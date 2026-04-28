@@ -24,4 +24,4 @@
 - [x] implement-extensibility — Build skill loading (SKILL.md parser) and hook pipeline (PreToolUse, PostToolUse lifecycle events)
 - [x] implement-cli — Create interactive CLI entry point with streaming output and permission dialogs
 - [x] add-error-recovery — Add recovery mechanisms: retry with backoff, context overflow handling, graceful degradation
-- [ ] add-tests — Write Jest test suite covering agent loop, permissions, tool dispatch, context, and persistence
+- [x] add-tests — Write Jest test suite covering agent loop, permissions, tool dispatch, context, and persistence
