@@ -13,7 +13,7 @@
 - [x] setup-ollama-client — Create the Ollama client abstraction layer with streaming and tool calling support
 - [x] define-types — Define core type interfaces: Tool, ToolResult, LoopEvent, Message, PermissionRule, SessionEntry
 - [x] implement-agent-loop — Build the core queryLoop async generator (while-loop, model call, tool dispatch, stop conditions)
-- [ ] implement-tool-dispatch — Create StreamingToolExecutor with concurrent-read/serial-write classification
+- [x] implement-tool-dispatch — Create StreamingToolExecutor with concurrent-read/serial-write classification
 - [ ] implement-permissions — Build deny-first permission rule engine with mode support (default, acceptEdits, dontAsk)
 - [ ] implement-builtin-tools — Create built-in tools: BashTool, FileReadTool, FileWriteTool, FileEditTool, WebFetchTool
 - [ ] implement-context-assembly — Build context assembly pipeline: system prompt, user context, tool schemas, message history
