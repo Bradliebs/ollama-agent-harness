@@ -6,8 +6,11 @@ import { Ollama } from 'ollama';
 import { OllamaClient } from '../core/ollamaClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { getBuiltinTools } from '../tools';
+import { setSkillsDir } from '../tools/skillTools';
 import { PermissionEngine } from '../permissions/engine';
 import { assembleSystemContext } from '../context/assembly';
+import { HookPipeline } from '../extensibility/hookPipeline';
+import { loadSkillsDir } from '../extensibility/skillLoader';
 import { RateLimiter } from '../core/rateLimiter';
 import { logger } from '../core/logger';
 import type { LoopConfig, PermissionMode } from '../types';
@@ -25,6 +28,11 @@ let temperature = 0.7;
 let topP = 0.9;
 const rateLimiter = new RateLimiter(10, 2);
 const HISTORY_DIR = path.join(process.cwd(), '.harness', 'chat-history');
+const SKILLS_DIR = path.join(process.cwd(), '.harness', 'skills');
+const hookPipeline = new HookPipeline();
+
+// Initialize skills directory for SkillTool
+setSkillsDir(SKILLS_DIR);
 
 // --- API Routes ---
 
@@ -90,7 +98,7 @@ app.post('/api/chat', async (req, res) => {
   const basePrompt = systemPromptOverride ||
     'You are a helpful AI assistant. You can read files, write files, edit code, run shell commands, search files with grep, and fetch web pages using the tools available to you. Format your responses using Markdown.';
 
-  const systemPrompt = await assembleSystemContext({ systemPrompt: basePrompt, projectDir });
+  const systemPrompt = await assembleSystemContext({ systemPrompt: basePrompt, projectDir, skillsDir: SKILLS_DIR });
 
   const config: LoopConfig = { model: activeModel, systemPrompt, maxTurns: 25 };
 
@@ -98,6 +106,7 @@ app.post('/api/chat', async (req, res) => {
     client,
     tools,
     permissionCheck: (call) => permissions.evaluateAsync(call),
+    hooks: hookPipeline,
   };
 
   const messages = [{ role: 'user' as const, content: message }];
@@ -187,6 +196,44 @@ app.delete('/api/history/:id', async (req, res) => {
     await fs.unlink(path.join(HISTORY_DIR, `${req.params.id}.json`));
     res.json({ ok: true });
   } catch { res.status(404).json({ error: 'Not found' }); }
+});
+
+// --- API: Skills ---
+app.get('/api/skills', async (_req, res) => {
+  try {
+    await fs.mkdir(SKILLS_DIR, { recursive: true });
+    const skills = await loadSkillsDir(SKILLS_DIR);
+    res.json({ skills: skills.map(s => ({ name: s.name, description: s.description, domain: s.domain, triggers: s.triggers, filePath: s.filePath })) });
+  } catch { res.json({ skills: [] }); }
+});
+
+app.get('/api/skills/:name', async (req, res) => {
+  try {
+    const skills = await loadSkillsDir(SKILLS_DIR);
+    const skill = skills.find(s => s.name === req.params.name);
+    if (!skill) { res.status(404).json({ error: 'Skill not found' }); return; }
+    res.json(skill);
+  } catch { res.status(500).json({ error: 'Failed to load skill' }); }
+});
+
+app.delete('/api/skills/:name', async (req, res) => {
+  try {
+    const skillDir = path.join(SKILLS_DIR, req.params.name);
+    await fs.rm(skillDir, { recursive: true });
+    res.json({ ok: true });
+  } catch { res.status(404).json({ error: 'Skill not found' }); }
+});
+
+// --- API: Agent Memory ---
+app.get('/api/memory', async (_req, res) => {
+  const memDir = path.join(process.cwd(), '.harness', 'memory');
+  const result: Record<string, string> = {};
+  for (const file of ['decisions.md', 'patterns.md', 'notes.md']) {
+    try {
+      result[file.replace('.md', '')] = await fs.readFile(path.join(memDir, file), 'utf-8');
+    } catch { /* not yet created */ }
+  }
+  res.json(result);
 });
 
 // --- API: File Tree ---

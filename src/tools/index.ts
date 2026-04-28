@@ -2,6 +2,8 @@ import { FileReadTool, FileWriteTool, FileEditTool, ListFilesTool } from './file
 import { BashTool } from './bashTool';
 import { WebFetchTool } from './webFetchTool';
 import { GrepTool } from './grepTool';
+import { SkillTool, ListSkillsTool, CreateSkillTool } from './skillTools';
+import { MemoryWriteTool, MemoryReadTool } from './memoryTools';
 import type { Tool } from '../types';
 
 export function getBuiltinTools(): Tool[] {
@@ -13,6 +15,11 @@ export function getBuiltinTools(): Tool[] {
     BashTool,
     WebFetchTool,
     GrepTool,
+    SkillTool,
+    ListSkillsTool,
+    CreateSkillTool,
+    MemoryWriteTool,
+    MemoryReadTool,
   ];
 }
 
@@ -20,4 +27,6 @@ export { FileReadTool, FileWriteTool, FileEditTool, ListFilesTool } from './file
 export { BashTool } from './bashTool';
 export { WebFetchTool } from './webFetchTool';
 export { GrepTool } from './grepTool';
+export { SkillTool, ListSkillsTool, CreateSkillTool } from './skillTools';
+export { MemoryWriteTool, MemoryReadTool } from './memoryTools';
 export { ToolDispatcher } from './dispatcher';

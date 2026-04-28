@@ -40,6 +40,21 @@
     .file-item:hover{background:var(--surface2)}
     .file-icon{font-size:14px;width:18px;text-align:center;flex-shrink:0}
 
+    .skill-list{flex:1;overflow-y:auto;padding:8px}
+    .skill-item{padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--rs);margin-bottom:6px;cursor:pointer;transition:all .15s}
+    .skill-item:hover{border-color:var(--accent)}
+    .skill-item .skill-name{font-size:13px;font-weight:600;color:var(--accent);margin-bottom:2px}
+    .skill-item .skill-desc{font-size:11px;color:var(--text-dim);line-height:1.4}
+    .skill-item .skill-meta{font-size:10px;color:var(--text-dim);margin-top:4px;display:flex;justify-content:space-between;align-items:center}
+    .skill-del{background:none;border:none;color:var(--error);cursor:pointer;font-size:12px;opacity:0;transition:opacity .15s}
+    .skill-item:hover .skill-del{opacity:.6}
+    .skill-del:hover{opacity:1!important}
+
+    .memory-view{flex:1;overflow-y:auto;padding:12px;font-size:12px;line-height:1.6}
+    .memory-section{margin-bottom:16px}
+    .memory-section h5{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin-bottom:6px}
+    .memory-section pre{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;white-space:pre-wrap;font-size:11px;font-family:'Cascadia Code','Fira Code',monospace;color:var(--text-dim)}
+
     .tab-bar{display:flex;border-bottom:1px solid var(--border)}
     .tab{flex:1;padding:10px;text-align:center;font-size:12px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;color:var(--text-dim);transition:all .2s}
     .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
@@ -148,9 +163,13 @@
     <div class="tab-bar">
       <div class="tab active" onclick="showLeftTab('history',this)">History</div>
       <div class="tab" onclick="showLeftTab('files',this)">Files</div>
+      <div class="tab" onclick="showLeftTab('skills',this)">Skills</div>
+      <div class="tab" onclick="showLeftTab('memory',this)">Memory</div>
     </div>
     <div class="history-list" id="historyList"></div>
     <div class="file-tree" id="fileTree" style="display:none"></div>
+    <div class="skill-list" id="skillList" style="display:none"></div>
+    <div class="memory-view" id="memoryView" style="display:none"></div>
   </div>
 
   <!-- Main Panel -->
@@ -537,7 +556,53 @@ function showLeftTab(tab,el){
   el.classList.add('active');
   document.getElementById('historyList').style.display=tab==='history'?'block':'none';
   document.getElementById('fileTree').style.display=tab==='files'?'block':'none';
+  document.getElementById('skillList').style.display=tab==='skills'?'block':'none';
+  document.getElementById('memoryView').style.display=tab==='memory'?'block':'none';
   if(tab==='files') loadFiles();
+  if(tab==='skills') loadSkills();
+  if(tab==='memory') loadMemory();
+}
+
+// --- Skills ---
+async function loadSkills(){
+  try{
+    const r=await fetch('/api/skills');const d=await r.json();
+    const list=document.getElementById('skillList');
+    list.innerHTML='';
+    if(!d.skills||d.skills.length===0){
+      list.innerHTML='<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No skills yet.<br><br>Ask the agent to <strong>"create a skill for..."</strong> and it will build one automatically.</div>';
+      return;
+    }
+    for(const s of d.skills){
+      const el=document.createElement('div');el.className='skill-item';
+      el.innerHTML=`<div class="skill-name">${esc(s.name)}</div><div class="skill-desc">${esc(s.description)}</div><div class="skill-meta"><span>${esc(s.domain)}</span><button class="skill-del" onclick="event.stopPropagation();deleteSkill('${esc(s.name)}')">🗑</button></div>`;
+      el.onclick=()=>{document.getElementById('chatInput').value='Use the skill: '+s.name;sendMessage();};
+      list.appendChild(el);
+    }
+  }catch{}
+}
+
+async function deleteSkill(name){
+  if(!confirm('Delete skill "'+name+'"?'))return;
+  await fetch('/api/skills/'+name,{method:'DELETE'});
+  loadSkills();
+}
+
+// --- Agent Memory ---
+async function loadMemory(){
+  try{
+    const r=await fetch('/api/memory');const d=await r.json();
+    const view=document.getElementById('memoryView');
+    if(!d.decisions&&!d.patterns&&!d.notes){
+      view.innerHTML='<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No memories yet.<br><br>The agent saves decisions, patterns, and notes here as it learns from your conversations.</div>';
+      return;
+    }
+    let html='';
+    if(d.decisions) html+=`<div class="memory-section"><h5>📋 Decisions</h5><pre>${esc(d.decisions)}</pre></div>`;
+    if(d.patterns) html+=`<div class="memory-section"><h5>🔧 Patterns</h5><pre>${esc(d.patterns)}</pre></div>`;
+    if(d.notes) html+=`<div class="memory-section"><h5>📝 Notes</h5><pre>${esc(d.notes)}</pre></div>`;
+    view.innerHTML=html;
+  }catch{}
 }
 
 // --- Panels ---

@@ -3,11 +3,13 @@ import * as path from 'path';
 import type { Message } from 'ollama';
 import type { Tool } from '../types';
 import { toolToSchema } from '../types/tool';
+import { loadSkillsDir } from '../extensibility/skillLoader';
 
 export interface ContextConfig {
   systemPrompt: string;
   projectDir: string;
   memoryFiles?: string[];
+  skillsDir?: string;
 }
 
 export async function assembleSystemContext(config: ContextConfig): Promise<string> {
@@ -26,6 +28,30 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
     } catch {
       // File doesn't exist — skip silently
     }
+  }
+
+  // Load agent memory (auto-memory from .harness/memory/)
+  const autoMemoryDir = path.join(config.projectDir, '.harness', 'memory');
+  for (const file of ['decisions.md', 'patterns.md', 'notes.md']) {
+    try {
+      const content = await fs.readFile(path.join(autoMemoryDir, file), 'utf-8');
+      parts.push(`\n--- Agent Memory: ${file} ---\n${content}`);
+    } catch {
+      // Not yet created — skip
+    }
+  }
+
+  // Inject skill descriptions so the model knows what skills are available
+  // (Paper §6.3: "only frontmatter descriptions stay in the prompt" — low context cost)
+  const sDir = config.skillsDir ?? path.join(config.projectDir, '.harness', 'skills');
+  try {
+    const skills = await loadSkillsDir(sDir);
+    if (skills.length > 0) {
+      const skillList = skills.map(s => `• ${s.name} — ${s.description} (triggers: ${s.triggers.join(', ') || 'none'})`).join('\n');
+      parts.push(`\n--- Available Skills ---\nYou can invoke these skills using the "skill" tool. Use "create_skill" to create new ones.\n${skillList}`);
+    }
+  } catch {
+    // No skills directory — skip
   }
 
   return parts.join('\n');

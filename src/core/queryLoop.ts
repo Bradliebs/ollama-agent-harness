@@ -2,11 +2,13 @@ import type { Message } from 'ollama';
 import { OllamaClient } from './ollamaClient';
 import type { Tool, ToolCall, ToolResult, LoopConfig, LoopEvent } from '../types';
 import { toolToSchema } from '../types/tool';
+import type { HookPipeline } from '../extensibility/hookPipeline';
 
 export interface QueryLoopDeps {
   client: OllamaClient;
   tools: Tool[];
   permissionCheck?: (call: ToolCall) => Promise<{ allowed: boolean; reason?: string }>;
+  hooks?: HookPipeline;
 }
 
 export async function* queryLoop(
@@ -15,7 +17,7 @@ export async function* queryLoop(
   initialMessages: Message[] = [],
 ): AsyncGenerator<LoopEvent> {
   const { maxTurns, abortSignal } = config;
-  const { client, tools, permissionCheck } = deps;
+  const { client, tools, permissionCheck, hooks } = deps;
 
   const toolMap = new Map(tools.map((t) => [t.name, t]));
   const ollamaTools = tools.map(toolToSchema);
@@ -75,7 +77,7 @@ export async function* queryLoop(
 
     // Dispatch read-only tools in parallel
     const readOnlyResults = await Promise.all(
-      readOnlyCalls.map((call) => executeTool(call, toolMap, permissionCheck)),
+      readOnlyCalls.map((call) => executeTool(call, toolMap, permissionCheck, hooks)),
     );
     for (const { call, result } of readOnlyResults) {
       yield { type: 'tool_call', call };
@@ -85,7 +87,7 @@ export async function* queryLoop(
 
     // Dispatch exclusive tools serially
     for (const call of exclusiveCalls) {
-      const { result } = await executeTool(call, toolMap, permissionCheck);
+      const { result } = await executeTool(call, toolMap, permissionCheck, hooks);
       yield { type: 'tool_call', call };
       yield { type: 'tool_result', call, result };
       messages.push({ role: 'tool', content: result.output });
@@ -100,7 +102,30 @@ async function executeTool(
   call: ToolCall,
   toolMap: Map<string, Tool>,
   permissionCheck?: (call: ToolCall) => Promise<{ allowed: boolean; reason?: string }>,
+  hooks?: HookPipeline,
 ): Promise<{ call: ToolCall; result: ToolResult }> {
+  // PreToolUse hook — can block or modify input
+  if (hooks) {
+    const hookResult = await hooks.execute({
+      eventType: 'PreToolUse',
+      toolName: call.name,
+      toolInput: call.input,
+    });
+    if (hookResult.action === 'block') {
+      return {
+        call,
+        result: {
+          success: false,
+          output: `Blocked by hook: ${hookResult.reason ?? 'no reason given'}`,
+          error: hookResult.reason,
+        },
+      };
+    }
+    if (hookResult.modifiedInput) {
+      call = { ...call, input: hookResult.modifiedInput };
+    }
+  }
+
   // Permission check
   if (permissionCheck) {
     const perm = await permissionCheck(call);
@@ -132,9 +157,34 @@ async function executeTool(
   // Execute
   try {
     const result = await tool.execute(call.input);
+
+    // PostToolUse hook — can modify output or inject context
+    if (hooks) {
+      const postHook = await hooks.execute({
+        eventType: 'PostToolUse',
+        toolName: call.name,
+        toolInput: call.input,
+        toolOutput: result.output,
+      });
+      if (postHook.modifiedOutput) {
+        return { call, result: { ...result, output: postHook.modifiedOutput } };
+      }
+    }
+
     return { call, result };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
+
+    // PostToolUseFailure hook
+    if (hooks) {
+      await hooks.execute({
+        eventType: 'PostToolUseFailure',
+        toolName: call.name,
+        toolInput: call.input,
+        error: msg,
+      });
+    }
+
     return {
       call,
       result: {
