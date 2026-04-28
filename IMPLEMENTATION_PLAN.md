@@ -10,7 +10,7 @@
 # To run: Open your AI assistant and say "run the plan" or use the task-loop recipe.
 
 - [x] init-project — Initialize TypeScript project with tsconfig.json, package.json, and directory structure
-- [ ] setup-ollama-client — Create the Ollama client abstraction layer with streaming and tool calling support
+- [x] setup-ollama-client — Create the Ollama client abstraction layer with streaming and tool calling support
 - [ ] define-types — Define core type interfaces: Tool, ToolResult, LoopEvent, Message, PermissionRule, SessionEntry
 - [ ] implement-agent-loop — Build the core queryLoop async generator (while-loop, model call, tool dispatch, stop conditions)
 - [ ] implement-tool-dispatch — Create StreamingToolExecutor with concurrent-read/serial-write classification
