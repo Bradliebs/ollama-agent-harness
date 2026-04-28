@@ -173,9 +173,15 @@
     </div>
 
     <div class="input-area">
+      <div id="attachedFiles" style="max-width:800px;margin:0 auto 6px;display:none;flex-wrap:wrap;gap:4px"></div>
       <div class="input-row">
-        <textarea id="chatInput" placeholder="Ask anything... (Shift+Enter for newline)" rows="1"
-          onkeydown="handleKey(event)" oninput="autoSize(this)"></textarea>
+        <button class="btn-icon" onclick="document.getElementById('fileInput').click()" title="Attach files" style="width:34px;height:44px;font-size:18px">📎</button>
+        <input type="file" id="fileInput" multiple style="display:none" onchange="handleFileAttach(this.files)">
+        <textarea id="chatInput" placeholder="Ask anything... drop files here or click 📎 (Shift+Enter for newline)" rows="1"
+          onkeydown="handleKey(event)" oninput="autoSize(this)"
+          ondragover="event.preventDefault();this.style.borderColor='var(--accent)'"
+          ondragleave="this.style.borderColor=''"
+          ondrop="event.preventDefault();this.style.borderColor='';handleFileAttach(event.dataTransfer.files)"></textarea>
         <button class="send-btn" id="sendBtn" onclick="sendMessage()" disabled>➤</button>
       </div>
     </div>
@@ -284,13 +290,49 @@ async function loadSettings(){
 function updateSetting(k,v){fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({[k]:v})});if(k==='ollamaHost')loadModels();}
 function setMode(m,el){document.querySelectorAll('.mode-opt').forEach(o=>o.classList.remove('active'));el.classList.add('active');updateSetting('permissionMode',m);}
 
+// --- File Attach ---
+let pendingFiles = [];
+
+async function handleFileAttach(fileList){
+  for(const file of fileList){
+    try{
+      const res = await fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/octet-stream','x-filename':file.name},body:file});
+      const data = await res.json();
+      if(data.error){alert('Upload failed: '+data.error);continue;}
+      pendingFiles.push(data);
+      showAttached();
+    }catch(e){alert('Upload failed: '+e.message);}
+  }
+  document.getElementById('fileInput').value='';
+}
+
+function showAttached(){
+  const el=document.getElementById('attachedFiles');
+  if(!pendingFiles.length){el.style.display='none';return;}
+  el.style.display='flex';
+  el.innerHTML=pendingFiles.map((f,i)=>
+    '<span style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:12px;display:flex;align-items:center;gap:4px">📄 '+esc(f.name)+' <button onclick="removeAttached('+i+')" style="background:none;border:none;color:var(--error);cursor:pointer;font-size:14px">✕</button></span>'
+  ).join('');
+}
+
+function removeAttached(i){pendingFiles.splice(i,1);showAttached();}
+
 // --- Chat ---
 function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}}
 function autoSize(el){el.style.height='auto';el.style.height=Math.min(el.scrollHeight,180)+'px';}
 function sendTip(el){document.getElementById('chatInput').value=el.textContent;sendMessage();}
 
 async function sendMessage(){
-  const inp=document.getElementById('chatInput'), text=inp.value.trim();
+  const inp=document.getElementById('chatInput');
+  let text=inp.value.trim();
+
+  // Append attached file info to the message
+  if(pendingFiles.length>0){
+    const fileInfo=pendingFiles.map(f=>'[Attached file: '+f.name+' at '+f.path+']').join('\n');
+    text=(text?text+'\n\n':'')+fileInfo+'\n\nPlease read and analyze the attached file(s).';
+    pendingFiles=[];showAttached();
+  }
+
   if(!text||isSending)return;
   const model=document.getElementById('modelSelect').value;
   if(!model){alert('Select a model first.');return;}

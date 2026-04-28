@@ -20,6 +20,8 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, '..', '..', 'ui')));
 
+const UPLOADS_DIR = path.join(process.cwd(), '.harness', 'uploads');
+
 // --- State ---
 let currentModel = '';
 let permissionMode: PermissionMode = 'dontAsk';
@@ -284,6 +286,48 @@ app.get('/api/learning', async (_req, res) => {
     result.toolBreakdown = counts;
   } catch { result.totalToolCalls = 0; result.toolBreakdown = {}; }
   res.json(result);
+});
+
+// --- API: File Upload ---
+app.post('/api/upload', express.raw({ type: '*/*', limit: '10mb' }), async (req, res) => {
+  const filename = req.headers['x-filename'] as string;
+  if (!filename) { res.status(400).json({ error: 'x-filename header required' }); return; }
+
+  // Sanitize filename — strip path traversal
+  const safe = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+  if (!safe) { res.status(400).json({ error: 'Invalid filename' }); return; }
+
+  try {
+    await fs.mkdir(UPLOADS_DIR, { recursive: true });
+    const dest = path.join(UPLOADS_DIR, safe);
+    await fs.writeFile(dest, req.body);
+    logger.info('Upload', `File saved: ${safe} (${req.body.length} bytes)`);
+    res.json({ path: dest, name: safe, size: req.body.length });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/uploads', async (_req, res) => {
+  try {
+    await fs.mkdir(UPLOADS_DIR, { recursive: true });
+    const entries = await fs.readdir(UPLOADS_DIR, { withFileTypes: true });
+    const files = [];
+    for (const e of entries.filter(e => e.isFile())) {
+      const stat = await fs.stat(path.join(UPLOADS_DIR, e.name));
+      files.push({ name: e.name, path: path.join(UPLOADS_DIR, e.name), size: stat.size, modified: stat.mtime.toISOString() });
+    }
+    res.json({ files });
+  } catch { res.json({ files: [] }); }
+});
+
+app.delete('/api/uploads/:name', async (req, res) => {
+  const safe = path.basename(req.params.name);
+  try {
+    await fs.unlink(path.join(UPLOADS_DIR, safe));
+    res.json({ ok: true });
+  } catch { res.status(404).json({ error: 'Not found' }); }
 });
 
 // --- API: File Tree ---
