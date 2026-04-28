@@ -12,7 +12,7 @@
 - [x] init-project — Initialize TypeScript project with tsconfig.json, package.json, and directory structure
 - [x] setup-ollama-client — Create the Ollama client abstraction layer with streaming and tool calling support
 - [x] define-types — Define core type interfaces: Tool, ToolResult, LoopEvent, Message, PermissionRule, SessionEntry
-- [ ] implement-agent-loop — Build the core queryLoop async generator (while-loop, model call, tool dispatch, stop conditions)
+- [x] implement-agent-loop — Build the core queryLoop async generator (while-loop, model call, tool dispatch, stop conditions)
 - [ ] implement-tool-dispatch — Create StreamingToolExecutor with concurrent-read/serial-write classification
 - [ ] implement-permissions — Build deny-first permission rule engine with mode support (default, acceptEdits, dontAsk)
 - [ ] implement-builtin-tools — Create built-in tools: BashTool, FileReadTool, FileWriteTool, FileEditTool, WebFetchTool
