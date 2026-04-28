@@ -4,24 +4,570 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ollama Agent Harness</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/marked-highlight/styles/github-dark.min.css">
   <style>
-    :root {
-      --bg: #0f0f0f;
-      --surface: #1a1a1a;
-      --surface2: #242424;
-      --border: #333;
-      --text: #e0e0e0;
-      --text-dim: #888;
-      --accent: #7c5cff;
-      --accent-hover: #9b80ff;
-      --success: #4caf50;
-      --error: #ef5350;
-      --warning: #ff9800;
-      --tool-bg: #1e2a1e;
-      --tool-border: #2e4a2e;
-      --radius: 12px;
-      --radius-sm: 8px;
+    :root{--bg:#0f0f0f;--surface:#1a1a1a;--surface2:#242424;--surface3:#2a2a2a;--border:#333;--text:#e0e0e0;--text-dim:#888;--accent:#7c5cff;--accent-hover:#9b80ff;--accent-bg:rgba(124,92,255,.1);--success:#4caf50;--error:#ef5350;--warning:#ff9800;--tool-bg:#1e2a1e;--tool-border:#2e4a2e;--r:12px;--rs:8px}
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;overflow:hidden}
+
+    /* Layout */
+    .layout{display:flex;width:100%;height:100%}
+    .left-panel{width:260px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;transition:margin-left .3s}
+    .left-panel.hidden{margin-left:-260px}
+    .main-panel{flex:1;display:flex;flex-direction:column;min-width:0}
+    .right-panel{width:320px;background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto;transition:margin-right .3s}
+    .right-panel.hidden{margin-right:-320px}
+
+    /* Left Panel - History */
+    .panel-header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border)}
+    .panel-header h3{font-size:14px;font-weight:600}
+    .btn-sm{background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s}
+    .btn-sm:hover{border-color:var(--accent);color:var(--text)}
+
+    .history-list{flex:1;overflow-y:auto;padding:8px}
+    .history-item{padding:10px 12px;border-radius:var(--rs);cursor:pointer;margin-bottom:2px;transition:background .15s;display:flex;justify-content:space-between;align-items:center}
+    .history-item:hover{background:var(--surface2)}
+    .history-item.active{background:var(--accent-bg);border:1px solid var(--accent)}
+    .history-title{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+    .history-date{font-size:11px;color:var(--text-dim)}
+    .history-del{opacity:0;background:none;border:none;color:var(--error);cursor:pointer;font-size:14px;padding:0 4px}
+    .history-item:hover .history-del{opacity:.6}
+    .history-del:hover{opacity:1!important}
+
+    /* File tree */
+    .file-tree{flex:1;overflow-y:auto;padding:8px}
+    .file-item{padding:6px 10px;border-radius:6px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:6px;transition:background .15s}
+    .file-item:hover{background:var(--surface2)}
+    .file-icon{font-size:14px;width:18px;text-align:center;flex-shrink:0}
+
+    .tab-bar{display:flex;border-bottom:1px solid var(--border)}
+    .tab{flex:1;padding:10px;text-align:center;font-size:12px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;color:var(--text-dim);transition:all .2s}
+    .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+
+    /* Top Bar */
+    .topbar{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+    .logo{font-size:18px;font-weight:700;color:var(--accent);display:flex;align-items:center;gap:6px;white-space:nowrap}
+    .model-select{flex:1;max-width:350px;padding:8px 32px 8px 12px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:var(--rs);font-size:13px;appearance:none;cursor:pointer;outline:none}
+    .model-select:hover{border-color:var(--accent)}
+    .model-wrap{position:relative;flex:1;max-width:350px}
+    .model-wrap::after{content:'▾';position:absolute;right:10px;top:50%;transform:translateY(-50%);color:var(--text-dim);pointer-events:none;font-size:12px}
+    .status-dot{width:8px;height:8px;border-radius:50%;background:var(--error);flex-shrink:0}
+    .status-dot.ok{background:var(--success)}
+    .status-dot.loading{background:var(--warning);animation:pulse 1s infinite}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+    .topbar-btns{display:flex;gap:6px;margin-left:auto}
+    .btn-icon{background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);width:34px;height:34px;border-radius:var(--rs);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;transition:all .2s}
+    .btn-icon:hover{border-color:var(--accent);color:var(--text)}
+
+    /* Chat */
+    .chat-area{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;scroll-behavior:smooth}
+    .welcome{text-align:center;padding:50px 20px;color:var(--text-dim)}
+    .welcome h2{font-size:22px;color:var(--text);margin-bottom:6px}
+    .welcome p{font-size:14px;max-width:480px;margin:0 auto 20px;line-height:1.5}
+    .tips{display:flex;flex-wrap:wrap;gap:6px;justify-content:center}
+    .tip{padding:7px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:18px;font-size:12px;cursor:pointer;transition:all .2s}
+    .tip:hover{border-color:var(--accent);color:var(--accent)}
+
+    .msg{max-width:800px;width:100%;margin:0 auto;display:flex;gap:10px}
+    .msg-avatar{width:28px;height:28px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600}
+    .msg.user .msg-avatar{background:var(--accent);color:#fff}
+    .msg.assistant .msg-avatar{background:var(--surface2);border:1px solid var(--border)}
+    .msg-body{flex:1;min-width:0}
+    .msg-role{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);margin-bottom:3px;display:flex;align-items:center;gap:8px}
+    .msg-tokens{font-size:10px;color:var(--text-dim);font-weight:400;background:var(--surface2);padding:1px 6px;border-radius:4px}
+    .msg-content{font-size:14px;line-height:1.65;word-break:break-word}
+    .msg-content p{margin:6px 0}
+    .msg-content code:not(pre code){background:var(--surface2);padding:1px 5px;border-radius:4px;font-size:12px;font-family:'Cascadia Code','Fira Code',monospace}
+    .msg-content pre{background:var(--surface2);border:1px solid var(--border);border-radius:var(--rs);padding:12px;margin:8px 0;overflow-x:auto;font-size:12px;font-family:'Cascadia Code','Fira Code',monospace;line-height:1.5;position:relative}
+    .msg-content pre .copy-btn{position:absolute;top:6px;right:6px;background:var(--surface3);border:1px solid var(--border);color:var(--text-dim);padding:3px 8px;border-radius:4px;font-size:11px;cursor:pointer;opacity:0;transition:opacity .2s}
+    .msg-content pre:hover .copy-btn{opacity:1}
+    .msg-content pre .copy-btn:hover{color:var(--text);border-color:var(--accent)}
+    .msg-content ul,.msg-content ol{margin:6px 0;padding-left:20px}
+    .msg-content li{margin:3px 0}
+    .msg-content blockquote{border-left:3px solid var(--accent);padding-left:12px;margin:6px 0;color:var(--text-dim)}
+    .msg-content h1,.msg-content h2,.msg-content h3{margin:10px 0 6px}
+    .msg-content a{color:var(--accent)}
+    .msg-content table{border-collapse:collapse;margin:8px 0;width:100%}
+    .msg-content th,.msg-content td{border:1px solid var(--border);padding:6px 10px;text-align:left;font-size:13px}
+    .msg-content th{background:var(--surface2)}
+
+    .tool-activity{max-width:800px;width:100%;margin:0 auto;padding-left:38px}
+    .tool-item{background:var(--tool-bg);border:1px solid var(--tool-border);border-radius:var(--rs);padding:6px 10px;margin-bottom:3px;font-size:12px;font-family:'Cascadia Code','Fira Code',monospace;display:flex;align-items:flex-start;gap:6px}
+    .tool-item.error{background:#2a1e1e;border-color:#4a2e2e}
+    .tool-name{color:var(--accent);font-weight:600}
+    .tool-detail{color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:550px}
+
+    .thinking{max-width:800px;width:100%;margin:0 auto;padding-left:38px;display:flex;align-items:center;gap:8px;color:var(--text-dim);font-size:13px}
+    .dots span{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--accent);animation:bounce 1.4s infinite;margin:0 2px}
+    .dots span:nth-child(2){animation-delay:.2s}
+    .dots span:nth-child(3){animation-delay:.4s}
+    @keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-6px)}}
+
+    /* Input */
+    .input-area{padding:12px 16px;background:var(--surface);border-top:1px solid var(--border);flex-shrink:0}
+    .input-row{max-width:800px;margin:0 auto;display:flex;gap:8px;align-items:flex-end}
+    .input-row textarea{flex:1;padding:10px 14px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:var(--r);font-size:14px;font-family:inherit;resize:none;outline:none;min-height:44px;max-height:180px;line-height:1.5;transition:border-color .2s}
+    .input-row textarea:focus{border-color:var(--accent)}
+    .input-row textarea::placeholder{color:var(--text-dim)}
+    .send-btn{width:44px;height:44px;border-radius:var(--r);background:var(--accent);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;transition:background .2s;flex-shrink:0}
+    .send-btn:hover{background:var(--accent-hover)}
+    .send-btn:disabled{opacity:.4;cursor:not-allowed}
+
+    /* Right Panel - Settings */
+    .settings-section{padding:14px 16px;border-bottom:1px solid var(--border)}
+    .settings-section h4{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);margin-bottom:8px}
+    .setting-row{margin-bottom:10px}
+    .setting-row label{display:block;font-size:12px;color:var(--text-dim);margin-bottom:3px}
+    .setting-row input,.setting-row select,.setting-row textarea{width:100%;padding:7px 10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px;outline:none;font-family:inherit}
+    .setting-row textarea{min-height:80px;resize:vertical}
+    .setting-row input:focus,.setting-row select:focus,.setting-row textarea:focus{border-color:var(--accent)}
+    .slider-row{display:flex;align-items:center;gap:10px}
+    .slider-row input[type=range]{flex:1;accent-color:var(--accent)}
+    .slider-val{font-size:12px;color:var(--accent);min-width:32px;text-align:right}
+
+    .mode-opt{padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all .2s}
+    .mode-opt:hover{border-color:var(--accent)}
+    .mode-opt.active{border-color:var(--accent);background:var(--accent-bg)}
+    .mode-opt .mode-t{font-size:13px;font-weight:600;margin-bottom:1px}
+    .mode-opt .mode-d{font-size:11px;color:var(--text-dim)}
+
+    @media(max-width:900px){.left-panel,.right-panel{position:fixed;top:0;bottom:0;z-index:100}.left-panel{left:-260px}.left-panel.visible{left:0}.right-panel{right:-320px}.right-panel.visible{right:0}}
+  </style>
+</head>
+<body>
+<div class="layout">
+  <!-- Left Panel: History + Files -->
+  <div class="left-panel" id="leftPanel">
+    <div class="panel-header">
+      <h3>💬 History</h3>
+      <div style="display:flex;gap:4px">
+        <button class="btn-sm" onclick="newChat()">+ New</button>
+        <button class="btn-sm" onclick="exportChat()">⬇ Export</button>
+      </div>
+    </div>
+    <div class="tab-bar">
+      <div class="tab active" onclick="showLeftTab('history',this)">History</div>
+      <div class="tab" onclick="showLeftTab('files',this)">Files</div>
+    </div>
+    <div class="history-list" id="historyList"></div>
+    <div class="file-tree" id="fileTree" style="display:none"></div>
+  </div>
+
+  <!-- Main Panel -->
+  <div class="main-panel">
+    <div class="topbar">
+      <button class="btn-icon" onclick="toggleLeft()" title="History">☰</button>
+      <div class="logo">🤖 Harness</div>
+      <div class="model-wrap">
+        <select class="model-select" id="modelSelect" disabled>
+          <option value="">Loading models...</option>
+        </select>
+      </div>
+      <div class="status-dot loading" id="statusDot" title="Connecting..."></div>
+      <div class="topbar-btns">
+        <button class="btn-icon" onclick="newChat()" title="New chat">✨</button>
+        <button class="btn-icon" onclick="toggleRight()" title="Settings">⚙️</button>
+      </div>
+    </div>
+
+    <div class="chat-area" id="chatArea">
+      <div class="welcome" id="welcome">
+        <h2>Welcome to Harness</h2>
+        <p>Pick a model above, then ask me anything. I can read files, write code, run commands, search your project, and more.</p>
+        <div class="tips">
+          <div class="tip" onclick="sendTip(this)">List files in this project</div>
+          <div class="tip" onclick="sendTip(this)">What models do I have?</div>
+          <div class="tip" onclick="sendTip(this)">Help me write a Python script</div>
+          <div class="tip" onclick="sendTip(this)">Explain this project</div>
+          <div class="tip" onclick="sendTip(this)">Search for TODO in my code</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-row">
+        <textarea id="chatInput" placeholder="Ask anything... (Shift+Enter for newline)" rows="1"
+          onkeydown="handleKey(event)" oninput="autoSize(this)"></textarea>
+        <button class="send-btn" id="sendBtn" onclick="sendMessage()" disabled>➤</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right Panel: Settings -->
+  <div class="right-panel hidden" id="rightPanel">
+    <div class="panel-header">
+      <h3>⚙️ Settings</h3>
+      <button class="btn-sm" onclick="toggleRight()">✕</button>
+    </div>
+
+    <div class="settings-section">
+      <h4>Connection</h4>
+      <div class="setting-row">
+        <label>Ollama Host</label>
+        <input type="text" id="ollamaHost" value="http://localhost:11434" onchange="updateSetting('ollamaHost',this.value)" />
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h4>Generation</h4>
+      <div class="setting-row">
+        <label>Temperature</label>
+        <div class="slider-row">
+          <input type="range" min="0" max="2" step="0.1" value="0.7" id="tempSlider"
+            oninput="document.getElementById('tempVal').textContent=this.value; updateSetting('temperature',this.value)">
+          <span class="slider-val" id="tempVal">0.7</span>
+        </div>
+      </div>
+      <div class="setting-row">
+        <label>Top P</label>
+        <div class="slider-row">
+          <input type="range" min="0" max="1" step="0.05" value="0.9" id="topPSlider"
+            oninput="document.getElementById('topPVal').textContent=this.value; updateSetting('topP',this.value)">
+          <span class="slider-val" id="topPVal">0.9</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h4>System Prompt</h4>
+      <div class="setting-row">
+        <textarea id="sysPrompt" placeholder="Leave empty for default..."
+          onchange="updateSetting('systemPrompt',this.value)"></textarea>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h4>Safety Mode</h4>
+      <div class="mode-opt active" onclick="setMode('dontAsk',this)">
+        <div class="mode-t">🟢 Auto-approve all</div>
+        <div class="mode-d">Tools run without asking.</div>
+      </div>
+      <div class="mode-opt" onclick="setMode('acceptEdits',this)">
+        <div class="mode-t">🟡 Ask for commands</div>
+        <div class="mode-d">File ops auto-approved. Shell needs approval.</div>
+      </div>
+      <div class="mode-opt" onclick="setMode('default',this)">
+        <div class="mode-t">🔴 Ask for everything</div>
+        <div class="mode-d">Only reads auto-approved.</div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h4>Download Model</h4>
+      <div class="setting-row">
+        <label>Model name (e.g. llama3.1:8b)</label>
+        <input type="text" id="pullName" placeholder="llama3.1:8b" />
+      </div>
+      <button class="btn-sm" style="width:100%;margin-top:4px" onclick="pullModel()">⬇️ Download</button>
+      <div id="pullProgress" style="font-size:11px;color:var(--text-dim);margin-top:6px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Markdown: marked.js via CDN (lightweight) -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+// Configure marked
+marked.setOptions({ breaks: true, gfm: true });
+
+// --- State ---
+let isSending = false;
+let chatMessages = []; // {role, content}
+let currentChatId = null;
+let totalTokens = 0;
+
+// --- Init ---
+window.addEventListener('DOMContentLoaded', () => {
+  loadModels();
+  loadHistory();
+  loadFiles();
+  loadSettings();
+  document.getElementById('chatInput').focus();
+});
+
+// --- Models ---
+async function loadModels() {
+  const dot = document.getElementById('statusDot');
+  const sel = document.getElementById('modelSelect');
+  try {
+    const r = await fetch('/api/models');
+    const d = await r.json();
+    if (d.error) { dot.className='status-dot'; sel.innerHTML='<option>⚠ '+esc(d.error)+'</option>'; return; }
+    dot.className='status-dot ok'; dot.title='Connected';
+    const models = d.models||[];
+    if (!models.length) { sel.innerHTML='<option value="">No models installed</option>'; return; }
+    sel.innerHTML='<option value="">— Select model —</option>'+models.map(m=>{
+      const s=m.parameterSize?' ('+m.parameterSize+')':'';
+      return '<option value="'+m.name+'">'+m.name+s+'</option>';
+    }).join('');
+    sel.disabled=false;
+    sel.onchange=()=>{ if(sel.value){updateSetting('model',sel.value);document.getElementById('sendBtn').disabled=false;} };
+    if(models.length===1){sel.value=models[0].name;sel.dispatchEvent(new Event('change'));}
+  } catch(e) { dot.className='status-dot'; sel.innerHTML='<option>⚠ Server not running</option>'; }
+}
+
+// --- Settings ---
+async function loadSettings() {
+  try {
+    const r = await fetch('/api/settings');
+    const s = await r.json();
+    if(s.temperature!==undefined){document.getElementById('tempSlider').value=s.temperature;document.getElementById('tempVal').textContent=s.temperature;}
+    if(s.topP!==undefined){document.getElementById('topPSlider').value=s.topP;document.getElementById('topPVal').textContent=s.topP;}
+    if(s.systemPrompt) document.getElementById('sysPrompt').value=s.systemPrompt;
+    if(s.ollamaHost) document.getElementById('ollamaHost').value=s.ollamaHost;
+  } catch{}
+}
+
+function updateSetting(key, val) {
+  fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({[key]:val})});
+  if(key==='ollamaHost') loadModels();
+}
+
+function setMode(mode,el){
+  document.querySelectorAll('.mode-opt').forEach(o=>o.classList.remove('active'));
+  el.classList.add('active');
+  updateSetting('permissionMode',mode);
+}
+
+// --- Chat ---
+function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}}
+function autoSize(el){el.style.height='auto';el.style.height=Math.min(el.scrollHeight,180)+'px';}
+function sendTip(el){document.getElementById('chatInput').value=el.textContent;sendMessage();}
+
+async function sendMessage(){
+  const inp=document.getElementById('chatInput');
+  const text=inp.value.trim();
+  if(!text||isSending)return;
+  const model=document.getElementById('modelSelect').value;
+  if(!model){alert('Select a model first.');return;}
+
+  const w=document.getElementById('welcome');if(w)w.remove();
+
+  addMsg('user',text);
+  chatMessages.push({role:'user',content:text});
+  inp.value='';inp.style.height='auto';
+  isSending=true;document.getElementById('sendBtn').disabled=true;
+  const thinkEl=addThinking();
+
+  try{
+    const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,model})});
+    const reader=res.body.getReader();
+    const dec=new TextDecoder();
+    let assistantText='',msgEl=null,toolBox=null,buf='';
+
+    while(true){
+      const{done,value}=await reader.read();
+      if(done)break;
+      buf+=dec.decode(value,{stream:true});
+      const lines=buf.split('\n');buf=lines.pop()||'';
+
+      for(const line of lines){
+        if(!line.startsWith('data: '))continue;
+        const payload=line.slice(6);
+        if(payload==='[DONE]')continue;
+        let ev;try{ev=JSON.parse(payload);}catch{continue;}
+
+        switch(ev.type){
+          case 'text':
+            thinkEl.remove();
+            if(!msgEl) msgEl=addMsg('assistant','');
+            assistantText+=ev.content;
+            renderMarkdown(msgEl.querySelector('.msg-content'),assistantText);
+            scrollBottom();
+            break;
+          case 'tool_call':
+            if(!toolBox){toolBox=document.createElement('div');toolBox.className='tool-activity';document.getElementById('chatArea').appendChild(toolBox);}
+            const tc=document.createElement('div');tc.className='tool-item';
+            tc.innerHTML='<span>🔧</span><span class="tool-name">'+esc(ev.call.name)+'</span><span class="tool-detail">'+esc(JSON.stringify(ev.call.input).slice(0,80))+'</span>';
+            toolBox.appendChild(tc);scrollBottom();
+            break;
+          case 'tool_result':
+            if(toolBox){const tr=document.createElement('div');tr.className='tool-item'+(ev.result.success?'':' error');
+            tr.innerHTML='<span>'+(ev.result.success?'✅':'❌')+'</span><span class="tool-detail">'+esc(ev.result.output.slice(0,120))+'</span>';
+            toolBox.appendChild(tr);scrollBottom();}
+            break;
+          case 'error':
+            thinkEl.remove();addMsg('assistant','⚠️ '+ev.message);break;
+          case 'done':
+            if(ev.turns) totalTokens+=ev.turns;
+            break;
+        }
+      }
     }
+
+    if(thinkEl.parentNode)thinkEl.remove();
+    if(assistantText){
+      chatMessages.push({role:'assistant',content:assistantText});
+      // Show token badge
+      if(msgEl){
+        const badge=msgEl.querySelector('.msg-tokens');
+        if(badge) badge.textContent='turns: '+(chatMessages.length);
+      }
+    }
+    autoSaveChat();
+
+  }catch(e){
+    if(thinkEl.parentNode)thinkEl.remove();
+    addMsg('assistant','⚠️ Request failed: '+e.message);
+  }
+
+  isSending=false;document.getElementById('sendBtn').disabled=false;
+  document.getElementById('chatInput').focus();
+}
+
+function addMsg(role,text){
+  const area=document.getElementById('chatArea');
+  const el=document.createElement('div');el.className='msg '+role;
+  const av=role==='user'?'Y':'🤖';
+  const label=role==='user'?'You':'Assistant';
+  el.innerHTML=`<div class="msg-avatar">${av}</div><div class="msg-body"><div class="msg-role">${label}<span class="msg-tokens"></span></div><div class="msg-content"></div></div>`;
+  if(role==='user') el.querySelector('.msg-content').textContent=text;
+  else renderMarkdown(el.querySelector('.msg-content'),text);
+  area.appendChild(el);scrollBottom();
+  return el;
+}
+
+function renderMarkdown(el,text){
+  if(!text){el.innerHTML='';return;}
+  el.innerHTML=marked.parse(text);
+  // Add copy buttons to code blocks
+  el.querySelectorAll('pre').forEach(pre=>{
+    if(pre.querySelector('.copy-btn'))return;
+    const btn=document.createElement('button');btn.className='copy-btn';btn.textContent='Copy';
+    btn.onclick=()=>{navigator.clipboard.writeText(pre.textContent.replace('Copy','').trim());btn.textContent='Copied!';setTimeout(()=>btn.textContent='Copy',1500);};
+    pre.style.position='relative';pre.appendChild(btn);
+  });
+}
+
+function addThinking(){
+  const area=document.getElementById('chatArea');
+  const el=document.createElement('div');el.className='thinking';
+  el.innerHTML='<div class="dots"><span></span><span></span><span></span></div> Thinking...';
+  area.appendChild(el);scrollBottom();return el;
+}
+
+function scrollBottom(){const a=document.getElementById('chatArea');a.scrollTop=a.scrollHeight;}
+
+// --- Chat History ---
+async function loadHistory(){
+  try{
+    const r=await fetch('/api/history');const d=await r.json();
+    const list=document.getElementById('historyList');
+    list.innerHTML='';
+    for(const c of d.chats||[]){
+      const el=document.createElement('div');el.className='history-item'+(c.id===currentChatId?' active':'');
+      el.innerHTML=`<div><div class="history-title">${esc(c.title)}</div><div class="history-date">${c.messageCount} msgs</div></div><button class="history-del" onclick="event.stopPropagation();deleteChat('${c.id}')">🗑</button>`;
+      el.onclick=()=>loadChat(c.id);
+      list.appendChild(el);
+    }
+  }catch{}
+}
+
+async function loadChat(id){
+  try{
+    const r=await fetch('/api/history/'+id);const d=await r.json();
+    currentChatId=id;chatMessages=d.messages||[];
+    const area=document.getElementById('chatArea');area.innerHTML='';
+    for(const m of chatMessages) addMsg(m.role,m.content);
+    loadHistory();
+  }catch{}
+}
+
+async function autoSaveChat(){
+  if(chatMessages.length<2)return;
+  const title=chatMessages[0].content.slice(0,60);
+  try{
+    const r=await fetch('/api/history',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:currentChatId,title,messages:chatMessages})});
+    const d=await r.json();
+    if(!currentChatId)currentChatId=d.id;
+    loadHistory();
+  }catch{}
+}
+
+async function deleteChat(id){
+  await fetch('/api/history/'+id,{method:'DELETE'});
+  if(id===currentChatId) newChat();
+  loadHistory();
+}
+
+function newChat(){
+  currentChatId=null;chatMessages=[];totalTokens=0;
+  document.getElementById('chatArea').innerHTML=`<div class="welcome" id="welcome"><h2>Welcome to Harness</h2><p>Pick a model above, then ask me anything.</p><div class="tips"><div class="tip" onclick="sendTip(this)">List files in this project</div><div class="tip" onclick="sendTip(this)">What models do I have?</div><div class="tip" onclick="sendTip(this)">Help me write a Python script</div><div class="tip" onclick="sendTip(this)">Explain this project</div></div></div>`;
+  loadHistory();
+}
+
+function exportChat(){
+  if(!chatMessages.length){alert('No messages to export.');return;}
+  let md='# Chat Export\n\n';
+  for(const m of chatMessages) md+=`## ${m.role==='user'?'You':'Assistant'}\n\n${m.content}\n\n---\n\n`;
+  const blob=new Blob([md],{type:'text/markdown'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='chat-export-'+new Date().toISOString().slice(0,10)+'.md';
+  a.click();URL.revokeObjectURL(a.href);
+}
+
+// --- File Tree ---
+async function loadFiles(dir){
+  try{
+    const url='/api/files'+(dir?'?path='+encodeURIComponent(dir):'');
+    const r=await fetch(url);const d=await r.json();
+    const tree=document.getElementById('fileTree');tree.innerHTML='';
+    if(dir){
+      const up=document.createElement('div');up.className='file-item';
+      up.innerHTML='<span class="file-icon">⬆</span> ..';
+      up.onclick=()=>loadFiles(d.cwd.split(/[\\/]/).slice(0,-1).join('/'));
+      tree.appendChild(up);
+    }
+    for(const item of d.items||[]){
+      const el=document.createElement('div');el.className='file-item';
+      const icon=item.type==='dir'?'📁':'📄';
+      el.innerHTML=`<span class="file-icon">${icon}</span>${esc(item.name)}`;
+      el.onclick=()=>{
+        if(item.type==='dir') loadFiles(item.path);
+        else{document.getElementById('chatInput').value='Read the file '+item.name;sendMessage();}
+      };
+      tree.appendChild(el);
+    }
+  }catch{}
+}
+
+function showLeftTab(tab,el){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('historyList').style.display=tab==='history'?'block':'none';
+  document.getElementById('fileTree').style.display=tab==='files'?'block':'none';
+  if(tab==='files') loadFiles();
+}
+
+// --- Panels ---
+function toggleLeft(){document.getElementById('leftPanel').classList.toggle('hidden');}
+function toggleRight(){document.getElementById('rightPanel').classList.toggle('hidden');}
+
+// --- Pull Model ---
+async function pullModel(){
+  const name=document.getElementById('pullName').value.trim();if(!name)return;
+  const prog=document.getElementById('pullProgress');prog.textContent='Starting...';
+  try{
+    const res=await fetch('/api/models/pull',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+    const reader=res.body.getReader();const dec=new TextDecoder();let buf='';
+    while(true){
+      const{done,value}=await reader.read();if(done)break;
+      buf+=dec.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop()||'';
+      for(const line of lines){
+        if(!line.startsWith('data: '))continue;const p=line.slice(6);
+        if(p==='[DONE]'){prog.textContent='✅ Done!';loadModels();return;}
+        try{const d=JSON.parse(p);if(d.error){prog.textContent='❌ '+d.error;return;}
+        if(d.status){const pct=d.completed&&d.total?' ('+Math.round(d.completed/d.total*100)+'%)':'';prog.textContent=d.status+pct;}}catch{}
+      }
+    }
+  }catch(e){prog.textContent='❌ '+e.message;}
+}
+
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+</script>
+</body>
+</html>
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
 

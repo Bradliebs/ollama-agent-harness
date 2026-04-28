@@ -1,21 +1,30 @@
 import express from 'express';
 import * as path from 'path';
+import * as fs from 'fs/promises';
+import * as net from 'net';
 import { Ollama } from 'ollama';
 import { OllamaClient } from '../core/ollamaClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { getBuiltinTools } from '../tools';
 import { PermissionEngine } from '../permissions/engine';
 import { assembleSystemContext } from '../context/assembly';
+import { RateLimiter } from '../core/rateLimiter';
+import { logger } from '../core/logger';
 import type { LoopConfig, PermissionMode } from '../types';
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, '..', '..', 'ui')));
 
 // --- State ---
 let currentModel = '';
 let permissionMode: PermissionMode = 'dontAsk';
 let ollamaHost = 'http://localhost:11434';
+let systemPromptOverride = '';
+let temperature = 0.7;
+let topP = 0.9;
+const rateLimiter = new RateLimiter(10, 2);
+const HISTORY_DIR = path.join(process.cwd(), '.harness', 'chat-history');
 
 // --- API Routes ---
 
@@ -40,27 +49,30 @@ app.get('/api/models', async (_req, res) => {
 
 // Get/set current settings
 app.get('/api/settings', (_req, res) => {
-  res.json({ model: currentModel, permissionMode, ollamaHost });
+  res.json({ model: currentModel, permissionMode, ollamaHost, systemPrompt: systemPromptOverride, temperature, topP });
 });
 
 app.post('/api/settings', (req, res) => {
-  if (req.body.model) currentModel = req.body.model;
-  if (req.body.permissionMode) permissionMode = req.body.permissionMode;
-  if (req.body.ollamaHost) ollamaHost = req.body.ollamaHost;
-  res.json({ model: currentModel, permissionMode, ollamaHost });
+  if (req.body.model !== undefined) currentModel = req.body.model;
+  if (req.body.permissionMode !== undefined) permissionMode = req.body.permissionMode;
+  if (req.body.ollamaHost !== undefined) ollamaHost = req.body.ollamaHost;
+  if (req.body.systemPrompt !== undefined) systemPromptOverride = req.body.systemPrompt;
+  if (req.body.temperature !== undefined) temperature = parseFloat(req.body.temperature);
+  if (req.body.topP !== undefined) topP = parseFloat(req.body.topP);
+  logger.info('Settings', 'Updated', { model: currentModel, permissionMode, temperature, topP });
+  res.json({ model: currentModel, permissionMode, ollamaHost, systemPrompt: systemPromptOverride, temperature, topP });
 });
 
 // Chat endpoint — runs the agent loop and streams events as SSE
 app.post('/api/chat', async (req, res) => {
   const { message, model } = req.body;
-  if (!message) {
-    res.status(400).json({ error: 'message is required' });
-    return;
-  }
+  if (!message) { res.status(400).json({ error: 'message is required' }); return; }
 
   const activeModel = model || currentModel;
-  if (!activeModel) {
-    res.status(400).json({ error: 'No model selected. Pick a model first.' });
+  if (!activeModel) { res.status(400).json({ error: 'No model selected.' }); return; }
+
+  if (!rateLimiter.tryConsume()) {
+    res.status(429).json({ error: 'Too many requests. Please slow down.' });
     return;
   }
 
@@ -75,16 +87,12 @@ app.post('/api/chat', async (req, res) => {
   const permissions = new PermissionEngine([], permissionMode);
   const projectDir = process.cwd();
 
-  const systemPrompt = await assembleSystemContext({
-    systemPrompt: 'You are a helpful AI assistant. You can read files, write files, edit code, run shell commands, and fetch web pages using the tools available to you. Be concise and helpful.',
-    projectDir,
-  });
+  const basePrompt = systemPromptOverride ||
+    'You are a helpful AI assistant. You can read files, write files, edit code, run shell commands, search files with grep, and fetch web pages using the tools available to you. Format your responses using Markdown.';
 
-  const config: LoopConfig = {
-    model: activeModel,
-    systemPrompt,
-    maxTurns: 25,
-  };
+  const systemPrompt = await assembleSystemContext({ systemPrompt: basePrompt, projectDir });
+
+  const config: LoopConfig = { model: activeModel, systemPrompt, maxTurns: 25 };
 
   const deps: QueryLoopDeps = {
     client,
@@ -93,6 +101,7 @@ app.post('/api/chat', async (req, res) => {
   };
 
   const messages = [{ role: 'user' as const, content: message }];
+  logger.info('Chat', `User: ${message.slice(0, 80)}`, { model: activeModel });
 
   try {
     for await (const event of queryLoop(config, deps, messages)) {
@@ -101,6 +110,7 @@ app.post('/api/chat', async (req, res) => {
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
+    logger.error('Chat', 'Loop error', { error: msg });
     res.write(`data: ${JSON.stringify({ type: 'error', message: msg, recoverable: false })}\n\n`);
   }
 
@@ -135,8 +145,67 @@ app.post('/api/models/pull', async (req, res) => {
   res.end();
 });
 
+// --- API: Chat History ---
+app.get('/api/history', async (_req, res) => {
+  try {
+    await fs.mkdir(HISTORY_DIR, { recursive: true });
+    const files = await fs.readdir(HISTORY_DIR);
+    const chats = [];
+    for (const f of files.filter(f => f.endsWith('.json')).sort().reverse().slice(0, 50)) {
+      try {
+        const raw = await fs.readFile(path.join(HISTORY_DIR, f), 'utf-8');
+        const data = JSON.parse(raw);
+        chats.push({ id: f.replace('.json', ''), title: data.title ?? 'Untitled', date: data.date, messageCount: data.messages?.length ?? 0 });
+      } catch { /* skip corrupt */ }
+    }
+    res.json({ chats });
+  } catch { res.json({ chats: [] }); }
+});
+
+app.get('/api/history/:id', async (req, res) => {
+  try {
+    const raw = await fs.readFile(path.join(HISTORY_DIR, `${req.params.id}.json`), 'utf-8');
+    res.json(JSON.parse(raw));
+  } catch { res.status(404).json({ error: 'Chat not found' }); }
+});
+
+app.post('/api/history', async (req, res) => {
+  const { id, title, messages, date } = req.body;
+  try {
+    await fs.mkdir(HISTORY_DIR, { recursive: true });
+    const chatId = id || Date.now().toString(36);
+    await fs.writeFile(path.join(HISTORY_DIR, `${chatId}.json`), JSON.stringify({ title, messages, date: date || new Date().toISOString() }, null, 2));
+    res.json({ id: chatId });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.delete('/api/history/:id', async (req, res) => {
+  try {
+    await fs.unlink(path.join(HISTORY_DIR, `${req.params.id}.json`));
+    res.json({ ok: true });
+  } catch { res.status(404).json({ error: 'Not found' }); }
+});
+
+// --- API: File Tree ---
+app.get('/api/files', async (req, res) => {
+  const dir = (req.query.path as string) || process.cwd();
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    const items = entries
+      .filter(e => !e.name.startsWith('.') && e.name !== 'node_modules' && e.name !== 'dist')
+      .map(e => ({ name: e.name, type: e.isDirectory() ? 'dir' : 'file', path: path.join(dir, e.name) }))
+      .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
+    res.json({ items, cwd: dir });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ error: msg });
+  }
+});
+
 // --- Start ---
-import * as net from 'net';
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -152,8 +221,15 @@ async function findAvailablePort(preferred: number, maxAttempts: number = 20): P
     const port = preferred + i;
     if (await isPortAvailable(port)) return port;
   }
-  // Fall back to OS-assigned port
   return 0;
+}
+
+function openBrowser(url: string): void {
+  const { exec } = require('child_process');
+  const cmd = process.platform === 'win32' ? `start "" "${url}"`
+    : process.platform === 'darwin' ? `open "${url}"`
+    : `xdg-open "${url}"`;
+  exec(cmd, () => { /* ignore errors */ });
 }
 
 (async () => {
@@ -161,13 +237,18 @@ async function findAvailablePort(preferred: number, maxAttempts: number = 20): P
   const port = await findAvailablePort(preferred);
 
   app.listen(port, () => {
+    const url = `http://localhost:${port}`;
     if (port !== preferred) {
       console.log(`\n  ⚠️  Port ${preferred} was in use — using ${port} instead.`);
     }
     console.log(`\n  🤖 Ollama Agent Harness`);
     console.log(`  ───────────────────────`);
-    console.log(`  Open in your browser:  http://localhost:${port}`);
+    console.log(`  Open in your browser:  ${url}`);
     console.log(`  Ollama host:           ${ollamaHost}`);
     console.log(`\n  Press Ctrl+C to stop.\n`);
+
+    if (process.env.NO_OPEN !== '1') {
+      openBrowser(url);
+    }
   });
 })();
