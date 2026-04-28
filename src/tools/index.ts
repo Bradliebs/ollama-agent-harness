@@ -5,6 +5,7 @@ import { GrepTool } from './grepTool';
 import { SkillTool, ListSkillsTool, CreateSkillTool } from './skillTools';
 import { MemoryWriteTool, MemoryReadTool } from './memoryTools';
 import { ReflectTool, AnalyzePatternsTool, PromotePatternTool, ConsolidateTool, EvolveTool, ImproveSkillTool } from './learningTools';
+import { WebSearchTool, WebReadTool } from './webSearchTool';
 import type { Tool } from '../types';
 
 export function getBuiltinTools(): Tool[] {
@@ -27,6 +28,8 @@ export function getBuiltinTools(): Tool[] {
     ConsolidateTool,
     EvolveTool,
     ImproveSkillTool,
+    WebSearchTool,
+    WebReadTool,
   ];
 }
 
@@ -37,4 +40,5 @@ export { GrepTool } from './grepTool';
 export { SkillTool, ListSkillsTool, CreateSkillTool } from './skillTools';
 export { MemoryWriteTool, MemoryReadTool } from './memoryTools';
 export { ReflectTool, AnalyzePatternsTool, PromotePatternTool, ConsolidateTool, EvolveTool, ImproveSkillTool } from './learningTools';
+export { WebSearchTool, WebReadTool } from './webSearchTool';
 export { ToolDispatcher } from './dispatcher';
