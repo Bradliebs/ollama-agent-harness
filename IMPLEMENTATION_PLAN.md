@@ -15,7 +15,7 @@
 - [x] implement-agent-loop — Build the core queryLoop async generator (while-loop, model call, tool dispatch, stop conditions)
 - [x] implement-tool-dispatch — Create StreamingToolExecutor with concurrent-read/serial-write classification
 - [x] implement-permissions — Build deny-first permission rule engine with mode support (default, acceptEdits, dontAsk)
-- [ ] implement-builtin-tools — Create built-in tools: BashTool, FileReadTool, FileWriteTool, FileEditTool, WebFetchTool
+- [x] implement-builtin-tools — Create built-in tools: BashTool, FileReadTool, FileWriteTool, FileEditTool, WebFetchTool
 - [ ] implement-context-assembly — Build context assembly pipeline: system prompt, user context, tool schemas, message history
 - [ ] implement-compaction — Create multi-layer context compaction: budget reduction, snip, and auto-compact summarization
 - [ ] implement-session-storage — Build append-only JSONL session transcript storage with read/write operations
