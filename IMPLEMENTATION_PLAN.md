@@ -22,6 +22,6 @@
 - [x] implement-session-resume — Add session resume (rebuild conversation from transcript) and fork operations
 - [x] implement-subagent — Create AgentTool for subagent delegation with isolated context and summary-only return
 - [x] implement-extensibility — Build skill loading (SKILL.md parser) and hook pipeline (PreToolUse, PostToolUse lifecycle events)
-- [ ] implement-cli — Create interactive CLI entry point with streaming output and permission dialogs
+- [x] implement-cli — Create interactive CLI entry point with streaming output and permission dialogs
 - [ ] add-error-recovery — Add recovery mechanisms: retry with backoff, context overflow handling, graceful degradation
 - [ ] add-tests — Write Jest test suite covering agent loop, permissions, tool dispatch, context, and persistence
