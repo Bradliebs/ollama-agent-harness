@@ -18,7 +18,7 @@
 - [x] implement-builtin-tools — Create built-in tools: BashTool, FileReadTool, FileWriteTool, FileEditTool, WebFetchTool
 - [x] implement-context-assembly — Build context assembly pipeline: system prompt, user context, tool schemas, message history
 - [x] implement-compaction — Create multi-layer context compaction: budget reduction, snip, and auto-compact summarization
-- [ ] implement-session-storage — Build append-only JSONL session transcript storage with read/write operations
+- [x] implement-session-storage — Build append-only JSONL session transcript storage with read/write operations
 - [ ] implement-session-resume — Add session resume (rebuild conversation from transcript) and fork operations
 - [ ] implement-subagent — Create AgentTool for subagent delegation with isolated context and summary-only return
 - [ ] implement-extensibility — Build skill loading (SKILL.md parser) and hook pipeline (PreToolUse, PostToolUse lifecycle events)
