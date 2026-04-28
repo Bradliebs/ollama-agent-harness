@@ -133,11 +133,13 @@
       <div class="tab" onclick="showLeftTab('files',this)">Files</div>
       <div class="tab" onclick="showLeftTab('skills',this)">Skills</div>
       <div class="tab" onclick="showLeftTab('memory',this)">Memory</div>
+      <div class="tab" onclick="showLeftTab('learning',this)">🧠</div>
     </div>
     <div class="history-list" id="historyList"></div>
     <div class="file-tree" id="fileTree" style="display:none"></div>
     <div class="skill-list" id="skillList" style="display:none"></div>
     <div class="memory-view" id="memoryView" style="display:none"></div>
+    <div class="memory-view" id="learningView" style="display:none"></div>
   </div>
 
   <div class="main-panel">
@@ -400,7 +402,8 @@ function showLeftTab(tab,el){
   document.getElementById('fileTree').style.display=tab==='files'?'block':'none';
   document.getElementById('skillList').style.display=tab==='skills'?'block':'none';
   document.getElementById('memoryView').style.display=tab==='memory'?'block':'none';
-  if(tab==='files')loadFiles();if(tab==='skills')loadSkills();if(tab==='memory')loadMemory();
+  document.getElementById('learningView').style.display=tab==='learning'?'block':'none';
+  if(tab==='files')loadFiles();if(tab==='skills')loadSkills();if(tab==='memory')loadMemory();if(tab==='learning')loadLearning();
 }
 function toggleLeft(){document.getElementById('leftPanel').classList.toggle('hidden');}
 function toggleRight(){document.getElementById('rightPanel').classList.toggle('hidden');}
@@ -414,6 +417,45 @@ async function pullModel(){
   while(true){const{done,value}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop()||'';
   for(const line of lines){if(!line.startsWith('data: '))continue;const p=line.slice(6);if(p==='[DONE]'){prog.textContent='Done!';loadModels();return;}
   try{const d=JSON.parse(p);if(d.error){prog.textContent='Error: '+d.error;return;}if(d.status){const pct=d.completed&&d.total?' ('+Math.round(d.completed/d.total*100)+'%)':'';prog.textContent=d.status+pct;}}catch{}}}}catch(e){prog.textContent='Failed: '+e.message;}
+}
+
+// --- Learning ---
+async function loadLearning(){
+  try{const r=await fetch('/api/learning'),d=await r.json(),view=document.getElementById('learningView');
+  let html='<div style="padding:4px 0"><h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin-bottom:8px">🧠 Self-Learning Status</h5>';
+  html+='<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Total tool calls tracked: <strong style="color:var(--text)">'+((d.totalToolCalls)||0)+'</strong></div>';
+  if(d.toolBreakdown&&Object.keys(d.toolBreakdown).length>0){
+    html+='<div style="margin-bottom:12px">';
+    for(const[tool,count]of Object.entries(d.toolBreakdown||{})){
+      html+='<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>'+esc(tool)+'</span><span style="color:var(--accent)">'+count+'</span></div>';
+    }
+    html+='</div>';
+  }
+  const patterns=(d.patterns||[]);
+  if(patterns.length>0){
+    html+='<h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin:8px 0">Detected Patterns</h5>';
+    for(const p of patterns.slice(0,5)){
+      html+='<div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:4px;font-size:11px">';
+      html+='<div style="color:var(--accent);font-weight:600">'+esc(p.toolSequence.join(' → '))+'</div>';
+      html+='<div style="color:var(--text-dim)">'+p.occurrences+'x across sessions'+(p.promoted?' ✅ promoted':'')+'</div></div>';
+    }
+  }
+  const reflections=(d.reflections||[]);
+  if(reflections.length>0){
+    html+='<h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin:8px 0">Recent Reflections</h5>';
+    for(const r of reflections.slice(-3)){
+      html+='<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;padding:6px;background:var(--surface2);border-radius:6px">';
+      html+='<div>Success: '+Math.round(r.successRate*100)+'% | Tools: '+r.toolsUsed.join(', ')+'</div>';
+      if(r.insights.length)html+='<div style="color:var(--warning);margin-top:2px">'+esc(r.insights.join('; '))+'</div>';
+      html+='</div>';
+    }
+  }
+  if(d.evolvedPrompt){
+    html+='<h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin:8px 0">Evolved Instructions</h5>';
+    html+='<pre style="font-size:10px;background:var(--surface2);padding:6px;border-radius:6px;white-space:pre-wrap;color:var(--text-dim)">'+esc(d.evolvedPrompt)+'</pre>';
+  }
+  html+='</div>';
+  view.innerHTML=html;}catch{document.getElementById('learningView').innerHTML='<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No learning data yet. Start chatting and the agent will begin tracking patterns.</div>';}
 }
 
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}

@@ -13,6 +13,7 @@ import { HookPipeline } from '../extensibility/hookPipeline';
 import { loadSkillsDir } from '../extensibility/skillLoader';
 import { RateLimiter } from '../core/rateLimiter';
 import { logger } from '../core/logger';
+import { startNewSession, onSessionEnd, getEvolvedPrompt } from '../learning/engine';
 import type { LoopConfig, PermissionMode } from '../types';
 
 const app = express();
@@ -95,10 +96,15 @@ app.post('/api/chat', async (req, res) => {
   const permissions = new PermissionEngine([], permissionMode);
   const projectDir = process.cwd();
 
-  const basePrompt = systemPromptOverride ||
-    'You are a helpful AI assistant. You can read files, write files, edit code, run shell commands, search files with grep, and fetch web pages using the tools available to you. Format your responses using Markdown.';
+  // Start a new learning session for tracking
+  startNewSession();
 
-  const systemPrompt = await assembleSystemContext({ systemPrompt: basePrompt, projectDir, skillsDir: SKILLS_DIR });
+  const basePrompt = systemPromptOverride ||
+    'You are a self-learning AI assistant. You can read files, write files, edit code, run commands, search files, fetch web pages, create and improve skills, remember things, reflect on your approach, analyze your usage patterns, and evolve your own instructions. Format responses in Markdown. When you notice a reusable pattern, create a skill. When you learn something important, use the remember tool. When something goes wrong, reflect on it.';
+
+  // Use evolved prompt — layers in learned patterns and self-improvements
+  const evolvedPrompt = await getEvolvedPrompt(basePrompt);
+  const systemPrompt = await assembleSystemContext({ systemPrompt: evolvedPrompt, projectDir, skillsDir: SKILLS_DIR });
 
   const config: LoopConfig = { model: activeModel, systemPrompt, maxTurns: 25 };
 
@@ -122,6 +128,16 @@ app.post('/api/chat', async (req, res) => {
     logger.error('Chat', 'Loop error', { error: msg });
     res.write(`data: ${JSON.stringify({ type: 'error', message: msg, recoverable: false })}\n\n`);
   }
+
+  // Auto-reflection: analyze this session's tool usage (runs silently, non-blocking)
+  onSessionEnd().then(({ reflection, newPatterns }) => {
+    if (reflection.insights.length > 0) {
+      logger.info('Learning', `Session reflection: ${reflection.insights.join('; ')}`);
+    }
+    if (newPatterns.length > 0) {
+      logger.info('Learning', `${newPatterns.length} patterns ready for skill promotion`);
+    }
+  }).catch(() => {});
 
   res.write('data: [DONE]\n\n');
   res.end();
@@ -233,6 +249,35 @@ app.get('/api/memory', async (_req, res) => {
       result[file.replace('.md', '')] = await fs.readFile(path.join(memDir, file), 'utf-8');
     } catch { /* not yet created */ }
   }
+  res.json(result);
+});
+
+// --- API: Learning ---
+app.get('/api/learning', async (_req, res) => {
+  const learningDir = path.join(process.cwd(), '.harness', 'learning');
+  const result: Record<string, unknown> = {};
+  try {
+    result.patterns = JSON.parse(await fs.readFile(path.join(learningDir, 'detected-patterns.json'), 'utf-8'));
+  } catch { result.patterns = []; }
+  try {
+    const raw = await fs.readFile(path.join(learningDir, 'reflections.jsonl'), 'utf-8');
+    result.reflections = raw.trim().split('\n').map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean).slice(-20);
+  } catch { result.reflections = []; }
+  try {
+    result.evolvedPrompt = await fs.readFile(path.join(learningDir, 'evolved-prompt.md'), 'utf-8');
+  } catch { result.evolvedPrompt = ''; }
+  try {
+    result.digest = await fs.readFile(path.join(learningDir, 'consolidated-digest.md'), 'utf-8');
+  } catch { result.digest = ''; }
+  try {
+    const raw = await fs.readFile(path.join(learningDir, 'tool-usage.jsonl'), 'utf-8');
+    const lines = raw.trim().split('\n');
+    result.totalToolCalls = lines.length;
+    // Tool usage breakdown
+    const counts: Record<string, number> = {};
+    for (const line of lines) { try { const e = JSON.parse(line); counts[e.tool] = (counts[e.tool] || 0) + 1; } catch {} }
+    result.toolBreakdown = counts;
+  } catch { result.totalToolCalls = 0; result.toolBreakdown = {}; }
   res.json(result);
 });
 

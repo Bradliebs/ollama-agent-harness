@@ -3,6 +3,7 @@ import { OllamaClient } from './ollamaClient';
 import type { Tool, ToolCall, ToolResult, LoopConfig, LoopEvent } from '../types';
 import { toolToSchema } from '../types/tool';
 import type { HookPipeline } from '../extensibility/hookPipeline';
+import { trackToolUsage } from '../learning/engine';
 
 export interface QueryLoopDeps {
   client: OllamaClient;
@@ -156,7 +157,12 @@ async function executeTool(
 
   // Execute
   try {
+    const startTime = Date.now();
     const result = await tool.execute(call.input);
+    const durationMs = Date.now() - startTime;
+
+    // Track tool usage for pattern detection (self-learning)
+    trackToolUsage(call.name, call.input, result.success, durationMs).catch(() => {});
 
     // PostToolUse hook — can modify output or inject context
     if (hooks) {
@@ -174,6 +180,9 @@ async function executeTool(
     return { call, result };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
+
+    // Track failure for pattern detection
+    trackToolUsage(call.name, call.input, false).catch(() => {});
 
     // PostToolUseFailure hook
     if (hooks) {

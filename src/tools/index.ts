@@ -4,6 +4,7 @@ import { WebFetchTool } from './webFetchTool';
 import { GrepTool } from './grepTool';
 import { SkillTool, ListSkillsTool, CreateSkillTool } from './skillTools';
 import { MemoryWriteTool, MemoryReadTool } from './memoryTools';
+import { ReflectTool, AnalyzePatternsTool, PromotePatternTool, ConsolidateTool, EvolveTool, ImproveSkillTool } from './learningTools';
 import type { Tool } from '../types';
 
 export function getBuiltinTools(): Tool[] {
@@ -20,6 +21,12 @@ export function getBuiltinTools(): Tool[] {
     CreateSkillTool,
     MemoryWriteTool,
     MemoryReadTool,
+    ReflectTool,
+    AnalyzePatternsTool,
+    PromotePatternTool,
+    ConsolidateTool,
+    EvolveTool,
+    ImproveSkillTool,
   ];
 }
 
@@ -29,4 +36,5 @@ export { WebFetchTool } from './webFetchTool';
 export { GrepTool } from './grepTool';
 export { SkillTool, ListSkillsTool, CreateSkillTool } from './skillTools';
 export { MemoryWriteTool, MemoryReadTool } from './memoryTools';
+export { ReflectTool, AnalyzePatternsTool, PromotePatternTool, ConsolidateTool, EvolveTool, ImproveSkillTool } from './learningTools';
 export { ToolDispatcher } from './dispatcher';
