@@ -11,21 +11,30 @@
     "build": "tsc",
     "start": "node dist/cli/index.js",
     "dev": "ts-node src/cli/index.ts",
+    "ui": "ts-node src/web/server.ts",
     "test": "jest",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit"
   },
-  "keywords": ["ollama", "agent", "harness", "ai", "local-first"],
+  "keywords": [
+    "ollama",
+    "agent",
+    "harness",
+    "ai",
+    "local-first"
+  ],
   "license": "MIT",
   "dependencies": {
+    "express": "^5.2.1",
     "ollama": "^0.5.0"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/jest": "^29.0.0",
     "@types/node": "^20.0.0",
-    "typescript": "^5.5.0",
-    "ts-node": "^10.9.0",
     "jest": "^29.0.0",
     "ts-jest": "^29.0.0",
-    "@types/jest": "^29.0.0"
+    "ts-node": "^10.9.0",
+    "typescript": "^5.5.0"
   }
 }
