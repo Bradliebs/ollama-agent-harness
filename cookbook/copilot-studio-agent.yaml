@@ -1,0 +1,69 @@
+# copilot-studio-agent.yaml — CopilotForge Cookbook Example
+#
+# WHAT THIS IS:
+#   An example Copilot Studio agent definition in YAML format.
+#   This is what you'll see when you clone an agent from Copilot Studio
+#   to your local VS Code workspace.
+#
+# HOW TO USE:
+#   1. Install the Copilot Studio VS Code extension
+#   2. Clone an agent (this gives you real YAML files like this one)
+#   3. Edit the YAML locally — the extension provides IntelliSense
+#   4. Apply changes back to Copilot Studio
+#
+# NOTE: This is a simplified example for learning. Real agent definitions
+#       may have more properties. See the extension docs for the full schema.
+
+kind: Agent
+name: project-helper
+description: A helpful assistant that answers questions about your project
+language: en
+
+# Knowledge sources — what the agent can reference
+knowledge:
+  - kind: File
+    name: project-docs
+    description: Project documentation and guides
+    files:
+      - README.md
+      - docs/GETTING-STARTED.md
+
+# Topics — conversation flows the agent can handle
+topics:
+  - kind: Topic
+    name: greeting
+    description: Welcome message when conversation starts
+    trigger:
+      kind: OnConversationStart
+    actions:
+      - kind: Message
+        text: "Hi! I'm your project helper. I can answer questions about the project, explain how things work, or help you get started. What would you like to know?"
+
+  - kind: Topic
+    name: explain-architecture
+    description: Explains the project architecture
+    trigger:
+      kind: Intent
+      description: User asks about architecture or how the project is structured
+    actions:
+      - kind: Message
+        text: "Let me look at the project docs and explain the architecture..."
+      - kind: SearchKnowledge
+        source: project-docs
+      - kind: GenerateAnswer
+
+  - kind: Topic
+    name: fallback
+    description: Handles unrecognized requests
+    trigger:
+      kind: OnUnknownIntent
+    actions:
+      - kind: Message
+        text: "I'm not sure about that. Try asking about the project architecture, getting started, or specific features."
+
+# Settings
+settings:
+  orchestrator:
+    enabled: true
+  generativeAI:
+    enabled: true
