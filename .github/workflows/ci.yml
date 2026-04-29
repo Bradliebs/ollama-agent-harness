@@ -34,6 +34,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Install browser for interactive smoke
+        run: npx playwright install --with-deps chromium
+
       - name: Start UI
         run: |
           PORT=4310 NO_OPEN=1 npm run ui > ui.log 2>&1 &

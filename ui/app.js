@@ -175,6 +175,27 @@ function updateMediaToolSetting(k, v) {
   updateSetting('mediaTools', next);
 }
 
+async function checkSettingsHealth() {
+  const detail = document.getElementById('settingsDoctorHealth');
+  const host = document.getElementById('ollamaHost')?.value.trim() || 'http://localhost:11434';
+  const visionModel = document.getElementById('visionModel')?.value.trim() || '';
+  const audioTranscribeCommand = document.getElementById('audioTranscribeCommand')?.value.trim() || '';
+  const audioSamplePath = document.getElementById('settingsAudioSamplePath')?.value.trim() || '';
+  if (detail) {
+    detail.classList.remove('initial-hidden');
+    detail.textContent = 'Checking setup...';
+  }
+  try {
+    const params = new URLSearchParams({ ollamaHost: host, visionModel, audioTranscribeCommand, audioSamplePath });
+    const response = await fetch('/api/setup/health?' + params.toString());
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    if (detail) detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio);
+  } catch (error) {
+    if (detail) detail.innerHTML = '<div><strong>Setup</strong> ' + esc(error.message || error) + '</div>';
+  }
+}
+
 async function applyFirstRunSetup() {
   const status = document.getElementById('firstRunStatus');
   const host = document.getElementById('firstRunOllamaHost')?.value.trim() || 'http://localhost:11434';

@@ -335,7 +335,13 @@
         <label>Audio command</label>
         <input type="text" id="audioTranscribeCommand" placeholder="whisper &quot;{input}&quot; --model base --output_format txt --output_dir -" onchange="updateMediaToolSetting('audioTranscribeCommand',this.value)" />
       </div>
+      <div class="setting-row">
+        <label>Audio test file</label>
+        <input type="text" id="settingsAudioSamplePath" placeholder=".harness/uploads/sample.wav" />
+      </div>
+      <button class="btn-sm full-width-button" onclick="checkSettingsHealth()">Run setup doctor</button>
       <div class="trace-detail">Use {input} where the uploaded audio path should be placed.</div>
+      <div id="settingsDoctorHealth" class="trace-detail initial-hidden"></div>
     </div>
     <div class="settings-section">
       <h4>Traces</h4>

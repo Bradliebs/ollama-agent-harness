@@ -16,8 +16,10 @@ async function main() {
     assertFile(workDir, 'package-lock.json');
     assertFile(workDir, 'dist/cli/index.js');
     assertFile(workDir, 'dist/web/server.js');
+    assertFile(workDir, 'scripts/release-notes.js');
     assertFile(workDir, 'ui/index.html');
     assertFile(workDir, 'start.bat');
+    assertFileContains(workDir, 'start.bat', 'Installing dependencies with npm ci');
 
     run('npm', ['ci'], workDir);
     run('node', ['dist/cli/index.js', '--help'], workDir);
@@ -44,6 +46,12 @@ function extractZip(source, destination) {
 function assertFile(root, relativePath) {
   const filePath = path.join(root, relativePath);
   if (!fs.existsSync(filePath)) throw new Error(`Missing release file: ${relativePath}`);
+}
+
+function assertFileContains(root, relativePath, expected) {
+  const filePath = path.join(root, relativePath);
+  const content = fs.readFileSync(filePath, 'utf-8');
+  if (!content.includes(expected)) throw new Error(`Release file ${relativePath} did not contain expected bootstrapper text.`);
 }
 
 function run(command, args, cwd) {

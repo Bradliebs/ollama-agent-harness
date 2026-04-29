@@ -15,16 +15,23 @@ async function main() {
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     await page.goto(targetUrl, { waitUntil: 'networkidle' });
+    await page.click('text=Check setup');
+    await page.waitForFunction(() => !document.getElementById('firstRunHealth').classList.contains('initial-hidden'));
     await page.click('button[title="Settings"]');
+    await page.click('text=Run setup doctor');
+    await page.waitForFunction(() => !document.getElementById('settingsDoctorHealth').classList.contains('initial-hidden'));
     await page.click('text=Refresh trace exports');
-    await page.click('text=Palace');
+    await page.evaluate(() => showLeftTab('palace', Array.from(document.querySelectorAll('.tab')).find((element) => element.textContent === 'Palace')));
+    await page.waitForFunction(() => getComputedStyle(document.getElementById('memoryPalaceView')).display !== 'none');
     const palaceTabVisible = await page.evaluate(() => getComputedStyle(document.getElementById('memoryPalaceView')).display !== 'none');
-    await page.click('[onclick*="learning"]');
+    await page.evaluate(() => showLeftTab('learning', document.querySelector('[onclick*="learning"]')));
+    await page.waitForFunction(() => Boolean(document.getElementById('learningCandidateQueue')));
     const result = await page.evaluate((palaceWasVisible) => {
       const ids = Array.from(document.querySelectorAll('[id]')).map((element) => element.id);
       const duplicateIds = ids.filter((id, index) => ids.indexOf(id) !== index);
       return {
         title: document.title,
+        mode: 'playwright',
         hasAppScript: Array.from(document.scripts).some((script) => script.src.endsWith('/app.js')),
         hasPermissionPanel: Boolean(document.getElementById('permissionPanel')),
         hasChatInput: Boolean(document.getElementById('chatInput')),
@@ -33,6 +40,9 @@ async function main() {
         hasRuntimeStorage: Boolean(document.getElementById('runtimeStorageStatus')),
         hasRoutingSettings: Boolean(document.getElementById('smallHelperModel')) && Boolean(document.getElementById('strongHelperModel')),
         hasMediaToolSettings: Boolean(document.getElementById('visionModel')) && Boolean(document.getElementById('audioTranscribeCommand')),
+        hasSettingsDoctor: Boolean(document.getElementById('settingsAudioSamplePath')) && Boolean(document.getElementById('settingsDoctorHealth')),
+        settingsDoctorVisible: !document.getElementById('settingsDoctorHealth').classList.contains('initial-hidden'),
+        firstRunHealthVisible: !document.getElementById('firstRunHealth').classList.contains('initial-hidden'),
         hasContextDetails: Boolean(document.getElementById('contextDetails')),
         hasTraceEvalExamples: Boolean(document.getElementById('traceEvalExamples')),
         hasWeatherReplayEvalButton: Boolean(document.getElementById('createWeatherReplayEvalBtn')),
@@ -80,6 +90,9 @@ async function main() {
     if (!result.hasRuntimeStorage) failures.push('runtime storage panel was not found');
     if (!result.hasRoutingSettings) failures.push('helper routing settings were not found');
     if (!result.hasMediaToolSettings) failures.push('media tool settings were not found');
+    if (!result.hasSettingsDoctor) failures.push('settings setup doctor controls were not found');
+    if (!result.settingsDoctorVisible) failures.push('settings setup doctor did not render results');
+    if (!result.firstRunHealthVisible) failures.push('first-run setup doctor did not render results');
     if (!result.hasContextDetails) failures.push('context details were not found');
     if (!result.hasTraceEvalExamples) failures.push('trace eval example panel was not found');
     if (!result.hasWeatherReplayEvalButton) failures.push('weather replay eval button was not found');
@@ -144,6 +157,7 @@ async function runStaticSmoke() {
     hasRuntimeStorage: ids.includes('runtimeStorageStatus'),
     hasRoutingSettings: ids.includes('smallHelperModel') && ids.includes('strongHelperModel'),
     hasMediaToolSettings: ids.includes('visionModel') && ids.includes('audioTranscribeCommand'),
+    hasSettingsDoctor: ids.includes('settingsAudioSamplePath') && ids.includes('settingsDoctorHealth'),
     hasContextDetails: ids.includes('contextDetails'),
     hasTraceEvalExamples: ids.includes('traceEvalExamples'),
     hasWeatherReplayEvalButton: ids.includes('createWeatherReplayEvalBtn'),
@@ -166,6 +180,7 @@ async function runStaticSmoke() {
     hasReplaySourceLinkFunction: appScript.includes('function renderReplaySourceLinks'),
     hasReplayFailureFunction: appScript.includes('function renderLatestRunFailures'),
     hasMediaToolSettingFunction: appScript.includes('function updateMediaToolSetting'),
+    hasSettingsDoctorFunction: appScript.includes('function checkSettingsHealth'),
     hasFirstRunSetupFunction: appScript.includes('function applyFirstRunSetup'),
     hasFirstRunHealthFunction: appScript.includes('function checkFirstRunHealth'),
     hasMediaToolGuidance: appScript.includes('image_analyze') && appScript.includes('audio_transcribe'),
@@ -182,6 +197,7 @@ async function runStaticSmoke() {
   if (!result.hasRuntimeStorage) failures.push('runtime storage panel was not found');
   if (!result.hasRoutingSettings) failures.push('helper routing settings were not found');
   if (!result.hasMediaToolSettings) failures.push('media tool settings were not found');
+  if (!result.hasSettingsDoctor) failures.push('settings setup doctor controls were not found');
   if (!result.hasContextDetails) failures.push('context details were not found');
   if (!result.hasTraceEvalExamples) failures.push('trace eval example panel was not found');
   if (!result.hasWeatherReplayEvalButton) failures.push('weather replay eval button was not found');
@@ -204,6 +220,7 @@ async function runStaticSmoke() {
   if (!result.hasReplaySourceLinkFunction) failures.push('replay source link function was not found');
   if (!result.hasReplayFailureFunction) failures.push('replay failure function was not found');
   if (!result.hasMediaToolSettingFunction) failures.push('media tool setting function was not found');
+  if (!result.hasSettingsDoctorFunction) failures.push('settings setup doctor function was not found');
   if (!result.hasFirstRunSetupFunction) failures.push('first-run setup function was not found');
   if (!result.hasFirstRunHealthFunction) failures.push('first-run health function was not found');
   if (!result.hasMediaToolGuidance) failures.push('media tool guidance was not found');

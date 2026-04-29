@@ -4,6 +4,7 @@ dist/
 *.js.map
 *.d.ts
 !jest.config.js
+!scripts/release-notes.js
 !scripts/release-smoke.js
 !scripts/ui-smoke.js
 !ui/app.js

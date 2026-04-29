@@ -39,9 +39,12 @@ jobs:
       - name: Smoke release archive
         run: node scripts/release-smoke.js "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip"
 
+      - name: Generate release notes
+        run: npm run release:notes -- --version "${GITHUB_REF_NAME}" --output release/release-notes.md
+
       - name: Publish release asset
         uses: softprops/action-gh-release@v2
         with:
           files: release/ollama-agent-harness-${{ github.ref_name }}.zip
           name: Ollama Agent Harness ${{ github.ref_name }}
-          generate_release_notes: true
+          body_path: release/release-notes.md
