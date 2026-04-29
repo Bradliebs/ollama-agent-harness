@@ -89,6 +89,8 @@ describe('web server API validation', () => {
     await expect(response.json()).resolves.toMatchObject({
       version: expect.stringMatching(/^\d+\.\d+\.\d+/),
       assetName: expect.stringContaining('ollama-agent-harness-v'),
+      manifestName: expect.stringContaining('.zip.sha256.json'),
+      manifestUrl: expect.stringContaining('/download/v'),
       releaseUrl: expect.stringContaining('/releases/tag/v'),
     });
   });
@@ -512,7 +514,7 @@ describe('web server API validation', () => {
       const download = await request('/api/learning/output-validation-trends/download');
       expect(download.status).toBe(200);
       expect(download.headers.get('content-disposition')).toContain('output-validation-trends-');
-      await expect(download.json()).resolves.toMatchObject({ trend: { totalResults: expect.any(Number) }, results: expect.arrayContaining([expect.objectContaining({ profile: 'coding-answer', status: 'warn' })]) });
+      await expect(download.json()).resolves.toMatchObject({ trend: { totalResults: expect.any(Number), bySelectionSource: expect.any(Object) }, results: expect.arrayContaining([expect.objectContaining({ profile: 'coding-answer', status: 'warn', selectionSource: expect.any(String) })]) });
     } finally {
       restore();
     }
@@ -748,11 +750,14 @@ describe('web server API validation', () => {
       });
       expect(response.status).toBe(200);
       const body = await response.text();
+      expect(body).toContain('"type":"output_validation_profile"');
+      expect(body).toContain('"source":"auto-selected"');
       expect(body).toContain('"type":"output_validation"');
       const runs = await request('/api/evals/runs');
-      const runsBody = await runs.json() as { outputValidationTrend: { byProfile: Record<string, { total: number }> } };
+      const runsBody = await runs.json() as { outputValidationTrend: { byProfile: Record<string, { total: number }>; bySelectionSource: Record<string, { total: number }> } };
       expect(JSON.stringify(runsBody)).toContain('coding-answer');
       expect(runsBody.outputValidationTrend.byProfile['coding-answer']).toMatchObject({ total: expect.any(Number) });
+      expect(runsBody.outputValidationTrend.bySelectionSource['auto-selected']).toMatchObject({ total: expect.any(Number) });
     } finally {
       restore();
     }

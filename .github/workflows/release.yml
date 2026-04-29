@@ -45,11 +45,11 @@ jobs:
           EOF
           zip -r "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip" dist ui scripts package.json package-lock.json README.md start.bat release-provenance.json
 
-      - name: Smoke release archive
-        run: node scripts/release-smoke.js "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip"
-
       - name: Generate release SHA manifest
         run: npm run release:manifest -- --version "${GITHUB_REF_NAME}" --asset "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip" --commit "${GITHUB_SHA}" --repository "${GITHUB_REPOSITORY}" --output "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip.sha256.json"
+
+      - name: Smoke release archive and manifest
+        run: node scripts/release-smoke.js "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip" "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip.sha256.json"
 
       - name: Generate release notes
         run: npm run release:notes -- --version "${GITHUB_REF_NAME}" --asset "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip" --commit "${GITHUB_SHA}" --output release/release-notes.md

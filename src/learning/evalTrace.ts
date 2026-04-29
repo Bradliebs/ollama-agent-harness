@@ -3,6 +3,13 @@ import * as path from 'path';
 import type { OutputValidationResult } from '../core/outputValidation';
 import type { TraceEvent, TraceRecord } from '../core/tracing';
 
+export type OutputValidationSelectionSource = 'auto-selected' | 'manual-selected';
+
+export interface OutputValidationEvalRunOptions {
+  selectionSource?: OutputValidationSelectionSource;
+  selectionReason?: string;
+}
+
 export interface TraceSnapshot {
   spans: TraceRecord[];
   events: TraceEvent[];
@@ -225,19 +232,22 @@ export async function runEvalTraceDataset(projectDir: string, options: ReplayEva
 export function createOutputValidationEvalRun(
   validation: OutputValidationResult,
   task = 'output validation',
+  options: OutputValidationEvalRunOptions = {},
 ): EvalTraceRun {
   const status = validation.status === 'pass' ? 'pass' : 'fail';
+  const selectionSource = options.selectionSource ?? 'manual-selected';
   const result: EvalTraceRunResult = {
     exampleId: `output-validation:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
     task,
     status,
     expectedStatus: 'pass',
     actualStatus: status,
-    tags: ['output-validation', validation.profile, validation.status],
+    tags: ['output-validation', validation.profile, validation.status, selectionSource],
     message: validation.status === 'pass'
       ? `Output validation passed for ${validation.profile}.`
       : `Output validation ${validation.status} for ${validation.profile}: ${validation.findings[0]?.message ?? 'see findings'}`,
     checks: validation.findings.map((finding) => finding.code),
+    links: options.selectionReason ? { context: options.selectionReason } : undefined,
   };
   return {
     id: `validation-run:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
@@ -254,8 +264,9 @@ export async function recordOutputValidationEvalRun(
   projectDir: string,
   validation: OutputValidationResult,
   task = 'output validation',
+  options: OutputValidationEvalRunOptions = {},
 ): Promise<EvalTraceRun> {
-  const run = createOutputValidationEvalRun(validation, task);
+  const run = createOutputValidationEvalRun(validation, task, options);
   await appendEvalTraceRun(projectDir, run);
   return run;
 }
@@ -411,8 +422,9 @@ function rate(value: number, total: number): number {
 export interface OutputValidationRunTrend {
   totalResults: number;
   byProfile: Record<string, { total: number; passed: number; failed: number; passRate: number }>;
+  bySelectionSource: Record<string, { total: number; passed: number; failed: number; passRate: number }>;
   byStatus: Record<string, number>;
-  latestFailures: Array<{ task: string; profile: string; status: string; message: string; checks: string[]; createdAt: string }>;
+  latestFailures: Array<{ task: string; profile: string; status: string; selectionSource: string; message: string; checks: string[]; createdAt: string }>;
 }
 
 export interface OutputValidationTrendExport {
@@ -424,6 +436,7 @@ export interface OutputValidationTrendExport {
     task: string;
     profile: string;
     status: string;
+    selectionSource: string;
     passed: boolean;
     message: string;
     checks: string[];
@@ -441,6 +454,7 @@ export function createOutputValidationTrendExport(runs: EvalTraceRun[], generate
         task: result.task,
         profile: result.tags[1] ?? 'unknown',
         status: result.tags[2] ?? result.actualStatus,
+        selectionSource: outputValidationSelectionSource(result.tags),
         passed: result.status === 'pass',
         message: result.message,
         checks: result.checks ?? [],
@@ -452,6 +466,7 @@ export function createOutputValidationTrendExport(runs: EvalTraceRun[], generate
 
 export function summarizeOutputValidationRuns(runs: EvalTraceRun[]): OutputValidationRunTrend {
   const byProfile: OutputValidationRunTrend['byProfile'] = {};
+  const bySelectionSource: OutputValidationRunTrend['bySelectionSource'] = {};
   const byStatus: OutputValidationRunTrend['byStatus'] = {};
   const latestFailures: OutputValidationRunTrend['latestFailures'] = [];
   let totalResults = 0;
@@ -461,18 +476,26 @@ export function summarizeOutputValidationRuns(runs: EvalTraceRun[]): OutputValid
       totalResults++;
       const profile = result.tags[1] ?? 'unknown';
       const validationStatus = result.tags[2] ?? result.actualStatus;
+      const selectionSource = outputValidationSelectionSource(result.tags);
       const bucket = byProfile[profile] ?? { total: 0, passed: 0, failed: 0, passRate: 0 };
       bucket.total++;
       if (result.status === 'pass') bucket.passed++;
       else bucket.failed++;
       bucket.passRate = rate(bucket.passed, bucket.total);
       byProfile[profile] = bucket;
+      const sourceBucket = bySelectionSource[selectionSource] ?? { total: 0, passed: 0, failed: 0, passRate: 0 };
+      sourceBucket.total++;
+      if (result.status === 'pass') sourceBucket.passed++;
+      else sourceBucket.failed++;
+      sourceBucket.passRate = rate(sourceBucket.passed, sourceBucket.total);
+      bySelectionSource[selectionSource] = sourceBucket;
       byStatus[validationStatus] = (byStatus[validationStatus] ?? 0) + 1;
       if (result.status === 'fail') {
         latestFailures.push({
           task: result.task,
           profile,
           status: validationStatus,
+          selectionSource,
           message: result.message,
           checks: result.checks ?? [],
           createdAt: run.createdAt,
@@ -480,5 +503,11 @@ export function summarizeOutputValidationRuns(runs: EvalTraceRun[]): OutputValid
       }
     }
   }
-  return { totalResults, byProfile, byStatus, latestFailures: latestFailures.slice(-5).reverse() };
+  return { totalResults, byProfile, bySelectionSource, byStatus, latestFailures: latestFailures.slice(-5).reverse() };
+}
+
+function outputValidationSelectionSource(tags: string[]): OutputValidationSelectionSource | 'unknown' {
+  if (tags.includes('auto-selected')) return 'auto-selected';
+  if (tags.includes('manual-selected')) return 'manual-selected';
+  return 'unknown';
 }

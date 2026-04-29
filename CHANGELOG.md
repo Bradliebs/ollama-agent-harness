@@ -11,6 +11,24 @@ keywords:
 estimated_reading_time: 8
 ---
 
+## Ollama Agent Harness v0.1.14
+
+## Changes
+
+### Validation Observability Changes
+
+Added validation source trend drill-downs, visible auto-selection notices, About manifest links, public validation exports, and stricter release manifest smoke checks.
+
+* `src/learning/evalTrace.ts` - records whether output validation was auto-selected or manually selected and includes that source in trend exports.
+* `src/web/server.ts` - streams auto-selection profile notices and returns companion manifest links in About metadata.
+* `ui/app.js` - renders auto-selection notices, source trend drill-downs, and manifest links.
+* `src/index.ts` - exports validation profile suggestion and template APIs for package consumers.
+* `.github/workflows/release.yml` and `scripts/release-smoke.js` - verify companion manifest fields and archive digest before and after publishing.
+
+## Validation
+
+* Focused tests, TypeScript typecheck, full Jest, build, UI smoke, release manifest generation, and release archive smoke should pass before release.
+
 ## Ollama Agent Harness v0.1.13
 
 ## Changes

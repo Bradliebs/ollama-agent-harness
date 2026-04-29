@@ -1,4 +1,5 @@
 import { OUTPUT_VALIDATION_PROFILE_TEMPLATES, getOutputValidationInstructions, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, suggestOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, withOutputValidationInstructions } from './outputValidation';
+import { OUTPUT_VALIDATION_PROFILE_TEMPLATES as EXPORTED_TEMPLATES, suggestOutputValidationProfile as exportedSuggestOutputValidationProfile } from '../index';
 
 const validOracleOutput = `🔍 **REFRAME** — [ANALYSIS] The question is whether strict output contracts improve reasoning quality.
 
@@ -108,6 +109,11 @@ describe('output validation', () => {
     expect(OUTPUT_VALIDATION_PROFILE_TEMPLATES).toEqual(expect.arrayContaining([
       expect.objectContaining({ profile: 'release-readiness', examples: { good: expect.any(String), bad: expect.any(String) } }),
     ]));
+  });
+
+  it('exports validation guidance APIs from the package entry point', () => {
+    expect(exportedSuggestOutputValidationProfile('Summarize this terminal output')).toBe('tool-result-summary');
+    expect(EXPORTED_TEMPLATES).toEqual(expect.arrayContaining([expect.objectContaining({ profile: 'release-readiness' })]));
   });
 
   it('validates coding answers with files and validation', () => {

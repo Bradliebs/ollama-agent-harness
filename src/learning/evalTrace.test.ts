@@ -128,7 +128,7 @@ describe('eval trace examples', () => {
     await recordOutputValidationEvalRun(projectDir, validation, 'final answer');
 
     expect(run).toMatchObject({ total: 1, passed: 0, failed: 1, passRate: 0 });
-    expect(run.results[0]).toMatchObject({ task: 'final answer', tags: ['output-validation', 'coding-answer', 'warn'] });
+    expect(run.results[0]).toMatchObject({ task: 'final answer', tags: ['output-validation', 'coding-answer', 'warn', 'manual-selected'] });
     await expect(listEvalTraceRuns(projectDir)).resolves.toEqual([expect.objectContaining({ results: [expect.objectContaining({ task: 'final answer' })] })]);
   });
 
@@ -139,15 +139,17 @@ describe('eval trace examples', () => {
       score: 0.95,
       findings: [{ code: 'missing-validation-summary', severity: 'warn', message: 'State validation performed.' }],
       missingSections: [],
-    }, 'coding summary');
+    }, 'coding summary', { selectionSource: 'auto-selected', selectionReason: 'The prompt looks like code.' });
     const passRun = createOutputValidationEvalRun({ profile: 'factual-answer', status: 'pass', score: 1, findings: [], missingSections: [] }, 'weather answer');
 
     const trend = summarizeOutputValidationRuns([warnRun, passRun]);
 
     expect(trend.totalResults).toBe(2);
     expect(trend.byProfile['coding-answer']).toMatchObject({ total: 1, failed: 1, passRate: 0 });
+    expect(trend.bySelectionSource['auto-selected']).toMatchObject({ total: 1, failed: 1, passRate: 0 });
+    expect(trend.bySelectionSource['manual-selected']).toMatchObject({ total: 1, passed: 1, passRate: 1 });
     expect(trend.byStatus.warn).toBe(1);
-    expect(trend.latestFailures[0]).toMatchObject({ profile: 'coding-answer', checks: ['missing-validation-summary'] });
+    expect(trend.latestFailures[0]).toMatchObject({ profile: 'coding-answer', selectionSource: 'auto-selected', checks: ['missing-validation-summary'] });
   });
 
   it('exports output-validation trends with raw validation results', () => {
@@ -157,12 +159,12 @@ describe('eval trace examples', () => {
       score: 0.95,
       findings: [{ code: 'missing-validation-summary', severity: 'warn', message: 'State validation performed.' }],
       missingSections: [],
-    }, 'coding summary');
+    }, 'coding summary', { selectionSource: 'auto-selected' });
 
     const exported = createOutputValidationTrendExport([warnRun], '2026-04-29T00:00:00.000Z');
 
     expect(exported.generatedAt).toBe('2026-04-29T00:00:00.000Z');
     expect(exported.trend.totalResults).toBe(1);
-    expect(exported.results).toEqual([expect.objectContaining({ task: 'coding summary', profile: 'coding-answer', status: 'warn', passed: false })]);
+    expect(exported.results).toEqual([expect.objectContaining({ task: 'coding summary', profile: 'coding-answer', status: 'warn', selectionSource: 'auto-selected', passed: false })]);
   });
 });

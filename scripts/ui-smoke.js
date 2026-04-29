@@ -89,6 +89,7 @@ async function main() {
         hasEvalDatasetManager: Boolean(document.getElementById('evalDatasetManager')),
         hasEvalRunTrend: Boolean(document.getElementById('evalRunTrend')),
         hasOutputValidationTrend: Boolean(document.getElementById('outputValidationTrend')),
+        hasOutputValidationSourceTrend: Boolean(document.getElementById('outputValidationSourceTrend')),
         hasOutputValidationTrendExport: Boolean(document.getElementById('downloadOutputValidationTrendBtn')),
         hasProfilePresetImportExport: Boolean(document.getElementById('downloadProfilePresetBtn')) && Boolean(document.getElementById('importProfilePresetBtn')) && Boolean(document.getElementById('profilePresetFileInput')),
         hasProfilePresetFunctions: typeof window.downloadOutputValidationProfilesPreset === 'function' && typeof window.importOutputValidationProfilesPreset === 'function' && typeof window.handleOutputValidationProfilesPresetFile === 'function',
@@ -102,6 +103,7 @@ async function main() {
         hasWalkthroughPersistenceFunction: typeof window.markWalkthroughStep === 'function' && typeof window.refreshWalkthroughChecklist === 'function',
         hasCompletedWalkthroughStep: document.querySelectorAll('#walkthroughChecklist .walkthrough-step.done').length > 0,
         hasAboutPanel: Boolean(document.getElementById('aboutPanel')),
+        hasAboutManifestLink: document.getElementById('aboutPanel')?.textContent.includes('Manifest'),
         hasAboutFunction: typeof window.loadAbout === 'function',
         hasReleaseVerification: Boolean(document.getElementById('verifyReleaseBtn')) && Boolean(document.getElementById('releaseVerificationPanel')),
         hasReleaseVerificationFunction: typeof window.verifyReleaseAsset === 'function',
@@ -123,6 +125,7 @@ async function main() {
         hasOutputValidationSettingFunction: typeof window.updateOutputValidationSetting === 'function' && typeof window.toggleOutputValidation === 'function' && typeof window.toggleOutputValidationAutoSelect === 'function' && typeof window.saveOutputValidationProfiles === 'function' && typeof window.validateOutputValidationProfilesEditor === 'function' && typeof window.saveProfileFromForm === 'function',
         hasOutputValidationFormatter: typeof window.formatOutputValidation === 'function',
         hasOutputValidationGroupedRenderer: typeof window.appendOutputValidationItem === 'function',
+        hasOutputValidationProfileRenderer: typeof window.appendOutputValidationProfileItem === 'function',
         hasApplyCalibrationFunction: typeof window.applyRoutingCalibration === 'function',
         duplicateIds,
       };
@@ -166,6 +169,7 @@ async function main() {
     if (!result.hasEvalDatasetManager) failures.push('eval dataset manager was not rendered');
     if (!result.hasEvalRunTrend) failures.push('eval run trend panel was not rendered');
     if (!result.hasOutputValidationTrend) failures.push('output validation trend panel was not rendered');
+    if (!result.hasOutputValidationSourceTrend) failures.push('output validation source trend panel was not rendered');
     if (!result.hasOutputValidationTrendExport) failures.push('output validation trend export button was not rendered');
     if (!result.hasProfilePresetImportExport) failures.push('profile preset import/export controls were not rendered');
     if (!result.hasProfilePresetFunctions) failures.push('profile preset import/export functions were not found');
@@ -179,6 +183,7 @@ async function main() {
     if (!result.hasWalkthroughPersistenceFunction) failures.push('walkthrough persistence functions were not found');
     if (!result.hasCompletedWalkthroughStep) failures.push('walkthrough completed state was not rendered');
     if (!result.hasAboutPanel) failures.push('about panel was not rendered');
+    if (!result.hasAboutManifestLink) failures.push('about panel manifest link was not rendered');
     if (!result.hasAboutFunction) failures.push('about panel function was not found');
     if (!result.hasReleaseVerification) failures.push('release verification controls were not rendered');
     if (!result.hasReleaseVerificationFunction) failures.push('release verification function was not found');
@@ -200,6 +205,7 @@ async function main() {
     if (!result.hasOutputValidationSettingFunction) failures.push('output validation setting function was not found');
     if (!result.hasOutputValidationFormatter) failures.push('output validation formatter was not found');
     if (!result.hasOutputValidationGroupedRenderer) failures.push('grouped output validation renderer was not found');
+    if (!result.hasOutputValidationProfileRenderer) failures.push('output validation profile renderer was not found');
     if (!result.hasApplyCalibrationFunction) failures.push('apply calibration function was not found');
     if (result.duplicateIds.length > 0) failures.push(`duplicate ids found: ${result.duplicateIds.join(', ')}`);
 
@@ -267,7 +273,9 @@ async function runStaticSmoke() {
     hasOutputValidationSettingFunction: appScript.includes('function updateOutputValidationSetting') && appScript.includes('function toggleOutputValidation') && appScript.includes('function toggleOutputValidationAutoSelect') && appScript.includes('function saveOutputValidationProfiles') && appScript.includes('function validateOutputValidationProfilesEditor') && appScript.includes('function saveProfileFromForm'),
     hasOutputValidationFormatter: appScript.includes('function formatOutputValidation'),
     hasOutputValidationGroupedRenderer: appScript.includes('function appendOutputValidationItem'),
+    hasOutputValidationProfileRenderer: appScript.includes('function appendOutputValidationProfileItem') && appScript.includes('output_validation_profile'),
     hasOutputValidationTrendFunction: appScript.includes('function renderOutputValidationTrends'),
+    hasOutputValidationSourceTrend: appScript.includes('outputValidationSourceTrend') && appScript.includes('bySelectionSource'),
     hasOutputValidationTrendExportFunction: appScript.includes('function downloadOutputValidationTrend'),
     hasProfilePresetImportExport: ids.includes('downloadProfilePresetBtn') && ids.includes('importProfilePresetBtn') && ids.includes('profilePresetFileInput'),
     hasProfilePresetFunctions: appScript.includes('function downloadOutputValidationProfilesPreset') && appScript.includes('function importOutputValidationProfilesPreset') && appScript.includes('function handleOutputValidationProfilesPresetFile'),
@@ -279,6 +287,7 @@ async function runStaticSmoke() {
     hasWalkthroughPersistenceFunction: appScript.includes('function markWalkthroughStep') && appScript.includes('function refreshWalkthroughChecklist'),
     hasAboutPanel: ids.includes('aboutPanel'),
     hasAboutFunction: appScript.includes('function loadAbout') && appScript.includes('function renderAboutPanel'),
+    hasAboutManifestLink: appScript.includes('manifestName') && appScript.includes('manifestUrl'),
     hasReleaseVerification: ids.includes('verifyReleaseBtn') && ids.includes('releaseVerificationPanel'),
     hasReleaseVerificationFunction: appScript.includes('function verifyReleaseAsset'),
     hasWalkthroughFunction: appScript.includes('function openWalkthroughTarget'),
@@ -331,7 +340,9 @@ async function runStaticSmoke() {
   if (!result.hasOutputValidationSettingFunction) failures.push('output validation setting function was not found');
   if (!result.hasOutputValidationFormatter) failures.push('output validation formatter was not found');
   if (!result.hasOutputValidationGroupedRenderer) failures.push('grouped output validation renderer was not found');
+  if (!result.hasOutputValidationProfileRenderer) failures.push('output validation profile renderer was not found');
   if (!result.hasOutputValidationTrendFunction) failures.push('output validation trend renderer was not found');
+  if (!result.hasOutputValidationSourceTrend) failures.push('output validation source trend renderer was not found');
   if (!result.hasOutputValidationTrendExportFunction) failures.push('output validation trend export function was not found');
   if (!result.hasProfilePresetImportExport) failures.push('profile preset import/export controls were not found');
   if (!result.hasProfilePresetFunctions) failures.push('profile preset import/export functions were not found');
@@ -343,6 +354,7 @@ async function runStaticSmoke() {
   if (!result.hasWalkthroughPersistenceFunction) failures.push('walkthrough persistence functions were not found');
   if (!result.hasAboutPanel) failures.push('about panel was not found');
   if (!result.hasAboutFunction) failures.push('about panel functions were not found');
+  if (!result.hasAboutManifestLink) failures.push('about panel manifest link support was not found');
   if (!result.hasReleaseVerification) failures.push('release verification controls were not found');
   if (!result.hasReleaseVerificationFunction) failures.push('release verification function was not found');
   if (!result.hasWalkthroughFunction) failures.push('walkthrough function was not found');

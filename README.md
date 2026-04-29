@@ -111,9 +111,9 @@ Built-in profiles:
 * `coding-answer` - checks that coding answers summarize changes and validation.
 * `tool-result-summary` - checks that tool outputs include outcome, evidence, and next steps.
 
-In the browser UI, open Settings, choose a profile under Output Validation, and enable **Validate final answers**. Leave **Auto-select best contract** on to let Harness choose factual, coding, tool-result, or Oracle Prime validation from the prompt. Turn it off when you want the selected profile to be the manual override.
+In the browser UI, open Settings, choose a profile under Output Validation, and enable **Validate final answers**. Leave **Auto-select best contract** on to let Harness choose factual, coding, tool-result, or Oracle Prime validation from the prompt. The chat activity stream shows which profile was auto-selected and why. Turn auto-select off when you want the selected profile to be the manual override.
 
-Use **Install templates** to add ready-made custom profiles such as beginner factual summaries, code summaries, release readiness, and decision briefs without hand-writing JSON. Each template includes a small good and bad example so new users can see what the validator expects. Use **Preview validator** to paste a draft answer and see the selected profile's score, findings, missing sections, and plain-English suggestions before using it in chat. The Learning tab shows output-validation trend summaries by profile and status.
+Use **Install templates** to add ready-made custom profiles such as beginner factual summaries, code summaries, release readiness, and decision briefs without hand-writing JSON. Each template includes a small good and bad example so new users can see what the validator expects. Use **Preview validator** to paste a draft answer and see the selected profile's score, findings, missing sections, and plain-English suggestions before using it in chat. The Learning tab shows output-validation trend summaries by profile, status, and selection source so you can compare auto-selected and manually selected contracts.
 
 From the CLI, pass a built-in profile with `--validate-output`:
 
@@ -152,6 +152,12 @@ Custom deterministic profiles can be authored from the Settings panel or by edit
 
 Custom checks support `requiresAny`, `requiresAll`, `forbidsAny`, `minLength`, and `maxLength`. These checks are structural. They can catch missing answer parts, but they do not prove that a factual claim is true.
 
+Package consumers can import validation helpers directly:
+
+```typescript
+import { OUTPUT_VALIDATION_PROFILE_TEMPLATES, suggestOutputValidationProfile, validateOutput } from 'ollama-agent-harness';
+```
+
 The Settings panel includes a guided profile form for custom validation profiles. Fill in the profile fields, add one or more checks, and choose **Save form profile**. Harness writes the JSON for you and saves it to `.harness/output-validation-profiles.json`. The advanced JSON editor remains available for manual edits.
 
 Use **Download presets** to export custom validation profiles as a shareable JSON file. Use **Import presets** to load a shared profile file back into the guided editor and save it through the same validation API.
@@ -162,11 +168,11 @@ The editor validates profile JSON before saving and the API returns field-level 
 * `warnBelowScore` on a profile changes a passing result to `warn` when the final score drops below the threshold.
 * `failBelowScore` on a profile changes a non-failing result to `fail` when the final score drops below the threshold.
 
-The release workflow downloads the published release zip after upload and runs the same archive smoke test against that published asset.
+The release workflow verifies the release archive and companion manifest before publishing, then downloads the published release zip and manifest after upload and runs the same archive smoke test against those published assets.
 
-The Learning tab can download output-validation trend data as JSON. Release notes include commit and asset provenance, including the release zip SHA-256 digest when an asset is available during note generation.
+The Learning tab can download output-validation trend data as JSON. The export includes the validation profile, status, pass/fail outcome, and whether the profile was auto-selected or manually selected. Release notes include commit and asset provenance, including the release zip SHA-256 digest when an asset is available during note generation.
 
-The Settings About panel shows the running package version, commit when available, release link, asset name, and release digest when the installed package includes it. Release archives include `release-provenance.json` so downloaded builds can identify where they came from. GitHub releases also publish a companion `*.zip.sha256.json` manifest with the final release archive digest, because that final digest cannot be embedded inside the same zip without changing it. Use **Verify release asset** to compare a local release archive SHA-256 when the archive and expected digest are available, or to get a clear pointer to the GitHub release digest when local comparison is not possible.
+The Settings About panel shows the running package version, commit when available, release link, asset name, companion manifest link, and release digest when the installed package includes it. Release archives include `release-provenance.json` so downloaded builds can identify where they came from. GitHub releases also publish a companion `*.zip.sha256.json` manifest with the final release archive digest, because that final digest cannot be embedded inside the same zip without changing it. Use **Verify release asset** to compare a local release archive SHA-256 when the archive and expected digest are available, or to get a clear pointer to the GitHub release digest when local comparison is not possible.
 
 ## GitHub Baseline
 

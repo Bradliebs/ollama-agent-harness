@@ -9,7 +9,7 @@ const zipPath = path.resolve(process.argv[2] || '');
 const manifestPath = process.argv[3] ? path.resolve(process.argv[3]) : '';
 
 async function main() {
-  if (!zipPath || !fs.existsSync(zipPath)) throw new Error('Usage: node scripts/release-smoke.js <release-zip>');
+  if (!zipPath || !fs.existsSync(zipPath)) throw new Error('Usage: node scripts/release-smoke.js <release-zip> [release-manifest.json]');
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-release-'));
   try {
     extractZip(zipPath, workDir);
@@ -42,8 +42,17 @@ async function main() {
 function assertReleaseManifest(filePath, assetPath) {
   if (!fs.existsSync(filePath)) throw new Error(`Missing release manifest: ${filePath}`);
   const manifest = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  const assetStats = fs.statSync(assetPath);
+  const manifestName = path.basename(filePath);
   if (manifest.assetName !== path.basename(assetPath)) throw new Error('Release manifest assetName does not match the release archive.');
+  if (manifest.manifestName !== manifestName) throw new Error('Release manifest manifestName does not match the manifest file name.');
+  if (manifest.assetSize !== assetStats.size) throw new Error('Release manifest assetSize does not match the release archive.');
+  if (!/^\d+\.\d+\.\d+/.test(String(manifest.version || ''))) throw new Error('Release manifest version is missing or invalid.');
+  if (!/^[a-f0-9]{40}$/i.test(String(manifest.commit || ''))) throw new Error('Release manifest commit is missing or invalid.');
+  if (!/^https:\/\/github\.com\/.+\/releases\/tag\/v\d+\.\d+\.\d+/.test(String(manifest.releaseUrl || ''))) throw new Error('Release manifest releaseUrl is missing or invalid.');
+  if (Number.isNaN(Date.parse(String(manifest.generatedAt || '')))) throw new Error('Release manifest generatedAt is missing or invalid.');
   const actualSha = cryptoHash(assetPath);
+  if (!/^[a-f0-9]{64}$/i.test(String(manifest.assetSha256 || ''))) throw new Error('Release manifest assetSha256 is missing or invalid.');
   if (manifest.assetSha256 !== actualSha) throw new Error('Release manifest SHA-256 does not match the release archive.');
 }
 

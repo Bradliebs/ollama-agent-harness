@@ -10,7 +10,7 @@ let activeChatController = null;
 let activeTraceExport = null;
 let currentModelRouting = {};
 let currentMediaTools = {};
-let currentOutputValidation = { enabled: false, profile: 'oracle-prime' };
+let currentOutputValidation = { enabled: false, profile: 'oracle-prime', autoSelect: true };
 let currentOutputValidationProfiles = [];
 let currentOutputValidationTemplates = [];
 let currentWalkthrough = { completed: [] };
@@ -257,11 +257,13 @@ function renderAboutPanel(data) {
   const panel = document.getElementById('aboutPanel');
   if (!panel) return;
   const releaseLink = data.releaseUrl ? '<a href="' + escAttr(data.releaseUrl) + '" target="_blank">release page</a>' : 'not packaged';
+  const manifestLink = data.manifestUrl ? '<a href="' + escAttr(data.manifestUrl) + '" target="_blank">' + esc(data.manifestName || 'manifest') + '</a>' : (data.manifestName || 'not available in this install');
   const rows = [
     ['Version', data.version || 'unknown'],
     ['Commit', data.commit || 'not available in this install'],
     ['Asset', data.assetName || 'not available in this install'],
     ['Asset SHA-256', data.assetSha256 || 'see release page'],
+    ['Manifest', manifestLink],
     ['Release', releaseLink],
   ];
   panel.innerHTML = '<div class="about-grid">' + rows.map(([label, value]) => '<div><strong>' + esc(label) + '</strong> ' + String(value).replace(/^((?!<a ).)*$/, (text) => esc(text)) + '</div>').join('') + '</div>';
@@ -861,6 +863,10 @@ async function sendMessage() {
             toolBox = ensureToolBox(toolBox);
             appendOutputValidationItem(toolBox, ev.validation);
             break;
+          case 'output_validation_profile':
+            toolBox = ensureToolBox(toolBox);
+            appendOutputValidationProfileItem(toolBox, ev);
+            break;
           case 'error':
             thinkEl.remove();
             addMsg('assistant', '⚠️ ' + ev.message);
@@ -919,6 +925,14 @@ function appendOutputValidationItem(toolBox, validation) {
     return '<div class="validation-group">' + severity.toUpperCase() + ': ' + items.map((finding) => esc(finding.code) + ' - ' + esc(finding.message) + (finding.suggestion ? ' Try: ' + esc(finding.suggestion) : '')).join(' · ') + '</div>';
   }).join('');
   item.innerHTML = '<span>🧪</span><span class="tool-name">output validation</span><span class="validation-groups"><strong>' + esc(validation.profile) + ' ' + esc(validation.status) + ' · score ' + esc(String(validation.score)) + '</strong>' + groups + '</span>';
+  toolBox.appendChild(item);
+  scrollBottom();
+}
+
+function appendOutputValidationProfileItem(toolBox, event) {
+  const item = document.createElement('div');
+  item.className = 'tool-item';
+  item.innerHTML = '<span>🧭</span><span class="tool-name">validation profile</span><span class="tool-detail">Auto-selected ' + esc(event.profile || 'default') + '. ' + esc(event.reason || '') + '</span>';
   toolBox.appendChild(item);
   scrollBottom();
 }
@@ -1116,11 +1130,12 @@ function renderLearningManager(data) {
 }
 
 function renderOutputValidationTrends(data) {
-  const trend = data.outputValidationTrend || { totalResults: 0, byProfile: {}, byStatus: {}, latestFailures: [] };
+  const trend = data.outputValidationTrend || { totalResults: 0, byProfile: {}, bySelectionSource: {}, byStatus: {}, latestFailures: [] };
   const profileRows = Object.entries(trend.byProfile || {}).map(([profile, bucket]) => '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(profile) + '</span><span>' + bucket.passed + '/' + bucket.total + ' · ' + Math.round((bucket.passRate || 0) * 100) + '%</span></div>').join('');
+  const sourceRows = Object.entries(trend.bySelectionSource || {}).map(([source, bucket]) => '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(source) + '</span><span>' + bucket.passed + '/' + bucket.total + ' · ' + Math.round((bucket.passRate || 0) * 100) + '%</span></div>').join('');
   const statusRows = Object.entries(trend.byStatus || {}).map(([status, count]) => '<span class="trace-pill">' + esc(status) + ': ' + count + '</span>').join('');
-  const failures = (trend.latestFailures || []).map((failure) => '<div class="trace-meta">' + esc(failure.profile) + ' · ' + esc(failure.task) + ' · ' + esc(failure.message) + (failure.checks?.length ? ' · ' + esc(failure.checks.join(', ')) : '') + '</div>').join('');
-  return '<div id="outputValidationTrend" class="trace-list"><div class="trace-title">Output Validation Trends</div><div class="trace-meta">' + trend.totalResults + ' validation results recorded</div><button id="downloadOutputValidationTrendBtn" class="btn-sm full-width-button" onclick="downloadOutputValidationTrend()">Download validation trends</button>' + (profileRows || '<div class="trace-meta">No validation runs yet</div>') + (statusRows ? '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">' + statusRows + '</div>' : '') + (failures ? '<div style="margin-top:6px"><strong>Recent findings</strong>' + failures + '</div>' : '') + '</div>';
+  const failures = (trend.latestFailures || []).map((failure) => '<div class="trace-meta">' + esc(failure.profile) + ' · ' + esc(failure.selectionSource || 'unknown') + ' · ' + esc(failure.task) + ' · ' + esc(failure.message) + (failure.checks?.length ? ' · ' + esc(failure.checks.join(', ')) : '') + '</div>').join('');
+  return '<div id="outputValidationTrend" class="trace-list"><div class="trace-title">Output Validation Trends</div><div class="trace-meta">' + trend.totalResults + ' validation results recorded</div><button id="downloadOutputValidationTrendBtn" class="btn-sm full-width-button" onclick="downloadOutputValidationTrend()">Download validation trends</button><div style="margin-top:6px"><strong>By profile</strong>' + (profileRows || '<div class="trace-meta">No validation runs yet</div>') + '</div><div id="outputValidationSourceTrend" style="margin-top:6px"><strong>By selection source</strong>' + (sourceRows || '<div class="trace-meta">No source data yet</div>') + '</div>' + (statusRows ? '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">' + statusRows + '</div>' : '') + (failures ? '<div style="margin-top:6px"><strong>Recent findings</strong>' + failures + '</div>' : '') + '</div>';
 }
 
 function downloadOutputValidationTrend() {

@@ -77,6 +77,11 @@ interface OutputValidationSettings {
   autoSelect: boolean;
 }
 
+interface EffectiveOutputValidationSettings extends OutputValidationSettings {
+  selectionSource: 'auto-selected' | 'manual-selected';
+  selectionReason: string;
+}
+
 interface WalkthroughSettings {
   completed: string[];
 }
@@ -536,6 +541,7 @@ app.post('/api/chat', async (req, res) => {
   });
 
   const activeContextMaxTokens = await resolveContextMaxTokens(activeModel);
+  const activeOutputValidation = effectiveOutputValidationForMessage(message);
   const client = webRuntime.createClient(activeModel, ollamaHost, activeContextMaxTokens);
   const tools = webRuntime.getTools();
   const permissions = webRuntime.createPermissionEngine(permissionMode);
@@ -562,7 +568,11 @@ app.post('/api/chat', async (req, res) => {
     maxTurns: 25,
     abortSignal: abortController.signal,
     context: { maxTokens: activeContextMaxTokens, summarizerModel },
-    outputValidation: { ...effectiveOutputValidationForMessage(message), customProfiles: customOutputValidationProfiles },
+    outputValidation: {
+      enabled: activeOutputValidation.enabled,
+      profile: activeOutputValidation.profile,
+      customProfiles: customOutputValidationProfiles,
+    },
   };
   const session = webRuntime.createSession(projectDir, activeModel);
   await session.initialize();
@@ -591,9 +601,20 @@ app.post('/api/chat', async (req, res) => {
   logger.info('Chat', `User: ${message.slice(0, 80)}`, { model: activeModel });
 
   try {
+    if (activeOutputValidation.enabled && activeOutputValidation.selectionSource === 'auto-selected') {
+      res.write(`data: ${JSON.stringify({
+        type: 'output_validation_profile',
+        profile: activeOutputValidation.profile,
+        source: activeOutputValidation.selectionSource,
+        reason: activeOutputValidation.selectionReason,
+      })}\n\n`);
+    }
     for await (const event of webRuntime.runQueryLoop(config, deps, messages)) {
       if (event.type === 'output_validation') {
-        await recordOutputValidationEvalRun(PROJECT_DIR, event.validation, message.slice(0, 120));
+        await recordOutputValidationEvalRun(PROJECT_DIR, event.validation, message.slice(0, 120), {
+          selectionSource: activeOutputValidation.selectionSource,
+          selectionReason: activeOutputValidation.selectionReason,
+        });
       }
       const data = JSON.stringify(event);
       res.write(`data: ${data}\n\n`);
@@ -1185,9 +1206,12 @@ function sanitizeOutputValidationSettings(value: unknown): OutputValidationSetti
   return { enabled: source.enabled === true, profile, autoSelect: source.autoSelect !== false };
 }
 
-function effectiveOutputValidationForMessage(message: string): OutputValidationSettings {
-  if (!outputValidation.enabled || !outputValidation.autoSelect) return outputValidation;
-  return { ...outputValidation, profile: suggestOutputValidationProfile(message, outputValidation.profile) };
+function effectiveOutputValidationForMessage(message: string): EffectiveOutputValidationSettings {
+  if (!outputValidation.enabled || !outputValidation.autoSelect) {
+    return { ...outputValidation, selectionSource: 'manual-selected', selectionReason: 'Manual profile override is active.' };
+  }
+  const profile = suggestOutputValidationProfile(message, outputValidation.profile);
+  return { ...outputValidation, profile, selectionSource: 'auto-selected', selectionReason: suggestionReason(profile) };
 }
 
 function suggestionReason(profile: OutputValidationProfile): string {
@@ -1265,18 +1289,21 @@ async function getRuntimeStorageSummary(): Promise<{ traces: { count: number; by
   };
 }
 
-async function getAboutInfo(): Promise<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string; manifestName: string }> {
+async function getAboutInfo(): Promise<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string; manifestName: string; manifestUrl: string }> {
   const packageJson = JSON.parse(await fs.readFile(path.join(PROJECT_DIR, 'package.json'), 'utf-8')) as { version?: string };
   const provenance = await readReleaseProvenance();
   const version = packageJson.version ?? provenance.version ?? 'unknown';
+  const releaseUrl = provenance.releaseUrl ?? `https://github.com/Bradliebs/ollama-agent-harness/releases/tag/v${version}`;
+  const manifestName = provenance.manifestName ?? `ollama-agent-harness-v${version}.zip.sha256.json`;
   return {
     version,
     commit: provenance.commit ?? process.env.GITHUB_SHA ?? '',
     assetName: provenance.assetName ?? `ollama-agent-harness-v${version}.zip`,
     assetSha256: provenance.assetSha256 ?? '',
-    releaseUrl: provenance.releaseUrl ?? `https://github.com/Bradliebs/ollama-agent-harness/releases/tag/v${version}`,
+    releaseUrl,
     generatedAt: provenance.generatedAt ?? '',
-    manifestName: provenance.manifestName ?? `ollama-agent-harness-v${version}.zip.sha256.json`,
+    manifestName,
+    manifestUrl: releaseUrl && manifestName ? `${releaseUrl.replace(/\/tag\/[^/]+$/, `/download/v${version}`)}/${manifestName}` : '',
   };
 }
 
