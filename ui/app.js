@@ -776,6 +776,7 @@ function mediaIcon(file) {
   const kind = mediaKind(file);
   if (kind === 'image') return '🖼️';
   if (kind === 'audio') return '🎧';
+  if (kind === 'pdf') return '📕';
   if (kind === 'data') return '▦';
   if (kind === 'text') return '¶';
   return '📄';
@@ -796,7 +797,7 @@ async function sendMessage() {
   if (pendingFiles.length > 0) {
     const fileInfo = pendingFiles.map((f) => '[Attached ' + mediaKind(f) + ': ' + f.name + ' at ' + f.path + ']').join('\n');
     const mediaConfig = '[Media tools: visionModel=' + (currentMediaTools.visionModel || model || 'not configured') + '; audioTranscribeCommand=' + (currentMediaTools.audioTranscribeCommand ? 'configured' : 'not configured') + ']';
-    text = (text ? text + '\n\n' : '') + '[Selected model: ' + model + ']\n' + mediaConfig + '\n' + fileInfo + '\n\nPlease analyze the attached file(s). For image attachments, use image_analyze with the configured vision model when available, otherwise use the selected model if it supports vision. For audio attachments, use audio_transcribe first, then analyze the transcript. If a required media tool is not configured, say that clearly.';
+    text = (text ? text + '\n\n' : '') + '[Selected model: ' + model + ']\n' + mediaConfig + '\n' + fileInfo + '\n\nPlease analyze the attached file(s). For image attachments, use image_analyze with the configured vision model when available, otherwise use the selected model if it supports vision. For audio attachments, use audio_transcribe first, then analyze the transcript. For PDF attachments, use pdf_read (and pdf_metadata when document properties matter); set ocr=true if the first read returns no extractable text. If a required media tool is not configured, say that clearly.';
     pendingFiles = [];
     showAttached();
   }

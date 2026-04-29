@@ -987,11 +987,12 @@ app.post('/api/upload', express.raw({ type: '*/*', limit: '10mb' }), async (req,
   }
 });
 
-function inferMediaKind(fileName: string, mimeType: string): 'image' | 'audio' | 'text' | 'data' | 'other' {
+function inferMediaKind(fileName: string, mimeType: string): 'image' | 'audio' | 'pdf' | 'text' | 'data' | 'other' {
   const lowerName = fileName.toLowerCase();
   const lowerMime = mimeType.toLowerCase();
   if (lowerMime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(lowerName)) return 'image';
   if (lowerMime.startsWith('audio/') || /\.(mp3|wav|m4a|flac|ogg|aac|opus)$/.test(lowerName)) return 'audio';
+  if (lowerMime === 'application/pdf' || lowerName.endsWith('.pdf')) return 'pdf';
   if (lowerMime.startsWith('text/') || /\.(txt|md|csv|json|log|ts|js|py|cs|rs|html|css)$/.test(lowerName)) return 'text';
   if (/\.(jsonl|xml|yaml|yml|parquet|sqlite|db)$/.test(lowerName)) return 'data';
   return 'other';

@@ -7,7 +7,7 @@ import { MemoryWriteTool, MemoryReadTool } from './memoryTools';
 import { ReflectTool, AnalyzePatternsTool, PromotePatternTool, ConsolidateTool, EvolveTool, ImproveSkillTool } from './learningTools';
 import { WebSearchTool, WebReadTool } from './webSearchTool';
 import { ImageAnalyzeTool, AudioTranscribeTool } from './multimodalTools';
-import { PdfReadTool } from './pdfTool';
+import { PdfReadTool, PdfMetadataTool } from './pdfTool';
 import type { Tool } from '../types';
 
 export function getBuiltinTools(): Tool[] {
@@ -35,6 +35,7 @@ export function getBuiltinTools(): Tool[] {
     ImageAnalyzeTool,
     AudioTranscribeTool,
     PdfReadTool,
+    PdfMetadataTool,
   ];
 }
 
@@ -47,5 +48,5 @@ export { MemoryWriteTool, MemoryReadTool } from './memoryTools';
 export { ReflectTool, AnalyzePatternsTool, PromotePatternTool, ConsolidateTool, EvolveTool, ImproveSkillTool } from './learningTools';
 export { WebSearchTool, WebReadTool } from './webSearchTool';
 export { ImageAnalyzeTool, AudioTranscribeTool } from './multimodalTools';
-export { PdfReadTool } from './pdfTool';
+export { PdfReadTool, PdfMetadataTool } from './pdfTool';
 export { ToolDispatcher } from './dispatcher';
