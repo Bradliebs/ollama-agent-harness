@@ -1,4 +1,5 @@
 import { ToolDispatcher } from './dispatcher';
+import { RuntimeTracer } from '../core/tracing';
 import type { Tool, ToolResult } from '../types';
 
 function makeTool(name: string, isReadOnly: boolean, handler?: (input: Record<string, unknown>) => Promise<ToolResult>): Tool {
@@ -94,5 +95,24 @@ describe('ToolDispatcher', () => {
 
     expect(results[0].result.success).toBe(false);
     expect(results[0].result.output).toContain('Permission denied');
+  });
+
+  it('records dispatch, permission, and tool spans when tracing is enabled', async () => {
+    const tracer = new RuntimeTracer();
+    const tool = makeTool('traced', false);
+    const dispatcher = new ToolDispatcher([tool]);
+
+    await dispatcher.dispatch(
+      [{ name: 'traced', input: {} }],
+      async () => ({ allowed: true }),
+      undefined,
+      { tracer },
+    );
+
+    expect(tracer.snapshot().spans).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'tool.dispatch', status: 'ok' }),
+      expect.objectContaining({ name: 'permission.check', status: 'ok' }),
+      expect.objectContaining({ name: 'tool.execute', status: 'ok' }),
+    ]));
   });
 });

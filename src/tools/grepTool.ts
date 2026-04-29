@@ -2,6 +2,9 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
 
+const MAX_SEARCH_FILE_BYTES = 1_000_000;
+const MAX_MATCHES = 200;
+
 export const GrepTool: Tool = {
   name: 'grep',
   description: 'Search for a pattern in files. Returns matching lines with file paths and line numbers.',
@@ -17,8 +20,12 @@ export const GrepTool: Tool = {
   isReadOnly: true,
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
     const pattern = input.pattern as string;
-    const searchPath = input.path as string;
+    const searchPath = resolveProjectPath(input.path);
     const include = input.include as string | undefined;
+
+    if (!searchPath) {
+      return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
+    }
 
     try {
       const results: string[] = [];
@@ -28,8 +35,8 @@ export const GrepTool: Tool = {
         return { success: true, output: `No matches found for "${pattern}"` };
       }
 
-      const output = results.slice(0, 200).join('\n');
-      const suffix = results.length > 200 ? `\n...(${results.length - 200} more matches)` : '';
+      const output = results.slice(0, MAX_MATCHES).join('\n');
+      const suffix = results.length > MAX_MATCHES ? `\n...(${results.length - MAX_MATCHES} more matches)` : '';
       return { success: true, output: output + suffix };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -45,7 +52,7 @@ async function searchDir(
   results: string[],
   depth: number,
 ): Promise<void> {
-  if (depth > 10 || results.length > 200) return;
+  if (depth > 10 || results.length > MAX_MATCHES) return;
 
   const stat = await fs.stat(dirPath);
   if (stat.isFile()) {
@@ -69,6 +76,10 @@ async function searchDir(
 
 async function searchFile(filePath: string, pattern: string, results: string[]): Promise<void> {
   try {
+    const stat = await fs.stat(filePath);
+    if (stat.size > MAX_SEARCH_FILE_BYTES) {
+      return;
+    }
     const content = await fs.readFile(filePath, 'utf-8');
     const lines = content.split('\n');
     let regex: RegExp;
@@ -78,7 +89,7 @@ async function searchFile(filePath: string, pattern: string, results: string[]):
       regex = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
     }
 
-    for (let i = 0; i < lines.length && results.length < 200; i++) {
+    for (let i = 0; i < lines.length && results.length < MAX_MATCHES; i++) {
       if (regex.test(lines[i])) {
         results.push(`${filePath}:${i + 1}: ${lines[i].trimEnd()}`);
       }
@@ -86,6 +97,14 @@ async function searchFile(filePath: string, pattern: string, results: string[]):
   } catch {
     // Binary file or unreadable — skip
   }
+}
+
+function resolveProjectPath(value: unknown): string | null {
+  const raw = String(value ?? '');
+  const resolved = path.resolve(raw);
+  const relative = path.relative(process.cwd(), resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  return resolved;
 }
 
 function matchGlob(name: string, glob: string): boolean {

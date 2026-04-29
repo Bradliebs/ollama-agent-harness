@@ -51,6 +51,42 @@
     .status-dot{width:8px;height:8px;border-radius:50%;background:var(--error);flex-shrink:0}
     .status-dot.ok{background:var(--success)}
     .status-dot.loading{background:var(--warning);animation:pulse 1s infinite}
+    .context-hud{display:flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid var(--border);border-radius:7px;background:var(--surface2);font-size:11px;color:var(--text-dim);white-space:nowrap}
+    .context-meter{width:54px;height:5px;border-radius:3px;background:var(--surface3);overflow:hidden}
+    .context-fill{height:100%;width:0;background:var(--success);transition:width .2s,background .2s}
+    .context-fill.warn{background:var(--warning)}
+    .context-fill.hot{background:var(--error)}
+    .recovery-banner{max-width:800px;width:100%;margin:0 auto;background:var(--surface2);border:1px solid var(--warning);border-radius:var(--rs);padding:10px 12px;font-size:13px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .recovery-banner span{color:var(--text-dim)}
+    .recovery-banner strong{color:var(--text)}
+    .permission-panel{position:absolute;left:50%;bottom:78px;transform:translateX(-50%);width:min(800px,calc(100% - 32px));z-index:50;display:flex;flex-direction:column;gap:8px}
+    .permission-panel.hidden{display:none}
+    .permission-card{background:var(--surface);border:1px solid var(--warning);border-radius:var(--rs);box-shadow:0 8px 30px rgba(0,0,0,.35);padding:10px 12px;display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+    .permission-title{font-size:13px;font-weight:700;color:var(--text);margin-bottom:3px}
+    .permission-reason{font-size:12px;color:var(--text-dim);margin-bottom:5px}
+    .permission-card code{display:block;max-width:560px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:4px 6px;font-size:11px;color:var(--text-dim)}
+    .permission-actions{display:flex;gap:6px;flex-shrink:0}
+    .btn-sm.danger{color:var(--error)}
+    .inline-actions{display:flex;gap:4px}
+    .initial-hidden{display:none}
+    .attached-files{max-width:800px;margin:0 auto 6px;display:none;flex-wrap:wrap;gap:4px}
+    .attachment-hint{max-width:800px;margin:0 auto 6px;color:var(--text-dim);font-size:11px;line-height:1.4}
+    .attach-btn{width:34px;height:44px;font-size:18px}
+    .full-width-button{width:100%;margin-top:4px}
+    .pull-progress{font-size:11px;color:var(--text-dim);margin-top:6px}
+    .trace-list,.palace-grid{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+    .trace-item,.palace-room{background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:8px;font-size:12px}
+    .trace-title,.palace-title{font-weight:700;color:var(--text);margin-bottom:3px}
+    .trace-meta,.palace-meta{color:var(--text-dim);font-size:11px}
+    .trace-detail,.palace-detail{background:var(--surface3);border:1px solid var(--border);border-radius:7px;margin-top:8px;padding:8px;font-size:11px;color:var(--text-dim);line-height:1.45;max-height:260px;overflow:auto}
+    .trace-row{padding:6px 0;border-top:1px solid var(--border)}
+    .trace-row:first-child{border-top:0}
+    .trace-row strong{color:var(--text)}
+    .trace-filter{width:100%;margin-top:8px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px}
+    .transcript-row{padding:6px;border:1px solid var(--border);border-radius:6px;margin-top:6px;background:var(--surface2)}
+    .transcript-row.anchor{border-color:var(--accent);background:var(--accent-bg)}
+    .palace-anchor{width:100%;margin-top:6px;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text-dim);font-size:11px;line-height:1.4;text-align:left;cursor:pointer}
+    .palace-anchor:hover{border-color:var(--accent);color:var(--text)}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
     .topbar-btns{display:flex;gap:6px;margin-left:auto}
     .btn-icon{background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);width:34px;height:34px;border-radius:var(--rs);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;transition:all .2s}
@@ -59,6 +95,12 @@
     .welcome{text-align:center;padding:50px 20px;color:var(--text-dim)}
     .welcome h2{font-size:22px;color:var(--text);margin-bottom:6px}
     .welcome p{font-size:14px;max-width:480px;margin:0 auto 20px;line-height:1.5}
+    .beginner-guide{max-width:640px;margin:0 auto 18px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;text-align:left}
+    .guide-item{background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:9px;font-size:12px;color:var(--text-dim);line-height:1.4}
+    .guide-item strong{display:block;color:var(--text);margin-bottom:3px}
+    .model-capability-hint{max-width:640px;margin:0 auto 14px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:9px;font-size:12px;color:var(--text-dim);line-height:1.45;text-align:left}
+    .model-capability-hint strong{color:var(--text)}
+    .capability-pill{display:inline-block;margin:2px 4px 0 0;padding:2px 6px;border:1px solid var(--border);border-radius:999px;font-size:11px;color:var(--text-dim)}
     .tips{display:flex;flex-wrap:wrap;gap:6px;justify-content:center}
     .tip{padding:7px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:18px;font-size:12px;cursor:pointer;transition:all .2s}
     .tip:hover{border-color:var(--accent);color:var(--accent)}
@@ -123,7 +165,7 @@
   <div class="left-panel" id="leftPanel">
     <div class="panel-header">
       <h3>History</h3>
-      <div style="display:flex;gap:4px">
+      <div class="inline-actions">
         <button class="btn-sm" onclick="newChat()">+ New</button>
         <button class="btn-sm" onclick="exportChat()">Export</button>
       </div>
@@ -133,13 +175,15 @@
       <div class="tab" onclick="showLeftTab('files',this)">Files</div>
       <div class="tab" onclick="showLeftTab('skills',this)">Skills</div>
       <div class="tab" onclick="showLeftTab('memory',this)">Memory</div>
+      <div class="tab" onclick="showLeftTab('palace',this)">Palace</div>
       <div class="tab" onclick="showLeftTab('learning',this)">🧠</div>
     </div>
     <div class="history-list" id="historyList"></div>
-    <div class="file-tree" id="fileTree" style="display:none"></div>
-    <div class="skill-list" id="skillList" style="display:none"></div>
-    <div class="memory-view" id="memoryView" style="display:none"></div>
-    <div class="memory-view" id="learningView" style="display:none"></div>
+    <div class="file-tree initial-hidden" id="fileTree"></div>
+    <div class="skill-list initial-hidden" id="skillList"></div>
+    <div class="memory-view initial-hidden" id="memoryView"></div>
+    <div class="memory-view initial-hidden" id="memoryPalaceView"></div>
+    <div class="memory-view initial-hidden" id="learningView"></div>
   </div>
 
   <div class="main-panel">
@@ -147,9 +191,13 @@
       <button class="btn-icon" onclick="toggleLeft()" title="History">☰</button>
       <div class="logo">🤖 Harness</div>
       <div class="model-wrap">
-        <select class="model-select" id="modelSelect" disabled>
+        <select class="model-select" id="modelSelect" title="Model" disabled>
           <option value="">Loading models...</option>
         </select>
+      </div>
+      <div class="context-hud" id="contextHud" title="Live context pressure">
+        <span id="contextLabel">Context 0%</span>
+        <div class="context-meter"><div class="context-fill" id="contextFill"></div></div>
       </div>
       <div class="status-dot loading" id="statusDot" title="Connecting..."></div>
       <div class="topbar-btns">
@@ -162,6 +210,12 @@
       <div class="welcome" id="welcome">
         <h2>Welcome to Harness</h2>
         <p>Pick a model above, then ask me anything. I can read files, write code, run commands, search your project, create skills, and remember things across sessions.</p>
+        <div class="beginner-guide" id="beginnerGuide">
+          <div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div>
+          <div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div>
+          <div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div>
+        </div>
+        <div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div>
         <div class="tips">
           <div class="tip" onclick="sendTip(this)">List files in this project</div>
           <div class="tip" onclick="sendTip(this)">What models do I have?</div>
@@ -173,10 +227,11 @@
     </div>
 
     <div class="input-area">
-      <div id="attachedFiles" style="max-width:800px;margin:0 auto 6px;display:none;flex-wrap:wrap;gap:4px"></div>
+      <div id="attachedFiles" class="attached-files"></div>
+      <div id="attachmentHint" class="attachment-hint">Attach text, data, image, or audio files. Harness will show what the selected model is likely to understand.</div>
       <div class="input-row">
-        <button class="btn-icon" onclick="document.getElementById('fileInput').click()" title="Attach files" style="width:34px;height:44px;font-size:18px">📎</button>
-        <input type="file" id="fileInput" multiple style="display:none" onchange="handleFileAttach(this.files)">
+        <button class="btn-icon attach-btn" onclick="document.getElementById('fileInput').click()" title="Attach files">📎</button>
+        <input type="file" id="fileInput" class="initial-hidden" multiple onchange="handleFileAttach(this.files)">
         <textarea id="chatInput" placeholder="Ask anything... drop files here or click 📎 (Shift+Enter for newline)" rows="1"
           onkeydown="handleKey(event)" oninput="autoSize(this)"
           ondragover="event.preventDefault();this.style.borderColor='var(--accent)'"
@@ -196,7 +251,7 @@
       <h4>Connection</h4>
       <div class="setting-row">
         <label>Ollama Host</label>
-        <input type="text" id="ollamaHost" value="http://localhost:11434" onchange="updateSetting('ollamaHost',this.value)" />
+        <input type="text" id="ollamaHost" title="Ollama Host" value="http://localhost:11434" onchange="updateSetting('ollamaHost',this.value)" />
       </div>
     </div>
     <div class="settings-section">
@@ -204,7 +259,7 @@
       <div class="setting-row">
         <label>Temperature</label>
         <div class="slider-row">
-          <input type="range" min="0" max="2" step="0.1" value="0.7" id="tempSlider"
+          <input type="range" min="0" max="2" step="0.1" value="0.7" id="tempSlider" title="Temperature"
             oninput="document.getElementById('tempVal').textContent=this.value;updateSetting('temperature',this.value)">
           <span class="slider-val" id="tempVal">0.7</span>
         </div>
@@ -212,11 +267,60 @@
       <div class="setting-row">
         <label>Top P</label>
         <div class="slider-row">
-          <input type="range" min="0" max="1" step="0.05" value="0.9" id="topPSlider"
+          <input type="range" min="0" max="1" step="0.05" value="0.9" id="topPSlider" title="Top P"
             oninput="document.getElementById('topPVal').textContent=this.value;updateSetting('topP',this.value)">
           <span class="slider-val" id="topPVal">0.9</span>
         </div>
       </div>
+    </div>
+    <div class="settings-section">
+      <h4>Context Continuity</h4>
+      <div class="setting-row">
+        <label>Max context tokens</label>
+        <input type="number" id="contextMaxTokens" title="Max context tokens" value="8192" min="1024" step="512" onchange="updateSetting('contextMaxTokens',this.value)" />
+      </div>
+      <div id="contextDetails" class="trace-detail">Detected context unavailable</div>
+      <div class="setting-row">
+        <label>Summarizer model</label>
+        <input type="text" id="summarizerModel" placeholder="Optional smaller model" onchange="updateSetting('summarizerModel',this.value)" />
+      </div>
+      <button class="btn-sm full-width-button" onclick="rebuildSemanticMemory()">Rebuild semantic memory</button>
+    </div>
+    <div class="settings-section">
+      <h4>Helper Routing</h4>
+      <div class="setting-row">
+        <label>Small helper model</label>
+        <input type="text" id="smallHelperModel" placeholder="Fast read-only helper" onchange="updateRoutingSetting('smallModel',this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Default helper model</label>
+        <input type="text" id="defaultHelperModel" placeholder="Normal helper model" onchange="updateRoutingSetting('defaultModel',this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Strong helper model</label>
+        <input type="text" id="strongHelperModel" placeholder="Escalated helper model" onchange="updateRoutingSetting('strongModel',this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Confidence threshold</label>
+        <input type="number" id="helperConfidenceThreshold" title="Confidence threshold" min="0" max="1" step="0.05" value="0.45" onchange="updateRoutingSetting('confidenceEscalationThreshold',this.value)" />
+      </div>
+    </div>
+    <div class="settings-section">
+      <h4>Traces</h4>
+      <button class="btn-sm full-width-button" onclick="exportTraceSnapshot()">Export current trace</button>
+      <button class="btn-sm full-width-button" onclick="exportTraceEvalExample()">Create eval example</button>
+      <button id="createWeatherReplayEvalBtn" class="btn-sm full-width-button" onclick="createWeatherReplayEval()">Create weather replay eval</button>
+      <button class="btn-sm full-width-button" onclick="loadTraceExports()">Refresh trace exports</button>
+      <div id="traceExports" class="trace-list"></div>
+      <div id="traceEvalExamples" class="trace-list"></div>
+      <div id="traceInspector" class="trace-detail initial-hidden"></div>
+    </div>
+    <div class="settings-section">
+      <h4>Runtime Storage</h4>
+      <button class="btn-sm full-width-button" onclick="loadRuntimeStorage()">Refresh storage summary</button>
+      <button class="btn-sm full-width-button" onclick="cleanupRuntimeStorage('traces')">Clean trace exports</button>
+      <button class="btn-sm full-width-button" onclick="cleanupRuntimeStorage('semanticIndex')">Clean semantic index</button>
+      <div id="runtimeStorageStatus" class="trace-detail"></div>
     </div>
     <div class="settings-section">
       <h4>System Prompt</h4>
@@ -245,262 +349,13 @@
         <label>Model name (e.g. llama3.1:8b)</label>
         <input type="text" id="pullName" placeholder="llama3.1:8b" />
       </div>
-      <button class="btn-sm" style="width:100%;margin-top:4px" onclick="pullModel()">⬇️ Download</button>
-      <div id="pullProgress" style="font-size:11px;color:var(--text-dim);margin-top:6px"></div>
+      <button class="btn-sm full-width-button" onclick="pullModel()">⬇️ Download</button>
+      <div id="pullProgress" class="pull-progress"></div>
     </div>
   </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script>
-marked.setOptions({breaks:true,gfm:true});
-let isSending=false, chatMessages=[], currentChatId=null;
-
-window.addEventListener('DOMContentLoaded',()=>{loadModels();loadHistory();loadFiles();loadSettings();document.getElementById('chatInput').focus();});
-
-// --- Models ---
-async function loadModels(){
-  const dot=document.getElementById('statusDot'), sel=document.getElementById('modelSelect');
-  try{
-    const r=await fetch('/api/models'), d=await r.json();
-    if(d.error){dot.className='status-dot';sel.innerHTML='<option>'+esc(d.error)+'</option>';return;}
-    dot.className='status-dot ok';dot.title='Connected';
-    const models=d.models||[];
-    if(!models.length){sel.innerHTML='<option value="">No models installed</option>';return;}
-    sel.innerHTML='<option value="">— Select model —</option>'+models.map(m=>{
-      const s=m.parameterSize?' ('+m.parameterSize+')':'';
-      return '<option value="'+m.name+'">'+m.name+s+'</option>';
-    }).join('');
-    sel.disabled=false;
-    sel.onchange=()=>{if(sel.value){updateSetting('model',sel.value);document.getElementById('sendBtn').disabled=false;}};
-    if(models.length===1){sel.value=models[0].name;sel.dispatchEvent(new Event('change'));}
-  }catch(e){dot.className='status-dot';sel.innerHTML='<option>Server not running</option>';}
-}
-
-// --- Settings ---
-async function loadSettings(){
-  try{
-    const r=await fetch('/api/settings'), s=await r.json();
-    if(s.temperature!==undefined){document.getElementById('tempSlider').value=s.temperature;document.getElementById('tempVal').textContent=s.temperature;}
-    if(s.topP!==undefined){document.getElementById('topPSlider').value=s.topP;document.getElementById('topPVal').textContent=s.topP;}
-    if(s.systemPrompt)document.getElementById('sysPrompt').value=s.systemPrompt;
-    if(s.ollamaHost)document.getElementById('ollamaHost').value=s.ollamaHost;
-  }catch{}
-}
-function updateSetting(k,v){fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({[k]:v})});if(k==='ollamaHost')loadModels();}
-function setMode(m,el){document.querySelectorAll('.mode-opt').forEach(o=>o.classList.remove('active'));el.classList.add('active');updateSetting('permissionMode',m);}
-
-// --- File Attach ---
-let pendingFiles = [];
-
-async function handleFileAttach(fileList){
-  for(const file of fileList){
-    try{
-      const res = await fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/octet-stream','x-filename':file.name},body:file});
-      const data = await res.json();
-      if(data.error){alert('Upload failed: '+data.error);continue;}
-      pendingFiles.push(data);
-      showAttached();
-    }catch(e){alert('Upload failed: '+e.message);}
-  }
-  document.getElementById('fileInput').value='';
-}
-
-function showAttached(){
-  const el=document.getElementById('attachedFiles');
-  if(!pendingFiles.length){el.style.display='none';return;}
-  el.style.display='flex';
-  el.innerHTML=pendingFiles.map((f,i)=>
-    '<span style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:12px;display:flex;align-items:center;gap:4px">📄 '+esc(f.name)+' <button onclick="removeAttached('+i+')" style="background:none;border:none;color:var(--error);cursor:pointer;font-size:14px">✕</button></span>'
-  ).join('');
-}
-
-function removeAttached(i){pendingFiles.splice(i,1);showAttached();}
-
-// --- Chat ---
-function handleKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}}
-function autoSize(el){el.style.height='auto';el.style.height=Math.min(el.scrollHeight,180)+'px';}
-function sendTip(el){document.getElementById('chatInput').value=el.textContent;sendMessage();}
-
-async function sendMessage(){
-  const inp=document.getElementById('chatInput');
-  let text=inp.value.trim();
-
-  // Append attached file info to the message
-  if(pendingFiles.length>0){
-    const fileInfo=pendingFiles.map(f=>'[Attached file: '+f.name+' at '+f.path+']').join('\n');
-    text=(text?text+'\n\n':'')+fileInfo+'\n\nPlease read and analyze the attached file(s).';
-    pendingFiles=[];showAttached();
-  }
-
-  if(!text||isSending)return;
-  const model=document.getElementById('modelSelect').value;
-  if(!model){alert('Select a model first.');return;}
-  const w=document.getElementById('welcome');if(w)w.remove();
-  addMsg('user',text);chatMessages.push({role:'user',content:text});
-  inp.value='';inp.style.height='auto';isSending=true;document.getElementById('sendBtn').disabled=true;
-  const thinkEl=addThinking();
-  try{
-    const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,model})});
-    const reader=res.body.getReader(), dec=new TextDecoder();
-    let assistantText='',msgEl=null,toolBox=null,buf='';
-    while(true){
-      const{done,value}=await reader.read();if(done)break;
-      buf+=dec.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop()||'';
-      for(const line of lines){
-        if(!line.startsWith('data: '))continue;const payload=line.slice(6);
-        if(payload==='[DONE]')continue;
-        let ev;try{ev=JSON.parse(payload);}catch{continue;}
-        switch(ev.type){
-          case 'text':
-            thinkEl.remove();if(!msgEl)msgEl=addMsg('assistant','');
-            assistantText+=ev.content;renderMd(msgEl.querySelector('.msg-content'),assistantText);scrollBottom();break;
-          case 'tool_call':
-            if(!toolBox){toolBox=document.createElement('div');toolBox.className='tool-activity';document.getElementById('chatArea').appendChild(toolBox);}
-            const tc=document.createElement('div');tc.className='tool-item';
-            tc.innerHTML='<span>🔧</span><span class="tool-name">'+esc(ev.call.name)+'</span><span class="tool-detail">'+esc(JSON.stringify(ev.call.input).slice(0,80))+'</span>';
-            toolBox.appendChild(tc);scrollBottom();break;
-          case 'tool_result':
-            if(toolBox){const tr=document.createElement('div');tr.className='tool-item'+(ev.result.success?'':' error');
-            tr.innerHTML='<span>'+(ev.result.success?'✅':'❌')+'</span><span class="tool-detail">'+esc(ev.result.output.slice(0,120))+'</span>';
-            toolBox.appendChild(tr);scrollBottom();}break;
-          case 'error':thinkEl.remove();addMsg('assistant','⚠️ '+ev.message);break;
-        }
-      }
-    }
-    if(thinkEl.parentNode)thinkEl.remove();
-    if(assistantText){chatMessages.push({role:'assistant',content:assistantText});}
-    autoSaveChat();
-  }catch(e){if(thinkEl.parentNode)thinkEl.remove();addMsg('assistant','⚠️ '+e.message);}
-  isSending=false;document.getElementById('sendBtn').disabled=false;document.getElementById('chatInput').focus();
-}
-
-function addMsg(role,text){
-  const area=document.getElementById('chatArea'), el=document.createElement('div');el.className='msg '+role;
-  const av=role==='user'?'Y':'🤖', label=role==='user'?'You':'Assistant';
-  el.innerHTML='<div class="msg-avatar">'+av+'</div><div class="msg-body"><div class="msg-role">'+label+'</div><div class="msg-content"></div></div>';
-  if(role==='user')el.querySelector('.msg-content').textContent=text;else renderMd(el.querySelector('.msg-content'),text);
-  area.appendChild(el);scrollBottom();return el;
-}
-function renderMd(el,text){
-  if(!text){el.innerHTML='';return;}
-  el.innerHTML=marked.parse(text);
-  el.querySelectorAll('pre').forEach(pre=>{
-    if(pre.querySelector('.copy-btn'))return;
-    const btn=document.createElement('button');btn.className='copy-btn';btn.textContent='Copy';
-    btn.onclick=()=>{navigator.clipboard.writeText(pre.textContent.replace('Copy','').trim());btn.textContent='Copied!';setTimeout(()=>btn.textContent='Copy',1500);};
-    pre.style.position='relative';pre.appendChild(btn);
-  });
-}
-function addThinking(){const area=document.getElementById('chatArea'),el=document.createElement('div');el.className='thinking';el.innerHTML='<div class="dots"><span></span><span></span><span></span></div> Thinking...';area.appendChild(el);scrollBottom();return el;}
-function scrollBottom(){const a=document.getElementById('chatArea');a.scrollTop=a.scrollHeight;}
-
-// --- History ---
-async function loadHistory(){
-  try{const r=await fetch('/api/history'),d=await r.json(),list=document.getElementById('historyList');list.innerHTML='';
-  for(const c of d.chats||[]){const el=document.createElement('div');el.className='history-item'+(c.id===currentChatId?' active':'');
-  el.innerHTML='<div><div class="history-title">'+esc(c.title)+'</div><div class="history-date">'+c.messageCount+' msgs</div></div><button class="history-del" onclick="event.stopPropagation();deleteChat(\''+c.id+'\')">🗑</button>';
-  el.onclick=()=>loadChat(c.id);list.appendChild(el);}}catch{}
-}
-async function loadChat(id){try{const r=await fetch('/api/history/'+id),d=await r.json();currentChatId=id;chatMessages=d.messages||[];document.getElementById('chatArea').innerHTML='';for(const m of chatMessages)addMsg(m.role,m.content);loadHistory();}catch{}}
-async function autoSaveChat(){if(chatMessages.length<2)return;const title=chatMessages[0].content.slice(0,60);try{const r=await fetch('/api/history',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:currentChatId,title,messages:chatMessages})});const d=await r.json();if(!currentChatId)currentChatId=d.id;loadHistory();}catch{}}
-async function deleteChat(id){await fetch('/api/history/'+id,{method:'DELETE'});if(id===currentChatId)newChat();loadHistory();}
-function newChat(){currentChatId=null;chatMessages=[];document.getElementById('chatArea').innerHTML='<div class="welcome" id="welcome"><h2>Welcome to Harness</h2><p>Pick a model, then ask me anything.</p><div class="tips"><div class="tip" onclick="sendTip(this)">List files in this project</div><div class="tip" onclick="sendTip(this)">What models do I have?</div><div class="tip" onclick="sendTip(this)">Create a skill for code review</div></div></div>';loadHistory();}
-function exportChat(){if(!chatMessages.length){alert('No messages.');return;}let md='# Chat Export\n\n';for(const m of chatMessages)md+='## '+(m.role==='user'?'You':'Assistant')+'\n\n'+m.content+'\n\n---\n\n';const blob=new Blob([md],{type:'text/markdown'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='chat-'+new Date().toISOString().slice(0,10)+'.md';a.click();}
-
-// --- Files ---
-async function loadFiles(dir){
-  try{const url='/api/files'+(dir?'?path='+encodeURIComponent(dir):''),r=await fetch(url),d=await r.json(),tree=document.getElementById('fileTree');tree.innerHTML='';
-  if(dir){const up=document.createElement('div');up.className='file-item';up.innerHTML='<span class="file-icon">⬆</span> ..';up.onclick=()=>loadFiles(d.cwd.split(/[\\/]/).slice(0,-1).join('/'));tree.appendChild(up);}
-  for(const item of d.items||[]){const el=document.createElement('div');el.className='file-item';el.innerHTML='<span class="file-icon">'+(item.type==='dir'?'📁':'📄')+'</span>'+esc(item.name);
-  el.onclick=()=>{if(item.type==='dir')loadFiles(item.path);else{document.getElementById('chatInput').value='Read the file '+item.name;sendMessage();}};tree.appendChild(el);}}catch{}
-}
-
-// --- Skills ---
-async function loadSkills(){
-  try{const r=await fetch('/api/skills'),d=await r.json(),list=document.getElementById('skillList');list.innerHTML='';
-  if(!d.skills||!d.skills.length){list.innerHTML='<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No skills yet.<br><br>Ask the agent to <strong>"create a skill for..."</strong> and it will build one automatically.</div>';return;}
-  for(const s of d.skills){const el=document.createElement('div');el.className='skill-item';
-  el.innerHTML='<div class="sk-name">'+esc(s.name)+'</div><div class="sk-desc">'+esc(s.description)+'</div><div class="sk-meta"><span>'+esc(s.domain)+'</span><button class="sk-del" onclick="event.stopPropagation();deleteSkill(\''+esc(s.name)+'\')">🗑</button></div>';
-  el.onclick=()=>{document.getElementById('chatInput').value='Use the skill: '+s.name;sendMessage();};list.appendChild(el);}}catch{}
-}
-async function deleteSkill(name){if(!confirm('Delete skill "'+name+'"?'))return;await fetch('/api/skills/'+name,{method:'DELETE'});loadSkills();}
-
-// --- Memory ---
-async function loadMemory(){
-  try{const r=await fetch('/api/memory'),d=await r.json(),view=document.getElementById('memoryView');
-  if(!d.decisions&&!d.patterns&&!d.notes){view.innerHTML='<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No memories yet.<br><br>The agent saves decisions, patterns, and notes here as it learns.</div>';return;}
-  let html='';
-  if(d.decisions)html+='<div class="mem-section"><h5>Decisions</h5><pre>'+esc(d.decisions)+'</pre></div>';
-  if(d.patterns)html+='<div class="mem-section"><h5>Patterns</h5><pre>'+esc(d.patterns)+'</pre></div>';
-  if(d.notes)html+='<div class="mem-section"><h5>Notes</h5><pre>'+esc(d.notes)+'</pre></div>';
-  view.innerHTML=html;}catch{}
-}
-
-// --- Tabs ---
-function showLeftTab(tab,el){
-  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));el.classList.add('active');
-  document.getElementById('historyList').style.display=tab==='history'?'block':'none';
-  document.getElementById('fileTree').style.display=tab==='files'?'block':'none';
-  document.getElementById('skillList').style.display=tab==='skills'?'block':'none';
-  document.getElementById('memoryView').style.display=tab==='memory'?'block':'none';
-  document.getElementById('learningView').style.display=tab==='learning'?'block':'none';
-  if(tab==='files')loadFiles();if(tab==='skills')loadSkills();if(tab==='memory')loadMemory();if(tab==='learning')loadLearning();
-}
-function toggleLeft(){document.getElementById('leftPanel').classList.toggle('hidden');}
-function toggleRight(){document.getElementById('rightPanel').classList.toggle('hidden');}
-
-// --- Pull Model ---
-async function pullModel(){
-  const name=document.getElementById('pullName').value.trim();if(!name)return;
-  const prog=document.getElementById('pullProgress');prog.textContent='Starting...';
-  try{const res=await fetch('/api/models/pull',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
-  const reader=res.body.getReader(),dec=new TextDecoder();let buf='';
-  while(true){const{done,value}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop()||'';
-  for(const line of lines){if(!line.startsWith('data: '))continue;const p=line.slice(6);if(p==='[DONE]'){prog.textContent='Done!';loadModels();return;}
-  try{const d=JSON.parse(p);if(d.error){prog.textContent='Error: '+d.error;return;}if(d.status){const pct=d.completed&&d.total?' ('+Math.round(d.completed/d.total*100)+'%)':'';prog.textContent=d.status+pct;}}catch{}}}}catch(e){prog.textContent='Failed: '+e.message;}
-}
-
-// --- Learning ---
-async function loadLearning(){
-  try{const r=await fetch('/api/learning'),d=await r.json(),view=document.getElementById('learningView');
-  let html='<div style="padding:4px 0"><h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin-bottom:8px">🧠 Self-Learning Status</h5>';
-  html+='<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Total tool calls tracked: <strong style="color:var(--text)">'+((d.totalToolCalls)||0)+'</strong></div>';
-  if(d.toolBreakdown&&Object.keys(d.toolBreakdown).length>0){
-    html+='<div style="margin-bottom:12px">';
-    for(const[tool,count]of Object.entries(d.toolBreakdown||{})){
-      html+='<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>'+esc(tool)+'</span><span style="color:var(--accent)">'+count+'</span></div>';
-    }
-    html+='</div>';
-  }
-  const patterns=(d.patterns||[]);
-  if(patterns.length>0){
-    html+='<h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin:8px 0">Detected Patterns</h5>';
-    for(const p of patterns.slice(0,5)){
-      html+='<div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:4px;font-size:11px">';
-      html+='<div style="color:var(--accent);font-weight:600">'+esc(p.toolSequence.join(' → '))+'</div>';
-      html+='<div style="color:var(--text-dim)">'+p.occurrences+'x across sessions'+(p.promoted?' ✅ promoted':'')+'</div></div>';
-    }
-  }
-  const reflections=(d.reflections||[]);
-  if(reflections.length>0){
-    html+='<h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin:8px 0">Recent Reflections</h5>';
-    for(const r of reflections.slice(-3)){
-      html+='<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;padding:6px;background:var(--surface2);border-radius:6px">';
-      html+='<div>Success: '+Math.round(r.successRate*100)+'% | Tools: '+r.toolsUsed.join(', ')+'</div>';
-      if(r.insights.length)html+='<div style="color:var(--warning);margin-top:2px">'+esc(r.insights.join('; '))+'</div>';
-      html+='</div>';
-    }
-  }
-  if(d.evolvedPrompt){
-    html+='<h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin:8px 0">Evolved Instructions</h5>';
-    html+='<pre style="font-size:10px;background:var(--surface2);padding:6px;border-radius:6px;white-space:pre-wrap;color:var(--text-dim)">'+esc(d.evolvedPrompt)+'</pre>';
-  }
-  html+='</div>';
-  view.innerHTML=html;}catch{document.getElementById('learningView').innerHTML='<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No learning data yet. Start chatting and the agent will begin tracking patterns.</div>';}
-}
-
-function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
-</script>
+<script src="./app.js"></script>
 </body>
 </html>

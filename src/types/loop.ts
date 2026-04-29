@@ -5,12 +5,22 @@ export interface LoopConfig {
   systemPrompt: string;
   maxTurns: number;
   abortSignal?: AbortSignal;
+  context?: {
+    enabled?: boolean;
+    maxTokens?: number;
+    budgetPerToolResult?: number;
+    snipThreshold?: number;
+    autoCompactThreshold?: number;
+    minSummaryQuality?: number;
+    summarizerModel?: string;
+  };
 }
 
 export type LoopEvent =
   | TextEvent
   | ToolCallEvent
   | ToolResultEvent
+  | ContextEvent
   | ErrorEvent
   | DoneEvent;
 
@@ -28,6 +38,18 @@ export interface ToolResultEvent {
   type: 'tool_result';
   call: ToolCall;
   result: ToolResult;
+}
+
+export interface ContextEvent {
+  type: 'context';
+  strategy: string;
+  tokensFreed: number;
+  compactedCount: number;
+  autosaved: boolean;
+  pressure: number;
+  maxTokens: number;
+  qualityScore?: number;
+  qualityPassed?: boolean;
 }
 
 export interface ErrorEvent {

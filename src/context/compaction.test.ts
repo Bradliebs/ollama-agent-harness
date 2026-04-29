@@ -1,4 +1,4 @@
-import { applyBudgetReduction, applySnip } from './compaction';
+import { applyBudgetReduction, applyAutoCompact, applySnip, compactIfNeeded } from './compaction';
 import { estimateTokenCount } from './assembly';
 import type { Message } from 'ollama';
 
@@ -58,6 +58,58 @@ describe('Context Compaction', () => {
       const result = applySnip(messages, 5);
       expect(result.messages).toEqual(messages);
       expect(result.tokensFreed).toBe(0);
+    });
+  });
+
+  describe('applyAutoCompact', () => {
+    it('returns summary metadata for persistence boundaries', async () => {
+      const messages: Message[] = [
+        { role: 'user', content: 'first decision' },
+        { role: 'assistant', content: 'first answer' },
+        { role: 'user', content: 'second decision' },
+        { role: 'assistant', content: 'second answer' },
+        { role: 'user', content: 'latest request' },
+      ];
+      const client = {
+        chat: jest.fn().mockResolvedValue({
+          message: { role: 'assistant', content: 'summary text' },
+        }),
+      };
+
+      const result = await applyAutoCompact(messages, client as never);
+
+      expect(result.strategy).toBe('auto_compact');
+      expect(result.summary).toBe('summary text');
+      expect(result.compactedCount).toBe(3);
+      expect(result.messages.some((m) => m.content?.includes('summary text'))).toBe(true);
+    });
+  });
+
+  describe('compactIfNeeded', () => {
+    it('auto-compacts before snipping near the context limit', async () => {
+      const messages: Message[] = [
+        { role: 'system', content: 'system' },
+        { role: 'user', content: 'a'.repeat(120) },
+        { role: 'assistant', content: 'b'.repeat(120) },
+        { role: 'user', content: 'c'.repeat(120) },
+        { role: 'assistant', content: 'd'.repeat(120) },
+        { role: 'user', content: 'latest' },
+      ];
+      const client = {
+        chat: jest.fn().mockResolvedValue({
+          message: { role: 'assistant', content: 'continuity summary' },
+        }),
+      };
+
+      const result = await compactIfNeeded(messages, {
+        maxTokens: 100,
+        budgetPerToolResult: 4000,
+        snipThreshold: 0.7,
+        autoCompactThreshold: 0.85,
+      }, client as never);
+
+      expect(result.strategy).toBe('auto_compact');
+      expect(result.summary).toBe('continuity summary');
     });
   });
 

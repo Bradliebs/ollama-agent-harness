@@ -46,6 +46,8 @@ export async function forkSession(
     await newStorage.append(event.type, event.data);
   }
 
+  await newStorage.updateMeta({ parentSessionId: sourceSessionId });
+
   // Add fork marker
   await newStorage.append('system', {
     kind: 'system',
@@ -70,9 +72,17 @@ function eventsToMessages(events: SessionEvent[]): Message[] {
         });
         break;
       case 'compact_boundary':
+        messages.length = 0;
         messages.push({
           role: 'system' as const,
           content: `[Compacted summary]\n${event.data.summary}`,
+        });
+        break;
+      case 'continuity_checkpoint':
+        messages.length = 0;
+        messages.push({
+          role: 'system' as const,
+          content: checkpointToMessage(event.data.checkpoint),
         });
         break;
       // tool_call and system events don't produce standalone messages
@@ -81,6 +91,19 @@ function eventsToMessages(events: SessionEvent[]): Message[] {
 
   return messages;
 }
+
+function checkpointToMessage(checkpoint: SessionEventDataCheckpoint): string {
+  return [
+    '[Continuity checkpoint]',
+    `Goal: ${checkpoint.currentGoal}`,
+    `Summary: ${checkpoint.summary}`,
+    `Next action: ${checkpoint.nextAction}`,
+    checkpoint.openQuestions.length ? `Open questions: ${checkpoint.openQuestions.join('; ')}` : '',
+    checkpoint.recentMessages.length ? `Recent context: ${checkpoint.recentMessages.join(' | ')}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+type SessionEventDataCheckpoint = Extract<SessionEvent['data'], { kind: 'continuity_checkpoint' }>['checkpoint'];
 
 export async function getLatestSession(
   projectDir: string,

@@ -4,5 +4,8 @@ dist/
 *.js.map
 *.d.ts
 !jest.config.js
+!scripts/ui-smoke.js
+!ui/app.js
 .env
 .env.local
+.harness/

@@ -5,6 +5,7 @@ export interface OllamaClientConfig {
   host?: string;
   model: string;
   keepAlive?: string;
+  numCtx?: number;
 }
 
 export interface TokenUsage {
@@ -28,11 +29,13 @@ export class OllamaClient {
   private client: Ollama;
   private model: string;
   private keepAlive: string;
+  private numCtx?: number;
 
   constructor(config: OllamaClientConfig) {
     this.client = new Ollama({ host: config.host ?? 'http://localhost:11434' });
     this.model = config.model;
     this.keepAlive = config.keepAlive ?? '5m';
+    this.numCtx = config.numCtx;
   }
 
   async chat(
@@ -45,6 +48,7 @@ export class OllamaClient {
       tools,
       stream: false as const,
       keep_alive: this.keepAlive,
+      options: this.numCtx ? { num_ctx: this.numCtx } : undefined,
     });
 
     return {
@@ -67,6 +71,7 @@ export class OllamaClient {
       tools,
       stream: true as const,
       keep_alive: this.keepAlive,
+      options: this.numCtx ? { num_ctx: this.numCtx } : undefined,
     });
 
     for await (const chunk of stream) {
@@ -81,6 +86,15 @@ export class OllamaClient {
   async listModels(): Promise<string[]> {
     const response = await this.client.list();
     return response.models.map((m) => m.name);
+  }
+
+  async getContextWindow(): Promise<number | null> {
+    try {
+      const response = await this.client.show({ model: this.model });
+      return extractContextWindow(response.model_info) ?? extractNumCtxParameter(response.parameters);
+    } catch {
+      return null;
+    }
   }
 
   async healthCheck(): Promise<{ ok: boolean; error?: string }> {
@@ -105,4 +119,25 @@ export class OllamaClient {
   getModel(): string {
     return this.model;
   }
+}
+
+function extractContextWindow(modelInfo: unknown): number | null {
+  const entries = modelInfo instanceof Map
+    ? Array.from(modelInfo.entries())
+    : typeof modelInfo === 'object' && modelInfo !== null
+      ? Object.entries(modelInfo as Record<string, unknown>)
+      : [];
+  for (const [key, value] of entries) {
+    if (!key.endsWith('.context_length') && key !== 'context_length') continue;
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  }
+  return null;
+}
+
+function extractNumCtxParameter(parameters: unknown): number | null {
+  const match = String(parameters ?? '').match(/(?:num_ctx|context_length)\s+(\d+)/i);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
 }

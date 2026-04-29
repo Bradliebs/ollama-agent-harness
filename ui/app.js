@@ -1,0 +1,619 @@
+marked.setOptions({ breaks: true, gfm: true });
+
+let isSending = false;
+let chatMessages = [];
+let currentChatId = null;
+let lastSessionId = null;
+let pendingFiles = [];
+let permissionPollTimer = null;
+let activeChatController = null;
+let activeTraceExport = null;
+let currentModelRouting = {};
+let availableModels = [];
+
+window.addEventListener('DOMContentLoaded', () => {
+  ensurePermissionPanel();
+  loadModels();
+  loadHistory();
+  loadFiles();
+  loadSettings();
+  loadTraceExports();
+  loadRuntimeStorage();
+  loadRecovery();
+  startPermissionPolling();
+  document.getElementById('chatInput').focus();
+});
+
+async function loadModels() {
+  const dot = document.getElementById('statusDot');
+  const sel = document.getElementById('modelSelect');
+  try {
+    const r = await fetch('/api/models');
+    const d = await r.json();
+    if (d.error) { dot.className = 'status-dot'; sel.innerHTML = '<option>' + esc(d.error) + '</option>'; return; }
+    dot.className = 'status-dot ok'; dot.title = 'Connected';
+    const models = d.models || [];
+    availableModels = models;
+    if (!models.length) { sel.innerHTML = '<option value="">No models installed</option>'; return; }
+    sel.innerHTML = '<option value="">— Select model —</option>' + models.map((m) => {
+      const size = m.parameterSize ? ' (' + m.parameterSize + ')' : '';
+      return '<option value="' + escAttr(m.name) + '">' + esc(m.name + size) + '</option>';
+    }).join('');
+    sel.disabled = false;
+    sel.onchange = () => { renderModelCapabilityHint(); if (sel.value) { updateSetting('model', sel.value); document.getElementById('sendBtn').disabled = false; } };
+    if (models.length === 1) { sel.value = models[0].name; sel.dispatchEvent(new Event('change')); }
+    renderModelCapabilityHint();
+  } catch {
+    dot.className = 'status-dot';
+    sel.innerHTML = '<option>Server not running</option>';
+  }
+}
+
+function selectedModelDetails() {
+  const selected = document.getElementById('modelSelect')?.value;
+  return availableModels.find((model) => model.name === selected) || null;
+}
+
+function renderModelCapabilityHint() {
+  const hint = document.getElementById('modelCapabilityHint');
+  if (!hint) return;
+  const model = selectedModelDetails();
+  if (!model) {
+    hint.textContent = 'Choose a model to see whether Harness detects text, image, or audio support.';
+    renderAttachmentHint();
+    return;
+  }
+  const capabilities = model.capabilities || { text: true, image: false, audio: false, notes: [] };
+  const pills = [
+    capabilityPill('Text', true),
+    capabilityPill('Images', capabilities.image),
+    capabilityPill('Audio', capabilities.audio),
+  ].join('');
+  const notes = (capabilities.notes || []).slice(0, 2).map(esc).join(' ');
+  hint.innerHTML = '<strong>' + esc(model.name) + '</strong><div>' + pills + '</div><div>' + esc(notes || 'Harness detected a text chat model. Attachments are still available as local file paths for tools and analysis.') + '</div>';
+  renderAttachmentHint();
+}
+
+function capabilityPill(label, enabled) {
+  return '<span class="capability-pill">' + (enabled ? '✓ ' : '○ ') + esc(label) + '</span>';
+}
+
+function renderAttachmentHint() {
+  const hint = document.getElementById('attachmentHint');
+  if (!hint) return;
+  const model = selectedModelDetails();
+  const hasImage = pendingFiles.some((file) => mediaKind(file) === 'image');
+  const hasAudio = pendingFiles.some((file) => mediaKind(file) === 'audio');
+  if (!model) {
+    hint.textContent = 'Attach text, data, image, or audio files. Pick a model to see what it is likely to understand.';
+    return;
+  }
+  const capabilities = model.capabilities || {};
+  if (hasImage && !capabilities.image) {
+    hint.textContent = 'Image attached. This model is not detected as a vision model, so Harness will provide the file path for tools or follow-up handling.';
+    return;
+  }
+  if (hasAudio && !capabilities.audio) {
+    hint.textContent = 'Audio attached. This model is not detected as audio-capable, so transcription tooling may be needed before chat analysis.';
+    return;
+  }
+  hint.textContent = 'Attach text, data, image, or audio files. Harness shows the media type and passes the local file path into your message.';
+}
+
+async function loadSettings() {
+  try {
+    const r = await fetch('/api/settings');
+    const s = await r.json();
+    if (s.temperature !== undefined) { document.getElementById('tempSlider').value = s.temperature; document.getElementById('tempVal').textContent = s.temperature; }
+    if (s.topP !== undefined) { document.getElementById('topPSlider').value = s.topP; document.getElementById('topPVal').textContent = s.topP; }
+    if (s.systemPrompt) document.getElementById('sysPrompt').value = s.systemPrompt;
+    if (s.ollamaHost) document.getElementById('ollamaHost').value = s.ollamaHost;
+    if (s.summarizerModel) document.getElementById('summarizerModel').value = s.summarizerModel;
+    if (s.contextMaxTokens) document.getElementById('contextMaxTokens').value = s.contextMaxTokens;
+    renderContextDetails(s.context || { configuredMaxTokens: s.contextMaxTokens, detectedMaxTokens: null, effectiveMaxTokens: s.contextMaxTokens });
+    currentModelRouting = s.modelRouting || {};
+    const small = document.getElementById('smallHelperModel');
+    const def = document.getElementById('defaultHelperModel');
+    const strong = document.getElementById('strongHelperModel');
+    const confidence = document.getElementById('helperConfidenceThreshold');
+    if (small) small.value = currentModelRouting.smallModel || '';
+    if (def) def.value = currentModelRouting.defaultModel || '';
+    if (strong) strong.value = currentModelRouting.strongModel || '';
+    if (confidence && currentModelRouting.confidenceEscalationThreshold !== undefined) confidence.value = currentModelRouting.confidenceEscalationThreshold;
+    document.querySelectorAll('.mode-opt').forEach((option) => option.classList.remove('active'));
+    const modeIndex = s.permissionMode === 'dontAsk' ? 0 : s.permissionMode === 'acceptEdits' ? 1 : 2;
+    const mode = document.querySelectorAll('.mode-opt')[modeIndex];
+    if (mode) mode.classList.add('active');
+  } catch {}
+}
+
+function renderContextDetails(context) {
+  const details = document.getElementById('contextDetails');
+  if (!details) return;
+  const configured = context.configuredMaxTokens || context.effectiveMaxTokens || 0;
+  const detected = context.detectedMaxTokens || 0;
+  const effective = context.effectiveMaxTokens || configured;
+  details.innerHTML = '<div><strong>Configured</strong> ' + esc(configured || 'unknown') + ' tokens</div><div><strong>Detected</strong> ' + (detected ? esc(detected) + ' tokens' : 'not detected yet') + '</div><div><strong>Effective</strong> ' + esc(effective || 'unknown') + ' tokens</div>';
+}
+
+function updateSetting(k, v) {
+  fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [k]: v }) });
+  if (k === 'ollamaHost') loadModels();
+}
+
+function updateRoutingSetting(k, v) {
+  const next = { ...currentModelRouting };
+  if (k === 'confidenceEscalationThreshold' || k.endsWith('Threshold')) {
+    const parsed = Number(v);
+    if (Number.isFinite(parsed)) next[k] = parsed;
+  } else if (String(v).trim()) {
+    next[k] = String(v).trim();
+  } else {
+    delete next[k];
+  }
+  currentModelRouting = next;
+  updateSetting('modelRouting', next);
+}
+
+function setMode(m, el) {
+  document.querySelectorAll('.mode-opt').forEach((o) => o.classList.remove('active'));
+  el.classList.add('active');
+  updateSetting('permissionMode', m);
+}
+
+async function handleFileAttach(fileList) {
+  for (const file of fileList) {
+    try {
+      const res = await fetch('/api/upload', { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream', 'x-filename': file.name }, body: file });
+      const data = await res.json();
+      if (data.error) { alert('Upload failed: ' + data.error); continue; }
+      pendingFiles.push(data);
+      showAttached();
+    } catch (e) { alert('Upload failed: ' + e.message); }
+  }
+  document.getElementById('fileInput').value = '';
+}
+
+function showAttached() {
+  const el = document.getElementById('attachedFiles');
+  if (!pendingFiles.length) { el.style.display = 'none'; renderAttachmentHint(); return; }
+  el.style.display = 'flex';
+  el.innerHTML = pendingFiles.map((f, i) => '<span title="' + escAttr(mediaKind(f)) + ' attachment" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:12px;display:flex;align-items:center;gap:4px">' + mediaIcon(f) + ' ' + esc(mediaKind(f)) + ': ' + esc(f.name) + ' <button onclick="removeAttached(' + i + ')" title="Remove attachment" style="background:none;border:none;color:var(--error);cursor:pointer;font-size:14px">✕</button></span>').join('');
+  renderAttachmentHint();
+}
+
+function mediaKind(file) { return file.mediaKind || (file.mimeType || '').split('/')[0] || 'file'; }
+function mediaIcon(file) {
+  const kind = mediaKind(file);
+  if (kind === 'image') return '🖼️';
+  if (kind === 'audio') return '🎧';
+  if (kind === 'data') return '▦';
+  if (kind === 'text') return '¶';
+  return '📄';
+}
+function removeAttached(i) { pendingFiles.splice(i, 1); showAttached(); }
+function handleKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }
+function autoSize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 180) + 'px'; }
+function sendTip(el) { document.getElementById('chatInput').value = el.textContent; sendMessage(); }
+
+async function sendMessage() {
+  if (isSending && activeChatController) {
+    activeChatController.abort();
+    return;
+  }
+  const inp = document.getElementById('chatInput');
+  let text = inp.value.trim();
+  const model = document.getElementById('modelSelect').value;
+  if (pendingFiles.length > 0) {
+    const fileInfo = pendingFiles.map((f) => '[Attached ' + mediaKind(f) + ': ' + f.name + ' at ' + f.path + ']').join('\n');
+    text = (text ? text + '\n\n' : '') + '[Selected model: ' + model + ']\n' + fileInfo + '\n\nPlease analyze the attached file(s). For image attachments, use image_analyze with the selected model when it supports vision. For audio attachments, use audio_transcribe first, then analyze the transcript. If a required media tool is not configured, say that clearly.';
+    pendingFiles = [];
+    showAttached();
+  }
+
+  if (!text || isSending) return;
+  if (!model) { alert('Select a model first.'); return; }
+  const welcome = document.getElementById('welcome');
+  if (welcome) welcome.remove();
+  addMsg('user', text);
+  chatMessages.push({ role: 'user', content: text });
+  inp.value = '';
+  inp.style.height = 'auto';
+  isSending = true;
+  activeChatController = new AbortController();
+  const sendBtn = document.getElementById('sendBtn');
+  sendBtn.disabled = false;
+  sendBtn.textContent = '■';
+  sendBtn.title = 'Stop';
+  const thinkEl = addThinking();
+  try {
+    const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text, model }), signal: activeChatController.signal });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let assistantText = '';
+    let msgEl = null;
+    let toolBox = null;
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const payload = line.slice(6);
+        if (payload === '[DONE]') continue;
+        let ev;
+        try { ev = JSON.parse(payload); } catch { continue; }
+        switch (ev.type) {
+          case 'text':
+            thinkEl.remove();
+            if (!msgEl) msgEl = addMsg('assistant', '');
+            assistantText += ev.content;
+            renderMd(msgEl.querySelector('.msg-content'), assistantText);
+            scrollBottom();
+            break;
+          case 'tool_call':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '🔧', ev.call.name, JSON.stringify(ev.call.input).slice(0, 80), false);
+            break;
+          case 'tool_result':
+            if (toolBox) appendToolItem(toolBox, ev.result.success ? '✅' : '❌', '', ev.result.output.slice(0, 120), !ev.result.success);
+            break;
+          case 'context':
+            updateContextHud(ev.pressure, ev.strategy, ev.qualityScore, ev.autosaved);
+            if (ev.strategy !== 'budget_reduction' || ev.autosaved) {
+              toolBox = ensureToolBox(toolBox);
+              appendToolItem(toolBox, '🧠', 'context', ev.strategy + ' freed ~' + ev.tokensFreed + ' tokens' + (ev.autosaved ? ' · checkpoint saved' : ''), false);
+            }
+            break;
+          case 'error':
+            thinkEl.remove();
+            addMsg('assistant', '⚠️ ' + ev.message);
+            break;
+        }
+      }
+    }
+    if (thinkEl.parentNode) thinkEl.remove();
+    if (assistantText) chatMessages.push({ role: 'assistant', content: assistantText });
+    autoSaveChat();
+    loadSettings();
+  } catch (e) {
+    if (thinkEl.parentNode) thinkEl.remove();
+    if (e.name === 'AbortError') addMsg('assistant', 'Stopped.');
+    else addMsg('assistant', '⚠️ ' + e.message);
+  }
+  isSending = false;
+  activeChatController = null;
+  document.getElementById('sendBtn').disabled = false;
+  document.getElementById('sendBtn').textContent = '➤';
+  document.getElementById('sendBtn').title = 'Send';
+  document.getElementById('chatInput').focus();
+}
+
+function ensureToolBox(toolBox) {
+  if (toolBox) return toolBox;
+  const box = document.createElement('div');
+  box.className = 'tool-activity';
+  document.getElementById('chatArea').appendChild(box);
+  return box;
+}
+
+function appendToolItem(toolBox, icon, name, detail, isError) {
+  const item = document.createElement('div');
+  item.className = 'tool-item' + (isError ? ' error' : '');
+  item.innerHTML = '<span>' + icon + '</span>' + (name ? '<span class="tool-name">' + esc(name) + '</span>' : '') + '<span class="tool-detail">' + esc(detail) + '</span>';
+  toolBox.appendChild(item);
+  scrollBottom();
+}
+
+function updateContextHud(pressure, strategy, qualityScore, autosaved) {
+  const pct = Math.round((pressure || 0) * 100);
+  const fill = document.getElementById('contextFill');
+  const label = document.getElementById('contextLabel');
+  fill.style.width = Math.min(100, pct) + '%';
+  fill.className = 'context-fill' + (pct > 85 ? ' hot' : pct > 65 ? ' warn' : '');
+  label.textContent = 'Context ' + pct + '%' + (strategy ? ' · ' + strategy : '') + (qualityScore !== undefined ? ' · Q' + Math.round(qualityScore * 100) : '') + (autosaved ? ' · saved' : '');
+}
+
+function ensurePermissionPanel() {
+  if (document.getElementById('permissionPanel')) return;
+  const panel = document.createElement('div');
+  panel.id = 'permissionPanel';
+  panel.className = 'permission-panel hidden';
+  document.querySelector('.main-panel').appendChild(panel);
+}
+
+function startPermissionPolling() {
+  if (permissionPollTimer) clearInterval(permissionPollTimer);
+  pollPermissions();
+  permissionPollTimer = setInterval(pollPermissions, 1000);
+}
+
+async function pollPermissions() {
+  try {
+    const r = await fetch('/api/permissions/pending');
+    const d = await r.json();
+    renderPermissionPrompts(d.prompts || []);
+  } catch {}
+}
+
+function renderPermissionPrompts(prompts) {
+  const panel = document.getElementById('permissionPanel');
+  if (!prompts.length) { panel.className = 'permission-panel hidden'; panel.innerHTML = ''; return; }
+  panel.className = 'permission-panel';
+  panel.innerHTML = prompts.map((prompt) => '<div class="permission-card"><div><div class="permission-title">Approve tool: ' + esc(prompt.call.name) + '</div><div class="permission-reason">' + esc(prompt.reason || 'Permission required') + '</div><code>' + esc(JSON.stringify(prompt.call.input).slice(0, 180)) + '</code></div><div class="permission-actions"><button class="btn-sm" onclick="resolvePermission(\'' + prompt.id + '\',true)">Approve</button><button class="btn-sm danger" onclick="resolvePermission(\'' + prompt.id + '\',false)">Deny</button></div></div>').join('');
+}
+
+async function resolvePermission(id, allowed) {
+  await fetch('/api/permissions/' + encodeURIComponent(id) + '/resolve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ allowed }) });
+  pollPermissions();
+}
+
+async function loadRecovery() {
+  try {
+    const r = await fetch('/api/sessions/recover');
+    const d = await r.json();
+    if (!d.sessions || !d.sessions.length) return;
+    const area = document.getElementById('chatArea');
+    const s = d.sessions[0];
+    const banner = document.createElement('div');
+    banner.className = 'recovery-banner';
+    banner.innerHTML = '<span><strong>Unfinished chat available:</strong> ' + esc(s.title || s.sessionId) + ' · ' + esc(s.status || 'running') + '<br>Resume continues it. Fork starts a copy so the original stays unchanged.</span><div style="display:flex;gap:6px"><button class="btn-sm" title="Continue this session" onclick="recoverSession(\'' + escAttr(s.sessionId) + '\')">Resume chat</button><button class="btn-sm" title="Start from a copy of this session" onclick="forkSession(\'' + escAttr(s.sessionId) + '\')">Fork copy</button></div>';
+    area.prepend(banner);
+  } catch {}
+}
+
+async function recoverSession(id) {
+  try {
+    const r = await fetch('/api/sessions/' + id);
+    const d = await r.json();
+    if (d.error) { alert(d.error); return; }
+    lastSessionId = id;
+    chatMessages = [];
+    document.getElementById('chatArea').innerHTML = '';
+    for (const m of d.messages || []) {
+      if (m.role === 'system') addMsg('assistant', m.content);
+      else { addMsg(m.role, m.content); chatMessages.push({ role: m.role, content: m.content }); }
+    }
+    loadHistory();
+  } catch (e) { alert(e.message); }
+}
+
+async function forkSession(id) {
+  const model = document.getElementById('modelSelect').value;
+  if (!model) { alert('Select a model first.'); return; }
+  try {
+    const r = await fetch('/api/sessions/' + id + '/fork', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }) });
+    const d = await r.json();
+    if (d.error) { alert(d.error); return; }
+    lastSessionId = d.sessionId;
+    alert('Forked session ' + d.sessionId);
+  } catch (e) { alert(e.message); }
+}
+
+function addMsg(role, text) {
+  const area = document.getElementById('chatArea');
+  const el = document.createElement('div');
+  el.className = 'msg ' + role;
+  const av = role === 'user' ? 'Y' : '🤖';
+  const label = role === 'user' ? 'You' : 'Assistant';
+  el.innerHTML = '<div class="msg-avatar">' + av + '</div><div class="msg-body"><div class="msg-role">' + label + '</div><div class="msg-content"></div></div>';
+  if (role === 'user') el.querySelector('.msg-content').textContent = text;
+  else renderMd(el.querySelector('.msg-content'), text);
+  area.appendChild(el);
+  scrollBottom();
+  return el;
+}
+
+function renderMd(el, text) {
+  if (!text) { el.innerHTML = ''; return; }
+  el.innerHTML = marked.parse(text);
+  el.querySelectorAll('pre').forEach((pre) => {
+    if (pre.querySelector('.copy-btn')) return;
+    const btn = document.createElement('button');
+    btn.className = 'copy-btn';
+    btn.textContent = 'Copy';
+    btn.onclick = () => { navigator.clipboard.writeText(pre.textContent.replace('Copy', '').trim()); btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy', 1500); };
+    pre.style.position = 'relative';
+    pre.appendChild(btn);
+  });
+}
+
+function addThinking() { const area = document.getElementById('chatArea'); const el = document.createElement('div'); el.className = 'thinking'; el.innerHTML = '<div class="dots"><span></span><span></span><span></span></div> Thinking...'; area.appendChild(el); scrollBottom(); return el; }
+function scrollBottom() { const a = document.getElementById('chatArea'); a.scrollTop = a.scrollHeight; }
+
+async function loadHistory() {
+  try {
+    const r = await fetch('/api/history');
+    const d = await r.json();
+    const list = document.getElementById('historyList');
+    list.innerHTML = '';
+    for (const c of d.chats || []) {
+      const el = document.createElement('div');
+      el.className = 'history-item' + (c.id === currentChatId ? ' active' : '');
+      el.innerHTML = '<div><div class="history-title">' + esc(c.title) + '</div><div class="history-date">' + c.messageCount + ' msgs</div></div><button class="history-del" onclick="event.stopPropagation();deleteChat(\'' + c.id + '\')">🗑</button>';
+      el.onclick = () => loadChat(c.id);
+      list.appendChild(el);
+    }
+  } catch {}
+}
+
+async function loadChat(id) { try { const r = await fetch('/api/history/' + id); const d = await r.json(); currentChatId = id; chatMessages = d.messages || []; document.getElementById('chatArea').innerHTML = ''; for (const m of chatMessages) addMsg(m.role, m.content); loadHistory(); } catch {} }
+async function autoSaveChat() { if (chatMessages.length < 2) return; const title = chatMessages[0].content.slice(0, 60); try { const r = await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: currentChatId, title, messages: chatMessages }) }); const d = await r.json(); if (!currentChatId) currentChatId = d.id; loadHistory(); } catch {} }
+async function deleteChat(id) { await fetch('/api/history/' + id, { method: 'DELETE' }); if (id === currentChatId) newChat(); loadHistory(); }
+function newChat() { currentChatId = null; chatMessages = []; document.getElementById('chatArea').innerHTML = '<div class="welcome" id="welcome"><h2>Welcome to Harness</h2><p>Pick a model above, then ask me anything. I can read files, write code, run commands, search your project, create skills, and remember things across sessions.</p><div class="beginner-guide" id="beginnerGuide"><div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div><div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div><div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div></div><div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div><div class="tips"><div class="tip" onclick="sendTip(this)">List files in this project</div><div class="tip" onclick="sendTip(this)">What models do I have?</div><div class="tip" onclick="sendTip(this)">Create a skill for code review</div></div></div>'; renderModelCapabilityHint(); loadHistory(); }
+function exportChat() { if (!chatMessages.length) { alert('No messages.'); return; } let md = '# Chat Export\n\n'; for (const m of chatMessages) md += '## ' + (m.role === 'user' ? 'You' : 'Assistant') + '\n\n' + m.content + '\n\n---\n\n'; const blob = new Blob([md], { type: 'text/markdown' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'chat-' + new Date().toISOString().slice(0, 10) + '.md'; a.click(); }
+
+async function loadFiles(dir) {
+  try {
+    const url = '/api/files' + (dir ? '?path=' + encodeURIComponent(dir) : '');
+    const r = await fetch(url);
+    const d = await r.json();
+    const tree = document.getElementById('fileTree');
+    tree.innerHTML = '';
+    if (dir) { const up = document.createElement('div'); up.className = 'file-item'; up.innerHTML = '<span class="file-icon">⬆</span> ..'; up.onclick = () => loadFiles(d.cwd.split(/[\\/]/).slice(0, -1).join('/')); tree.appendChild(up); }
+    for (const item of d.items || []) { const el = document.createElement('div'); el.className = 'file-item'; el.innerHTML = '<span class="file-icon">' + (item.type === 'dir' ? '📁' : '📄') + '</span>' + esc(item.name); el.onclick = () => { if (item.type === 'dir') loadFiles(item.path); else { document.getElementById('chatInput').value = 'Read the file ' + item.name; sendMessage(); } }; tree.appendChild(el); }
+  } catch {}
+}
+
+async function loadSkills() { try { const r = await fetch('/api/skills'); const d = await r.json(); const list = document.getElementById('skillList'); list.innerHTML = ''; if (!d.skills || !d.skills.length) { list.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No skills yet.<br><br>Ask the agent to <strong>"create a skill for..."</strong> and it will build one automatically.</div>'; return; } for (const s of d.skills) { const el = document.createElement('div'); el.className = 'skill-item'; el.innerHTML = '<div class="sk-name">' + esc(s.name) + '</div><div class="sk-desc">' + esc(s.description) + '</div><div class="sk-meta"><span>' + esc(s.domain) + '</span><button class="sk-del" onclick="event.stopPropagation();deleteSkill(\'' + escAttr(s.name) + '\')">🗑</button></div>'; el.onclick = () => { document.getElementById('chatInput').value = 'Use the skill: ' + s.name; sendMessage(); }; list.appendChild(el); } } catch {} }
+async function deleteSkill(name) { if (!confirm('Delete skill "' + name + '"?')) return; await fetch('/api/skills/' + name, { method: 'DELETE' }); loadSkills(); }
+
+async function loadMemory() { try { const r = await fetch('/api/memory'); const d = await r.json(); const view = document.getElementById('memoryView'); if (!d.decisions && !d.patterns && !d.notes) { view.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No memories yet.<br><br>The agent saves decisions, patterns, and notes here as it learns.</div>'; return; } let html = ''; if (d.decisions) html += '<div class="mem-section"><h5>Decisions</h5><pre>' + esc(d.decisions) + '</pre></div>'; if (d.patterns) html += '<div class="mem-section"><h5>Patterns</h5><pre>' + esc(d.patterns) + '</pre></div>'; if (d.notes) html += '<div class="mem-section"><h5>Notes</h5><pre>' + esc(d.notes) + '</pre></div>'; view.innerHTML = html; } catch {} }
+
+async function loadMemoryPalace() { try { const response = await fetch('/api/memory/palace'); const data = await response.json(); const view = document.getElementById('memoryPalaceView'); if (!data.rooms || !data.rooms.length) { view.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No palace rooms yet.</div>'; return; } view.innerHTML = '<div class="palace-grid">' + data.rooms.map((room) => '<div class="palace-room"><div class="palace-title">' + esc(room.title) + '</div><div class="palace-meta">' + room.entryCount + ' memories · ' + room.sessions.length + ' sessions</div>' + room.anchors.map((anchor) => '<button class="palace-anchor" onclick="loadPalaceEntry(\'' + escAttr(anchor.id) + '\')"><strong>' + esc(anchor.kind) + '</strong> · ' + esc(anchor.text) + '</button>').join('') + '</div>').join('') + '</div><div id="palaceDetail" class="palace-detail initial-hidden"></div>'; } catch (error) { document.getElementById('memoryPalaceView').textContent = error.message; } }
+
+async function loadPalaceEntry(id) { const detail = document.getElementById('palaceDetail'); if (!detail) return; detail.classList.remove('initial-hidden'); detail.textContent = 'Loading memory entry...'; try { const entryResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id)); const entryData = await entryResponse.json(); if (entryData.error) { detail.textContent = entryData.error; return; } const contextResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id) + '/context?window=3'); const contextData = await contextResponse.json(); const entry = entryData.entry; const transcriptRows = (contextData.events || []).map((event) => '<div class="transcript-row' + (event.isAnchor ? ' anchor' : '') + '"><div><strong>' + esc(event.kind) + '</strong> · ' + esc(event.timestamp) + '</div><div style="white-space:pre-wrap;color:var(--text)">' + esc(event.text || '[empty]') + '</div></div>').join(''); detail.innerHTML = '<div><strong>Session</strong> ' + esc(entry.sessionId) + '</div><div><strong>Event</strong> ' + esc(entry.id) + '</div><div><strong>Kind</strong> ' + esc(entry.kind) + '</div><div><strong>Time</strong> ' + esc(entry.timestamp) + '</div><div style="margin-top:6px;white-space:pre-wrap;color:var(--text)">' + esc(entry.text) + '</div><div style="margin-top:10px"><strong>Transcript Context</strong>' + (transcriptRows || '<div class="transcript-row">No transcript context found.</div>') + '</div>'; } catch (error) { detail.textContent = error.message; } }
+
+function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); el.classList.add('active'); document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'learning') loadLearning(); }
+function toggleLeft() { document.getElementById('leftPanel').classList.toggle('hidden'); }
+function toggleRight() { document.getElementById('rightPanel').classList.toggle('hidden'); }
+
+async function pullModel() { const name = document.getElementById('pullName').value.trim(); if (!name) return; const prog = document.getElementById('pullProgress'); prog.textContent = 'Starting...'; try { const res = await fetch('/api/models/pull', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }); const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = ''; while (true) { const { done, value } = await reader.read(); if (done) break; buf += dec.decode(value, { stream: true }); const lines = buf.split('\n'); buf = lines.pop() || ''; for (const line of lines) { if (!line.startsWith('data: ')) continue; const p = line.slice(6); if (p === '[DONE]') { prog.textContent = 'Done!'; loadModels(); return; } try { const d = JSON.parse(p); if (d.error) { prog.textContent = 'Error: ' + d.error; return; } if (d.status) { const pct = d.completed && d.total ? ' (' + Math.round(d.completed / d.total * 100) + '%)' : ''; prog.textContent = d.status + pct; } } catch {} } } } catch (e) { prog.textContent = 'Failed: ' + e.message; } }
+
+async function loadLearning() { try { const r = await fetch('/api/learning'); const d = await r.json(); const view = document.getElementById('learningView'); let html = '<div style="padding:4px 0"><h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin-bottom:8px">🧠 Self-Learning Status</h5>'; html += '<div style="display:flex;gap:4px;margin-bottom:8px"><input id="semanticQuery" placeholder="Search session memory" style="flex:1;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px"><button class="btn-sm" onclick="searchSemanticMemory()">Search</button></div><div id="semanticResults"></div>'; html += '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Total tool calls tracked: <strong style="color:var(--text)">' + ((d.totalToolCalls) || 0) + '</strong></div>'; if (d.toolBreakdown && Object.keys(d.toolBreakdown).length > 0) { html += '<div style="margin-bottom:12px">'; for (const [tool, count] of Object.entries(d.toolBreakdown || {})) html += '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(tool) + '</span><span style="color:var(--accent)">' + count + '</span></div>'; html += '</div>'; } const patterns = d.patterns || []; if (patterns.length > 0) { html += '<h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin:8px 0">Detected Patterns</h5>'; for (const p of patterns.slice(0, 5)) html += '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:4px;font-size:11px"><div style="color:var(--accent);font-weight:600">' + esc(p.toolSequence.join(' → ')) + '</div><div style="color:var(--text-dim)">' + p.occurrences + 'x across sessions' + (p.promoted ? ' ✅ promoted' : '') + '</div></div>'; } const reflections = d.reflections || []; if (reflections.length > 0) { html += '<h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin:8px 0">Recent Reflections</h5>'; for (const item of reflections.slice(-3)) { html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;padding:6px;background:var(--surface2);border-radius:6px"><div>Success: ' + Math.round(item.successRate * 100) + '% | Tools: ' + item.toolsUsed.join(', ') + '</div>'; if (item.insights.length) html += '<div style="color:var(--warning);margin-top:2px">' + esc(item.insights.join('; ')) + '</div>'; html += '</div>'; } } if (d.evolvedPrompt) html += '<h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin:8px 0">Evolved Instructions</h5><pre style="font-size:10px;background:var(--surface2);padding:6px;border-radius:6px;white-space:pre-wrap;color:var(--text-dim)">' + esc(d.evolvedPrompt) + '</pre>'; html += '</div>'; view.innerHTML = html; renderLearningManager(d); } catch { document.getElementById('learningView').innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No learning data yet. Start chatting and the agent will begin tracking patterns.</div>'; } }
+
+function renderLearningManager(data) {
+  const view = document.getElementById('learningView');
+  if (!view) return;
+  view.innerHTML += renderRoutingMetrics(data) + renderCandidateQueue(data) + renderEvalDatasetManager(data);
+}
+
+function renderRoutingMetrics(data) {
+  const summary = data.routingSummary || { total: 0, successRate: 0, escalationRate: 0, byTier: {}, topReasons: [] };
+  const calibration = data.routingCalibration || { recommendations: [], suggestedPolicy: {} };
+  const tiers = Object.entries(summary.byTier || {}).map(([tier, bucket]) => '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(tier) + '</span><span>' + bucket.count + ' · ' + Math.round(bucket.successRate * 100) + '%</span></div>').join('');
+  const recommendations = (calibration.recommendations || []).map((item) => '<div class="trace-meta">' + esc(item) + '</div>').join('');
+  const suggested = Object.entries(calibration.suggestedPolicy || {}).map(([key, value]) => '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(key) + '</span><span>' + esc(value) + '</span></div>').join('');
+  const applyDisabled = suggested ? '' : ' disabled';
+  return '<div id="routingMetricsPanel" class="trace-item"><div class="trace-title">Routing Metrics</div><div class="trace-meta">' + summary.total + ' runs · ' + Math.round((summary.successRate || 0) * 100) + '% success · ' + Math.round((summary.escalationRate || 0) * 100) + '% escalated</div>' + (tiers || '<div class="trace-meta">No tier metrics yet</div>') + '<div style="margin-top:6px"><strong>Calibration</strong>' + (recommendations || '<div class="trace-meta">No calibration suggestions yet</div>') + (suggested ? '<div style="margin-top:4px">' + suggested + '</div>' : '') + '<button id="applyCalibrationBtn" class="btn-sm full-width-button"' + applyDisabled + ' onclick="applyRoutingCalibration()">Apply calibration</button></div></div>';
+}
+
+function renderCandidateQueue(data) {
+  const candidates = data.candidates || [];
+  const rows = candidates.slice(-8).reverse().map((candidate) => {
+    const disabled = candidate.reviewStatus !== 'pending' || !candidate.accepted;
+    const status = candidate.reviewStatus || 'pending';
+    return '<div class="trace-item"><div class="trace-title">Candidate · ' + esc(status) + '</div><div class="trace-meta">Quality ' + Math.round((candidate.qualityScore || 0) * 100) + '% · ' + esc(candidate.toolNames?.join(', ') || 'no tools') + '</div><div style="font-size:11px;color:var(--text);white-space:pre-wrap;margin-top:4px">' + esc((candidate.prompt || '').slice(0, 180)) + '</div><div style="display:flex;gap:4px;margin-top:6px"><button class="btn-sm" onclick="inspectLearningCandidate(\'' + escAttr(candidate.id) + '\')">Details</button><button class="btn-sm" ' + (disabled ? 'disabled' : '') + ' onclick="reviewLearningCandidate(\'' + escAttr(candidate.id) + '\',\'promote\')">Promote</button><button class="btn-sm danger" ' + (candidate.reviewStatus !== 'pending' ? 'disabled' : '') + ' onclick="reviewLearningCandidate(\'' + escAttr(candidate.id) + '\',\'reject\')">Reject</button></div></div>';
+  }).join('');
+  return '<div id="learningCandidateQueue" class="trace-list"><div class="trace-title">Learning Candidate Review</div>' + (rows || '<div class="trace-meta">No candidates yet</div>') + '<div id="candidateProvenanceDetail" class="trace-item initial-hidden"></div></div>';
+}
+
+function renderEvalDatasetManager(data) {
+  const examples = data.evalExamples || [];
+  const trend = data.evalRunTrend || { totalRuns: 0, averagePassRate: 0 };
+  const latest = trend.latest ? '<div class="trace-meta">Latest run: ' + trend.latest.passed + '/' + trend.latest.total + ' passed · ' + Math.round((trend.latest.passRate || 0) * 100) + '%</div>' : '<div class="trace-meta">No eval runs yet</div>';
+  const latestFailures = renderLatestRunFailures(trend.latest);
+  const tagRows = Object.entries(trend.byTag || {}).slice(0, 5).map(([tag, bucket]) => '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(tag) + '</span><span>' + bucket.passed + '/' + bucket.total + ' · ' + Math.round((bucket.passRate || 0) * 100) + '%</span></div>').join('');
+  const rows = examples.slice(-8).reverse().map((example) => '<div class="trace-item"><div class="trace-title">Eval · ' + esc(example.status) + (example.mode === 'replay' ? ' · replay' : '') + '</div><div class="trace-meta">' + esc(example.task) + '</div><div class="trace-meta">' + esc((example.tags || []).join(', ')) + '</div>' + renderReplaySourceLinks(example) + '<div style="display:flex;gap:4px;margin-top:6px"><button class="btn-sm" onclick="tagEvalExample(\'' + escAttr(example.id) + '\',\'' + escAttr((example.tags || []).join(', ')) + '\')">Tag</button><button class="btn-sm danger" onclick="deleteEvalExample(\'' + escAttr(example.id) + '\')">Delete</button></div></div>').join('');
+  return '<div id="evalDatasetManager" class="trace-list"><div class="trace-title">Eval Dataset</div><button id="runEvalDatasetBtn" class="btn-sm full-width-button" onclick="runEvalDataset(\'stored\')">Run stored evals</button><button id="runLiveReplayDatasetBtn" class="btn-sm full-width-button" onclick="runEvalDataset(\'live\')">Run live replay evals</button><button class="btn-sm full-width-button" onclick="downloadEvalDataset()">Download JSONL</button><div id="evalRunTrend" class="trace-item"><div class="trace-title">Eval Trends</div><div class="trace-meta">' + trend.totalRuns + ' runs · ' + Math.round((trend.averagePassRate || 0) * 100) + '% average pass rate</div>' + latest + tagRows + latestFailures + '</div>' + (rows || '<div class="trace-meta">No eval examples yet</div>') + '</div>';
+}
+
+function renderLatestRunFailures(run) {
+  const failed = (run?.results || []).filter((result) => result.status === 'fail').slice(0, 4);
+  if (failed.length === 0) return '';
+  return '<div id="latestReplayFailures" style="margin-top:6px"><strong>Latest failures</strong>' + failed.map((result) => '<div class="trace-meta">' + esc(result.task) + ' · ' + esc(result.message) + renderReplayResultLinks(result.links) + '</div>').join('') + '</div>';
+}
+
+function renderReplayResultLinks(links) {
+  if (!links) return '';
+  const rendered = [];
+  if (links.traceUrl) rendered.push('<a href="' + escAttr(links.traceUrl) + '" target="_blank">trace</a>');
+  if (links.sessionUrl) rendered.push('<a href="' + escAttr(links.sessionUrl) + '" target="_blank">session</a>');
+  if (!rendered.length && !links.context) return '';
+  return '<span> · Source: ' + rendered.join(' · ') + (links.context ? ' · ' + esc(links.context) : '') + '</span>';
+}
+
+function renderReplaySourceLinks(example) {
+  const links = [];
+  if (example.sourceTraceId) links.push('<a href="/api/traces/exports/' + encodeURIComponent(example.sourceTraceId) + '" target="_blank">trace</a>');
+  if (example.sourceSessionId) links.push('<a href="/api/sessions/' + encodeURIComponent(example.sourceSessionId) + '" target="_blank">session</a>');
+  if (!links.length && !example.sourceContext) return '';
+  return '<div class="trace-meta">Source: ' + links.join(' · ') + (example.sourceContext ? ' · ' + esc(example.sourceContext) : '') + '</div>';
+}
+
+async function applyRoutingCalibration() {
+  const response = await fetch('/api/learning/routing/apply-calibration', { method: 'POST' });
+  const data = await response.json();
+  if (data.error) { alert(data.error); return; }
+  currentModelRouting = data.settings?.modelRouting || currentModelRouting;
+  await loadSettings();
+  await loadLearning();
+}
+
+async function inspectLearningCandidate(id) {
+  const detail = document.getElementById('candidateProvenanceDetail');
+  if (!detail) return;
+  detail.classList.remove('initial-hidden');
+  detail.textContent = 'Loading candidate provenance...';
+  const response = await fetch('/api/learning/candidates/' + encodeURIComponent(id) + '/provenance');
+  const data = await response.json();
+  if (data.error) { detail.textContent = data.error; return; }
+  const events = (data.events || []).map((event) => '<div class="trace-row"><strong>' + esc(event.kind) + '</strong><div>' + esc(event.type) + ' · ' + esc(event.timestamp) + '</div><div style="white-space:pre-wrap;color:var(--text)">' + esc(event.summary) + '</div></div>').join('');
+  detail.innerHTML = '<div class="trace-title">Candidate Provenance</div><div class="trace-meta">' + esc(data.candidate.sessionId) + ' · ' + (data.events || []).length + ' source events</div>' + (events || '<div class="trace-meta">No source events found</div>') + ((data.missingEventIds || []).length ? '<div class="trace-meta">Missing source ids: ' + esc(data.missingEventIds.join(', ')) + '</div>' : '');
+}
+
+async function runEvalDataset(mode) {
+  const selectedModel = document.getElementById('modelSelect')?.value;
+  if (mode === 'live' && !selectedModel) { alert('Select a model before running live replay evals.'); return; }
+  const response = await fetch('/api/evals/trace-examples/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: mode || 'stored', model: selectedModel }) });
+  const data = await response.json();
+  if (data.error) { alert(data.error); return; }
+  await loadLearning();
+}
+
+async function reviewLearningCandidate(id, action) {
+  const reason = action === 'reject' ? prompt('Reason for rejection', 'Not useful enough') : undefined;
+  if (action === 'reject' && reason === null) return;
+  const response = await fetch('/api/learning/candidates/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, action, reason }) });
+  const data = await response.json();
+  if (data.error) { alert(data.error); return; }
+  await loadLearning();
+}
+
+async function tagEvalExample(id, currentTags) {
+  const input = prompt('Tags, comma separated', currentTags || '');
+  if (input === null) return;
+  const response = await fetch('/api/evals/trace-examples/' + encodeURIComponent(id) + '/tags', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tags: input.split(',') }) });
+  const data = await response.json();
+  if (data.error) { alert(data.error); return; }
+  await loadLearning();
+  await loadTraceEvalExamples();
+}
+
+async function deleteEvalExample(id) {
+  if (!confirm('Delete this eval example?')) return;
+  const response = await fetch('/api/evals/trace-examples/' + encodeURIComponent(id), { method: 'DELETE' });
+  const data = await response.json();
+  if (data.error) { alert(data.error); return; }
+  await loadLearning();
+  await loadTraceEvalExamples();
+}
+
+function downloadEvalDataset() {
+  window.location.href = '/api/evals/trace-examples/download';
+}
+
+async function rebuildSemanticMemory() { try { const r = await fetch('/api/memory/rebuild', { method: 'POST' }); const d = await r.json(); alert('Semantic memory entries: ' + (d.entries || 0)); } catch (e) { alert(e.message); } }
+async function searchSemanticMemory() { const q = document.getElementById('semanticQuery').value.trim(); const box = document.getElementById('semanticResults'); if (!q) return; try { const r = await fetch('/api/memory/search?q=' + encodeURIComponent(q)); const d = await r.json(); box.innerHTML = (d.results || []).map((x) => '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px;margin-bottom:4px;font-size:11px"><div style="color:var(--accent);font-weight:600">' + esc(x.entry.kind) + ' · ' + Math.round(x.score * 100) + '</div><div style="color:var(--text-dim)">' + esc(x.entry.text.slice(0, 220)) + '</div></div>').join('') || '<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">No matches</div>'; } catch (e) { box.textContent = e.message; } }
+
+async function exportTraceSnapshot() { try { const response = await fetch('/api/traces/exports', { method: 'POST' }); const data = await response.json(); if (data.error) { alert(data.error); return; } loadTraceExports(); } catch (error) { alert(error.message); } }
+async function exportTraceEvalExample() { try { const response = await fetch('/api/evals/trace-examples', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'browser trace export', tags: ['browser', 'runtime'] }) }); const data = await response.json(); if (data.error) { alert(data.error); return; } await loadTraceEvalExamples(); } catch (error) { alert(error.message); } }
+async function createWeatherReplayEval() { try { const response = await fetch('/api/evals/replay-examples', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'Bracknell weather answer regression', prompt: 'What is the weather like in Bracknell, UK today?', expectedResponseIncludes: ['Bracknell', 'weather'], expectedTools: ['web_search', 'web_read'], tags: ['weather', 'replay'] }) }); const data = await response.json(); if (data.error) { alert(data.error); return; } await loadTraceEvalExamples(); await loadLearning(); } catch (error) { alert(error.message); } }
+async function loadTraceEvalExamples() { const box = document.getElementById('traceEvalExamples'); if (!box) return; try { const response = await fetch('/api/evals/trace-examples'); const data = await response.json(); const examples = data.examples || []; box.innerHTML = examples.slice(-5).reverse().map((item) => '<div class="trace-item"><div class="trace-title">Eval · ' + esc(item.status) + '</div><div class="trace-meta">' + esc(item.task) + ' · ' + esc((item.tags || []).join(', ')) + '</div></div>').join('') || '<div class="trace-meta">No eval examples</div>'; } catch { box.innerHTML = '<div class="trace-meta">Eval examples unavailable</div>'; } }
+async function loadTraceExports() { const box = document.getElementById('traceExports'); if (!box) return; try { const response = await fetch('/api/traces/exports'); const data = await response.json(); box.innerHTML = (data.exports || []).slice(0, 5).map((item) => '<div class="trace-item"><div class="trace-title">' + esc(item.id) + '</div><div class="trace-meta">' + Math.round((item.size || 0) / 1024) + ' KB · ' + esc(item.modifiedAt || '') + '</div><button class="btn-sm full-width-button" onclick="inspectTraceExport(\'' + escAttr(item.id) + '\')">Inspect trace</button></div>').join('') || '<div class="trace-meta">No exports</div>'; await loadTraceEvalExamples(); } catch { box.innerHTML = '<div class="trace-meta">Trace exports unavailable</div>'; } }
+
+async function inspectTraceExport(id) { const inspector = document.getElementById('traceInspector'); if (!inspector) return; inspector.classList.remove('initial-hidden'); inspector.textContent = 'Loading trace export...'; try { const response = await fetch('/api/traces/exports/' + encodeURIComponent(id)); const data = await response.json(); if (data.error) { inspector.textContent = data.error; return; } activeTraceExport = data; renderTraceInspector(); } catch (error) { inspector.textContent = error.message; } }
+
+function renderTraceInspector() { const inspector = document.getElementById('traceInspector'); if (!inspector || !activeTraceExport) return; const filter = (document.getElementById('traceFilter')?.value || '').toLowerCase(); const spans = (activeTraceExport.spans || []).filter((span) => traceRecordText(span).includes(filter)); const events = (activeTraceExport.events || []).filter((event) => traceRecordText(event).includes(filter)); const spanRows = spans.slice(0, 8).map((span) => '<div class="trace-row"><strong>' + esc(span.name) + '</strong><div>' + esc(span.status || 'open') + ' · ' + esc(span.durationMs ?? 0) + ' ms · ' + esc(span.startedAt || '') + '</div>' + (span.error ? '<div>' + esc(span.error) + '</div>' : '') + '</div>').join(''); const eventRows = events.slice(0, 8).map((event) => '<div class="trace-row"><strong>' + esc(event.name) + '</strong><div>' + esc(event.timestamp || '') + '</div></div>').join(''); inspector.innerHTML = '<div><strong>' + esc(activeTraceExport.id || 'trace') + '</strong></div><div>' + spans.length + '/' + (activeTraceExport.spans || []).length + ' spans · ' + events.length + '/' + (activeTraceExport.events || []).length + ' events</div><input id="traceFilter" class="trace-filter" placeholder="Filter spans and events" value="' + escAttr(filter) + '" oninput="renderTraceInspector()"><div style="margin-top:8px"><strong>Spans</strong>' + (spanRows || '<div class="trace-row">No matching spans</div>') + '</div><div style="margin-top:8px"><strong>Events</strong>' + (eventRows || '<div class="trace-row">No matching events</div>') + '</div>'; const input = document.getElementById('traceFilter'); if (input) input.selectionStart = input.selectionEnd = input.value.length; }
+
+function traceRecordText(record) { return JSON.stringify(record || {}).toLowerCase(); }
+
+async function loadRuntimeStorage() { const box = document.getElementById('runtimeStorageStatus'); if (!box) return; try { const response = await fetch('/api/runtime/storage'); const data = await response.json(); box.innerHTML = '<div><strong>Trace exports</strong> ' + esc(data.traces.count) + ' files · ' + Math.round((data.traces.bytes || 0) / 1024) + ' KB</div><div><strong>Semantic index</strong> ' + (data.semanticIndex.exists ? Math.round((data.semanticIndex.bytes || 0) / 1024) + ' KB' : 'not built') + '</div>'; } catch (error) { box.textContent = error.message; } }
+
+async function cleanupRuntimeStorage(target) { const body = { traces: target === 'traces', semanticIndex: target === 'semanticIndex' }; try { const response = await fetch('/api/runtime/cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const data = await response.json(); if (data.error) { alert(data.error); return; } await loadRuntimeStorage(); if (target === 'traces') await loadTraceExports(); } catch (error) { alert(error.message); } }
+
+function esc(s) { const d = document.createElement('div'); d.textContent = String(s ?? ''); return d.innerHTML; }
+function escAttr(s) { return esc(s).replace(/"/g, '&quot;'); }

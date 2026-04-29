@@ -7,6 +7,7 @@ import { getBuiltinTools } from '../tools';
 import { PermissionEngine } from '../permissions/engine';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { assembleSystemContext } from '../context/assembly';
+import type { ModelRoutingPolicy } from '../agents/modelRouting';
 import type { LoopConfig, PermissionMode } from '../types';
 
 interface CliOptions {
@@ -14,6 +15,8 @@ interface CliOptions {
   host: string;
   permissionMode: PermissionMode;
   maxTurns: number;
+  summarizerModel?: string;
+  modelRouting: ModelRoutingPolicy;
   prompt?: string;
 }
 
@@ -24,6 +27,7 @@ function parseArgs(): CliOptions {
     host: 'http://localhost:11434',
     permissionMode: 'default',
     maxTurns: 50,
+    modelRouting: {},
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -40,6 +44,21 @@ function parseArgs(): CliOptions {
         break;
       case '--max-turns':
         options.maxTurns = parseInt(args[++i], 10);
+        break;
+      case '--summarizer-model':
+        options.summarizerModel = args[++i];
+        break;
+      case '--small-helper-model':
+        options.modelRouting.smallModel = args[++i];
+        break;
+      case '--default-helper-model':
+        options.modelRouting.defaultModel = args[++i];
+        break;
+      case '--strong-helper-model':
+        options.modelRouting.strongModel = args[++i];
+        break;
+      case '--helper-confidence-threshold':
+        options.modelRouting.confidenceEscalationThreshold = parseFloat(args[++i]);
         break;
       case '-p':
       case '--prompt':
@@ -68,6 +87,11 @@ Options:
   --host <url>           Ollama host (default: http://localhost:11434)
   --mode <mode>          Permission mode: default, acceptEdits, dontAsk
   --max-turns <n>        Max agent loop turns (default: 50)
+  --summarizer-model <n> Optional smaller model for context compaction
+  --small-helper-model <n> Model for bounded read-only helper agents
+  --default-helper-model <n> Model for normal helper agents
+  --strong-helper-model <n> Model for escalated helper agents
+  --helper-confidence-threshold <n> Escalate helpers below this confidence (default: 0.45)
   -p, --prompt <text>    Run a single prompt (headless mode)
   -h, --help             Show this help
 `);
@@ -97,7 +121,7 @@ async function main(): Promise<void> {
   await session.initialize();
 
   const systemPrompt = await assembleSystemContext({
-    systemPrompt: 'You are a helpful coding assistant. Use the available tools to help the user with their task. Read files, write code, and execute commands as needed.',
+    systemPrompt: buildSystemPrompt(options.modelRouting),
     projectDir,
   });
 
@@ -111,6 +135,10 @@ async function main(): Promise<void> {
     client,
     tools,
     permissionCheck: (call) => permissionEngine.evaluateAsync(call),
+    session,
+    summarizerClient: options.summarizerModel
+      ? new OllamaClient({ model: options.summarizerModel, host: options.host })
+      : undefined,
   };
 
   // Headless mode
@@ -123,6 +151,16 @@ async function main(): Promise<void> {
   await runInteractive(config, deps, session);
 }
 
+function buildSystemPrompt(modelRouting: ModelRoutingPolicy): string {
+  const routingLines = Object.entries(modelRouting)
+    .filter(([, value]) => value !== undefined && value !== '')
+    .map(([key, value]) => `${key}: ${value}`);
+  const routingText = routingLines.length
+    ? `\n\nHelper model routing policy:\n${routingLines.join('\n')}`
+    : '';
+  return 'You are a helpful coding assistant. Use the available tools to help the user with their task. Read files, write code, and execute commands as needed.' + routingText;
+}
+
 async function runHeadless(
   config: LoopConfig,
   deps: QueryLoopDeps,
@@ -131,29 +169,20 @@ async function runHeadless(
 ): Promise<void> {
   const messages = [{ role: 'user' as const, content: prompt }];
 
-  await session.append('user_message', { kind: 'message', message: messages[0] });
-
   for await (const event of queryLoop(config, deps, messages)) {
     switch (event.type) {
       case 'text':
         console.log(event.content);
-        await session.append('assistant_message', {
-          kind: 'message',
-          message: { role: 'assistant', content: event.content },
-        });
         break;
       case 'tool_call':
         console.error(`🔧 ${event.call.name}(${JSON.stringify(event.call.input).slice(0, 100)})`);
-        await session.append('tool_call', { kind: 'tool_call', call: event.call });
         break;
       case 'tool_result':
         const icon = event.result.success ? '✅' : '❌';
         console.error(`  ${icon} ${event.result.output.slice(0, 200)}`);
-        await session.append('tool_result', {
-          kind: 'tool_result',
-          call: event.call,
-          result: event.result,
-        });
+        break;
+      case 'context':
+        console.error(`🧠 context ${event.strategy}: freed ~${event.tokensFreed} tokens, pressure ${Math.round(event.pressure * 100)}%${event.autosaved ? ', autosaved' : ''}`);
         break;
       case 'error':
         console.error(`⚠️ ${event.message}`);
@@ -193,16 +222,10 @@ async function runInteractive(
     }
 
     const messages = [{ role: 'user' as const, content: trimmed }];
-    await session.append('user_message', { kind: 'message', message: messages[0] });
-
     for await (const event of queryLoop(config, deps, messages)) {
       switch (event.type) {
         case 'text':
           console.log(`\n${event.content}\n`);
-          await session.append('assistant_message', {
-            kind: 'message',
-            message: { role: 'assistant', content: event.content },
-          });
           break;
         case 'tool_call':
           console.log(`  🔧 ${event.call.name}(${JSON.stringify(event.call.input).slice(0, 100)})`);
@@ -213,6 +236,9 @@ async function runInteractive(
           break;
         case 'error':
           console.log(`  ⚠️ ${event.message}`);
+          break;
+        case 'context':
+          console.log(`  🧠 context ${event.strategy}: freed ~${event.tokensFreed} tokens, pressure ${Math.round(event.pressure * 100)}%${event.autosaved ? ', autosaved' : ''}`);
           break;
         case 'done':
           break;

@@ -12,6 +12,7 @@
     "start": "node dist/cli/index.js",
     "dev": "ts-node src/cli/index.ts",
     "ui": "ts-node src/web/server.ts",
+    "smoke:ui": "node scripts/ui-smoke.js",
     "test": "jest",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit"

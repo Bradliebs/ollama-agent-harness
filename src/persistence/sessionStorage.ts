@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import type { SessionEvent, SessionEventData, SessionMeta } from '../types';
+import type { SessionEvent, SessionEventData, SessionMeta, SessionStatus } from '../types';
 
 export class SessionStorage {
   private transcriptPath: string;
@@ -16,8 +16,11 @@ export class SessionStorage {
     this.meta = {
       sessionId: id,
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       model,
       projectDir,
+      status: 'running',
+      checkpointCount: 0,
     };
   }
 
@@ -35,6 +38,26 @@ export class SessionStorage {
     };
     const line = JSON.stringify(event) + '\n';
     await fs.appendFile(this.transcriptPath, line, 'utf-8');
+    const patch: Partial<SessionMeta> = { updatedAt: event.timestamp };
+    if (data.kind === 'continuity_checkpoint') {
+      patch.checkpointCount = (this.meta.checkpointCount ?? 0) + 1;
+      patch.lastCheckpointAt = event.timestamp;
+      patch.title = this.meta.title ?? data.checkpoint.currentGoal.slice(0, 80);
+    } else if (data.kind === 'message' && data.message.role === 'user' && !this.meta.title) {
+      patch.title = data.message.content?.slice(0, 80) ?? 'Untitled session';
+    }
+    await this.updateMeta(patch);
+  }
+
+  async updateMeta(patch: Partial<SessionMeta>): Promise<SessionMeta> {
+    this.meta = { ...this.meta, ...patch, updatedAt: patch.updatedAt ?? new Date().toISOString() };
+    await fs.mkdir(path.dirname(this.metaPath), { recursive: true });
+    await fs.writeFile(this.metaPath, JSON.stringify(this.meta, null, 2), 'utf-8');
+    return this.meta;
+  }
+
+  async markStatus(status: SessionStatus, lastError?: string): Promise<void> {
+    await this.updateMeta({ status, lastError });
   }
 
   async readAll(): Promise<SessionEvent[]> {
@@ -81,9 +104,14 @@ export class SessionStorage {
           // Skip corrupt meta files
         }
       }
-      return metas.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      return metas.sort((a, b) => (b.updatedAt ?? b.createdAt).localeCompare(a.updatedAt ?? a.createdAt));
     } catch {
       return [];
     }
+  }
+
+  static async listRecoverableSessions(projectDir: string): Promise<SessionMeta[]> {
+    const sessions = await SessionStorage.listSessions(projectDir);
+    return sessions.filter((session) => session.status === 'running' || session.status === 'error' || session.status === 'aborted');
   }
 }

@@ -2,6 +2,7 @@ import type { Tool, ToolResult } from '../types';
 
 const MAX_RESULTS = 8;
 const MAX_CONTENT = 50_000;
+const SPARSE_TEXT_MIN_CHARS = 600;
 
 /**
  * WebSearchTool — searches the web using DuckDuckGo's HTML interface.
@@ -142,7 +143,11 @@ export const WebReadTool: Tool = {
 
       // Extract readable content from HTML
       const text = extractReadableText(body);
-      const truncated = text.length > MAX_CONTENT ? text.slice(0, MAX_CONTENT) + '\n...(truncated)' : text;
+      const fallback = isSparseReadableText(text) && isWeatherPage(url, text)
+        ? await buildWeatherFallback(url, body)
+        : '';
+      const combined = fallback ? `${text}\n\n${fallback}` : text;
+      const truncated = combined.length > MAX_CONTENT ? combined.slice(0, MAX_CONTENT) + '\n...(truncated)' : combined;
 
       return { success: true, output: `Content from ${url}:\n\n${truncated}` };
     } catch (error) {
@@ -184,6 +189,74 @@ function extractReadableText(html: string): string {
   text = text.trim();
 
   return text;
+}
+
+function isSparseReadableText(text: string): boolean {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  if (normalized.length < SPARSE_TEXT_MIN_CHARS) return true;
+  if (lines.length <= 8 && /maps? & charts|climate|specialist forecasts/i.test(normalized)) return true;
+  return false;
+}
+
+function isWeatherPage(url: string, text: string): boolean {
+  return /weather|forecast|metoffice|accuweather|weather\.com/i.test(url + ' ' + text);
+}
+
+async function buildWeatherFallback(url: string, html: string): Promise<string> {
+  const query = buildWeatherFallbackQuery(url, html);
+  try {
+    const response = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; OllamaHarness/1.0)' },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+      return sparseWeatherFallbackNotice(query);
+    }
+    const results = rankWeatherResults(parseDuckDuckGoResults(await response.text(), 8)).slice(0, 5);
+    if (results.length === 0) {
+      return sparseWeatherFallbackNotice(query);
+    }
+    const rendered = results.map((result, index) => `${index + 1}. ${result.title} [${weatherSourceLabel(result.url)}]\n   ${result.url}\n   ${result.snippet}`).join('\n\n');
+    return `[Weather fallback]\nThe primary forecast page exposed sparse text, likely because forecast details are rendered dynamically. Use these search-derived forecast snippets as fallback context for the answer.\nQuery: ${query}\n\n${rendered}`;
+  } catch {
+    return sparseWeatherFallbackNotice(query);
+  }
+}
+
+function buildWeatherFallbackQuery(url: string, html: string): string {
+  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+  const heading = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
+  const seed = decodeHtmlEntities((heading ?? title ?? new URL(url).hostname).replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();
+  const cleaned = seed.replace(/\|.*$/, '').replace(/- Met Office.*$/i, '').trim();
+  return `${cleaned || 'local'} weather forecast today`;
+}
+
+function sparseWeatherFallbackNotice(query: string): string {
+  return `[Weather fallback]\nThe primary forecast page exposed sparse text, likely because forecast details are rendered dynamically. Search fallback query attempted: ${query}`;
+}
+
+function rankWeatherResults(results: SearchResult[]): SearchResult[] {
+  return [...results].sort((left, right) => weatherResultScore(right) - weatherResultScore(left));
+}
+
+function weatherResultScore(result: SearchResult): number {
+  const haystack = `${result.title} ${result.url} ${result.snippet}`.toLowerCase();
+  let score = 0;
+  if (/metoffice\.gov\.uk|weather\.metoffice\.gov\.uk/.test(haystack)) score += 50;
+  if (/bbc\.co\.uk\/weather|weather\.com|accuweather\.com/.test(haystack)) score += 35;
+  if (/forecast|weather|temperature|wind|rain/.test(haystack)) score += 12;
+  if (/today|hourly|latest|now/.test(haystack)) score += 8;
+  if (/advert|shopping|map/.test(haystack)) score -= 10;
+  return score;
+}
+
+function weatherSourceLabel(url: string): string {
+  const lower = url.toLowerCase();
+  if (lower.includes('metoffice.gov.uk')) return 'official forecast';
+  if (lower.includes('bbc.co.uk/weather')) return 'public forecast';
+  if (lower.includes('weather.com') || lower.includes('accuweather.com')) return 'forecast provider';
+  return 'search result';
 }
 
 function decodeHtmlEntities(text: string): string {

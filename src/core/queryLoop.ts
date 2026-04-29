@@ -1,15 +1,23 @@
 import type { Message } from 'ollama';
 import { OllamaClient } from './ollamaClient';
-import type { Tool, ToolCall, ToolResult, LoopConfig, LoopEvent } from '../types';
+import type { Tool, ToolCall, LoopConfig, LoopEvent } from '../types';
 import { toolToSchema } from '../types/tool';
 import type { HookPipeline } from '../extensibility/hookPipeline';
-import { trackToolUsage } from '../learning/engine';
+import { compactIfNeeded, DEFAULT_COMPACTION_CONFIG } from '../context/compaction';
+import { estimateTokenCount } from '../context/assembly';
+import type { SessionStorage } from '../persistence/sessionStorage';
+import { createContinuityCheckpoint } from '../persistence/continuity';
+import { ToolDispatcher } from '../tools/dispatcher';
+import type { RuntimeTracer } from './tracing';
 
 export interface QueryLoopDeps {
   client: OllamaClient;
   tools: Tool[];
   permissionCheck?: (call: ToolCall) => Promise<{ allowed: boolean; reason?: string }>;
   hooks?: HookPipeline;
+  session?: SessionStorage;
+  summarizerClient?: OllamaClient;
+  tracer?: RuntimeTracer;
 }
 
 export async function* queryLoop(
@@ -18,9 +26,9 @@ export async function* queryLoop(
   initialMessages: Message[] = [],
 ): AsyncGenerator<LoopEvent> {
   const { maxTurns, abortSignal } = config;
-  const { client, tools, permissionCheck, hooks } = deps;
+  const { client, tools, permissionCheck, hooks, session, summarizerClient, tracer } = deps;
 
-  const toolMap = new Map(tools.map((t) => [t.name, t]));
+  const dispatcher = new ToolDispatcher(tools);
   const ollamaTools = tools.map(toolToSchema);
 
   const messages: Message[] = [
@@ -30,30 +38,101 @@ export async function* queryLoop(
 
   let turn = 0;
 
+  if (session) {
+    await appendStatus(session, 'running', undefined, tracer);
+    await appendSession(session, 'system', { kind: 'system', content: 'Session autosave started.' }, tracer);
+    for (const message of initialMessages) {
+      if (message.role === 'user' || message.role === 'assistant') {
+        await appendSession(session, message.role === 'assistant' ? 'assistant_message' : 'user_message', {
+          kind: 'message',
+          message,
+        }, tracer);
+      }
+    }
+  }
+
   while (turn < maxTurns) {
     if (abortSignal?.aborted) {
+      if (session) {
+        await appendStatus(session, 'aborted', undefined, tracer);
+      }
       yield { type: 'done', reason: 'aborted', turns: turn };
       return;
     }
 
     turn++;
 
+    if (config.context?.enabled !== false) {
+      const compactionConfig = { ...DEFAULT_COMPACTION_CONFIG, ...config.context };
+      const before = estimateTokenCount(messages);
+      const compactionSpan = tracer?.startSpan('context.compaction', { beforeTokens: before, maxTokens: compactionConfig.maxTokens });
+      const compacted = await compactIfNeeded(messages, compactionConfig, summarizerClient ?? client);
+      if (compacted.messages !== messages && compacted.tokensFreed > 0) {
+        const checkpoint = createContinuityCheckpoint({
+          sessionId: session?.getSessionId() ?? 'ephemeral',
+          messages,
+          summary: compacted.summary ?? `${compacted.strategy} compacted ${compacted.compactedCount ?? 0} messages.`,
+          strategy: compacted.strategy,
+          maxTokens: compactionConfig.maxTokens,
+        });
+        messages.length = 0;
+        messages.push(...compacted.messages);
+        const hasContinuityBoundary = compacted.summary !== undefined;
+        if (session && hasContinuityBoundary) {
+          await appendSession(session, 'compact_boundary', {
+            kind: 'compact_boundary',
+            summary: checkpoint.summary,
+            compactedCount: compacted.compactedCount ?? 0,
+          }, tracer);
+          await appendSession(session, 'continuity_checkpoint', {
+            kind: 'continuity_checkpoint',
+            checkpoint,
+          }, tracer);
+        }
+        const after = estimateTokenCount(messages);
+        yield {
+          type: 'context',
+          strategy: compacted.strategy,
+          tokensFreed: Math.max(compacted.tokensFreed, before - after),
+          compactedCount: compacted.compactedCount ?? 0,
+          autosaved: Boolean(session && hasContinuityBoundary),
+          pressure: Math.min(1, after / compactionConfig.maxTokens),
+          maxTokens: compactionConfig.maxTokens,
+          qualityScore: compacted.validation?.score,
+          qualityPassed: compacted.validation?.passed,
+        };
+      }
+      compactionSpan?.end('ok', { strategy: compacted.strategy, tokensFreed: compacted.tokensFreed });
+    }
+
     let assistantMessage: Message;
+    const modelSpan = tracer?.startSpan('model.chat', { model: config.model, turn });
     try {
       const result = await client.chat(messages, ollamaTools);
       assistantMessage = result.message;
+      modelSpan?.end('ok', { toolCalls: assistantMessage.tool_calls?.length ?? 0 });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
+      modelSpan?.fail(error);
+      if (session) {
+        await appendStatus(session, 'error', msg, tracer);
+      }
       yield { type: 'error', message: `Model call failed: ${msg}`, recoverable: true };
       yield { type: 'done', reason: 'error', turns: turn };
       return;
     }
 
     messages.push(assistantMessage);
+    if (session) {
+      await appendSession(session, 'assistant_message', { kind: 'message', message: assistantMessage }, tracer);
+    }
 
     // Stop condition: text-only response (no tool calls)
     if (!assistantMessage.tool_calls?.length) {
       yield { type: 'text', content: assistantMessage.content };
+      if (session) {
+        await appendStatus(session, 'completed', undefined, tracer);
+      }
       yield { type: 'done', reason: 'completed', turns: turn };
       return;
     }
@@ -64,143 +143,52 @@ export async function* queryLoop(
       input: (tc.function.arguments ?? {}) as Record<string, unknown>,
     }));
 
-    // Classify tools: read-only can run in parallel, exclusive runs serially
-    const readOnlyCalls: ToolCall[] = [];
-    const exclusiveCalls: ToolCall[] = [];
-    for (const call of toolCalls) {
-      const tool = toolMap.get(call.name);
-      if (tool?.isReadOnly) {
-        readOnlyCalls.push(call);
-      } else {
-        exclusiveCalls.push(call);
+    const toolResults = await dispatcher.dispatch(toolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer });
+    for (const { call, result } of toolResults) {
+      yield { type: 'tool_call', call };
+      if (session) {
+        await appendSession(session, 'tool_call', { kind: 'tool_call', call }, tracer);
       }
-    }
-
-    // Dispatch read-only tools in parallel
-    const readOnlyResults = await Promise.all(
-      readOnlyCalls.map((call) => executeTool(call, toolMap, permissionCheck, hooks)),
-    );
-    for (const { call, result } of readOnlyResults) {
-      yield { type: 'tool_call', call };
       yield { type: 'tool_result', call, result };
-      messages.push({ role: 'tool', content: result.output });
-    }
-
-    // Dispatch exclusive tools serially
-    for (const call of exclusiveCalls) {
-      const { result } = await executeTool(call, toolMap, permissionCheck, hooks);
-      yield { type: 'tool_call', call };
-      yield { type: 'tool_result', call, result };
+      if (session) {
+        await appendSession(session, 'tool_result', { kind: 'tool_result', call, result }, tracer);
+      }
       messages.push({ role: 'tool', content: result.output });
     }
   }
 
   // Max turns reached
+  if (session) {
+    await appendStatus(session, 'max_turns', undefined, tracer);
+  }
   yield { type: 'done', reason: 'max_turns', turns: turn };
 }
 
-async function executeTool(
-  call: ToolCall,
-  toolMap: Map<string, Tool>,
-  permissionCheck?: (call: ToolCall) => Promise<{ allowed: boolean; reason?: string }>,
-  hooks?: HookPipeline,
-): Promise<{ call: ToolCall; result: ToolResult }> {
-  // PreToolUse hook — can block or modify input
-  if (hooks) {
-    const hookResult = await hooks.execute({
-      eventType: 'PreToolUse',
-      toolName: call.name,
-      toolInput: call.input,
-    });
-    if (hookResult.action === 'block') {
-      return {
-        call,
-        result: {
-          success: false,
-          output: `Blocked by hook: ${hookResult.reason ?? 'no reason given'}`,
-          error: hookResult.reason,
-        },
-      };
-    }
-    if (hookResult.modifiedInput) {
-      call = { ...call, input: hookResult.modifiedInput };
-    }
-  }
-
-  // Permission check
-  if (permissionCheck) {
-    const perm = await permissionCheck(call);
-    if (!perm.allowed) {
-      return {
-        call,
-        result: {
-          success: false,
-          output: `Permission denied for '${call.name}': ${perm.reason ?? 'no matching allow rule'}`,
-          error: perm.reason,
-        },
-      };
-    }
-  }
-
-  // Find tool
-  const tool = toolMap.get(call.name);
-  if (!tool) {
-    return {
-      call,
-      result: {
-        success: false,
-        output: `Unknown tool: '${call.name}'`,
-        error: `Tool '${call.name}' not found`,
-      },
-    };
-  }
-
-  // Execute
+async function appendStatus(
+  session: SessionStorage,
+  status: Parameters<SessionStorage['markStatus']>[0],
+  lastError?: string,
+  tracer?: RuntimeTracer,
+): Promise<void> {
   try {
-    const startTime = Date.now();
-    const result = await tool.execute(call.input);
-    const durationMs = Date.now() - startTime;
-
-    // Track tool usage for pattern detection (self-learning)
-    trackToolUsage(call.name, call.input, result.success, durationMs).catch(() => {});
-
-    // PostToolUse hook — can modify output or inject context
-    if (hooks) {
-      const postHook = await hooks.execute({
-        eventType: 'PostToolUse',
-        toolName: call.name,
-        toolInput: call.input,
-        toolOutput: result.output,
-      });
-      if (postHook.modifiedOutput) {
-        return { call, result: { ...result, output: postHook.modifiedOutput } };
-      }
-    }
-
-    return { call, result };
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-
-    // Track failure for pattern detection
-    trackToolUsage(call.name, call.input, false).catch(() => {});
-
-    // PostToolUseFailure hook
-    if (hooks) {
-      await hooks.execute({
-        eventType: 'PostToolUseFailure',
-        toolName: call.name,
-        toolInput: call.input,
-        error: msg,
-      });
-    }
-
-    return {
-      call,
-      result: {
-        success: false,
-        output: `Tool '${call.name}' failed: ${msg}`,
-        error: msg,
-      },
-    };
+    tracer?.recordEvent('session.status', { status, lastError });
+    await session.markStatus(status, lastError);
+  } catch {
+    // Session status is helpful recovery metadata, not a reason to stop the task.
   }
 }
+
+async function appendSession(
+  session: SessionStorage,
+  type: Parameters<SessionStorage['append']>[0],
+  data: Parameters<SessionStorage['append']>[1],
+  tracer?: RuntimeTracer,
+): Promise<void> {
+  try {
+    tracer?.recordEvent('session.append', { type });
+    await session.append(type, data);
+  } catch {
+    // Autosave should not stop the agent from continuing the user's task.
+  }
+}
+

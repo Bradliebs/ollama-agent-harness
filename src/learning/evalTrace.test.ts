@@ -1,0 +1,116 @@
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+import { RuntimeTracer } from '../core/tracing';
+import { appendEvalTraceExample, createEvalTraceExample, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, readEvalTraceDataset, runEvalTraceDataset, summarizeEvalTraceRuns, updateEvalTraceExampleTags } from './evalTrace';
+
+describe('eval trace examples', () => {
+  it('creates passing examples from successful traces', () => {
+    const tracer = new RuntimeTracer();
+    const span = tracer.startSpan('model.chat', { model: 'base' });
+    tracer.recordEvent('session.status', { status: 'completed' });
+    span.end('ok');
+
+    const example = createEvalTraceExample(tracer.snapshot(), { task: 'answer user' });
+
+    expect(example).toMatchObject({ task: 'answer user', status: 'pass' });
+    expect(example.tags).toEqual(expect.arrayContaining(['pass', 'model', 'session']));
+  });
+
+  it('creates failing examples from errored traces', () => {
+    const tracer = new RuntimeTracer();
+    const span = tracer.startSpan('tool.execute', { tool: 'bash' });
+    span.fail(new Error('boom'));
+
+    const example = createEvalTraceExample(tracer.snapshot());
+
+    expect(example).toMatchObject({ status: 'fail', error: 'boom' });
+    expect(example.tags).toEqual(expect.arrayContaining(['fail', 'tools']));
+  });
+
+  it('appends examples as JSONL', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-eval-'));
+    const example = createEvalTraceExample({ spans: [], events: [] }, { task: 'empty trace' });
+
+    const filePath = await appendEvalTraceExample(projectDir, example);
+    const lines = (await fs.readFile(filePath, 'utf-8')).trim().split('\n');
+
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0])).toMatchObject({ task: 'empty trace' });
+    await expect(listEvalTraceExamples(projectDir)).resolves.toEqual([expect.objectContaining({ task: 'empty trace' })]);
+  });
+
+  it('updates tags, reads, and deletes dataset examples', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-eval-manage-'));
+    const example = createEvalTraceExample({ spans: [], events: [] }, { task: 'managed trace', tags: ['old'] });
+    await appendEvalTraceExample(projectDir, example);
+
+    await expect(updateEvalTraceExampleTags(projectDir, example.id, ['new', 'reviewed', 'new'])).resolves.toMatchObject({ tags: ['new', 'reviewed'] });
+    await expect(readEvalTraceDataset(projectDir)).resolves.toContain('managed trace');
+    await expect(deleteEvalTraceExample(projectDir, example.id)).resolves.toBe(true);
+    await expect(listEvalTraceExamples(projectDir)).resolves.toEqual([]);
+  });
+
+  it('runs curated trace examples and summarizes trends by tag', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-eval-run-'));
+    const passing = createEvalTraceExample({ spans: [], events: [] }, { task: 'passing trace', tags: ['smoke'] });
+    const failing = createEvalTraceExample({ spans: [{ id: 's1', name: 'tool.execute', startedAt: '2026-04-29T00:00:00.000Z', status: 'error', attributes: {}, error: 'boom' }], events: [] }, { task: 'unexpected failure', tags: ['smoke'] });
+    await appendEvalTraceExample(projectDir, passing);
+    await appendEvalTraceExample(projectDir, failing);
+
+    const run = await runEvalTraceDataset(projectDir);
+    const trend = summarizeEvalTraceRuns([run]);
+
+    expect(run).toMatchObject({ total: 2, passed: 1, failed: 1, passRate: 0.5 });
+    expect(run.results).toEqual(expect.arrayContaining([expect.objectContaining({ task: 'unexpected failure', status: 'fail' })]));
+    expect(trend.byTag.smoke).toMatchObject({ total: 2, passed: 1, failed: 1, passRate: 0.5 });
+  });
+
+  it('creates and evaluates replayable examples deterministically', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-replay-eval-'));
+    const example = createReplayEvalExample({
+      task: 'weather answer regression',
+      prompt: 'What is the weather like in Bracknell, UK today?',
+      expectedResponseIncludes: ['Bracknell', 'weather'],
+      expectedTools: ['web_search', 'web_read'],
+      actualResponse: 'The weather in Bracknell looks cloudy today.',
+      actualTools: ['web_search', 'web_read'],
+      tags: ['weather', 'replay'],
+    });
+    await appendEvalTraceExample(projectDir, example);
+
+    const run = await runEvalTraceDataset(projectDir);
+
+    expect(example).toMatchObject({ mode: 'replay', status: 'pass' });
+    expect(run).toMatchObject({ total: 1, passed: 1, failed: 0, passRate: 1 });
+    expect(run.results[0]).toMatchObject({ checks: ['expected response fragments', 'expected tool calls'] });
+  });
+
+  it('uses replay adapters and returns source links for replay evals', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-replay-adapter-'));
+    const example = createReplayEvalExample({
+      task: 'linked replay regression',
+      prompt: 'Summarize trace failure',
+      expectedResponseIncludes: ['trace', 'failure'],
+      expectedTools: ['web_read'],
+      sourceTraceId: 'trace-2026-04-29T00-00-00-000Z',
+      sourceSessionId: 'session-123',
+      sourceContext: 'Created from a failed weather answer.',
+      tags: ['replay'],
+    });
+    await appendEvalTraceExample(projectDir, example);
+
+    const run = await runEvalTraceDataset(projectDir, {
+      replayAdapter: async () => ({ actualResponse: 'Trace failure was reproduced.', actualTools: ['web_read'] }),
+    });
+
+    expect(run).toMatchObject({ total: 1, passed: 1, failed: 0 });
+    expect(run.results[0]).toMatchObject({
+      links: {
+        traceUrl: '/api/traces/exports/trace-2026-04-29T00-00-00-000Z',
+        sessionUrl: '/api/sessions/session-123',
+        context: 'Created from a failed weather answer.',
+      },
+    });
+  });
+});
