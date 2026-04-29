@@ -23,6 +23,7 @@ import { appendEvalTraceExample, createEvalTraceExample, createReplayEvalExample
 import { appendLearningCandidate, extractLearningCandidate, getLearningCandidateProvenance, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
 import { listSubagentRoutingMetrics } from '../agents/subagent';
 import { calibrateModelRoutingPolicy, summarizeRoutingMetrics } from '../agents/modelRouting';
+import { checkSetupHealth } from '../setup/health';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
 import type { LoopConfig, LoopEvent, PermissionMode, Tool } from '../types';
 import type { Message } from 'ollama';
@@ -60,12 +61,6 @@ interface WebSettings {
 interface MediaToolSettings {
   visionModel: string;
   audioTranscribeCommand: string;
-}
-
-interface SetupHealthResult {
-  ollama: { ok: boolean; message: string; modelCount: number };
-  vision: { ok: boolean; message: string };
-  audio: { ok: boolean; message: string };
 }
 
 interface WebRuntimeDeps {
@@ -195,7 +190,15 @@ app.get('/api/setup/health', async (req, res) => {
   const requestedAudioCommand = typeof req.query.audioTranscribeCommand === 'string'
     ? String(req.query.audioTranscribeCommand).trim()
     : mediaTools.audioTranscribeCommand;
-  res.json(await checkSetupHealth(parsedHost, requestedVisionModel, requestedAudioCommand));
+  const requestedAudioSamplePath = typeof req.query.audioSamplePath === 'string'
+    ? String(req.query.audioSamplePath).trim()
+    : '';
+  res.json(await checkSetupHealth({
+    host: parsedHost,
+    visionModel: requestedVisionModel,
+    audioTranscribeCommand: requestedAudioCommand,
+    audioSamplePath: requestedAudioSamplePath || undefined,
+  }));
 });
 
 app.get('/api/traces', (_req, res) => {
@@ -1061,39 +1064,6 @@ function applyMediaToolEnvironment(settings: MediaToolSettings): void {
   else delete process.env.HARNESS_VISION_MODEL;
   if (settings.audioTranscribeCommand) process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND = settings.audioTranscribeCommand;
   else delete process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND;
-}
-
-async function checkSetupHealth(host: string, visionModel: string, audioCommand: string): Promise<SetupHealthResult> {
-  try {
-    const response = await new Ollama({ host }).list();
-    const modelNames = response.models.map((model) => model.name);
-    const matchingVisionModel = visionModel
-      ? modelNames.some((name) => name === visionModel || name.startsWith(`${visionModel}:`))
-      : false;
-    return {
-      ollama: {
-        ok: true,
-        message: modelNames.length > 0 ? `Connected to Ollama with ${modelNames.length} model(s).` : 'Connected to Ollama, but no models are installed.',
-        modelCount: modelNames.length,
-      },
-      vision: visionModel
-        ? {
-          ok: matchingVisionModel,
-          message: matchingVisionModel ? `Vision model '${visionModel}' is installed.` : `Vision model '${visionModel}' was not found in Ollama.`,
-        }
-        : { ok: false, message: 'No vision model configured.' },
-      audio: audioCommand
-        ? { ok: true, message: 'Audio transcription command is configured.' }
-        : { ok: false, message: 'No audio transcription command configured.' },
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return {
-      ollama: { ok: false, message: `Cannot connect to Ollama: ${message}`, modelCount: 0 },
-      vision: visionModel ? { ok: false, message: 'Vision model could not be checked because Ollama is unavailable.' } : { ok: false, message: 'No vision model configured.' },
-      audio: audioCommand ? { ok: true, message: 'Audio transcription command is configured.' } : { ok: false, message: 'No audio transcription command configured.' },
-    };
-  }
 }
 
 function withRoutingPolicy(prompt: string): string {

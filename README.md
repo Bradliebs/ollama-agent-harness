@@ -37,6 +37,8 @@ npm run ui
 
 Open the URL printed by the server, usually `http://127.0.0.1:3000`.
 
+Pick models from the [model presets guide](docs/MODEL-PRESETS.md) when you want a beginner-friendly starting point for coding, vision, helpers, and summarization.
+
 Run validation:
 
 ```powershell
@@ -77,6 +79,8 @@ npm run ui
 ```
 
 If no transcription command is configured, the tool returns a clear setup message instead of pretending the model can hear the file.
+
+The First-run setup panel and `harness doctor` can also run an optional audio sample through the configured command so you can verify transcription end to end.
 
 ## Browser Settings
 

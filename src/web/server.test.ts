@@ -124,6 +124,13 @@ describe('web server API validation', () => {
   });
 
   it('reports setup health for Ollama and media helpers', async () => {
+    const audioDir = path.join(process.cwd(), '.harness', 'test-web-health');
+    const audioPath = path.join(audioDir, 'voice.wav');
+    const scriptPath = path.join(audioDir, 'transcribe.js');
+    await fs.rm(audioDir, { recursive: true, force: true });
+    await fs.mkdir(audioDir, { recursive: true });
+    await fs.writeFile(audioPath, Buffer.from([1, 2, 3]));
+    await fs.writeFile(scriptPath, "console.log('web transcript for ' + process.argv[2].split(/[\\\\/]/).pop())", 'utf-8');
     const ollamaServer = http.createServer((req, res) => {
       if (req.url === '/api/tags') {
         res.setHeader('Content-Type', 'application/json');
@@ -137,7 +144,7 @@ describe('web server API validation', () => {
     const address = ollamaServer.address();
     if (!address || typeof address === 'string') throw new Error('Failed to bind fake Ollama server');
     try {
-      const response = await request(`/api/setup/health?ollamaHost=${encodeURIComponent(`http://127.0.0.1:${address.port}`)}&visionModel=llava&audioTranscribeCommand=${encodeURIComponent('whisper "{input}"')}`);
+      const response = await request(`/api/setup/health?ollamaHost=${encodeURIComponent(`http://127.0.0.1:${address.port}`)}&visionModel=llava&audioTranscribeCommand=${encodeURIComponent(`node "${scriptPath}" "{input}"`)}&audioSamplePath=${encodeURIComponent(audioPath)}`);
 
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toMatchObject({
@@ -147,6 +154,7 @@ describe('web server API validation', () => {
       });
     } finally {
       await new Promise<void>((resolve, reject) => ollamaServer.close((error) => error ? reject(error) : resolve()));
+      await fs.rm(audioDir, { recursive: true, force: true });
     }
   });
 

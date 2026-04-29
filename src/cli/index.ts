@@ -7,10 +7,12 @@ import { getBuiltinTools } from '../tools';
 import { PermissionEngine } from '../permissions/engine';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { assembleSystemContext } from '../context/assembly';
+import { checkSetupHealth, type SetupHealthResult } from '../setup/health';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
 import type { LoopConfig, PermissionMode } from '../types';
 
 interface CliOptions {
+  command?: 'doctor';
   model: string;
   host: string;
   permissionMode: PermissionMode;
@@ -18,17 +20,27 @@ interface CliOptions {
   summarizerModel?: string;
   modelRouting: ModelRoutingPolicy;
   prompt?: string;
+  visionModel: string;
+  audioTranscribeCommand: string;
+  audioSamplePath: string;
 }
 
-function parseArgs(): CliOptions {
-  const args = process.argv.slice(2);
+export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
   const options: CliOptions = {
     model: 'qwen2.5-coder:7b',
     host: 'http://localhost:11434',
     permissionMode: 'default',
     maxTurns: 50,
     modelRouting: {},
+    visionModel: process.env.HARNESS_VISION_MODEL ?? '',
+    audioTranscribeCommand: process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND ?? '',
+    audioSamplePath: '',
   };
+
+  if (args[0] === 'doctor') {
+    options.command = 'doctor';
+    args = args.slice(1);
+  }
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
@@ -57,6 +69,15 @@ function parseArgs(): CliOptions {
       case '--strong-helper-model':
         options.modelRouting.strongModel = args[++i];
         break;
+      case '--vision-model':
+        options.visionModel = args[++i];
+        break;
+      case '--audio-command':
+        options.audioTranscribeCommand = args[++i];
+        break;
+      case '--audio-sample':
+        options.audioSamplePath = args[++i];
+        break;
       case '--helper-confidence-threshold':
         options.modelRouting.confidenceEscalationThreshold = parseFloat(args[++i]);
         break;
@@ -81,6 +102,7 @@ Ollama Agent Harness — local-first agentic coding tool
 Usage:
   harness [options]              Interactive mode
   harness -p "your prompt"       Headless mode (single prompt)
+  harness doctor [options]       Check Ollama, vision, and audio setup
 
 Options:
   -m, --model <name>     Ollama model (default: qwen2.5-coder:7b)
@@ -92,13 +114,31 @@ Options:
   --default-helper-model <n> Model for normal helper agents
   --strong-helper-model <n> Model for escalated helper agents
   --helper-confidence-threshold <n> Escalate helpers below this confidence (default: 0.45)
+  --vision-model <name>  Vision model to check in Ollama
+  --audio-command <cmd>  Audio transcription command with {input}
+  --audio-sample <path>  Optional audio file path for an end-to-end transcription check
   -p, --prompt <text>    Run a single prompt (headless mode)
   -h, --help             Show this help
 `);
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const options = parseArgs();
+
+  if (options.command === 'doctor') {
+    const result = await checkSetupHealth({
+      host: options.host,
+      visionModel: options.visionModel,
+      audioTranscribeCommand: options.audioTranscribeCommand,
+      audioSamplePath: options.audioSamplePath || undefined,
+    });
+    console.log(formatSetupHealth(result));
+    if (!result.ollama.ok || (options.visionModel ? !result.vision.ok : false) || (options.audioTranscribeCommand ? !result.audio.ok : false)) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   const projectDir = process.cwd();
 
   // Initialize client
@@ -149,6 +189,19 @@ async function main(): Promise<void> {
 
   // Interactive mode
   await runInteractive(config, deps, session);
+}
+
+export function formatSetupHealth(result: SetupHealthResult): string {
+  return [
+    'Setup doctor',
+    formatHealthLine('Ollama', result.ollama.ok, result.ollama.message),
+    formatHealthLine('Vision', result.vision.ok, result.vision.message),
+    formatHealthLine('Audio', result.audio.ok, result.audio.message),
+  ].join('\n');
+}
+
+function formatHealthLine(label: string, ok: boolean, message: string): string {
+  return `${ok ? 'OK' : 'WARN'} ${label}: ${message}`;
 }
 
 function buildSystemPrompt(modelRouting: ModelRoutingPolicy): string {
@@ -247,7 +300,9 @@ async function runInteractive(
   }
 }
 
-main().catch((error) => {
-  console.error('Fatal error:', error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error('Fatal error:', error);
+    process.exit(1);
+  });
+}

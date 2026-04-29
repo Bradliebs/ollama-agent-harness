@@ -1,0 +1,34 @@
+import { formatSetupHealth, parseArgs } from './index';
+
+describe('cli setup doctor', () => {
+  it('parses doctor options', () => {
+    const options = parseArgs([
+      'doctor',
+      '--host', 'http://127.0.0.1:11434',
+      '--vision-model', 'llava',
+      '--audio-command', 'whisper "{input}"',
+      '--audio-sample', '.harness/uploads/sample.wav',
+    ]);
+
+    expect(options).toMatchObject({
+      command: 'doctor',
+      host: 'http://127.0.0.1:11434',
+      visionModel: 'llava',
+      audioTranscribeCommand: 'whisper "{input}"',
+      audioSamplePath: '.harness/uploads/sample.wav',
+    });
+  });
+
+  it('formats setup health for terminal output', () => {
+    const output = formatSetupHealth({
+      ollama: { ok: true, message: 'Connected to Ollama with 2 model(s).', modelCount: 2 },
+      vision: { ok: false, message: 'No vision model configured.' },
+      audio: { ok: true, message: 'Audio transcription command is configured.' },
+    });
+
+    expect(output).toContain('Setup doctor');
+    expect(output).toContain('OK Ollama: Connected to Ollama with 2 model(s).');
+    expect(output).toContain('WARN Vision: No vision model configured.');
+    expect(output).toContain('OK Audio: Audio transcription command is configured.');
+  });
+});

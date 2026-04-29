@@ -36,6 +36,9 @@ jobs:
           mkdir -p release
           zip -r "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip" dist ui scripts package.json package-lock.json README.md start.bat
 
+      - name: Smoke release archive
+        run: node scripts/release-smoke.js "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip"
+
       - name: Publish release asset
         uses: softprops/action-gh-release@v2
         with:
