@@ -1,4 +1,4 @@
-import { getOutputValidationInstructions, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, withOutputValidationInstructions } from './outputValidation';
+import { OUTPUT_VALIDATION_PROFILE_TEMPLATES, getOutputValidationInstructions, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, suggestOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, withOutputValidationInstructions } from './outputValidation';
 
 const validOracleOutput = `🔍 **REFRAME** — [ANALYSIS] The question is whether strict output contracts improve reasoning quality.
 
@@ -91,6 +91,22 @@ describe('output validation', () => {
     expect(result.findings).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'missing-evidence-basis' }),
       expect.objectContaining({ code: 'missing-uncertainty' }),
+    ]));
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ suggestion: expect.stringContaining('source') }),
+    ]));
+  });
+
+  it('suggests built-in profiles from prompt intent', () => {
+    expect(suggestOutputValidationProfile('Fix the failing TypeScript tests in src/web/server.ts')).toBe('coding-answer');
+    expect(suggestOutputValidationProfile('What is the weather in Bracknell today?')).toBe('factual-answer');
+    expect(suggestOutputValidationProfile('Summarize this terminal output and exit code')).toBe('tool-result-summary');
+    expect(suggestOutputValidationProfile('Compare the risks and recommend an option')).toBe('oracle-prime');
+  });
+
+  it('ships examples with installable validation templates', () => {
+    expect(OUTPUT_VALIDATION_PROFILE_TEMPLATES).toEqual(expect.arrayContaining([
+      expect.objectContaining({ profile: 'release-readiness', examples: { good: expect.any(String), bad: expect.any(String) } }),
     ]));
   });
 

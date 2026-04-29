@@ -1,6 +1,6 @@
 {
   "name": "ollama-agent-harness",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "A local-first agentic system wrapping Ollama's API, borrowing architectural patterns from the Claude Code paper",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,6 +16,7 @@
     "smoke:ui": "node scripts/ui-smoke.js",
     "smoke:release": "node scripts/release-smoke.js",
     "release:notes": "node scripts/release-notes.js",
+    "release:manifest": "node scripts/release-manifest.js",
     "test": "jest",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit"

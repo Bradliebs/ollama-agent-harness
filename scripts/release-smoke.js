@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 
 const zipPath = path.resolve(process.argv[2] || '');
+const manifestPath = process.argv[3] ? path.resolve(process.argv[3]) : '';
 
 async function main() {
   if (!zipPath || !fs.existsSync(zipPath)) throw new Error('Usage: node scripts/release-smoke.js <release-zip>');
@@ -22,6 +23,7 @@ async function main() {
     assertFile(workDir, 'release-provenance.json');
     assertFileContains(workDir, 'start.bat', 'Installing dependencies with npm ci');
     assertReleaseProvenance(workDir);
+    if (manifestPath) assertReleaseManifest(manifestPath, zipPath);
 
     run('npm', ['ci'], workDir);
     run('node', ['dist/cli/index.js', '--help'], workDir);
@@ -35,6 +37,18 @@ async function main() {
       console.warn(`Release smoke cleanup skipped: ${error.message || error}`);
     }
   }
+}
+
+function assertReleaseManifest(filePath, assetPath) {
+  if (!fs.existsSync(filePath)) throw new Error(`Missing release manifest: ${filePath}`);
+  const manifest = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  if (manifest.assetName !== path.basename(assetPath)) throw new Error('Release manifest assetName does not match the release archive.');
+  const actualSha = cryptoHash(assetPath);
+  if (manifest.assetSha256 !== actualSha) throw new Error('Release manifest SHA-256 does not match the release archive.');
+}
+
+function cryptoHash(filePath) {
+  return require('crypto').createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
 function assertReleaseProvenance(root) {

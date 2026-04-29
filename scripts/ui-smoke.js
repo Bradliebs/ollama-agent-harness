@@ -31,6 +31,10 @@ async function main() {
     await page.selectOption('#outputValidationProfile', 'coding-answer');
     await page.click('#previewOutputValidationBtn');
     await page.waitForFunction(() => document.getElementById('outputValidationPreviewResult')?.textContent.includes('coding-answer'));
+    await page.fill('#outputValidationPreviewText', 'It will be cloudy.');
+    await page.selectOption('#outputValidationProfile', 'factual-answer');
+    await page.click('#previewOutputValidationBtn');
+    await page.waitForFunction(() => document.getElementById('outputValidationPreviewResult')?.textContent.includes('Try:'));
     await page.fill('#customProfileId', 'smoke-profile');
     await page.fill('#customProfileLabel', 'Smoke Profile');
     await page.fill('#customProfileDescription', 'Created by UI smoke.');
@@ -58,7 +62,7 @@ async function main() {
         hasRoutingSettings: Boolean(document.getElementById('smallHelperModel')) && Boolean(document.getElementById('strongHelperModel')),
         hasMediaToolSettings: Boolean(document.getElementById('visionModel')) && Boolean(document.getElementById('audioTranscribeCommand')),
         hasSettingsDoctor: Boolean(document.getElementById('settingsAudioSamplePath')) && Boolean(document.getElementById('settingsDoctorHealth')),
-        hasOutputValidationSettings: Boolean(document.getElementById('outputValidationProfile')) && Boolean(document.getElementById('outputValidationToggle')),
+        hasOutputValidationSettings: Boolean(document.getElementById('outputValidationProfile')) && Boolean(document.getElementById('outputValidationToggle')) && Boolean(document.getElementById('outputValidationAutoSelectToggle')),
         hasOutputValidationProfileEditor: Boolean(document.getElementById('outputValidationProfilesJson')) && Boolean(document.getElementById('saveOutputValidationProfilesBtn')) && Boolean(document.getElementById('customProfileId')) && Boolean(document.getElementById('customProfileChecks')),
         outputValidationProfiles: Array.from(document.querySelectorAll('#outputValidationProfile option')).map((option) => option.value),
         settingsDoctorVisible: !document.getElementById('settingsDoctorHealth').classList.contains('initial-hidden'),
@@ -89,10 +93,12 @@ async function main() {
         hasProfilePresetImportExport: Boolean(document.getElementById('downloadProfilePresetBtn')) && Boolean(document.getElementById('importProfilePresetBtn')) && Boolean(document.getElementById('profilePresetFileInput')),
         hasProfilePresetFunctions: typeof window.downloadOutputValidationProfilesPreset === 'function' && typeof window.importOutputValidationProfilesPreset === 'function' && typeof window.handleOutputValidationProfilesPresetFile === 'function',
         hasValidationTemplates: Boolean(document.getElementById('outputValidationTemplates')) && document.querySelectorAll('#outputValidationTemplates button').length > 0,
+        hasValidationTemplateExamples: document.querySelectorAll('#outputValidationTemplates .template-example').length > 0,
         hasValidationTemplateFunction: typeof window.installOutputValidationTemplate === 'function' && typeof window.loadOutputValidationTemplates === 'function',
         hasValidationPreview: Boolean(document.getElementById('outputValidationPreviewText')) && Boolean(document.getElementById('previewOutputValidationBtn')) && Boolean(document.getElementById('outputValidationPreviewResult')),
         hasValidationPreviewFunction: typeof window.previewOutputValidation === 'function' && typeof window.renderValidationPreviewResult === 'function',
-        validationPreviewRendered: document.getElementById('outputValidationPreviewResult')?.textContent.includes('coding-answer'),
+        validationPreviewRendered: document.getElementById('outputValidationPreviewResult')?.textContent.includes('factual-answer'),
+        validationFixSuggestionsRendered: document.getElementById('outputValidationPreviewResult')?.textContent.includes('Try:'),
         hasWalkthroughPersistenceFunction: typeof window.markWalkthroughStep === 'function' && typeof window.refreshWalkthroughChecklist === 'function',
         hasCompletedWalkthroughStep: document.querySelectorAll('#walkthroughChecklist .walkthrough-step.done').length > 0,
         hasAboutPanel: Boolean(document.getElementById('aboutPanel')),
@@ -114,7 +120,7 @@ async function main() {
         hasMediaToolSettingFunction: typeof window.updateMediaToolSetting === 'function',
         hasFirstRunSetupFunction: typeof window.applyFirstRunSetup === 'function',
         hasFirstRunHealthFunction: typeof window.checkFirstRunHealth === 'function',
-        hasOutputValidationSettingFunction: typeof window.updateOutputValidationSetting === 'function' && typeof window.toggleOutputValidation === 'function' && typeof window.saveOutputValidationProfiles === 'function' && typeof window.validateOutputValidationProfilesEditor === 'function' && typeof window.saveProfileFromForm === 'function',
+        hasOutputValidationSettingFunction: typeof window.updateOutputValidationSetting === 'function' && typeof window.toggleOutputValidation === 'function' && typeof window.toggleOutputValidationAutoSelect === 'function' && typeof window.saveOutputValidationProfiles === 'function' && typeof window.validateOutputValidationProfilesEditor === 'function' && typeof window.saveProfileFromForm === 'function',
         hasOutputValidationFormatter: typeof window.formatOutputValidation === 'function',
         hasOutputValidationGroupedRenderer: typeof window.appendOutputValidationItem === 'function',
         hasApplyCalibrationFunction: typeof window.applyRoutingCalibration === 'function',
@@ -164,10 +170,12 @@ async function main() {
     if (!result.hasProfilePresetImportExport) failures.push('profile preset import/export controls were not rendered');
     if (!result.hasProfilePresetFunctions) failures.push('profile preset import/export functions were not found');
     if (!result.hasValidationTemplates) failures.push('validation template controls were not rendered');
+    if (!result.hasValidationTemplateExamples) failures.push('validation template examples were not rendered');
     if (!result.hasValidationTemplateFunction) failures.push('validation template functions were not found');
     if (!result.hasValidationPreview) failures.push('validation preview controls were not rendered');
     if (!result.hasValidationPreviewFunction) failures.push('validation preview functions were not found');
     if (!result.validationPreviewRendered) failures.push('validation preview did not render a result');
+    if (!result.validationFixSuggestionsRendered) failures.push('validation fix suggestions did not render');
     if (!result.hasWalkthroughPersistenceFunction) failures.push('walkthrough persistence functions were not found');
     if (!result.hasCompletedWalkthroughStep) failures.push('walkthrough completed state was not rendered');
     if (!result.hasAboutPanel) failures.push('about panel was not rendered');
@@ -227,7 +235,7 @@ async function runStaticSmoke() {
     hasRoutingSettings: ids.includes('smallHelperModel') && ids.includes('strongHelperModel'),
     hasMediaToolSettings: ids.includes('visionModel') && ids.includes('audioTranscribeCommand'),
     hasSettingsDoctor: ids.includes('settingsAudioSamplePath') && ids.includes('settingsDoctorHealth'),
-    hasOutputValidationSettings: ids.includes('outputValidationProfile') && ids.includes('outputValidationToggle'),
+    hasOutputValidationSettings: ids.includes('outputValidationProfile') && ids.includes('outputValidationToggle') && ids.includes('outputValidationAutoSelectToggle'),
     hasOutputValidationProfileEditor: ids.includes('outputValidationProfilesJson') && ids.includes('saveOutputValidationProfilesBtn') && ids.includes('customProfileId') && ids.includes('customProfileChecks'),
     outputValidationProfiles: Array.from(html.matchAll(/<option value="([^"]+)"/g)).map((match) => match[1]).filter((value) => ['oracle-prime', 'factual-answer', 'coding-answer', 'tool-result-summary'].includes(value)),
     hasContextDetails: ids.includes('contextDetails'),
@@ -256,7 +264,7 @@ async function runStaticSmoke() {
     hasSettingsDoctorFunction: appScript.includes('function checkSettingsHealth'),
     hasFirstRunSetupFunction: appScript.includes('function applyFirstRunSetup'),
     hasFirstRunHealthFunction: appScript.includes('function checkFirstRunHealth'),
-    hasOutputValidationSettingFunction: appScript.includes('function updateOutputValidationSetting') && appScript.includes('function toggleOutputValidation') && appScript.includes('function saveOutputValidationProfiles') && appScript.includes('function validateOutputValidationProfilesEditor') && appScript.includes('function saveProfileFromForm'),
+    hasOutputValidationSettingFunction: appScript.includes('function updateOutputValidationSetting') && appScript.includes('function toggleOutputValidation') && appScript.includes('function toggleOutputValidationAutoSelect') && appScript.includes('function saveOutputValidationProfiles') && appScript.includes('function validateOutputValidationProfilesEditor') && appScript.includes('function saveProfileFromForm'),
     hasOutputValidationFormatter: appScript.includes('function formatOutputValidation'),
     hasOutputValidationGroupedRenderer: appScript.includes('function appendOutputValidationItem'),
     hasOutputValidationTrendFunction: appScript.includes('function renderOutputValidationTrends'),
@@ -264,9 +272,10 @@ async function runStaticSmoke() {
     hasProfilePresetImportExport: ids.includes('downloadProfilePresetBtn') && ids.includes('importProfilePresetBtn') && ids.includes('profilePresetFileInput'),
     hasProfilePresetFunctions: appScript.includes('function downloadOutputValidationProfilesPreset') && appScript.includes('function importOutputValidationProfilesPreset') && appScript.includes('function handleOutputValidationProfilesPresetFile'),
     hasValidationTemplates: ids.includes('outputValidationTemplates'),
+    hasValidationTemplateExamples: html.includes('template-example'),
     hasValidationTemplateFunction: appScript.includes('function installOutputValidationTemplate') && appScript.includes('function loadOutputValidationTemplates'),
     hasValidationPreview: ids.includes('outputValidationPreviewText') && ids.includes('previewOutputValidationBtn') && ids.includes('outputValidationPreviewResult'),
-    hasValidationPreviewFunction: appScript.includes('function previewOutputValidation') && appScript.includes('function renderValidationPreviewResult'),
+    hasValidationPreviewFunction: appScript.includes('function previewOutputValidation') && appScript.includes('function renderValidationPreviewResult') && appScript.includes('Try:'),
     hasWalkthroughPersistenceFunction: appScript.includes('function markWalkthroughStep') && appScript.includes('function refreshWalkthroughChecklist'),
     hasAboutPanel: ids.includes('aboutPanel'),
     hasAboutFunction: appScript.includes('function loadAbout') && appScript.includes('function renderAboutPanel'),
@@ -327,6 +336,7 @@ async function runStaticSmoke() {
   if (!result.hasProfilePresetImportExport) failures.push('profile preset import/export controls were not found');
   if (!result.hasProfilePresetFunctions) failures.push('profile preset import/export functions were not found');
   if (!result.hasValidationTemplates) failures.push('validation template controls were not found');
+  if (!result.hasValidationTemplateExamples) failures.push('validation template example renderer was not found');
   if (!result.hasValidationTemplateFunction) failures.push('validation template functions were not found');
   if (!result.hasValidationPreview) failures.push('validation preview controls were not found');
   if (!result.hasValidationPreviewFunction) failures.push('validation preview functions were not found');

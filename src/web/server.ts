@@ -19,7 +19,7 @@ import { loadSkillsDir } from '../extensibility/skillLoader';
 import { RateLimiter } from '../core/rateLimiter';
 import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
-import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
+import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, suggestOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
 import { startNewSession, onSessionEnd, getEvolvedPrompt } from '../learning/engine';
 import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordOutputValidationEvalRun, runEvalTraceDataset, summarizeEvalTraceRuns, summarizeOutputValidationRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
 import { appendLearningCandidate, extractLearningCandidate, getLearningCandidateProvenance, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
@@ -74,6 +74,7 @@ interface MediaToolSettings {
 interface OutputValidationSettings {
   enabled: boolean;
   profile: OutputValidationProfile;
+  autoSelect: boolean;
 }
 
 interface WalkthroughSettings {
@@ -110,7 +111,7 @@ let mediaTools: MediaToolSettings = {
   visionModel: process.env.HARNESS_VISION_MODEL ?? '',
   audioTranscribeCommand: process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND ?? '',
 };
-let outputValidation: OutputValidationSettings = { enabled: false, profile: 'oracle-prime' };
+let outputValidation: OutputValidationSettings = { enabled: false, profile: 'oracle-prime', autoSelect: true };
 let customOutputValidationProfiles: CustomOutputValidationProfile[] = [];
 let walkthrough: WalkthroughSettings = { completed: [] };
 let settingsLoaded = false;
@@ -221,6 +222,14 @@ app.get('/api/output-validation/profiles', async (_req, res) => {
 
 app.get('/api/output-validation/templates', async (_req, res) => {
   res.json({ templates: OUTPUT_VALIDATION_PROFILE_TEMPLATES });
+});
+
+app.post('/api/output-validation/suggest-profile', async (req, res) => {
+  await ensureSettingsLoaded();
+  const input = String(req.body?.input ?? req.body?.message ?? '').slice(0, 20_000);
+  const profile = suggestOutputValidationProfile(input, outputValidation.profile);
+  const metadata = OUTPUT_VALIDATION_PROFILES.find((candidate) => candidate.profile === profile);
+  res.json({ profile, label: metadata?.label ?? profile, reason: suggestionReason(profile) });
 });
 
 app.post('/api/output-validation/templates/install', async (req, res) => {
@@ -553,7 +562,7 @@ app.post('/api/chat', async (req, res) => {
     maxTurns: 25,
     abortSignal: abortController.signal,
     context: { maxTokens: activeContextMaxTokens, summarizerModel },
-    outputValidation: { ...outputValidation, customProfiles: customOutputValidationProfiles },
+    outputValidation: { ...effectiveOutputValidationForMessage(message), customProfiles: customOutputValidationProfiles },
   };
   const session = webRuntime.createSession(projectDir, activeModel);
   await session.initialize();
@@ -1173,7 +1182,22 @@ function sanitizeMediaToolSettings(value: unknown): MediaToolSettings {
 function sanitizeOutputValidationSettings(value: unknown): OutputValidationSettings {
   const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
   const profile = parseOutputValidationProfile(source.profile, customOutputValidationProfiles) ?? 'oracle-prime';
-  return { enabled: source.enabled === true, profile };
+  return { enabled: source.enabled === true, profile, autoSelect: source.autoSelect !== false };
+}
+
+function effectiveOutputValidationForMessage(message: string): OutputValidationSettings {
+  if (!outputValidation.enabled || !outputValidation.autoSelect) return outputValidation;
+  return { ...outputValidation, profile: suggestOutputValidationProfile(message, outputValidation.profile) };
+}
+
+function suggestionReason(profile: OutputValidationProfile): string {
+  switch (profile) {
+    case 'coding-answer': return 'The prompt looks like code, tests, files, or implementation work.';
+    case 'factual-answer': return 'The prompt looks like a current or factual answer that should cite evidence and uncertainty.';
+    case 'tool-result-summary': return 'The prompt looks like a command, terminal, log, or tool output summary.';
+    case 'oracle-prime': return 'The prompt looks like a decision, risk, strategy, or uncertainty-heavy answer.';
+    default: return 'Using the current custom profile because it is selected manually.';
+  }
 }
 
 function sanitizeWalkthroughSettings(value: unknown): WalkthroughSettings {
@@ -1241,7 +1265,7 @@ async function getRuntimeStorageSummary(): Promise<{ traces: { count: number; by
   };
 }
 
-async function getAboutInfo(): Promise<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string }> {
+async function getAboutInfo(): Promise<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string; manifestName: string }> {
   const packageJson = JSON.parse(await fs.readFile(path.join(PROJECT_DIR, 'package.json'), 'utf-8')) as { version?: string };
   const provenance = await readReleaseProvenance();
   const version = packageJson.version ?? provenance.version ?? 'unknown';
@@ -1252,6 +1276,7 @@ async function getAboutInfo(): Promise<{ version: string; commit: string; assetN
     assetSha256: provenance.assetSha256 ?? '',
     releaseUrl: provenance.releaseUrl ?? `https://github.com/Bradliebs/ollama-agent-harness/releases/tag/v${version}`,
     generatedAt: provenance.generatedAt ?? '',
+    manifestName: provenance.manifestName ?? `ollama-agent-harness-v${version}.zip.sha256.json`,
   };
 }
 
@@ -1297,12 +1322,30 @@ async function sha256FileIfExists(filePath: string): Promise<string> {
   }
 }
 
-async function readReleaseProvenance(): Promise<Partial<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string }>> {
+async function readReleaseProvenance(): Promise<Partial<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string; manifestName: string }>> {
+  let provenance: Partial<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string; manifestName: string }> = {};
   try {
-    return JSON.parse(await fs.readFile(RELEASE_PROVENANCE_PATH, 'utf-8')) as Partial<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string }>;
+    provenance = JSON.parse(await fs.readFile(RELEASE_PROVENANCE_PATH, 'utf-8')) as Partial<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string; manifestName: string }>;
   } catch {
-    return {};
+    provenance = {};
   }
+  const manifest = await readReleaseManifest(provenance.assetName);
+  return { ...provenance, ...manifest };
+}
+
+async function readReleaseManifest(assetName?: string): Promise<Partial<{ assetName: string; assetSha256: string; generatedAt: string; manifestName: string }>> {
+  const candidates = [
+    path.join(PROJECT_DIR, 'release-manifest.json'),
+    assetName ? path.join(PROJECT_DIR, 'release', `${assetName}.sha256.json`) : '',
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(await fs.readFile(candidate, 'utf-8')) as Partial<{ assetName: string; assetSha256: string; generatedAt: string; manifestName: string }>;
+    } catch {
+      // Try the next companion manifest location.
+    }
+  }
+  return {};
 }
 
 async function directoryJsonStats(dirPath: string): Promise<{ count: number; bytes: number }> {

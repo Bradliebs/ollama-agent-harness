@@ -42,6 +42,7 @@ export interface OutputValidationFinding {
   severity: OutputValidationStatus;
   message: string;
   scorePenalty?: number;
+  suggestion?: string;
 }
 
 export interface OutputValidationResult {
@@ -50,6 +51,13 @@ export interface OutputValidationResult {
   score: number;
   findings: OutputValidationFinding[];
   missingSections: string[];
+}
+
+export interface OutputValidationProfileTemplate extends CustomOutputValidationProfile {
+  examples: {
+    good: string;
+    bad: string;
+  };
 }
 
 const ORACLE_REQUIRED_SECTIONS = [
@@ -86,7 +94,7 @@ export const OUTPUT_VALIDATION_PROFILES: OutputValidationProfileInfo[] = [
   { profile: 'tool-result-summary', label: 'Tool Result Summary', description: 'Checks command/tool summaries for outcome, evidence, and concise status.' },
 ];
 
-export const OUTPUT_VALIDATION_PROFILE_TEMPLATES: CustomOutputValidationProfile[] = [
+export const OUTPUT_VALIDATION_PROFILE_TEMPLATES: OutputValidationProfileTemplate[] = [
   {
     profile: 'beginner-factual-summary',
     label: 'Beginner Factual Summary',
@@ -99,6 +107,10 @@ export const OUTPUT_VALIDATION_PROFILE_TEMPLATES: CustomOutputValidationProfile[
       { code: 'missing-uncertainty', severity: 'warn', message: 'State confidence or uncertainty.', requiresAny: ['confidence', 'uncertain', 'likely', 'may', 'might', 'as of', 'today', 'latest'], scorePenalty: 0.15 },
       { code: 'too-short', severity: 'fail', message: 'Provide enough detail to be useful.', minLength: 80, scorePenalty: 0.25 },
     ],
+    examples: {
+      good: 'Based on Met Office data found today, Bracknell is likely cloudy, with some uncertainty around later showers.',
+      bad: 'It will be cloudy.',
+    },
   },
   {
     profile: 'beginner-code-summary',
@@ -112,6 +124,10 @@ export const OUTPUT_VALIDATION_PROFILE_TEMPLATES: CustomOutputValidationProfile[
       { code: 'missing-validation', severity: 'warn', message: 'Mention validation or tests.', requiresAny: ['test', 'typecheck', 'build', 'lint', 'smoke', 'validated', 'not run'], scorePenalty: 0.15 },
       { code: 'missing-file', severity: 'warn', message: 'Mention a file or code area.', requiresAny: ['.ts', '.js', '.json', '.md', '.html', '.css', 'src/', 'ui/', 'scripts/'], scorePenalty: 0.1 },
     ],
+    examples: {
+      good: 'Updated src/web/server.ts and ui/app.js, then ran npm test and npm run typecheck successfully.',
+      bad: 'Done.',
+    },
   },
   {
     profile: 'release-readiness',
@@ -126,6 +142,10 @@ export const OUTPUT_VALIDATION_PROFILE_TEMPLATES: CustomOutputValidationProfile[
       { code: 'missing-provenance', severity: 'warn', message: 'Mention provenance, commit, digest, or SHA-256.', requiresAny: ['provenance', 'commit', 'digest', 'sha-256', 'sha256'], scorePenalty: 0.15 },
       { code: 'missing-validation', severity: 'fail', message: 'Mention validation status.', requiresAny: ['passed', 'failed', 'validation', 'ci', 'smoke'], scorePenalty: 0.25 },
     ],
+    examples: {
+      good: 'Release v0.1.12 passed CI and smoke checks. Asset ollama-agent-harness-v0.1.12.zip was published with SHA-256 provenance.',
+      bad: 'The release is ready.',
+    },
   },
   {
     profile: 'decision-brief',
@@ -139,8 +159,21 @@ export const OUTPUT_VALIDATION_PROFILE_TEMPLATES: CustomOutputValidationProfile[
       { code: 'missing-alternatives', severity: 'warn', message: 'Mention alternatives or options.', requiresAny: ['alternative', 'option', 'instead', 'tradeoff'], scorePenalty: 0.15 },
       { code: 'missing-risk', severity: 'warn', message: 'Mention risk or uncertainty.', requiresAny: ['risk', 'uncertain', 'unknown', 'confidence', 'assumption'], scorePenalty: 0.15 },
     ],
+    examples: {
+      good: 'Recommendation: choose option A. The main alternative is option B. Risk is migration complexity, so confidence is Medium.',
+      bad: 'Option A is best.',
+    },
   },
 ];
+
+export function suggestOutputValidationProfile(input: string, fallback: OutputValidationProfile = 'oracle-prime'): BuiltInOutputValidationProfile {
+  const text = input.toLowerCase();
+  if (/\b(command|terminal|stdout|stderr|exit code|log|tool result|returned|output)\b/.test(text)) return 'tool-result-summary';
+  if (/\b(code|coding|implemented|fix|bug|test|typecheck|build|lint|file|repo|pull request|commit|typescript|javascript|python|script)\b/.test(text)) return 'coding-answer';
+  if (/\b(weather|today|current|latest|news|price|stock|who is|what is|when is|where is|source|according to|factual)\b/.test(text)) return 'factual-answer';
+  if (/\b(decision|strategy|risk|scenario|tradeoff|alternative|recommend|confidence|uncertainty|forecast|plan)\b/.test(text)) return 'oracle-prime';
+  return isBuiltInProfile(fallback) ? fallback : 'oracle-prime';
+}
 
 export function validateOutput(
   content: string,
@@ -469,7 +502,31 @@ function completeValidationResult(
   let status: OutputValidationStatus = failCount > 0 ? 'fail' : warnCount > 0 ? 'warn' : 'pass';
   if (thresholds.failBelowScore !== undefined && score < thresholds.failBelowScore) status = 'fail';
   else if (status === 'pass' && thresholds.warnBelowScore !== undefined && score < thresholds.warnBelowScore) status = 'warn';
-  return { profile, status, score, findings, missingSections };
+  return { profile, status, score, findings: findings.map(withFindingSuggestion), missingSections };
+}
+
+function withFindingSuggestion(finding: OutputValidationFinding): OutputValidationFinding {
+  if (finding.suggestion) return finding;
+  return { ...finding, suggestion: suggestionForFinding(finding) };
+}
+
+function suggestionForFinding(finding: OutputValidationFinding): string {
+  if (finding.code.includes('evidence') || finding.code.includes('source')) return 'Add the source, evidence basis, or tool result you used.';
+  if (finding.code.includes('uncertainty') || finding.code.includes('confidence')) return 'State confidence, uncertainty, or what could change the answer.';
+  if (finding.code.includes('validation') || finding.code.includes('tests')) return 'Mention the tests, build, smoke check, or why validation was not run.';
+  if (finding.code.includes('file')) return 'Name the changed file, folder, or code area.';
+  if (finding.code.includes('release') || finding.code.includes('asset') || finding.code.includes('provenance')) return 'Include the release version, asset name, commit, or SHA-256 digest.';
+  if (finding.code.includes('scenario')) return 'Add Base, Bull, Bear, and Black Swan scenarios with rough percentages.';
+  if (finding.code.includes('section')) return 'Add the missing section heading and a concise answer under it.';
+  if (finding.code.includes('recommendation')) return 'State the recommended option or decision clearly.';
+  if (finding.code.includes('alternative')) return 'Name at least one alternative or tradeoff.';
+  if (finding.code.includes('risk')) return 'Add the main risk, assumption, or uncertainty.';
+  if (finding.code.includes('short')) return 'Add enough detail for a reader to act on the answer.';
+  return 'Revise the answer to satisfy this check.';
+}
+
+function isBuiltInProfile(profile: OutputValidationProfile): profile is BuiltInOutputValidationProfile {
+  return OUTPUT_VALIDATION_PROFILES.some((candidate) => candidate.profile === profile);
 }
 
 function hasSection(content: string, section: string): boolean {

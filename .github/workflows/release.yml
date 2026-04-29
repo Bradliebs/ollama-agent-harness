@@ -48,13 +48,18 @@ jobs:
       - name: Smoke release archive
         run: node scripts/release-smoke.js "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip"
 
+      - name: Generate release SHA manifest
+        run: npm run release:manifest -- --version "${GITHUB_REF_NAME}" --asset "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip" --commit "${GITHUB_SHA}" --repository "${GITHUB_REPOSITORY}" --output "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip.sha256.json"
+
       - name: Generate release notes
         run: npm run release:notes -- --version "${GITHUB_REF_NAME}" --asset "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip" --commit "${GITHUB_SHA}" --output release/release-notes.md
 
       - name: Publish release asset
         uses: softprops/action-gh-release@v2
         with:
-          files: release/ollama-agent-harness-${{ github.ref_name }}.zip
+          files: |
+            release/ollama-agent-harness-${{ github.ref_name }}.zip
+            release/ollama-agent-harness-${{ github.ref_name }}.zip.sha256.json
           name: Ollama Agent Harness ${{ github.ref_name }}
           body_path: release/release-notes.md
 
@@ -64,5 +69,5 @@ jobs:
         run: |
           rm -rf published-release
           mkdir -p published-release
-          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --pattern "ollama-agent-harness-${GITHUB_REF_NAME}.zip" --dir published-release --clobber
-          node scripts/release-smoke.js "published-release/ollama-agent-harness-${GITHUB_REF_NAME}.zip"
+          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --pattern "ollama-agent-harness-${GITHUB_REF_NAME}.zip*" --dir published-release --clobber
+          node scripts/release-smoke.js "published-release/ollama-agent-harness-${GITHUB_REF_NAME}.zip" "published-release/ollama-agent-harness-${GITHUB_REF_NAME}.zip.sha256.json"

@@ -120,7 +120,7 @@ async function loadSettings() {
     renderContextDetails(s.context || { configuredMaxTokens: s.contextMaxTokens, detectedMaxTokens: null, effectiveMaxTokens: s.contextMaxTokens });
     currentModelRouting = s.modelRouting || {};
     currentMediaTools = s.mediaTools || {};
-    currentOutputValidation = s.outputValidation || { enabled: false, profile: 'oracle-prime' };
+    currentOutputValidation = s.outputValidation || { enabled: false, profile: 'oracle-prime', autoSelect: true };
     currentOutputValidationProfiles = s.outputValidationProfiles || [];
     currentWalkthrough = s.walkthrough || { completed: [] };
     const small = document.getElementById('smallHelperModel');
@@ -131,6 +131,7 @@ async function loadSettings() {
     const audio = document.getElementById('audioTranscribeCommand');
     const outputProfile = document.getElementById('outputValidationProfile');
     const outputToggle = document.getElementById('outputValidationToggle');
+    const outputAutoToggle = document.getElementById('outputValidationAutoSelectToggle');
     const firstRunHost = document.getElementById('firstRunOllamaHost');
     const firstRunVision = document.getElementById('firstRunVisionModel');
     const firstRunAudio = document.getElementById('firstRunAudioCommand');
@@ -151,12 +152,13 @@ async function loadSettings() {
     resetCustomProfileForm();
     refreshWalkthroughChecklist();
     if (outputToggle) outputToggle.classList.toggle('active', currentOutputValidation.enabled === true);
+    if (outputAutoToggle) outputAutoToggle.classList.toggle('active', currentOutputValidation.autoSelect !== false);
     if (firstRunHost) firstRunHost.value = s.ollamaHost || 'http://localhost:11434';
     if (firstRunVision) firstRunVision.value = currentMediaTools.visionModel || '';
     if (firstRunAudio) firstRunAudio.value = currentMediaTools.audioTranscribeCommand || '';
-    document.querySelectorAll('.mode-opt').forEach((option) => option.classList.remove('active'));
+    document.querySelectorAll('.permission-mode-option').forEach((option) => option.classList.remove('active'));
     const modeIndex = s.permissionMode === 'dontAsk' ? 0 : s.permissionMode === 'acceptEdits' ? 1 : 2;
-    const mode = document.querySelectorAll('.mode-opt')[modeIndex];
+    const mode = document.querySelectorAll('.permission-mode-option')[modeIndex];
     if (mode) mode.classList.add('active');
   } catch {}
 }
@@ -175,7 +177,8 @@ function renderOutputValidationTemplates() {
   if (!list) return;
   list.innerHTML = currentOutputValidationTemplates.map((template) => {
     const installed = currentCustomProfilesFromEditor().some((profile) => profile.profile === template.profile);
-    return '<div class="template-item"><div><strong>' + esc(template.label || template.profile) + '</strong>' + esc(template.description || '') + '</div><button class="btn-sm" onclick="installOutputValidationTemplate(\'' + escAttr(template.profile) + '\')">' + (installed ? 'Reinstall' : 'Install') + '</button></div>';
+    const examples = template.examples ? '<div class="template-example"><span>Good</span>' + esc(template.examples.good || '') + '<span>Bad</span>' + esc(template.examples.bad || '') + '</div>' : '';
+    return '<div class="template-item"><div><strong>' + esc(template.label || template.profile) + '</strong>' + esc(template.description || '') + '</div><button class="btn-sm" onclick="installOutputValidationTemplate(\'' + escAttr(template.profile) + '\')">' + (installed ? 'Reinstall' : 'Install') + '</button>' + examples + '</div>';
   }).join('') || '<div class="trace-meta">Templates unavailable.</div>';
 }
 
@@ -230,9 +233,11 @@ function renderValidationPreviewResult(validation) {
   if (!output) return;
   const findings = validation.findings || [];
   output.className = 'validation-preview-result ' + escAttr(validation.status || 'warn');
+  const suggestions = Array.from(new Set(findings.map((finding) => finding.suggestion).filter(Boolean)));
   output.innerHTML = '<div><strong>' + esc(validation.profile) + ' ' + esc(validation.status) + '</strong> · score ' + esc(validation.score) + '</div>' +
     (findings.length ? findings.map((finding) => '<div>' + esc(finding.severity.toUpperCase()) + ': ' + esc(finding.code) + ' - ' + esc(finding.message) + '</div>').join('') : '<div>PASS: no findings</div>') +
-    ((validation.missingSections || []).length ? '<div>Missing sections: ' + esc(validation.missingSections.join(', ')) + '</div>' : '');
+    ((validation.missingSections || []).length ? '<div>Missing sections: ' + esc(validation.missingSections.join(', ')) + '</div>' : '') +
+    (suggestions.length ? '<div><strong>Suggestions</strong></div>' + suggestions.map((suggestion) => '<div>Try: ' + esc(suggestion) + '</div>').join('') : '');
 }
 
 async function loadAbout() {
@@ -501,8 +506,9 @@ function renderContextDetails(context) {
 }
 
 function updateSetting(k, v) {
-  fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [k]: v }) });
+  const request = fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [k]: v }) });
   if (k === 'ollamaHost') loadModels();
+  return request;
 }
 
 function updateRoutingSetting(k, v) {
@@ -536,6 +542,12 @@ function updateOutputValidationSetting() {
 function toggleOutputValidation(el) {
   currentOutputValidation = { ...currentOutputValidation, enabled: !currentOutputValidation.enabled };
   if (el) el.classList.toggle('active', currentOutputValidation.enabled);
+  updateSetting('outputValidation', currentOutputValidation);
+}
+
+function toggleOutputValidationAutoSelect(el) {
+  currentOutputValidation = { ...currentOutputValidation, autoSelect: currentOutputValidation.autoSelect === false };
+  if (el) el.classList.toggle('active', currentOutputValidation.autoSelect !== false);
   updateSetting('outputValidation', currentOutputValidation);
 }
 
@@ -731,7 +743,7 @@ function renderSetupHealthRow(label, result) {
 }
 
 function setMode(m, el) {
-  document.querySelectorAll('.mode-opt').forEach((o) => o.classList.remove('active'));
+  document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
   el.classList.add('active');
   updateSetting('permissionMode', m);
 }
@@ -789,6 +801,7 @@ async function sendMessage() {
 
   if (!text || isSending) return;
   if (!model) { alert('Select a model first.'); return; }
+  await maybeSuggestOutputValidationProfile(text);
   const welcome = document.getElementById('welcome');
   if (welcome) welcome.remove();
   addMsg('user', text);
@@ -872,6 +885,23 @@ async function sendMessage() {
   document.getElementById('chatInput').focus();
 }
 
+async function maybeSuggestOutputValidationProfile(text) {
+  if (!currentOutputValidation.enabled || currentOutputValidation.autoSelect === false) return;
+  try {
+    const response = await fetch('/api/output-validation/suggest-profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: text }),
+    });
+    const suggestion = await response.json();
+    if (!suggestion.profile) return;
+    currentOutputValidation = { ...currentOutputValidation, profile: suggestion.profile };
+    const profileSelect = document.getElementById('outputValidationProfile');
+    if (profileSelect) profileSelect.value = suggestion.profile;
+    await updateSetting('outputValidation', currentOutputValidation);
+  } catch {}
+}
+
 function formatOutputValidation(validation) {
   const firstFinding = validation.findings && validation.findings[0] ? ' · ' + validation.findings[0].message : '';
   return validation.profile + ' ' + validation.status + ' · score ' + validation.score + firstFinding;
@@ -886,7 +916,7 @@ function appendOutputValidationItem(toolBox, validation) {
     if (items.length === 0 && severity !== 'pass') return '';
     if (severity === 'pass' && findings.length > 0) return '';
     if (severity === 'pass') return '<div class="validation-group">PASS: no findings</div>';
-    return '<div class="validation-group">' + severity.toUpperCase() + ': ' + items.map((finding) => esc(finding.code) + ' - ' + esc(finding.message)).join(' · ') + '</div>';
+    return '<div class="validation-group">' + severity.toUpperCase() + ': ' + items.map((finding) => esc(finding.code) + ' - ' + esc(finding.message) + (finding.suggestion ? ' Try: ' + esc(finding.suggestion) : '')).join(' · ') + '</div>';
   }).join('');
   item.innerHTML = '<span>🧪</span><span class="tool-name">output validation</span><span class="validation-groups"><strong>' + esc(validation.profile) + ' ' + esc(validation.status) + ' · score ' + esc(String(validation.score)) + '</strong>' + groups + '</span>';
   toolBox.appendChild(item);

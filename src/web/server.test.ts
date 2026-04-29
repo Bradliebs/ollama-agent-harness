@@ -141,7 +141,7 @@ describe('web server API validation', () => {
   it('lists and installs output validation profile templates', async () => {
     const templates = await request('/api/output-validation/templates');
     expect(templates.status).toBe(200);
-    await expect(templates.json()).resolves.toMatchObject({ templates: expect.arrayContaining([expect.objectContaining({ profile: 'release-readiness' })]) });
+    await expect(templates.json()).resolves.toMatchObject({ templates: expect.arrayContaining([expect.objectContaining({ profile: 'release-readiness', examples: { good: expect.any(String), bad: expect.any(String) } })]) });
 
     const installed = await request('/api/output-validation/templates/install', {
       method: 'POST',
@@ -163,6 +163,33 @@ describe('web server API validation', () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ validation: { profile: 'coding-answer', status: 'pass', score: 1 } });
+  });
+
+  it('suggests output validation profiles from prompt intent', async () => {
+    const response = await request('/api/output-validation/suggest-profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: 'Fix a bug and run the TypeScript tests.' }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ profile: 'coding-answer', reason: expect.stringContaining('code') });
+  });
+
+  it('returns fix suggestions with failing output validation previews', async () => {
+    const response = await request('/api/output-validation/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: 'factual-answer', content: 'It will be cloudy.' }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      validation: {
+        status: expect.stringMatching(/^(warn|fail)$/),
+        findings: expect.arrayContaining([expect.objectContaining({ suggestion: expect.stringContaining('source') })]),
+      },
+    });
   });
 
   it('persists walkthrough completion settings', async () => {

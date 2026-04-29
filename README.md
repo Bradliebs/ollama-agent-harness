@@ -102,7 +102,7 @@ The welcome screen includes a guided checklist for first-run setup, validation p
 
 ## Output Validation
 
-Output validation is an optional final-answer check. When enabled, Harness adds the selected validation contract to the system prompt, checks the final answer with deterministic structural rules, streams the validation result, and records the result in eval run history.
+Output validation is an optional final-answer check. When enabled, Harness adds the selected validation contract to the system prompt, checks the final answer with deterministic structural rules, streams the validation result, and records the result in eval run history. The browser UI can automatically select the most fitting built-in contract for each prompt, while still showing the selected profile so beginners can override it.
 
 Built-in profiles:
 
@@ -111,7 +111,9 @@ Built-in profiles:
 * `coding-answer` - checks that coding answers summarize changes and validation.
 * `tool-result-summary` - checks that tool outputs include outcome, evidence, and next steps.
 
-In the browser UI, open Settings, choose a profile under Output Validation, and enable **Validate final answers**. Use **Install templates** to add ready-made custom profiles such as beginner factual summaries, code summaries, release readiness, and decision briefs without hand-writing JSON. Use **Preview validator** to paste a draft answer and see the selected profile's score and findings before using it in chat. The Learning tab shows output-validation trend summaries by profile and status.
+In the browser UI, open Settings, choose a profile under Output Validation, and enable **Validate final answers**. Leave **Auto-select best contract** on to let Harness choose factual, coding, tool-result, or Oracle Prime validation from the prompt. Turn it off when you want the selected profile to be the manual override.
+
+Use **Install templates** to add ready-made custom profiles such as beginner factual summaries, code summaries, release readiness, and decision briefs without hand-writing JSON. Each template includes a small good and bad example so new users can see what the validator expects. Use **Preview validator** to paste a draft answer and see the selected profile's score, findings, missing sections, and plain-English suggestions before using it in chat. The Learning tab shows output-validation trend summaries by profile and status.
 
 From the CLI, pass a built-in profile with `--validate-output`:
 
@@ -164,7 +166,7 @@ The release workflow downloads the published release zip after upload and runs t
 
 The Learning tab can download output-validation trend data as JSON. Release notes include commit and asset provenance, including the release zip SHA-256 digest when an asset is available during note generation.
 
-The Settings About panel shows the running package version, commit when available, release link, asset name, and release digest when the installed package includes it. Release archives include `release-provenance.json` so downloaded builds can identify where they came from. Use **Verify release asset** to compare a local release archive SHA-256 when the archive and expected digest are available, or to get a clear pointer to the GitHub release digest when local comparison is not possible.
+The Settings About panel shows the running package version, commit when available, release link, asset name, and release digest when the installed package includes it. Release archives include `release-provenance.json` so downloaded builds can identify where they came from. GitHub releases also publish a companion `*.zip.sha256.json` manifest with the final release archive digest, because that final digest cannot be embedded inside the same zip without changing it. Use **Verify release asset** to compare a local release archive SHA-256 when the archive and expected digest are available, or to get a clear pointer to the GitHub release digest when local comparison is not possible.
 
 ## GitHub Baseline
 

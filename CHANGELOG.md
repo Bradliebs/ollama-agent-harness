@@ -11,6 +11,24 @@ keywords:
 estimated_reading_time: 8
 ---
 
+## Ollama Agent Harness v0.1.13
+
+## Changes
+
+### Automatic Validation Guidance Changes
+
+Added automatic output-validation profile selection, template examples, validation fix suggestions, and a companion SHA manifest for release assets.
+
+* `src/core/outputValidation.ts` - adds deterministic profile suggestion, template examples, and plain-English fix suggestions on validation findings.
+* `src/web/server.ts` - adds a suggestion API, persists auto-select settings, applies auto-selected profiles for chat, and reads local companion SHA manifests.
+* `ui/index.html` and `ui/app.js` - add an auto-select toggle, visible manual override, template good and bad examples, and preview fix suggestions.
+* `.github/workflows/release.yml` and `scripts/release-manifest.js` - publish a companion `*.zip.sha256.json` manifest with the final archive digest.
+* `scripts/ui-smoke.js` and `scripts/release-smoke.js` - cover the new validation UI and release manifest checks.
+
+## Validation
+
+* Focused tests, TypeScript typecheck, full Jest, build, UI smoke, release manifest generation, and release archive smoke should pass before release.
+
 ## Ollama Agent Harness v0.1.12
 
 ## Changes
