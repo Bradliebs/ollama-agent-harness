@@ -120,12 +120,18 @@ async function loadSettings() {
     const confidence = document.getElementById('helperConfidenceThreshold');
     const vision = document.getElementById('visionModel');
     const audio = document.getElementById('audioTranscribeCommand');
+    const firstRunHost = document.getElementById('firstRunOllamaHost');
+    const firstRunVision = document.getElementById('firstRunVisionModel');
+    const firstRunAudio = document.getElementById('firstRunAudioCommand');
     if (small) small.value = currentModelRouting.smallModel || '';
     if (def) def.value = currentModelRouting.defaultModel || '';
     if (strong) strong.value = currentModelRouting.strongModel || '';
     if (confidence && currentModelRouting.confidenceEscalationThreshold !== undefined) confidence.value = currentModelRouting.confidenceEscalationThreshold;
     if (vision) vision.value = currentMediaTools.visionModel || '';
     if (audio) audio.value = currentMediaTools.audioTranscribeCommand || '';
+    if (firstRunHost) firstRunHost.value = s.ollamaHost || 'http://localhost:11434';
+    if (firstRunVision) firstRunVision.value = currentMediaTools.visionModel || '';
+    if (firstRunAudio) firstRunAudio.value = currentMediaTools.audioTranscribeCommand || '';
     document.querySelectorAll('.mode-opt').forEach((option) => option.classList.remove('active'));
     const modeIndex = s.permissionMode === 'dontAsk' ? 0 : s.permissionMode === 'acceptEdits' ? 1 : 2;
     const mode = document.querySelectorAll('.mode-opt')[modeIndex];
@@ -167,6 +173,34 @@ function updateMediaToolSetting(k, v) {
   else delete next[k];
   currentMediaTools = next;
   updateSetting('mediaTools', next);
+}
+
+async function applyFirstRunSetup() {
+  const status = document.getElementById('firstRunStatus');
+  const host = document.getElementById('firstRunOllamaHost')?.value.trim() || 'http://localhost:11434';
+  const visionModel = document.getElementById('firstRunVisionModel')?.value.trim() || '';
+  const audioTranscribeCommand = document.getElementById('firstRunAudioCommand')?.value.trim() || '';
+  const mediaTools = { visionModel, audioTranscribeCommand };
+  if (status) status.textContent = 'Saving setup...';
+  try {
+    const response = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ollamaHost: host, mediaTools }),
+    });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    currentMediaTools = data.mediaTools || mediaTools;
+    document.getElementById('ollamaHost').value = data.ollamaHost || host;
+    const vision = document.getElementById('visionModel');
+    const audio = document.getElementById('audioTranscribeCommand');
+    if (vision) vision.value = currentMediaTools.visionModel || '';
+    if (audio) audio.value = currentMediaTools.audioTranscribeCommand || '';
+    if (status) status.textContent = 'Saved. Models will refresh from the configured Ollama host.';
+    await loadModels();
+  } catch (error) {
+    if (status) status.textContent = 'Setup failed: ' + (error.message || error);
+  }
 }
 
 function setMode(m, el) {
@@ -458,7 +492,10 @@ async function loadHistory() {
 async function loadChat(id) { try { const r = await fetch('/api/history/' + id); const d = await r.json(); currentChatId = id; chatMessages = d.messages || []; document.getElementById('chatArea').innerHTML = ''; for (const m of chatMessages) addMsg(m.role, m.content); loadHistory(); } catch {} }
 async function autoSaveChat() { if (chatMessages.length < 2) return; const title = chatMessages[0].content.slice(0, 60); try { const r = await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: currentChatId, title, messages: chatMessages }) }); const d = await r.json(); if (!currentChatId) currentChatId = d.id; loadHistory(); } catch {} }
 async function deleteChat(id) { await fetch('/api/history/' + id, { method: 'DELETE' }); if (id === currentChatId) newChat(); loadHistory(); }
-function newChat() { currentChatId = null; chatMessages = []; document.getElementById('chatArea').innerHTML = '<div class="welcome" id="welcome"><h2>Welcome to Harness</h2><p>Pick a model above, then ask me anything. I can read files, write code, run commands, search your project, create skills, and remember things across sessions.</p><div class="beginner-guide" id="beginnerGuide"><div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div><div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div><div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div></div><div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div><div class="tips"><div class="tip" onclick="sendTip(this)">List files in this project</div><div class="tip" onclick="sendTip(this)">What models do I have?</div><div class="tip" onclick="sendTip(this)">Create a skill for code review</div></div></div>'; renderModelCapabilityHint(); loadHistory(); }
+function newChat() { currentChatId = null; chatMessages = []; document.getElementById('chatArea').innerHTML = welcomeMarkup(); renderModelCapabilityHint(); loadSettings(); loadHistory(); }
+function welcomeMarkup() {
+  return '<div class="welcome" id="welcome"><h2>Welcome to Harness</h2><p>Pick a model above, then ask me anything. I can read files, write code, run commands, search your project, create skills, and remember things across sessions.</p><div class="beginner-guide" id="beginnerGuide"><div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div><div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div><div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div></div><div class="first-run-setup" id="firstRunSetup"><h3>First-run setup</h3><p>Set the local Ollama host and optional media helpers before your first chat.</p><div class="first-run-grid"><div><label for="firstRunOllamaHost">Ollama host</label><input id="firstRunOllamaHost" type="text" value="http://localhost:11434"></div><div><label for="firstRunVisionModel">Vision model</label><input id="firstRunVisionModel" type="text" placeholder="llava"></div><div><label for="firstRunAudioCommand">Audio command</label><input id="firstRunAudioCommand" type="text" placeholder="whisper &quot;{input}&quot; --model base"></div></div><div class="first-run-actions"><button class="btn-sm" onclick="applyFirstRunSetup()">Save setup</button><span class="first-run-status" id="firstRunStatus">Optional. You can change these later in Settings.</span></div></div><div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div><div class="tips"><div class="tip" onclick="sendTip(this)">List files in this project</div><div class="tip" onclick="sendTip(this)">What models do I have?</div><div class="tip" onclick="sendTip(this)">Create a skill for code review</div></div></div>';
+}
 function exportChat() { if (!chatMessages.length) { alert('No messages.'); return; } let md = '# Chat Export\n\n'; for (const m of chatMessages) md += '## ' + (m.role === 'user' ? 'You' : 'Assistant') + '\n\n' + m.content + '\n\n---\n\n'; const blob = new Blob([md], { type: 'text/markdown' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'chat-' + new Date().toISOString().slice(0, 10) + '.md'; a.click(); }
 
 async function loadFiles(dir) {

@@ -98,6 +98,14 @@
     .beginner-guide{max-width:640px;margin:0 auto 18px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;text-align:left}
     .guide-item{background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:9px;font-size:12px;color:var(--text-dim);line-height:1.4}
     .guide-item strong{display:block;color:var(--text);margin-bottom:3px}
+    .first-run-setup{max-width:640px;margin:0 auto 14px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:10px;text-align:left}
+    .first-run-setup h3{font-size:13px;margin-bottom:3px;color:var(--text)}
+    .first-run-setup p{font-size:12px;margin:0 0 8px;max-width:none;color:var(--text-dim)}
+    .first-run-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+    .first-run-grid label{display:block;font-size:11px;color:var(--text-dim);margin-bottom:3px}
+    .first-run-grid input{width:100%;padding:7px 8px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;outline:none}
+    .first-run-actions{display:flex;align-items:center;gap:8px;margin-top:8px}
+    .first-run-status{font-size:11px;color:var(--text-dim)}
     .model-capability-hint{max-width:640px;margin:0 auto 14px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:9px;font-size:12px;color:var(--text-dim);line-height:1.45;text-align:left}
     .model-capability-hint strong{color:var(--text)}
     .capability-pill{display:inline-block;margin:2px 4px 0 0;padding:2px 6px;border:1px solid var(--border);border-radius:999px;font-size:11px;color:var(--text-dim)}
@@ -214,6 +222,16 @@
           <div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div>
           <div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div>
           <div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div>
+        </div>
+        <div class="first-run-setup" id="firstRunSetup">
+          <h3>First-run setup</h3>
+          <p>Set the local Ollama host and optional media helpers before your first chat.</p>
+          <div class="first-run-grid">
+            <div><label for="firstRunOllamaHost">Ollama host</label><input id="firstRunOllamaHost" type="text" value="http://localhost:11434"></div>
+            <div><label for="firstRunVisionModel">Vision model</label><input id="firstRunVisionModel" type="text" placeholder="llava"></div>
+            <div><label for="firstRunAudioCommand">Audio command</label><input id="firstRunAudioCommand" type="text" placeholder='whisper "{input}" --model base'></div>
+          </div>
+          <div class="first-run-actions"><button class="btn-sm" onclick="applyFirstRunSetup()">Save setup</button><span class="first-run-status" id="firstRunStatus">Optional. You can change these later in Settings.</span></div>
         </div>
         <div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div>
         <div class="tips">
