@@ -137,7 +137,11 @@ async function loadSettings() {
     if (audio) audio.value = currentMediaTools.audioTranscribeCommand || '';
     renderOutputValidationProfileOptions(outputProfile, currentOutputValidationProfiles, currentOutputValidation.profile || 'oracle-prime');
     const profilesEditor = document.getElementById('outputValidationProfilesJson');
-    if (profilesEditor) profilesEditor.value = JSON.stringify({ profiles: s.customOutputValidationProfiles || [] }, null, 2);
+    if (profilesEditor) {
+      profilesEditor.value = JSON.stringify({ profiles: s.customOutputValidationProfiles || [] }, null, 2);
+      profilesEditor.oninput = validateOutputValidationProfilesEditor;
+      validateOutputValidationProfilesEditor();
+    }
     if (outputToggle) outputToggle.classList.toggle('active', currentOutputValidation.enabled === true);
     if (firstRunHost) firstRunHost.value = s.ollamaHost || 'http://localhost:11434';
     if (firstRunVision) firstRunVision.value = currentMediaTools.visionModel || '';
@@ -213,17 +217,66 @@ async function saveOutputValidationProfiles() {
   const editor = document.getElementById('outputValidationProfilesJson');
   const status = document.getElementById('outputValidationProfilesStatus');
   if (!editor) return;
+  const localValidation = validateOutputValidationProfilesEditor();
+  if (!localValidation.ok) return;
   try {
     const parsed = JSON.parse(editor.value || '{"profiles":[]}');
     const response = await fetch('/api/output-validation/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) });
     const data = await response.json();
-    if (data.error) throw new Error(data.error);
+    if (data.error) throw new Error(data.error + renderProfileSchemaErrors(data.errors));
     currentOutputValidationProfiles = data.profiles || [];
     renderOutputValidationProfileOptions(document.getElementById('outputValidationProfile'), currentOutputValidationProfiles, currentOutputValidation.profile || 'oracle-prime');
     if (status) status.textContent = (data.customProfiles || []).length + ' custom profiles saved to ' + (data.path || '.harness/output-validation-profiles.json') + '.';
   } catch (error) {
     if (status) status.textContent = 'Could not save profiles: ' + (error instanceof Error ? error.message : String(error));
   }
+}
+
+function validateOutputValidationProfilesEditor() {
+  const editor = document.getElementById('outputValidationProfilesJson');
+  const status = document.getElementById('outputValidationProfilesStatus');
+  if (!editor) return { ok: true, errors: [] };
+  const errors = [];
+  try {
+    const parsed = JSON.parse(editor.value || '{"profiles":[]}');
+    const profiles = Array.isArray(parsed) ? parsed : Array.isArray(parsed.profiles) ? parsed.profiles : null;
+    if (!profiles) errors.push('profiles: expected an array or an object with a profiles array');
+    else profiles.forEach((profile, profileIndex) => validateProfileEditorProfile(profile, profileIndex, errors));
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : String(error));
+  }
+  if (status) status.textContent = errors.length > 0 ? 'Profile schema errors: ' + errors.slice(0, 5).join(' | ') : 'Profile JSON looks valid.';
+  return { ok: errors.length === 0, errors };
+}
+
+function validateProfileEditorProfile(profile, profileIndex, errors) {
+  if (!profile || typeof profile !== 'object') { errors.push('profiles[' + profileIndex + ']: expected an object'); return; }
+  if (!/^[a-z][a-z0-9._-]{2,63}$/.test(String(profile.profile || ''))) errors.push('profiles[' + profileIndex + '].profile: invalid profile id');
+  if (!Array.isArray(profile.checks) || profile.checks.length === 0) errors.push('profiles[' + profileIndex + '].checks: add at least one check');
+  for (const key of ['warnBelowScore', 'failBelowScore']) {
+    if (profile[key] !== undefined && (!Number.isFinite(Number(profile[key])) || Number(profile[key]) < 0 || Number(profile[key]) > 1)) errors.push('profiles[' + profileIndex + '].' + key + ': expected 0 to 1');
+  }
+  (profile.checks || []).forEach((check, checkIndex) => validateProfileEditorCheck(check, profileIndex, checkIndex, errors));
+}
+
+function validateProfileEditorCheck(check, profileIndex, checkIndex, errors) {
+  const path = 'profiles[' + profileIndex + '].checks[' + checkIndex + ']';
+  if (!check || typeof check !== 'object') { errors.push(path + ': expected an object'); return; }
+  if (!/^[a-z][a-z0-9._-]{1,63}$/.test(String(check.code || ''))) errors.push(path + '.code: invalid check code');
+  if (!String(check.message || '').trim()) errors.push(path + '.message: required');
+  if (check.severity !== undefined && !['pass', 'warn', 'fail'].includes(check.severity)) errors.push(path + '.severity: expected pass, warn, or fail');
+  for (const key of ['requiresAny', 'requiresAll', 'forbidsAny']) {
+    if (check[key] !== undefined && (!Array.isArray(check[key]) || check[key].some((term) => typeof term !== 'string'))) errors.push(path + '.' + key + ': expected string array');
+  }
+  for (const key of ['minLength', 'maxLength']) {
+    if (check[key] !== undefined && (!Number.isFinite(Number(check[key])) || Number(check[key]) < 1 || Number(check[key]) > 200000)) errors.push(path + '.' + key + ': expected 1 to 200000');
+  }
+  if (check.scorePenalty !== undefined && (!Number.isFinite(Number(check.scorePenalty)) || Number(check.scorePenalty) < 0 || Number(check.scorePenalty) > 1)) errors.push(path + '.scorePenalty: expected 0 to 1');
+}
+
+function renderProfileSchemaErrors(errors) {
+  if (!Array.isArray(errors) || errors.length === 0) return '';
+  return ' ' + errors.slice(0, 5).map((error) => (error.path || 'profiles') + ': ' + (error.message || 'Invalid value.')).join(' | ');
 }
 
 async function checkSettingsHealth() {

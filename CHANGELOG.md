@@ -11,6 +11,24 @@ keywords:
 estimated_reading_time: 8
 ---
 
+## Ollama Agent Harness v0.1.7
+
+## Changes
+
+### Validation Profile UX And Release Verification Changes
+
+Added custom profile schema diagnostics, deterministic score tuning fields, and post-publish release asset verification.
+
+* `src/core/outputValidation.ts` - reports field-level custom profile schema errors and supports `scorePenalty`, `warnBelowScore`, and `failBelowScore`.
+* `src/web/server.ts` - rejects invalid custom profile saves with structured error details.
+* `ui/app.js` - validates profile JSON in the Settings editor before save.
+* `.github/workflows/release.yml` - downloads the published release zip after upload and runs archive smoke validation.
+* `README.md` - documents custom profile validation, scoring thresholds, and published asset verification.
+
+## Validation
+
+* Focused output-validation and web server Jest suites, TypeScript typecheck, full Jest, build, UI smoke, and release archive smoke passed locally before release packaging.
+
 ## Ollama Agent Harness v0.1.6
 
 ## Changes

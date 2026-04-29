@@ -1,4 +1,4 @@
-import { getOutputValidationInstructions, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateOutput, withOutputValidationInstructions } from './outputValidation';
+import { getOutputValidationInstructions, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, withOutputValidationInstructions } from './outputValidation';
 
 const validOracleOutput = `🔍 **REFRAME** — [ANALYSIS] The question is whether strict output contracts improve reasoning quality.
 
@@ -136,6 +136,40 @@ describe('output validation', () => {
     expect(parseOutputValidationProfile('brief-release-note', customProfiles)).toBe('brief-release-note');
     expect(validateOutput('Validation passed and the release was published.', 'brief-release-note', customProfiles)).toMatchObject({ status: 'pass', score: 1 });
     expect(validateOutput('Release was published.', 'brief-release-note', customProfiles)).toMatchObject({ status: 'fail' });
+  });
+
+  it('reports schema errors for invalid custom output profiles', () => {
+    const validation = validateCustomOutputValidationProfiles({
+      profiles: [{
+        profile: 'coding-answer',
+        checks: [{ code: 'x', severity: 'block', message: '', requiresAny: 'tests' }],
+      }],
+    });
+
+    expect(validation.profiles).toEqual([]);
+    expect(validation.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'profiles[0].profile' }),
+      expect.objectContaining({ path: 'profiles[0].checks[0].severity' }),
+      expect.objectContaining({ path: 'profiles[0].checks[0].message' }),
+      expect.objectContaining({ path: 'profiles[0].checks[0].requiresAny' }),
+    ]));
+  });
+
+  it('uses custom score penalties and profile score thresholds', () => {
+    const customProfiles = normalizeCustomOutputValidationProfiles({
+      profiles: [{
+        profile: 'release-threshold',
+        warnBelowScore: 0.9,
+        failBelowScore: 0.6,
+        checks: [
+          { code: 'missing-tests', severity: 'warn', message: 'Mention tests.', requiresAny: ['tests'], scorePenalty: 0.2 },
+          { code: 'missing-release', severity: 'warn', message: 'Mention release.', requiresAny: ['release'], scorePenalty: 0.3 },
+        ],
+      }],
+    });
+
+    expect(validateOutput('Tests passed.', 'release-threshold', customProfiles)).toMatchObject({ status: 'warn', score: 0.7 });
+    expect(validateOutput('Summary only.', 'release-threshold', customProfiles)).toMatchObject({ status: 'fail', score: 0.5 });
   });
 
   it('uses custom profile instructions in prompt pairing', () => {

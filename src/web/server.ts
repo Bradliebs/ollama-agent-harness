@@ -18,7 +18,7 @@ import { loadSkillsDir } from '../extensibility/skillLoader';
 import { RateLimiter } from '../core/rateLimiter';
 import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
-import { OUTPUT_VALIDATION_PROFILES, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
+import { OUTPUT_VALIDATION_PROFILES, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
 import { startNewSession, onSessionEnd, getEvolvedPrompt } from '../learning/engine';
 import { appendEvalTraceExample, createEvalTraceExample, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordOutputValidationEvalRun, runEvalTraceDataset, summarizeEvalTraceRuns, summarizeOutputValidationRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
 import { appendLearningCandidate, extractLearningCandidate, getLearningCandidateProvenance, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
@@ -194,7 +194,12 @@ app.get('/api/output-validation/profiles', async (_req, res) => {
 
 app.post('/api/output-validation/profiles', async (req, res) => {
   await ensureSettingsLoaded();
-  const profiles = normalizeCustomOutputValidationProfiles(req.body.profiles ?? req.body);
+  const validation = validateCustomOutputValidationProfiles(req.body.profiles ?? req.body);
+  if (validation.errors.length > 0) {
+    res.status(400).json({ error: 'Custom profile schema validation failed.', errors: validation.errors });
+    return;
+  }
+  const profiles = validation.profiles;
   customOutputValidationProfiles = profiles;
   outputValidation = sanitizeOutputValidationSettings(outputValidation);
   await saveCustomOutputValidationProfiles();

@@ -147,6 +147,14 @@ Custom deterministic profiles can be authored from the Settings panel or by edit
 
 Custom checks support `requiresAny`, `requiresAll`, `forbidsAny`, `minLength`, and `maxLength`. These checks are structural. They can catch missing answer parts, but they do not prove that a factual claim is true.
 
+The editor validates profile JSON before saving and the API returns field-level schema errors for invalid profiles. Custom checks also support deterministic score tuning:
+
+* `scorePenalty` on a check sets the score reduction when that check fails. Use a value from `0` to `1`.
+* `warnBelowScore` on a profile changes a passing result to `warn` when the final score drops below the threshold.
+* `failBelowScore` on a profile changes a non-failing result to `fail` when the final score drops below the threshold.
+
+The release workflow downloads the published release zip after upload and runs the same archive smoke test against that published asset.
+
 ## GitHub Baseline
 
 This workspace is pushed to a private GitHub repository:

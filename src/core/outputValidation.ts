@@ -17,17 +17,31 @@ export interface CustomOutputValidationCheck {
   forbidsAny?: string[];
   minLength?: number;
   maxLength?: number;
+  scorePenalty?: number;
 }
 
 export interface CustomOutputValidationProfile extends OutputValidationProfileInfo {
   instructions: string;
   checks: CustomOutputValidationCheck[];
+  warnBelowScore?: number;
+  failBelowScore?: number;
+}
+
+export interface CustomOutputValidationProfileError {
+  path: string;
+  message: string;
+}
+
+export interface CustomOutputValidationProfileValidation {
+  profiles: CustomOutputValidationProfile[];
+  errors: CustomOutputValidationProfileError[];
 }
 
 export interface OutputValidationFinding {
   code: string;
   severity: OutputValidationStatus;
   message: string;
+  scorePenalty?: number;
 }
 
 export interface OutputValidationResult {
@@ -122,12 +136,32 @@ export function withOutputValidationInstructions(systemPrompt: string, profile: 
 }
 
 export function normalizeCustomOutputValidationProfiles(value: unknown): CustomOutputValidationProfile[] {
+  return validateCustomOutputValidationProfiles(value).profiles;
+}
+
+export function validateCustomOutputValidationProfiles(value: unknown): CustomOutputValidationProfileValidation {
+  const errors: CustomOutputValidationProfileError[] = [];
   const source = Array.isArray(value)
     ? value
     : typeof value === 'object' && value !== null && Array.isArray((value as { profiles?: unknown }).profiles)
       ? (value as { profiles: unknown[] }).profiles
       : [];
-  return source.map(normalizeCustomProfile).filter((profile): profile is CustomOutputValidationProfile => Boolean(profile));
+  if (!Array.isArray(value) && !(typeof value === 'object' && value !== null && Array.isArray((value as { profiles?: unknown }).profiles))) {
+    errors.push({ path: 'profiles', message: 'Expected an array of profiles or an object with a profiles array.' });
+  }
+  const seen = new Set<string>();
+  const profiles: CustomOutputValidationProfile[] = [];
+  for (let index = 0; index < source.length; index += 1) {
+    const profile = normalizeCustomProfile(source[index], `profiles[${index}]`, errors);
+    if (!profile) continue;
+    if (seen.has(profile.profile)) {
+      errors.push({ path: `profiles[${index}].profile`, message: `Duplicate custom profile id: ${profile.profile}.` });
+      continue;
+    }
+    seen.add(profile.profile);
+    profiles.push(profile);
+  }
+  return { profiles, errors };
 }
 
 function validateOraclePrimeOutput(content: string, profile: OutputValidationProfile): OutputValidationResult {
@@ -257,87 +291,128 @@ function validateCustomOutput(content: string, profile: CustomOutputValidationPr
   const normalized = content.toLowerCase();
   for (const check of profile.checks) {
     const severity = check.severity ?? 'warn';
+    const finding = { code: check.code, severity, message: check.message, scorePenalty: check.scorePenalty };
     if (check.minLength !== undefined && content.trim().length < check.minLength) {
-      findings.push({ code: check.code, severity, message: check.message });
+      findings.push(finding);
       continue;
     }
     if (check.maxLength !== undefined && content.trim().length > check.maxLength) {
-      findings.push({ code: check.code, severity, message: check.message });
+      findings.push(finding);
       continue;
     }
     if (check.requiresAll?.some((term) => !normalized.includes(term.toLowerCase()))) {
-      findings.push({ code: check.code, severity, message: check.message });
+      findings.push(finding);
       continue;
     }
     if (check.requiresAny && check.requiresAny.length > 0 && !check.requiresAny.some((term) => normalized.includes(term.toLowerCase()))) {
-      findings.push({ code: check.code, severity, message: check.message });
+      findings.push(finding);
       continue;
     }
     if (check.forbidsAny?.some((term) => normalized.includes(term.toLowerCase()))) {
-      findings.push({ code: check.code, severity, message: check.message });
+      findings.push(finding);
     }
   }
-  return completeValidationResult(profile.profile, findings, []);
+  return completeValidationResult(profile.profile, findings, [], { warnBelowScore: profile.warnBelowScore, failBelowScore: profile.failBelowScore });
 }
 
-function normalizeCustomProfile(value: unknown): CustomOutputValidationProfile | null {
+function normalizeCustomProfile(value: unknown, path: string, errors: CustomOutputValidationProfileError[]): CustomOutputValidationProfile | null {
   const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
   const profile = String(source.profile ?? '').trim();
-  if (!/^[a-z][a-z0-9._-]{2,63}$/.test(profile)) return null;
-  if (OUTPUT_VALIDATION_PROFILES.some((builtIn) => builtIn.profile === profile)) return null;
+  if (source !== value) errors.push({ path, message: 'Profile must be an object.' });
+  if (!/^[a-z][a-z0-9._-]{2,63}$/.test(profile)) errors.push({ path: `${path}.profile`, message: 'Profile id must start with a lowercase letter and contain 3-64 lowercase letters, numbers, dots, underscores, or hyphens.' });
+  if (OUTPUT_VALIDATION_PROFILES.some((builtIn) => builtIn.profile === profile)) errors.push({ path: `${path}.profile`, message: `Custom profile id cannot replace built-in profile: ${profile}.` });
   const checks = Array.isArray(source.checks)
-    ? source.checks.map(normalizeCustomCheck).filter((check): check is CustomOutputValidationCheck => Boolean(check))
+    ? source.checks.map((check, index) => normalizeCustomCheck(check, `${path}.checks[${index}]`, errors)).filter((check): check is CustomOutputValidationCheck => Boolean(check))
     : [];
-  if (checks.length === 0) return null;
+  if (!Array.isArray(source.checks)) errors.push({ path: `${path}.checks`, message: 'Checks must be an array.' });
+  if (checks.length === 0) errors.push({ path: `${path}.checks`, message: 'At least one valid check is required.' });
+  if (!/^[a-z][a-z0-9._-]{2,63}$/.test(profile) || OUTPUT_VALIDATION_PROFILES.some((builtIn) => builtIn.profile === profile) || checks.length === 0) return null;
   return {
     profile,
     label: String(source.label ?? profile).trim().slice(0, 80) || profile,
     description: String(source.description ?? 'Custom deterministic output validation profile.').trim().slice(0, 240),
     instructions: String(source.instructions ?? 'Satisfy the custom validation checks for this response.').trim().slice(0, 1000),
     checks,
+    warnBelowScore: normalizeOptionalNumber(source.warnBelowScore, 0, 1, `${path}.warnBelowScore`, errors),
+    failBelowScore: normalizeOptionalNumber(source.failBelowScore, 0, 1, `${path}.failBelowScore`, errors),
   };
 }
 
-function normalizeCustomCheck(value: unknown): CustomOutputValidationCheck | null {
+function normalizeCustomCheck(value: unknown, path: string, errors: CustomOutputValidationProfileError[]): CustomOutputValidationCheck | null {
   const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
   const code = String(source.code ?? '').trim();
   const message = String(source.message ?? '').trim();
+  if (source !== value) errors.push({ path, message: 'Check must be an object.' });
+  if (!/^[a-z][a-z0-9._-]{1,63}$/.test(code)) errors.push({ path: `${path}.code`, message: 'Check code must start with a lowercase letter and contain 2-64 lowercase letters, numbers, dots, underscores, or hyphens.' });
+  if (!message) errors.push({ path: `${path}.message`, message: 'Check message is required.' });
+  if (source.severity !== undefined && source.severity !== 'fail' && source.severity !== 'warn' && source.severity !== 'pass') errors.push({ path: `${path}.severity`, message: 'Severity must be pass, warn, or fail.' });
+  const requiresAny = normalizeTerms(source.requiresAny, `${path}.requiresAny`, errors);
+  const requiresAll = normalizeTerms(source.requiresAll, `${path}.requiresAll`, errors);
+  const forbidsAny = normalizeTerms(source.forbidsAny, `${path}.forbidsAny`, errors);
+  const minLength = normalizeOptionalInteger(source.minLength, 1, 200_000, `${path}.minLength`, errors);
+  const maxLength = normalizeOptionalInteger(source.maxLength, 1, 200_000, `${path}.maxLength`, errors);
+  const scorePenalty = normalizeOptionalNumber(source.scorePenalty, 0, 1, `${path}.scorePenalty`, errors);
   if (!/^[a-z][a-z0-9._-]{1,63}$/.test(code) || !message) return null;
   const severity = source.severity === 'fail' || source.severity === 'warn' || source.severity === 'pass' ? source.severity : 'warn';
   return {
     code,
     severity,
     message: message.slice(0, 240),
-    requiresAny: normalizeTerms(source.requiresAny),
-    requiresAll: normalizeTerms(source.requiresAll),
-    forbidsAny: normalizeTerms(source.forbidsAny),
-    minLength: normalizeOptionalInteger(source.minLength, 1, 200_000),
-    maxLength: normalizeOptionalInteger(source.maxLength, 1, 200_000),
+    requiresAny,
+    requiresAll,
+    forbidsAny,
+    minLength,
+    maxLength,
+    scorePenalty,
   };
 }
 
-function normalizeTerms(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
+function normalizeTerms(value: unknown, path: string, errors: CustomOutputValidationProfileError[]): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    errors.push({ path, message: 'Expected an array of terms.' });
+    return undefined;
+  }
+  if (value.some((term) => typeof term !== 'string')) errors.push({ path, message: 'Terms must be strings.' });
   const terms = Array.from(new Set(value.map((term) => String(term).trim()).filter(Boolean))).slice(0, 20);
   return terms.length > 0 ? terms : undefined;
 }
 
-function normalizeOptionalInteger(value: unknown, min: number, max: number): number | undefined {
+function normalizeOptionalInteger(value: unknown, min: number, max: number, path: string, errors: CustomOutputValidationProfileError[]): number | undefined {
   if (value === undefined) return undefined;
   const number = Math.floor(Number(value));
-  if (!Number.isFinite(number)) return undefined;
+  if (!Number.isFinite(number)) {
+    errors.push({ path, message: `Expected a number from ${min} to ${max}.` });
+    return undefined;
+  }
+  if (number < min || number > max) errors.push({ path, message: `Expected a number from ${min} to ${max}.` });
   return Math.min(max, Math.max(min, number));
+}
+
+function normalizeOptionalNumber(value: unknown, min: number, max: number, path: string, errors: CustomOutputValidationProfileError[]): number | undefined {
+  if (value === undefined) return undefined;
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    errors.push({ path, message: `Expected a number from ${min} to ${max}.` });
+    return undefined;
+  }
+  if (number < min || number > max) errors.push({ path, message: `Expected a number from ${min} to ${max}.` });
+  return Math.min(max, Math.max(min, Math.round(number * 100) / 100));
 }
 
 function completeValidationResult(
   profile: OutputValidationProfile,
   findings: OutputValidationFinding[],
   missingSections: string[],
+  thresholds: { warnBelowScore?: number; failBelowScore?: number } = {},
 ): OutputValidationResult {
   const failCount = findings.filter((finding) => finding.severity === 'fail').length;
   const warnCount = findings.filter((finding) => finding.severity === 'warn').length;
-  const score = Math.max(0, Math.round((1 - ((failCount * 0.15) + (warnCount * 0.05))) * 100) / 100);
-  const status: OutputValidationStatus = failCount > 0 ? 'fail' : warnCount > 0 ? 'warn' : 'pass';
+  const penalty = findings.reduce((sum, finding) => sum + (finding.scorePenalty ?? (finding.severity === 'fail' ? 0.15 : finding.severity === 'warn' ? 0.05 : 0)), 0);
+  const score = Math.max(0, Math.round((1 - penalty) * 100) / 100);
+  let status: OutputValidationStatus = failCount > 0 ? 'fail' : warnCount > 0 ? 'warn' : 'pass';
+  if (thresholds.failBelowScore !== undefined && score < thresholds.failBelowScore) status = 'fail';
+  else if (status === 'pass' && thresholds.warnBelowScore !== undefined && score < thresholds.warnBelowScore) status = 'warn';
   return { profile, status, score, findings, missingSections };
 }
 

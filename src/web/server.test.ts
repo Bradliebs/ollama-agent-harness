@@ -127,6 +127,24 @@ describe('web server API validation', () => {
     await expect(fs.readFile(validationProfilesPath, 'utf-8')).resolves.toContain('release-note');
   });
 
+  it('rejects invalid custom output validation profiles with schema errors', async () => {
+    const response = await request('/api/output-validation/profiles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profiles: [{ profile: 'oracle-prime', checks: [{ code: 'x', message: '', requiresAny: 'tests' }] }] }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: 'Custom profile schema validation failed.',
+      errors: expect.arrayContaining([
+        expect.objectContaining({ path: 'profiles[0].profile' }),
+        expect.objectContaining({ path: 'profiles[0].checks[0].message' }),
+        expect.objectContaining({ path: 'profiles[0].checks[0].requiresAny' }),
+      ]),
+    });
+  });
+
   it('applies media tool settings to the running process', async () => {
     const originalVision = process.env.HARNESS_VISION_MODEL;
     const originalAudio = process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND;
