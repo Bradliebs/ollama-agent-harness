@@ -137,6 +137,8 @@
     .tool-item.error{background:#2a1e1e;border-color:#4a2e2e}
     .tool-name{color:var(--accent);font-weight:600}
     .tool-detail{color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:550px}
+    .validation-groups{display:flex;flex-direction:column;gap:3px;width:100%}
+    .validation-group{color:var(--text-dim);font-size:11px;line-height:1.35}
     .thinking{max-width:800px;width:100%;margin:0 auto;padding-left:38px;display:flex;align-items:center;gap:8px;color:var(--text-dim);font-size:13px}
     .dots span{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--accent);animation:bounce 1.4s infinite;margin:0 2px}
     .dots span:nth-child(2){animation-delay:.2s}
@@ -342,6 +344,28 @@
       <button class="btn-sm full-width-button" onclick="checkSettingsHealth()">Run setup doctor</button>
       <div class="trace-detail">Use {input} where the uploaded audio path should be placed.</div>
       <div id="settingsDoctorHealth" class="trace-detail initial-hidden"></div>
+    </div>
+    <div class="settings-section">
+      <h4>Output Validation</h4>
+      <div class="setting-row">
+        <label>Reasoning contract</label>
+        <select id="outputValidationProfile" title="Output validation profile" onchange="updateOutputValidationSetting()">
+          <option value="oracle-prime">Oracle Prime</option>
+          <option value="factual-answer">Factual Answer</option>
+          <option value="coding-answer">Coding Answer</option>
+          <option value="tool-result-summary">Tool Result Summary</option>
+        </select>
+      </div>
+      <div class="mode-opt" id="outputValidationToggle" onclick="toggleOutputValidation(this)">
+        <div class="mode-t">Validate final answers</div>
+        <div class="mode-d">Pairs the prompt with a selected contract, checks the final answer, and records validation trends.</div>
+      </div>
+      <div class="setting-row">
+        <label>Custom profiles JSON</label>
+        <textarea id="outputValidationProfilesJson" placeholder='{"profiles":[{"profile":"brief-summary","instructions":"Mention outcome and evidence.","checks":[{"code":"has-outcome","severity":"fail","message":"Mention the outcome.","requiresAny":["passed","failed"]}]}]}'></textarea>
+      </div>
+      <button id="saveOutputValidationProfilesBtn" class="btn-sm full-width-button" onclick="saveOutputValidationProfiles()">Save custom profiles</button>
+      <div id="outputValidationProfilesStatus" class="trace-detail"></div>
     </div>
     <div class="settings-section">
       <h4>Traces</h4>

@@ -1,6 +1,12 @@
 import { formatSetupHealth, parseArgs } from './index';
 
 describe('cli setup doctor', () => {
+  it('parses output validation profile options', () => {
+    const options = parseArgs(['--validate-output', 'tool-result-summary']);
+
+    expect(options.outputValidation).toBe('tool-result-summary');
+  });
+
   it('parses doctor options', () => {
     const options = parseArgs([
       'doctor',

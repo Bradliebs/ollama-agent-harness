@@ -18,8 +18,9 @@ import { loadSkillsDir } from '../extensibility/skillLoader';
 import { RateLimiter } from '../core/rateLimiter';
 import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
+import { OUTPUT_VALIDATION_PROFILES, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
 import { startNewSession, onSessionEnd, getEvolvedPrompt } from '../learning/engine';
-import { appendEvalTraceExample, createEvalTraceExample, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, runEvalTraceDataset, summarizeEvalTraceRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
+import { appendEvalTraceExample, createEvalTraceExample, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordOutputValidationEvalRun, runEvalTraceDataset, summarizeEvalTraceRuns, summarizeOutputValidationRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
 import { appendLearningCandidate, extractLearningCandidate, getLearningCandidateProvenance, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
 import { listSubagentRoutingMetrics } from '../agents/subagent';
 import { calibrateModelRoutingPolicy, summarizeRoutingMetrics } from '../agents/modelRouting';
@@ -39,6 +40,7 @@ const HISTORY_DIR = path.join(PROJECT_DIR, '.harness', 'chat-history');
 const SKILLS_DIR = path.join(PROJECT_DIR, '.harness', 'skills');
 const TRACES_DIR = path.join(PROJECT_DIR, '.harness', 'traces');
 const SETTINGS_PATH = path.join(PROJECT_DIR, '.harness', 'settings.json');
+const OUTPUT_VALIDATION_PROFILES_PATH = path.join(PROJECT_DIR, '.harness', 'output-validation-profiles.json');
 const ALLOWED_PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'dontAsk'];
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9._-]+$/;
 
@@ -56,11 +58,19 @@ interface WebSettings {
   topP: number;
   modelRouting: ModelRoutingPolicy;
   mediaTools: MediaToolSettings;
+  outputValidation: OutputValidationSettings;
+  outputValidationProfiles: Array<{ profile: string; label: string; description: string }>;
+  customOutputValidationProfiles: CustomOutputValidationProfile[];
 }
 
 interface MediaToolSettings {
   visionModel: string;
   audioTranscribeCommand: string;
+}
+
+interface OutputValidationSettings {
+  enabled: boolean;
+  profile: OutputValidationProfile;
 }
 
 interface WebRuntimeDeps {
@@ -93,6 +103,8 @@ let mediaTools: MediaToolSettings = {
   visionModel: process.env.HARNESS_VISION_MODEL ?? '',
   audioTranscribeCommand: process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND ?? '',
 };
+let outputValidation: OutputValidationSettings = { enabled: false, profile: 'oracle-prime' };
+let customOutputValidationProfiles: CustomOutputValidationProfile[] = [];
 let settingsLoaded = false;
 const rateLimiter = new RateLimiter(10, 2);
 const hookPipeline = new HookPipeline();
@@ -166,12 +178,27 @@ app.post('/api/settings', async (req, res) => {
     mediaTools = sanitizeMediaToolSettings(req.body.mediaTools);
     applyMediaToolEnvironment(mediaTools);
   }
+  if (req.body.outputValidation !== undefined) outputValidation = sanitizeOutputValidationSettings(req.body.outputValidation);
   if (req.body.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(req.body.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (req.body.temperature !== undefined) temperature = clampNumber(req.body.temperature, 0, 2, 0.7);
   if (req.body.topP !== undefined) topP = clampNumber(req.body.topP, 0, 1, 0.9);
   await saveSettingsToDisk();
   logger.info('Settings', 'Updated', { model: currentModel, permissionMode, temperature, topP });
   res.json(getCurrentSettings());
+});
+
+app.get('/api/output-validation/profiles', async (_req, res) => {
+  await ensureSettingsLoaded();
+  res.json({ profiles: getOutputValidationProfiles(), customProfiles: customOutputValidationProfiles, path: '.harness/output-validation-profiles.json' });
+});
+
+app.post('/api/output-validation/profiles', async (req, res) => {
+  await ensureSettingsLoaded();
+  const profiles = normalizeCustomOutputValidationProfiles(req.body.profiles ?? req.body);
+  customOutputValidationProfiles = profiles;
+  outputValidation = sanitizeOutputValidationSettings(outputValidation);
+  await saveCustomOutputValidationProfiles();
+  res.json({ profiles: getOutputValidationProfiles(), customProfiles: customOutputValidationProfiles, path: '.harness/output-validation-profiles.json' });
 });
 
 app.get('/api/setup/health', async (req, res) => {
@@ -277,7 +304,7 @@ app.get('/api/evals/trace-examples/download', async (_req, res) => {
 app.get('/api/evals/runs', async (_req, res) => {
   try {
     const runs = await listEvalTraceRuns(PROJECT_DIR);
-    res.json({ runs, trend: summarizeEvalTraceRuns(runs) });
+    res.json({ runs, trend: summarizeEvalTraceRuns(runs), outputValidationTrend: summarizeOutputValidationRuns(runs) });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -468,6 +495,7 @@ app.post('/api/chat', async (req, res) => {
     maxTurns: 25,
     abortSignal: abortController.signal,
     context: { maxTokens: activeContextMaxTokens, summarizerModel },
+    outputValidation: { ...outputValidation, customProfiles: customOutputValidationProfiles },
   };
   const session = webRuntime.createSession(projectDir, activeModel);
   await session.initialize();
@@ -497,6 +525,9 @@ app.post('/api/chat', async (req, res) => {
 
   try {
     for await (const event of webRuntime.runQueryLoop(config, deps, messages)) {
+      if (event.type === 'output_validation') {
+        await recordOutputValidationEvalRun(PROJECT_DIR, event.validation, message.slice(0, 120));
+      }
       const data = JSON.stringify(event);
       res.write(`data: ${data}\n\n`);
     }
@@ -770,6 +801,7 @@ app.get('/api/learning', async (_req, res) => {
   result.evalExamples = await listEvalTraceExamples(PROJECT_DIR);
   result.evalRuns = evalRuns;
   result.evalRunTrend = summarizeEvalTraceRuns(evalRuns);
+  result.outputValidationTrend = summarizeOutputValidationRuns(evalRuns);
   try {
     const raw = await fs.readFile(path.join(learningDir, 'tool-usage.jsonl'), 'utf-8');
     const lines = raw.trim().split('\n');
@@ -994,6 +1026,9 @@ function getCurrentSettings(): WebSettings {
     topP,
     modelRouting,
     mediaTools,
+    outputValidation,
+    outputValidationProfiles: getOutputValidationProfiles(),
+    customOutputValidationProfiles,
   };
 }
 
@@ -1010,6 +1045,7 @@ async function resolveContextMaxTokens(model: string): Promise<number> {
 async function ensureSettingsLoaded(): Promise<void> {
   if (settingsLoaded) return;
   settingsLoaded = true;
+  await loadCustomOutputValidationProfiles();
   try {
     const raw = await fs.readFile(SETTINGS_PATH, 'utf-8');
     const settings = JSON.parse(raw) as Partial<WebSettings>;
@@ -1033,6 +1069,7 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
     mediaTools = sanitizeMediaToolSettings(settings.mediaTools);
     applyMediaToolEnvironment(mediaTools);
   }
+  if (settings.outputValidation !== undefined) outputValidation = sanitizeOutputValidationSettings(settings.outputValidation);
   if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (settings.temperature !== undefined) temperature = clampNumber(settings.temperature, 0, 2, 0.7);
   if (settings.topP !== undefined) topP = clampNumber(settings.topP, 0, 1, 0.9);
@@ -1059,6 +1096,30 @@ function sanitizeMediaToolSettings(value: unknown): MediaToolSettings {
   };
 }
 
+function sanitizeOutputValidationSettings(value: unknown): OutputValidationSettings {
+  const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+  const profile = parseOutputValidationProfile(source.profile, customOutputValidationProfiles) ?? 'oracle-prime';
+  return { enabled: source.enabled === true, profile };
+}
+
+function getOutputValidationProfiles(): WebSettings['outputValidationProfiles'] {
+  return [...OUTPUT_VALIDATION_PROFILES, ...customOutputValidationProfiles.map(({ profile, label, description }) => ({ profile, label, description }))];
+}
+
+async function loadCustomOutputValidationProfiles(): Promise<void> {
+  try {
+    const raw = await fs.readFile(OUTPUT_VALIDATION_PROFILES_PATH, 'utf-8');
+    customOutputValidationProfiles = normalizeCustomOutputValidationProfiles(JSON.parse(raw));
+  } catch {
+    customOutputValidationProfiles = [];
+  }
+}
+
+async function saveCustomOutputValidationProfiles(): Promise<void> {
+  await fs.mkdir(path.dirname(OUTPUT_VALIDATION_PROFILES_PATH), { recursive: true });
+  await fs.writeFile(OUTPUT_VALIDATION_PROFILES_PATH, JSON.stringify({ profiles: customOutputValidationProfiles }, null, 2), 'utf-8');
+}
+
 function applyMediaToolEnvironment(settings: MediaToolSettings): void {
   if (settings.visionModel) process.env.HARNESS_VISION_MODEL = settings.visionModel;
   else delete process.env.HARNESS_VISION_MODEL;
@@ -1080,7 +1141,10 @@ async function persistSessionLearning(session: SessionStorage, projectDir: strin
 
 async function saveSettingsToDisk(): Promise<void> {
   await fs.mkdir(path.dirname(SETTINGS_PATH), { recursive: true });
-  await fs.writeFile(SETTINGS_PATH, JSON.stringify(getCurrentSettings(), null, 2), 'utf-8');
+  const { outputValidationProfiles, customOutputValidationProfiles: profiles, ...settings } = getCurrentSettings();
+  void outputValidationProfiles;
+  void profiles;
+  await fs.writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf-8');
 }
 
 async function getRuntimeStorageSummary(): Promise<{ traces: { count: number; bytes: number }; semanticIndex: { exists: boolean; bytes: number } }> {

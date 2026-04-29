@@ -10,6 +10,8 @@ let activeChatController = null;
 let activeTraceExport = null;
 let currentModelRouting = {};
 let currentMediaTools = {};
+let currentOutputValidation = { enabled: false, profile: 'oracle-prime' };
+let currentOutputValidationProfiles = [];
 let availableModels = [];
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -114,12 +116,16 @@ async function loadSettings() {
     renderContextDetails(s.context || { configuredMaxTokens: s.contextMaxTokens, detectedMaxTokens: null, effectiveMaxTokens: s.contextMaxTokens });
     currentModelRouting = s.modelRouting || {};
     currentMediaTools = s.mediaTools || {};
+    currentOutputValidation = s.outputValidation || { enabled: false, profile: 'oracle-prime' };
+    currentOutputValidationProfiles = s.outputValidationProfiles || [];
     const small = document.getElementById('smallHelperModel');
     const def = document.getElementById('defaultHelperModel');
     const strong = document.getElementById('strongHelperModel');
     const confidence = document.getElementById('helperConfidenceThreshold');
     const vision = document.getElementById('visionModel');
     const audio = document.getElementById('audioTranscribeCommand');
+    const outputProfile = document.getElementById('outputValidationProfile');
+    const outputToggle = document.getElementById('outputValidationToggle');
     const firstRunHost = document.getElementById('firstRunOllamaHost');
     const firstRunVision = document.getElementById('firstRunVisionModel');
     const firstRunAudio = document.getElementById('firstRunAudioCommand');
@@ -129,6 +135,10 @@ async function loadSettings() {
     if (confidence && currentModelRouting.confidenceEscalationThreshold !== undefined) confidence.value = currentModelRouting.confidenceEscalationThreshold;
     if (vision) vision.value = currentMediaTools.visionModel || '';
     if (audio) audio.value = currentMediaTools.audioTranscribeCommand || '';
+    renderOutputValidationProfileOptions(outputProfile, currentOutputValidationProfiles, currentOutputValidation.profile || 'oracle-prime');
+    const profilesEditor = document.getElementById('outputValidationProfilesJson');
+    if (profilesEditor) profilesEditor.value = JSON.stringify({ profiles: s.customOutputValidationProfiles || [] }, null, 2);
+    if (outputToggle) outputToggle.classList.toggle('active', currentOutputValidation.enabled === true);
     if (firstRunHost) firstRunHost.value = s.ollamaHost || 'http://localhost:11434';
     if (firstRunVision) firstRunVision.value = currentMediaTools.visionModel || '';
     if (firstRunAudio) firstRunAudio.value = currentMediaTools.audioTranscribeCommand || '';
@@ -137,6 +147,18 @@ async function loadSettings() {
     const mode = document.querySelectorAll('.mode-opt')[modeIndex];
     if (mode) mode.classList.add('active');
   } catch {}
+}
+
+function renderOutputValidationProfileOptions(select, profiles, selected) {
+  if (!select) return;
+  const knownProfiles = profiles.length ? profiles : [
+    { profile: 'oracle-prime', label: 'Oracle Prime' },
+    { profile: 'factual-answer', label: 'Factual Answer' },
+    { profile: 'coding-answer', label: 'Coding Answer' },
+    { profile: 'tool-result-summary', label: 'Tool Result Summary' },
+  ];
+  select.innerHTML = knownProfiles.map((profile) => '<option value="' + escAttr(profile.profile) + '">' + esc(profile.label || profile.profile) + '</option>').join('');
+  select.value = selected;
 }
 
 function renderContextDetails(context) {
@@ -173,6 +195,35 @@ function updateMediaToolSetting(k, v) {
   else delete next[k];
   currentMediaTools = next;
   updateSetting('mediaTools', next);
+}
+
+function updateOutputValidationSetting() {
+  const profile = document.getElementById('outputValidationProfile')?.value || 'oracle-prime';
+  currentOutputValidation = { ...currentOutputValidation, profile };
+  updateSetting('outputValidation', currentOutputValidation);
+}
+
+function toggleOutputValidation(el) {
+  currentOutputValidation = { ...currentOutputValidation, enabled: !currentOutputValidation.enabled };
+  if (el) el.classList.toggle('active', currentOutputValidation.enabled);
+  updateSetting('outputValidation', currentOutputValidation);
+}
+
+async function saveOutputValidationProfiles() {
+  const editor = document.getElementById('outputValidationProfilesJson');
+  const status = document.getElementById('outputValidationProfilesStatus');
+  if (!editor) return;
+  try {
+    const parsed = JSON.parse(editor.value || '{"profiles":[]}');
+    const response = await fetch('/api/output-validation/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    currentOutputValidationProfiles = data.profiles || [];
+    renderOutputValidationProfileOptions(document.getElementById('outputValidationProfile'), currentOutputValidationProfiles, currentOutputValidation.profile || 'oracle-prime');
+    if (status) status.textContent = (data.customProfiles || []).length + ' custom profiles saved to ' + (data.path || '.harness/output-validation-profiles.json') + '.';
+  } catch (error) {
+    if (status) status.textContent = 'Could not save profiles: ' + (error instanceof Error ? error.message : String(error));
+  }
 }
 
 async function checkSettingsHealth() {
@@ -370,6 +421,10 @@ async function sendMessage() {
               appendToolItem(toolBox, '🧠', 'context', ev.strategy + ' freed ~' + ev.tokensFreed + ' tokens' + (ev.autosaved ? ' · checkpoint saved' : ''), false);
             }
             break;
+          case 'output_validation':
+            toolBox = ensureToolBox(toolBox);
+            appendOutputValidationItem(toolBox, ev.validation);
+            break;
           case 'error':
             thinkEl.remove();
             addMsg('assistant', '⚠️ ' + ev.message);
@@ -392,6 +447,27 @@ async function sendMessage() {
   document.getElementById('sendBtn').textContent = '➤';
   document.getElementById('sendBtn').title = 'Send';
   document.getElementById('chatInput').focus();
+}
+
+function formatOutputValidation(validation) {
+  const firstFinding = validation.findings && validation.findings[0] ? ' · ' + validation.findings[0].message : '';
+  return validation.profile + ' ' + validation.status + ' · score ' + validation.score + firstFinding;
+}
+
+function appendOutputValidationItem(toolBox, validation) {
+  const item = document.createElement('div');
+  item.className = 'tool-item' + (validation.status === 'fail' ? ' error' : '');
+  const findings = validation.findings || [];
+  const groups = ['fail', 'warn', 'pass'].map((severity) => {
+    const items = findings.filter((finding) => finding.severity === severity);
+    if (items.length === 0 && severity !== 'pass') return '';
+    if (severity === 'pass' && findings.length > 0) return '';
+    if (severity === 'pass') return '<div class="validation-group">PASS: no findings</div>';
+    return '<div class="validation-group">' + severity.toUpperCase() + ': ' + items.map((finding) => esc(finding.code) + ' - ' + esc(finding.message)).join(' · ') + '</div>';
+  }).join('');
+  item.innerHTML = '<span>🧪</span><span class="tool-name">output validation</span><span class="validation-groups"><strong>' + esc(validation.profile) + ' ' + esc(validation.status) + ' · score ' + esc(String(validation.score)) + '</strong>' + groups + '</span>';
+  toolBox.appendChild(item);
+  scrollBottom();
 }
 
 function ensureToolBox(toolBox) {
@@ -583,7 +659,15 @@ async function loadLearning() { try { const r = await fetch('/api/learning'); co
 function renderLearningManager(data) {
   const view = document.getElementById('learningView');
   if (!view) return;
-  view.innerHTML += renderRoutingMetrics(data) + renderCandidateQueue(data) + renderEvalDatasetManager(data);
+  view.innerHTML += renderRoutingMetrics(data) + renderCandidateQueue(data) + renderOutputValidationTrends(data) + renderEvalDatasetManager(data);
+}
+
+function renderOutputValidationTrends(data) {
+  const trend = data.outputValidationTrend || { totalResults: 0, byProfile: {}, byStatus: {}, latestFailures: [] };
+  const profileRows = Object.entries(trend.byProfile || {}).map(([profile, bucket]) => '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(profile) + '</span><span>' + bucket.passed + '/' + bucket.total + ' · ' + Math.round((bucket.passRate || 0) * 100) + '%</span></div>').join('');
+  const statusRows = Object.entries(trend.byStatus || {}).map(([status, count]) => '<span class="trace-pill">' + esc(status) + ': ' + count + '</span>').join('');
+  const failures = (trend.latestFailures || []).map((failure) => '<div class="trace-meta">' + esc(failure.profile) + ' · ' + esc(failure.task) + ' · ' + esc(failure.message) + (failure.checks?.length ? ' · ' + esc(failure.checks.join(', ')) : '') + '</div>').join('');
+  return '<div id="outputValidationTrend" class="trace-list"><div class="trace-title">Output Validation Trends</div><div class="trace-meta">' + trend.totalResults + ' validation results recorded</div>' + (profileRows || '<div class="trace-meta">No validation runs yet</div>') + (statusRows ? '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">' + statusRows + '</div>' : '') + (failures ? '<div style="margin-top:6px"><strong>Recent findings</strong>' + failures + '</div>' : '') + '</div>';
 }
 
 function renderRoutingMetrics(data) {

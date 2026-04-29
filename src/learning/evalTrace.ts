@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import type { OutputValidationResult } from '../core/outputValidation';
 import type { TraceEvent, TraceRecord } from '../core/tracing';
 
 export interface TraceSnapshot {
@@ -221,6 +222,44 @@ export async function runEvalTraceDataset(projectDir: string, options: ReplayEva
   return run;
 }
 
+export function createOutputValidationEvalRun(
+  validation: OutputValidationResult,
+  task = 'output validation',
+): EvalTraceRun {
+  const status = validation.status === 'pass' ? 'pass' : 'fail';
+  const result: EvalTraceRunResult = {
+    exampleId: `output-validation:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
+    task,
+    status,
+    expectedStatus: 'pass',
+    actualStatus: status,
+    tags: ['output-validation', validation.profile, validation.status],
+    message: validation.status === 'pass'
+      ? `Output validation passed for ${validation.profile}.`
+      : `Output validation ${validation.status} for ${validation.profile}: ${validation.findings[0]?.message ?? 'see findings'}`,
+    checks: validation.findings.map((finding) => finding.code),
+  };
+  return {
+    id: `validation-run:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: new Date().toISOString(),
+    total: 1,
+    passed: status === 'pass' ? 1 : 0,
+    failed: status === 'pass' ? 0 : 1,
+    passRate: status === 'pass' ? 1 : 0,
+    results: [result],
+  };
+}
+
+export async function recordOutputValidationEvalRun(
+  projectDir: string,
+  validation: OutputValidationResult,
+  task = 'output validation',
+): Promise<EvalTraceRun> {
+  const run = createOutputValidationEvalRun(validation, task);
+  await appendEvalTraceRun(projectDir, run);
+  return run;
+}
+
 export async function listEvalTraceRuns(projectDir: string, limit = 20): Promise<EvalTraceRun[]> {
   try {
     const raw = await fs.readFile(evalTraceRunsPath(projectDir), 'utf-8');
@@ -367,4 +406,44 @@ function evalTraceRunsPath(projectDir: string): string {
 
 function rate(value: number, total: number): number {
   return total > 0 ? Number((value / total).toFixed(3)) : 0;
+}
+
+export interface OutputValidationRunTrend {
+  totalResults: number;
+  byProfile: Record<string, { total: number; passed: number; failed: number; passRate: number }>;
+  byStatus: Record<string, number>;
+  latestFailures: Array<{ task: string; profile: string; status: string; message: string; checks: string[]; createdAt: string }>;
+}
+
+export function summarizeOutputValidationRuns(runs: EvalTraceRun[]): OutputValidationRunTrend {
+  const byProfile: OutputValidationRunTrend['byProfile'] = {};
+  const byStatus: OutputValidationRunTrend['byStatus'] = {};
+  const latestFailures: OutputValidationRunTrend['latestFailures'] = [];
+  let totalResults = 0;
+  for (const run of runs) {
+    for (const result of run.results) {
+      if (!result.tags.includes('output-validation')) continue;
+      totalResults++;
+      const profile = result.tags[1] ?? 'unknown';
+      const validationStatus = result.tags[2] ?? result.actualStatus;
+      const bucket = byProfile[profile] ?? { total: 0, passed: 0, failed: 0, passRate: 0 };
+      bucket.total++;
+      if (result.status === 'pass') bucket.passed++;
+      else bucket.failed++;
+      bucket.passRate = rate(bucket.passed, bucket.total);
+      byProfile[profile] = bucket;
+      byStatus[validationStatus] = (byStatus[validationStatus] ?? 0) + 1;
+      if (result.status === 'fail') {
+        latestFailures.push({
+          task: result.task,
+          profile,
+          status: validationStatus,
+          message: result.message,
+          checks: result.checks ?? [],
+          createdAt: run.createdAt,
+        });
+      }
+    }
+  }
+  return { totalResults, byProfile, byStatus, latestFailures: latestFailures.slice(-5).reverse() };
 }

@@ -9,6 +9,7 @@ import type { SessionStorage } from '../persistence/sessionStorage';
 import { createContinuityCheckpoint } from '../persistence/continuity';
 import { ToolDispatcher } from '../tools/dispatcher';
 import type { RuntimeTracer } from './tracing';
+import { validateOutput, withOutputValidationInstructions } from './outputValidation';
 
 export interface QueryLoopDeps {
   client: OllamaClient;
@@ -31,8 +32,14 @@ export async function* queryLoop(
   const dispatcher = new ToolDispatcher(tools);
   const ollamaTools = tools.map(toolToSchema);
 
+  const validationProfile = config.outputValidation?.profile ?? 'oracle-prime';
+  const customValidationProfiles = config.outputValidation?.customProfiles ?? [];
+  const systemPrompt = config.outputValidation?.enabled
+    ? withOutputValidationInstructions(config.systemPrompt, validationProfile, customValidationProfiles)
+    : config.systemPrompt;
+
   const messages: Message[] = [
-    { role: 'system', content: config.systemPrompt },
+    { role: 'system', content: systemPrompt },
     ...initialMessages,
   ];
 
@@ -129,6 +136,16 @@ export async function* queryLoop(
 
     // Stop condition: text-only response (no tool calls)
     if (!assistantMessage.tool_calls?.length) {
+      if (config.outputValidation?.enabled) {
+        const validation = validateOutput(assistantMessage.content ?? '', validationProfile, customValidationProfiles);
+        tracer?.recordEvent('output.validation', {
+          profile: validation.profile,
+          status: validation.status,
+          score: validation.score,
+          findings: validation.findings.length,
+        });
+        yield { type: 'output_validation', validation };
+      }
       yield { type: 'text', content: assistantMessage.content };
       if (session) {
         await appendStatus(session, 'completed', undefined, tracer);

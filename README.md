@@ -97,6 +97,56 @@ The Settings panel lets you configure:
 
 Settings are saved to `.harness/settings.json` and applied by the running server.
 
+## Output Validation
+
+Output validation is an optional final-answer check. When enabled, Harness adds the selected validation contract to the system prompt, checks the final answer with deterministic structural rules, streams the validation result, and records the result in eval run history.
+
+Built-in profiles:
+
+* `oracle-prime` - requires an explicit Oracle Prime reasoning contract shape.
+* `factual-answer` - checks that factual answers include confidence and source language.
+* `coding-answer` - checks that coding answers summarize changes and validation.
+* `tool-result-summary` - checks that tool outputs include outcome, evidence, and next steps.
+
+In the browser UI, open Settings, choose a profile under Output Validation, and enable **Validate final answers**. The Learning tab shows output-validation trend summaries by profile and status.
+
+From the CLI, pass a built-in profile with `--validate-output`:
+
+```powershell
+npm run harness -- --validate-output coding-answer -p "Summarize the latest code changes"
+```
+
+Custom deterministic profiles can be authored from the Settings panel or by editing `.harness/output-validation-profiles.json`:
+
+```json
+{
+  "profiles": [
+    {
+      "profile": "brief-summary",
+      "label": "Brief Summary",
+      "description": "Requires a concise outcome summary.",
+      "instructions": "Mention the outcome and evidence in a concise answer.",
+      "checks": [
+        {
+          "code": "has-outcome",
+          "severity": "fail",
+          "message": "Mention whether the work passed or failed.",
+          "requiresAny": ["passed", "failed"]
+        },
+        {
+          "code": "too-long",
+          "severity": "warn",
+          "message": "Keep the summary concise.",
+          "maxLength": 500
+        }
+      ]
+    }
+  ]
+}
+```
+
+Custom checks support `requiresAny`, `requiresAll`, `forbidsAny`, `minLength`, and `maxLength`. These checks are structural. They can catch missing answer parts, but they do not prove that a factual claim is true.
+
 ## GitHub Baseline
 
 This workspace is pushed to a private GitHub repository:

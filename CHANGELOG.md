@@ -11,6 +11,26 @@ keywords:
 estimated_reading_time: 8
 ---
 
+## Ollama Agent Harness v0.1.6
+
+## Changes
+
+### Output Validation Profiles And Trends Changes
+
+Added output-validation documentation, custom deterministic profile authoring, validation trend summaries in the Learning panel, and release validation for the output-validation feature set.
+
+* `README.md` - documented output-validation profiles, CLI usage, custom profile JSON, and structural validation limits.
+* `src/core/outputValidation.ts` - added custom profile definitions with deterministic text and length checks.
+* `src/core/queryLoop.ts` - pairs custom profile instructions with the final-answer validation path.
+* `src/learning/evalTrace.ts` - summarizes output-validation run trends by profile and validation status.
+* `src/web/server.ts` - exposes custom profile APIs, loads `.harness/output-validation-profiles.json`, and includes validation trend payloads.
+* `ui/app.js` and `ui/index.html` - add custom profile editing controls and output-validation trend rendering.
+* `scripts/ui-smoke.js` - validates the new profile authoring and trend UI hooks.
+
+## Validation
+
+* Focused output-validation Jest suites and TypeScript typecheck passed locally before release packaging.
+
 ## Ollama Agent Harness v0.1.5
 
 ## Changes

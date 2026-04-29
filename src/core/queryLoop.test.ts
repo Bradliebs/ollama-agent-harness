@@ -74,6 +74,42 @@ describe('queryLoop runtime behavior', () => {
     expect(events[0]).toEqual({ type: 'text', content: 'All done.' });
   });
 
+  it('emits output validation before final text when validation is enabled', async () => {
+    const client = makeClient([{ role: 'assistant', content: 'All done.' }]);
+
+    const events = await collectEvents(client, [], {
+      config: { outputValidation: { enabled: true, profile: 'oracle-prime' } },
+    });
+
+    expect(events.map((event) => event.type)).toEqual(['output_validation', 'text', 'done']);
+    expect(events[0]).toMatchObject({
+      type: 'output_validation',
+      validation: { profile: 'oracle-prime', status: 'fail' },
+    });
+  });
+
+  it('pairs enabled output validation with profile instructions in the system prompt', async () => {
+    const client = makeClient([{ role: 'assistant', content: 'Implemented changes in src/core/queryLoop.ts and ran tests.' }]);
+
+    await collectEvents(client, [], {
+      config: { outputValidation: { enabled: true, profile: 'coding-answer' } },
+    });
+
+    expect(client.chat.mock.calls[0][0][0]).toMatchObject({ role: 'system' });
+    expect(client.chat.mock.calls[0][0][0].content).toContain('Output validation profile: coding-answer');
+  });
+
+  it('uses custom output validation profiles when configured', async () => {
+    const client = makeClient([{ role: 'assistant', content: 'Release validation passed.' }]);
+
+    const events = await collectEvents(client, [], {
+      config: { outputValidation: { enabled: true, profile: 'release-note', customProfiles: [{ profile: 'release-note', label: 'Release Note', description: 'Release validation summary.', instructions: 'Mention release validation.', checks: [{ code: 'missing-release', severity: 'fail', message: 'Mention release.', requiresAll: ['release'] }] }] } },
+    });
+
+    expect(client.chat.mock.calls[0][0][0].content).toContain('Mention release validation.');
+    expect(events[0]).toMatchObject({ type: 'output_validation', validation: { profile: 'release-note', status: 'pass' } });
+  });
+
   it('dispatches tool calls through the shared dispatcher and continues', async () => {
     const tool = makeTool('echo', true, async (input) => ({ success: true, output: `echo:${input.value}` }));
     const client = makeClient([

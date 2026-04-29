@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { RuntimeTracer } from '../core/tracing';
-import { appendEvalTraceExample, createEvalTraceExample, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, readEvalTraceDataset, runEvalTraceDataset, summarizeEvalTraceRuns, updateEvalTraceExampleTags } from './evalTrace';
+import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationEvalRun, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordOutputValidationEvalRun, runEvalTraceDataset, summarizeEvalTraceRuns, summarizeOutputValidationRuns, updateEvalTraceExampleTags } from './evalTrace';
 
 describe('eval trace examples', () => {
   it('creates passing examples from successful traces', () => {
@@ -112,5 +112,41 @@ describe('eval trace examples', () => {
         context: 'Created from a failed weather answer.',
       },
     });
+  });
+
+  it('records output-validation results as eval runs', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-validation-eval-'));
+    const validation = {
+      profile: 'coding-answer' as const,
+      status: 'warn' as const,
+      score: 0.95,
+      findings: [{ code: 'missing-validation-summary', severity: 'warn' as const, message: 'Coding answer should state validation performed.' }],
+      missingSections: [],
+    };
+
+    const run = createOutputValidationEvalRun(validation, 'final answer');
+    await recordOutputValidationEvalRun(projectDir, validation, 'final answer');
+
+    expect(run).toMatchObject({ total: 1, passed: 0, failed: 1, passRate: 0 });
+    expect(run.results[0]).toMatchObject({ task: 'final answer', tags: ['output-validation', 'coding-answer', 'warn'] });
+    await expect(listEvalTraceRuns(projectDir)).resolves.toEqual([expect.objectContaining({ results: [expect.objectContaining({ task: 'final answer' })] })]);
+  });
+
+  it('summarizes output-validation eval runs by profile and status', () => {
+    const warnRun = createOutputValidationEvalRun({
+      profile: 'coding-answer',
+      status: 'warn',
+      score: 0.95,
+      findings: [{ code: 'missing-validation-summary', severity: 'warn', message: 'State validation performed.' }],
+      missingSections: [],
+    }, 'coding summary');
+    const passRun = createOutputValidationEvalRun({ profile: 'factual-answer', status: 'pass', score: 1, findings: [], missingSections: [] }, 'weather answer');
+
+    const trend = summarizeOutputValidationRuns([warnRun, passRun]);
+
+    expect(trend.totalResults).toBe(2);
+    expect(trend.byProfile['coding-answer']).toMatchObject({ total: 1, failed: 1, passRate: 0 });
+    expect(trend.byStatus.warn).toBe(1);
+    expect(trend.latestFailures[0]).toMatchObject({ profile: 'coding-answer', checks: ['missing-validation-summary'] });
   });
 });

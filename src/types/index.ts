@@ -1,6 +1,6 @@
 export { Tool, ToolResult, ToolCall, OllamaToolSchema, toolToSchema } from './tool';
 export type { Message } from './tool';
-export { LoopConfig, LoopEvent, TextEvent, ToolCallEvent, ToolResultEvent, ContextEvent, ErrorEvent, DoneEvent } from './loop';
+export { LoopConfig, LoopEvent, TextEvent, OutputValidationEvent, ToolCallEvent, ToolResultEvent, ContextEvent, ErrorEvent, DoneEvent } from './loop';
 export { PermissionRule, PermissionMode, PermissionDecision, PermissionResult } from './permission';
 export { SessionEvent, SessionEventType, SessionEventData, SessionMeta, ContinuityCheckpoint, SessionStatus } from './session';
 export { Hook, HookHandler, HookContext, HookResult, HookEventType } from './hook';

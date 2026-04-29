@@ -1,4 +1,5 @@
 import type { ToolCall, ToolResult } from './tool';
+import type { CustomOutputValidationProfile, OutputValidationProfile, OutputValidationResult } from '../core/outputValidation';
 
 export interface LoopConfig {
   model: string;
@@ -14,10 +15,16 @@ export interface LoopConfig {
     minSummaryQuality?: number;
     summarizerModel?: string;
   };
+  outputValidation?: {
+    enabled?: boolean;
+    profile?: OutputValidationProfile;
+    customProfiles?: CustomOutputValidationProfile[];
+  };
 }
 
 export type LoopEvent =
   | TextEvent
+  | OutputValidationEvent
   | ToolCallEvent
   | ToolResultEvent
   | ContextEvent
@@ -27,6 +34,11 @@ export type LoopEvent =
 export interface TextEvent {
   type: 'text';
   content: string;
+}
+
+export interface OutputValidationEvent {
+  type: 'output_validation';
+  validation: OutputValidationResult;
 }
 
 export interface ToolCallEvent {

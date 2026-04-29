@@ -41,6 +41,9 @@ async function main() {
         hasRoutingSettings: Boolean(document.getElementById('smallHelperModel')) && Boolean(document.getElementById('strongHelperModel')),
         hasMediaToolSettings: Boolean(document.getElementById('visionModel')) && Boolean(document.getElementById('audioTranscribeCommand')),
         hasSettingsDoctor: Boolean(document.getElementById('settingsAudioSamplePath')) && Boolean(document.getElementById('settingsDoctorHealth')),
+        hasOutputValidationSettings: Boolean(document.getElementById('outputValidationProfile')) && Boolean(document.getElementById('outputValidationToggle')),
+        hasOutputValidationProfileEditor: Boolean(document.getElementById('outputValidationProfilesJson')) && Boolean(document.getElementById('saveOutputValidationProfilesBtn')),
+        outputValidationProfiles: Array.from(document.querySelectorAll('#outputValidationProfile option')).map((option) => option.value),
         settingsDoctorVisible: !document.getElementById('settingsDoctorHealth').classList.contains('initial-hidden'),
         firstRunHealthVisible: !document.getElementById('firstRunHealth').classList.contains('initial-hidden'),
         hasContextDetails: Boolean(document.getElementById('contextDetails')),
@@ -62,6 +65,7 @@ async function main() {
         hasCandidateProvenanceDetail: Boolean(document.getElementById('candidateProvenanceDetail')),
         hasEvalDatasetManager: Boolean(document.getElementById('evalDatasetManager')),
         hasEvalRunTrend: Boolean(document.getElementById('evalRunTrend')),
+        hasOutputValidationTrend: Boolean(document.getElementById('outputValidationTrend')),
         hasRunEvalDatasetButton: Boolean(document.getElementById('runEvalDatasetBtn')),
         hasRunLiveReplayDatasetButton: Boolean(document.getElementById('runLiveReplayDatasetBtn')),
         hasApplyCalibrationButton: Boolean(document.getElementById('applyCalibrationBtn')),
@@ -75,6 +79,9 @@ async function main() {
         hasMediaToolSettingFunction: typeof window.updateMediaToolSetting === 'function',
         hasFirstRunSetupFunction: typeof window.applyFirstRunSetup === 'function',
         hasFirstRunHealthFunction: typeof window.checkFirstRunHealth === 'function',
+        hasOutputValidationSettingFunction: typeof window.updateOutputValidationSetting === 'function' && typeof window.toggleOutputValidation === 'function' && typeof window.saveOutputValidationProfiles === 'function',
+        hasOutputValidationFormatter: typeof window.formatOutputValidation === 'function',
+        hasOutputValidationGroupedRenderer: typeof window.appendOutputValidationItem === 'function',
         hasApplyCalibrationFunction: typeof window.applyRoutingCalibration === 'function',
         duplicateIds,
       };
@@ -91,6 +98,11 @@ async function main() {
     if (!result.hasRoutingSettings) failures.push('helper routing settings were not found');
     if (!result.hasMediaToolSettings) failures.push('media tool settings were not found');
     if (!result.hasSettingsDoctor) failures.push('settings setup doctor controls were not found');
+    if (!result.hasOutputValidationSettings) failures.push('output validation settings were not found');
+    if (!result.hasOutputValidationProfileEditor) failures.push('output validation profile editor was not found');
+    for (const profile of ['oracle-prime', 'factual-answer', 'coding-answer', 'tool-result-summary']) {
+      if (!result.outputValidationProfiles.includes(profile)) failures.push(`output validation profile option was not found: ${profile}`);
+    }
     if (!result.settingsDoctorVisible) failures.push('settings setup doctor did not render results');
     if (!result.firstRunHealthVisible) failures.push('first-run setup doctor did not render results');
     if (!result.hasContextDetails) failures.push('context details were not found');
@@ -110,6 +122,7 @@ async function main() {
     if (!result.hasCandidateProvenanceDetail) failures.push('candidate provenance detail panel was not rendered');
     if (!result.hasEvalDatasetManager) failures.push('eval dataset manager was not rendered');
     if (!result.hasEvalRunTrend) failures.push('eval run trend panel was not rendered');
+    if (!result.hasOutputValidationTrend) failures.push('output validation trend panel was not rendered');
     if (!result.hasRunEvalDatasetButton) failures.push('run eval dataset button was not rendered');
     if (!result.hasRunLiveReplayDatasetButton) failures.push('run live replay dataset button was not rendered');
     if (!result.hasApplyCalibrationButton) failures.push('apply calibration button was not rendered');
@@ -123,6 +136,9 @@ async function main() {
     if (!result.hasMediaToolSettingFunction) failures.push('media tool setting function was not found');
     if (!result.hasFirstRunSetupFunction) failures.push('first-run setup function was not found');
     if (!result.hasFirstRunHealthFunction) failures.push('first-run health function was not found');
+    if (!result.hasOutputValidationSettingFunction) failures.push('output validation setting function was not found');
+    if (!result.hasOutputValidationFormatter) failures.push('output validation formatter was not found');
+    if (!result.hasOutputValidationGroupedRenderer) failures.push('grouped output validation renderer was not found');
     if (!result.hasApplyCalibrationFunction) failures.push('apply calibration function was not found');
     if (result.duplicateIds.length > 0) failures.push(`duplicate ids found: ${result.duplicateIds.join(', ')}`);
 
@@ -158,6 +174,9 @@ async function runStaticSmoke() {
     hasRoutingSettings: ids.includes('smallHelperModel') && ids.includes('strongHelperModel'),
     hasMediaToolSettings: ids.includes('visionModel') && ids.includes('audioTranscribeCommand'),
     hasSettingsDoctor: ids.includes('settingsAudioSamplePath') && ids.includes('settingsDoctorHealth'),
+    hasOutputValidationSettings: ids.includes('outputValidationProfile') && ids.includes('outputValidationToggle'),
+    hasOutputValidationProfileEditor: ids.includes('outputValidationProfilesJson') && ids.includes('saveOutputValidationProfilesBtn'),
+    outputValidationProfiles: Array.from(html.matchAll(/<option value="([^"]+)"/g)).map((match) => match[1]).filter((value) => ['oracle-prime', 'factual-answer', 'coding-answer', 'tool-result-summary'].includes(value)),
     hasContextDetails: ids.includes('contextDetails'),
     hasTraceEvalExamples: ids.includes('traceEvalExamples'),
     hasWeatherReplayEvalButton: ids.includes('createWeatherReplayEvalBtn'),
@@ -183,6 +202,10 @@ async function runStaticSmoke() {
     hasSettingsDoctorFunction: appScript.includes('function checkSettingsHealth'),
     hasFirstRunSetupFunction: appScript.includes('function applyFirstRunSetup'),
     hasFirstRunHealthFunction: appScript.includes('function checkFirstRunHealth'),
+    hasOutputValidationSettingFunction: appScript.includes('function updateOutputValidationSetting') && appScript.includes('function toggleOutputValidation') && appScript.includes('function saveOutputValidationProfiles'),
+    hasOutputValidationFormatter: appScript.includes('function formatOutputValidation'),
+    hasOutputValidationGroupedRenderer: appScript.includes('function appendOutputValidationItem'),
+    hasOutputValidationTrendFunction: appScript.includes('function renderOutputValidationTrends'),
     hasMediaToolGuidance: appScript.includes('image_analyze') && appScript.includes('audio_transcribe'),
     hasRecoveryCopy: appScript.includes('Unfinished chat available') && appScript.includes('Fork starts a copy'),
     hasApplyCalibrationFunction: appScript.includes('function applyRoutingCalibration'),
@@ -198,6 +221,11 @@ async function runStaticSmoke() {
   if (!result.hasRoutingSettings) failures.push('helper routing settings were not found');
   if (!result.hasMediaToolSettings) failures.push('media tool settings were not found');
   if (!result.hasSettingsDoctor) failures.push('settings setup doctor controls were not found');
+  if (!result.hasOutputValidationSettings) failures.push('output validation settings were not found');
+  if (!result.hasOutputValidationProfileEditor) failures.push('output validation profile editor was not found');
+  for (const profile of ['oracle-prime', 'factual-answer', 'coding-answer', 'tool-result-summary']) {
+    if (!result.outputValidationProfiles.includes(profile)) failures.push(`output validation profile option was not found: ${profile}`);
+  }
   if (!result.hasContextDetails) failures.push('context details were not found');
   if (!result.hasTraceEvalExamples) failures.push('trace eval example panel was not found');
   if (!result.hasWeatherReplayEvalButton) failures.push('weather replay eval button was not found');
@@ -223,6 +251,10 @@ async function runStaticSmoke() {
   if (!result.hasSettingsDoctorFunction) failures.push('settings setup doctor function was not found');
   if (!result.hasFirstRunSetupFunction) failures.push('first-run setup function was not found');
   if (!result.hasFirstRunHealthFunction) failures.push('first-run health function was not found');
+  if (!result.hasOutputValidationSettingFunction) failures.push('output validation setting function was not found');
+  if (!result.hasOutputValidationFormatter) failures.push('output validation formatter was not found');
+  if (!result.hasOutputValidationGroupedRenderer) failures.push('grouped output validation renderer was not found');
+  if (!result.hasOutputValidationTrendFunction) failures.push('output validation trend renderer was not found');
   if (!result.hasMediaToolGuidance) failures.push('media tool guidance was not found');
   if (!result.hasRecoveryCopy) failures.push('recovery explanation copy was not found');
   if (!result.hasApplyCalibrationFunction) failures.push('apply calibration function was not found');

@@ -15,13 +15,20 @@ describe('web server API validation', () => {
   let server: Server;
   let baseUrl: string;
   let originalSettings: string | null = null;
+  let originalValidationProfiles: string | null = null;
   const settingsPath = path.join(process.cwd(), '.harness', 'settings.json');
+  const validationProfilesPath = path.join(process.cwd(), '.harness', 'output-validation-profiles.json');
 
   beforeAll(async () => {
     try {
       originalSettings = await fs.readFile(settingsPath, 'utf-8');
     } catch {
       originalSettings = null;
+    }
+    try {
+      originalValidationProfiles = await fs.readFile(validationProfilesPath, 'utf-8');
+    } catch {
+      originalValidationProfiles = null;
     }
     await new Promise<void>((resolve) => {
       server = app.listen(0, '127.0.0.1', () => resolve());
@@ -40,6 +47,12 @@ describe('web server API validation', () => {
     } else {
       await fs.mkdir(path.dirname(settingsPath), { recursive: true });
       await fs.writeFile(settingsPath, originalSettings, 'utf-8');
+    }
+    if (originalValidationProfiles === null) {
+      await fs.rm(validationProfilesPath, { force: true });
+    } else {
+      await fs.mkdir(path.dirname(validationProfilesPath), { recursive: true });
+      await fs.writeFile(validationProfilesPath, originalValidationProfiles, 'utf-8');
     }
   });
 
@@ -99,6 +112,19 @@ describe('web server API validation', () => {
       modelRouting: { smallModel: 'tiny-helper', defaultModel: 'base-helper', strongModel: 'strong-helper', confidenceEscalationThreshold: 0.3 },
       mediaTools: { visionModel: 'llava', audioTranscribeCommand: 'whisper "{input}" --model base' },
     });
+  });
+
+  it('saves custom output validation profiles and exposes them in settings', async () => {
+    const response = await request('/api/output-validation/profiles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profiles: [{ profile: 'release-note', label: 'Release Note', description: 'Release validation summary.', instructions: 'Mention release validation.', checks: [{ code: 'mentions-release', severity: 'fail', message: 'Mention release.', requiresAll: ['release'] }] }] }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ customProfiles: [expect.objectContaining({ profile: 'release-note' })] });
+    await expect(request('/api/settings').then((settings) => settings.json())).resolves.toMatchObject({ outputValidationProfiles: expect.arrayContaining([expect.objectContaining({ profile: 'release-note' })]) });
+    await expect(fs.readFile(validationProfilesPath, 'utf-8')).resolves.toContain('release-note');
   });
 
   it('applies media tool settings to the running process', async () => {
@@ -496,7 +522,10 @@ describe('web server API validation', () => {
       startNewSession: jest.fn(),
       getEvolvedPrompt: async (basePrompt) => basePrompt,
       assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
-      runQueryLoop: async function* (): AsyncGenerator<LoopEvent> {
+      runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
+        if (config.outputValidation?.enabled) {
+          yield { type: 'output_validation', validation: { profile: 'oracle-prime', status: 'fail', score: 0.1, findings: [], missingSections: [] } };
+        }
         yield { type: 'text', content: 'mocked response' };
         yield { type: 'done', reason: 'completed', turns: 1 };
       },
@@ -519,6 +548,58 @@ describe('web server API validation', () => {
       expect(createClient).toHaveBeenCalledWith('test-model', expect.any(String), 32768);
       const settings = await request('/api/settings');
       await expect(settings.json()).resolves.toMatchObject({ context: { detectedMaxTokens: 32768, effectiveMaxTokens: 32768 } });
+    } finally {
+      restore();
+    }
+  });
+
+  it('persists output validation settings, streams validation events, and records eval runs', async () => {
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('validation-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
+        expect(config.outputValidation).toMatchObject({ enabled: true, profile: 'coding-answer' });
+        yield { type: 'output_validation', validation: { profile: 'coding-answer', status: 'warn', score: 0.95, findings: [{ code: 'missing-validation-summary', severity: 'warn', message: 'Coding answer should state validation performed.' }], missingSections: [] } };
+        yield { type: 'text', content: 'mocked response' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const settingsResponse = await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outputValidation: { enabled: true, profile: 'coding-answer' } }),
+      });
+      expect(settingsResponse.status).toBe(200);
+      await expect(settingsResponse.json()).resolves.toMatchObject({ outputValidation: { enabled: true, profile: 'coding-answer' } });
+
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'hello', model: 'test-model' }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain('"type":"output_validation"');
+      const runs = await request('/api/evals/runs');
+      const runsBody = await runs.json() as { outputValidationTrend: { byProfile: Record<string, { total: number }> } };
+      expect(JSON.stringify(runsBody)).toContain('coding-answer');
+      expect(runsBody.outputValidationTrend.byProfile['coding-answer']).toMatchObject({ total: expect.any(Number) });
     } finally {
       restore();
     }

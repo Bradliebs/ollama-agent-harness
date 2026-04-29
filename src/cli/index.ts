@@ -9,6 +9,7 @@ import { SessionStorage } from '../persistence/sessionStorage';
 import { assembleSystemContext } from '../context/assembly';
 import { checkSetupHealth, type SetupHealthResult } from '../setup/health';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
+import { OUTPUT_VALIDATION_PROFILES, parseOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
 import type { LoopConfig, PermissionMode } from '../types';
 
 interface CliOptions {
@@ -23,6 +24,7 @@ interface CliOptions {
   visionModel: string;
   audioTranscribeCommand: string;
   audioSamplePath: string;
+  outputValidation?: OutputValidationProfile;
 }
 
 export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
@@ -78,6 +80,9 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
       case '--audio-sample':
         options.audioSamplePath = args[++i];
         break;
+      case '--validate-output':
+        options.outputValidation = parseOutputValidationProfile(args[++i]);
+        break;
       case '--helper-confidence-threshold':
         options.modelRouting.confidenceEscalationThreshold = parseFloat(args[++i]);
         break;
@@ -117,6 +122,7 @@ Options:
   --vision-model <name>  Vision model to check in Ollama
   --audio-command <cmd>  Audio transcription command with {input}
   --audio-sample <path>  Optional audio file path for an end-to-end transcription check
+  --validate-output <profile> Validate final output against a profile: ${OUTPUT_VALIDATION_PROFILES.map((profile) => profile.profile).join(', ')}
   -p, --prompt <text>    Run a single prompt (headless mode)
   -h, --help             Show this help
 `);
@@ -169,6 +175,7 @@ export async function main(): Promise<void> {
     model: options.model,
     systemPrompt,
     maxTurns: options.maxTurns,
+    outputValidation: options.outputValidation ? { enabled: true, profile: options.outputValidation } : undefined,
   };
 
   const deps: QueryLoopDeps = {
@@ -237,6 +244,12 @@ async function runHeadless(
       case 'context':
         console.error(`🧠 context ${event.strategy}: freed ~${event.tokensFreed} tokens, pressure ${Math.round(event.pressure * 100)}%${event.autosaved ? ', autosaved' : ''}`);
         break;
+      case 'output_validation':
+        console.error(`🧪 output validation ${event.validation.status}: score ${event.validation.score}`);
+        for (const finding of event.validation.findings.slice(0, 5)) {
+          console.error(`  ${finding.severity.toUpperCase()} ${finding.message}`);
+        }
+        break;
       case 'error':
         console.error(`⚠️ ${event.message}`);
         break;
@@ -292,6 +305,12 @@ async function runInteractive(
           break;
         case 'context':
           console.log(`  🧠 context ${event.strategy}: freed ~${event.tokensFreed} tokens, pressure ${Math.round(event.pressure * 100)}%${event.autosaved ? ', autosaved' : ''}`);
+          break;
+        case 'output_validation':
+          console.log(`  🧪 output validation ${event.validation.status}: score ${event.validation.score}`);
+          for (const finding of event.validation.findings.slice(0, 3)) {
+            console.log(`     ${finding.severity.toUpperCase()} ${finding.message}`);
+          }
           break;
         case 'done':
           break;
