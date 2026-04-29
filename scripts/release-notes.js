@@ -25,7 +25,7 @@ function main() {
       if (entry.releaseItems.length > 0) lines.push('');
     }
   } else if (fs.existsSync('CHANGELOG.md')) {
-    const changelog = stripFrontmatter(fs.readFileSync('CHANGELOG.md', 'utf-8')).trim();
+    const changelog = currentVersionSection(stripFrontmatter(fs.readFileSync('CHANGELOG.md', 'utf-8')), version).trim();
     lines.length = 0;
     lines.push(changelog.replace(/^##?\s+Ollama Agent Harness .+$/m, `# Ollama Agent Harness ${version}`), '');
   } else {
@@ -148,6 +148,13 @@ function sha256(file) {
 
 function stripFrontmatter(content) {
   return content.startsWith('---\n') ? content.replace(/^---\n[\s\S]*?\n---\n/, '') : content;
+}
+
+function currentVersionSection(content, targetVersion) {
+  const escaped = escapeRegExp(String(targetVersion).replace(/^v/i, 'v'));
+  const pattern = new RegExp(`^##\\s+Ollama Agent Harness ${escaped}\\s*$([\\s\\S]*?)(?=^##\\s+Ollama Agent Harness v|\\z)`, 'm');
+  const match = content.match(pattern);
+  return match ? match[0] : content;
 }
 
 main();
