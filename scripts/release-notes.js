@@ -33,7 +33,9 @@ function main() {
     lines.push('## Changes', '', fallback || 'Validated release from the current repository state.', '');
   }
 
-  lines.push('## Validation', '', '* Typecheck, tests, build, and release archive smoke are expected to pass before publishing.', '');
+  if (!lines.join('\n').includes('\n## Validation\n')) {
+    lines.push('## Validation', '', '* Typecheck, tests, build, and release archive smoke are expected to pass before publishing.', '');
+  }
   fs.mkdirSync(path.dirname(output), { recursive: true });
   fs.writeFileSync(output, lines.join('\n'), 'utf-8');
   console.log(JSON.stringify({ ok: true, output, changes: entries.length }, null, 2));
