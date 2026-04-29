@@ -419,3 +419,118 @@ export const PdfRenderPageTool: Tool = {
     }
   },
 };
+
+export const PdfExtractTablesTool: Tool = {
+  name: 'pdf_extract_tables',
+  description: 'Heuristically extract tabular data from a PDF page using pdfjs text item positions. Outputs CSV. Best on PDFs with embedded text and reasonably aligned columns.',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Absolute or project-relative path to a .pdf file' },
+      page: { type: 'number', description: '1-based page number to scan' },
+      column_tolerance: { type: 'number', description: 'Pixel tolerance when grouping items into the same column (default 8)' },
+      row_tolerance: { type: 'number', description: 'Pixel tolerance when grouping items into the same row (default 4)' },
+    },
+    required: ['path', 'page'],
+  },
+  isReadOnly: true,
+  async execute(input: Record<string, unknown>): Promise<ToolResult> {
+    const filePath = resolveProjectPath(input.path);
+    if (!filePath) return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
+    if (path.extname(filePath).toLowerCase() !== '.pdf') return { success: false, output: 'File does not have a .pdf extension', error: 'not a pdf' };
+    const pageNum = Math.max(1, Math.floor(Number(input.page)));
+    if (!Number.isFinite(pageNum) || pageNum < 1) return { success: false, output: 'page must be a positive integer', error: 'invalid page' };
+    const colTol = Number.isFinite(Number(input.column_tolerance)) ? Number(input.column_tolerance) : 8;
+    const rowTol = Number.isFinite(Number(input.row_tolerance)) ? Number(input.row_tolerance) : 4;
+    try {
+      const stat = await fs.stat(filePath);
+      if (stat.size > MAX_PDF_BYTES) return { success: false, output: `PDF exceeds ${MAX_PDF_BYTES} bytes (${stat.size}).`, error: 'pdf too large' };
+      const data = await fs.readFile(filePath);
+      const csv = await extractPdfPageTableCsv(data, pageNum, { colTol, rowTol });
+      if (!csv) return { success: true, output: '(no tabular content detected on this page)' };
+      return { success: true, output: csv };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return { success: false, output: `Failed to extract tables: ${msg}`, error: msg };
+    }
+  },
+};
+
+interface PositionedItem { str: string; x: number; y: number; width: number; }
+
+export async function extractPdfPageTableCsv(
+  data: Buffer,
+  pageNum: number,
+  options: { colTol: number; rowTol: number }
+): Promise<string> {
+  const pdfjs = loadPdfjs();
+  const loadingTask = pdfjs.getDocument({
+    data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+    disableFontFace: true,
+    useSystemFonts: false,
+    isEvalSupported: false,
+    verbosity: 0,
+  });
+  const doc = await loadingTask.promise;
+  try {
+    if (pageNum < 1 || pageNum > doc.numPages) throw new Error(`page ${pageNum} out of range (1-${doc.numPages})`);
+    const page = await doc.getPage(pageNum);
+    try {
+      const content = await page.getTextContent();
+      const items: PositionedItem[] = [];
+      for (const raw of content.items as unknown[]) {
+        const item = raw as { str?: unknown; transform?: number[]; width?: number };
+        if (typeof item.str !== 'string' || !item.str.trim()) continue;
+        const tr = item.transform;
+        if (!Array.isArray(tr) || tr.length < 6) continue;
+        items.push({ str: item.str, x: Number(tr[4]), y: Number(tr[5]), width: Number(item.width ?? 0) });
+      }
+      if (items.length === 0) return '';
+      // Group into rows by y coordinate.
+      const sortedY = [...items].sort((a, b) => b.y - a.y);
+      const rows: PositionedItem[][] = [];
+      for (const item of sortedY) {
+        const lastRow = rows[rows.length - 1];
+        if (lastRow && Math.abs((lastRow[0] as PositionedItem).y - item.y) <= options.rowTol) {
+          lastRow.push(item);
+        } else {
+          rows.push([item]);
+        }
+      }
+      // Determine column anchors from the densest row.
+      const densest = rows.slice().sort((a, b) => b.length - a.length)[0] ?? rows[0]!;
+      const anchors = densest.map((it) => it.x).sort((a, b) => a - b);
+      // For each row, place items into nearest column.
+      const csvRows: string[][] = [];
+      for (const row of rows) {
+        const cols: string[] = anchors.map(() => '');
+        for (const item of row.sort((a, b) => a.x - b.x)) {
+          let best = 0;
+          let bestDist = Infinity;
+          for (let i = 0; i < anchors.length; i++) {
+            const dist = Math.abs((anchors[i] as number) - item.x);
+            if (dist < bestDist) { bestDist = dist; best = i; }
+          }
+          if (bestDist <= options.colTol * 6) {
+            cols[best] = (cols[best] ? cols[best] + ' ' : '') + item.str.trim();
+          }
+        }
+        if (cols.some((c) => c.trim().length > 0)) csvRows.push(cols);
+      }
+      if (csvRows.length === 0) return '';
+      return csvRows.map((row) => row.map(csvEscape).join(',')).join('\n');
+    } finally {
+      page.cleanup();
+    }
+  } finally {
+    await doc.destroy();
+  }
+}
+
+function csvEscape(value: string): string {
+  const v = value.replace(/\r?\n/g, ' ').trim();
+  if (v.includes(',') || v.includes('"') || v.includes('\n')) {
+    return '"' + v.replace(/"/g, '""') + '"';
+  }
+  return v;
+}

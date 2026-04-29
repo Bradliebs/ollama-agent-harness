@@ -675,10 +675,12 @@ async function checkSettingsHealth() {
   }
   try {
     const params = new URLSearchParams({ ollamaHost: host, visionModel, audioTranscribeCommand, audioSamplePath });
+    const pdfOcrCommand = document.getElementById('pdfOcrCommand')?.value.trim() || '';
+    if (pdfOcrCommand) params.set('pdfOcrCommand', pdfOcrCommand);
     const response = await fetch('/api/setup/health?' + params.toString());
     const data = await response.json();
     if (data.error) throw new Error(data.error);
-    if (detail) detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio);
+    if (detail) detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio) + (data.pdfOcr ? renderSetupHealthRow('PDF OCR', data.pdfOcr) : '');
   } catch (error) {
     if (detail) detail.innerHTML = '<div><strong>Setup</strong> ' + esc(error.message || error) + '</div>';
   }
@@ -730,7 +732,7 @@ async function checkFirstRunHealth() {
     if (data.error) throw new Error(data.error);
     if (detail) {
       detail.classList.remove('initial-hidden');
-      detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio);
+      detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio) + (data.pdfOcr ? renderSetupHealthRow('PDF OCR', data.pdfOcr) : '');
     }
     if (status) status.textContent = data.ollama?.ok ? 'Setup check finished.' : 'Setup check found an Ollama connection issue.';
     markWalkthroughStep('setup');
@@ -771,8 +773,49 @@ function showAttached() {
   const el = document.getElementById('attachedFiles');
   if (!pendingFiles.length) { el.style.display = 'none'; renderAttachmentHint(); return; }
   el.style.display = 'flex';
-  el.innerHTML = pendingFiles.map((f, i) => '<span title="' + escAttr(mediaKind(f)) + ' attachment" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:12px;display:flex;align-items:center;gap:4px">' + mediaIcon(f) + ' ' + esc(mediaKind(f)) + ': ' + esc(f.name) + ' <button onclick="removeAttached(' + i + ')" title="Remove attachment" style="background:none;border:none;color:var(--error);cursor:pointer;font-size:14px">✕</button></span>').join('');
+  el.innerHTML = pendingFiles.map((f, i) => {
+    const streamBtn = mediaKind(f) === 'pdf'
+      ? ' <button onclick="streamPdfExtract(' + i + ')" title="Stream PDF extraction" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:14px">⇩</button>'
+      : '';
+    return '<span title="' + escAttr(mediaKind(f)) + ' attachment" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:12px;display:flex;align-items:center;gap:4px">' + mediaIcon(f) + ' ' + esc(mediaKind(f)) + ': ' + esc(f.name) + streamBtn + ' <button onclick="removeAttached(' + i + ')" title="Remove attachment" style="background:none;border:none;color:var(--error);cursor:pointer;font-size:14px">✕</button></span>';
+  }).join('');
   renderAttachmentHint();
+}
+
+async function streamPdfExtract(index) {
+  const file = pendingFiles[index];
+  if (!file) return;
+  const dialog = document.createElement('div');
+  dialog.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999';
+  dialog.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;width:80%;max-width:800px;max-height:80vh;display:flex;flex-direction:column;gap:8px"><div style="display:flex;justify-content:space-between;align-items:center"><strong>Streaming pages from ' + esc(file.name) + '</strong><button id="closePdfStream" style="background:none;border:none;color:var(--text);font-size:18px;cursor:pointer">✕</button></div><div id="pdfStreamLog" style="flex:1;overflow:auto;font-family:var(--mono);font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px"></div><div id="pdfStreamStatus" style="font-size:12px;color:var(--muted)">Connecting…</div></div>';
+  document.body.appendChild(dialog);
+  const log = dialog.querySelector('#pdfStreamLog');
+  const status = dialog.querySelector('#pdfStreamStatus');
+  const close = () => { try { source.close(); } catch {} dialog.remove(); };
+  dialog.querySelector('#closePdfStream').onclick = close;
+  const source = new EventSource('/api/pdf/extract?path=' + encodeURIComponent(file.path));
+  let pages = 0;
+  source.addEventListener('page', (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      pages++;
+      const block = document.createElement('div');
+      block.innerHTML = '<div style="color:var(--accent);margin-top:6px">--- Page ' + data.pageNum + ' ---</div><div style="white-space:pre-wrap">' + esc(data.text || '(empty)') + '</div>';
+      log.appendChild(block);
+      log.scrollTop = log.scrollHeight;
+      status.textContent = 'Streamed ' + pages + ' page(s)…';
+    } catch {}
+  });
+  source.addEventListener('done', (e) => {
+    try { const data = JSON.parse(e.data); status.textContent = 'Done. ' + data.pages + ' pages.'; } catch {}
+    source.close();
+  });
+  source.addEventListener('error', (e) => {
+    let msg = 'Stream error.';
+    try { msg = 'Error: ' + (JSON.parse(e.data).message || msg); } catch {}
+    status.textContent = msg;
+    source.close();
+  });
 }
 
 function mediaKind(file) { return file.mediaKind || (file.mimeType || '').split('/')[0] || 'file'; }

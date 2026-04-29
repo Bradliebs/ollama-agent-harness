@@ -295,11 +295,15 @@ app.get('/api/setup/health', async (req, res) => {
   const requestedAudioSamplePath = typeof req.query.audioSamplePath === 'string'
     ? String(req.query.audioSamplePath).trim()
     : '';
+  const requestedPdfOcrCommand = typeof req.query.pdfOcrCommand === 'string'
+    ? String(req.query.pdfOcrCommand).trim()
+    : mediaTools.pdfOcrCommand;
   res.json(await checkSetupHealth({
     host: parsedHost,
     visionModel: requestedVisionModel,
     audioTranscribeCommand: requestedAudioCommand,
     audioSamplePath: requestedAudioSamplePath || undefined,
+    pdfOcrCommand: requestedPdfOcrCommand || undefined,
   }));
 });
 

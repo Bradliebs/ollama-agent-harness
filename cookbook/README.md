@@ -12,6 +12,7 @@ Copy-paste-ready code recipes for the Ollama Agent Harness. Each recipe demonstr
 | **Hello World** | [hello-world.ts](hello-world.ts) | Starter recipe |
 | **Task Loop** | [task-loop.ts](task-loop.ts) | Autonomous task execution — reads IMPLEMENTATION_PLAN.md and works through tasks |
 | **Summarize a PDF** | [pdf-summarize.ts](pdf-summarize.ts) | Calls `PdfMetadataTool` and `PdfReadTool` from the public API, then asks Ollama to summarize the extracted text |
+| **Render a PDF page for a vision model** | [pdf-render-vision.ts](pdf-render-vision.ts) | Calls `PdfRenderPageTool` (needs `HARNESS_PDF_RENDER_COMMAND`) to rasterize a page and asks a vision model to describe it |
 
 ## Architecture Reference
 
