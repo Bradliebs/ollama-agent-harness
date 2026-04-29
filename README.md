@@ -147,6 +147,8 @@ Custom deterministic profiles can be authored from the Settings panel or by edit
 
 Custom checks support `requiresAny`, `requiresAll`, `forbidsAny`, `minLength`, and `maxLength`. These checks are structural. They can catch missing answer parts, but they do not prove that a factual claim is true.
 
+The Settings panel includes a guided profile form for custom validation profiles. Fill in the profile fields, add one or more checks, and choose **Save form profile**. Harness writes the JSON for you and saves it to `.harness/output-validation-profiles.json`. The advanced JSON editor remains available for manual edits.
+
 The editor validates profile JSON before saving and the API returns field-level schema errors for invalid profiles. Custom checks also support deterministic score tuning:
 
 * `scorePenalty` on a check sets the score reduction when that check fails. Use a value from `0` to `1`.
@@ -154,6 +156,8 @@ The editor validates profile JSON before saving and the API returns field-level 
 * `failBelowScore` on a profile changes a non-failing result to `fail` when the final score drops below the threshold.
 
 The release workflow downloads the published release zip after upload and runs the same archive smoke test against that published asset.
+
+The Learning tab can download output-validation trend data as JSON. Release notes include commit and asset provenance, including the release zip SHA-256 digest when an asset is available during note generation.
 
 ## GitHub Baseline
 

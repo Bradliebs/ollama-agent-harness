@@ -11,6 +11,24 @@ keywords:
 estimated_reading_time: 8
 ---
 
+## Ollama Agent Harness v0.1.8
+
+## Changes
+
+### Beginner Proof Validation Experience Changes
+
+Added beginner-friendly profile authoring, validation trend export, and release provenance in generated release notes.
+
+* `ui/index.html` and `ui/app.js` - add guided custom profile form controls that write valid profile JSON for users.
+* `src/learning/evalTrace.ts` - exports output-validation trend data with raw validation results.
+* `src/web/server.ts` - adds a JSON download endpoint for validation trend exports.
+* `scripts/release-notes.js` - adds commit SHA, asset name, asset size, and SHA-256 digest to release notes when an asset is provided.
+* `.github/workflows/release.yml` - passes the packaged release asset and commit SHA into release note generation.
+
+## Validation
+
+* Focused learning and web server Jest suites, TypeScript typecheck, full Jest, build, UI smoke, release notes generation, and release archive smoke passed locally before release packaging.
+
 ## Ollama Agent Harness v0.1.7
 
 ## Changes

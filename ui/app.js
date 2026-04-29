@@ -142,6 +142,8 @@ async function loadSettings() {
       profilesEditor.oninput = validateOutputValidationProfilesEditor;
       validateOutputValidationProfilesEditor();
     }
+    renderCustomProfilePicker();
+    resetCustomProfileForm();
     if (outputToggle) outputToggle.classList.toggle('active', currentOutputValidation.enabled === true);
     if (firstRunHost) firstRunHost.value = s.ollamaHost || 'http://localhost:11434';
     if (firstRunVision) firstRunVision.value = currentMediaTools.visionModel || '';
@@ -163,6 +165,154 @@ function renderOutputValidationProfileOptions(select, profiles, selected) {
   ];
   select.innerHTML = knownProfiles.map((profile) => '<option value="' + escAttr(profile.profile) + '">' + esc(profile.label || profile.profile) + '</option>').join('');
   select.value = selected;
+}
+
+function currentCustomProfilesFromEditor() {
+  const editor = document.getElementById('outputValidationProfilesJson');
+  if (!editor) return [];
+  try {
+    const parsed = JSON.parse(editor.value || '{"profiles":[]}');
+    return Array.isArray(parsed) ? parsed : Array.isArray(parsed.profiles) ? parsed.profiles : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCustomProfilesToEditor(profiles) {
+  const editor = document.getElementById('outputValidationProfilesJson');
+  if (!editor) return;
+  editor.value = JSON.stringify({ profiles }, null, 2);
+  validateOutputValidationProfilesEditor();
+  renderCustomProfilePicker();
+}
+
+function renderCustomProfilePicker(selected) {
+  const picker = document.getElementById('customProfilePicker');
+  if (!picker) return;
+  const profiles = currentCustomProfilesFromEditor();
+  picker.innerHTML = '<option value="">New profile</option>' + profiles.map((profile) => '<option value="' + escAttr(profile.profile || '') + '">' + esc(profile.label || profile.profile || 'Untitled profile') + '</option>').join('');
+  picker.value = selected || '';
+}
+
+function resetCustomProfileForm() {
+  const fields = {
+    customProfileId: '',
+    customProfileLabel: '',
+    customProfileDescription: '',
+    customProfileInstructions: '',
+    customProfileWarnBelow: '',
+    customProfileFailBelow: '',
+  };
+  for (const [id, value] of Object.entries(fields)) {
+    const field = document.getElementById(id);
+    if (field) field.value = value;
+  }
+  const picker = document.getElementById('customProfilePicker');
+  if (picker) picker.value = '';
+  const checks = document.getElementById('customProfileChecks');
+  if (checks) checks.innerHTML = '';
+  addCustomProfileCheck({ code: 'has-outcome', severity: 'fail', message: 'Mention whether the work passed or failed.', requiresAny: ['passed', 'failed'], scorePenalty: 0.2 });
+}
+
+function loadSelectedCustomProfile() {
+  const selected = document.getElementById('customProfilePicker')?.value || '';
+  const profile = currentCustomProfilesFromEditor().find((item) => item.profile === selected);
+  if (!profile) { resetCustomProfileForm(); return; }
+  document.getElementById('customProfileId').value = profile.profile || '';
+  document.getElementById('customProfileLabel').value = profile.label || '';
+  document.getElementById('customProfileDescription').value = profile.description || '';
+  document.getElementById('customProfileInstructions').value = profile.instructions || '';
+  document.getElementById('customProfileWarnBelow').value = profile.warnBelowScore ?? '';
+  document.getElementById('customProfileFailBelow').value = profile.failBelowScore ?? '';
+  const checks = document.getElementById('customProfileChecks');
+  if (checks) checks.innerHTML = '';
+  (profile.checks || []).forEach((check) => addCustomProfileCheck(check));
+  if (!profile.checks?.length) addCustomProfileCheck();
+}
+
+function addCustomProfileCheck(check = {}) {
+  const checks = document.getElementById('customProfileChecks');
+  if (!checks) return;
+  const row = document.createElement('div');
+  row.className = 'profile-check-row';
+  row.innerHTML = '<div><label>Check code</label><input data-field="code" placeholder="has-outcome" value="' + escAttr(check.code || '') + '"></div>' +
+    '<div><label>Severity</label><select data-field="severity"><option value="fail">fail</option><option value="warn">warn</option><option value="pass">pass</option></select></div>' +
+    '<div class="wide"><label>Message</label><input data-field="message" placeholder="Mention the outcome." value="' + escAttr(check.message || '') + '"></div>' +
+    '<div class="wide"><label>Requires any</label><input data-field="requiresAny" placeholder="passed, failed" value="' + escAttr((check.requiresAny || []).join(', ')) + '"></div>' +
+    '<div class="wide"><label>Requires all</label><input data-field="requiresAll" placeholder="release, validation" value="' + escAttr((check.requiresAll || []).join(', ')) + '"></div>' +
+    '<div class="wide"><label>Forbids any</label><input data-field="forbidsAny" placeholder="todo, placeholder" value="' + escAttr((check.forbidsAny || []).join(', ')) + '"></div>' +
+    '<div><label>Min length</label><input data-field="minLength" type="number" min="1" max="200000" value="' + escAttr(check.minLength ?? '') + '"></div>' +
+    '<div><label>Max length</label><input data-field="maxLength" type="number" min="1" max="200000" value="' + escAttr(check.maxLength ?? '') + '"></div>' +
+    '<div><label>Score penalty</label><input data-field="scorePenalty" type="number" min="0" max="1" step="0.05" value="' + escAttr(check.scorePenalty ?? '') + '"></div>' +
+    '<button class="btn-sm danger" type="button" onclick="this.closest(\'.profile-check-row\').remove()">Remove</button>';
+  checks.appendChild(row);
+  row.querySelector('[data-field="severity"]').value = check.severity || 'fail';
+}
+
+async function saveProfileFromForm() {
+  const status = document.getElementById('outputValidationProfilesStatus');
+  try {
+    const profile = collectCustomProfileForm();
+    const profiles = currentCustomProfilesFromEditor().filter((item) => item.profile !== profile.profile);
+    profiles.push(profile);
+    writeCustomProfilesToEditor(profiles);
+    await saveOutputValidationProfiles();
+    renderCustomProfilePicker(profile.profile);
+  } catch (error) {
+    if (status) status.textContent = 'Profile form needs attention: ' + (error instanceof Error ? error.message : String(error));
+  }
+}
+
+function collectCustomProfileForm() {
+  const profile = document.getElementById('customProfileId')?.value.trim() || '';
+  if (!/^[a-z][a-z0-9._-]{2,63}$/.test(profile)) throw new Error('Profile id must look like brief-summary.');
+  const checks = Array.from(document.querySelectorAll('#customProfileChecks .profile-check-row')).map(collectCustomProfileCheck).filter(Boolean);
+  if (checks.length === 0) throw new Error('Add at least one check.');
+  const result = {
+    profile,
+    label: document.getElementById('customProfileLabel')?.value.trim() || profile,
+    description: document.getElementById('customProfileDescription')?.value.trim() || 'Custom deterministic output validation profile.',
+    instructions: document.getElementById('customProfileInstructions')?.value.trim() || 'Satisfy the custom validation checks for this response.',
+    checks,
+  };
+  const warnBelowScore = optionalNumberFromField('customProfileWarnBelow');
+  const failBelowScore = optionalNumberFromField('customProfileFailBelow');
+  if (warnBelowScore !== undefined) result.warnBelowScore = warnBelowScore;
+  if (failBelowScore !== undefined) result.failBelowScore = failBelowScore;
+  return result;
+}
+
+function collectCustomProfileCheck(row) {
+  const value = (field) => row.querySelector('[data-field="' + field + '"]')?.value.trim() || '';
+  const code = value('code');
+  const message = value('message');
+  if (!code && !message) return null;
+  if (!/^[a-z][a-z0-9._-]{1,63}$/.test(code)) throw new Error('Each check needs a code like has-outcome.');
+  if (!message) throw new Error('Each check needs a message.');
+  const check = { code, severity: value('severity') || 'warn', message };
+  for (const field of ['requiresAny', 'requiresAll', 'forbidsAny']) {
+    const terms = value(field).split(',').map((term) => term.trim()).filter(Boolean);
+    if (terms.length > 0) check[field] = terms;
+  }
+  for (const field of ['minLength', 'maxLength']) {
+    const parsed = optionalNumberValue(value(field), 1, 200000, field);
+    if (parsed !== undefined) check[field] = Math.floor(parsed);
+  }
+  const scorePenalty = optionalNumberValue(value('scorePenalty'), 0, 1, 'score penalty');
+  if (scorePenalty !== undefined) check.scorePenalty = scorePenalty;
+  return check;
+}
+
+function optionalNumberFromField(id) {
+  const value = document.getElementById(id)?.value.trim() || '';
+  return optionalNumberValue(value, 0, 1, id.replace('customProfile', '').replace('Below', ' below score').toLowerCase());
+}
+
+function optionalNumberValue(value, min, max, label) {
+  if (!value) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < min || parsed > max) throw new Error(label + ' must be from ' + min + ' to ' + max + '.');
+  return Math.round(parsed * 100) / 100;
 }
 
 function renderContextDetails(context) {
@@ -226,6 +376,7 @@ async function saveOutputValidationProfiles() {
     if (data.error) throw new Error(data.error + renderProfileSchemaErrors(data.errors));
     currentOutputValidationProfiles = data.profiles || [];
     renderOutputValidationProfileOptions(document.getElementById('outputValidationProfile'), currentOutputValidationProfiles, currentOutputValidation.profile || 'oracle-prime');
+    writeCustomProfilesToEditor(data.customProfiles || []);
     if (status) status.textContent = (data.customProfiles || []).length + ' custom profiles saved to ' + (data.path || '.harness/output-validation-profiles.json') + '.';
   } catch (error) {
     if (status) status.textContent = 'Could not save profiles: ' + (error instanceof Error ? error.message : String(error));
@@ -246,6 +397,7 @@ function validateOutputValidationProfilesEditor() {
     errors.push(error instanceof Error ? error.message : String(error));
   }
   if (status) status.textContent = errors.length > 0 ? 'Profile schema errors: ' + errors.slice(0, 5).join(' | ') : 'Profile JSON looks valid.';
+  renderCustomProfilePicker(document.getElementById('customProfilePicker')?.value || '');
   return { ok: errors.length === 0, errors };
 }
 
@@ -720,7 +872,11 @@ function renderOutputValidationTrends(data) {
   const profileRows = Object.entries(trend.byProfile || {}).map(([profile, bucket]) => '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(profile) + '</span><span>' + bucket.passed + '/' + bucket.total + ' · ' + Math.round((bucket.passRate || 0) * 100) + '%</span></div>').join('');
   const statusRows = Object.entries(trend.byStatus || {}).map(([status, count]) => '<span class="trace-pill">' + esc(status) + ': ' + count + '</span>').join('');
   const failures = (trend.latestFailures || []).map((failure) => '<div class="trace-meta">' + esc(failure.profile) + ' · ' + esc(failure.task) + ' · ' + esc(failure.message) + (failure.checks?.length ? ' · ' + esc(failure.checks.join(', ')) : '') + '</div>').join('');
-  return '<div id="outputValidationTrend" class="trace-list"><div class="trace-title">Output Validation Trends</div><div class="trace-meta">' + trend.totalResults + ' validation results recorded</div>' + (profileRows || '<div class="trace-meta">No validation runs yet</div>') + (statusRows ? '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">' + statusRows + '</div>' : '') + (failures ? '<div style="margin-top:6px"><strong>Recent findings</strong>' + failures + '</div>' : '') + '</div>';
+  return '<div id="outputValidationTrend" class="trace-list"><div class="trace-title">Output Validation Trends</div><div class="trace-meta">' + trend.totalResults + ' validation results recorded</div><button id="downloadOutputValidationTrendBtn" class="btn-sm full-width-button" onclick="downloadOutputValidationTrend()">Download validation trends</button>' + (profileRows || '<div class="trace-meta">No validation runs yet</div>') + (statusRows ? '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">' + statusRows + '</div>' : '') + (failures ? '<div style="margin-top:6px"><strong>Recent findings</strong>' + failures + '</div>' : '') + '</div>';
+}
+
+function downloadOutputValidationTrend() {
+  window.location.href = '/api/learning/output-validation-trends/download';
 }
 
 function renderRoutingMetrics(data) {

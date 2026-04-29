@@ -36,6 +36,7 @@ function main() {
   if (!lines.join('\n').includes('\n## Validation\n')) {
     lines.push('## Validation', '', '* Typecheck, tests, build, and release archive smoke are expected to pass before publishing.', '');
   }
+  appendProvenance(lines, args);
   fs.mkdirSync(path.dirname(output), { recursive: true });
   fs.writeFileSync(output, lines.join('\n'), 'utf-8');
   console.log(JSON.stringify({ ok: true, output, changes: entries.length }, null, 2));
@@ -48,8 +49,25 @@ function parseArgs(values) {
     if (value === '--version') parsed.version = values[++index];
     else if (value === '--output') parsed.output = values[++index];
     else if (value === '--changes-dir') parsed.changesDir = values[++index];
+    else if (value === '--asset') parsed.asset = values[++index];
+    else if (value === '--commit') parsed.commit = values[++index];
   }
   return parsed;
+}
+
+function appendProvenance(lines, options) {
+  const commit = options.commit || process.env.GITHUB_SHA || gitCommitSha();
+  const asset = options.asset ? path.resolve(options.asset) : '';
+  const items = [];
+  if (commit) items.push(`* Commit: \`${commit}\``);
+  if (asset && fs.existsSync(asset)) {
+    const stat = fs.statSync(asset);
+    items.push(`* Asset: \`${path.basename(asset)}\``);
+    items.push(`* Asset size: ${stat.size} bytes`);
+    items.push(`* Asset SHA-256: \`${sha256(asset)}\``);
+  }
+  if (items.length === 0 || lines.join('\n').includes('\n## Release Provenance\n')) return;
+  lines.push('## Release Provenance', '', ...items, '');
 }
 
 function readPackageVersion() {
@@ -117,6 +135,15 @@ function escapeRegExp(value) {
 function gitSummary() {
   const result = spawnSync('git', ['log', '-1', '--pretty=format:%s'], { encoding: 'utf-8' });
   return result.status === 0 && result.stdout.trim() ? `Latest commit: ${result.stdout.trim()}` : '';
+}
+
+function gitCommitSha() {
+  const result = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf-8' });
+  return result.status === 0 ? result.stdout.trim() : '';
+}
+
+function sha256(file) {
+  return require('crypto').createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
 
 function stripFrontmatter(content) {

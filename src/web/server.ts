@@ -20,7 +20,7 @@ import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
 import { OUTPUT_VALIDATION_PROFILES, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
 import { startNewSession, onSessionEnd, getEvolvedPrompt } from '../learning/engine';
-import { appendEvalTraceExample, createEvalTraceExample, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordOutputValidationEvalRun, runEvalTraceDataset, summarizeEvalTraceRuns, summarizeOutputValidationRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
+import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordOutputValidationEvalRun, runEvalTraceDataset, summarizeEvalTraceRuns, summarizeOutputValidationRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
 import { appendLearningCandidate, extractLearningCandidate, getLearningCandidateProvenance, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
 import { listSubagentRoutingMetrics } from '../agents/subagent';
 import { calibrateModelRoutingPolicy, summarizeRoutingMetrics } from '../agents/modelRouting';
@@ -823,6 +823,20 @@ app.get('/api/learning/routing', async (_req, res) => {
   try {
     const metrics = await listSubagentRoutingMetrics(PROJECT_DIR, 100);
     res.json({ metrics, summary: summarizeRoutingMetrics(metrics), calibration: calibrateModelRoutingPolicy(metrics, modelRouting) });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/learning/output-validation-trends/download', async (_req, res) => {
+  try {
+    const runs = await listEvalTraceRuns(PROJECT_DIR, 1000);
+    const payload = createOutputValidationTrendExport(runs);
+    const stamp = payload.generatedAt.replace(/[:.]/g, '-');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="output-validation-trends-${stamp}.json"`);
+    res.send(JSON.stringify(payload, null, 2));
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });

@@ -42,7 +42,7 @@ async function main() {
         hasMediaToolSettings: Boolean(document.getElementById('visionModel')) && Boolean(document.getElementById('audioTranscribeCommand')),
         hasSettingsDoctor: Boolean(document.getElementById('settingsAudioSamplePath')) && Boolean(document.getElementById('settingsDoctorHealth')),
         hasOutputValidationSettings: Boolean(document.getElementById('outputValidationProfile')) && Boolean(document.getElementById('outputValidationToggle')),
-        hasOutputValidationProfileEditor: Boolean(document.getElementById('outputValidationProfilesJson')) && Boolean(document.getElementById('saveOutputValidationProfilesBtn')),
+        hasOutputValidationProfileEditor: Boolean(document.getElementById('outputValidationProfilesJson')) && Boolean(document.getElementById('saveOutputValidationProfilesBtn')) && Boolean(document.getElementById('customProfileId')) && Boolean(document.getElementById('customProfileChecks')),
         outputValidationProfiles: Array.from(document.querySelectorAll('#outputValidationProfile option')).map((option) => option.value),
         settingsDoctorVisible: !document.getElementById('settingsDoctorHealth').classList.contains('initial-hidden'),
         firstRunHealthVisible: !document.getElementById('firstRunHealth').classList.contains('initial-hidden'),
@@ -66,6 +66,7 @@ async function main() {
         hasEvalDatasetManager: Boolean(document.getElementById('evalDatasetManager')),
         hasEvalRunTrend: Boolean(document.getElementById('evalRunTrend')),
         hasOutputValidationTrend: Boolean(document.getElementById('outputValidationTrend')),
+        hasOutputValidationTrendExport: Boolean(document.getElementById('downloadOutputValidationTrendBtn')),
         hasRunEvalDatasetButton: Boolean(document.getElementById('runEvalDatasetBtn')),
         hasRunLiveReplayDatasetButton: Boolean(document.getElementById('runLiveReplayDatasetBtn')),
         hasApplyCalibrationButton: Boolean(document.getElementById('applyCalibrationBtn')),
@@ -79,7 +80,7 @@ async function main() {
         hasMediaToolSettingFunction: typeof window.updateMediaToolSetting === 'function',
         hasFirstRunSetupFunction: typeof window.applyFirstRunSetup === 'function',
         hasFirstRunHealthFunction: typeof window.checkFirstRunHealth === 'function',
-        hasOutputValidationSettingFunction: typeof window.updateOutputValidationSetting === 'function' && typeof window.toggleOutputValidation === 'function' && typeof window.saveOutputValidationProfiles === 'function' && typeof window.validateOutputValidationProfilesEditor === 'function',
+        hasOutputValidationSettingFunction: typeof window.updateOutputValidationSetting === 'function' && typeof window.toggleOutputValidation === 'function' && typeof window.saveOutputValidationProfiles === 'function' && typeof window.validateOutputValidationProfilesEditor === 'function' && typeof window.saveProfileFromForm === 'function',
         hasOutputValidationFormatter: typeof window.formatOutputValidation === 'function',
         hasOutputValidationGroupedRenderer: typeof window.appendOutputValidationItem === 'function',
         hasApplyCalibrationFunction: typeof window.applyRoutingCalibration === 'function',
@@ -123,6 +124,7 @@ async function main() {
     if (!result.hasEvalDatasetManager) failures.push('eval dataset manager was not rendered');
     if (!result.hasEvalRunTrend) failures.push('eval run trend panel was not rendered');
     if (!result.hasOutputValidationTrend) failures.push('output validation trend panel was not rendered');
+    if (!result.hasOutputValidationTrendExport) failures.push('output validation trend export button was not rendered');
     if (!result.hasRunEvalDatasetButton) failures.push('run eval dataset button was not rendered');
     if (!result.hasRunLiveReplayDatasetButton) failures.push('run live replay dataset button was not rendered');
     if (!result.hasApplyCalibrationButton) failures.push('apply calibration button was not rendered');
@@ -175,7 +177,7 @@ async function runStaticSmoke() {
     hasMediaToolSettings: ids.includes('visionModel') && ids.includes('audioTranscribeCommand'),
     hasSettingsDoctor: ids.includes('settingsAudioSamplePath') && ids.includes('settingsDoctorHealth'),
     hasOutputValidationSettings: ids.includes('outputValidationProfile') && ids.includes('outputValidationToggle'),
-    hasOutputValidationProfileEditor: ids.includes('outputValidationProfilesJson') && ids.includes('saveOutputValidationProfilesBtn'),
+    hasOutputValidationProfileEditor: ids.includes('outputValidationProfilesJson') && ids.includes('saveOutputValidationProfilesBtn') && ids.includes('customProfileId') && ids.includes('customProfileChecks'),
     outputValidationProfiles: Array.from(html.matchAll(/<option value="([^"]+)"/g)).map((match) => match[1]).filter((value) => ['oracle-prime', 'factual-answer', 'coding-answer', 'tool-result-summary'].includes(value)),
     hasContextDetails: ids.includes('contextDetails'),
     hasTraceEvalExamples: ids.includes('traceEvalExamples'),
@@ -202,10 +204,11 @@ async function runStaticSmoke() {
     hasSettingsDoctorFunction: appScript.includes('function checkSettingsHealth'),
     hasFirstRunSetupFunction: appScript.includes('function applyFirstRunSetup'),
     hasFirstRunHealthFunction: appScript.includes('function checkFirstRunHealth'),
-    hasOutputValidationSettingFunction: appScript.includes('function updateOutputValidationSetting') && appScript.includes('function toggleOutputValidation') && appScript.includes('function saveOutputValidationProfiles') && appScript.includes('function validateOutputValidationProfilesEditor'),
+    hasOutputValidationSettingFunction: appScript.includes('function updateOutputValidationSetting') && appScript.includes('function toggleOutputValidation') && appScript.includes('function saveOutputValidationProfiles') && appScript.includes('function validateOutputValidationProfilesEditor') && appScript.includes('function saveProfileFromForm'),
     hasOutputValidationFormatter: appScript.includes('function formatOutputValidation'),
     hasOutputValidationGroupedRenderer: appScript.includes('function appendOutputValidationItem'),
     hasOutputValidationTrendFunction: appScript.includes('function renderOutputValidationTrends'),
+    hasOutputValidationTrendExportFunction: appScript.includes('function downloadOutputValidationTrend'),
     hasMediaToolGuidance: appScript.includes('image_analyze') && appScript.includes('audio_transcribe'),
     hasRecoveryCopy: appScript.includes('Unfinished chat available') && appScript.includes('Fork starts a copy'),
     hasApplyCalibrationFunction: appScript.includes('function applyRoutingCalibration'),
@@ -255,6 +258,7 @@ async function runStaticSmoke() {
   if (!result.hasOutputValidationFormatter) failures.push('output validation formatter was not found');
   if (!result.hasOutputValidationGroupedRenderer) failures.push('grouped output validation renderer was not found');
   if (!result.hasOutputValidationTrendFunction) failures.push('output validation trend renderer was not found');
+  if (!result.hasOutputValidationTrendExportFunction) failures.push('output validation trend export function was not found');
   if (!result.hasMediaToolGuidance) failures.push('media tool guidance was not found');
   if (!result.hasRecoveryCopy) failures.push('recovery explanation copy was not found');
   if (!result.hasApplyCalibrationFunction) failures.push('apply calibration function was not found');

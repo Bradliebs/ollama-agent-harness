@@ -159,6 +159,14 @@
     .setting-row input,.setting-row select,.setting-row textarea{width:100%;padding:7px 10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px;outline:none;font-family:inherit}
     .setting-row textarea{min-height:80px;resize:vertical}
     .setting-row input:focus,.setting-row textarea:focus{border-color:var(--accent)}
+    .profile-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .profile-form-grid .wide{grid-column:1/-1}
+    .profile-check-list{display:flex;flex-direction:column;gap:6px;margin:6px 0}
+    .profile-check-row{border:1px solid var(--border);border-radius:7px;background:var(--surface2);padding:8px;display:grid;grid-template-columns:1fr 90px;gap:6px}
+    .profile-check-row .wide{grid-column:1/-1}
+    .profile-check-row input,.profile-check-row select{width:100%;padding:6px 8px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;outline:none}
+    .profile-check-row label{font-size:10px;color:var(--text-dim);display:block;margin-bottom:2px}
+    .profile-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px}
     .slider-row{display:flex;align-items:center;gap:10px}
     .slider-row input[type=range]{flex:1;accent-color:var(--accent)}
     .slider-val{font-size:12px;color:var(--accent);min-width:32px;text-align:right}
@@ -361,7 +369,26 @@
         <div class="mode-d">Pairs the prompt with a selected contract, checks the final answer, and records validation trends.</div>
       </div>
       <div class="setting-row">
-        <label>Custom profiles JSON</label>
+        <label>Build a custom profile</label>
+        <select id="customProfilePicker" title="Custom profile" onchange="loadSelectedCustomProfile()"></select>
+      </div>
+      <div class="profile-form-grid">
+        <div class="setting-row"><label>Profile id</label><input id="customProfileId" type="text" placeholder="brief-summary"></div>
+        <div class="setting-row"><label>Label</label><input id="customProfileLabel" type="text" placeholder="Brief Summary"></div>
+        <div class="setting-row wide"><label>Description</label><input id="customProfileDescription" type="text" placeholder="Requires a concise outcome summary"></div>
+        <div class="setting-row wide"><label>Instructions</label><textarea id="customProfileInstructions" placeholder="Mention the outcome and evidence in a concise answer."></textarea></div>
+        <div class="setting-row"><label>Warn below score</label><input id="customProfileWarnBelow" type="number" min="0" max="1" step="0.05" placeholder="0.8"></div>
+        <div class="setting-row"><label>Fail below score</label><input id="customProfileFailBelow" type="number" min="0" max="1" step="0.05" placeholder="0.5"></div>
+      </div>
+      <div id="customProfileChecks" class="profile-check-list"></div>
+      <div class="profile-actions">
+        <button class="btn-sm" onclick="addCustomProfileCheck()">Add check</button>
+        <button class="btn-sm" onclick="resetCustomProfileForm()">Clear form</button>
+        <button id="saveProfileFromFormBtn" class="btn-sm" onclick="saveProfileFromForm()">Save form profile</button>
+        <button class="btn-sm" onclick="loadSelectedCustomProfile()">Load selected</button>
+      </div>
+      <div class="setting-row">
+        <label>Advanced JSON</label>
         <textarea id="outputValidationProfilesJson" placeholder='{"profiles":[{"profile":"brief-summary","instructions":"Mention outcome and evidence.","checks":[{"code":"has-outcome","severity":"fail","message":"Mention the outcome.","requiresAny":["passed","failed"]}]}]}'></textarea>
       </div>
       <button id="saveOutputValidationProfilesBtn" class="btn-sm full-width-button" onclick="saveOutputValidationProfiles()">Save custom profiles</button>

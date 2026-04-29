@@ -415,6 +415,41 @@ export interface OutputValidationRunTrend {
   latestFailures: Array<{ task: string; profile: string; status: string; message: string; checks: string[]; createdAt: string }>;
 }
 
+export interface OutputValidationTrendExport {
+  generatedAt: string;
+  trend: OutputValidationRunTrend;
+  results: Array<{
+    runId: string;
+    createdAt: string;
+    task: string;
+    profile: string;
+    status: string;
+    passed: boolean;
+    message: string;
+    checks: string[];
+  }>;
+}
+
+export function createOutputValidationTrendExport(runs: EvalTraceRun[], generatedAt = new Date().toISOString()): OutputValidationTrendExport {
+  const results: OutputValidationTrendExport['results'] = [];
+  for (const run of runs) {
+    for (const result of run.results) {
+      if (!result.tags.includes('output-validation')) continue;
+      results.push({
+        runId: run.id,
+        createdAt: run.createdAt,
+        task: result.task,
+        profile: result.tags[1] ?? 'unknown',
+        status: result.tags[2] ?? result.actualStatus,
+        passed: result.status === 'pass',
+        message: result.message,
+        checks: result.checks ?? [],
+      });
+    }
+  }
+  return { generatedAt, trend: summarizeOutputValidationRuns(runs), results };
+}
+
 export function summarizeOutputValidationRuns(runs: EvalTraceRun[]): OutputValidationRunTrend {
   const byProfile: OutputValidationRunTrend['byProfile'] = {};
   const byStatus: OutputValidationRunTrend['byStatus'] = {};

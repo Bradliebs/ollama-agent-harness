@@ -383,6 +383,53 @@ describe('web server API validation', () => {
     await expect(runs.json()).resolves.toMatchObject({ runs: expect.arrayContaining([expect.objectContaining({ total: expect.any(Number) })]), trend: { byTag: expect.any(Object) } });
   });
 
+  it('downloads output validation trend exports', async () => {
+    const restore = setWebRuntimeOverrides({
+      createClient: () => ({}) as never,
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('validation-export-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (): AsyncGenerator<LoopEvent> {
+        yield { type: 'output_validation', validation: { profile: 'coding-answer', status: 'warn', score: 0.8, findings: [{ code: 'missing-validation-summary', severity: 'warn', message: 'State validation.' }], missingSections: [] } };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outputValidation: { enabled: true, profile: 'coding-answer' } }),
+      });
+      const chat = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'hello', model: 'test-model' }),
+      });
+      expect(chat.status).toBe(200);
+      await chat.text();
+
+      const download = await request('/api/learning/output-validation-trends/download');
+      expect(download.status).toBe(200);
+      expect(download.headers.get('content-disposition')).toContain('output-validation-trends-');
+      await expect(download.json()).resolves.toMatchObject({ trend: { totalResults: expect.any(Number) }, results: expect.arrayContaining([expect.objectContaining({ profile: 'coding-answer', status: 'warn' })]) });
+    } finally {
+      restore();
+    }
+  });
+
   it('reviews learning candidates and exposes routing calibration', async () => {
     const sessionId = `server-learning-review-test-${Date.now()}`;
     const events: SessionEvent[] = [

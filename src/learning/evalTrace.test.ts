@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { RuntimeTracer } from '../core/tracing';
-import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationEvalRun, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordOutputValidationEvalRun, runEvalTraceDataset, summarizeEvalTraceRuns, summarizeOutputValidationRuns, updateEvalTraceExampleTags } from './evalTrace';
+import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationEvalRun, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordOutputValidationEvalRun, runEvalTraceDataset, summarizeEvalTraceRuns, summarizeOutputValidationRuns, updateEvalTraceExampleTags } from './evalTrace';
 
 describe('eval trace examples', () => {
   it('creates passing examples from successful traces', () => {
@@ -148,5 +148,21 @@ describe('eval trace examples', () => {
     expect(trend.byProfile['coding-answer']).toMatchObject({ total: 1, failed: 1, passRate: 0 });
     expect(trend.byStatus.warn).toBe(1);
     expect(trend.latestFailures[0]).toMatchObject({ profile: 'coding-answer', checks: ['missing-validation-summary'] });
+  });
+
+  it('exports output-validation trends with raw validation results', () => {
+    const warnRun = createOutputValidationEvalRun({
+      profile: 'coding-answer',
+      status: 'warn',
+      score: 0.95,
+      findings: [{ code: 'missing-validation-summary', severity: 'warn', message: 'State validation performed.' }],
+      missingSections: [],
+    }, 'coding summary');
+
+    const exported = createOutputValidationTrendExport([warnRun], '2026-04-29T00:00:00.000Z');
+
+    expect(exported.generatedAt).toBe('2026-04-29T00:00:00.000Z');
+    expect(exported.trend.totalResults).toBe(1);
+    expect(exported.results).toEqual([expect.objectContaining({ task: 'coding summary', profile: 'coding-answer', status: 'warn', passed: false })]);
   });
 });
