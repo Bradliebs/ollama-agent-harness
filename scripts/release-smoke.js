@@ -19,7 +19,9 @@ async function main() {
     assertFile(workDir, 'scripts/release-notes.js');
     assertFile(workDir, 'ui/index.html');
     assertFile(workDir, 'start.bat');
+    assertFile(workDir, 'release-provenance.json');
     assertFileContains(workDir, 'start.bat', 'Installing dependencies with npm ci');
+    assertReleaseProvenance(workDir);
 
     run('npm', ['ci'], workDir);
     run('node', ['dist/cli/index.js', '--help'], workDir);
@@ -33,6 +35,13 @@ async function main() {
       console.warn(`Release smoke cleanup skipped: ${error.message || error}`);
     }
   }
+}
+
+function assertReleaseProvenance(root) {
+  const filePath = path.join(root, 'release-provenance.json');
+  const provenance = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  if (!provenance.version) throw new Error('release-provenance.json is missing version.');
+  if (!provenance.assetName) throw new Error('release-provenance.json is missing assetName.');
 }
 
 function extractZip(source, destination) {

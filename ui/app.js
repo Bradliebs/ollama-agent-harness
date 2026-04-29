@@ -20,6 +20,7 @@ window.addEventListener('DOMContentLoaded', () => {
   loadHistory();
   loadFiles();
   loadSettings();
+  loadAbout();
   loadTraceExports();
   loadRuntimeStorage();
   loadRecovery();
@@ -153,6 +154,51 @@ async function loadSettings() {
     const mode = document.querySelectorAll('.mode-opt')[modeIndex];
     if (mode) mode.classList.add('active');
   } catch {}
+}
+
+async function loadAbout() {
+  const panel = document.getElementById('aboutPanel');
+  if (panel) panel.textContent = 'Loading version information...';
+  try {
+    const response = await fetch('/api/about');
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    renderAboutPanel(data);
+  } catch (error) {
+    if (panel) panel.textContent = 'Version information unavailable: ' + (error instanceof Error ? error.message : String(error));
+  }
+}
+
+function renderAboutPanel(data) {
+  const panel = document.getElementById('aboutPanel');
+  if (!panel) return;
+  const releaseLink = data.releaseUrl ? '<a href="' + escAttr(data.releaseUrl) + '" target="_blank">release page</a>' : 'not packaged';
+  const rows = [
+    ['Version', data.version || 'unknown'],
+    ['Commit', data.commit || 'not available in this install'],
+    ['Asset', data.assetName || 'not available in this install'],
+    ['Asset SHA-256', data.assetSha256 || 'see release page'],
+    ['Release', releaseLink],
+  ];
+  panel.innerHTML = '<div class="about-grid">' + rows.map(([label, value]) => '<div><strong>' + esc(label) + '</strong> ' + String(value).replace(/^((?!<a ).)*$/, (text) => esc(text)) + '</div>').join('') + '</div>';
+}
+
+function openWalkthroughTarget(target) {
+  if (target === 'learning') {
+    const tab = document.querySelector('[onclick*="learning"]');
+    if (tab) showLeftTab('learning', tab);
+    return;
+  }
+  ensureRightPanelVisible();
+  const targetId = target === 'setup' ? 'ollamaHost' : target === 'validation' ? 'customProfileId' : 'aboutPanel';
+  const element = document.getElementById(targetId);
+  if (element) element.scrollIntoView({ block: 'center' });
+  if (target === 'about') loadAbout();
+}
+
+function ensureRightPanelVisible() {
+  const panel = document.getElementById('rightPanel');
+  if (panel?.classList.contains('hidden')) panel.classList.remove('hidden');
 }
 
 function renderOutputValidationProfileOptions(select, profiles, selected) {
@@ -380,6 +426,45 @@ async function saveOutputValidationProfiles() {
     if (status) status.textContent = (data.customProfiles || []).length + ' custom profiles saved to ' + (data.path || '.harness/output-validation-profiles.json') + '.';
   } catch (error) {
     if (status) status.textContent = 'Could not save profiles: ' + (error instanceof Error ? error.message : String(error));
+  }
+}
+
+function downloadOutputValidationProfilesPreset() {
+  const profiles = currentCustomProfilesFromEditor();
+  const status = document.getElementById('outputValidationProfilesStatus');
+  const payload = JSON.stringify({ profiles }, null, 2);
+  const blob = new Blob([payload], { type: 'application/json' });
+  const anchor = document.createElement('a');
+  anchor.href = URL.createObjectURL(blob);
+  anchor.download = 'output-validation-profiles.json';
+  anchor.click();
+  URL.revokeObjectURL(anchor.href);
+  if (status) status.textContent = profiles.length + ' custom profiles prepared for download.';
+}
+
+function importOutputValidationProfilesPreset() {
+  document.getElementById('profilePresetFileInput')?.click();
+}
+
+async function handleOutputValidationProfilesPresetFile(files) {
+  const status = document.getElementById('outputValidationProfilesStatus');
+  const file = files && files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    const profiles = Array.isArray(parsed) ? parsed : parsed.profiles;
+    if (!Array.isArray(profiles)) throw new Error('Preset file must contain a profiles array.');
+    writeCustomProfilesToEditor(profiles);
+    const validation = validateOutputValidationProfilesEditor();
+    if (!validation.ok) throw new Error(validation.errors.slice(0, 3).join(' | '));
+    await saveOutputValidationProfiles();
+    if (status) status.textContent = profiles.length + ' profiles imported and saved.';
+  } catch (error) {
+    if (status) status.textContent = 'Could not import preset: ' + (error instanceof Error ? error.message : String(error));
+  } finally {
+    const input = document.getElementById('profilePresetFileInput');
+    if (input) input.value = '';
   }
 }
 
@@ -828,7 +913,7 @@ async function autoSaveChat() { if (chatMessages.length < 2) return; const title
 async function deleteChat(id) { await fetch('/api/history/' + id, { method: 'DELETE' }); if (id === currentChatId) newChat(); loadHistory(); }
 function newChat() { currentChatId = null; chatMessages = []; document.getElementById('chatArea').innerHTML = welcomeMarkup(); renderModelCapabilityHint(); loadSettings(); loadHistory(); }
 function welcomeMarkup() {
-  return '<div class="welcome" id="welcome"><h2>Welcome to Harness</h2><p>Pick a model above, then ask me anything. I can read files, write code, run commands, search your project, create skills, and remember things across sessions.</p><div class="beginner-guide" id="beginnerGuide"><div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div><div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div><div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div></div><div class="first-run-setup" id="firstRunSetup"><h3>First-run setup</h3><p>Set the local Ollama host and optional media helpers before your first chat.</p><div class="first-run-grid"><div><label for="firstRunOllamaHost">Ollama host</label><input id="firstRunOllamaHost" type="text" value="http://localhost:11434"></div><div><label for="firstRunVisionModel">Vision model</label><input id="firstRunVisionModel" type="text" placeholder="llava"></div><div><label for="firstRunAudioCommand">Audio command</label><input id="firstRunAudioCommand" type="text" placeholder="whisper &quot;{input}&quot; --model base"></div><div><label for="firstRunAudioSamplePath">Audio test file</label><input id="firstRunAudioSamplePath" type="text" placeholder=".harness/uploads/sample.wav"></div></div><div class="first-run-actions"><button class="btn-sm" onclick="applyFirstRunSetup()">Save setup</button><button class="btn-sm" onclick="checkFirstRunHealth()">Check setup</button><span class="first-run-status" id="firstRunStatus">Optional. You can change these later in Settings.</span></div><div class="trace-detail initial-hidden" id="firstRunHealth"></div></div><div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div><div class="tips"><div class="tip" onclick="sendTip(this)">List files in this project</div><div class="tip" onclick="sendTip(this)">What models do I have?</div><div class="tip" onclick="sendTip(this)">Create a skill for code review</div></div></div>';
+  return '<div class="welcome" id="welcome"><h2>Welcome to Harness</h2><p>Pick a model above, then ask me anything. I can read files, write code, run commands, search your project, create skills, and remember things across sessions.</p><div class="beginner-guide" id="beginnerGuide"><div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div><div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div><div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div></div><div class="walkthrough-checklist" id="walkthroughChecklist"><div class="walkthrough-step"><div class="walkthrough-dot">1</div><div><strong>Check setup</strong>Confirm Ollama, optional vision, and optional audio helpers.</div><button class="btn-sm" onclick="openWalkthroughTarget(\'setup\')">Open</button></div><div class="walkthrough-step"><div class="walkthrough-dot">2</div><div><strong>Create a profile</strong>Use the guided form instead of hand-writing JSON.</div><button class="btn-sm" onclick="openWalkthroughTarget(\'validation\')">Open</button></div><div class="walkthrough-step"><div class="walkthrough-dot">3</div><div><strong>Export results</strong>Download validation trends from the Learning tab.</div><button class="btn-sm" onclick="openWalkthroughTarget(\'learning\')">Open</button></div><div class="walkthrough-step"><div class="walkthrough-dot">4</div><div><strong>Verify install</strong>Check the running version and release provenance.</div><button class="btn-sm" onclick="openWalkthroughTarget(\'about\')">Open</button></div></div><div class="first-run-setup" id="firstRunSetup"><h3>First-run setup</h3><p>Set the local Ollama host and optional media helpers before your first chat.</p><div class="first-run-grid"><div><label for="firstRunOllamaHost">Ollama host</label><input id="firstRunOllamaHost" type="text" value="http://localhost:11434"></div><div><label for="firstRunVisionModel">Vision model</label><input id="firstRunVisionModel" type="text" placeholder="llava"></div><div><label for="firstRunAudioCommand">Audio command</label><input id="firstRunAudioCommand" type="text" placeholder="whisper &quot;{input}&quot; --model base"></div><div><label for="firstRunAudioSamplePath">Audio test file</label><input id="firstRunAudioSamplePath" type="text" placeholder=".harness/uploads/sample.wav"></div></div><div class="first-run-actions"><button class="btn-sm" onclick="applyFirstRunSetup()">Save setup</button><button class="btn-sm" onclick="checkFirstRunHealth()">Check setup</button><span class="first-run-status" id="firstRunStatus">Optional. You can change these later in Settings.</span></div><div class="trace-detail initial-hidden" id="firstRunHealth"></div></div><div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div><div class="tips"><div class="tip" onclick="sendTip(this)">List files in this project</div><div class="tip" onclick="sendTip(this)">What models do I have?</div><div class="tip" onclick="sendTip(this)">Create a skill for code review</div></div></div>';
 }
 function exportChat() { if (!chatMessages.length) { alert('No messages.'); return; } let md = '# Chat Export\n\n'; for (const m of chatMessages) md += '## ' + (m.role === 'user' ? 'You' : 'Assistant') + '\n\n' + m.content + '\n\n---\n\n'; const blob = new Blob([md], { type: 'text/markdown' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'chat-' + new Date().toISOString().slice(0, 10) + '.md'; a.click(); }
 

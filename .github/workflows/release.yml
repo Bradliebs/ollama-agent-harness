@@ -34,7 +34,16 @@ jobs:
       - name: Package release asset
         run: |
           mkdir -p release
-          zip -r "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip" dist ui scripts package.json package-lock.json README.md start.bat
+          cat > release-provenance.json <<EOF
+          {
+            "version": "${GITHUB_REF_NAME#v}",
+            "commit": "${GITHUB_SHA}",
+            "assetName": "ollama-agent-harness-${GITHUB_REF_NAME}.zip",
+            "releaseUrl": "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}",
+            "generatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          zip -r "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip" dist ui scripts package.json package-lock.json README.md start.bat release-provenance.json
 
       - name: Smoke release archive
         run: node scripts/release-smoke.js "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip"

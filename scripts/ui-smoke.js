@@ -15,11 +15,19 @@ async function main() {
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     await page.goto(targetUrl, { waitUntil: 'networkidle' });
-    await page.click('text=Check setup');
+    await page.click('#firstRunSetup button:has-text("Check setup")');
     await page.waitForFunction(() => !document.getElementById('firstRunHealth').classList.contains('initial-hidden'));
-    await page.click('button[title="Settings"]');
+    await page.click('text=Verify install');
+    await page.waitForFunction(() => document.getElementById('aboutPanel')?.textContent.includes('Version'));
+    await page.evaluate(() => { if (document.getElementById('rightPanel')?.classList.contains('hidden')) toggleRight(); });
     await page.click('text=Run setup doctor');
     await page.waitForFunction(() => !document.getElementById('settingsDoctorHealth').classList.contains('initial-hidden'));
+    await page.fill('#customProfileId', 'smoke-profile');
+    await page.fill('#customProfileLabel', 'Smoke Profile');
+    await page.fill('#customProfileDescription', 'Created by UI smoke.');
+    await page.fill('#customProfileInstructions', 'Mention smoke validation.');
+    await page.click('#saveProfileFromFormBtn');
+    await page.waitForFunction(() => document.getElementById('outputValidationProfilesStatus')?.textContent.includes('custom profiles saved'));
     await page.click('text=Refresh trace exports');
     await page.evaluate(() => showLeftTab('palace', Array.from(document.querySelectorAll('.tab')).find((element) => element.textContent === 'Palace')));
     await page.waitForFunction(() => getComputedStyle(document.getElementById('memoryPalaceView')).display !== 'none');
@@ -50,6 +58,8 @@ async function main() {
         hasTraceEvalExamples: Boolean(document.getElementById('traceEvalExamples')),
         hasWeatherReplayEvalButton: Boolean(document.getElementById('createWeatherReplayEvalBtn')),
         hasBeginnerGuide: Boolean(document.getElementById('beginnerGuide')),
+        hasWalkthroughChecklist: Boolean(document.getElementById('walkthroughChecklist')),
+        hasWalkthroughFunction: typeof window.openWalkthroughTarget === 'function',
         hasFirstRunSetup: Boolean(document.getElementById('firstRunSetup')),
         hasFirstRunInputs: Boolean(document.getElementById('firstRunOllamaHost')) && Boolean(document.getElementById('firstRunVisionModel')) && Boolean(document.getElementById('firstRunAudioCommand')) && Boolean(document.getElementById('firstRunAudioSamplePath')),
         hasFirstRunHealth: Boolean(document.getElementById('firstRunHealth')),
@@ -67,6 +77,11 @@ async function main() {
         hasEvalRunTrend: Boolean(document.getElementById('evalRunTrend')),
         hasOutputValidationTrend: Boolean(document.getElementById('outputValidationTrend')),
         hasOutputValidationTrendExport: Boolean(document.getElementById('downloadOutputValidationTrendBtn')),
+        hasProfilePresetImportExport: Boolean(document.getElementById('downloadProfilePresetBtn')) && Boolean(document.getElementById('importProfilePresetBtn')) && Boolean(document.getElementById('profilePresetFileInput')),
+        hasProfilePresetFunctions: typeof window.downloadOutputValidationProfilesPreset === 'function' && typeof window.importOutputValidationProfilesPreset === 'function' && typeof window.handleOutputValidationProfilesPresetFile === 'function',
+        hasAboutPanel: Boolean(document.getElementById('aboutPanel')),
+        hasAboutFunction: typeof window.loadAbout === 'function',
+        guidedProfileSaved: document.getElementById('outputValidationProfilesStatus')?.textContent.includes('custom profiles saved'),
         hasRunEvalDatasetButton: Boolean(document.getElementById('runEvalDatasetBtn')),
         hasRunLiveReplayDatasetButton: Boolean(document.getElementById('runLiveReplayDatasetBtn')),
         hasApplyCalibrationButton: Boolean(document.getElementById('applyCalibrationBtn')),
@@ -110,6 +125,8 @@ async function main() {
     if (!result.hasTraceEvalExamples) failures.push('trace eval example panel was not found');
     if (!result.hasWeatherReplayEvalButton) failures.push('weather replay eval button was not found');
     if (!result.hasBeginnerGuide) failures.push('beginner guide was not found');
+    if (!result.hasWalkthroughChecklist) failures.push('walkthrough checklist was not found');
+    if (!result.hasWalkthroughFunction) failures.push('walkthrough action function was not found');
     if (!result.hasFirstRunSetup) failures.push('first-run setup panel was not found');
     if (!result.hasFirstRunInputs) failures.push('first-run setup inputs were not found');
     if (!result.hasFirstRunHealth) failures.push('first-run health panel was not found');
@@ -125,6 +142,11 @@ async function main() {
     if (!result.hasEvalRunTrend) failures.push('eval run trend panel was not rendered');
     if (!result.hasOutputValidationTrend) failures.push('output validation trend panel was not rendered');
     if (!result.hasOutputValidationTrendExport) failures.push('output validation trend export button was not rendered');
+    if (!result.hasProfilePresetImportExport) failures.push('profile preset import/export controls were not rendered');
+    if (!result.hasProfilePresetFunctions) failures.push('profile preset import/export functions were not found');
+    if (!result.hasAboutPanel) failures.push('about panel was not rendered');
+    if (!result.hasAboutFunction) failures.push('about panel function was not found');
+    if (!result.guidedProfileSaved) failures.push('guided profile form did not save a profile');
     if (!result.hasRunEvalDatasetButton) failures.push('run eval dataset button was not rendered');
     if (!result.hasRunLiveReplayDatasetButton) failures.push('run live replay dataset button was not rendered');
     if (!result.hasApplyCalibrationButton) failures.push('apply calibration button was not rendered');
@@ -183,6 +205,7 @@ async function runStaticSmoke() {
     hasTraceEvalExamples: ids.includes('traceEvalExamples'),
     hasWeatherReplayEvalButton: ids.includes('createWeatherReplayEvalBtn'),
     hasBeginnerGuide: ids.includes('beginnerGuide'),
+    hasWalkthroughChecklist: ids.includes('walkthroughChecklist'),
     hasFirstRunSetup: ids.includes('firstRunSetup'),
     hasFirstRunInputs: ids.includes('firstRunOllamaHost') && ids.includes('firstRunVisionModel') && ids.includes('firstRunAudioCommand') && ids.includes('firstRunAudioSamplePath'),
     hasFirstRunHealth: ids.includes('firstRunHealth'),
@@ -209,6 +232,11 @@ async function runStaticSmoke() {
     hasOutputValidationGroupedRenderer: appScript.includes('function appendOutputValidationItem'),
     hasOutputValidationTrendFunction: appScript.includes('function renderOutputValidationTrends'),
     hasOutputValidationTrendExportFunction: appScript.includes('function downloadOutputValidationTrend'),
+    hasProfilePresetImportExport: ids.includes('downloadProfilePresetBtn') && ids.includes('importProfilePresetBtn') && ids.includes('profilePresetFileInput'),
+    hasProfilePresetFunctions: appScript.includes('function downloadOutputValidationProfilesPreset') && appScript.includes('function importOutputValidationProfilesPreset') && appScript.includes('function handleOutputValidationProfilesPresetFile'),
+    hasAboutPanel: ids.includes('aboutPanel'),
+    hasAboutFunction: appScript.includes('function loadAbout') && appScript.includes('function renderAboutPanel'),
+    hasWalkthroughFunction: appScript.includes('function openWalkthroughTarget'),
     hasMediaToolGuidance: appScript.includes('image_analyze') && appScript.includes('audio_transcribe'),
     hasRecoveryCopy: appScript.includes('Unfinished chat available') && appScript.includes('Fork starts a copy'),
     hasApplyCalibrationFunction: appScript.includes('function applyRoutingCalibration'),
@@ -233,6 +261,7 @@ async function runStaticSmoke() {
   if (!result.hasTraceEvalExamples) failures.push('trace eval example panel was not found');
   if (!result.hasWeatherReplayEvalButton) failures.push('weather replay eval button was not found');
   if (!result.hasBeginnerGuide) failures.push('beginner guide was not found');
+  if (!result.hasWalkthroughChecklist) failures.push('walkthrough checklist was not found');
   if (!result.hasFirstRunSetup) failures.push('first-run setup panel was not found');
   if (!result.hasFirstRunInputs) failures.push('first-run setup inputs were not found');
   if (!result.hasFirstRunHealth) failures.push('first-run health panel was not found');
@@ -259,6 +288,11 @@ async function runStaticSmoke() {
   if (!result.hasOutputValidationGroupedRenderer) failures.push('grouped output validation renderer was not found');
   if (!result.hasOutputValidationTrendFunction) failures.push('output validation trend renderer was not found');
   if (!result.hasOutputValidationTrendExportFunction) failures.push('output validation trend export function was not found');
+  if (!result.hasProfilePresetImportExport) failures.push('profile preset import/export controls were not found');
+  if (!result.hasProfilePresetFunctions) failures.push('profile preset import/export functions were not found');
+  if (!result.hasAboutPanel) failures.push('about panel was not found');
+  if (!result.hasAboutFunction) failures.push('about panel functions were not found');
+  if (!result.hasWalkthroughFunction) failures.push('walkthrough function was not found');
   if (!result.hasMediaToolGuidance) failures.push('media tool guidance was not found');
   if (!result.hasRecoveryCopy) failures.push('recovery explanation copy was not found');
   if (!result.hasApplyCalibrationFunction) failures.push('apply calibration function was not found');

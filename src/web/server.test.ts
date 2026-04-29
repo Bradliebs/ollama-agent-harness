@@ -82,6 +82,17 @@ describe('web server API validation', () => {
     await expect(response.json()).resolves.toMatchObject({ error: 'Invalid Ollama host.' });
   });
 
+  it('returns installed version metadata for the About panel', async () => {
+    const response = await request('/api/about');
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      version: expect.stringMatching(/^\d+\.\d+\.\d+/),
+      assetName: expect.stringContaining('ollama-agent-harness-v'),
+      releaseUrl: expect.stringContaining('/releases/tag/v'),
+    });
+  });
+
   it('persists validated settings to runtime storage', async () => {
     const response = await request('/api/settings', {
       method: 'POST',

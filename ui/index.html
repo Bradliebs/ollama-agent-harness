@@ -98,6 +98,10 @@
     .beginner-guide{max-width:640px;margin:0 auto 18px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;text-align:left}
     .guide-item{background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:9px;font-size:12px;color:var(--text-dim);line-height:1.4}
     .guide-item strong{display:block;color:var(--text);margin-bottom:3px}
+    .walkthrough-checklist{max-width:640px;margin:0 auto 14px;text-align:left;display:flex;flex-direction:column;gap:6px}
+    .walkthrough-step{display:grid;grid-template-columns:22px 1fr auto;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:8px;font-size:12px;color:var(--text-dim)}
+    .walkthrough-step strong{display:block;color:var(--text);margin-bottom:2px}
+    .walkthrough-dot{width:18px;height:18px;border-radius:50%;border:1px solid var(--accent);color:var(--accent);display:flex;align-items:center;justify-content:center;font-size:11px}
     .first-run-setup{max-width:640px;margin:0 auto 14px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:10px;text-align:left}
     .first-run-setup h3{font-size:13px;margin-bottom:3px;color:var(--text)}
     .first-run-setup p{font-size:12px;margin:0 0 8px;max-width:none;color:var(--text-dim)}
@@ -167,6 +171,9 @@
     .profile-check-row input,.profile-check-row select{width:100%;padding:6px 8px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;outline:none}
     .profile-check-row label{font-size:10px;color:var(--text-dim);display:block;margin-bottom:2px}
     .profile-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px}
+    .about-grid{display:grid;grid-template-columns:1fr;gap:4px;font-size:11px;color:var(--text-dim)}
+    .about-grid strong{color:var(--text)}
+    .about-grid a{color:var(--accent)}
     .slider-row{display:flex;align-items:center;gap:10px}
     .slider-row input[type=range]{flex:1;accent-color:var(--accent)}
     .slider-val{font-size:12px;color:var(--accent);min-width:32px;text-align:right}
@@ -232,6 +239,12 @@
           <div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div>
           <div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div>
           <div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div>
+        </div>
+        <div class="walkthrough-checklist" id="walkthroughChecklist">
+          <div class="walkthrough-step"><div class="walkthrough-dot">1</div><div><strong>Check setup</strong>Confirm Ollama, optional vision, and optional audio helpers.</div><button class="btn-sm" onclick="openWalkthroughTarget('setup')">Open</button></div>
+          <div class="walkthrough-step"><div class="walkthrough-dot">2</div><div><strong>Create a profile</strong>Use the guided form instead of hand-writing JSON.</div><button class="btn-sm" onclick="openWalkthroughTarget('validation')">Open</button></div>
+          <div class="walkthrough-step"><div class="walkthrough-dot">3</div><div><strong>Export results</strong>Download validation trends from the Learning tab.</div><button class="btn-sm" onclick="openWalkthroughTarget('learning')">Open</button></div>
+          <div class="walkthrough-step"><div class="walkthrough-dot">4</div><div><strong>Verify install</strong>Check the running version and release provenance.</div><button class="btn-sm" onclick="openWalkthroughTarget('about')">Open</button></div>
         </div>
         <div class="first-run-setup" id="firstRunSetup">
           <h3>First-run setup</h3>
@@ -387,6 +400,11 @@
         <button id="saveProfileFromFormBtn" class="btn-sm" onclick="saveProfileFromForm()">Save form profile</button>
         <button class="btn-sm" onclick="loadSelectedCustomProfile()">Load selected</button>
       </div>
+      <div class="profile-actions">
+        <button id="downloadProfilePresetBtn" class="btn-sm" onclick="downloadOutputValidationProfilesPreset()">Download presets</button>
+        <button id="importProfilePresetBtn" class="btn-sm" onclick="importOutputValidationProfilesPreset()">Import presets</button>
+      </div>
+      <input type="file" id="profilePresetFileInput" class="initial-hidden" accept="application/json,.json" onchange="handleOutputValidationProfilesPresetFile(this.files)">
       <div class="setting-row">
         <label>Advanced JSON</label>
         <textarea id="outputValidationProfilesJson" placeholder='{"profiles":[{"profile":"brief-summary","instructions":"Mention outcome and evidence.","checks":[{"code":"has-outcome","severity":"fail","message":"Mention the outcome.","requiresAny":["passed","failed"]}]}]}'></textarea>
@@ -410,6 +428,11 @@
       <button class="btn-sm full-width-button" onclick="cleanupRuntimeStorage('traces')">Clean trace exports</button>
       <button class="btn-sm full-width-button" onclick="cleanupRuntimeStorage('semanticIndex')">Clean semantic index</button>
       <div id="runtimeStorageStatus" class="trace-detail"></div>
+    </div>
+    <div class="settings-section">
+      <h4>About</h4>
+      <button class="btn-sm full-width-button" onclick="loadAbout()">Refresh version info</button>
+      <div id="aboutPanel" class="trace-detail">Version information loading...</div>
     </div>
     <div class="settings-section">
       <h4>System Prompt</h4>

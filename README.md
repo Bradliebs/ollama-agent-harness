@@ -91,11 +91,14 @@ The Settings panel lets you configure:
 * Context continuity and detected context length
 * Helper model routing
 * Media tool defaults for vision and audio
+* Installed version and release provenance
 * Trace and eval utilities
 * Runtime storage cleanup
 * Safety mode
 
 Settings are saved to `.harness/settings.json` and applied by the running server.
+
+The welcome screen includes a guided checklist for first-run setup, validation profile creation, validation trend export, and installed-version verification. Each checklist action opens the relevant panel so a new user does not need to know where features live.
 
 ## Output Validation
 
@@ -149,6 +152,8 @@ Custom checks support `requiresAny`, `requiresAll`, `forbidsAny`, `minLength`, a
 
 The Settings panel includes a guided profile form for custom validation profiles. Fill in the profile fields, add one or more checks, and choose **Save form profile**. Harness writes the JSON for you and saves it to `.harness/output-validation-profiles.json`. The advanced JSON editor remains available for manual edits.
 
+Use **Download presets** to export custom validation profiles as a shareable JSON file. Use **Import presets** to load a shared profile file back into the guided editor and save it through the same validation API.
+
 The editor validates profile JSON before saving and the API returns field-level schema errors for invalid profiles. Custom checks also support deterministic score tuning:
 
 * `scorePenalty` on a check sets the score reduction when that check fails. Use a value from `0` to `1`.
@@ -158,6 +163,8 @@ The editor validates profile JSON before saving and the API returns field-level 
 The release workflow downloads the published release zip after upload and runs the same archive smoke test against that published asset.
 
 The Learning tab can download output-validation trend data as JSON. Release notes include commit and asset provenance, including the release zip SHA-256 digest when an asset is available during note generation.
+
+The Settings About panel shows the running package version, commit when available, release link, asset name, and release digest when the installed package includes it. Release archives include `release-provenance.json` so downloaded builds can identify where they came from.
 
 ## GitHub Baseline
 

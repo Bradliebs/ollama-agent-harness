@@ -41,6 +41,7 @@ const SKILLS_DIR = path.join(PROJECT_DIR, '.harness', 'skills');
 const TRACES_DIR = path.join(PROJECT_DIR, '.harness', 'traces');
 const SETTINGS_PATH = path.join(PROJECT_DIR, '.harness', 'settings.json');
 const OUTPUT_VALIDATION_PROFILES_PATH = path.join(PROJECT_DIR, '.harness', 'output-validation-profiles.json');
+const RELEASE_PROVENANCE_PATH = path.join(PROJECT_DIR, 'release-provenance.json');
 const ALLOWED_PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'dontAsk'];
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9._-]+$/;
 
@@ -128,6 +129,15 @@ let webRuntime: WebRuntimeDeps = defaultWebRuntime;
 setSkillsDir(SKILLS_DIR);
 
 // --- API Routes ---
+
+app.get('/api/about', async (_req, res) => {
+  try {
+    res.json(await getAboutInfo());
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
 
 // List available models from Ollama
 app.get('/api/models', async (_req, res) => {
@@ -1171,6 +1181,28 @@ async function getRuntimeStorageSummary(): Promise<{ traces: { count: number; by
     traces: await directoryJsonStats(TRACES_DIR),
     semanticIndex: await fileStats(path.join(PROJECT_DIR, '.harness', 'memory', 'semantic-index.json')),
   };
+}
+
+async function getAboutInfo(): Promise<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string }> {
+  const packageJson = JSON.parse(await fs.readFile(path.join(PROJECT_DIR, 'package.json'), 'utf-8')) as { version?: string };
+  const provenance = await readReleaseProvenance();
+  const version = packageJson.version ?? provenance.version ?? 'unknown';
+  return {
+    version,
+    commit: provenance.commit ?? process.env.GITHUB_SHA ?? '',
+    assetName: provenance.assetName ?? `ollama-agent-harness-v${version}.zip`,
+    assetSha256: provenance.assetSha256 ?? '',
+    releaseUrl: provenance.releaseUrl ?? `https://github.com/Bradliebs/ollama-agent-harness/releases/tag/v${version}`,
+    generatedAt: provenance.generatedAt ?? '',
+  };
+}
+
+async function readReleaseProvenance(): Promise<Partial<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string }>> {
+  try {
+    return JSON.parse(await fs.readFile(RELEASE_PROVENANCE_PATH, 'utf-8')) as Partial<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string }>;
+  } catch {
+    return {};
+  }
 }
 
 async function directoryJsonStats(dirPath: string): Promise<{ count: number; bytes: number }> {

@@ -11,6 +11,24 @@ keywords:
 estimated_reading_time: 8
 ---
 
+## Ollama Agent Harness v0.1.11
+
+## Changes
+
+### Beginner Proof Onboarding Changes
+
+Added visible onboarding, profile preset import/export, installed-version metadata, and interaction smoke coverage for the guided validation profile flow.
+
+* `ui/index.html` and `ui/app.js` - add a first-run walkthrough checklist, profile preset import/export controls, and a Settings About panel.
+* `src/web/server.ts` - adds `/api/about` for installed version and release provenance metadata.
+* `.github/workflows/release.yml` - includes `release-provenance.json` in packaged release archives.
+* `scripts/ui-smoke.js` - verifies guided profile form creation through Playwright interactions.
+* `scripts/release-smoke.js` - verifies release archives include provenance metadata.
+
+## Validation
+
+* Focused web server tests, TypeScript typecheck, full Jest, build, UI smoke, release notes generation, and release archive smoke should pass before release.
+
 ## Ollama Agent Harness v0.1.10
 
 ## Changes
