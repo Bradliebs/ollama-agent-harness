@@ -11,6 +11,23 @@ keywords:
 estimated_reading_time: 8
 ---
 
+## Ollama Agent Harness v0.1.12
+
+## Changes
+
+### Validation Guidance Changes
+
+Added one-click validation templates, validator preview, persisted walkthrough progress, and release verification guidance.
+
+* `src/core/outputValidation.ts` - adds installable custom validation profile templates for factual, coding, release, and decision outputs.
+* `src/web/server.ts` - adds APIs for validation templates, validation preview, persisted walkthrough state, and release verification status.
+* `ui/index.html` and `ui/app.js` - add visible template install buttons, a paste-and-preview validator, completed walkthrough state, and release verification controls.
+* `scripts/ui-smoke.js` - covers template install, preview rendering, walkthrough completion state, and release verification UI.
+
+## Validation
+
+* Focused web server tests, TypeScript typecheck, full Jest, build, UI smoke, release notes generation, and release archive smoke should pass before release.
+
 ## Ollama Agent Harness v0.1.11
 
 ## Changes

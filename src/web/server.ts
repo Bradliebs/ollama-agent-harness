@@ -2,6 +2,7 @@ import express from 'express';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as net from 'net';
+import * as crypto from 'crypto';
 import { Ollama } from 'ollama';
 import { OllamaClient } from '../core/ollamaClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
@@ -18,7 +19,7 @@ import { loadSkillsDir } from '../extensibility/skillLoader';
 import { RateLimiter } from '../core/rateLimiter';
 import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
-import { OUTPUT_VALIDATION_PROFILES, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
+import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
 import { startNewSession, onSessionEnd, getEvolvedPrompt } from '../learning/engine';
 import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordOutputValidationEvalRun, runEvalTraceDataset, summarizeEvalTraceRuns, summarizeOutputValidationRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
 import { appendLearningCandidate, extractLearningCandidate, getLearningCandidateProvenance, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
@@ -62,6 +63,7 @@ interface WebSettings {
   outputValidation: OutputValidationSettings;
   outputValidationProfiles: Array<{ profile: string; label: string; description: string }>;
   customOutputValidationProfiles: CustomOutputValidationProfile[];
+  walkthrough: WalkthroughSettings;
 }
 
 interface MediaToolSettings {
@@ -72,6 +74,10 @@ interface MediaToolSettings {
 interface OutputValidationSettings {
   enabled: boolean;
   profile: OutputValidationProfile;
+}
+
+interface WalkthroughSettings {
+  completed: string[];
 }
 
 interface WebRuntimeDeps {
@@ -106,6 +112,7 @@ let mediaTools: MediaToolSettings = {
 };
 let outputValidation: OutputValidationSettings = { enabled: false, profile: 'oracle-prime' };
 let customOutputValidationProfiles: CustomOutputValidationProfile[] = [];
+let walkthrough: WalkthroughSettings = { completed: [] };
 let settingsLoaded = false;
 const rateLimiter = new RateLimiter(10, 2);
 const hookPipeline = new HookPipeline();
@@ -133,6 +140,15 @@ setSkillsDir(SKILLS_DIR);
 app.get('/api/about', async (_req, res) => {
   try {
     res.json(await getAboutInfo());
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/about/verify', async (_req, res) => {
+  try {
+    res.json(await getReleaseVerification());
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -189,6 +205,7 @@ app.post('/api/settings', async (req, res) => {
     applyMediaToolEnvironment(mediaTools);
   }
   if (req.body.outputValidation !== undefined) outputValidation = sanitizeOutputValidationSettings(req.body.outputValidation);
+  if (req.body.walkthrough !== undefined) walkthrough = sanitizeWalkthroughSettings(req.body.walkthrough);
   if (req.body.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(req.body.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (req.body.temperature !== undefined) temperature = clampNumber(req.body.temperature, 0, 2, 0.7);
   if (req.body.topP !== undefined) topP = clampNumber(req.body.topP, 0, 1, 0.9);
@@ -200,6 +217,32 @@ app.post('/api/settings', async (req, res) => {
 app.get('/api/output-validation/profiles', async (_req, res) => {
   await ensureSettingsLoaded();
   res.json({ profiles: getOutputValidationProfiles(), customProfiles: customOutputValidationProfiles, path: '.harness/output-validation-profiles.json' });
+});
+
+app.get('/api/output-validation/templates', async (_req, res) => {
+  res.json({ templates: OUTPUT_VALIDATION_PROFILE_TEMPLATES });
+});
+
+app.post('/api/output-validation/templates/install', async (req, res) => {
+  await ensureSettingsLoaded();
+  const requestedProfile = String(req.body?.profile ?? '').trim();
+  const template = OUTPUT_VALIDATION_PROFILE_TEMPLATES.find((candidate) => candidate.profile === requestedProfile);
+  if (!template) {
+    res.status(404).json({ error: 'Unknown output validation template.' });
+    return;
+  }
+  customOutputValidationProfiles = customOutputValidationProfiles.filter((profile) => profile.profile !== template.profile).concat(cloneTemplate(template));
+  outputValidation = sanitizeOutputValidationSettings({ ...outputValidation, profile: template.profile });
+  await saveCustomOutputValidationProfiles();
+  await saveSettingsToDisk();
+  res.json({ installed: template.profile, profiles: getOutputValidationProfiles(), customProfiles: customOutputValidationProfiles, path: '.harness/output-validation-profiles.json' });
+});
+
+app.post('/api/output-validation/preview', async (req, res) => {
+  await ensureSettingsLoaded();
+  const content = String(req.body?.content ?? '').slice(0, 200_000);
+  const profile = parseOutputValidationProfile(req.body?.profile, customOutputValidationProfiles) ?? outputValidation.profile;
+  res.json({ validation: validateOutput(content, profile, customOutputValidationProfiles) });
 });
 
 app.post('/api/output-validation/profiles', async (req, res) => {
@@ -1058,6 +1101,7 @@ function getCurrentSettings(): WebSettings {
     outputValidation,
     outputValidationProfiles: getOutputValidationProfiles(),
     customOutputValidationProfiles,
+    walkthrough,
   };
 }
 
@@ -1099,6 +1143,7 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
     applyMediaToolEnvironment(mediaTools);
   }
   if (settings.outputValidation !== undefined) outputValidation = sanitizeOutputValidationSettings(settings.outputValidation);
+  if (settings.walkthrough !== undefined) walkthrough = sanitizeWalkthroughSettings(settings.walkthrough);
   if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (settings.temperature !== undefined) temperature = clampNumber(settings.temperature, 0, 2, 0.7);
   if (settings.topP !== undefined) topP = clampNumber(settings.topP, 0, 1, 0.9);
@@ -1131,6 +1176,15 @@ function sanitizeOutputValidationSettings(value: unknown): OutputValidationSetti
   return { enabled: source.enabled === true, profile };
 }
 
+function sanitizeWalkthroughSettings(value: unknown): WalkthroughSettings {
+  const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+  const allowed = new Set(['setup', 'validation', 'learning', 'about']);
+  const completed = Array.isArray(source.completed)
+    ? Array.from(new Set(source.completed.map((item) => String(item)).filter((item) => allowed.has(item))))
+    : [];
+  return { completed };
+}
+
 function getOutputValidationProfiles(): WebSettings['outputValidationProfiles'] {
   return [...OUTPUT_VALIDATION_PROFILES, ...customOutputValidationProfiles.map(({ profile, label, description }) => ({ profile, label, description }))];
 }
@@ -1147,6 +1201,10 @@ async function loadCustomOutputValidationProfiles(): Promise<void> {
 async function saveCustomOutputValidationProfiles(): Promise<void> {
   await fs.mkdir(path.dirname(OUTPUT_VALIDATION_PROFILES_PATH), { recursive: true });
   await fs.writeFile(OUTPUT_VALIDATION_PROFILES_PATH, JSON.stringify({ profiles: customOutputValidationProfiles }, null, 2), 'utf-8');
+}
+
+function cloneTemplate(template: CustomOutputValidationProfile): CustomOutputValidationProfile {
+  return JSON.parse(JSON.stringify(template)) as CustomOutputValidationProfile;
 }
 
 function applyMediaToolEnvironment(settings: MediaToolSettings): void {
@@ -1195,6 +1253,48 @@ async function getAboutInfo(): Promise<{ version: string; commit: string; assetN
     releaseUrl: provenance.releaseUrl ?? `https://github.com/Bradliebs/ollama-agent-harness/releases/tag/v${version}`,
     generatedAt: provenance.generatedAt ?? '',
   };
+}
+
+async function getReleaseVerification(): Promise<{ status: 'verified' | 'warning'; message: string; version: string; commit: string; assetName: string; releaseUrl: string; expectedSha256: string; localArchiveSha256: string; localArchivePath: string }> {
+  const about = await getAboutInfo();
+  const localArchivePath = path.join(PROJECT_DIR, 'release', about.assetName);
+  const localArchiveSha256 = await sha256FileIfExists(localArchivePath);
+  if (about.assetSha256 && localArchiveSha256) {
+    const verified = about.assetSha256.toLowerCase() === localArchiveSha256.toLowerCase();
+    return {
+      status: verified ? 'verified' : 'warning',
+      message: verified ? 'Local release archive matches the recorded SHA-256.' : 'Local release archive SHA-256 does not match the recorded release provenance.',
+      version: about.version,
+      commit: about.commit,
+      assetName: about.assetName,
+      releaseUrl: about.releaseUrl,
+      expectedSha256: about.assetSha256,
+      localArchiveSha256,
+      localArchivePath: path.relative(PROJECT_DIR, localArchivePath),
+    };
+  }
+  return {
+    status: 'warning',
+    message: about.assetSha256
+      ? 'Recorded SHA-256 is available, but no local release archive was found to compare.'
+      : 'This install has release provenance, but the release asset SHA-256 is only available on the GitHub release page.',
+    version: about.version,
+    commit: about.commit,
+    assetName: about.assetName,
+    releaseUrl: about.releaseUrl,
+    expectedSha256: about.assetSha256,
+    localArchiveSha256,
+    localArchivePath: path.relative(PROJECT_DIR, localArchivePath),
+  };
+}
+
+async function sha256FileIfExists(filePath: string): Promise<string> {
+  try {
+    const content = await fs.readFile(filePath);
+    return crypto.createHash('sha256').update(content).digest('hex');
+  } catch {
+    return '';
+  }
 }
 
 async function readReleaseProvenance(): Promise<Partial<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string }>> {

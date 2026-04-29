@@ -98,7 +98,7 @@ The Settings panel lets you configure:
 
 Settings are saved to `.harness/settings.json` and applied by the running server.
 
-The welcome screen includes a guided checklist for first-run setup, validation profile creation, validation trend export, and installed-version verification. Each checklist action opens the relevant panel so a new user does not need to know where features live.
+The welcome screen includes a guided checklist for first-run setup, validation profile creation, validation trend export, and installed-version verification. Completed checklist steps are saved to `.harness/settings.json` so a new user can return later and see what is already done.
 
 ## Output Validation
 
@@ -111,7 +111,7 @@ Built-in profiles:
 * `coding-answer` - checks that coding answers summarize changes and validation.
 * `tool-result-summary` - checks that tool outputs include outcome, evidence, and next steps.
 
-In the browser UI, open Settings, choose a profile under Output Validation, and enable **Validate final answers**. The Learning tab shows output-validation trend summaries by profile and status.
+In the browser UI, open Settings, choose a profile under Output Validation, and enable **Validate final answers**. Use **Install templates** to add ready-made custom profiles such as beginner factual summaries, code summaries, release readiness, and decision briefs without hand-writing JSON. Use **Preview validator** to paste a draft answer and see the selected profile's score and findings before using it in chat. The Learning tab shows output-validation trend summaries by profile and status.
 
 From the CLI, pass a built-in profile with `--validate-output`:
 
@@ -164,7 +164,7 @@ The release workflow downloads the published release zip after upload and runs t
 
 The Learning tab can download output-validation trend data as JSON. Release notes include commit and asset provenance, including the release zip SHA-256 digest when an asset is available during note generation.
 
-The Settings About panel shows the running package version, commit when available, release link, asset name, and release digest when the installed package includes it. Release archives include `release-provenance.json` so downloaded builds can identify where they came from.
+The Settings About panel shows the running package version, commit when available, release link, asset name, and release digest when the installed package includes it. Release archives include `release-provenance.json` so downloaded builds can identify where they came from. Use **Verify release asset** to compare a local release archive SHA-256 when the archive and expected digest are available, or to get a clear pointer to the GitHub release digest when local comparison is not possible.
 
 ## GitHub Baseline
 

@@ -138,6 +138,56 @@ describe('web server API validation', () => {
     await expect(fs.readFile(validationProfilesPath, 'utf-8')).resolves.toContain('release-note');
   });
 
+  it('lists and installs output validation profile templates', async () => {
+    const templates = await request('/api/output-validation/templates');
+    expect(templates.status).toBe(200);
+    await expect(templates.json()).resolves.toMatchObject({ templates: expect.arrayContaining([expect.objectContaining({ profile: 'release-readiness' })]) });
+
+    const installed = await request('/api/output-validation/templates/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: 'release-readiness' }),
+    });
+
+    expect(installed.status).toBe(200);
+    await expect(installed.json()).resolves.toMatchObject({ installed: 'release-readiness', customProfiles: expect.arrayContaining([expect.objectContaining({ profile: 'release-readiness' })]) });
+    await expect(request('/api/settings').then((settings) => settings.json())).resolves.toMatchObject({ outputValidation: { profile: 'release-readiness' } });
+  });
+
+  it('previews output validation results for pasted content', async () => {
+    const response = await request('/api/output-validation/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: 'coding-answer', content: 'Implemented src/web/server.ts and ran npm test plus npm run typecheck.' }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ validation: { profile: 'coding-answer', status: 'pass', score: 1 } });
+  });
+
+  it('persists walkthrough completion settings', async () => {
+    const response = await request('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ walkthrough: { completed: ['setup', 'validation', 'bad-step'] } }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ walkthrough: { completed: ['setup', 'validation'] } });
+    await expect(fs.readFile(settingsPath, 'utf-8')).resolves.toContain('walkthrough');
+  });
+
+  it('reports release verification status for the About panel', async () => {
+    const response = await request('/api/about/verify');
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      status: expect.stringMatching(/^(verified|warning)$/),
+      assetName: expect.stringContaining('ollama-agent-harness-v'),
+      releaseUrl: expect.stringContaining('/releases/tag/v'),
+    });
+  });
+
   it('rejects invalid custom output validation profiles with schema errors', async () => {
     const response = await request('/api/output-validation/profiles', {
       method: 'POST',

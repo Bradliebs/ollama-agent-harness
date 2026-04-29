@@ -86,6 +86,62 @@ export const OUTPUT_VALIDATION_PROFILES: OutputValidationProfileInfo[] = [
   { profile: 'tool-result-summary', label: 'Tool Result Summary', description: 'Checks command/tool summaries for outcome, evidence, and concise status.' },
 ];
 
+export const OUTPUT_VALIDATION_PROFILE_TEMPLATES: CustomOutputValidationProfile[] = [
+  {
+    profile: 'beginner-factual-summary',
+    label: 'Beginner Factual Summary',
+    description: 'Requires source/evidence language, uncertainty, and a useful answer length.',
+    instructions: 'Answer directly, mention the source or evidence basis, and state confidence or uncertainty when facts may change.',
+    warnBelowScore: 0.85,
+    failBelowScore: 0.6,
+    checks: [
+      { code: 'missing-evidence', severity: 'warn', message: 'Mention the source or evidence basis.', requiresAny: ['source', 'according to', 'based on', 'evidence', 'reported', 'data'], scorePenalty: 0.15 },
+      { code: 'missing-uncertainty', severity: 'warn', message: 'State confidence or uncertainty.', requiresAny: ['confidence', 'uncertain', 'likely', 'may', 'might', 'as of', 'today', 'latest'], scorePenalty: 0.15 },
+      { code: 'too-short', severity: 'fail', message: 'Provide enough detail to be useful.', minLength: 80, scorePenalty: 0.25 },
+    ],
+  },
+  {
+    profile: 'beginner-code-summary',
+    label: 'Beginner Code Summary',
+    description: 'Requires changed files, what changed, and validation status.',
+    instructions: 'Summarize what changed, name the files or areas touched, and state validation performed or why it was not run.',
+    warnBelowScore: 0.85,
+    failBelowScore: 0.6,
+    checks: [
+      { code: 'missing-change', severity: 'fail', message: 'Summarize a concrete change.', requiresAny: ['changed', 'added', 'updated', 'fixed', 'implemented', 'removed'], scorePenalty: 0.25 },
+      { code: 'missing-validation', severity: 'warn', message: 'Mention validation or tests.', requiresAny: ['test', 'typecheck', 'build', 'lint', 'smoke', 'validated', 'not run'], scorePenalty: 0.15 },
+      { code: 'missing-file', severity: 'warn', message: 'Mention a file or code area.', requiresAny: ['.ts', '.js', '.json', '.md', '.html', '.css', 'src/', 'ui/', 'scripts/'], scorePenalty: 0.1 },
+    ],
+  },
+  {
+    profile: 'release-readiness',
+    label: 'Release Readiness',
+    description: 'Requires release version, asset, validation, and provenance language.',
+    instructions: 'State the release version, asset or package, validation status, and provenance or digest details.',
+    warnBelowScore: 0.85,
+    failBelowScore: 0.65,
+    checks: [
+      { code: 'missing-release', severity: 'fail', message: 'Mention the release.', requiresAny: ['release', 'version', 'tag'], scorePenalty: 0.25 },
+      { code: 'missing-asset', severity: 'warn', message: 'Mention the release asset or package.', requiresAny: ['asset', 'zip', 'package', 'archive'], scorePenalty: 0.15 },
+      { code: 'missing-provenance', severity: 'warn', message: 'Mention provenance, commit, digest, or SHA-256.', requiresAny: ['provenance', 'commit', 'digest', 'sha-256', 'sha256'], scorePenalty: 0.15 },
+      { code: 'missing-validation', severity: 'fail', message: 'Mention validation status.', requiresAny: ['passed', 'failed', 'validation', 'ci', 'smoke'], scorePenalty: 0.25 },
+    ],
+  },
+  {
+    profile: 'decision-brief',
+    label: 'Decision Brief',
+    description: 'Requires recommendation, alternatives, risk, and confidence.',
+    instructions: 'Give a clear recommendation, name alternatives, state key risks, and include confidence.',
+    warnBelowScore: 0.85,
+    failBelowScore: 0.6,
+    checks: [
+      { code: 'missing-recommendation', severity: 'fail', message: 'Give a recommendation or conclusion.', requiresAny: ['recommend', 'conclusion', 'decision', 'choose'], scorePenalty: 0.25 },
+      { code: 'missing-alternatives', severity: 'warn', message: 'Mention alternatives or options.', requiresAny: ['alternative', 'option', 'instead', 'tradeoff'], scorePenalty: 0.15 },
+      { code: 'missing-risk', severity: 'warn', message: 'Mention risk or uncertainty.', requiresAny: ['risk', 'uncertain', 'unknown', 'confidence', 'assumption'], scorePenalty: 0.15 },
+    ],
+  },
+];
+
 export function validateOutput(
   content: string,
   profile: OutputValidationProfile = 'oracle-prime',

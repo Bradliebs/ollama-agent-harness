@@ -12,6 +12,8 @@ let currentModelRouting = {};
 let currentMediaTools = {};
 let currentOutputValidation = { enabled: false, profile: 'oracle-prime' };
 let currentOutputValidationProfiles = [];
+let currentOutputValidationTemplates = [];
+let currentWalkthrough = { completed: [] };
 let availableModels = [];
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -20,6 +22,7 @@ window.addEventListener('DOMContentLoaded', () => {
   loadHistory();
   loadFiles();
   loadSettings();
+  loadOutputValidationTemplates();
   loadAbout();
   loadTraceExports();
   loadRuntimeStorage();
@@ -119,6 +122,7 @@ async function loadSettings() {
     currentMediaTools = s.mediaTools || {};
     currentOutputValidation = s.outputValidation || { enabled: false, profile: 'oracle-prime' };
     currentOutputValidationProfiles = s.outputValidationProfiles || [];
+    currentWalkthrough = s.walkthrough || { completed: [] };
     const small = document.getElementById('smallHelperModel');
     const def = document.getElementById('defaultHelperModel');
     const strong = document.getElementById('strongHelperModel');
@@ -145,6 +149,7 @@ async function loadSettings() {
     }
     renderCustomProfilePicker();
     resetCustomProfileForm();
+    refreshWalkthroughChecklist();
     if (outputToggle) outputToggle.classList.toggle('active', currentOutputValidation.enabled === true);
     if (firstRunHost) firstRunHost.value = s.ollamaHost || 'http://localhost:11434';
     if (firstRunVision) firstRunVision.value = currentMediaTools.visionModel || '';
@@ -154,6 +159,80 @@ async function loadSettings() {
     const mode = document.querySelectorAll('.mode-opt')[modeIndex];
     if (mode) mode.classList.add('active');
   } catch {}
+}
+
+async function loadOutputValidationTemplates() {
+  try {
+    const response = await fetch('/api/output-validation/templates');
+    const data = await response.json();
+    currentOutputValidationTemplates = data.templates || [];
+    renderOutputValidationTemplates();
+  } catch {}
+}
+
+function renderOutputValidationTemplates() {
+  const list = document.getElementById('outputValidationTemplates');
+  if (!list) return;
+  list.innerHTML = currentOutputValidationTemplates.map((template) => {
+    const installed = currentCustomProfilesFromEditor().some((profile) => profile.profile === template.profile);
+    return '<div class="template-item"><div><strong>' + esc(template.label || template.profile) + '</strong>' + esc(template.description || '') + '</div><button class="btn-sm" onclick="installOutputValidationTemplate(\'' + escAttr(template.profile) + '\')">' + (installed ? 'Reinstall' : 'Install') + '</button></div>';
+  }).join('') || '<div class="trace-meta">Templates unavailable.</div>';
+}
+
+async function installOutputValidationTemplate(profile) {
+  const status = document.getElementById('outputValidationProfilesStatus');
+  if (status) status.textContent = 'Installing template...';
+  try {
+    const response = await fetch('/api/output-validation/templates/install', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile }),
+    });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    currentOutputValidationProfiles = data.profiles || [];
+    currentOutputValidation = { ...currentOutputValidation, profile: data.installed || profile };
+    renderOutputValidationProfileOptions(document.getElementById('outputValidationProfile'), currentOutputValidationProfiles, currentOutputValidation.profile);
+    writeCustomProfilesToEditor(data.customProfiles || []);
+    renderOutputValidationTemplates();
+    markWalkthroughStep('validation');
+    if (status) status.textContent = 'Installed ' + (data.installed || profile) + ' into custom profiles.';
+  } catch (error) {
+    if (status) status.textContent = 'Could not install template: ' + (error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function previewOutputValidation() {
+  const output = document.getElementById('outputValidationPreviewResult');
+  const content = document.getElementById('outputValidationPreviewText')?.value || '';
+  const profile = document.getElementById('outputValidationProfile')?.value || currentOutputValidation.profile || 'oracle-prime';
+  if (!output) return;
+  output.className = 'validation-preview-result';
+  output.textContent = 'Running preview...';
+  try {
+    const response = await fetch('/api/output-validation/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile, content }),
+    });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    renderValidationPreviewResult(data.validation);
+    markWalkthroughStep('validation');
+  } catch (error) {
+    output.className = 'validation-preview-result fail';
+    output.textContent = 'Preview failed: ' + (error instanceof Error ? error.message : String(error));
+  }
+}
+
+function renderValidationPreviewResult(validation) {
+  const output = document.getElementById('outputValidationPreviewResult');
+  if (!output) return;
+  const findings = validation.findings || [];
+  output.className = 'validation-preview-result ' + escAttr(validation.status || 'warn');
+  output.innerHTML = '<div><strong>' + esc(validation.profile) + ' ' + esc(validation.status) + '</strong> · score ' + esc(validation.score) + '</div>' +
+    (findings.length ? findings.map((finding) => '<div>' + esc(finding.severity.toUpperCase()) + ': ' + esc(finding.code) + ' - ' + esc(finding.message) + '</div>').join('') : '<div>PASS: no findings</div>') +
+    ((validation.missingSections || []).length ? '<div>Missing sections: ' + esc(validation.missingSections.join(', ')) + '</div>' : '');
 }
 
 async function loadAbout() {
@@ -183,6 +262,27 @@ function renderAboutPanel(data) {
   panel.innerHTML = '<div class="about-grid">' + rows.map(([label, value]) => '<div><strong>' + esc(label) + '</strong> ' + String(value).replace(/^((?!<a ).)*$/, (text) => esc(text)) + '</div>').join('') + '</div>';
 }
 
+async function verifyReleaseAsset() {
+  const panel = document.getElementById('releaseVerificationPanel');
+  if (!panel) return;
+  panel.classList.remove('initial-hidden');
+  panel.textContent = 'Checking release provenance...';
+  try {
+    const response = await fetch('/api/about/verify');
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    const releaseLink = data.releaseUrl ? '<a href="' + escAttr(data.releaseUrl) + '" target="_blank">release page</a>' : 'release page unavailable';
+    panel.innerHTML = '<div><strong>' + esc(data.status === 'verified' ? 'Verified' : 'Needs comparison') + '</strong> ' + esc(data.message) + '</div>' +
+      '<div><strong>Asset</strong> ' + esc(data.assetName || 'unknown') + '</div>' +
+      '<div><strong>Expected SHA-256</strong> ' + esc(data.expectedSha256 || 'shown on GitHub release') + '</div>' +
+      '<div><strong>Local archive SHA-256</strong> ' + esc(data.localArchiveSha256 || 'no local archive found at ' + (data.localArchivePath || 'release folder')) + '</div>' +
+      '<div><strong>Release</strong> ' + releaseLink + '</div>';
+    markWalkthroughStep('about');
+  } catch (error) {
+    panel.textContent = 'Release verification unavailable: ' + (error instanceof Error ? error.message : String(error));
+  }
+}
+
 function openWalkthroughTarget(target) {
   if (target === 'learning') {
     const tab = document.querySelector('[onclick*="learning"]');
@@ -194,6 +294,35 @@ function openWalkthroughTarget(target) {
   const element = document.getElementById(targetId);
   if (element) element.scrollIntoView({ block: 'center' });
   if (target === 'about') loadAbout();
+}
+
+function walkthroughCompleted(step) {
+  return (currentWalkthrough.completed || []).includes(step);
+}
+
+function markWalkthroughStep(step) {
+  if (walkthroughCompleted(step)) return;
+  currentWalkthrough = { completed: [...(currentWalkthrough.completed || []), step] };
+  updateSetting('walkthrough', currentWalkthrough);
+  refreshWalkthroughChecklist();
+}
+
+function refreshWalkthroughChecklist() {
+  const checklist = document.getElementById('walkthroughChecklist');
+  if (checklist) checklist.innerHTML = walkthroughChecklistMarkup();
+}
+
+function walkthroughChecklistMarkup() {
+  const steps = [
+    ['setup', 'Check setup', 'Confirm Ollama, optional vision, and optional audio helpers.'],
+    ['validation', 'Create or preview validation', 'Install a template, save a profile, or preview an answer.'],
+    ['learning', 'Export results', 'Download validation trends from the Learning tab.'],
+    ['about', 'Verify install', 'Check the running version and release provenance.'],
+  ];
+  return steps.map(([id, title, description], index) => {
+    const done = walkthroughCompleted(id);
+    return '<div class="walkthrough-step' + (done ? ' done' : '') + '"><div class="walkthrough-dot">' + (done ? '✓' : index + 1) + '</div><div><strong>' + esc(title) + '</strong>' + esc(description) + '</div><button class="btn-sm" onclick="openWalkthroughTarget(\'' + escAttr(id) + '\')">' + (done ? 'Open' : 'Start') + '</button></div>';
+  }).join('');
 }
 
 function ensureRightPanelVisible() {
@@ -304,6 +433,7 @@ async function saveProfileFromForm() {
     writeCustomProfilesToEditor(profiles);
     await saveOutputValidationProfiles();
     renderCustomProfilePicker(profile.profile);
+    markWalkthroughStep('validation');
   } catch (error) {
     if (status) status.textContent = 'Profile form needs attention: ' + (error instanceof Error ? error.message : String(error));
   }
@@ -423,6 +553,7 @@ async function saveOutputValidationProfiles() {
     currentOutputValidationProfiles = data.profiles || [];
     renderOutputValidationProfileOptions(document.getElementById('outputValidationProfile'), currentOutputValidationProfiles, currentOutputValidation.profile || 'oracle-prime');
     writeCustomProfilesToEditor(data.customProfiles || []);
+    renderOutputValidationTemplates();
     if (status) status.textContent = (data.customProfiles || []).length + ' custom profiles saved to ' + (data.path || '.harness/output-validation-profiles.json') + '.';
   } catch (error) {
     if (status) status.textContent = 'Could not save profiles: ' + (error instanceof Error ? error.message : String(error));
@@ -559,6 +690,7 @@ async function applyFirstRunSetup() {
     if (vision) vision.value = currentMediaTools.visionModel || '';
     if (audio) audio.value = currentMediaTools.audioTranscribeCommand || '';
     if (status) status.textContent = 'Saved. Models will refresh from the configured Ollama host.';
+    markWalkthroughStep('setup');
     await loadModels();
   } catch (error) {
     if (status) status.textContent = 'Setup failed: ' + (error.message || error);
@@ -583,6 +715,7 @@ async function checkFirstRunHealth() {
       detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio);
     }
     if (status) status.textContent = data.ollama?.ok ? 'Setup check finished.' : 'Setup check found an Ollama connection issue.';
+    markWalkthroughStep('setup');
   } catch (error) {
     if (detail) {
       detail.classList.remove('initial-hidden');
@@ -913,7 +1046,7 @@ async function autoSaveChat() { if (chatMessages.length < 2) return; const title
 async function deleteChat(id) { await fetch('/api/history/' + id, { method: 'DELETE' }); if (id === currentChatId) newChat(); loadHistory(); }
 function newChat() { currentChatId = null; chatMessages = []; document.getElementById('chatArea').innerHTML = welcomeMarkup(); renderModelCapabilityHint(); loadSettings(); loadHistory(); }
 function welcomeMarkup() {
-  return '<div class="welcome" id="welcome"><h2>Welcome to Harness</h2><p>Pick a model above, then ask me anything. I can read files, write code, run commands, search your project, create skills, and remember things across sessions.</p><div class="beginner-guide" id="beginnerGuide"><div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div><div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div><div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div></div><div class="walkthrough-checklist" id="walkthroughChecklist"><div class="walkthrough-step"><div class="walkthrough-dot">1</div><div><strong>Check setup</strong>Confirm Ollama, optional vision, and optional audio helpers.</div><button class="btn-sm" onclick="openWalkthroughTarget(\'setup\')">Open</button></div><div class="walkthrough-step"><div class="walkthrough-dot">2</div><div><strong>Create a profile</strong>Use the guided form instead of hand-writing JSON.</div><button class="btn-sm" onclick="openWalkthroughTarget(\'validation\')">Open</button></div><div class="walkthrough-step"><div class="walkthrough-dot">3</div><div><strong>Export results</strong>Download validation trends from the Learning tab.</div><button class="btn-sm" onclick="openWalkthroughTarget(\'learning\')">Open</button></div><div class="walkthrough-step"><div class="walkthrough-dot">4</div><div><strong>Verify install</strong>Check the running version and release provenance.</div><button class="btn-sm" onclick="openWalkthroughTarget(\'about\')">Open</button></div></div><div class="first-run-setup" id="firstRunSetup"><h3>First-run setup</h3><p>Set the local Ollama host and optional media helpers before your first chat.</p><div class="first-run-grid"><div><label for="firstRunOllamaHost">Ollama host</label><input id="firstRunOllamaHost" type="text" value="http://localhost:11434"></div><div><label for="firstRunVisionModel">Vision model</label><input id="firstRunVisionModel" type="text" placeholder="llava"></div><div><label for="firstRunAudioCommand">Audio command</label><input id="firstRunAudioCommand" type="text" placeholder="whisper &quot;{input}&quot; --model base"></div><div><label for="firstRunAudioSamplePath">Audio test file</label><input id="firstRunAudioSamplePath" type="text" placeholder=".harness/uploads/sample.wav"></div></div><div class="first-run-actions"><button class="btn-sm" onclick="applyFirstRunSetup()">Save setup</button><button class="btn-sm" onclick="checkFirstRunHealth()">Check setup</button><span class="first-run-status" id="firstRunStatus">Optional. You can change these later in Settings.</span></div><div class="trace-detail initial-hidden" id="firstRunHealth"></div></div><div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div><div class="tips"><div class="tip" onclick="sendTip(this)">List files in this project</div><div class="tip" onclick="sendTip(this)">What models do I have?</div><div class="tip" onclick="sendTip(this)">Create a skill for code review</div></div></div>';
+  return '<div class="welcome" id="welcome"><h2>Welcome to Harness</h2><p>Pick a model above, then ask me anything. I can read files, write code, run commands, search your project, create skills, and remember things across sessions.</p><div class="beginner-guide" id="beginnerGuide"><div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div><div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div><div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div></div><div class="walkthrough-checklist" id="walkthroughChecklist">' + walkthroughChecklistMarkup() + '</div><div class="first-run-setup" id="firstRunSetup"><h3>First-run setup</h3><p>Set the local Ollama host and optional media helpers before your first chat.</p><div class="first-run-grid"><div><label for="firstRunOllamaHost">Ollama host</label><input id="firstRunOllamaHost" type="text" value="http://localhost:11434"></div><div><label for="firstRunVisionModel">Vision model</label><input id="firstRunVisionModel" type="text" placeholder="llava"></div><div><label for="firstRunAudioCommand">Audio command</label><input id="firstRunAudioCommand" type="text" placeholder="whisper &quot;{input}&quot; --model base"></div><div><label for="firstRunAudioSamplePath">Audio test file</label><input id="firstRunAudioSamplePath" type="text" placeholder=".harness/uploads/sample.wav"></div></div><div class="first-run-actions"><button class="btn-sm" onclick="applyFirstRunSetup()">Save setup</button><button class="btn-sm" onclick="checkFirstRunHealth()">Check setup</button><span class="first-run-status" id="firstRunStatus">Optional. You can change these later in Settings.</span></div><div class="trace-detail initial-hidden" id="firstRunHealth"></div></div><div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div><div class="tips"><div class="tip" onclick="sendTip(this)">List files in this project</div><div class="tip" onclick="sendTip(this)">What models do I have?</div><div class="tip" onclick="sendTip(this)">Create a skill for code review</div></div></div>';
 }
 function exportChat() { if (!chatMessages.length) { alert('No messages.'); return; } let md = '# Chat Export\n\n'; for (const m of chatMessages) md += '## ' + (m.role === 'user' ? 'You' : 'Assistant') + '\n\n' + m.content + '\n\n---\n\n'; const blob = new Blob([md], { type: 'text/markdown' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'chat-' + new Date().toISOString().slice(0, 10) + '.md'; a.click(); }
 
@@ -961,6 +1094,7 @@ function renderOutputValidationTrends(data) {
 }
 
 function downloadOutputValidationTrend() {
+  markWalkthroughStep('learning');
   window.location.href = '/api/learning/output-validation-trends/download';
 }
 
