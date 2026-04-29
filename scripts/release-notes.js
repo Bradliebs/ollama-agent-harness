@@ -151,10 +151,24 @@ function stripFrontmatter(content) {
 }
 
 function currentVersionSection(content, targetVersion) {
-  const escaped = escapeRegExp(String(targetVersion).replace(/^v/i, 'v'));
-  const pattern = new RegExp(`^##\\s+Ollama Agent Harness ${escaped}\\s*$([\\s\\S]*?)(?=^##\\s+Ollama Agent Harness v|\\z)`, 'm');
-  const match = content.match(pattern);
-  return match ? match[0] : content;
+  const normalizedVersion = String(targetVersion).replace(/^v/i, 'v');
+  const heading = `## Ollama Agent Harness ${normalizedVersion}`;
+  const lines = content.split(/\r?\n/);
+  const startIndex = lines.findIndex((line) => line.trim() === heading);
+  if (startIndex === -1) {
+    return content;
+  }
+
+  let endIndex = lines.length;
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (line.startsWith('## Ollama Agent Harness v')) {
+      endIndex = index;
+      break;
+    }
+  }
+
+  return lines.slice(startIndex, endIndex).join('\n');
 }
 
 main();
