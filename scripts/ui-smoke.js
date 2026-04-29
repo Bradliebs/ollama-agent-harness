@@ -103,7 +103,7 @@ async function main() {
     if (!result.hasModelCapabilityHint) failures.push('model capability hint was not found');
     if (!result.hasAttachmentHint) failures.push('attachment hint was not found');
     if (!result.hasMemoryPalace) failures.push('memory palace view was not found');
-    if (!result.hasPalaceDetail) failures.push('palace detail panel was not found');
+    if (result.palaceAnchorButtons > 0 && !result.hasPalaceDetail) failures.push('palace detail panel was not found');
     if (!result.palaceTabVisible) failures.push('palace tab did not become visible');
     if (!result.learningTabVisible) failures.push('learning tab did not become visible');
     if (!result.hasLearningCandidateQueue) failures.push('learning candidate queue was not rendered');

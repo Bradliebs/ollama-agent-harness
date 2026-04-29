@@ -24,6 +24,10 @@ function main() {
       for (const item of entry.releaseItems.slice(0, 5)) lines.push(`* ${item}`);
       if (entry.releaseItems.length > 0) lines.push('');
     }
+  } else if (fs.existsSync('CHANGELOG.md')) {
+    const changelog = stripFrontmatter(fs.readFileSync('CHANGELOG.md', 'utf-8')).trim();
+    lines.length = 0;
+    lines.push(changelog.replace(/^##?\s+Ollama Agent Harness .+$/m, `# Ollama Agent Harness ${version}`), '');
   } else {
     const fallback = gitSummary();
     lines.push('## Changes', '', fallback || 'Validated release from the current repository state.', '');
@@ -111,6 +115,10 @@ function escapeRegExp(value) {
 function gitSummary() {
   const result = spawnSync('git', ['log', '-1', '--pretty=format:%s'], { encoding: 'utf-8' });
   return result.status === 0 && result.stdout.trim() ? `Latest commit: ${result.stdout.trim()}` : '';
+}
+
+function stripFrontmatter(content) {
+  return content.startsWith('---\n') ? content.replace(/^---\n[\s\S]*?\n---\n/, '') : content;
 }
 
 main();
