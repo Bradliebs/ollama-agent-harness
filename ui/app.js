@@ -9,6 +9,7 @@ let permissionPollTimer = null;
 let activeChatController = null;
 let activeTraceExport = null;
 let currentModelRouting = {};
+let currentMediaTools = {};
 let availableModels = [];
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -112,14 +113,19 @@ async function loadSettings() {
     if (s.contextMaxTokens) document.getElementById('contextMaxTokens').value = s.contextMaxTokens;
     renderContextDetails(s.context || { configuredMaxTokens: s.contextMaxTokens, detectedMaxTokens: null, effectiveMaxTokens: s.contextMaxTokens });
     currentModelRouting = s.modelRouting || {};
+    currentMediaTools = s.mediaTools || {};
     const small = document.getElementById('smallHelperModel');
     const def = document.getElementById('defaultHelperModel');
     const strong = document.getElementById('strongHelperModel');
     const confidence = document.getElementById('helperConfidenceThreshold');
+    const vision = document.getElementById('visionModel');
+    const audio = document.getElementById('audioTranscribeCommand');
     if (small) small.value = currentModelRouting.smallModel || '';
     if (def) def.value = currentModelRouting.defaultModel || '';
     if (strong) strong.value = currentModelRouting.strongModel || '';
     if (confidence && currentModelRouting.confidenceEscalationThreshold !== undefined) confidence.value = currentModelRouting.confidenceEscalationThreshold;
+    if (vision) vision.value = currentMediaTools.visionModel || '';
+    if (audio) audio.value = currentMediaTools.audioTranscribeCommand || '';
     document.querySelectorAll('.mode-opt').forEach((option) => option.classList.remove('active'));
     const modeIndex = s.permissionMode === 'dontAsk' ? 0 : s.permissionMode === 'acceptEdits' ? 1 : 2;
     const mode = document.querySelectorAll('.mode-opt')[modeIndex];
@@ -153,6 +159,14 @@ function updateRoutingSetting(k, v) {
   }
   currentModelRouting = next;
   updateSetting('modelRouting', next);
+}
+
+function updateMediaToolSetting(k, v) {
+  const next = { ...currentMediaTools };
+  if (String(v).trim()) next[k] = String(v).trim();
+  else delete next[k];
+  currentMediaTools = next;
+  updateSetting('mediaTools', next);
 }
 
 function setMode(m, el) {
@@ -206,7 +220,8 @@ async function sendMessage() {
   const model = document.getElementById('modelSelect').value;
   if (pendingFiles.length > 0) {
     const fileInfo = pendingFiles.map((f) => '[Attached ' + mediaKind(f) + ': ' + f.name + ' at ' + f.path + ']').join('\n');
-    text = (text ? text + '\n\n' : '') + '[Selected model: ' + model + ']\n' + fileInfo + '\n\nPlease analyze the attached file(s). For image attachments, use image_analyze with the selected model when it supports vision. For audio attachments, use audio_transcribe first, then analyze the transcript. If a required media tool is not configured, say that clearly.';
+    const mediaConfig = '[Media tools: visionModel=' + (currentMediaTools.visionModel || model || 'not configured') + '; audioTranscribeCommand=' + (currentMediaTools.audioTranscribeCommand ? 'configured' : 'not configured') + ']';
+    text = (text ? text + '\n\n' : '') + '[Selected model: ' + model + ']\n' + mediaConfig + '\n' + fileInfo + '\n\nPlease analyze the attached file(s). For image attachments, use image_analyze with the configured vision model when available, otherwise use the selected model if it supports vision. For audio attachments, use audio_transcribe first, then analyze the transcript. If a required media tool is not configured, say that clearly.';
     pendingFiles = [];
     showAttached();
   }

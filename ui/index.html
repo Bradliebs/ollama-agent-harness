@@ -306,6 +306,18 @@
       </div>
     </div>
     <div class="settings-section">
+      <h4>Media Tools</h4>
+      <div class="setting-row">
+        <label>Vision model</label>
+        <input type="text" id="visionModel" placeholder="llava or qwen2-vl" onchange="updateMediaToolSetting('visionModel',this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Audio command</label>
+        <input type="text" id="audioTranscribeCommand" placeholder="whisper &quot;{input}&quot; --model base --output_format txt --output_dir -" onchange="updateMediaToolSetting('audioTranscribeCommand',this.value)" />
+      </div>
+      <div class="trace-detail">Use {input} where the uploaded audio path should be placed.</div>
+    </div>
+    <div class="settings-section">
       <h4>Traces</h4>
       <button class="btn-sm full-width-button" onclick="exportTraceSnapshot()">Export current trace</button>
       <button class="btn-sm full-width-button" onclick="exportTraceEvalExample()">Create eval example</button>

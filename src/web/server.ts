@@ -54,6 +54,12 @@ interface WebSettings {
   temperature: number;
   topP: number;
   modelRouting: ModelRoutingPolicy;
+  mediaTools: MediaToolSettings;
+}
+
+interface MediaToolSettings {
+  visionModel: string;
+  audioTranscribeCommand: string;
 }
 
 interface WebRuntimeDeps {
@@ -82,6 +88,10 @@ let detectedContextMaxTokens: number | null = null;
 let temperature = 0.7;
 let topP = 0.9;
 let modelRouting: ModelRoutingPolicy = {};
+let mediaTools: MediaToolSettings = {
+  visionModel: process.env.HARNESS_VISION_MODEL ?? '',
+  audioTranscribeCommand: process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND ?? '',
+};
 let settingsLoaded = false;
 const rateLimiter = new RateLimiter(10, 2);
 const hookPipeline = new HookPipeline();
@@ -151,6 +161,10 @@ app.post('/api/settings', async (req, res) => {
   if (req.body.systemPrompt !== undefined) systemPromptOverride = String(req.body.systemPrompt).slice(0, 20_000);
   if (req.body.summarizerModel !== undefined) summarizerModel = sanitizeModelName(req.body.summarizerModel);
   if (req.body.modelRouting !== undefined) modelRouting = sanitizeModelRoutingPolicy(req.body.modelRouting);
+  if (req.body.mediaTools !== undefined) {
+    mediaTools = sanitizeMediaToolSettings(req.body.mediaTools);
+    applyMediaToolEnvironment(mediaTools);
+  }
   if (req.body.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(req.body.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (req.body.temperature !== undefined) temperature = clampNumber(req.body.temperature, 0, 2, 0.7);
   if (req.body.topP !== undefined) topP = clampNumber(req.body.topP, 0, 1, 0.9);
@@ -951,6 +965,7 @@ function getCurrentSettings(): WebSettings {
     temperature,
     topP,
     modelRouting,
+    mediaTools,
   };
 }
 
@@ -986,6 +1001,10 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   if (settings.systemPrompt !== undefined) systemPromptOverride = String(settings.systemPrompt).slice(0, 20_000);
   if (settings.summarizerModel !== undefined) summarizerModel = sanitizeModelName(settings.summarizerModel);
   if (settings.modelRouting !== undefined) modelRouting = sanitizeModelRoutingPolicy(settings.modelRouting);
+  if (settings.mediaTools !== undefined) {
+    mediaTools = sanitizeMediaToolSettings(settings.mediaTools);
+    applyMediaToolEnvironment(mediaTools);
+  }
   if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (settings.temperature !== undefined) temperature = clampNumber(settings.temperature, 0, 2, 0.7);
   if (settings.topP !== undefined) topP = clampNumber(settings.topP, 0, 1, 0.9);
@@ -1002,6 +1021,21 @@ function sanitizeModelRoutingPolicy(value: unknown): ModelRoutingPolicy {
   if (source.failureEscalationThreshold !== undefined) policy.failureEscalationThreshold = Math.floor(clampNumber(source.failureEscalationThreshold, 1, 20, 2));
   if (source.confidenceEscalationThreshold !== undefined) policy.confidenceEscalationThreshold = clampNumber(source.confidenceEscalationThreshold, 0, 1, 0.45);
   return policy;
+}
+
+function sanitizeMediaToolSettings(value: unknown): MediaToolSettings {
+  const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+  return {
+    visionModel: sanitizeModelName(source.visionModel).slice(0, 200),
+    audioTranscribeCommand: String(source.audioTranscribeCommand ?? '').trim().slice(0, 5000),
+  };
+}
+
+function applyMediaToolEnvironment(settings: MediaToolSettings): void {
+  if (settings.visionModel) process.env.HARNESS_VISION_MODEL = settings.visionModel;
+  else delete process.env.HARNESS_VISION_MODEL;
+  if (settings.audioTranscribeCommand) process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND = settings.audioTranscribeCommand;
+  else delete process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND;
 }
 
 function withRoutingPolicy(prompt: string): string {

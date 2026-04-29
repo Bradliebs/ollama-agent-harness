@@ -80,17 +80,44 @@ describe('web server API validation', () => {
           strongModel: 'strong-helper',
           confidenceEscalationThreshold: 0.3,
         },
+        mediaTools: {
+          visionModel: 'llava',
+          audioTranscribeCommand: 'whisper "{input}" --model base',
+        },
       }),
     });
 
     expect(response.status).toBe(200);
-    const saved = JSON.parse(await fs.readFile(settingsPath, 'utf-8')) as { model: string; temperature: number; contextMaxTokens: number; modelRouting: unknown };
+    const saved = JSON.parse(await fs.readFile(settingsPath, 'utf-8')) as { model: string; temperature: number; contextMaxTokens: number; modelRouting: unknown; mediaTools: unknown };
     expect(saved).toMatchObject({
       model: 'persist-test',
       temperature: 0.2,
       contextMaxTokens: 4096,
       modelRouting: { smallModel: 'tiny-helper', defaultModel: 'base-helper', strongModel: 'strong-helper', confidenceEscalationThreshold: 0.3 },
+      mediaTools: { visionModel: 'llava', audioTranscribeCommand: 'whisper "{input}" --model base' },
     });
+  });
+
+  it('applies media tool settings to the running process', async () => {
+    const originalVision = process.env.HARNESS_VISION_MODEL;
+    const originalAudio = process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND;
+    try {
+      const response = await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mediaTools: { visionModel: 'qwen2-vl', audioTranscribeCommand: 'transcribe "{input}"' } }),
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ mediaTools: { visionModel: 'qwen2-vl', audioTranscribeCommand: 'transcribe "{input}"' } });
+      expect(process.env.HARNESS_VISION_MODEL).toBe('qwen2-vl');
+      expect(process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND).toBe('transcribe "{input}"');
+    } finally {
+      if (originalVision === undefined) delete process.env.HARNESS_VISION_MODEL;
+      else process.env.HARNESS_VISION_MODEL = originalVision;
+      if (originalAudio === undefined) delete process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND;
+      else process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND = originalAudio;
+    }
   });
 
   it('rejects file tree paths outside the project directory', async () => {

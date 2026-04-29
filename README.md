@@ -1,0 +1,99 @@
+---
+title: Ollama Agent Harness
+description: Local-first Ollama agent harness with tools, tracing, learning, multimodal helpers, and a browser UI
+author: Bradliebs
+ms.date: 2026-04-29
+ms.topic: overview
+keywords:
+  - ollama
+  - agent
+  - local-first
+  - multimodal
+estimated_reading_time: 5
+---
+
+## Overview
+
+Ollama Agent Harness is a local-first agent runtime and browser UI for working with Ollama models on project tasks. It combines a minimal ReAct-style loop with the operational pieces a coding assistant needs: tool dispatch, permission modes, session recovery, tracing, context continuity, learning datasets, and model routing.
+
+The app is designed for local experimentation. Your runtime state is stored under `.harness/`, while implementation and planning notes from this assistant session are tracked separately under `.copilot-tracking/`.
+
+## Quick Start
+
+Install dependencies:
+
+```powershell
+npm install
+```
+
+Start the browser UI:
+
+```powershell
+npm run ui
+```
+
+Open the URL printed by the server, usually `http://127.0.0.1:3000`.
+
+Run validation:
+
+```powershell
+npm run typecheck
+npm test -- --runInBand
+```
+
+Run the UI smoke check after the UI server is running:
+
+```powershell
+npm run smoke:ui -- http://127.0.0.1:3000/
+```
+
+## Media Tools
+
+Harness can route image and audio attachments through local tools when the selected model asks for them.
+
+### Image Analysis
+
+The `image_analyze` tool reads a local image and sends the image bytes to an Ollama vision-capable model. You can configure the default vision model in the browser Settings panel or with an environment variable:
+
+```powershell
+$env:HARNESS_VISION_MODEL = 'llava'
+npm run ui
+```
+
+You can also leave this blank. When a user attaches an image, the chat prompt includes the selected model name so the model can call `image_analyze` with that model if it supports vision.
+
+### Audio Transcription
+
+The `audio_transcribe` tool runs a local transcription command. Configure it in the browser Settings panel or with `HARNESS_AUDIO_TRANSCRIBE_COMMAND`. Use `{input}` where Harness should place the uploaded audio file path.
+
+Example with a local Whisper command:
+
+```powershell
+$env:HARNESS_AUDIO_TRANSCRIBE_COMMAND = 'whisper "{input}" --model base --output_format txt --output_dir -'
+npm run ui
+```
+
+If no transcription command is configured, the tool returns a clear setup message instead of pretending the model can hear the file.
+
+## Browser Settings
+
+The Settings panel lets you configure:
+
+* Ollama host
+* Generation parameters
+* Context continuity and detected context length
+* Helper model routing
+* Media tool defaults for vision and audio
+* Trace and eval utilities
+* Runtime storage cleanup
+* Safety mode
+
+Settings are saved to `.harness/settings.json` and applied by the running server.
+
+## GitHub Baseline
+
+This workspace is pushed to a private GitHub repository:
+
+<https://github.com/Bradliebs/ollama-agent-harness>
+
+The first pushed baseline is commit `428e5da`, and release tags should be created from validated commits.

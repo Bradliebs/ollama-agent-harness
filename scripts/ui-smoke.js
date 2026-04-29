@@ -32,6 +32,7 @@ async function main() {
         hasTraceInspector: Boolean(document.getElementById('traceInspector')),
         hasRuntimeStorage: Boolean(document.getElementById('runtimeStorageStatus')),
         hasRoutingSettings: Boolean(document.getElementById('smallHelperModel')) && Boolean(document.getElementById('strongHelperModel')),
+        hasMediaToolSettings: Boolean(document.getElementById('visionModel')) && Boolean(document.getElementById('audioTranscribeCommand')),
         hasContextDetails: Boolean(document.getElementById('contextDetails')),
         hasTraceEvalExamples: Boolean(document.getElementById('traceEvalExamples')),
         hasWeatherReplayEvalButton: Boolean(document.getElementById('createWeatherReplayEvalBtn')),
@@ -58,6 +59,7 @@ async function main() {
         hasRunEvalDatasetFunction: typeof window.runEvalDataset === 'function',
         hasReplaySourceLinkFunction: typeof window.renderReplaySourceLinks === 'function',
         hasReplayFailureFunction: typeof window.renderLatestRunFailures === 'function',
+        hasMediaToolSettingFunction: typeof window.updateMediaToolSetting === 'function',
         hasApplyCalibrationFunction: typeof window.applyRoutingCalibration === 'function',
         duplicateIds,
       };
@@ -72,6 +74,7 @@ async function main() {
     if (!result.hasTraceInspector) failures.push('trace inspector panel was not found');
     if (!result.hasRuntimeStorage) failures.push('runtime storage panel was not found');
     if (!result.hasRoutingSettings) failures.push('helper routing settings were not found');
+    if (!result.hasMediaToolSettings) failures.push('media tool settings were not found');
     if (!result.hasContextDetails) failures.push('context details were not found');
     if (!result.hasTraceEvalExamples) failures.push('trace eval example panel was not found');
     if (!result.hasWeatherReplayEvalButton) failures.push('weather replay eval button was not found');
@@ -96,6 +99,7 @@ async function main() {
     if (!result.hasRunEvalDatasetFunction) failures.push('eval runner function was not found');
     if (!result.hasReplaySourceLinkFunction) failures.push('replay source link function was not found');
     if (!result.hasReplayFailureFunction) failures.push('replay failure function was not found');
+    if (!result.hasMediaToolSettingFunction) failures.push('media tool setting function was not found');
     if (!result.hasApplyCalibrationFunction) failures.push('apply calibration function was not found');
     if (result.duplicateIds.length > 0) failures.push(`duplicate ids found: ${result.duplicateIds.join(', ')}`);
 
@@ -129,6 +133,7 @@ async function runStaticSmoke() {
     hasTraceInspector: ids.includes('traceInspector'),
     hasRuntimeStorage: ids.includes('runtimeStorageStatus'),
     hasRoutingSettings: ids.includes('smallHelperModel') && ids.includes('strongHelperModel'),
+    hasMediaToolSettings: ids.includes('visionModel') && ids.includes('audioTranscribeCommand'),
     hasContextDetails: ids.includes('contextDetails'),
     hasTraceEvalExamples: ids.includes('traceEvalExamples'),
     hasWeatherReplayEvalButton: ids.includes('createWeatherReplayEvalBtn'),
@@ -147,6 +152,7 @@ async function runStaticSmoke() {
     hasRunEvalDatasetFunction: appScript.includes('function runEvalDataset'),
     hasReplaySourceLinkFunction: appScript.includes('function renderReplaySourceLinks'),
     hasReplayFailureFunction: appScript.includes('function renderLatestRunFailures'),
+    hasMediaToolSettingFunction: appScript.includes('function updateMediaToolSetting'),
     hasMediaToolGuidance: appScript.includes('image_analyze') && appScript.includes('audio_transcribe'),
     hasRecoveryCopy: appScript.includes('Unfinished chat available') && appScript.includes('Fork starts a copy'),
     hasApplyCalibrationFunction: appScript.includes('function applyRoutingCalibration'),
@@ -160,6 +166,7 @@ async function runStaticSmoke() {
   if (!result.hasTraceInspector) failures.push('trace inspector panel was not found');
   if (!result.hasRuntimeStorage) failures.push('runtime storage panel was not found');
   if (!result.hasRoutingSettings) failures.push('helper routing settings were not found');
+  if (!result.hasMediaToolSettings) failures.push('media tool settings were not found');
   if (!result.hasContextDetails) failures.push('context details were not found');
   if (!result.hasTraceEvalExamples) failures.push('trace eval example panel was not found');
   if (!result.hasWeatherReplayEvalButton) failures.push('weather replay eval button was not found');
@@ -178,6 +185,7 @@ async function runStaticSmoke() {
   if (!result.hasRunEvalDatasetFunction) failures.push('eval runner function was not found');
   if (!result.hasReplaySourceLinkFunction) failures.push('replay source link function was not found');
   if (!result.hasReplayFailureFunction) failures.push('replay failure function was not found');
+  if (!result.hasMediaToolSettingFunction) failures.push('media tool setting function was not found');
   if (!result.hasMediaToolGuidance) failures.push('media tool guidance was not found');
   if (!result.hasRecoveryCopy) failures.push('recovery explanation copy was not found');
   if (!result.hasApplyCalibrationFunction) failures.push('apply calibration function was not found');
