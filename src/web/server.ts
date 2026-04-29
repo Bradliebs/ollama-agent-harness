@@ -7,6 +7,7 @@ import { Ollama } from 'ollama';
 import { OllamaClient } from '../core/ollamaClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { getBuiltinTools } from '../tools';
+import { iteratePdfPages } from '../tools/pdfTool';
 import { setSkillsDir } from '../tools/skillTools';
 import { PermissionEngine } from '../permissions/engine';
 import { PermissionPromptBroker } from '../permissions/promptBroker';
@@ -69,6 +70,7 @@ interface WebSettings {
 interface MediaToolSettings {
   visionModel: string;
   audioTranscribeCommand: string;
+  pdfOcrCommand: string;
 }
 
 interface OutputValidationSettings {
@@ -115,6 +117,7 @@ let modelRouting: ModelRoutingPolicy = {};
 let mediaTools: MediaToolSettings = {
   visionModel: process.env.HARNESS_VISION_MODEL ?? '',
   audioTranscribeCommand: process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND ?? '',
+  pdfOcrCommand: process.env.HARNESS_PDF_OCR_COMMAND ?? '',
 };
 let outputValidation: OutputValidationSettings = { enabled: false, profile: 'oracle-prime', autoSelect: true };
 let customOutputValidationProfiles: CustomOutputValidationProfile[] = [];
@@ -298,6 +301,47 @@ app.get('/api/setup/health', async (req, res) => {
     audioTranscribeCommand: requestedAudioCommand,
     audioSamplePath: requestedAudioSamplePath || undefined,
   }));
+});
+
+app.get('/api/pdf/extract', async (req, res) => {
+  const rawPath = typeof req.query.path === 'string' ? req.query.path : '';
+  const startPage = typeof req.query.startPage === 'string' ? Number(req.query.startPage) : undefined;
+  const endPage = typeof req.query.endPage === 'string' ? Number(req.query.endPage) : undefined;
+  const resolved = path.resolve(rawPath);
+  const relative = path.relative(process.cwd(), resolved);
+  if (!rawPath || relative.startsWith('..') || path.isAbsolute(relative)) {
+    res.status(400).json({ error: 'path is required and must be inside the project directory' });
+    return;
+  }
+  if (path.extname(resolved).toLowerCase() !== '.pdf') {
+    res.status(400).json({ error: 'file must have a .pdf extension' });
+    return;
+  }
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+  const writeEvent = (event: string, data: unknown): void => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+  let aborted = false;
+  req.on('close', () => { aborted = true; });
+  try {
+    const data = await fs.readFile(resolved);
+    let count = 0;
+    for await (const chunk of iteratePdfPages(data, { startPage, endPage })) {
+      if (aborted) break;
+      writeEvent('page', chunk);
+      count++;
+    }
+    writeEvent('done', { pages: count });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    writeEvent('error', { message: msg });
+  } finally {
+    if (!res.writableEnded) res.end();
+  }
 });
 
 app.get('/api/traces', (_req, res) => {
@@ -1198,6 +1242,7 @@ function sanitizeMediaToolSettings(value: unknown): MediaToolSettings {
   return {
     visionModel: sanitizeModelName(source.visionModel).slice(0, 200),
     audioTranscribeCommand: String(source.audioTranscribeCommand ?? '').trim().slice(0, 5000),
+    pdfOcrCommand: String(source.pdfOcrCommand ?? '').trim().slice(0, 5000),
   };
 }
 
@@ -1261,6 +1306,8 @@ function applyMediaToolEnvironment(settings: MediaToolSettings): void {
   else delete process.env.HARNESS_VISION_MODEL;
   if (settings.audioTranscribeCommand) process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND = settings.audioTranscribeCommand;
   else delete process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND;
+  if (settings.pdfOcrCommand) process.env.HARNESS_PDF_OCR_COMMAND = settings.pdfOcrCommand;
+  else delete process.env.HARNESS_PDF_OCR_COMMAND;
 }
 
 function withRoutingPolicy(prompt: string): string {

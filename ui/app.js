@@ -129,6 +129,7 @@ async function loadSettings() {
     const confidence = document.getElementById('helperConfidenceThreshold');
     const vision = document.getElementById('visionModel');
     const audio = document.getElementById('audioTranscribeCommand');
+    const pdfOcr = document.getElementById('pdfOcrCommand');
     const outputProfile = document.getElementById('outputValidationProfile');
     const outputToggle = document.getElementById('outputValidationToggle');
     const outputAutoToggle = document.getElementById('outputValidationAutoSelectToggle');
@@ -141,6 +142,7 @@ async function loadSettings() {
     if (confidence && currentModelRouting.confidenceEscalationThreshold !== undefined) confidence.value = currentModelRouting.confidenceEscalationThreshold;
     if (vision) vision.value = currentMediaTools.visionModel || '';
     if (audio) audio.value = currentMediaTools.audioTranscribeCommand || '';
+    if (pdfOcr) pdfOcr.value = currentMediaTools.pdfOcrCommand || '';
     renderOutputValidationProfileOptions(outputProfile, currentOutputValidationProfiles, currentOutputValidation.profile || 'oracle-prime');
     const profilesEditor = document.getElementById('outputValidationProfilesJson');
     if (profilesEditor) {
@@ -701,8 +703,10 @@ async function applyFirstRunSetup() {
     document.getElementById('ollamaHost').value = data.ollamaHost || host;
     const vision = document.getElementById('visionModel');
     const audio = document.getElementById('audioTranscribeCommand');
+    const pdfOcr = document.getElementById('pdfOcrCommand');
     if (vision) vision.value = currentMediaTools.visionModel || '';
     if (audio) audio.value = currentMediaTools.audioTranscribeCommand || '';
+    if (pdfOcr) pdfOcr.value = currentMediaTools.pdfOcrCommand || '';
     if (status) status.textContent = 'Saved. Models will refresh from the configured Ollama host.';
     markWalkthroughStep('setup');
     await loadModels();
@@ -796,7 +800,7 @@ async function sendMessage() {
   const model = document.getElementById('modelSelect').value;
   if (pendingFiles.length > 0) {
     const fileInfo = pendingFiles.map((f) => '[Attached ' + mediaKind(f) + ': ' + f.name + ' at ' + f.path + ']').join('\n');
-    const mediaConfig = '[Media tools: visionModel=' + (currentMediaTools.visionModel || model || 'not configured') + '; audioTranscribeCommand=' + (currentMediaTools.audioTranscribeCommand ? 'configured' : 'not configured') + ']';
+    const mediaConfig = '[Media tools: visionModel=' + (currentMediaTools.visionModel || model || 'not configured') + '; audioTranscribeCommand=' + (currentMediaTools.audioTranscribeCommand ? 'configured' : 'not configured') + '; pdfOcrCommand=' + (currentMediaTools.pdfOcrCommand ? 'configured' : 'not configured') + ']';
     text = (text ? text + '\n\n' : '') + '[Selected model: ' + model + ']\n' + mediaConfig + '\n' + fileInfo + '\n\nPlease analyze the attached file(s). For image attachments, use image_analyze with the configured vision model when available, otherwise use the selected model if it supports vision. For audio attachments, use audio_transcribe first, then analyze the transcript. For PDF attachments, use pdf_read (and pdf_metadata when document properties matter); set ocr=true if the first read returns no extractable text. If a required media tool is not configured, say that clearly.';
     pendingFiles = [];
     showAttached();

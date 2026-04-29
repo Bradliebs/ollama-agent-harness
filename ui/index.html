@@ -371,6 +371,10 @@
         <input type="text" id="audioTranscribeCommand" placeholder="whisper &quot;{input}&quot; --model base --output_format txt --output_dir -" onchange="updateMediaToolSetting('audioTranscribeCommand',this.value)" />
       </div>
       <div class="setting-row">
+        <label>PDF OCR command</label>
+        <input type="text" id="pdfOcrCommand" placeholder="tesseract &quot;{input}&quot; - -l eng" onchange="updateMediaToolSetting('pdfOcrCommand',this.value)" />
+      </div>
+      <div class="setting-row">
         <label>Audio test file</label>
         <input type="text" id="settingsAudioSamplePath" placeholder=".harness/uploads/sample.wav" />
       </div>

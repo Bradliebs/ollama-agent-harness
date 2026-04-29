@@ -6,7 +6,7 @@ export { RuntimeTracer, runtimeTracer } from './core/tracing';
 export { getOutputValidationInstructions, normalizeCustomOutputValidationProfiles, OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, parseOutputValidationProfile, suggestOutputValidationProfile, validateOutput, withOutputValidationInstructions } from './core/outputValidation';
 export type { BuiltInOutputValidationProfile, CustomOutputValidationCheck, CustomOutputValidationProfile, OutputValidationFinding, OutputValidationProfile, OutputValidationProfileInfo, OutputValidationProfileTemplate, OutputValidationResult, OutputValidationStatus } from './core/outputValidation';
 export { HarnessError, OllamaConnectionError, ContextOverflowError, ToolExecutionError, PermissionDeniedError, withRetry, errorToToolResult } from './core/errors';
-export { ToolDispatcher, getBuiltinTools, FileReadTool, FileWriteTool, FileEditTool, ListFilesTool, BashTool, WebFetchTool, ImageAnalyzeTool, AudioTranscribeTool, PdfReadTool, PdfMetadataTool } from './tools';
+export { ToolDispatcher, getBuiltinTools, FileReadTool, FileWriteTool, FileEditTool, ListFilesTool, BashTool, WebFetchTool, ImageAnalyzeTool, AudioTranscribeTool, PdfReadTool, PdfMetadataTool, PdfRenderPageTool } from './tools';
 export { PermissionEngine } from './permissions/engine';
 export { assembleSystemContext, assembleToolSchemas, assembleUserContext, buildInitialMessages, estimateTokenCount } from './context/assembly';
 export { applyBudgetReduction, applySnip, applyAutoCompact, compactIfNeeded, validateCompactionSummary, DEFAULT_COMPACTION_CONFIG } from './context/compaction';
