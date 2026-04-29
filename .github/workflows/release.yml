@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate
+        run: |
+          npm run typecheck
+          npm test -- --runInBand
+          npm run build
+
+      - name: Package release asset
+        run: |
+          mkdir -p release
+          zip -r "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip" dist ui scripts package.json package-lock.json README.md start.bat
+
+      - name: Publish release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/ollama-agent-harness-${{ github.ref_name }}.zip
+          name: Ollama Agent Harness ${{ github.ref_name }}
+          generate_release_notes: true

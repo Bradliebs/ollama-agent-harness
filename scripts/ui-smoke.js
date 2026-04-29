@@ -39,6 +39,7 @@ async function main() {
         hasBeginnerGuide: Boolean(document.getElementById('beginnerGuide')),
         hasFirstRunSetup: Boolean(document.getElementById('firstRunSetup')),
         hasFirstRunInputs: Boolean(document.getElementById('firstRunOllamaHost')) && Boolean(document.getElementById('firstRunVisionModel')) && Boolean(document.getElementById('firstRunAudioCommand')),
+        hasFirstRunHealth: Boolean(document.getElementById('firstRunHealth')),
         hasModelCapabilityHint: Boolean(document.getElementById('modelCapabilityHint')),
         hasAttachmentHint: Boolean(document.getElementById('attachmentHint')),
         hasMemoryPalace: Boolean(document.getElementById('memoryPalaceView')),
@@ -63,6 +64,7 @@ async function main() {
         hasReplayFailureFunction: typeof window.renderLatestRunFailures === 'function',
         hasMediaToolSettingFunction: typeof window.updateMediaToolSetting === 'function',
         hasFirstRunSetupFunction: typeof window.applyFirstRunSetup === 'function',
+        hasFirstRunHealthFunction: typeof window.checkFirstRunHealth === 'function',
         hasApplyCalibrationFunction: typeof window.applyRoutingCalibration === 'function',
         duplicateIds,
       };
@@ -84,6 +86,7 @@ async function main() {
     if (!result.hasBeginnerGuide) failures.push('beginner guide was not found');
     if (!result.hasFirstRunSetup) failures.push('first-run setup panel was not found');
     if (!result.hasFirstRunInputs) failures.push('first-run setup inputs were not found');
+    if (!result.hasFirstRunHealth) failures.push('first-run health panel was not found');
     if (!result.hasModelCapabilityHint) failures.push('model capability hint was not found');
     if (!result.hasAttachmentHint) failures.push('attachment hint was not found');
     if (!result.hasMemoryPalace) failures.push('memory palace view was not found');
@@ -106,6 +109,7 @@ async function main() {
     if (!result.hasReplayFailureFunction) failures.push('replay failure function was not found');
     if (!result.hasMediaToolSettingFunction) failures.push('media tool setting function was not found');
     if (!result.hasFirstRunSetupFunction) failures.push('first-run setup function was not found');
+    if (!result.hasFirstRunHealthFunction) failures.push('first-run health function was not found');
     if (!result.hasApplyCalibrationFunction) failures.push('apply calibration function was not found');
     if (result.duplicateIds.length > 0) failures.push(`duplicate ids found: ${result.duplicateIds.join(', ')}`);
 
@@ -146,6 +150,7 @@ async function runStaticSmoke() {
     hasBeginnerGuide: ids.includes('beginnerGuide'),
     hasFirstRunSetup: ids.includes('firstRunSetup'),
     hasFirstRunInputs: ids.includes('firstRunOllamaHost') && ids.includes('firstRunVisionModel') && ids.includes('firstRunAudioCommand'),
+    hasFirstRunHealth: ids.includes('firstRunHealth'),
     hasModelCapabilityHint: ids.includes('modelCapabilityHint'),
     hasAttachmentHint: ids.includes('attachmentHint'),
     hasMemoryPalace: ids.includes('memoryPalaceView'),
@@ -162,6 +167,7 @@ async function runStaticSmoke() {
     hasReplayFailureFunction: appScript.includes('function renderLatestRunFailures'),
     hasMediaToolSettingFunction: appScript.includes('function updateMediaToolSetting'),
     hasFirstRunSetupFunction: appScript.includes('function applyFirstRunSetup'),
+    hasFirstRunHealthFunction: appScript.includes('function checkFirstRunHealth'),
     hasMediaToolGuidance: appScript.includes('image_analyze') && appScript.includes('audio_transcribe'),
     hasRecoveryCopy: appScript.includes('Unfinished chat available') && appScript.includes('Fork starts a copy'),
     hasApplyCalibrationFunction: appScript.includes('function applyRoutingCalibration'),
@@ -182,6 +188,7 @@ async function runStaticSmoke() {
   if (!result.hasBeginnerGuide) failures.push('beginner guide was not found');
   if (!result.hasFirstRunSetup) failures.push('first-run setup panel was not found');
   if (!result.hasFirstRunInputs) failures.push('first-run setup inputs were not found');
+  if (!result.hasFirstRunHealth) failures.push('first-run health panel was not found');
   if (!result.hasModelCapabilityHint) failures.push('model capability hint was not found');
   if (!result.hasAttachmentHint) failures.push('attachment hint was not found');
   if (!result.hasMemoryPalace) failures.push('memory palace view was not found');
@@ -198,6 +205,7 @@ async function runStaticSmoke() {
   if (!result.hasReplayFailureFunction) failures.push('replay failure function was not found');
   if (!result.hasMediaToolSettingFunction) failures.push('media tool setting function was not found');
   if (!result.hasFirstRunSetupFunction) failures.push('first-run setup function was not found');
+  if (!result.hasFirstRunHealthFunction) failures.push('first-run health function was not found');
   if (!result.hasMediaToolGuidance) failures.push('media tool guidance was not found');
   if (!result.hasRecoveryCopy) failures.push('recovery explanation copy was not found');
   if (!result.hasApplyCalibrationFunction) failures.push('apply calibration function was not found');

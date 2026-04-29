@@ -12,6 +12,9 @@ keywords:
 estimated_reading_time: 5
 ---
 
+[![CI](https://github.com/Bradliebs/ollama-agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/Bradliebs/ollama-agent-harness/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Bradliebs/ollama-agent-harness)](https://github.com/Bradliebs/ollama-agent-harness/releases/latest)
+
 ## Overview
 
 Ollama Agent Harness is a local-first agent runtime and browser UI for working with Ollama models on project tasks. It combines a minimal ReAct-style loop with the operational pieces a coding assistant needs: tool dispatch, permission modes, session recovery, tracing, context continuity, learning datasets, and model routing.
@@ -96,4 +99,4 @@ This workspace is pushed to a private GitHub repository:
 
 <https://github.com/Bradliebs/ollama-agent-harness>
 
-The first pushed baseline is commit `428e5da`, and release tags should be created from validated commits.
+The current release is available from [GitHub Releases](https://github.com/Bradliebs/ollama-agent-harness/releases/latest). The first pushed baseline is commit `428e5da`, and release tags are created from validated commits.

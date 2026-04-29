@@ -62,6 +62,12 @@ interface MediaToolSettings {
   audioTranscribeCommand: string;
 }
 
+interface SetupHealthResult {
+  ollama: { ok: boolean; message: string; modelCount: number };
+  vision: { ok: boolean; message: string };
+  audio: { ok: boolean; message: string };
+}
+
 interface WebRuntimeDeps {
   createClient(model: string, host: string, numCtx?: number): OllamaClient;
   getModelContextWindow(model: string, host: string): Promise<number | null>;
@@ -171,6 +177,25 @@ app.post('/api/settings', async (req, res) => {
   await saveSettingsToDisk();
   logger.info('Settings', 'Updated', { model: currentModel, permissionMode, temperature, topP });
   res.json(getCurrentSettings());
+});
+
+app.get('/api/setup/health', async (req, res) => {
+  await ensureSettingsLoaded();
+  const requestedHost = typeof req.query.ollamaHost === 'string' && req.query.ollamaHost.trim()
+    ? req.query.ollamaHost
+    : ollamaHost;
+  const parsedHost = parseHttpUrl(requestedHost);
+  if (!parsedHost) {
+    res.status(400).json({ error: 'Invalid Ollama host.' });
+    return;
+  }
+  const requestedVisionModel = typeof req.query.visionModel === 'string'
+    ? sanitizeModelName(req.query.visionModel)
+    : mediaTools.visionModel;
+  const requestedAudioCommand = typeof req.query.audioTranscribeCommand === 'string'
+    ? String(req.query.audioTranscribeCommand).trim()
+    : mediaTools.audioTranscribeCommand;
+  res.json(await checkSetupHealth(parsedHost, requestedVisionModel, requestedAudioCommand));
 });
 
 app.get('/api/traces', (_req, res) => {
@@ -1036,6 +1061,39 @@ function applyMediaToolEnvironment(settings: MediaToolSettings): void {
   else delete process.env.HARNESS_VISION_MODEL;
   if (settings.audioTranscribeCommand) process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND = settings.audioTranscribeCommand;
   else delete process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND;
+}
+
+async function checkSetupHealth(host: string, visionModel: string, audioCommand: string): Promise<SetupHealthResult> {
+  try {
+    const response = await new Ollama({ host }).list();
+    const modelNames = response.models.map((model) => model.name);
+    const matchingVisionModel = visionModel
+      ? modelNames.some((name) => name === visionModel || name.startsWith(`${visionModel}:`))
+      : false;
+    return {
+      ollama: {
+        ok: true,
+        message: modelNames.length > 0 ? `Connected to Ollama with ${modelNames.length} model(s).` : 'Connected to Ollama, but no models are installed.',
+        modelCount: modelNames.length,
+      },
+      vision: visionModel
+        ? {
+          ok: matchingVisionModel,
+          message: matchingVisionModel ? `Vision model '${visionModel}' is installed.` : `Vision model '${visionModel}' was not found in Ollama.`,
+        }
+        : { ok: false, message: 'No vision model configured.' },
+      audio: audioCommand
+        ? { ok: true, message: 'Audio transcription command is configured.' }
+        : { ok: false, message: 'No audio transcription command configured.' },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ollama: { ok: false, message: `Cannot connect to Ollama: ${message}`, modelCount: 0 },
+      vision: visionModel ? { ok: false, message: 'Vision model could not be checked because Ollama is unavailable.' } : { ok: false, message: 'No vision model configured.' },
+      audio: audioCommand ? { ok: true, message: 'Audio transcription command is configured.' } : { ok: false, message: 'No audio transcription command configured.' },
+    };
+  }
 }
 
 function withRoutingPolicy(prompt: string): string {

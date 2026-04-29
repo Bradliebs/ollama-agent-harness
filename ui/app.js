@@ -203,6 +203,37 @@ async function applyFirstRunSetup() {
   }
 }
 
+async function checkFirstRunHealth() {
+  const status = document.getElementById('firstRunStatus');
+  const detail = document.getElementById('firstRunHealth');
+  const host = document.getElementById('firstRunOllamaHost')?.value.trim() || 'http://localhost:11434';
+  const visionModel = document.getElementById('firstRunVisionModel')?.value.trim() || '';
+  const audioTranscribeCommand = document.getElementById('firstRunAudioCommand')?.value.trim() || '';
+  if (status) status.textContent = 'Checking setup...';
+  try {
+    const params = new URLSearchParams({ ollamaHost: host, visionModel, audioTranscribeCommand });
+    const response = await fetch('/api/setup/health?' + params.toString());
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    if (detail) {
+      detail.classList.remove('initial-hidden');
+      detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio);
+    }
+    if (status) status.textContent = data.ollama?.ok ? 'Setup check finished.' : 'Setup check found an Ollama connection issue.';
+  } catch (error) {
+    if (detail) {
+      detail.classList.remove('initial-hidden');
+      detail.innerHTML = '<div><strong>Setup</strong> ' + esc(error.message || error) + '</div>';
+    }
+    if (status) status.textContent = 'Setup check failed.';
+  }
+}
+
+function renderSetupHealthRow(label, result) {
+  const ok = result?.ok ? '✓' : '○';
+  return '<div><strong>' + esc(label) + '</strong> ' + ok + ' ' + esc(result?.message || 'not checked') + '</div>';
+}
+
 function setMode(m, el) {
   document.querySelectorAll('.mode-opt').forEach((o) => o.classList.remove('active'));
   el.classList.add('active');
@@ -494,7 +525,7 @@ async function autoSaveChat() { if (chatMessages.length < 2) return; const title
 async function deleteChat(id) { await fetch('/api/history/' + id, { method: 'DELETE' }); if (id === currentChatId) newChat(); loadHistory(); }
 function newChat() { currentChatId = null; chatMessages = []; document.getElementById('chatArea').innerHTML = welcomeMarkup(); renderModelCapabilityHint(); loadSettings(); loadHistory(); }
 function welcomeMarkup() {
-  return '<div class="welcome" id="welcome"><h2>Welcome to Harness</h2><p>Pick a model above, then ask me anything. I can read files, write code, run commands, search your project, create skills, and remember things across sessions.</p><div class="beginner-guide" id="beginnerGuide"><div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div><div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div><div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div></div><div class="first-run-setup" id="firstRunSetup"><h3>First-run setup</h3><p>Set the local Ollama host and optional media helpers before your first chat.</p><div class="first-run-grid"><div><label for="firstRunOllamaHost">Ollama host</label><input id="firstRunOllamaHost" type="text" value="http://localhost:11434"></div><div><label for="firstRunVisionModel">Vision model</label><input id="firstRunVisionModel" type="text" placeholder="llava"></div><div><label for="firstRunAudioCommand">Audio command</label><input id="firstRunAudioCommand" type="text" placeholder="whisper &quot;{input}&quot; --model base"></div></div><div class="first-run-actions"><button class="btn-sm" onclick="applyFirstRunSetup()">Save setup</button><span class="first-run-status" id="firstRunStatus">Optional. You can change these later in Settings.</span></div></div><div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div><div class="tips"><div class="tip" onclick="sendTip(this)">List files in this project</div><div class="tip" onclick="sendTip(this)">What models do I have?</div><div class="tip" onclick="sendTip(this)">Create a skill for code review</div></div></div>';
+  return '<div class="welcome" id="welcome"><h2>Welcome to Harness</h2><p>Pick a model above, then ask me anything. I can read files, write code, run commands, search your project, create skills, and remember things across sessions.</p><div class="beginner-guide" id="beginnerGuide"><div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div><div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div><div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div></div><div class="first-run-setup" id="firstRunSetup"><h3>First-run setup</h3><p>Set the local Ollama host and optional media helpers before your first chat.</p><div class="first-run-grid"><div><label for="firstRunOllamaHost">Ollama host</label><input id="firstRunOllamaHost" type="text" value="http://localhost:11434"></div><div><label for="firstRunVisionModel">Vision model</label><input id="firstRunVisionModel" type="text" placeholder="llava"></div><div><label for="firstRunAudioCommand">Audio command</label><input id="firstRunAudioCommand" type="text" placeholder="whisper &quot;{input}&quot; --model base"></div></div><div class="first-run-actions"><button class="btn-sm" onclick="applyFirstRunSetup()">Save setup</button><button class="btn-sm" onclick="checkFirstRunHealth()">Check setup</button><span class="first-run-status" id="firstRunStatus">Optional. You can change these later in Settings.</span></div><div class="trace-detail initial-hidden" id="firstRunHealth"></div></div><div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div><div class="tips"><div class="tip" onclick="sendTip(this)">List files in this project</div><div class="tip" onclick="sendTip(this)">What models do I have?</div><div class="tip" onclick="sendTip(this)">Create a skill for code review</div></div></div>';
 }
 function exportChat() { if (!chatMessages.length) { alert('No messages.'); return; } let md = '# Chat Export\n\n'; for (const m of chatMessages) md += '## ' + (m.role === 'user' ? 'You' : 'Assistant') + '\n\n' + m.content + '\n\n---\n\n'; const blob = new Blob([md], { type: 'text/markdown' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'chat-' + new Date().toISOString().slice(0, 10) + '.md'; a.click(); }
 

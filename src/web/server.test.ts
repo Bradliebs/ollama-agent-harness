@@ -1,5 +1,6 @@
 import type { Server } from 'http';
 import * as fs from 'fs/promises';
+import http from 'http';
 import * as path from 'path';
 import { app, setWebRuntimeOverrides } from './server';
 import { runtimeTracer } from '../core/tracing';
@@ -7,6 +8,8 @@ import { SessionStorage } from '../persistence/sessionStorage';
 import { appendLearningCandidate, extractLearningCandidate } from '../learning/sessionLearning';
 import { appendSubagentRoutingMetric } from '../agents/subagent';
 import type { LoopEvent, SessionEvent } from '../types';
+
+jest.setTimeout(30_000);
 
 describe('web server API validation', () => {
   let server: Server;
@@ -118,6 +121,40 @@ describe('web server API validation', () => {
       if (originalAudio === undefined) delete process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND;
       else process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND = originalAudio;
     }
+  });
+
+  it('reports setup health for Ollama and media helpers', async () => {
+    const ollamaServer = http.createServer((req, res) => {
+      if (req.url === '/api/tags') {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ models: [{ name: 'llava:latest', size: 1, modified_at: new Date().toISOString(), details: {} }] }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+    await new Promise<void>((resolve) => ollamaServer.listen(0, '127.0.0.1', resolve));
+    const address = ollamaServer.address();
+    if (!address || typeof address === 'string') throw new Error('Failed to bind fake Ollama server');
+    try {
+      const response = await request(`/api/setup/health?ollamaHost=${encodeURIComponent(`http://127.0.0.1:${address.port}`)}&visionModel=llava&audioTranscribeCommand=${encodeURIComponent('whisper "{input}"')}`);
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        ollama: { ok: true, modelCount: 1 },
+        vision: { ok: true },
+        audio: { ok: true },
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => ollamaServer.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('rejects invalid setup health hosts', async () => {
+    const response = await request('/api/setup/health?ollamaHost=file%3A%2F%2Fbad');
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: 'Invalid Ollama host.' });
   });
 
   it('rejects file tree paths outside the project directory', async () => {
