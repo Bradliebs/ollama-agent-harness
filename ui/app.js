@@ -715,6 +715,7 @@ function saveAgentProfile() {
     avatar: currentAgentAvatar,
     personality: document.getElementById('personalityText')?.value || '',
     model,
+    accentColor: localStorage.getItem('harness-accent') || '',
   };
   updateSetting('agentProfiles', agentProfiles);
   hydrateAgentProfiles(agentProfiles);
@@ -736,6 +737,7 @@ function loadAgentProfile(profileName) {
     const sel = document.getElementById('modelSelect');
     if (sel) { sel.value = profile.model; updateSetting('model', profile.model); }
   }
+  if (profile.accentColor) setAccentColor(profile.accentColor);
 }
 
 function deleteAgentProfile() {
@@ -3111,6 +3113,11 @@ async function loadToolsDashboard() {
       },
     ];
 
+    // Add health status card (async, fills in after render)
+    const healthCard = { emoji: '🩺', title: 'System health', value: 'Checking...', sub: '', action: { label: 'Check', fn: 'refreshHealthCard()' } };
+    cards.push(healthCard);
+    refreshHealthCardAsync();
+
     const cardHtml = cards.map((c) => '<div class="trace-item">'
       + '<div class="trace-title">' + c.emoji + ' ' + esc(c.title) + '</div>'
       + '<div class="trace-meta" style="margin-top:2px;color:var(--text)">' + esc(c.value) + '</div>'
@@ -3333,6 +3340,10 @@ document.addEventListener('keydown', (event) => {
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'K' || event.key === 'k')) {
     event.preventDefault();
     toggleKillSwitchShortcut();
+  }
+  if (event.key === '?' && !event.ctrlKey && !event.metaKey && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA' && document.activeElement?.tagName !== 'SELECT') {
+    event.preventDefault();
+    showKeyboardShortcuts();
   }
 });
 
@@ -3824,6 +3835,58 @@ function toggleVoiceInput() {
     alert('Could not start voice input: ' + e.message);
   }
 }
+
+// ─── Keyboard shortcuts ─────────────────────────────────────────────
+
+function showKeyboardShortcuts() {
+  const existing = document.getElementById('shortcutsModal');
+  if (existing) { existing.remove(); return; }
+  const shortcuts = [
+    ['Ctrl+Shift+K', 'Toggle kill switch (block all tools)'],
+    ['?', 'Show this shortcuts guide'],
+    ['Enter', 'Send message'],
+    ['Shift+Enter', 'New line in message'],
+    ['/', 'Open slash command palette'],
+    ['Escape', 'Close slash palette'],
+  ];
+  const rows = shortcuts.map(([key, desc]) =>
+    '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">'
+    + '<kbd style="background:var(--surface2);padding:2px 8px;border-radius:4px;font-size:12px;font-family:monospace;border:1px solid var(--border)">' + esc(key) + '</kbd>'
+    + '<span style="color:var(--text-dim);font-size:12px">' + esc(desc) + '</span>'
+    + '</div>'
+  ).join('');
+  const modal = document.createElement('div');
+  modal.id = 'shortcutsModal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:9999';
+  modal.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:400px;width:90%">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h3 style="margin:0">Keyboard Shortcuts</h3><button class="btn-sm" onclick="document.getElementById(\'shortcutsModal\').remove()">Close</button></div>'
+    + rows
+    + '</div>';
+  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+  document.body.appendChild(modal);
+}
+
+// ─── Health check ───────────────────────────────────────────────────
+
+async function refreshHealthCardAsync() {
+  try {
+    const r = await fetch('/api/health').then((r) => r.json());
+    const items = [];
+    if (r.ollama) items.push(r.ollama.ok ? 'Ollama: connected' : 'Ollama: ' + (r.ollama.error || 'unreachable'));
+    if (r.vision) items.push(r.vision.ok ? 'Vision: ready' : 'Vision: not configured');
+    if (r.audio) items.push(r.audio.ok ? 'Audio: ready' : 'Audio: not configured');
+    const allOk = items.every((i) => !i.includes('unreachable') && !i.includes('error'));
+    const card = document.querySelector('.trace-item:last-child');
+    if (card && card.textContent.includes('System health')) {
+      const valueEl = card.querySelector('.trace-meta');
+      const subEl = card.querySelectorAll('.trace-meta')[1];
+      if (valueEl) valueEl.innerHTML = '<span style="color:' + (allOk ? '#50c878' : '#ffb050') + '">' + (allOk ? 'All systems OK' : 'Some issues detected') + '</span>';
+      if (subEl) subEl.textContent = items.join(' · ');
+    }
+  } catch { /* health check is optional */ }
+}
+
+function refreshHealthCard() { refreshHealthCardAsync(); }
 
 // ─── Theme toggle ───────────────────────────────────────────────────
 
