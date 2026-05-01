@@ -35,7 +35,7 @@ npm install
 npm run ui
 ```
 
-Open the URL printed by the server (default `http://127.0.0.1:3000`). That is the full UI. Start chatting in the main panel.
+Open the URL printed by the server (default `http://127.0.0.1:3000`, or `http://127.0.0.1:4000` via `start.bat`). That is the full UI. Start chatting in the main panel.
 
 ### CLI mode
 
@@ -84,7 +84,7 @@ The right side has a **Settings** panel for Ollama host, generation parameters, 
 
 ### Tools
 
-Built-in tools include `file_read`, `file_write`, `file_edit`, `bash`, `list_files`, `web_fetch`, `web_search`, `web_read`, `image_analyze`, `audio_transcribe`, `create_skill`, and more. Each tool has a risk level (low/medium/high) and can be individually disabled from the Tools tab.
+Built-in tools include `file_read`, `file_write`, `file_edit`, `bash`, `list_files`, `web_fetch`, `web_search`, `web_read`, `image_analyze`, `audio_transcribe`, `create_skill`, `install_skill`, `desktop_screenshot`, `browser_bookmarks`, `email_draft`, `calendar_read`, and more. Each tool has a risk level (low/medium/high) and can be individually disabled from the Tools tab.
 
 ### Permissions
 

@@ -205,7 +205,7 @@ let mediaTools: MediaToolSettings = {
   uploadsAutoPruneDays: 0,
   uploadsLastPrunedAt: '',
 };
-let outputValidation: OutputValidationSettings = { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: false };
+let outputValidation: OutputValidationSettings = { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: true };
 let customOutputValidationProfiles: CustomOutputValidationProfile[] = [];
 let modelCatalog: ModelCatalogSettings = { url: '', ttlHours: 24 };
 let extensionActivation: ExtensionActivationSettings = { executablePlugins: false, allowedPluginNames: [], requirePermissionReview: true };
@@ -333,8 +333,13 @@ app.get('/api/models', async (_req, res) => {
 
 // Get/set current settings
 app.get('/api/settings', async (_req, res) => {
-  await ensureSettingsLoaded();
-  res.json(getCurrentSettings());
+  try {
+    await ensureSettingsLoaded();
+    res.json(getCurrentSettings());
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
 });
 
 app.post('/api/settings', async (req, res) => {
@@ -386,8 +391,13 @@ app.post('/api/settings', async (req, res) => {
 });
 
 app.get('/api/output-validation/profiles', async (_req, res) => {
-  await ensureSettingsLoaded();
-  res.json({ profiles: getOutputValidationProfiles(), customProfiles: customOutputValidationProfiles, path: '.harness/output-validation-profiles.json' });
+  try {
+    await ensureSettingsLoaded();
+    res.json({ profiles: getOutputValidationProfiles(), customProfiles: customOutputValidationProfiles, path: '.harness/output-validation-profiles.json' });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
 });
 
 app.get('/api/output-validation/templates', async (_req, res) => {
@@ -395,11 +405,16 @@ app.get('/api/output-validation/templates', async (_req, res) => {
 });
 
 app.post('/api/output-validation/suggest-profile', async (req, res) => {
-  await ensureSettingsLoaded();
-  const input = String(req.body?.input ?? req.body?.message ?? '').slice(0, 20_000);
-  const suggestion = describeOutputValidationProfileSuggestion(input, 'oracle-prime');
-  const metadata = OUTPUT_VALIDATION_PROFILES.find((candidate) => candidate.profile === suggestion.profile);
-  res.json({ profile: suggestion.profile, label: metadata?.label ?? suggestion.profile, reason: suggestionReason(suggestion.profile, suggestion.matched), matched: suggestion.matched });
+  try {
+    await ensureSettingsLoaded();
+    const input = String(req.body?.input ?? req.body?.message ?? '').slice(0, 20_000);
+    const suggestion = describeOutputValidationProfileSuggestion(input, 'oracle-prime');
+    const metadata = OUTPUT_VALIDATION_PROFILES.find((candidate) => candidate.profile === suggestion.profile);
+    res.json({ profile: suggestion.profile, label: metadata?.label ?? suggestion.profile, reason: suggestionReason(suggestion.profile, suggestion.matched), matched: suggestion.matched });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
 });
 
 app.post('/api/output-validation/feedback', async (req, res) => {
@@ -1289,7 +1304,8 @@ app.post('/api/chat', async (req, res) => {
     '2. You can read files, write files, edit code, run commands, search files with grep, search the web, and read web pages.\n' +
     '3. When you notice a reusable pattern, create a skill. When you learn something important, use the remember tool.\n' +
     '4. Format responses in Markdown.\n' +
-    '5. Be direct — do the work, don\'t ask the user to do it themselves.';
+    '5. Be direct — do the work, don\'t ask the user to do it themselves.\n' +
+    '6. file_read and list_files only work inside the project directory. To access files outside the project (Downloads, Desktop, other drives), use the bash tool with dir, cat, or type commands instead.';
 
   // Inject name and personality before the base prompt
   const identityPrefix = [

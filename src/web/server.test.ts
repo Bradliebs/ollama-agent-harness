@@ -481,6 +481,22 @@ describe('web server API validation', () => {
     expect(response.status).toBe(403);
   });
 
+  it('returns mycelium graph data via GET /api/mycelium', async () => {
+    const response = await request('/api/mycelium');
+    expect(response.status).toBe(200);
+    const body = await response.json() as { stats: { nodes: number }; nodes: unknown[]; edges: unknown[]; episodes: unknown[] };
+    expect(body.stats).toBeDefined();
+    expect(Array.isArray(body.nodes)).toBe(true);
+    expect(Array.isArray(body.edges)).toBe(true);
+    expect(Array.isArray(body.episodes)).toBe(true);
+  });
+
+  it('resets mycelium graph via DELETE /api/mycelium', async () => {
+    const response = await request('/api/mycelium', { method: 'DELETE' });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ reset: true });
+  });
+
   it('returns runtime skills, repo skills, and runtime skill diagnostics', async () => {
     const runtimeSkillDir = path.join(process.cwd(), '.harness', 'skills', 'api-runtime-skill');
     const malformedSkillDir = path.join(process.cwd(), '.harness', 'skills', 'api-malformed-skill');
