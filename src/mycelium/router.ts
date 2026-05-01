@@ -236,3 +236,68 @@ function estimateRelevance(query: string, node: MyceliumNode): number {
   // Combine with base relevance from trust
   return Math.min(1, overlap * 0.6 + descOverlap * 0.3 + node.trust * 0.1);
 }
+
+// ─── Semantic relevance via Ollama embeddings ───────────────────────
+
+export async function computeSemanticRelevance(
+  query: string,
+  nodes: MyceliumNode[],
+  ollamaHost: string,
+  model = 'nomic-embed-text',
+): Promise<Map<string, number>> {
+  const scores = new Map<string, number>();
+  if (nodes.length === 0) return scores;
+
+  try {
+    const texts = [query, ...nodes.map((n) => `${n.label} ${n.metadata?.description ?? ''}`.trim())];
+    const embeddings = await embedBatch(texts, ollamaHost, model);
+
+    if (embeddings.length !== texts.length) return scores;
+
+    const queryVec = embeddings[0];
+    for (let i = 0; i < nodes.length; i++) {
+      const similarity = cosineSimilarity(queryVec, embeddings[i + 1]);
+      // Blend embedding similarity with trust
+      scores.set(nodes[i].id, similarity * 0.8 + nodes[i].trust * 0.2);
+    }
+  } catch {
+    // Embedding failed — caller falls back to keyword relevance
+  }
+
+  return scores;
+}
+
+async function embedBatch(texts: string[], host: string, model: string): Promise<number[][]> {
+  const results: number[][] = [];
+  for (const text of texts) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    try {
+      const response = await fetch(`${host.replace(/\/$/, '')}/api/embeddings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, prompt: text }),
+        signal: controller.signal,
+      });
+      if (!response.ok) return results;
+      const data = (await response.json()) as { embedding?: number[] };
+      if (!Array.isArray(data.embedding) || data.embedding.length === 0) return results;
+      results.push(data.embedding);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  return results;
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+  let dot = 0, magA = 0, magB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(magA) * Math.sqrt(magB);
+  return denom > 0 ? dot / denom : 0;
+}

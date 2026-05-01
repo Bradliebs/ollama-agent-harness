@@ -43,6 +43,7 @@ import { checkSetupHealth } from '../setup/health';
 import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCatalog';
 import { createAutomationJob, deleteAutomationJob, executeDueJobs, listAutomationJobs, listDueAutomationJobs, readAutomationRunLog, updateAutomationJob } from '../automation/jobs';
 import { AutomationScheduler } from '../automation/scheduler';
+import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
 import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
 import { listShellCommandAllowlistPresets } from '../automation/runner';
 import { appendCapabilityAuditEvent, readCapabilityAuditEvents } from '../permissions/capabilityAudit';
@@ -1257,7 +1258,23 @@ app.post('/api/chat', async (req, res) => {
   const evolvedPrompt = await webRuntime.getEvolvedPrompt(basePrompt);
   const baseSystemPrompt = await webRuntime.assembleSystemContext({ systemPrompt: withRoutingPolicy(evolvedPrompt), projectDir, skillsDir: SKILLS_DIR });
   const attachmentsBlock = await buildAttachmentsContextBlock(req.body?.attachments);
-  const systemPrompt = attachmentsBlock ? `${baseSystemPrompt}\n\n${attachmentsBlock}` : baseSystemPrompt;
+
+  // Mycelium routing: grow adaptive context from the message
+  let myceliumRouter: MycelialContextRouter | null = null;
+  let myceliumContext = '';
+  try {
+    myceliumRouter = await createMycelialRouter(PROJECT_DIR);
+    const tools = webRuntime.getTools();
+    myceliumRouter.seedToolNodes(tools.map((t) => ({ name: t.name, description: t.description })));
+    const myceliumResult = myceliumRouter.routeQuery(message);
+    if (myceliumResult.nodes.length > 0) {
+      myceliumContext = '\n\n--- Mycelium context (adaptive routing) ---\n' + myceliumResult.contextText;
+    }
+  } catch (error) {
+    logger.warn('Mycelium', 'Context routing failed', { error: error instanceof Error ? error.message : String(error) });
+  }
+
+  const systemPrompt = [baseSystemPrompt, attachmentsBlock, myceliumContext].filter(Boolean).join('\n\n');
 
   const config: LoopConfig = {
     model: activeModel,
@@ -1440,6 +1457,20 @@ app.post('/api/chat', async (req, res) => {
   }).catch(() => {});
   persistSessionLearning(session, projectDir).catch(() => {});
   webRuntime.rebuildSemanticMemory(projectDir).catch(() => {});
+
+  // Mycelium reinforcement: strengthen or weaken routes based on outcome
+  if (myceliumRouter) {
+    const hasOutput = assistantTextBuffer.trim().length > 0;
+    myceliumRouter.reinforce({
+      taskSuccess: hasOutput ? 0.7 : 0.2,
+      correctness: hasOutput ? 0.6 : 0.1,
+      usefulness: hasOutput ? 0.6 : 0.1,
+    });
+    myceliumRouter.decay();
+    myceliumRouter.save().catch((error) => {
+      logger.warn('Mycelium', 'Failed to save graph', { error: error instanceof Error ? error.message : String(error) });
+    });
+  }
 
   res.write('data: [DONE]\n\n');
   res.end();

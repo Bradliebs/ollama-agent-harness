@@ -1614,11 +1614,12 @@ describe('web server API validation', () => {
         { role: 'user', content: big('MID') },
         { role: 'assistant', content: big('NEW-A') },
       ];
-      await request('/api/chat', {
+      const chatResponse = await request('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: 'follow-up question', model: 'test-model', history }),
       });
+      await chatResponse.text();
       expect(seenInitialMessages).toHaveLength(1);
       const sent = seenInitialMessages[0];
       // Oldest entries must have been dropped first.

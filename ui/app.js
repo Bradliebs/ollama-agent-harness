@@ -2070,7 +2070,7 @@ async function rebuildSessionSearchIndex() { const view = document.getElementByI
 
 async function loadPalaceEntry(id) { const detail = document.getElementById('palaceDetail'); if (!detail) return; detail.classList.remove('initial-hidden'); detail.textContent = 'Loading memory entry...'; try { const entryResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id)); const entryData = await entryResponse.json(); if (entryData.error) { detail.textContent = entryData.error; return; } const contextResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id) + '/context?window=3'); const contextData = await contextResponse.json(); const entry = entryData.entry; const transcriptRows = (contextData.events || []).map((event) => '<div class="transcript-row' + (event.isAnchor ? ' anchor' : '') + '"><div><strong>' + esc(event.kind) + '</strong> · ' + esc(event.timestamp) + '</div><div style="white-space:pre-wrap;color:var(--text)">' + esc(event.text || '[empty]') + '</div></div>').join(''); detail.innerHTML = '<div><strong>Session</strong> ' + esc(entry.sessionId) + '</div><div><strong>Event</strong> ' + esc(entry.id) + '</div><div><strong>Kind</strong> ' + esc(entry.kind) + '</div><div><strong>Time</strong> ' + esc(entry.timestamp) + '</div><div style="margin-top:6px;white-space:pre-wrap;color:var(--text)">' + esc(entry.text) + '</div><div style="margin-top:10px"><strong>Transcript Context</strong>' + (transcriptRows || '<div class="transcript-row">No transcript context found.</div>') + '</div>'; } catch (error) { detail.textContent = error.message; } }
 
-function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); el.classList.add('active'); document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; const rn = document.getElementById('runsView'); if (rn) rn.style.display = tab === 'runs' ? 'block' : 'none'; const wf = document.getElementById('workflowsView'); if (wf) wf.style.display = tab === 'workflows' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); if (tab === 'runs') loadRuns(); if (tab === 'workflows') loadWorkflows(); }
+function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); el.classList.add('active'); document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; const rn = document.getElementById('runsView'); if (rn) rn.style.display = tab === 'runs' ? 'block' : 'none'; const wf = document.getElementById('workflowsView'); if (wf) wf.style.display = tab === 'workflows' ? 'block' : 'none'; const my = document.getElementById('myceliumView'); if (my) my.style.display = tab === 'mycelium' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); if (tab === 'runs') loadRuns(); if (tab === 'workflows') loadWorkflows(); if (tab === 'mycelium') loadMycelium(); }
 function toggleLeft() { document.getElementById('leftPanel').classList.toggle('hidden'); }
 function toggleRight() { document.getElementById('rightPanel').classList.toggle('hidden'); }
 
@@ -3568,6 +3568,99 @@ function toggleVoiceInput() {
     voiceActive = false;
     if (btn) { btn.classList.remove('recording'); btn.title = 'Voice input (browser STT)'; }
     alert('Could not start voice input: ' + e.message);
+  }
+}
+
+// ─── Mycelium tab ───────────────────────────────────────────────────
+
+async function loadMycelium() {
+  const view = document.getElementById('myceliumView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-list"><div class="trace-title">🍄 Mycelium Network</div><div class="trace-meta">Loading…</div></div>';
+  try {
+    const data = await fetch('/api/mycelium').then((r) => r.json());
+    if (data.error) { view.innerHTML = '<div class="trace-meta">Failed: ' + esc(data.error) + '</div>'; return; }
+    const stats = data.stats || {};
+    const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+    const edges = Array.isArray(data.edges) ? data.edges : [];
+    const episodes = Array.isArray(data.episodes) ? data.episodes : [];
+
+    const header = '<div class="panel-header" style="border-bottom:none"><h3>🍄 Mycelium Network</h3><div class="inline-actions"><button class="btn-sm" onclick="loadMycelium()">Refresh</button></div></div>';
+
+    const statsHtml = '<div class="trace-meta" style="padding:0 4px 6px">'
+      + 'Nodes: ' + (stats.nodes || 0) + ' · Edges: ' + (stats.edges || 0) + ' · Episodes: ' + (stats.episodes || 0) + ' · Avg weight: ' + (stats.avgWeight || 0)
+      + '</div>';
+
+    // Group nodes by type
+    const nodesByType = {};
+    for (const node of nodes) {
+      if (!nodesByType[node.type]) nodesByType[node.type] = [];
+      nodesByType[node.type].push(node);
+    }
+
+    const typeColors = { query: '#5bb0ff', memory: '#b080ff', tool: '#50c878', skill: '#ffb050', agent: '#ff5050', strategy: '#8ab4f8', document: '#888', output: '#50c878' };
+
+    const nodesSections = Object.entries(nodesByType).sort(([a], [b]) => a.localeCompare(b)).map(([type, typeNodes]) => {
+      const color = typeColors[type] || '#888';
+      const rows = typeNodes.map((node) => {
+        const trustBar = '<span style="display:inline-block;width:40px;height:6px;background:var(--border);border-radius:3px;margin-left:6px;vertical-align:middle"><span style="display:block;width:' + Math.round(node.trust * 100) + '%;height:100%;background:' + color + ';border-radius:3px"></span></span>';
+        return '<div class="trace-meta" style="font-size:11px">'
+          + '<span style="color:' + color + '">●</span> '
+          + '<strong>' + esc(node.label) + '</strong>'
+          + ' trust:' + (node.trust || 0).toFixed(2) + trustBar
+          + ' cost:' + (node.cost || 0).toFixed(2)
+          + '</div>';
+      }).join('');
+      return '<details' + (typeNodes.length <= 5 ? ' open' : '') + '><summary class="trace-meta" style="cursor:pointer;color:' + color + '">' + esc(type) + ' (' + typeNodes.length + ')</summary>' + rows + '</details>';
+    }).join('');
+
+    const nodesPanel = nodes.length === 0
+      ? '<div class="trace-meta">No nodes yet. Chat with the harness to grow the network.</div>'
+      : nodesSections;
+
+    // Edges: show top 20 by weight
+    const topEdges = edges.sort((a, b) => b.weight - a.weight).slice(0, 20);
+    const edgeRows = topEdges.map((edge) => {
+      const sourceLabel = edge.source.replace(/^[^.]+\./, '');
+      const targetLabel = edge.target.replace(/^[^.]+\./, '');
+      const barWidth = Math.round(edge.weight * 100);
+      return '<div class="trace-meta" style="font-size:11px">'
+        + esc(sourceLabel) + ' → ' + esc(targetLabel)
+        + ' <span style="display:inline-block;width:60px;height:6px;background:var(--border);border-radius:3px;vertical-align:middle"><span style="display:block;width:' + barWidth + '%;height:100%;background:#50c878;border-radius:3px"></span></span>'
+        + ' ' + edge.weight.toFixed(3)
+        + ' (✓' + (edge.successCount || 0) + ' ✗' + (edge.failureCount || 0) + ')'
+        + '</div>';
+    }).join('');
+
+    const edgesPanel = edges.length === 0
+      ? '<div class="trace-meta">No edges yet.</div>'
+      : '<details open><summary class="trace-meta" style="cursor:pointer">Top edges by weight (' + Math.min(edges.length, 20) + ' of ' + edges.length + ')</summary>' + edgeRows + '</details>';
+
+    // Episodes: last 10
+    const recentEpisodes = episodes.slice(0, 10);
+    const episodeRows = recentEpisodes.map((ep) => {
+      const ts = ep.timestamp ? new Date(ep.timestamp).toLocaleString() : '?';
+      const routeStr = (ep.route || []).map((id) => id.replace(/^[^.]+\./, '')).join(' → ');
+      const rewardColor = ep.reward > 0.5 ? '#50c878' : ep.reward > 0.3 ? '#ffb050' : '#ff5050';
+      return '<div class="trace-meta" style="font-size:11px">'
+        + '<span style="color:' + rewardColor + '">' + (ep.reward || 0).toFixed(2) + '</span> '
+        + esc(routeStr || '(empty)')
+        + ' <span style="color:var(--text-dim)">' + esc(ts) + '</span>'
+        + '</div>';
+    }).join('');
+
+    const episodesPanel = episodes.length === 0
+      ? '<div class="trace-meta">No episodes yet. Routes are recorded after each chat.</div>'
+      : '<details><summary class="trace-meta" style="cursor:pointer">Recent episodes (' + Math.min(episodes.length, 10) + ' of ' + episodes.length + ')</summary>' + episodeRows + '</details>';
+
+    view.innerHTML = header + statsHtml
+      + '<div class="trace-list">'
+      + '<div class="trace-item"><div class="trace-title">Nodes</div>' + nodesPanel + '</div>'
+      + '<div class="trace-item"><div class="trace-title">Edges</div>' + edgesPanel + '</div>'
+      + '<div class="trace-item"><div class="trace-title">Episodes</div>' + episodesPanel + '</div>'
+      + '</div>';
+  } catch (error) {
+    view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message || error) + '</div>';
   }
 }
 
