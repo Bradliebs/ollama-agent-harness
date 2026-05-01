@@ -5,14 +5,14 @@ setlocal
 
 echo.
 echo   ============================================
-echo   🤖  Ollama Agent Harness - Setup ^& Launch
+echo   Ollama Agent Harness - Setup and Launch
 echo   ============================================
 echo.
 
 :: Step 1: Check Node.js
 where node >nul 2>nul
 if errorlevel 1 (
-	echo   ❌ Node.js was not found.
+	echo   [X] Node.js was not found.
 	echo.
 	echo   To fix this:
 	echo   1. Go to https://nodejs.org/
@@ -23,12 +23,12 @@ if errorlevel 1 (
 	pause
 	exit /b 1
 )
-for /f "tokens=*" %%v in ('node --version') do echo   ✅ Node.js %%v found
+for /f "tokens=*" %%v in ('node --version') do echo   [OK] Node.js %%v found
 
 :: Step 2: Check npm
 where npm >nul 2>nul
 if errorlevel 1 (
-	echo   ❌ npm was not found. Reinstall Node.js from https://nodejs.org/
+	echo   [X] npm was not found. Reinstall Node.js from https://nodejs.org/
 	pause
 	exit /b 1
 )
@@ -36,7 +36,7 @@ if errorlevel 1 (
 :: Step 3: Check Ollama
 where ollama >nul 2>nul
 if errorlevel 1 (
-	echo   ⚠️  Ollama was not found in PATH.
+	echo   [!!] Ollama was not found in PATH.
 	echo.
 	echo   To fix this:
 	echo   1. Go to https://ollama.com/
@@ -44,44 +44,44 @@ if errorlevel 1 (
 	echo   3. After installing, open a new terminal and run: ollama pull llama3.2
 	echo   4. Then double-click start.bat again
 	echo.
-	echo   (You can skip this if Ollama is already running elsewhere)
+	echo   You can skip this if Ollama is already running elsewhere.
 	echo.
 	set /p SKIP_OLLAMA="Press Enter to continue anyway, or type Q to quit: "
-	if /i "%SKIP_OLLAMA%"=="Q" exit /b 1
+	if /i "!SKIP_OLLAMA!"=="Q" exit /b 1
 ) else (
-	for /f "tokens=*" %%v in ('ollama --version 2^>nul') do echo   ✅ Ollama found: %%v
+	for /f "tokens=*" %%v in ('ollama --version 2^>nul') do echo   [OK] Ollama found: %%v
 )
 
 :: Step 4: Install dependencies
 if not exist node_modules\ (
 	echo.
-	echo   📦 Installing dependencies (first time only)...
-	npm ci
+	echo   Installing dependencies (first time only, may take a minute)...
+	call npm ci
 	if errorlevel 1 (
 		echo.
-		echo   ❌ Dependency install failed. Check your internet connection and try again.
+		echo   [X] Dependency install failed. Check your internet connection and try again.
 		pause
 		exit /b 1
 	)
-	echo   ✅ Dependencies installed
+	echo   [OK] Dependencies installed
 )
 
 :: Step 5: Build
 if not exist dist\web\server.js (
 	echo.
-	echo   🔨 Building from source (first time only)...
-	npm run build
+	echo   Building from source (first time only)...
+	call npm run build
 	if errorlevel 1 (
-		echo   ❌ Build failed.
+		echo   [X] Build failed.
 		pause
 		exit /b 1
 	)
-	echo   ✅ Build complete
+	echo   [OK] Build complete
 )
 
 :: Step 6: Launch
 echo.
-echo   🚀 Starting Ollama Agent Harness...
+echo   Starting Ollama Agent Harness...
 echo   Your browser should open automatically.
 echo   If not, go to: http://127.0.0.1:4000
 echo.
@@ -94,4 +94,5 @@ if "%PORT%"=="" set PORT=4000
 :: Auto-open browser after a short delay
 start "" /b cmd /c "timeout /t 3 /nobreak >nul & start http://127.0.0.1:%PORT%"
 
-npm run serve
+call npm run serve
+pause
