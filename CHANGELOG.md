@@ -11,6 +11,59 @@ keywords:
 estimated_reading_time: 8
 ---
 
+## v0.2.0 (2026-05-01)
+
+Major release adding the mycelial context router, agent identity system, full autonomy mode, 5 new tools, automation CRUD, and beginner-friendly setup.
+
+### Mycelial Context Router
+- Adaptive graph system (`src/mycelium/`) that learns which tools, skills, and memories work best for different queries
+- Spread activation, weighted route selection, reinforcement based on tool success rates
+- Semantic relevance via Ollama embeddings with keyword fallback
+- New Mycelium tab showing nodes, edges, and episodes. API: GET/DELETE `/api/mycelium`
+- Tool chain tracking feeds success/failure signals into reinforcement
+
+### Agent Identity
+- Configurable agent name, avatar emoji (12 options), and personality
+- 6 personality presets: professional, friendly, concise, mentor, creative, pirate
+- Multi-profile save/load/delete with JSON export/import
+- Name and avatar in topbar, chat bubbles, session history, and welcome screen
+- Model-specific profile suggestions when selecting a model
+
+### Full Autonomy Mode
+- One-click Full Autonomy button sets dontAsk mode and enables all tools
+- `autoGrantGatedCapabilities` creates 8-hour grants for all 9 gated capabilities at chat start
+- Kill switch (Ctrl+Shift+K) remains the emergency stop
+
+### Capability System
+- 9 gated capabilities: shell, background jobs, self-modifying code, multi-agent swarm, desktop control, browser profile, skill install, email, calendar
+- 3 blocked: password manager, live trading, skill marketplace. 0 design-only
+- Grant lifecycle with create/revoke/auto-expire and audit trail
+- Shell command allowlist presets with path traversal rejection
+
+### New Tools
+- `desktop_screenshot`: platform-native screen capture (disabled by default)
+- `browser_bookmarks`: read-only Chrome/Edge bookmarks (disabled by default)
+- `install_skill`: install skills from GitHub/Gist/GitLab URLs (disabled by default)
+- `email_draft`: create .eml draft files for manual review (disabled by default)
+- `calendar_read`: parse local .ics files for upcoming events
+
+### Automation
+- Job CRUD: create, edit, toggle, delete from Runs tab or API
+- AutomationScheduler with heartbeat, idle gate, kill-switch guard
+- Run history with output viewer. Scheduler settings in Settings panel
+
+### Setup and Onboarding
+- `start.bat` (Windows) and `start.sh` (Mac/Linux) with auto-install, auto-build, browser auto-open
+- Guided first-chat tutorial in the welcome screen (5 interactive steps)
+- START-HERE.md rewritten as complete beginner guide
+- README.md updated with all new features
+
+### Speech Input
+- Auto-send on mic button toggle off with hourglass indicator
+
+### Testing
+- 365 tests across 48 suites. Runner, grant, automation, tool, and personality tests added
+
 ## Unreleased
 
 ### LocalAgentHarness session

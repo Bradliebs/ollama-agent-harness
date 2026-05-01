@@ -6,6 +6,7 @@
   <title>Ollama Agent Harness</title>
   <style>
     :root{--bg:#0f0f0f;--surface:#1a1a1a;--surface2:#242424;--surface3:#2a2a2a;--border:#333;--text:#e0e0e0;--text-dim:#888;--accent:#7c5cff;--accent-hover:#9b80ff;--accent-bg:rgba(124,92,255,.1);--success:#4caf50;--error:#ef5350;--warning:#ff9800;--tool-bg:#1e2a1e;--tool-border:#2e4a2e;--r:12px;--rs:8px}
+    .light{--bg:#f5f5f5;--surface:#ffffff;--surface2:#f0f0f0;--surface3:#e8e8e8;--border:#d0d0d0;--text:#1a1a1a;--text-dim:#666;--accent:#5b3fd4;--accent-hover:#7c5cff;--accent-bg:rgba(91,63,212,.08);--tool-bg:#e8f5e9;--tool-border:#a5d6a7}
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;overflow:hidden}
     .layout{display:flex;width:100%;height:100%}
@@ -376,6 +377,7 @@
       </div>
       <div class="status-dot loading" id="statusDot" title="Connecting..."></div>
       <div class="topbar-btns">
+        <button class="btn-icon" id="themeToggle" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
         <button class="btn-icon" onclick="newChat()" title="New chat">✨</button>
         <button class="btn-icon" onclick="toggleRight()" title="Settings">⚙️</button>
       </div>

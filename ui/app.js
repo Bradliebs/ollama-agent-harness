@@ -38,6 +38,7 @@ let currentWalkthrough = { completed: [] };
 let availableModels = [];
 
 window.addEventListener('DOMContentLoaded', () => {
+  restoreTheme();
   ensurePermissionPanel();
   loadModels();
   loadHistory();
@@ -3821,6 +3822,24 @@ function toggleVoiceInput() {
     voiceActive = false;
     if (btn) { btn.classList.remove('recording'); btn.title = 'Voice input (browser STT)'; }
     alert('Could not start voice input: ' + e.message);
+  }
+}
+
+// ─── Theme toggle ───────────────────────────────────────────────────
+
+function toggleTheme() {
+  const isLight = document.documentElement.classList.toggle('light');
+  localStorage.setItem('harness-theme', isLight ? 'light' : 'dark');
+  const btn = document.getElementById('themeToggle');
+  if (btn) btn.textContent = isLight ? '☀️' : '🌙';
+}
+
+function restoreTheme() {
+  const saved = localStorage.getItem('harness-theme');
+  if (saved === 'light') {
+    document.documentElement.classList.add('light');
+    const btn = document.getElementById('themeToggle');
+    if (btn) btn.textContent = '☀️';
   }
 }
 

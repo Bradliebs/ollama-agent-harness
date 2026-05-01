@@ -1403,6 +1403,7 @@ app.post('/api/chat', async (req, res) => {
   let assistantTextBuffer = '';
   let toolCallCount = 0;
   let toolSuccessCount = 0;
+  const toolCallSequence: string[] = [];
 
   try {
     if (droppedForTokens > 0) {
@@ -1427,6 +1428,7 @@ app.post('/api/chat', async (req, res) => {
       if (event.type === 'tool_result') {
         toolCallCount++;
         if (event.result?.success) toolSuccessCount++;
+        if (event.call?.name) toolCallSequence.push(event.call.name);
       }
       if (event.type === 'output_validation') {
         await recordOutputValidationEvalRun(PROJECT_DIR, event.validation, message.slice(0, 120), {
@@ -1538,6 +1540,15 @@ app.post('/api/chat', async (req, res) => {
       usefulness: hasOutput ? 0.5 + toolSuccessRate * 0.3 : 0.1,
       costEfficiency: toolCallCount <= 5 ? 0.8 : toolCallCount <= 15 ? 0.5 : 0.2,
     });
+    // Auto-create edges between consecutive tools in the call sequence
+    const graph = myceliumRouter.getGraph();
+    for (let i = 0; i < toolCallSequence.length - 1; i++) {
+      const srcId = `tool.${toolCallSequence[i]}`;
+      const tgtId = `tool.${toolCallSequence[i + 1]}`;
+      if (graph.getNode(srcId) && graph.getNode(tgtId)) {
+        graph.addEdge(srcId, tgtId, 0.3);
+      }
+    }
     myceliumRouter.decay();
     myceliumRouter.save().catch((error) => {
       logger.warn('Mycelium', 'Failed to save graph', { error: error instanceof Error ? error.message : String(error) });
