@@ -1351,6 +1351,8 @@ app.post('/api/chat', async (req, res) => {
     },
   };
   const session = webRuntime.createSession(projectDir, activeModel);
+  if (agentName) session.setMeta('agentName', agentName);
+  if (agentAvatar) session.setMeta('agentAvatar', agentAvatar);
   await session.initialize();
 
   const deps: QueryLoopDeps = {

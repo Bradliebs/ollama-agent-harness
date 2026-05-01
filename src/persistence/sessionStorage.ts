@@ -29,6 +29,10 @@ export class SessionStorage {
     await fs.writeFile(this.metaPath, JSON.stringify(this.meta, null, 2), 'utf-8');
   }
 
+  setMeta<K extends keyof SessionMeta>(key: K, value: SessionMeta[K]): void {
+    this.meta[key] = value;
+  }
+
   async append(type: SessionEvent['type'], data: SessionEventData): Promise<void> {
     const event: SessionEvent = {
       id: crypto.randomUUID(),

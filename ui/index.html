@@ -798,6 +798,11 @@
         </select>
         <button class="btn-sm danger" onclick="deleteAgentProfile()">🗑</button>
       </div>
+      <div class="setting-row" style="display:flex;gap:6px">
+        <button class="btn-sm" onclick="exportAgentProfiles()">📥 Export profiles</button>
+        <button class="btn-sm" onclick="document.getElementById('profileImportFile').click()">📤 Import profiles</button>
+        <input type="file" id="profileImportFile" accept=".json" class="initial-hidden" onchange="importAgentProfiles(this.files)">
+      </div>
     </div>
     <div class="settings-section">
       <h4>System Prompt</h4>

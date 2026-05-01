@@ -110,12 +110,39 @@ function renderModelCapabilityHint() {
     capabilityPill('Audio', capabilities.audio),
   ].join('');
   const notes = (capabilities.notes || []).slice(0, 2).map(esc).join(' ');
-  hint.innerHTML = '<strong>' + esc(model.name) + '</strong><div>' + pills + '</div><div>' + esc(notes || 'Harness detected a text chat model. Attachments are still available as local file paths for tools and analysis.') + '</div>';
+  hint.innerHTML = '<strong>' + esc(model.name) + '</strong><div>' + pills + '</div><div>' + esc(notes || 'Harness detected a text chat model. Attachments are still available as local file paths for tools and analysis.') + '</div>' + getModelProfileSuggestion(model.name);
   renderAttachmentHint();
 }
 
 function capabilityPill(label, enabled) {
   return '<span class="capability-pill">' + (enabled ? '✓ ' : '○ ') + esc(label) + '</span>';
+}
+
+function getModelProfileSuggestion(modelName) {
+  if (!modelName) return '';
+  const modelLower = modelName.toLowerCase();
+  // Check if any saved profile uses this model
+  for (const [name, profile] of Object.entries(agentProfiles)) {
+    if (profile.model && modelLower.includes(profile.model.toLowerCase().split(':')[0])) {
+      return '<div style="margin-top:4px"><a href="#" onclick="loadAgentProfile(\'' + escAttr(name) + '\'); event.preventDefault();" style="color:var(--accent);font-size:11px">' + esc((profile.avatar || '🤖') + ' Load "' + name + '" profile for this model') + '</a></div>';
+    }
+  }
+  // Suggest personality presets based on model type
+  const MODEL_PERSONALITY_HINTS = {
+    'codellama': { preset: 'concise', hint: 'Code-focused model — try the Concise personality' },
+    'deepseek-coder': { preset: 'concise', hint: 'Code-focused model — try the Concise personality' },
+    'qwen2.5-coder': { preset: 'concise', hint: 'Code-focused model — try the Concise personality' },
+    'llava': { preset: 'friendly', hint: 'Vision model — try the Friendly personality for image conversations' },
+    'gemma': { preset: 'friendly', hint: 'Conversational model — try the Friendly personality' },
+    'mistral': { preset: 'professional', hint: 'Balanced model — try the Professional personality' },
+    'llama': { preset: 'mentor', hint: 'General model — try the Mentor personality for learning' },
+  };
+  for (const [prefix, config] of Object.entries(MODEL_PERSONALITY_HINTS)) {
+    if (modelLower.includes(prefix) && !currentAgentName) {
+      return '<div style="margin-top:4px;font-size:11px;color:var(--text-dim)">' + esc(config.hint) + ' <a href="#" onclick="applyPersonalityPreset(\'' + config.preset + '\'); event.preventDefault();" style="color:var(--accent)">Apply</a></div>';
+    }
+  }
+  return '';
 }
 
 function renderAttachmentHint() {
@@ -718,6 +745,34 @@ function deleteAgentProfile() {
   delete agentProfiles[name];
   updateSetting('agentProfiles', agentProfiles);
   hydrateAgentProfiles(agentProfiles);
+}
+
+function exportAgentProfiles() {
+  if (Object.keys(agentProfiles).length === 0) { alert('No profiles to export.'); return; }
+  const blob = new Blob([JSON.stringify(agentProfiles, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'agent-profiles-' + new Date().toISOString().slice(0, 10) + '.json';
+  a.click();
+}
+
+function importAgentProfiles(files) {
+  if (!files || files.length === 0) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const imported = JSON.parse(e.target.result);
+      if (typeof imported !== 'object' || imported === null) { alert('Invalid profiles file.'); return; }
+      const count = Object.keys(imported).length;
+      if (!confirm('Import ' + count + ' profile(s)? Existing profiles with the same name will be overwritten.')) return;
+      Object.assign(agentProfiles, imported);
+      updateSetting('agentProfiles', agentProfiles);
+      hydrateAgentProfiles(agentProfiles);
+      alert('Imported ' + count + ' profile(s).');
+    } catch { alert('Invalid JSON file.'); }
+  };
+  reader.readAsText(files[0]);
+  document.getElementById('profileImportFile').value = '';
 }
 
 function updateRoutingSetting(k, v) {
@@ -3503,8 +3558,9 @@ function renderRunRow(run) {
   const duration = run.durationMs ? formatRunDuration(run.durationMs) : (run.status === 'running' ? 'in progress' : '—');
   const errorRow = run.lastError ? '<div class="trace-meta" style="color:#ff5050">' + esc(run.lastError) + '</div>' : '';
   const checkpointsRow = run.checkpointCount ? '<div class="trace-meta">Checkpoints: ' + run.checkpointCount + '</div>' : '';
+  const agentBadge = run.agentName ? ' <span class="capability-pill">' + esc((run.agentAvatar || '🤖') + ' ' + run.agentName) + '</span>' : '';
   return '<div class="trace-item">'
-    + '<div class="trace-title">' + esc(run.title) + ' ' + statusBadge + '</div>'
+    + '<div class="trace-title">' + esc(run.title) + ' ' + statusBadge + agentBadge + '</div>'
     + '<div class="trace-meta">' + esc(created) + ' · ' + esc(run.model || 'unknown model') + ' · ' + esc(duration) + '</div>'
     + checkpointsRow
     + errorRow

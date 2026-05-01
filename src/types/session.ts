@@ -53,4 +53,6 @@ export interface SessionMeta {
   checkpointCount?: number;
   lastCheckpointAt?: string;
   lastError?: string;
+  agentName?: string;
+  agentAvatar?: string;
 }
