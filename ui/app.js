@@ -3181,13 +3181,32 @@ function renderAutomationRunsSection(automations, runLog) {
 
 function renderAutomationRunLog(entries) {
   if (!entries || entries.length === 0) return '';
-  const rows = entries.slice(0, 20).map((entry) => {
+  const rows = entries.slice(0, 20).map((entry, i) => {
     const ts = entry.ranAt ? new Date(entry.ranAt).toLocaleString() : '?';
     const color = entry.success === false ? '#ff5050' : '#50c878';
     const name = entry.name || entry.jobId || '?';
-    return '<div class="trace-meta" style="font-size:11px"><span style="color:' + color + '">' + (entry.success === false ? '✗' : '✓') + '</span> ' + esc(name) + ' <span style="color:var(--text-dim)">' + esc(ts) + '</span></div>';
+    const viewBtn = entry.outputPath
+      ? ' <button class="btn-sm" style="font-size:10px;padding:1px 4px" onclick="viewAutomationRunOutput(\'' + escAttr(entry.outputPath) + '\', this)">View</button>'
+      : '';
+    return '<div class="trace-meta" style="font-size:11px"><span style="color:' + color + '">' + (entry.success === false ? '✗' : '✓') + '</span> ' + esc(name) + ' <span style="color:var(--text-dim)">' + esc(ts) + '</span>' + viewBtn + '<div id="autoRunOutput' + i + '" style="display:none"></div></div>';
   }).join('');
   return '<details style="margin-top:8px"><summary class="trace-meta" style="cursor:pointer">Run history (last ' + Math.min(entries.length, 20) + ' of ' + entries.length + ')</summary>' + rows + '</details>';
+}
+
+async function viewAutomationRunOutput(outputPath, btn) {
+  const parent = btn.parentElement;
+  const outputDiv = parent ? parent.querySelector('[id^="autoRunOutput"]') : null;
+  if (outputDiv && outputDiv.style.display !== 'none') { outputDiv.style.display = 'none'; btn.textContent = 'View'; return; }
+  try {
+    const response = await fetch('/api/automations/output?path=' + encodeURIComponent(outputPath));
+    const data = await response.json();
+    if (data.error) { alert('Could not load output: ' + data.error); return; }
+    if (outputDiv) {
+      outputDiv.style.display = 'block';
+      outputDiv.innerHTML = '<pre style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:6px;margin:4px 0;font-size:11px;white-space:pre-wrap;max-height:200px;overflow-y:auto">' + esc(data.content) + '</pre>';
+      btn.textContent = 'Hide';
+    }
+  } catch (error) { alert('Failed to load output: ' + (error.message || error)); }
 }
 
 async function executeAutomationDueJobs() {
@@ -3536,7 +3555,12 @@ function toggleVoiceInput() {
     if (shouldSend) {
       const inp = document.getElementById('chatInput');
       if (inp && inp.value.trim()) {
-        setTimeout(() => sendMessage(), 300);
+        const sendBtn = document.getElementById('sendBtn');
+        if (sendBtn) { sendBtn.textContent = '⏳'; sendBtn.disabled = false; }
+        setTimeout(() => {
+          if (sendBtn) sendBtn.textContent = '➤';
+          sendMessage();
+        }, 300);
       }
     }
   };

@@ -1058,6 +1058,21 @@ app.get('/api/automations/runs', async (_req, res) => {
   }
 });
 
+app.get('/api/automations/output', async (req, res) => {
+  try {
+    const rawPath = typeof req.query.path === 'string' ? req.query.path : '';
+    if (!rawPath) { res.status(400).json({ error: 'path is required' }); return; }
+    const resolved = path.resolve(PROJECT_DIR, rawPath);
+    const automationsDir = path.resolve(PROJECT_DIR, '.harness', 'automations');
+    if (!resolved.startsWith(automationsDir)) { res.status(403).json({ error: 'Path must be inside .harness/automations/' }); return; }
+    const content = await fs.readFile(resolved, 'utf-8');
+    res.json({ path: rawPath, content: content.slice(0, 50_000) });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(404).json({ error: msg });
+  }
+});
+
 // Enable or disable a single tool at runtime. Disabled tools are filtered out
 // of the agent's tool list before each chat turn.
 app.post('/api/tools/:name/toggle', (req, res) => {

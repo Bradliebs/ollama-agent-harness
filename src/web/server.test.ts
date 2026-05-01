@@ -433,6 +433,54 @@ describe('web server API validation', () => {
     expect(response.status).toBe(404);
   });
 
+  it('runs full automation lifecycle: create job, grant, execute, verify history and output', async () => {
+    // Create a job that is already due (created in the past)
+    await createAutomationJob(process.cwd(), { name: 'smoke-lifecycle', prompt: 'Run version check', schedule: '1 minutes', scriptCommand: 'node --version' }, new Date('2026-04-30T00:00:00.000Z'));
+
+    // Grant required capabilities
+    const shellGrant = await request('/api/capabilities/grants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ capabilityId: 'arbitrary-shell', controls: ['explicit-grant', 'audit-log', 'allowlist', 'kill-switch'], expiresInMinutes: 60 }),
+    });
+    const bgGrant = await request('/api/capabilities/grants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ capabilityId: 'background-autonomous-jobs', controls: ['explicit-grant', 'time-limit', 'audit-log', 'allowlist', 'kill-switch'], expiresInMinutes: 60 }),
+    });
+    const shellGrantId = ((await shellGrant.json()) as { grant: { id: string } }).grant.id;
+    const bgGrantId = ((await bgGrant.json()) as { grant: { id: string } }).grant.id;
+
+    // Execute due jobs
+    const exec = await request('/api/automations/execute-due', { method: 'POST' });
+    const execBody = await exec.json() as { executed: number; results: Array<{ name: string; scriptOutput: string; outputPath: string }> };
+    const smokeResult = execBody.results.find((r) => r.name === 'smoke-lifecycle');
+    expect(smokeResult).toBeDefined();
+    expect(smokeResult!.scriptOutput).toMatch(/^v?\d+\.\d+\.\d+/);
+
+    // Verify run history
+    const history = await request('/api/automations/runs');
+    const historyBody = await history.json() as { runs: Array<{ name: string; outputPath: string }> };
+    const historyEntry = historyBody.runs.find((r) => r.name === 'smoke-lifecycle');
+    expect(historyEntry).toBeDefined();
+    expect(historyEntry!.outputPath).toBeTruthy();
+
+    // Verify output endpoint
+    const output = await request('/api/automations/output?path=' + encodeURIComponent(historyEntry!.outputPath));
+    expect(output.status).toBe(200);
+    const outputBody = await output.json() as { content: string };
+    expect(outputBody.content).toContain('Run version check');
+
+    // Clean up
+    await request(`/api/capabilities/grants/${encodeURIComponent(shellGrantId)}`, { method: 'DELETE' });
+    await request(`/api/capabilities/grants/${encodeURIComponent(bgGrantId)}`, { method: 'DELETE' });
+  });
+
+  it('rejects output reads outside automations directory', async () => {
+    const response = await request('/api/automations/output?path=../../package.json');
+    expect(response.status).toBe(403);
+  });
+
   it('returns runtime skills, repo skills, and runtime skill diagnostics', async () => {
     const runtimeSkillDir = path.join(process.cwd(), '.harness', 'skills', 'api-runtime-skill');
     const malformedSkillDir = path.join(process.cwd(), '.harness', 'skills', 'api-malformed-skill');
