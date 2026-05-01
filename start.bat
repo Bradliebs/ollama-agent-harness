@@ -90,4 +90,8 @@ echo   ============================================
 echo.
 
 if "%PORT%"=="" set PORT=4000
+
+:: Auto-open browser after a short delay
+start "" /b cmd /c "timeout /t 3 /nobreak >nul & start http://127.0.0.1:%PORT%"
+
 npm run serve
