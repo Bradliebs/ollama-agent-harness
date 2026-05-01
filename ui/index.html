@@ -759,6 +759,23 @@
         <input type="text" id="agentNameInput" placeholder="e.g. Sage, Atlas, Hermes..." onchange="updateAgentName(this.value)" />
       </div>
       <div class="setting-row">
+        <label>Avatar</label>
+        <div style="display:flex;flex-wrap:wrap;gap:4px" id="avatarPicker">
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🤖')">🤖</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🧠')">🧠</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('⚡')">⚡</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🔮')">🔮</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🍄')">🍄</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🦊')">🦊</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🐙')">🐙</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🦉')">🦉</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🐺')">🐺</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🏴‍☠️')">🏴‍☠️</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🎯')">🎯</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('💎')">💎</button>
+        </div>
+      </div>
+      <div class="setting-row">
         <label>Personality</label>
         <select id="personalityPreset" onchange="applyPersonalityPreset(this.value)">
           <option value="">None (default assistant)</option>
@@ -773,6 +790,13 @@
       </div>
       <div class="setting-row">
         <textarea id="personalityText" rows="3" placeholder="Describe your agent's personality, voice, and tone..." onchange="updateSetting('agentPersonality',this.value)"></textarea>
+      </div>
+      <div class="setting-row" style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn-sm" onclick="saveAgentProfile()">💾 Save profile</button>
+        <select id="profileSelect" onchange="loadAgentProfile(this.value)" style="flex:1;min-width:120px;padding:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+          <option value="">Load saved profile...</option>
+        </select>
+        <button class="btn-sm danger" onclick="deleteAgentProfile()">🗑</button>
       </div>
     </div>
     <div class="settings-section">

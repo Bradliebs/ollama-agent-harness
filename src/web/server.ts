@@ -90,6 +90,8 @@ interface WebSettings {
   systemPrompt: string;
   agentPersonality: string;
   agentName: string;
+  agentAvatar: string;
+  agentProfiles: Record<string, { name: string; avatar: string; personality: string; model: string }>;
   summarizerModel: string;
   contextMaxTokens: number;
   context: { configuredMaxTokens: number; detectedMaxTokens: number | null; effectiveMaxTokens: number };
@@ -186,6 +188,8 @@ let ollamaHost = 'http://localhost:11434';
 let systemPromptOverride = '';
 let agentPersonality = '';
 let agentName = '';
+let agentAvatar = '';
+let agentProfiles: Record<string, { name: string; avatar: string; personality: string; model: string }> = {};
 let summarizerModel = '';
 const DEFAULT_CONTEXT_MAX_TOKENS = 8192;
 let contextMaxTokens = DEFAULT_CONTEXT_MAX_TOKENS;
@@ -352,6 +356,8 @@ app.post('/api/settings', async (req, res) => {
   if (req.body.systemPrompt !== undefined) systemPromptOverride = String(req.body.systemPrompt).slice(0, 20_000);
   if (req.body.agentPersonality !== undefined) agentPersonality = String(req.body.agentPersonality).slice(0, 5_000);
   if (req.body.agentName !== undefined) agentName = String(req.body.agentName).slice(0, 100);
+  if (req.body.agentAvatar !== undefined) agentAvatar = String(req.body.agentAvatar).slice(0, 10);
+  if (req.body.agentProfiles !== undefined && typeof req.body.agentProfiles === 'object') agentProfiles = sanitizeAgentProfiles(req.body.agentProfiles);
   if (req.body.summarizerModel !== undefined) summarizerModel = sanitizeModelName(req.body.summarizerModel);
   if (req.body.modelRouting !== undefined) modelRouting = sanitizeModelRoutingPolicy(req.body.modelRouting);
   if (req.body.mediaTools !== undefined) {
@@ -2638,6 +2644,8 @@ function getCurrentSettings(): WebSettings {
     systemPrompt: systemPromptOverride,
     agentPersonality,
     agentName,
+    agentAvatar,
+    agentProfiles,
     summarizerModel,
     contextMaxTokens,
     context: {
@@ -2696,6 +2704,8 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   if (settings.systemPrompt !== undefined) systemPromptOverride = String(settings.systemPrompt).slice(0, 20_000);
   if (settings.agentPersonality !== undefined) agentPersonality = String(settings.agentPersonality).slice(0, 5_000);
   if (settings.agentName !== undefined) agentName = String(settings.agentName).slice(0, 100);
+  if (settings.agentAvatar !== undefined) agentAvatar = String(settings.agentAvatar).slice(0, 10);
+  if (settings.agentProfiles !== undefined && typeof settings.agentProfiles === 'object') agentProfiles = sanitizeAgentProfiles(settings.agentProfiles);
   if (settings.summarizerModel !== undefined) summarizerModel = sanitizeModelName(settings.summarizerModel);
   if (settings.modelRouting !== undefined) modelRouting = sanitizeModelRoutingPolicy(settings.modelRouting);
   if (settings.mediaTools !== undefined) {
@@ -2862,6 +2872,23 @@ function sanitizeAutomationSchedulerSettings(value: unknown): AutomationSchedule
     enabled: source.enabled !== undefined ? Boolean(source.enabled) : true,
     idleThresholdMinutes: clampInt(source.idleThresholdMinutes, 1, 60, 2),
   };
+}
+
+function sanitizeAgentProfiles(value: unknown): Record<string, { name: string; avatar: string; personality: string; model: string }> {
+  if (typeof value !== 'object' || value === null) return {};
+  const source = value as Record<string, unknown>;
+  const result: Record<string, { name: string; avatar: string; personality: string; model: string }> = {};
+  for (const [key, val] of Object.entries(source)) {
+    if (typeof val !== 'object' || val === null) continue;
+    const entry = val as Record<string, unknown>;
+    result[key.slice(0, 100)] = {
+      name: String(entry.name ?? '').slice(0, 100),
+      avatar: String(entry.avatar ?? '').slice(0, 10),
+      personality: String(entry.personality ?? '').slice(0, 5000),
+      model: String(entry.model ?? '').slice(0, 200),
+    };
+  }
+  return result;
 }
 
 function getOutputValidationProfiles(): WebSettings['outputValidationProfiles'] {

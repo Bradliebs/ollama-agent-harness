@@ -163,6 +163,8 @@ async function loadSettings() {
     if (s.systemPrompt) document.getElementById('sysPrompt').value = s.systemPrompt;
     hydratePersonality(s.agentPersonality || '');
     hydrateAgentName(s.agentName || '');
+    hydrateAgentAvatar(s.agentAvatar || '');
+    hydrateAgentProfiles(s.agentProfiles || {});
     if (s.ollamaHost) document.getElementById('ollamaHost').value = s.ollamaHost;
     if (s.summarizerModel) document.getElementById('summarizerModel').value = s.summarizerModel;
     if (s.contextMaxTokens) document.getElementById('contextMaxTokens').value = s.contextMaxTokens;
@@ -632,7 +634,90 @@ function updateAgentName(name) {
 
 function updateTopbarName(name) {
   const logo = document.getElementById('topbarLogo');
-  if (logo) logo.textContent = name ? '🤖 ' + name : '🤖 Harness';
+  const avatar = currentAgentAvatar || '🤖';
+  if (logo) logo.textContent = name ? avatar + ' ' + name : avatar + ' Harness';
+}
+
+let currentAgentAvatar = '';
+
+function hydrateAgentAvatar(avatar) {
+  currentAgentAvatar = avatar;
+  highlightAvatarPick(avatar);
+  updateTopbarName(currentAgentName);
+}
+
+function setAgentAvatar(emoji) {
+  currentAgentAvatar = emoji;
+  updateSetting('agentAvatar', emoji);
+  highlightAvatarPick(emoji);
+  updateTopbarName(currentAgentName);
+}
+
+function highlightAvatarPick(active) {
+  document.querySelectorAll('.avatar-pick').forEach((btn) => {
+    btn.style.outline = btn.textContent.trim() === active ? '2px solid var(--accent)' : 'none';
+  });
+}
+
+function getAgentAvatar() {
+  return currentAgentAvatar || '🤖';
+}
+
+let agentProfiles = {};
+
+function hydrateAgentProfiles(profiles) {
+  agentProfiles = profiles || {};
+  const sel = document.getElementById('profileSelect');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">Load saved profile...</option>';
+  for (const name of Object.keys(agentProfiles).sort()) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = (agentProfiles[name].avatar || '🤖') + ' ' + name;
+    sel.appendChild(opt);
+  }
+}
+
+function saveAgentProfile() {
+  const name = currentAgentName || prompt('Profile name:');
+  if (!name) return;
+  const model = document.getElementById('modelSelect')?.value || '';
+  agentProfiles[name] = {
+    name: currentAgentName,
+    avatar: currentAgentAvatar,
+    personality: document.getElementById('personalityText')?.value || '',
+    model,
+  };
+  updateSetting('agentProfiles', agentProfiles);
+  hydrateAgentProfiles(agentProfiles);
+  alert('Profile "' + name + '" saved.');
+}
+
+function loadAgentProfile(profileName) {
+  if (!profileName || !agentProfiles[profileName]) return;
+  const profile = agentProfiles[profileName];
+  if (profile.name) { updateAgentName(profile.name); document.getElementById('agentNameInput').value = profile.name; }
+  if (profile.avatar) setAgentAvatar(profile.avatar);
+  if (profile.personality !== undefined) {
+    const el = document.getElementById('personalityText');
+    if (el) el.value = profile.personality;
+    updateSetting('agentPersonality', profile.personality);
+    hydratePersonality(profile.personality);
+  }
+  if (profile.model) {
+    const sel = document.getElementById('modelSelect');
+    if (sel) { sel.value = profile.model; updateSetting('model', profile.model); }
+  }
+}
+
+function deleteAgentProfile() {
+  const sel = document.getElementById('profileSelect');
+  const name = sel?.value;
+  if (!name) { alert('Select a profile to delete.'); return; }
+  if (!confirm('Delete profile "' + name + '"?')) return;
+  delete agentProfiles[name];
+  updateSetting('agentProfiles', agentProfiles);
+  hydrateAgentProfiles(agentProfiles);
 }
 
 function updateRoutingSetting(k, v) {
@@ -1529,9 +1614,9 @@ function addMsg(role, text) {
   const area = document.getElementById('chatArea');
   const el = document.createElement('div');
   el.className = 'msg ' + role;
-  const av = role === 'user' ? 'Y' : '🤖';
-  const label = role === 'user' ? 'You' : 'Assistant';
-  el.innerHTML = '<div class="msg-avatar">' + av + '</div><div class="msg-body"><div class="msg-role">' + label + '</div><div class="msg-content"></div></div>';
+  const av = role === 'user' ? 'Y' : getAgentAvatar();
+  const label = role === 'user' ? 'You' : (currentAgentName || 'Assistant');
+  el.innerHTML = '<div class="msg-avatar">' + av + '</div><div class="msg-body"><div class="msg-role">' + esc(label) + '</div><div class="msg-content"></div></div>';
   if (role === 'user') el.querySelector('.msg-content').textContent = text;
   else renderMd(el.querySelector('.msg-content'), text);
   area.appendChild(el);
