@@ -2878,6 +2878,70 @@ async function releaseKillSwitch() {
   await loadToolsDashboard();
 }
 
+// ─── Kill-switch global shortcut and status banner ────────────────
+// Ctrl+Shift+K (or Cmd+Shift+K on macOS) toggles the kill switch from any
+// view. While the switch is engaged a fixed banner stays visible at the top
+// of the page so the operator never forgets the agent is muzzled.
+async function toggleKillSwitchShortcut() {
+  try {
+    const state = await fetch('/api/permissions/state').then((r) => r.json());
+    const active = Boolean(state?.killSwitch?.active);
+    if (active) {
+      await fetch('/api/permissions/kill-switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: false }) });
+    } else {
+      await fetch('/api/permissions/kill-switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: true, reason: 'Engaged via Ctrl+Shift+K shortcut.' }) });
+    }
+    await refreshKillSwitchBanner();
+    if (document.getElementById('toolsDashboardView')?.style.display !== 'none' && typeof loadToolsDashboard === 'function') loadToolsDashboard();
+  } catch (error) { console.warn('Kill switch toggle failed:', error); }
+}
+
+async function refreshKillSwitchBanner() {
+  try {
+    const state = await fetch('/api/permissions/state').then((r) => r.json());
+    renderKillSwitchBanner(state?.killSwitch || { active: false, reason: '' });
+  } catch { /* leave banner state alone if the call fails */ }
+}
+
+function renderKillSwitchBanner(killSwitch) {
+  let banner = document.getElementById('killSwitchBanner');
+  if (!killSwitch.active) {
+    if (banner) banner.remove();
+    return;
+  }
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'killSwitchBanner';
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(255,80,80,.18);border-bottom:1px solid #ff5050;color:#ff5050;padding:6px 12px;font-size:12px;display:flex;align-items:center;gap:10px;font-family:inherit';
+    document.body.appendChild(banner);
+  }
+  banner.innerHTML = '<strong>🛑 KILL SWITCH ACTIVE</strong>'
+    + '<span>' + esc(killSwitch.reason || 'All tool calls are denied.') + '</span>'
+    + '<span style="margin-left:auto;opacity:.8">Ctrl+Shift+K to toggle</span>'
+    + '<button class="btn-sm" style="margin-left:8px" onclick="releaseKillSwitchFromBanner()">Release</button>';
+}
+
+async function releaseKillSwitchFromBanner() {
+  await fetch('/api/permissions/kill-switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: false }) });
+  await refreshKillSwitchBanner();
+  if (document.getElementById('toolsDashboardView')?.style.display !== 'none' && typeof loadToolsDashboard === 'function') loadToolsDashboard();
+}
+
+document.addEventListener('keydown', (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'K' || event.key === 'k')) {
+    event.preventDefault();
+    toggleKillSwitchShortcut();
+  }
+});
+
+// On page load, sync the banner so a kill switch persisted from a previous
+// run is visible as soon as the UI mounts.
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => { refreshKillSwitchBanner(); });
+} else {
+  refreshKillSwitchBanner();
+}
+
 // ─── Runs tab ──────────────────────────────────────────────────────
 async function loadRuns() {
   const view = document.getElementById('runsView');

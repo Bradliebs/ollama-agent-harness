@@ -16,6 +16,7 @@ import { drainUploadsFallbacks, getUploadsDir, resolveProjectReadPath } from '..
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { setSkillsDir } from '../tools/skillTools';
 import { setRagRuntime } from '../tools/ragTools';
+import { setCuratorToolRuntime } from '../tools/curatorTools';
 import { PermissionEngine } from '../permissions/engine';
 import { PermissionPromptBroker } from '../permissions/promptBroker';
 import { SessionStorage } from '../persistence/sessionStorage';
@@ -222,6 +223,11 @@ let webRuntime: WebRuntimeDeps = defaultWebRuntime;
 // Initialize skills directory for SkillTool
 setSkillsDir(SKILLS_DIR);
 setRagRuntime({ projectDir: PROJECT_DIR, ollamaHost });
+setCuratorToolRuntime({
+  projectDir: PROJECT_DIR,
+  getConfig: () => curatorConfigFromSettings(),
+  isKillSwitchActive: () => killSwitchActive,
+});
 
 // --- API Routes ---
 

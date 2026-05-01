@@ -48,7 +48,7 @@ A background skill maintenance loop modeled after the Curator pattern.
 The harness is a supervised execution surface, not an autonomous agent.
 
 * Every tool call is evaluated by the permission engine in `default`, `acceptEdits`, or `dontAsk` mode.
-* The kill switch denies every call (including read-only ones) until released.
+* The kill switch denies every call (including read-only ones) until released. Toggle it from the Tools tab or from any view with **Ctrl+Shift+K** (Cmd+Shift+K on macOS). While active, a fixed red banner stays at the top of the page.
 * Per-tool disables filter `getTools()` before each chat turn so the agent never sees disabled tools.
 * The workflow runner treats the permission engine's `ask` decision as `denied` to keep batch execution deterministic.
 * The curator scheduler is opt-in, gated by the kill switch, and never auto-applies LLM merge proposals — every merge requires an explicit Apply click.

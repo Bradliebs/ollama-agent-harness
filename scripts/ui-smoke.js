@@ -86,6 +86,9 @@ async function main() {
         hasExtensionDiscoveryPanel: Boolean(document.getElementById('extensionDiscoveryPanel')),
         hasAutomationDiscoveryPanel: Boolean(document.getElementById('automationDiscoveryPanel')),
         hasSessionSearchDiscoveryPanel: Boolean(document.getElementById('sessionSearchDiscoveryPanel')),
+        hasCuratorDiscoveryPanel: Boolean(document.getElementById('curatorDiscoveryPanel')),
+        hasCuratorSettingsSection: Boolean(document.getElementById('curatorSettingsSection')) && Boolean(document.getElementById('curatorEnabled')),
+        hasKillSwitchShortcut: typeof window.toggleKillSwitchShortcut === 'function' && typeof window.refreshKillSwitchBanner === 'function',
         hasModelCatalogSettings: Boolean(document.getElementById('modelCatalogUrl')) && Boolean(document.getElementById('modelCatalogTtlHours')) && Boolean(document.getElementById('refreshModelCatalogBtn')),
         hasExtensionPolicySettings: Boolean(document.getElementById('extensionExecutableToggle')) && Boolean(document.getElementById('extensionPermissionReviewToggle')) && Boolean(document.getElementById('extensionAllowedPluginNames')),
         hasDiscoveryFunctions: typeof window.loadDiscovery === 'function' && typeof window.refreshModelCatalog === 'function' && typeof window.rebuildSessionSearchIndex === 'function' && typeof window.updateModelCatalogSetting === 'function' && typeof window.toggleExtensionExecutablePlugins === 'function',
@@ -183,6 +186,9 @@ async function main() {
     if (!result.hasExtensionDiscoveryPanel) failures.push('extension discovery panel was not rendered');
     if (!result.hasAutomationDiscoveryPanel) failures.push('automation discovery panel was not rendered');
     if (!result.hasSessionSearchDiscoveryPanel) failures.push('session search discovery panel was not rendered');
+    if (!result.hasCuratorDiscoveryPanel) failures.push('curator discovery panel was not rendered');
+    if (!result.hasCuratorSettingsSection) failures.push('curator settings section was not rendered');
+    if (!result.hasKillSwitchShortcut) failures.push('kill switch keyboard shortcut helpers were not loaded');
     if (!result.hasModelCatalogSettings) failures.push('model catalog settings were not found');
     if (!result.hasExtensionPolicySettings) failures.push('extension activation policy settings were not found');
     if (!result.hasDiscoveryFunctions) failures.push('discovery functions were not found');
