@@ -182,6 +182,257 @@ describe('web server API validation', () => {
     });
   });
 
+  it('returns capability alignment policy for high-risk automation surfaces', async () => {
+    const response = await request('/api/capabilities');
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      capabilities: expect.arrayContaining([
+        expect.objectContaining({ id: 'password-manager-access', posture: 'blocked' }),
+        expect.objectContaining({ id: 'live-broker-trading', posture: 'blocked' }),
+        expect.objectContaining({ id: 'arbitrary-shell', posture: 'gated', existingCoverage: expect.arrayContaining(['bash']) }),
+        expect.objectContaining({ id: 'background-autonomous-jobs', posture: 'gated' }),
+      ]),
+      summary: expect.objectContaining({ blocked: expect.any(Number), gated: expect.any(Number), 'design-only': expect.any(Number) }),
+      coverage: expect.objectContaining({ 'arbitrary-shell': expect.arrayContaining(['bash']) }),
+    });
+  });
+
+  it('includes capability alignment summary in the tools dashboard payload', async () => {
+    const response = await request('/api/tools');
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      capabilities: {
+        summary: expect.objectContaining({ blocked: 3, gated: 4, 'design-only': 5 }),
+        coverage: expect.objectContaining({ 'self-modifying-code': expect.arrayContaining(['file_edit', 'file_write']) }),
+      },
+    });
+  });
+
+  it('creates and revokes time-limited capability grants for gated capabilities', async () => {
+    const created = await request('/api/capabilities/grants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        capabilityId: 'arbitrary-shell',
+        controls: ['explicit-grant', 'audit-log', 'allowlist', 'kill-switch'],
+        reason: 'server test grant',
+        expiresInMinutes: 5,
+      }),
+    });
+    expect(created.status).toBe(200);
+    const createdBody = await created.json() as { grant: { id: string; capabilityId: string }; grants: Array<{ id: string }> };
+    expect(createdBody.grant).toMatchObject({ capabilityId: 'arbitrary-shell' });
+    expect(createdBody.grants).toEqual(expect.arrayContaining([expect.objectContaining({ id: createdBody.grant.id })]));
+
+    const visible = await request('/api/capabilities');
+    await expect(visible.json()).resolves.toMatchObject({ grants: expect.arrayContaining([expect.objectContaining({ id: createdBody.grant.id })]) });
+
+    const revoked = await request(`/api/capabilities/grants/${encodeURIComponent(createdBody.grant.id)}`, { method: 'DELETE' });
+    expect(revoked.status).toBe(200);
+    const revokedBody = await revoked.json() as { grants: Array<{ id: string }> };
+    expect(revokedBody.grants.map((grant) => grant.id)).not.toContain(createdBody.grant.id);
+
+    const audit = await request('/api/capabilities/audit');
+    await expect(audit.json()).resolves.toMatchObject({
+      events: expect.arrayContaining([
+        expect.objectContaining({ type: 'grant.created', capabilityId: 'arbitrary-shell', grantId: createdBody.grant.id }),
+        expect.objectContaining({ type: 'grant.revoked', capabilityId: 'arbitrary-shell', grantId: createdBody.grant.id }),
+      ]),
+    });
+  });
+
+  it('returns command allowlist presets with the capability payload', async () => {
+    const response = await request('/api/capabilities');
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      shellCommandPresets: expect.arrayContaining([expect.objectContaining({ id: 'tool-version', examples: expect.arrayContaining(['node --version']) })]),
+    });
+  });
+
+  it('rejects grants for blocked capability surfaces', async () => {
+    const response = await request('/api/capabilities/grants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        capabilityId: 'live-broker-trading',
+        controls: ['explicit-grant', 'time-limit', 'audit-log', 'dry-run', 'allowlist', 'human-confirmation', 'kill-switch'],
+      }),
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ evaluation: expect.objectContaining({ decision: 'deny', posture: 'blocked' }) });
+  });
+
+  it('rejects grant creation with missing capabilityId', async () => {
+    const response = await request('/api/capabilities/grants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ controls: ['explicit-grant'] }),
+    });
+
+    expect(response.status).toBeGreaterThanOrEqual(400);
+  });
+
+  it('rejects grant creation for unknown capability', async () => {
+    const response = await request('/api/capabilities/grants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ capabilityId: 'does-not-exist', controls: ['explicit-grant'] }),
+    });
+
+    expect(response.status).toBeGreaterThanOrEqual(400);
+  });
+
+  it('returns 404 when revoking a nonexistent grant', async () => {
+    const response = await request('/api/capabilities/grants/nonexistent-id', { method: 'DELETE' });
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining('not found') });
+  });
+
+  it('returns audit events with valid types and timestamps', async () => {
+    const audit = await request('/api/capabilities/audit');
+
+    expect(audit.status).toBe(200);
+    const body = await audit.json() as { events: Array<{ type: string; createdAt: string }> };
+    expect(Array.isArray(body.events)).toBe(true);
+    for (const event of body.events) {
+      expect(['grant.created', 'grant.revoked', 'grant.expired', 'automation_script.allowed', 'automation_script.denied']).toContain(event.type);
+      expect(Date.parse(event.createdAt)).not.toBeNaN();
+    }
+  });
+
+  it('executes due automation jobs via the API', async () => {
+    const response = await request('/api/automations/execute-due', { method: 'POST' });
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { executed: number; results: Array<{ jobId: string; name: string; scriptOutput: string }> };
+    expect(typeof body.executed).toBe('number');
+    expect(Array.isArray(body.results)).toBe(true);
+  });
+
+  it('executes a due job end-to-end and records audit trail', async () => {
+    await createAutomationJob(process.cwd(), { name: 'lifecycle-test-job', prompt: 'Check lifecycle', schedule: '1 minutes', scriptCommand: 'node --version' }, new Date('2026-04-30T00:00:00.000Z'));
+
+    const created = await request('/api/capabilities/grants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        capabilityId: 'arbitrary-shell',
+        controls: ['explicit-grant', 'audit-log', 'allowlist', 'kill-switch'],
+        reason: 'lifecycle test',
+        expiresInMinutes: 60,
+      }),
+    });
+    const shellGrant = (await created.json() as { grant: { id: string } }).grant;
+
+    const bgCreated = await request('/api/capabilities/grants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        capabilityId: 'background-autonomous-jobs',
+        controls: ['explicit-grant', 'time-limit', 'audit-log', 'allowlist', 'kill-switch'],
+        reason: 'lifecycle test',
+        expiresInMinutes: 60,
+      }),
+    });
+    const bgGrant = (await bgCreated.json() as { grant: { id: string } }).grant;
+
+    const execResponse = await request('/api/automations/execute-due', { method: 'POST' });
+    expect(execResponse.status).toBe(200);
+    const execBody = await execResponse.json() as { executed: number; results: Array<{ jobId: string; name: string; scriptOutput: string }> };
+    const lifecycleResult = execBody.results.find((r) => r.name === 'lifecycle-test-job');
+    expect(lifecycleResult).toBeDefined();
+    expect(lifecycleResult!.scriptOutput).toMatch(/^v?\d+\.\d+\.\d+/);
+
+    const audit = await request('/api/capabilities/audit');
+    const auditBody = await audit.json() as { events: Array<{ type: string; command?: string; presetId?: string }> };
+    expect(auditBody.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'automation_script.allowed', command: 'node --version', presetId: 'tool-version' }),
+    ]));
+
+    // Clean up grants
+    await request(`/api/capabilities/grants/${encodeURIComponent(shellGrant.id)}`, { method: 'DELETE' });
+    await request(`/api/capabilities/grants/${encodeURIComponent(bgGrant.id)}`, { method: 'DELETE' });
+  });
+
+  it('creates and deletes automation jobs via the API', async () => {
+    const created = await request('/api/automations/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'API test job', prompt: 'Test prompt', schedule: 'every 1h' }),
+    });
+    expect(created.status).toBe(200);
+    const createdBody = await created.json() as { job: { id: string; name: string } };
+    expect(createdBody.job.name).toBe('API test job');
+
+    const deleted = await request(`/api/automations/jobs/${encodeURIComponent(createdBody.job.id)}`, { method: 'DELETE' });
+    expect(deleted.status).toBe(200);
+    await expect(deleted.json()).resolves.toMatchObject({ deleted: createdBody.job.id });
+
+    const notFound = await request(`/api/automations/jobs/${encodeURIComponent(createdBody.job.id)}`, { method: 'DELETE' });
+    expect(notFound.status).toBe(404);
+  });
+
+  it('rejects job creation with missing fields', async () => {
+    const response = await request('/api/automations/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Incomplete' }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('returns automation run history', async () => {
+    const response = await request('/api/automations/runs');
+    expect(response.status).toBe(200);
+    const body = await response.json() as { runs: unknown[] };
+    expect(Array.isArray(body.runs)).toBe(true);
+  });
+
+  it('toggles and updates automation jobs via PATCH', async () => {
+    const created = await request('/api/automations/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Toggle test', prompt: 'Test', schedule: 'every 1h' }),
+    });
+    const { job } = await created.json() as { job: { id: string; enabled: boolean; name: string } };
+    expect(job.enabled).toBe(true);
+
+    const disabled = await request(`/api/automations/jobs/${encodeURIComponent(job.id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(disabled.status).toBe(200);
+    const disabledBody = await disabled.json() as { job: { enabled: boolean } };
+    expect(disabledBody.job.enabled).toBe(false);
+
+    const edited = await request(`/api/automations/jobs/${encodeURIComponent(job.id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed job', enabled: true }),
+    });
+    expect(edited.status).toBe(200);
+    const editedBody = await edited.json() as { job: { name: string; enabled: boolean } };
+    expect(editedBody.job.name).toBe('Renamed job');
+    expect(editedBody.job.enabled).toBe(true);
+
+    await request(`/api/automations/jobs/${encodeURIComponent(job.id)}`, { method: 'DELETE' });
+  });
+
+  it('returns 404 when patching a nonexistent job', async () => {
+    const response = await request('/api/automations/jobs/nonexistent', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(response.status).toBe(404);
+  });
+
   it('returns runtime skills, repo skills, and runtime skill diagnostics', async () => {
     const runtimeSkillDir = path.join(process.cwd(), '.harness', 'skills', 'api-runtime-skill');
     const malformedSkillDir = path.join(process.cwd(), '.harness', 'skills', 'api-malformed-skill');
@@ -212,13 +463,20 @@ describe('web server API validation', () => {
     const repoSkillDir = path.join(process.cwd(), '.github', 'skills', 'install-test-skill');
     const runtimeSkillDir = path.join(process.cwd(), '.harness', 'skills', 'install-test-skill');
     await fs.mkdir(repoSkillDir, { recursive: true });
-    await fs.writeFile(path.join(repoSkillDir, 'SKILL.md'), '---\nname: install-test-skill\ndescription: Installable repo skill.\ndomain: tests\n---\n\n# Install Test Skill\n', 'utf-8');
+    await fs.writeFile(path.join(repoSkillDir, 'SKILL.md'), '---\nname: install-test-display-name\ndescription: Installable repo skill.\ndomain: tests\n---\n\n# Install Test Skill\n', 'utf-8');
 
     try {
       const installed = await request('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'install-test-skill' }) });
       expect(installed.status).toBe(200);
-      await expect(installed.json()).resolves.toMatchObject({ ok: true, name: 'install-test-skill', overwrote: false });
-      await expect(fs.readFile(path.join(runtimeSkillDir, 'SKILL.md'), 'utf-8')).resolves.toContain('install-test-skill');
+      await expect(installed.json()).resolves.toMatchObject({ ok: true, id: 'install-test-skill', name: 'install-test-display-name', overwrote: false });
+      await expect(fs.readFile(path.join(runtimeSkillDir, 'SKILL.md'), 'utf-8')).resolves.toContain('install-test-display-name');
+
+      const visible = await request('/api/skills');
+      await expect(visible.json()).resolves.toMatchObject({
+        sources: expect.arrayContaining([
+          expect.objectContaining({ source: 'runtime', skills: expect.arrayContaining([expect.objectContaining({ id: 'install-test-skill', name: 'install-test-display-name' })]) }),
+        ]),
+      });
 
       const conflict = await request('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'install-test-skill' }) });
       expect(conflict.status).toBe(409);
@@ -235,6 +493,34 @@ describe('web server API validation', () => {
     } finally {
       await fs.rm(repoSkillDir, { recursive: true, force: true });
       await fs.rm(runtimeSkillDir, { recursive: true, force: true });
+    }
+  });
+
+  it('automates safe skill installation and missing SKILL.md scaffolding', async () => {
+    const repoSkillDir = path.join(process.cwd(), '.github', 'skills', 'automation-repo-skill');
+    const runtimeRepoSkillDir = path.join(process.cwd(), '.harness', 'skills', 'automation-repo-skill');
+    const missingRuntimeDir = path.join(process.cwd(), '.harness', 'skills', 'automation-missing-skill');
+    const malformedRuntimeDir = path.join(process.cwd(), '.harness', 'skills', 'automation-malformed-skill');
+    await fs.mkdir(repoSkillDir, { recursive: true });
+    await fs.mkdir(missingRuntimeDir, { recursive: true });
+    await fs.mkdir(malformedRuntimeDir, { recursive: true });
+    await fs.writeFile(path.join(repoSkillDir, 'SKILL.md'), '---\nname: automation-repo-display-name\ndescription: Automated repo skill.\ndomain: tests\n---\n\n# Automation Repo Skill\n', 'utf-8');
+    await fs.writeFile(path.join(malformedRuntimeDir, 'SKILL.md'), '# Missing frontmatter\n', 'utf-8');
+
+    try {
+      const response = await request('/api/skills/automation/repair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { installed: Array<{ id: string; name: string }>; scaffolded: Array<{ id: string }>; skipped: Array<{ id: string; reason: string }> };
+      expect(body.installed).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'automation-repo-skill', name: 'automation-repo-display-name' })]));
+      expect(body.scaffolded).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'automation-missing-skill' })]));
+      expect(body.skipped).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'automation-malformed-skill', reason: expect.stringContaining('manual repair required') })]));
+      await expect(fs.readFile(path.join(runtimeRepoSkillDir, 'SKILL.md'), 'utf-8')).resolves.toContain('automation-repo-display-name');
+      await expect(fs.readFile(path.join(missingRuntimeDir, 'SKILL.md'), 'utf-8')).resolves.toContain('name: automation-missing-skill');
+    } finally {
+      await fs.rm(repoSkillDir, { recursive: true, force: true });
+      await fs.rm(runtimeRepoSkillDir, { recursive: true, force: true });
+      await fs.rm(missingRuntimeDir, { recursive: true, force: true });
+      await fs.rm(malformedRuntimeDir, { recursive: true, force: true });
     }
   });
 

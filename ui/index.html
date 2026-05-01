@@ -711,6 +711,19 @@
       <div class="trace-detail">Settings persist in <code>.harness/settings.json</code>. The scheduler always honors the kill switch and only runs when the system has been idle for the threshold above.</div>
       <div id="curatorSettingsStatus" class="trace-detail initial-hidden"></div>
     </div>
+    <div class="settings-section" id="automationSchedulerSettingsSection">
+      <h4>Automation Scheduler</h4>
+      <div class="setting-row">
+        <label for="automationSchedulerEnabled">Enable scheduler</label>
+        <input type="checkbox" id="automationSchedulerEnabled" checked onchange="updateAutomationSchedulerSetting('enabled', this.checked)" />
+      </div>
+      <div class="setting-row">
+        <label for="automationSchedulerIdleMinutes">Idle threshold (minutes)</label>
+        <input type="number" id="automationSchedulerIdleMinutes" min="1" max="60" value="2" onchange="updateAutomationSchedulerSetting('idleThresholdMinutes', Number(this.value))" />
+      </div>
+      <div class="trace-detail">Runs due automation jobs when the system has been idle. Respects the kill switch and active capability grants.</div>
+      <div id="automationSchedulerSettingsStatus" class="trace-detail initial-hidden"></div>
+    </div>
     <div class="settings-section">
       <h4>Traces</h4>
       <button class="btn-sm full-width-button" onclick="exportTraceSnapshot()">Export current trace</button>

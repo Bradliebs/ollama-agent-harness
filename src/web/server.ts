@@ -14,11 +14,12 @@ import { CuratorScheduler } from '../curator/scheduler';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { drainUploadsFallbacks, getUploadsDir, resolveProjectReadPath } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
-import { setSkillsDir } from '../tools/skillTools';
+import { invalidateSkillsCache, setSkillsDir } from '../tools/skillTools';
 import { setRagRuntime } from '../tools/ragTools';
 import { setCuratorToolRuntime } from '../tools/curatorTools';
 import { PermissionEngine } from '../permissions/engine';
 import { PermissionPromptBroker } from '../permissions/promptBroker';
+import { createCapabilityGrant, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, summarizeCapabilityAlignment, type CapabilityGrant } from '../permissions/capabilities';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { forkSession, resumeSession } from '../persistence/resume';
 import { buildMemoryPalace, getSemanticMemoryContext, getSemanticMemoryEntry, rebuildSemanticMemory, searchSemanticMemory } from '../persistence/semanticMemory';
@@ -27,7 +28,7 @@ import * as ragIndex from '../persistence/ragIndex';
 import { MCP_CATALOG } from '../extensibility/mcpCatalog';
 import { assembleSystemContext, estimateTokenCount } from '../context/assembly';
 import { HookPipeline } from '../extensibility/hookPipeline';
-import { loadSkillsDir, matchSkillTrigger, scanSkillsDir } from '../extensibility/skillLoader';
+import { loadSkillsDir, matchSkillTrigger, scanSkillsDir, type SkillDefinition, type SkillDirectoryScan } from '../extensibility/skillLoader';
 import { discoverExtensionManifests } from '../extensibility/extensionManifest';
 import { RateLimiter } from '../core/rateLimiter';
 import { logger } from '../core/logger';
@@ -40,8 +41,11 @@ import { listSubagentRoutingMetrics } from '../agents/subagent';
 import { calibrateModelRoutingPolicy, summarizeRoutingMetrics } from '../agents/modelRouting';
 import { checkSetupHealth } from '../setup/health';
 import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCatalog';
-import { listAutomationJobs, listDueAutomationJobs } from '../automation/jobs';
+import { createAutomationJob, deleteAutomationJob, executeDueJobs, listAutomationJobs, listDueAutomationJobs, readAutomationRunLog, updateAutomationJob } from '../automation/jobs';
+import { AutomationScheduler } from '../automation/scheduler';
 import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
+import { listShellCommandAllowlistPresets } from '../automation/runner';
+import { appendCapabilityAuditEvent, readCapabilityAuditEvents } from '../permissions/capabilityAudit';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
 import type { LoopConfig, LoopEvent, PermissionMode, Tool } from '../types';
 import type { Message } from 'ollama';
@@ -97,10 +101,13 @@ interface WebSettings {
   extensionActivation: ExtensionActivationSettings;
   walkthrough: WalkthroughSettings;
   curator: CuratorSettings;
+  automationScheduler: AutomationSchedulerSettings;
   /** Tool names disabled via the Tools tab. Restored on startup. */
   disabledTools: string[];
   /** Last known kill switch state. Restored on startup so a stop persists across restarts. */
   killSwitch: { active: boolean; reason: string };
+  /** Time-limited capability grants for gated high-power surfaces. */
+  capabilityGrants: CapabilityGrant[];
 }
 
 interface MediaToolSettings {
@@ -137,6 +144,11 @@ interface CuratorSettings {
   maxArchivePerRun: number;
   enableLlmPhase: boolean;
   lastRunAt: string;
+}
+
+interface AutomationSchedulerSettings {
+  enabled: boolean;
+  idleThresholdMinutes: number;
 }
 
 interface ModelCatalogSettings {
@@ -193,10 +205,17 @@ let settingsLoaded = false;
 let killSwitchActive = false;
 let killSwitchReason = '';
 const disabledTools = new Set<string>();
+let capabilityGrants: CapabilityGrant[] = [];
+
+function getAutomationPolicyContext(now = new Date()): { grants: CapabilityGrant[]; killSwitchActive: boolean; now: Date } {
+  return { grants: listActiveCapabilityGrants(capabilityGrants, now), killSwitchActive, now };
+}
 
 let curatorSettings: CuratorSettings = sanitizeCuratorSettings({});
+let automationSchedulerSettings: AutomationSchedulerSettings = sanitizeAutomationSchedulerSettings({});
 let lastUserActivityMs = Date.now();
 let curatorScheduler: CuratorScheduler | null = null;
+let automationScheduler: AutomationScheduler | null = null;
 
 function applyToolDisables(tools: Tool[]): Tool[] {
   if (disabledTools.size === 0) return tools;
@@ -223,6 +242,35 @@ const defaultWebRuntime: WebRuntimeDeps = {
   rebuildSemanticMemory,
 };
 let webRuntime: WebRuntimeDeps = defaultWebRuntime;
+
+type SkillApiSource = 'runtime' | 'repo';
+
+function skillFolderId(skill: SkillDefinition): string {
+  return path.basename(path.dirname(skill.filePath));
+}
+
+function mapSkillForApi(source: SkillApiSource): (skill: SkillDefinition) => Record<string, unknown> {
+  return (skill) => ({
+    id: skillFolderId(skill),
+    name: skill.name,
+    description: skill.description,
+    domain: skill.domain,
+    triggers: skill.triggers,
+    filePath: skill.filePath,
+    source,
+  });
+}
+
+function skillSourceForApi(source: SkillApiSource, label: string, directory: string, scan: SkillDirectoryScan, mutable: boolean): Record<string, unknown> {
+  return {
+    source,
+    label,
+    directory,
+    skills: scan.skills.map(mapSkillForApi(source)),
+    diagnostics: scan.diagnostics,
+    mutable,
+  };
+}
 
 // Initialize skills directory for SkillTool
 setSkillsDir(SKILLS_DIR);
@@ -312,6 +360,10 @@ app.post('/api/settings', async (req, res) => {
     curatorSettings = sanitizeCuratorSettings(req.body.curator);
     configureCuratorScheduler();
   }
+  if (req.body.automationScheduler !== undefined) {
+    automationSchedulerSettings = sanitizeAutomationSchedulerSettings(req.body.automationScheduler);
+  }
+  configureAutomationScheduler();
   if (req.body.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(req.body.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (req.body.temperature !== undefined) temperature = clampNumber(req.body.temperature, 0, 2, 0.7);
   if (req.body.topP !== undefined) topP = clampNumber(req.body.topP, 0, 1, 0.9);
@@ -462,6 +514,7 @@ app.get('/api/setup/health', async (req, res) => {
 app.get('/api/discovery', async (_req, res) => {
   await ensureSettingsLoaded();
   try {
+    const automationPolicy = getAutomationPolicyContext();
     const ttlMs = modelCatalog.ttlHours * 60 * 60 * 1000;
     const [catalog, catalogStatus, extensions, automationJobs, dueAutomations, sessionSearch, runtimeSkills, repoSkills, curatorLog] = await Promise.all([
       getModelCatalog(PROJECT_DIR, { url: modelCatalog.url || undefined, ttlMs, fetchJson: fetchJsonFromUrl }),
@@ -481,10 +534,14 @@ app.get('/api/discovery', async (_req, res) => {
         manifests: extensions.map((manifest) => ({ ...manifest, activation: describeExtensionActivation(manifest.kind, manifest.name, manifest.enabled) })),
         skills: {
           runtime: { directory: SKILLS_DIR, total: runtimeSkills.skills.length, diagnosticCount: runtimeSkills.diagnostics.length, diagnostics: runtimeSkills.diagnostics },
-          repo: { directory: REPO_SKILLS_DIR, total: repoSkills.skills.length, diagnosticCount: repoSkills.diagnostics.length },
+          repo: { directory: REPO_SKILLS_DIR, total: repoSkills.skills.length, diagnosticCount: repoSkills.diagnostics.length, diagnostics: repoSkills.diagnostics },
+          sources: [
+            skillSourceForApi('runtime', 'Runtime skills', SKILLS_DIR, runtimeSkills, true),
+            skillSourceForApi('repo', 'Repo skills', REPO_SKILLS_DIR, repoSkills, false),
+          ],
         },
       },
-      automations: { total: automationJobs.length, due: dueAutomations, jobs: automationJobs },
+      automations: { total: automationJobs.length, due: dueAutomations, jobs: automationJobs, policy: { activeGrantCount: automationPolicy.grants.length, killSwitchActive: automationPolicy.killSwitchActive }, schedulerRunning: Boolean(automationScheduler) },
       sessionSearch,
       curator: {
         enabled: curatorSettings.enabled,
@@ -826,7 +883,175 @@ app.get('/api/tools', (_req, res) => {
     }));
     const toolsets: Record<string, number> = {};
     for (const tool of tools) toolsets[tool.toolset] = (toolsets[tool.toolset] ?? 0) + 1;
-    res.json({ tools, toolsets, disabled: Array.from(disabledTools).sort() });
+    const capabilities = listCapabilityPolicies();
+    res.json({
+      tools,
+      toolsets,
+      disabled: Array.from(disabledTools).sort(),
+      capabilities: {
+        items: capabilities,
+        summary: summarizeCapabilityAlignment(capabilities),
+        coverage: mapToolsToCapabilityCoverage(),
+      },
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/capabilities', async (_req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    const capabilities = listCapabilityPolicies();
+    const activeGrants = listActiveCapabilityGrants(capabilityGrants);
+    const expired = findExpiredGrants(capabilityGrants);
+    if (expired.length > 0) {
+      for (const grant of expired) {
+        await appendCapabilityAuditEvent(PROJECT_DIR, { type: 'grant.expired', capabilityId: grant.capabilityId, grantId: grant.id });
+        capabilityGrants = revokeCapabilityGrant(capabilityGrants, grant.id);
+      }
+      await saveSettingsToDisk();
+    }
+    res.json({
+      capabilities,
+      summary: summarizeCapabilityAlignment(capabilities),
+      coverage: mapToolsToCapabilityCoverage(),
+      grants: activeGrants,
+      grantCount: activeGrants.length,
+      shellCommandPresets: listShellCommandAllowlistPresets(),
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/capabilities/grants', async (req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    const capabilityId = String(req.body?.capabilityId ?? '').trim();
+    const controls = Array.isArray(req.body?.controls) ? req.body.controls : [];
+    const result = createCapabilityGrant({
+      id: crypto.randomUUID(),
+      capabilityId,
+      controls,
+      reason: typeof req.body?.reason === 'string' ? req.body.reason : undefined,
+      expiresInMinutes: req.body?.expiresInMinutes,
+    });
+    if (!result.grant) {
+      const status = result.evaluation.decision === 'deny' ? 403 : 400;
+      res.status(status).json({ error: result.evaluation.reason, evaluation: result.evaluation });
+      return;
+    }
+    capabilityGrants = sanitizeCapabilityGrants([...capabilityGrants, result.grant]);
+    await saveSettingsToDisk();
+    await appendCapabilityAuditEvent(PROJECT_DIR, { type: 'grant.created', capabilityId, grantId: result.grant.id, reason: result.grant.reason });
+    logger.info('Capabilities', 'Capability grant created', { capabilityId, grantId: result.grant.id, expiresAt: result.grant.expiresAt });
+    res.json({ grant: result.grant, evaluation: result.evaluation, grants: listActiveCapabilityGrants(capabilityGrants) });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.delete('/api/capabilities/grants/:id', async (req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    const grantId = String(req.params.id ?? '').trim();
+    const before = capabilityGrants.find((grant) => grant.id === grantId);
+    if (!before) { res.status(404).json({ error: 'Capability grant not found.' }); return; }
+    capabilityGrants = revokeCapabilityGrant(capabilityGrants, grantId);
+    await saveSettingsToDisk();
+    await appendCapabilityAuditEvent(PROJECT_DIR, { type: 'grant.revoked', capabilityId: before.capabilityId, grantId });
+    logger.info('Capabilities', 'Capability grant revoked', { capabilityId: before.capabilityId, grantId });
+    res.json({ revoked: grantId, grants: listActiveCapabilityGrants(capabilityGrants) });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/capabilities/audit', async (_req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    const events = await readCapabilityAuditEvents(PROJECT_DIR);
+    res.json({ events: events.slice(-200).reverse() });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/automations/execute-due', async (_req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    if (killSwitchActive) {
+      res.status(403).json({ error: 'Kill switch is active.', results: [] });
+      return;
+    }
+    const policy = getAutomationPolicyContext();
+    const results = await executeDueJobs(PROJECT_DIR, policy);
+    res.json({ executed: results.length, results: results.map((r) => ({ jobId: r.jobId, name: r.name, scriptOutput: r.run.scriptOutput, outputPath: r.run.outputPath })) });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/automations/jobs', async (req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    const name = String(req.body?.name ?? '').trim();
+    const prompt = String(req.body?.prompt ?? '').trim();
+    const schedule = String(req.body?.schedule ?? '').trim();
+    if (!name || !prompt || !schedule) {
+      res.status(400).json({ error: 'name, prompt, and schedule are required.' });
+      return;
+    }
+    const scriptCommand = typeof req.body?.scriptCommand === 'string' ? req.body.scriptCommand : undefined;
+    const job = await createAutomationJob(PROJECT_DIR, { name, prompt, schedule, scriptCommand });
+    logger.info('Automation', 'Job created', { jobId: job.id, name: job.name });
+    res.json({ job });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ error: msg });
+  }
+});
+
+app.delete('/api/automations/jobs/:id', async (req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    const jobId = String(req.params.id ?? '').trim();
+    const deleted = await deleteAutomationJob(PROJECT_DIR, jobId);
+    if (!deleted) { res.status(404).json({ error: 'Automation job not found.' }); return; }
+    logger.info('Automation', 'Job deleted', { jobId });
+    res.json({ deleted: jobId });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.patch('/api/automations/jobs/:id', async (req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    const jobId = String(req.params.id ?? '').trim();
+    const updated = await updateAutomationJob(PROJECT_DIR, jobId, req.body ?? {});
+    if (!updated) { res.status(404).json({ error: 'Automation job not found.' }); return; }
+    logger.info('Automation', 'Job updated', { jobId, name: updated.name });
+    res.json({ job: updated });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ error: msg });
+  }
+});
+
+app.get('/api/automations/runs', async (_req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    const entries = await readAutomationRunLog(PROJECT_DIR);
+    res.json({ runs: entries });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -1570,13 +1795,12 @@ app.get('/api/skills', async (_req, res) => {
       scanSkillsDir(SKILLS_DIR),
       scanSkillsDir(REPO_SKILLS_DIR),
     ]);
-    const mapSkill = (source: 'runtime' | 'repo') => (s: Awaited<ReturnType<typeof loadSkillsDir>>[number]) => ({ name: s.name, description: s.description, domain: s.domain, triggers: s.triggers, filePath: s.filePath, source });
     res.json({
-      skills: runtime.skills.map(mapSkill('runtime')),
+      skills: runtime.skills.map(mapSkillForApi('runtime')),
       diagnostics: runtime.diagnostics,
       sources: [
-        { source: 'runtime', label: 'Runtime skills', directory: SKILLS_DIR, skills: runtime.skills.map(mapSkill('runtime')), diagnostics: runtime.diagnostics, mutable: true },
-        { source: 'repo', label: 'Repo skills', directory: REPO_SKILLS_DIR, skills: repo.skills.map(mapSkill('repo')), diagnostics: repo.diagnostics, mutable: false },
+        skillSourceForApi('runtime', 'Runtime skills', SKILLS_DIR, runtime, true),
+        skillSourceForApi('repo', 'Repo skills', REPO_SKILLS_DIR, repo, false),
       ],
     });
   } catch { res.json({ skills: [], diagnostics: [], sources: [] }); }
@@ -1599,6 +1823,7 @@ app.delete('/api/skills/:name', async (req, res) => {
     if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
     const skillDir = path.join(SKILLS_DIR, skillName);
     await fs.rm(skillDir, { recursive: true });
+    invalidateSkillsCache();
     res.json({ ok: true });
   } catch { res.status(404).json({ error: 'Skill not found' }); }
 });
@@ -1608,18 +1833,25 @@ app.post('/api/skills/install', async (req, res) => {
   const skillName = safeLocalId(req.body?.name);
   if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
   const overwrite = Boolean(req.body?.overwrite);
-  const sourceDir = path.join(REPO_SKILLS_DIR, skillName);
-  const destDir = path.join(SKILLS_DIR, skillName);
   try {
-    const sourceStat = await fs.stat(sourceDir).catch(() => null);
-    if (!sourceStat || !sourceStat.isDirectory()) {
+    const sourceScan = await scanSkillsDir(REPO_SKILLS_DIR);
+    const sourceSkill = sourceScan.skills.find((s) => skillFolderId(s) === skillName || s.name === skillName);
+    if (!sourceSkill) {
+      const directSourceDir = path.join(REPO_SKILLS_DIR, skillName);
+      const directSourceStat = await fs.stat(directSourceDir).catch(() => null);
+      if (directSourceStat?.isDirectory()) {
+        res.status(400).json({ error: 'Source skill is malformed and cannot be installed. Fix SKILL.md frontmatter first.' });
+        return;
+      }
       res.status(404).json({ error: 'Source skill not found in .github/skills.' });
       return;
     }
-    const sourceScan = await scanSkillsDir(REPO_SKILLS_DIR);
-    const sourceSkill = sourceScan.skills.find((s) => path.dirname(s.filePath) === sourceDir);
-    if (!sourceSkill) {
-      res.status(400).json({ error: 'Source skill is malformed and cannot be installed. Fix SKILL.md frontmatter first.' });
+    const sourceDir = path.dirname(sourceSkill.filePath);
+    const destinationId = skillFolderId(sourceSkill);
+    const destDir = path.join(SKILLS_DIR, destinationId);
+    const sourceStat = await fs.stat(sourceDir).catch(() => null);
+    if (!sourceStat || !sourceStat.isDirectory()) {
+      res.status(404).json({ error: 'Source skill not found in .github/skills.' });
       return;
     }
     const destStat = await fs.stat(destDir).catch(() => null);
@@ -1630,7 +1862,8 @@ app.post('/api/skills/install', async (req, res) => {
     if (destStat) await fs.rm(destDir, { recursive: true, force: true });
     await fs.mkdir(SKILLS_DIR, { recursive: true });
     await fs.cp(sourceDir, destDir, { recursive: true });
-    res.json({ ok: true, name: skillName, source: sourceDir, destination: destDir, overwrote: Boolean(destStat) });
+    invalidateSkillsCache();
+    res.json({ ok: true, id: destinationId, name: sourceSkill.name, source: sourceDir, destination: destDir, overwrote: Boolean(destStat) });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -1658,7 +1891,66 @@ app.post('/api/skills/scaffold', async (req, res) => {
       : 'general';
     const scaffold = `---\nname: ${skillName}\ndescription: ${description}\ndomain: ${domain}\ntriggers: []\n---\n\n# ${skillName}\n\nDescribe how to use this skill here.\n`;
     await fs.writeFile(skillFile, scaffold, 'utf-8');
+    invalidateSkillsCache();
     res.json({ ok: true, name: skillName, filePath: skillFile });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/skills/automation/repair', async (_req, res) => {
+  try {
+    await fs.mkdir(SKILLS_DIR, { recursive: true });
+    const [runtime, repo] = await Promise.all([
+      scanSkillsDir(SKILLS_DIR),
+      scanSkillsDir(REPO_SKILLS_DIR),
+    ]);
+    const runtimeNames = new Set(runtime.skills.map((skill) => skill.name));
+    const runtimeIds = new Set(runtime.skills.map(skillFolderId));
+    const installed: Array<{ id: string; name: string; source: string; destination: string }> = [];
+    const scaffolded: Array<{ id: string; filePath: string }> = [];
+    const skipped: Array<{ id: string; reason: string }> = [];
+
+    for (const skill of repo.skills) {
+      const id = skillFolderId(skill);
+      const destination = path.join(SKILLS_DIR, id);
+      const destinationExists = await fs.stat(destination).catch(() => null);
+      if (runtimeNames.has(skill.name) || runtimeIds.has(id) || destinationExists) {
+        skipped.push({ id, reason: 'runtime skill already exists' });
+        continue;
+      }
+      await fs.cp(path.dirname(skill.filePath), destination, { recursive: true });
+      installed.push({ id, name: skill.name, source: path.dirname(skill.filePath), destination });
+      runtimeNames.add(skill.name);
+      runtimeIds.add(id);
+    }
+
+    for (const diagnostic of runtime.diagnostics) {
+      if (diagnostic.reason !== 'missing-skill-file') {
+        skipped.push({ id: diagnostic.name, reason: `manual repair required: ${diagnostic.reason}` });
+        continue;
+      }
+      const id = safeLocalId(diagnostic.name);
+      if (!id) {
+        skipped.push({ id: diagnostic.name, reason: 'invalid runtime skill folder name' });
+        continue;
+      }
+      const skillDir = path.join(SKILLS_DIR, id);
+      const skillFile = path.join(skillDir, 'SKILL.md');
+      const existing = await fs.stat(skillFile).catch(() => null);
+      if (existing) {
+        skipped.push({ id, reason: 'SKILL.md already exists' });
+        continue;
+      }
+      const scaffold = `---\nname: ${id}\ndescription: Describe what this skill does.\ndomain: general\ntriggers: []\n---\n\n# ${id}\n\nDescribe how to use this skill here.\n`;
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(skillFile, scaffold, 'utf-8');
+      scaffolded.push({ id, filePath: skillFile });
+    }
+
+    if (installed.length > 0 || scaffolded.length > 0) invalidateSkillsCache();
+    res.json({ ok: true, installed, scaffolded, skipped });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -2096,6 +2388,30 @@ export function stopCuratorScheduler(): void {
   }
 }
 
+function configureAutomationScheduler(): void {
+  if (automationScheduler) {
+    automationScheduler.stop();
+    automationScheduler = null;
+  }
+  if (!automationSchedulerSettings.enabled) return;
+  automationScheduler = new AutomationScheduler({
+    projectDir: PROJECT_DIR,
+    getPolicyContext: () => getAutomationPolicyContext(),
+    isKillSwitchActive: () => killSwitchActive,
+    isEnabled: () => automationSchedulerSettings.enabled && !killSwitchActive,
+    getLastUserActivityMs: () => lastUserActivityMs,
+    idleThresholdMinutes: automationSchedulerSettings.idleThresholdMinutes,
+  });
+  automationScheduler.start();
+}
+
+export function stopAutomationScheduler(): void {
+  if (automationScheduler) {
+    automationScheduler.stop();
+    automationScheduler = null;
+  }
+}
+
 // --- API: File Tree ---
 app.get('/api/files', async (req, res) => {
   const dir = resolveProjectPath((req.query.path as string) || PROJECT_DIR);
@@ -2216,8 +2532,10 @@ function getCurrentSettings(): WebSettings {
     extensionActivation,
     walkthrough,
     curator: curatorSettings,
+    automationScheduler: automationSchedulerSettings,
     disabledTools: Array.from(disabledTools).sort(),
     killSwitch: { active: killSwitchActive, reason: killSwitchReason },
+    capabilityGrants,
   };
 }
 
@@ -2267,6 +2585,10 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
     curatorSettings = sanitizeCuratorSettings(settings.curator);
     configureCuratorScheduler();
   }
+  if (settings.automationScheduler !== undefined) {
+    automationSchedulerSettings = sanitizeAutomationSchedulerSettings(settings.automationScheduler);
+  }
+  configureAutomationScheduler();
   if (Array.isArray(settings.disabledTools)) {
     const registry = createBuiltinToolRegistry();
     disabledTools.clear();
@@ -2282,6 +2604,7 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
       ? (typeof ks.reason === 'string' && ks.reason.trim() ? String(ks.reason).slice(0, 500) : 'Kill switch restored from saved state.')
       : '';
   }
+  if (settings.capabilityGrants !== undefined) capabilityGrants = sanitizeCapabilityGrants(settings.capabilityGrants);
   if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (settings.temperature !== undefined) temperature = clampNumber(settings.temperature, 0, 2, 0.7);
   if (settings.topP !== undefined) topP = clampNumber(settings.topP, 0, 1, 0.9);
@@ -2404,6 +2727,14 @@ function sanitizeCuratorSettings(value: unknown): CuratorSettings {
     maxArchivePerRun: clampInt(source.maxArchivePerRun, 1, 100, 5),
     enableLlmPhase: Boolean(source.enableLlmPhase),
     lastRunAt: typeof source.lastRunAt === 'string' ? source.lastRunAt : '',
+  };
+}
+
+function sanitizeAutomationSchedulerSettings(value: unknown): AutomationSchedulerSettings {
+  const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+  return {
+    enabled: source.enabled !== undefined ? Boolean(source.enabled) : true,
+    idleThresholdMinutes: clampInt(source.idleThresholdMinutes, 1, 60, 2),
   };
 }
 

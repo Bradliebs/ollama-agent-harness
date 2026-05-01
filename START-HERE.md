@@ -1,39 +1,92 @@
-# Welcome to CopilotForge
+# Start Here
 
-CopilotForge added one file to your project:
+## What is Ollama Agent Harness?
 
-**`.github/skills/planner/SKILL.md`** — This teaches your AI assistant how to set up skills for your project.
+A local AI assistant that runs on your machine using [Ollama](https://ollama.com/) models. It provides a browser UI where you chat with a model that can read/write files, run shell commands, search the web, analyze images, and more — all governed by a permission system you control.
 
----
+## First time setup
 
-## Get started in 2 steps
+1. **Install Ollama** from <https://ollama.com/> and pull a model:
 
-**Step 1:** Open your AI chat window
-- GitHub Copilot Chat → the speech-bubble icon in VS Code's left sidebar
-- Or Claude Code, Cursor, or any AI that can read your project files
+   ```powershell
+   ollama pull llama3.2
+   ```
 
-**Step 2:** Type this:
-> set up my project
+2. **Install dependencies** in this project:
 
-Your AI will ask three quick questions (what you're building, your stack, your experience level) then create custom skills for your project. Takes about one minute.
+   ```powershell
+   npm install
+   ```
 
----
+3. **Start the browser UI**:
 
-## What you'll have after the wizard runs
+   ```powershell
+   npm run ui
+   ```
 
-- `.github/skills/code-review/SKILL.md` — say **"review this code"** to use it
-- `.github/skills/test-helper/SKILL.md` — say **"write tests for this"** to use it
-- `cookbook/starter.{ext}` — a working code example to build from
+4. **Open the URL** printed in the terminal (usually `http://127.0.0.1:3000`).
 
----
+5. **Pick a model** from the dropdown in the Settings panel on the right side. If you pulled `llama3.2`, select it there.
 
-## You can't break anything
+6. **Start chatting** in the main panel. Type a message and press Enter.
 
-All of these files are plain text. If something looks wrong, just delete the file and run `npx copilotforge init` again.
+## What you can do
 
-Need the full setup (memory system, agents, advanced recipes)?
-Run `npx copilotforge init --full`
+### Chat with tools
 
-Questions? → https://github.com/Bradliebs/CopilotForge/discussions
+The model can call tools during a conversation: read project files, write code, run commands, search the web. You control what it can do through the permission mode (Settings panel).
 
-<!-- copilotforge: v1.7.0 -->
+### Browse your project
+
+The **Files** tab in the left sidebar shows your project tree. The model can read any file you point it to.
+
+### Use skills
+
+Skills are structured prompts that teach the model specific tasks. Check the **Skills** tab for installed skills, or create new ones from chat.
+
+### Search your files
+
+The **RAG** tab lets you build a local vector index over selected files, then search them semantically.
+
+### Run workflows
+
+The **Flows** tab runs declarative tool-call sequences. See `.harness/workflows/` for examples.
+
+### Schedule automation
+
+Create scheduled jobs from the **Runs** tab or the API. Jobs can run shell commands (if granted) on a timer.
+
+## Safety defaults
+
+* **Permission prompts** — the model asks before running medium/high-risk tools
+* **Kill switch** — press Ctrl+Shift+K to block all tool calls instantly
+* **Capability grants** — high-risk actions require explicit time-limited approval
+* **Command allowlist** — background shell commands must match a preset pattern
+
+## Where things are stored
+
+| Location | What |
+|----------|------|
+| `.harness/settings.json` | Your configuration |
+| `.harness/sessions/` | Chat transcripts |
+| `.harness/skills/` | Installed skills |
+| `.harness/memory/` | Agent memory |
+
+## Common commands
+
+| Command | What it does |
+|---------|-------------|
+| `npm run ui` | Start the browser UI (dev mode) |
+| `npm run start -- -p "your prompt"` | CLI mode, single prompt |
+| `npm run start -- --help` | Show all CLI flags |
+| `npm run typecheck` | Type-check the source |
+| `npm test -- --runInBand` | Run the test suite |
+| `npm run build` | Compile TypeScript to dist/ |
+| `npm run serve` | Start the UI from compiled dist/ |
+
+## Next steps
+
+* Open the **Settings** panel and explore the configuration options
+* Try the **Skills** tab to see what skills are available
+* Check [docs/MODEL-PRESETS.md](docs/MODEL-PRESETS.md) for recommended models
+* Read the [README](README.md) for the full feature reference

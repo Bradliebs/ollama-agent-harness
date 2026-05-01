@@ -1,6 +1,7 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { prepareAutomationRun, type AutomationPolicyContext, type AutomationRunResult } from './runner';
 
 export type AutomationScheduleKind = 'once' | 'interval' | 'cron';
 
@@ -141,9 +142,30 @@ function parseDurationMinutes(value: string): number {
 }
 
 async function appendAutomationRunLog(projectDir: string, job: AutomationJob, update: AutomationRunUpdate, now: Date): Promise<void> {
-  const logPath = path.join(projectDir, '.harness', 'automations', 'runs.jsonl');
+  const logPath = automationRunLogPath(projectDir);
   await fs.mkdir(path.dirname(logPath), { recursive: true });
-  await fs.appendFile(logPath, JSON.stringify({ jobId: job.id, ranAt: now.toISOString(), ...update }) + '\n', 'utf-8');
+  await fs.appendFile(logPath, JSON.stringify({ jobId: job.id, name: job.name, ranAt: now.toISOString(), ...update }) + '\n', 'utf-8');
+}
+
+export interface AutomationRunLogEntry {
+  jobId: string;
+  name?: string;
+  ranAt: string;
+  success?: boolean;
+  outputPath?: string;
+}
+
+export async function readAutomationRunLog(projectDir: string, limit = 50): Promise<AutomationRunLogEntry[]> {
+  try {
+    const raw = await fs.readFile(automationRunLogPath(projectDir), 'utf-8');
+    return raw.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as AutomationRunLogEntry).slice(-limit).reverse();
+  } catch {
+    return [];
+  }
+}
+
+function automationRunLogPath(projectDir: string): string {
+  return path.join(projectDir, '.harness', 'automations', 'runs.jsonl');
 }
 
 function computeNextCronRun(expr: string, now: Date): string | undefined {
@@ -186,4 +208,58 @@ function cronSegmentMatches(segment: string, value: number, min: number, max: nu
 
 function jobsPath(projectDir: string): string {
   return path.join(projectDir, '.harness', 'automations', 'jobs.json');
+}
+
+export interface DueJobResult {
+  jobId: string;
+  name: string;
+  run: AutomationRunResult;
+  markedJob: AutomationJob;
+}
+
+export async function deleteAutomationJob(projectDir: string, jobId: string): Promise<boolean> {
+  const jobs = await listAutomationJobs(projectDir);
+  const filtered = jobs.filter((job) => job.id !== jobId);
+  if (filtered.length === jobs.length) return false;
+  await saveAutomationJobs(projectDir, filtered);
+  return true;
+}
+
+export interface UpdateAutomationJobInput {
+  enabled?: boolean;
+  name?: string;
+  prompt?: string;
+  schedule?: string;
+  scriptCommand?: string | null;
+}
+
+export async function updateAutomationJob(projectDir: string, jobId: string, input: UpdateAutomationJobInput, now = new Date()): Promise<AutomationJob | null> {
+  const jobs = await listAutomationJobs(projectDir);
+  const index = jobs.findIndex((job) => job.id === jobId);
+  if (index === -1) return null;
+  const existing = jobs[index];
+  const updated: AutomationJob = { ...existing, updatedAt: now.toISOString() };
+  if (input.enabled !== undefined) updated.enabled = input.enabled;
+  if (typeof input.name === 'string' && input.name.trim()) updated.name = input.name.trim();
+  if (typeof input.prompt === 'string' && input.prompt.trim()) updated.prompt = input.prompt.trim();
+  if (typeof input.schedule === 'string' && input.schedule.trim()) {
+    updated.schedule = parseAutomationSchedule(input.schedule.trim(), now);
+    updated.nextRunAt = computeNextAutomationRun(updated.schedule, updated.lastRunAt, now);
+  }
+  if (input.scriptCommand === null) updated.scriptCommand = undefined;
+  else if (typeof input.scriptCommand === 'string') updated.scriptCommand = input.scriptCommand.trim() || undefined;
+  jobs[index] = updated;
+  await saveAutomationJobs(projectDir, jobs);
+  return updated;
+}
+
+export async function executeDueJobs(projectDir: string, policy: AutomationPolicyContext = {}, now = new Date()): Promise<DueJobResult[]> {
+  const due = await listDueAutomationJobs(projectDir, now);
+  const results: DueJobResult[] = [];
+  for (const job of due) {
+    const run = await prepareAutomationRun(projectDir, job, now, policy);
+    const markedJob = await markAutomationJobRun(projectDir, job.id, { success: true, outputPath: run.outputPath }, now);
+    results.push({ jobId: job.id, name: job.name, run, markedJob });
+  }
+  return results;
 }

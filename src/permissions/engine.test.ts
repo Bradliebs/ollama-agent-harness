@@ -1,4 +1,5 @@
 import { PermissionEngine } from './engine';
+import { BUILTIN_TOOL_ENTRIES } from '../tools/registry';
 import type { PermissionRule } from '../types';
 
 describe('PermissionEngine', () => {
@@ -56,6 +57,16 @@ describe('PermissionEngine', () => {
       expect(engine.evaluate({ name: 'rag_search', input: { index: 'docs', query: 'q' } }).decision).toBe('allow');
       expect(engine.evaluate({ name: 'rag_list_indexes', input: {} }).decision).toBe('allow');
       expect(engine.evaluate({ name: 'curator_preview', input: {} }).decision).toBe('allow');
+    });
+
+    it('default mode follows builtin read-only tool metadata', () => {
+      const engine = new PermissionEngine([], 'default');
+      const readOnlyTools = BUILTIN_TOOL_ENTRIES.filter((entry) => entry.tool.isReadOnly).map((entry) => entry.tool.name);
+
+      expect(readOnlyTools.length).toBeGreaterThan(0);
+      for (const toolName of readOnlyTools) {
+        expect(engine.evaluate({ name: toolName, input: {} }).decision).toBe('allow');
+      }
     });
 
     it('default mode asks for non-read tools', () => {

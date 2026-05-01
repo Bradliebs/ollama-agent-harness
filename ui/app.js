@@ -226,6 +226,7 @@ async function loadSettings() {
     if (firstRunVision) firstRunVision.value = currentMediaTools.visionModel || '';
     if (firstRunAudio) firstRunAudio.value = currentMediaTools.audioTranscribeCommand || '';
     hydrateCuratorSettings(s.curator || {});
+    hydrateAutomationSchedulerSettings(s.automationScheduler || {});
     document.querySelectorAll('.permission-mode-option').forEach((option) => option.classList.remove('active'));
     const modeIndex = s.permissionMode === 'dontAsk' ? 0 : s.permissionMode === 'acceptEdits' ? 1 : 2;
     const mode = document.querySelectorAll('.permission-mode-option')[modeIndex];
@@ -658,6 +659,27 @@ async function updateCuratorSetting(key, value) {
     if (status) status.textContent = 'Saved.';
     // Refresh the Skills tab Curator panel if it is open.
     if (typeof loadSkills === 'function' && document.getElementById('curatorPanel')) loadSkills();
+  } catch (error) {
+    if (status) status.textContent = 'Save failed: ' + (error.message || error);
+  }
+}
+
+let currentAutomationSchedulerSettings = {};
+function hydrateAutomationSchedulerSettings(settings) {
+  currentAutomationSchedulerSettings = settings || {};
+  const set = (id, value) => { const el = document.getElementById(id); if (el && value !== undefined && value !== null) { if (el.type === 'checkbox') el.checked = Boolean(value); else el.value = value; } };
+  set('automationSchedulerEnabled', currentAutomationSchedulerSettings.enabled !== false);
+  set('automationSchedulerIdleMinutes', currentAutomationSchedulerSettings.idleThresholdMinutes || 2);
+}
+
+async function updateAutomationSchedulerSetting(key, value) {
+  const next = { ...currentAutomationSchedulerSettings, [key]: value };
+  currentAutomationSchedulerSettings = next;
+  const status = document.getElementById('automationSchedulerSettingsStatus');
+  if (status) { status.classList.remove('initial-hidden'); status.textContent = 'Saving…'; }
+  try {
+    await updateSetting('automationScheduler', next);
+    if (status) status.textContent = 'Saved.';
   } catch (error) {
     if (status) status.textContent = 'Save failed: ' + (error.message || error);
   }
@@ -1736,16 +1758,28 @@ async function loadFiles(dir) {
   } catch {}
 }
 
-async function loadSkills() { try { const r = await fetch('/api/skills'); const d = await r.json(); const usageR = await fetch('/api/skills/usage').then((r) => r.json()).catch(() => ({ records: [] })); const curatorR = await fetch('/api/curator').then((r) => r.json()).catch(() => null); const usageMap = new Map((usageR.records || []).map((rec) => [rec.name, rec])); const list = document.getElementById('skillList'); list.innerHTML = ''; const runtime = (d.sources || []).find((source) => source.source === 'runtime') || { skills: d.skills || [], diagnostics: [], mutable: true }; const repo = (d.sources || []).find((source) => source.source === 'repo') || { skills: [], diagnostics: [], mutable: false }; let html = renderCuratorPanel(curatorR); html += '<div id="runtimeSkillSource" class="trace-list"><div class="trace-title">Runtime Skills</div>'; if (!runtime.skills || !runtime.skills.length) html += '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No runtime skills yet.<br><br>Ask the agent to <strong>"create a skill for..."</strong> and it will build one automatically.</div>'; else html += runtime.skills.map((s) => renderRuntimeSkillItem(s, usageMap.get(s.name))).join(''); html += '</div>' + renderSkillDiagnostics(runtime.diagnostics || []); html += '<div id="repoSkillSource" class="trace-list"><div class="trace-title">Repo Skills</div>' + ((repo.skills || []).length ? repo.skills.map(renderRepoSkillItem).join('') : '<div class="trace-meta">No repo skills found in .github/skills.</div>') + '</div>'; list.innerHTML = html; if (curatorR && curatorR.proposals) loadCuratorProposals(); } catch {} }
+async function loadSkills() { try { const r = await fetch('/api/skills'); const d = await r.json(); const usageR = await fetch('/api/skills/usage').then((r) => r.json()).catch(() => ({ records: [] })); const curatorR = await fetch('/api/curator').then((r) => r.json()).catch(() => null); const usageMap = new Map((usageR.records || []).map((rec) => [rec.name, rec])); const list = document.getElementById('skillList'); list.innerHTML = ''; const runtime = (d.sources || []).find((source) => source.source === 'runtime') || { skills: d.skills || [], diagnostics: [], mutable: true }; const repo = (d.sources || []).find((source) => source.source === 'repo') || { skills: [], diagnostics: [], mutable: false }; let html = renderCuratorPanel(curatorR); html += renderSkillAutomationPanel(runtime, repo); html += '<div id="runtimeSkillSource" class="trace-list"><div class="trace-title">Runtime Skills</div>'; if (!runtime.skills || !runtime.skills.length) html += '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No runtime skills yet.<br><br>Ask the agent to <strong>"create a skill for..."</strong> and it will build one automatically.</div>'; else html += runtime.skills.map((s) => renderRuntimeSkillItem(s, usageMap.get(s.name))).join(''); html += '</div>' + renderSkillDiagnostics(runtime.diagnostics || []); html += '<div id="repoSkillSource" class="trace-list"><div class="trace-title">Repo Skills</div>' + ((repo.skills || []).length ? repo.skills.map(renderRepoSkillItem).join('') : '<div class="trace-meta">No repo skills found in .github/skills.</div>') + '</div>'; list.innerHTML = html; if (curatorR && curatorR.proposals) loadCuratorProposals(); } catch {} }
+
+function renderSkillAutomationPanel(runtime, repo) {
+  const runtimeSkipped = (runtime.diagnostics || []).length;
+  const repoAvailable = (repo.skills || []).length;
+  return '<div id="skillAutomationPanel" class="trace-item" style="margin-bottom:8px">'
+    + '<div class="trace-title">Skill automation</div>'
+    + '<div class="trace-meta">Checks ' + repoAvailable + ' repo skill(s) and ' + runtimeSkipped + ' runtime diagnostic(s). Missing repo skills are installed; missing runtime SKILL.md files get starter scaffolds.</div>'
+    + '<button class="btn-sm full-width-button" onclick="runSkillAutomation()">Auto repair and install skills</button>'
+    + '<div id="skillAutomationResult" class="trace-meta"></div>'
+    + '</div>';
+}
 
 function renderRuntimeSkillItem(s, usage) {
   const u = usage || {};
+  const id = s.id || s.name;
   const pinned = u.pinned ? ' 📌' : '';
   const archived = u.archived ? ' <span class="capability-pill" style="border-color:#888;color:#888">archived</span>' : '';
   const useInfo = (u.useCount || u.viewCount) ? ' · used ' + (u.useCount || 0) + ' / viewed ' + (u.viewCount || 0) : '';
   const lastUsed = u.lastUsedAt ? ' · last ' + new Date(u.lastUsedAt).toLocaleDateString() : '';
   const pinBtn = '<button class="sk-install" onclick="event.stopPropagation();togglePinSkill(\'' + escAttr(s.name) + '\', ' + (!u.pinned) + ')" title="' + (u.pinned ? 'Unpin' : 'Pin (curator will not archive)') + '">' + (u.pinned ? 'Unpin' : 'Pin') + '</button>';
-  return '<div class="skill-item" onclick="useSkillFromList(\'' + escAttr(s.name) + '\')"><div class="sk-name">' + esc(s.name) + pinned + '</div><div class="sk-desc">' + esc(s.description) + '</div><div class="sk-meta"><span>' + esc(s.domain) + useInfo + lastUsed + archived + '</span><span>' + pinBtn + ' <button class="sk-del" onclick="event.stopPropagation();deleteSkill(\'' + escAttr(s.name) + '\')">🗑</button></span></div></div>';
+  return '<div class="skill-item" onclick="useSkillFromList(\'' + escAttr(s.name) + '\')"><div class="sk-name">' + esc(s.name) + pinned + '</div><div class="sk-desc">' + esc(s.description) + '</div><div class="sk-meta"><span>' + esc(s.domain) + useInfo + lastUsed + archived + '</span><span>' + pinBtn + ' <button class="sk-del" onclick="event.stopPropagation();deleteSkill(\'' + escAttr(id) + '\')">🗑</button></span></div></div>';
 }
 
 async function togglePinSkill(name, pinned) {
@@ -1910,23 +1944,39 @@ async function dismissCuratorProposals() {
     await loadSkills();
   } catch (error) { alert('Dismiss failed: ' + (error.message || error)); }
 }
-function renderRepoSkillItem(s) { return '<div class="skill-item"><div class="sk-name">' + esc(s.name) + '</div><div class="sk-desc">' + esc(s.description) + '</div><div class="sk-meta"><span>' + esc(s.domain || 'repo') + '</span><span>read-only</span><button class="sk-install" onclick="installRepoSkill(\'' + escAttr(s.name) + '\')">Install to runtime</button></div></div>'; }
+function renderRepoSkillItem(s) { const id = s.id || s.name; return '<div class="skill-item"><div class="sk-name">' + esc(s.name) + '</div><div class="sk-desc">' + esc(s.description) + '</div><div class="sk-meta"><span>' + esc(s.domain || 'repo') + '</span><span>read-only</span><button class="sk-install" onclick="installRepoSkill(\'' + escAttr(id) + '\', \'' + escAttr(s.name) + '\')">Install to runtime</button></div></div>'; }
 function renderSkillDiagnostics(diagnostics) { if (!diagnostics || diagnostics.length === 0) return '<div id="skillDiagnostics" class="trace-list"><div class="trace-title">Skill Diagnostics</div><div class="trace-meta">No skipped runtime skill folders.</div></div>'; return '<div id="skillDiagnostics" class="trace-list"><div class="trace-title">Skill Diagnostics</div>' + diagnostics.map((item) => '<div class="trace-item"><div class="trace-title">' + esc(item.name) + '</div><div class="trace-meta">' + esc(item.reason) + ' · ' + esc(item.message) + '</div><div class="trace-meta">' + esc(item.filePath) + '</div>' + renderSkillDiagnosticActions(item) + '</div>').join('') + '</div>'; }
 function renderSkillDiagnosticActions(item) { const actions = ['<button class="btn-sm" onclick="copySkillDiagnosticPath(\'' + escAttr(item.filePath) + '\')">Copy path</button>']; if (item.reason === 'missing-skill-file') actions.push('<button class="btn-sm" onclick="scaffoldSkill(\'' + escAttr(item.name) + '\')">Create starter SKILL.md</button>'); return '<div class="skill-diagnostic-actions">' + actions.join(' ') + '</div>'; }
 function useSkillFromList(name) { document.getElementById('chatInput').value = 'Use the skill: ' + name; sendMessage(); }
 async function deleteSkill(name) { if (!confirm('Delete skill "' + name + '"?')) return; await fetch('/api/skills/' + name, { method: 'DELETE' }); loadSkills(); }
-async function installRepoSkill(name) {
-  if (!confirm('Install repo skill "' + name + '" into runtime .harness/skills?')) return;
+async function installRepoSkill(id, displayName) {
+  const label = displayName || id;
+  if (!confirm('Install repo skill "' + label + '" into runtime .harness/skills?')) return;
   try {
-    let response = await fetch('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+    let response = await fetch('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: id }) });
     if (response.status === 409) {
-      if (!confirm('Runtime skill "' + name + '" already exists. Overwrite it?')) return;
-      response = await fetch('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, overwrite: true }) });
+      if (!confirm('Runtime skill "' + label + '" already exists. Overwrite it?')) return;
+      response = await fetch('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: id, overwrite: true }) });
     }
     const data = await response.json();
     if (data.error) { alert('Install failed: ' + data.error); return; }
     await loadSkills();
   } catch (error) { alert('Install failed: ' + (error.message || error)); }
+}
+async function runSkillAutomation() {
+  if (!confirm('Run skill automation now? It installs missing repo skills and scaffolds runtime folders missing SKILL.md. Existing skills are skipped.')) return;
+  const out = document.getElementById('skillAutomationResult');
+  if (out) out.textContent = 'Running skill automation...';
+  try {
+    const response = await fetch('/api/skills/automation/repair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const data = await response.json();
+    if (data.error) { if (out) out.textContent = 'Automation failed: ' + data.error; return; }
+    const installed = (data.installed || []).length;
+    const scaffolded = (data.scaffolded || []).length;
+    const skipped = (data.skipped || []).length;
+    if (out) out.textContent = 'Installed ' + installed + ', scaffolded ' + scaffolded + ', skipped ' + skipped + '.';
+    await loadSkills();
+  } catch (error) { if (out) out.textContent = 'Automation failed: ' + (error.message || error); }
 }
 async function scaffoldSkill(name) {
   if (!confirm('Create a starter SKILL.md for "' + name + '"?')) return;
@@ -1985,8 +2035,18 @@ function renderExtensionDiscoveryPanel(extensions) {
   const skills = extensions.skills || {};
   const runtimeSummary = skills.runtime ? '<div class="trace-meta">Runtime skills: ' + (skills.runtime.total || 0) + ' loaded · ' + (skills.runtime.diagnosticCount || 0) + ' skipped</div>' : '';
   const repoSummary = skills.repo ? '<div class="trace-meta">Repo skills: ' + (skills.repo.total || 0) + ' available · ' + (skills.repo.diagnosticCount || 0) + ' malformed</div>' : '';
+  const diagnosticRows = renderDiscoverySkillDiagnostics(skills);
   const skillsAction = (skills.runtime || skills.repo) ? '<button class="btn-sm full-width-button" onclick="openSkillsTab()">Open Skills tab</button>' : '';
-  return '<div id="extensionDiscoveryPanel" class="trace-item"><div class="trace-title">Extensions</div><div class="trace-meta">' + manifests.length + ' manifest(s) discovered</div>' + runtimeSummary + repoSummary + (rows || '<div class="trace-meta">No extension manifests found.</div>') + skillsAction + '</div>';
+  return '<div id="extensionDiscoveryPanel" class="trace-item"><div class="trace-title">Extensions</div><div class="trace-meta">' + manifests.length + ' manifest(s) discovered</div>' + runtimeSummary + repoSummary + diagnosticRows + (rows || '<div class="trace-meta">No extension manifests found.</div>') + skillsAction + '</div>';
+}
+
+function renderDiscoverySkillDiagnostics(skills) {
+  const sources = skills.sources || [];
+  const diagnostics = sources.flatMap((source) => (source.diagnostics || []).map((item) => ({ ...item, source: source.source })));
+  if (diagnostics.length === 0) return '<div class="trace-meta">Skill diagnostics: clean.</div>';
+  const rows = diagnostics.slice(0, 5).map((item) => '<div class="trace-meta" style="font-size:11px">' + esc(item.source || 'skills') + ' · ' + esc(item.name) + ' · ' + esc(item.reason) + '</div>').join('');
+  const more = diagnostics.length > 5 ? '<div class="trace-meta">+' + (diagnostics.length - 5) + ' more diagnostic(s) in the Skills tab.</div>' : '';
+  return '<details style="margin:6px 0"><summary class="trace-meta" style="cursor:pointer">Skill diagnostics (' + diagnostics.length + ')</summary>' + rows + more + '</details>';
 }
 
 function renderAutomationDiscoveryPanel(automations) {
@@ -2000,7 +2060,8 @@ function renderSessionSearchDiscoveryPanel(status) {
 }
 
 function renderInlineList(label, values) {
-  return values && values.length ? '<div class="trace-meta">' + esc(label) + ': ' + esc(values.join(', ')) + '</div>' : '';
+  const list = Array.isArray(values) ? values : (values ? [values] : []);
+  return list.length ? '<div class="trace-meta">' + esc(label) + ': ' + esc(list.join(', ')) + '</div>' : '';
 }
 
 async function refreshModelCatalog() { const status = document.getElementById('modelCatalogSettingsStatus'); if (status) status.textContent = 'Refreshing catalog...'; try { const response = await fetch('/api/models/catalog/refresh', { method: 'POST' }); const data = await response.json(); if (data.error) throw new Error(data.error); if (status) status.textContent = 'Catalog refreshed: ' + Object.keys(data.manifest?.providers || {}).length + ' provider(s).'; await loadDiscovery(); } catch (error) { if (status) status.textContent = 'Catalog refresh failed: ' + (error.message || error); } }
@@ -2731,15 +2792,28 @@ async function loadToolsDashboard() {
   if (!view) return;
   view.innerHTML = '<div class="trace-list"><div class="trace-title">Local Tools</div><div class="trace-meta">Loading…</div></div>';
   try {
-    const [snapsR, indexesR, sessionsR, modelsR, storageR, mcpR, registryR, permR] = await Promise.allSettled([
+    const [capabilitiesR, registryR, permR] = await Promise.allSettled([
+      fetch('/api/capabilities').then((r) => r.json()),
+      fetch('/api/tools').then((r) => r.json()),
+      fetch('/api/permissions/state').then((r) => r.json()),
+    ]);
+    const registry = registryR.status === 'fulfilled' ? registryR.value : { tools: [], toolsets: {} };
+    const capabilities = capabilitiesR.status === 'fulfilled'
+      ? { items: capabilitiesR.value.capabilities || [], summary: capabilitiesR.value.summary || {}, grants: capabilitiesR.value.grants || [], shellCommandPresets: capabilitiesR.value.shellCommandPresets || [] }
+      : (registry.capabilities || { items: [], summary: {}, grants: [] });
+    const perm = permR.status === 'fulfilled' ? permR.value : null;
+    const header = '<div class="panel-header" style="border-bottom:none"><h3>Local Tools</h3><div class="inline-actions"><button class="btn-sm" onclick="loadToolsDashboard()">Refresh</button></div></div>';
+    const auditR = await fetch('/api/capabilities/audit').then((r) => r.json()).catch(() => ({ events: [] }));
+    const auditEvents = Array.isArray(auditR.events) ? auditR.events : [];
+    view.innerHTML = header + renderPermissionPanel(perm) + renderCapabilityAlignmentPanel(capabilities, auditEvents) + renderToolRegistryPanel(registry) + '<div class="trace-list" id="toolsDashboardCards"><div class="trace-item"><div class="trace-title">Dashboard details</div><div class="trace-meta">Loading local status…</div></div></div>';
+
+    const [snapsR, indexesR, sessionsR, modelsR, storageR, mcpR] = await Promise.allSettled([
       fetch('/api/snapshots').then((r) => r.json()),
       fetch('/api/rag/indexes').then((r) => r.json()),
       fetch('/api/sessions').then((r) => r.json()),
       fetch('/api/models').then((r) => r.json()),
       fetch('/api/runtime/storage').then((r) => r.json()),
       fetch('/api/mcp/catalog').then((r) => r.json()),
-      fetch('/api/tools').then((r) => r.json()),
-      fetch('/api/permissions/state').then((r) => r.json()),
     ]);
     const snapsCount = snapsR.status === 'fulfilled' ? (snapsR.value.snapshots || []).length : 0;
     const indexesArr = indexesR.status === 'fulfilled' ? (indexesR.value.indexes || []) : [];
@@ -2747,8 +2821,6 @@ async function loadToolsDashboard() {
     const modelsArr = modelsR.status === 'fulfilled' ? (modelsR.value.models || []) : [];
     const storage = storageR.status === 'fulfilled' ? storageR.value : null;
     const mcpArr = mcpR.status === 'fulfilled' ? (mcpR.value.catalog || []) : [];
-    const registry = registryR.status === 'fulfilled' ? registryR.value : { tools: [], toolsets: {} };
-    const perm = permR.status === 'fulfilled' ? permR.value : null;
 
     const speechSupported = typeof window.SpeechRecognition !== 'undefined' || typeof window.webkitSpeechRecognition !== 'undefined';
     const totalIndexedChunks = indexesArr.reduce((sum, i) => sum + (i.chunks || 0), 0);
@@ -2800,8 +2872,8 @@ async function loadToolsDashboard() {
       + '<div id="mcpCatalogList"></div>'
       + '</div>';
 
-    const header = '<div class="panel-header" style="border-bottom:none"><h3>Local Tools</h3><div class="inline-actions"><button class="btn-sm" onclick="loadToolsDashboard()">Refresh</button></div></div>';
-    view.innerHTML = header + renderPermissionPanel(perm) + renderToolRegistryPanel(registry) + '<div class="trace-list">' + cardHtml + mcpHtml + '</div>';
+    const cardsHost = document.getElementById('toolsDashboardCards');
+    if (cardsHost) cardsHost.innerHTML = cardHtml + mcpHtml;
     window._mcpCatalog = mcpArr;
     renderMcpCatalogList();
   } catch (error) {
@@ -2826,6 +2898,83 @@ function renderPermissionPanel(perm) {
     + '<div class="trace-meta" style="margin-top:4px">Engaging the kill switch denies every subsequent tool call (including reads) until released. The agent loop keeps running but cannot touch the system.</div>'
     + '<div class="inline-actions" style="margin-top:6px">' + button + '</div>'
     + '</div>';
+}
+
+function renderCapabilityAlignmentPanel(capabilities, auditEvents) {
+  const items = (capabilities && capabilities.items) || [];
+  if (items.length === 0) return '';
+  const summary = capabilities.summary || {};
+  const grants = Array.isArray(capabilities.grants) ? capabilities.grants : [];
+  const grantCount = grants.length;
+  const presets = Array.isArray(capabilities.shellCommandPresets) ? capabilities.shellCommandPresets : [];
+  const events = Array.isArray(auditEvents) ? auditEvents.slice(0, 20) : [];
+  const summaryText = ['gated', 'design-only', 'blocked', 'available']
+    .map((key) => key + ': ' + (summary[key] || 0))
+    .join(' · ');
+  const postureMeta = {
+    available: { color: '#50c878', label: 'available' },
+    gated: { color: '#ffb050', label: 'gated' },
+    'design-only': { color: '#8ab4f8', label: 'design-only' },
+    blocked: { color: '#ff5050', label: 'blocked' },
+  };
+  const rows = items.map((cap) => {
+    const meta = postureMeta[cap.posture] || postureMeta.blocked;
+    const coverage = Array.isArray(cap.existingCoverage) && cap.existingCoverage.length ? cap.existingCoverage.join(', ') : 'none';
+    const controls = Array.isArray(cap.requiredControls) && cap.requiredControls.length ? cap.requiredControls.join(', ') : 'none';
+    const grantButton = cap.posture === 'gated'
+      ? '<button class="btn-sm" onclick="grantCapability(\'' + escAttr(cap.id) + '\')">Grant</button>'
+      : '';
+    return '<div class="trace-row">'
+      + '<strong>' + esc(cap.label || cap.id) + '</strong> '
+      + '<span class="capability-pill" style="border-color:' + meta.color + ';color:' + meta.color + '">' + esc(meta.label) + '</span>'
+      + '<span class="capability-pill">' + esc(cap.category || 'policy') + '</span>'
+      + '<div class="trace-meta">' + esc(cap.summary || '') + '</div>'
+      + '<div class="trace-meta">Coverage: ' + esc(coverage) + '</div>'
+      + '<div class="trace-meta">Controls: ' + esc(controls) + '</div>'
+      + (grantButton ? '<div class="inline-actions" style="margin-top:6px">' + grantButton + '</div>' : '')
+      + '</div>';
+  }).join('');
+  const grantRows = grants.length ? grants.map((grant) => '<div class="trace-row"><strong>' + esc(grant.capabilityId) + '</strong> <span class="capability-pill">expires ' + esc(new Date(grant.expiresAt).toLocaleString()) + '</span><div class="trace-meta">' + esc(grant.reason || '') + '</div><div class="inline-actions" style="margin-top:6px"><button class="btn-sm danger" onclick="revokeCapabilityGrant(\'' + escAttr(grant.id) + '\')">Revoke</button></div></div>').join('') : '<div class="trace-meta">No active grants.</div>';
+  const presetRows = presets.length ? '<details style="margin-top:8px"><summary class="trace-meta" style="cursor:pointer">Shell command allowlist presets (' + presets.length + ')</summary>' + presets.map((preset) => '<div class="trace-meta" style="font-size:11px"><strong>' + esc(preset.label || preset.id) + '</strong>: ' + esc((preset.examples || []).join(', ')) + '</div>').join('') + '</details>' : '';
+  const auditTypeColors = { 'grant.created': '#50c878', 'grant.revoked': '#ffb050', 'grant.expired': '#ff5050', 'automation_script.allowed': '#50c878', 'automation_script.denied': '#ff5050' };
+  const auditSection = events.length ? '<details style="margin-top:8px"><summary class="trace-meta" style="cursor:pointer">Audit log (last ' + events.length + ' events)</summary>'
+    + events.map((ev) => {
+      const color = auditTypeColors[ev.type] || 'var(--text-dim)';
+      const ts = ev.createdAt ? new Date(ev.createdAt).toLocaleString() : '';
+      const detail = ev.capabilityId ? ev.capabilityId : ev.command ? ev.command : '';
+      return '<div class="trace-meta" style="font-size:11px"><span style="color:' + color + '">' + esc(ev.type) + '</span> ' + esc(detail) + (ev.reason ? ' — ' + esc(ev.reason) : '') + (ev.presetId ? ' [' + esc(ev.presetId) + ']' : '') + '<span style="color:var(--text-dim);margin-left:8px">' + esc(ts) + '</span></div>';
+    }).join('') + '</details>' : '';
+  return '<div class="trace-list" id="capabilityAlignmentPanel" style="margin-top:8px">'
+    + '<div class="trace-title" style="padding:0 4px">Capability alignment · ' + esc(summaryText) + ' · active grants: ' + grantCount + '</div>'
+    + '<div class="trace-item"><div class="trace-title">Active grants</div>' + grantRows + presetRows + auditSection + '</div>'
+    + '<div class="trace-item">' + rows + '</div>'
+    + '</div>';
+}
+
+async function grantCapability(capabilityId) {
+  const reason = prompt('Reason for this capability grant?', 'Manual grant from Tools dashboard.');
+  if (reason === null) return;
+  const expiresRaw = prompt('Expire after how many minutes? (1-1440)', '60');
+  if (expiresRaw === null) return;
+  const capabilities = await fetch('/api/capabilities').then((r) => r.json());
+  const item = (capabilities.capabilities || []).find((cap) => cap.id === capabilityId);
+  if (!item || item.posture !== 'gated') { alert('Only gated capabilities can be granted.'); return; }
+  const response = await fetch('/api/capabilities/grants', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ capabilityId, controls: item.requiredControls || [], reason, expiresInMinutes: Number(expiresRaw) || 60 }),
+  });
+  const data = await response.json();
+  if (data.error) { alert('Grant failed: ' + data.error); return; }
+  await loadToolsDashboard();
+}
+
+async function revokeCapabilityGrant(grantId) {
+  if (!confirm('Revoke this capability grant?')) return;
+  const response = await fetch('/api/capabilities/grants/' + encodeURIComponent(grantId), { method: 'DELETE' });
+  const data = await response.json();
+  if (data.error) { alert('Revoke failed: ' + data.error); return; }
+  await loadToolsDashboard();
 }
 
 function renderToolRegistryPanel(registry) {
@@ -2948,9 +3097,11 @@ async function loadRuns() {
   if (!view) return;
   view.innerHTML = '<div class="trace-list"><div class="trace-title">Runs</div><div class="trace-meta">Loading…</div></div>';
   try {
-    const [runsR, curatorR] = await Promise.allSettled([
+    const [runsR, curatorR, discoveryR, autoRunsR] = await Promise.allSettled([
       fetch('/api/runs').then((r) => r.json()),
       fetch('/api/curator').then((r) => r.json()),
+      fetch('/api/discovery').then((r) => r.json()),
+      fetch('/api/automations/runs').then((r) => r.json()),
     ]);
     const data = runsR.status === 'fulfilled' ? runsR.value : { error: 'failed to load' };
     if (data.error) { view.innerHTML = '<div class="trace-meta">Failed: ' + esc(data.error) + '</div>'; return; }
@@ -2961,15 +3112,169 @@ async function loadRuns() {
       + Object.entries(counts).map(([k, v]) => esc(k) + ': ' + v).join(' · ')
       + '</div>';
     const curatorSection = curatorR.status === 'fulfilled' ? renderCuratorRunsSection(curatorR.value) : '';
+    const autoRunLog = autoRunsR.status === 'fulfilled' ? (autoRunsR.value.runs || []) : [];
+    const automationSection = discoveryR.status === 'fulfilled' ? renderAutomationRunsSection(discoveryR.value.automations, autoRunLog) : '';
     if (runs.length === 0) {
-      view.innerHTML = summary + curatorSection + '<div class="trace-meta" style="padding:8px">(no chat runs yet — start a chat to record one)</div>';
+      view.innerHTML = summary + automationSection + curatorSection + '<div class="trace-meta" style="padding:8px">(no chat runs yet — start a chat to record one)</div>';
       return;
     }
     const rows = runs.map(renderRunRow).join('');
-    view.innerHTML = summary + curatorSection + '<div class="trace-list">' + rows + '</div>';
+    view.innerHTML = summary + automationSection + curatorSection + '<div class="trace-list">' + rows + '</div>';
   } catch (error) {
     view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message || error) + '</div>';
   }
+}
+
+function renderAutomationRunsSection(automations, runLog) {
+  if (!automations) return '';
+  const jobs = Array.isArray(automations.jobs) ? automations.jobs : [];
+  const due = Array.isArray(automations.due) ? automations.due : [];
+  const policy = automations.policy || {};
+  const schedulerRunning = automations.schedulerRunning;
+  const entries = Array.isArray(runLog) ? runLog : [];
+  const schedulerBadge = schedulerRunning
+    ? '<span class="capability-pill" style="border-color:#5bb0ff;color:#5bb0ff">running</span>'
+    : '<span class="capability-pill" style="border-color:#888;color:#888">idle</span>';
+  const dueBadge = due.length > 0
+    ? '<span class="capability-pill" style="border-color:#ffb050;color:#ffb050">' + due.length + ' due</span>'
+    : '';
+  const jobRows = jobs.length === 0
+    ? '<div class="trace-meta">No automation jobs configured.</div>'
+    : jobs.map((job) => {
+      const enabled = job.enabled !== false;
+      const isDue = due.some((d) => d.id === job.id);
+      const statusColor = isDue ? '#ffb050' : enabled ? '#50c878' : '#888';
+      const statusLabel = isDue ? 'due' : enabled ? 'active' : 'disabled';
+      const nextRun = job.nextRunAt ? new Date(job.nextRunAt).toLocaleString() : 'none';
+      const lastRun = job.lastRunAt ? new Date(job.lastRunAt).toLocaleString() : 'never';
+      const script = job.scriptCommand ? ' · script: ' + esc(job.scriptCommand) : '';
+      return '<div class="trace-row">'
+        + '<strong>' + esc(job.name) + '</strong> '
+        + '<span class="capability-pill" style="border-color:' + statusColor + ';color:' + statusColor + '">' + statusLabel + '</span>'
+        + '<div class="trace-meta">' + esc(job.schedule?.display || '') + ' · next: ' + esc(nextRun) + ' · last: ' + esc(lastRun) + script + '</div>'
+        + '<div class="inline-actions" style="margin-top:4px">'
+        + '<button class="btn-sm" onclick="toggleAutomationJob(\'' + escAttr(job.id) + '\', ' + (!enabled) + ')">' + (enabled ? 'Disable' : 'Enable') + '</button> '
+        + '<button class="btn-sm" onclick="editAutomationJob(\'' + escAttr(job.id) + '\', ' + escAttr(JSON.stringify(job.name)) + ', ' + escAttr(JSON.stringify(job.prompt)) + ', ' + escAttr(JSON.stringify(job.schedule?.display || '')) + ', ' + escAttr(JSON.stringify(job.scriptCommand || '')) + ')">Edit</button> '
+        + '<button class="btn-sm danger" onclick="deleteAutomationJob(\'' + escAttr(job.id) + '\')">Delete</button>'
+        + '</div>'
+        + '</div>';
+    }).join('');
+  const executeBtn = due.length > 0
+    ? '<button class="btn-sm" onclick="executeAutomationDueJobs()">Execute ' + due.length + ' due job(s)</button>'
+    : '';
+  const newJobBtn = '<button class="btn-sm" onclick="showNewAutomationJobForm()">+ New job</button>';
+  return '<div class="trace-item" id="automationRunsSection" style="margin:6px 4px">'
+    + '<div class="trace-title">⚙ Automation jobs (' + jobs.length + ') ' + schedulerBadge + ' ' + dueBadge + '</div>'
+    + '<div class="trace-meta">Grants: ' + (policy.activeGrantCount || 0) + ' active · Kill switch: ' + (policy.killSwitchActive ? 'engaged' : 'off') + '</div>'
+    + '<div style="margin-top:6px">' + jobRows + '</div>'
+    + '<div class="inline-actions" style="margin-top:6px">' + newJobBtn + ' ' + executeBtn + '</div>'
+    + '<div id="newAutomationJobForm" style="display:none;margin-top:8px;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px">'
+    + '<input id="newJobName" type="text" placeholder="Job name" style="width:100%;padding:4px 6px;margin-bottom:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">'
+    + '<input id="newJobPrompt" type="text" placeholder="Prompt text" style="width:100%;padding:4px 6px;margin-bottom:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">'
+    + '<input id="newJobSchedule" type="text" placeholder="Schedule (e.g. every 2h, 30m, 0 9 * * *)" style="width:100%;padding:4px 6px;margin-bottom:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">'
+    + '<input id="newJobScript" type="text" placeholder="Script command (optional)" style="width:100%;padding:4px 6px;margin-bottom:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">'
+    + '<div class="inline-actions"><button class="btn-sm" onclick="createAutomationJob()">Create</button> <button class="btn-sm" onclick="hideNewAutomationJobForm()">Cancel</button></div>'
+    + '</div>'
+    + renderAutomationRunLog(entries)
+    + '</div>';
+}
+
+function renderAutomationRunLog(entries) {
+  if (!entries || entries.length === 0) return '';
+  const rows = entries.slice(0, 20).map((entry) => {
+    const ts = entry.ranAt ? new Date(entry.ranAt).toLocaleString() : '?';
+    const color = entry.success === false ? '#ff5050' : '#50c878';
+    const name = entry.name || entry.jobId || '?';
+    return '<div class="trace-meta" style="font-size:11px"><span style="color:' + color + '">' + (entry.success === false ? '✗' : '✓') + '</span> ' + esc(name) + ' <span style="color:var(--text-dim)">' + esc(ts) + '</span></div>';
+  }).join('');
+  return '<details style="margin-top:8px"><summary class="trace-meta" style="cursor:pointer">Run history (last ' + Math.min(entries.length, 20) + ' of ' + entries.length + ')</summary>' + rows + '</details>';
+}
+
+async function executeAutomationDueJobs() {
+  try {
+    const response = await fetch('/api/automations/execute-due', { method: 'POST' });
+    const data = await response.json();
+    if (data.error) { alert('Execute failed: ' + data.error); return; }
+    alert('Executed ' + (data.executed || 0) + ' due job(s).');
+    loadRuns();
+  } catch (error) { alert('Execute failed: ' + (error.message || error)); }
+}
+
+function showNewAutomationJobForm() {
+  const form = document.getElementById('newAutomationJobForm');
+  if (form) form.style.display = 'block';
+}
+
+function hideNewAutomationJobForm() {
+  const form = document.getElementById('newAutomationJobForm');
+  if (form) form.style.display = 'none';
+}
+
+async function createAutomationJob() {
+  const name = document.getElementById('newJobName')?.value?.trim();
+  const prompt = document.getElementById('newJobPrompt')?.value?.trim();
+  const schedule = document.getElementById('newJobSchedule')?.value?.trim();
+  const scriptCommand = document.getElementById('newJobScript')?.value?.trim() || undefined;
+  if (!name || !prompt || !schedule) { alert('Name, prompt, and schedule are required.'); return; }
+  try {
+    const response = await fetch('/api/automations/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, prompt, schedule, scriptCommand }),
+    });
+    const data = await response.json();
+    if (data.error) { alert('Create failed: ' + data.error); return; }
+    hideNewAutomationJobForm();
+    loadRuns();
+  } catch (error) { alert('Create failed: ' + (error.message || error)); }
+}
+
+async function deleteAutomationJob(jobId) {
+  if (!confirm('Delete this automation job?')) return;
+  try {
+    const response = await fetch('/api/automations/jobs/' + encodeURIComponent(jobId), { method: 'DELETE' });
+    const data = await response.json();
+    if (data.error) { alert('Delete failed: ' + data.error); return; }
+    loadRuns();
+  } catch (error) { alert('Delete failed: ' + (error.message || error)); }
+}
+
+async function toggleAutomationJob(jobId, enabled) {
+  try {
+    const response = await fetch('/api/automations/jobs/' + encodeURIComponent(jobId), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+    const data = await response.json();
+    if (data.error) { alert('Toggle failed: ' + data.error); return; }
+    loadRuns();
+  } catch (error) { alert('Toggle failed: ' + (error.message || error)); }
+}
+
+function editAutomationJob(jobId, name, prompt, schedule, scriptCommand) {
+  const newName = window.prompt('Job name:', name);
+  if (newName === null) return;
+  const newPrompt = window.prompt('Prompt:', prompt);
+  if (newPrompt === null) return;
+  const newSchedule = window.prompt('Schedule (e.g. every 2h, 30m, 0 9 * * *):', schedule);
+  if (newSchedule === null) return;
+  const newScript = window.prompt('Script command (leave empty for none):', scriptCommand);
+  if (newScript === null) return;
+  const body = {};
+  if (newName.trim() !== name) body.name = newName.trim();
+  if (newPrompt.trim() !== prompt) body.prompt = newPrompt.trim();
+  if (newSchedule.trim() !== schedule) body.schedule = newSchedule.trim();
+  if (newScript.trim() !== (scriptCommand || '')) body.scriptCommand = newScript.trim() || null;
+  if (Object.keys(body).length === 0) return;
+  fetch('/api/automations/jobs/' + encodeURIComponent(jobId), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then((r) => r.json()).then((data) => {
+    if (data.error) { alert('Edit failed: ' + data.error); return; }
+    loadRuns();
+  }).catch((error) => alert('Edit failed: ' + (error.message || error)));
 }
 
 function renderCuratorRunsSection(curator) {
@@ -3194,6 +3499,7 @@ function toggleVoiceInput() {
   }
   const btn = document.getElementById('voiceBtn');
   if (voiceActive && voiceRecognition) {
+    voiceRecognition._stoppedByUser = true;
     voiceRecognition.stop();
     return;
   }
@@ -3202,7 +3508,7 @@ function toggleVoiceInput() {
   voiceRecognition.interimResults = false;
   voiceRecognition.lang = (navigator.language || 'en-US');
   voiceActive = true;
-  if (btn) { btn.classList.add('recording'); btn.title = 'Stop voice input'; }
+  if (btn) { btn.classList.add('recording'); btn.title = 'Stop voice input and send'; }
   voiceRecognition.onresult = (event) => {
     const inp = document.getElementById('chatInput');
     if (!inp) return;
@@ -3223,9 +3529,16 @@ function toggleVoiceInput() {
     }
   };
   voiceRecognition.onend = () => {
+    const shouldSend = voiceRecognition && voiceRecognition._stoppedByUser;
     voiceActive = false;
     if (btn) { btn.classList.remove('recording'); btn.title = 'Voice input (browser STT)'; }
     voiceRecognition = null;
+    if (shouldSend) {
+      const inp = document.getElementById('chatInput');
+      if (inp && inp.value.trim()) {
+        setTimeout(() => sendMessage(), 300);
+      }
+    }
   };
   try { voiceRecognition.start(); } catch (e) {
     voiceActive = false;

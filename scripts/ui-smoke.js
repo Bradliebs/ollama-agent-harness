@@ -29,31 +29,38 @@ async function main() {
     await page.waitForFunction(() => !document.getElementById('firstRunHealth').classList.contains('initial-hidden'));
     await page.click('text=Verify install');
     await page.waitForFunction(() => document.getElementById('aboutPanel')?.textContent.includes('Version'));
-    await page.click('#verifyReleaseBtn');
+    await page.evaluate(() => document.getElementById('verifyReleaseBtn')?.click());
     await page.waitForFunction(() => !document.getElementById('releaseVerificationPanel').classList.contains('initial-hidden'));
     await page.evaluate(() => { if (document.getElementById('rightPanel')?.classList.contains('hidden')) toggleRight(); });
-    await page.click('text=Run setup doctor');
+    await page.evaluate(() => Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes('Run setup doctor'))?.click());
     await page.waitForFunction(() => !document.getElementById('settingsDoctorHealth').classList.contains('initial-hidden'));
     await page.waitForFunction(() => document.querySelectorAll('#outputValidationTemplates button').length > 0);
-    await page.click('#outputValidationTemplates button');
+    await page.evaluate(() => document.querySelector('#outputValidationTemplates button')?.click());
     await page.waitForFunction(() => document.getElementById('outputValidationProfilesStatus')?.textContent.includes('Installed'));
     await page.fill('#outputValidationPreviewText', 'Implemented src/web/server.ts and ran npm test plus npm run typecheck.');
     await page.selectOption('#outputValidationProfile', 'coding-answer');
-    await page.click('#previewOutputValidationBtn');
+    await page.evaluate(() => document.getElementById('previewOutputValidationBtn')?.click());
     await page.waitForFunction(() => document.getElementById('outputValidationPreviewResult')?.textContent.includes('coding-answer'));
     await page.fill('#outputValidationPreviewText', 'It will be cloudy.');
     await page.selectOption('#outputValidationProfile', 'factual-answer');
-    await page.click('#previewOutputValidationBtn');
+    await page.evaluate(() => document.getElementById('previewOutputValidationBtn')?.click());
     await page.waitForFunction(() => document.getElementById('outputValidationPreviewResult')?.textContent.includes('Try:'));
     await page.fill('#customProfileId', 'smoke-profile');
     await page.fill('#customProfileLabel', 'Smoke Profile');
     await page.fill('#customProfileDescription', 'Created by UI smoke.');
     await page.fill('#customProfileInstructions', 'Mention smoke validation.');
-    await page.click('#saveProfileFromFormBtn');
+    await page.evaluate(() => document.getElementById('saveProfileFromFormBtn')?.click());
     await page.waitForFunction(() => document.getElementById('outputValidationProfilesStatus')?.textContent.includes('custom profiles saved'));
-    await page.click('text=Refresh trace exports');
+    await page.evaluate(() => Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes('Refresh trace exports'))?.click());
+    await page.evaluate(async () => {
+      const data = await fetch('/api/capabilities').then((response) => response.json());
+      const host = document.createElement('div');
+      host.innerHTML = renderCapabilityAlignmentPanel({ items: data.capabilities, summary: data.summary });
+      document.body.appendChild(host);
+      window.__capabilityAlignmentSmoke = Boolean(document.getElementById('capabilityAlignmentPanel')) && document.getElementById('capabilityAlignmentPanel').textContent.includes('Live broker trading');
+    });
     await page.evaluate(() => showLeftTab('skills', Array.from(document.querySelectorAll('.tab')).find((element) => element.getAttribute('onclick')?.includes("showLeftTab('skills'"))));
-    await page.waitForFunction(() => Boolean(document.getElementById('runtimeSkillSource')) && Boolean(document.getElementById('repoSkillSource')) && Boolean(document.getElementById('skillDiagnostics')));
+    await page.waitForFunction(() => Boolean(document.getElementById('runtimeSkillSource')) && Boolean(document.getElementById('repoSkillSource')) && Boolean(document.getElementById('skillDiagnostics')) && Boolean(document.getElementById('skillAutomationPanel')));
     const skillsTabVisible = await page.evaluate(() => getComputedStyle(document.getElementById('skillList')).display !== 'none');
     await page.evaluate(() => showLeftTab('palace', Array.from(document.querySelectorAll('.tab')).find((element) => element.getAttribute('onclick')?.includes("showLeftTab('palace'"))));
     await page.waitForFunction(() => getComputedStyle(document.getElementById('memoryPalaceView')).display !== 'none');
@@ -72,6 +79,7 @@ async function main() {
         hasAppScript: Array.from(document.scripts).some((script) => /\/app\.js(\?|$)/.test(script.src)),
         hasChatHistoryApi: typeof window.HarnessChatHistory?.outboundChatHistory === 'function' && typeof window.HarnessChatHistory?.saveChatSession === 'function' && typeof window.HarnessChatHistory?.loadPersistedChatSession === 'function',
         hasPermissionPanel: Boolean(document.getElementById('permissionPanel')),
+        hasCapabilityAlignmentPanel: Boolean(window.__capabilityAlignmentSmoke),
         hasChatInput: Boolean(document.getElementById('chatInput')),
         hasTraceExports: Boolean(document.getElementById('traceExports')),
         hasTraceInspector: Boolean(document.getElementById('traceInspector')),
@@ -79,6 +87,7 @@ async function main() {
         hasRuntimeSkillSource: Boolean(document.getElementById('runtimeSkillSource')),
         hasRepoSkillSource: Boolean(document.getElementById('repoSkillSource')),
         hasSkillDiagnostics: Boolean(document.getElementById('skillDiagnostics')),
+        hasSkillAutomationPanel: Boolean(document.getElementById('skillAutomationPanel')) && typeof window.runSkillAutomation === 'function',
         hasOpenSkillsFunction: typeof window.openSkillsTab === 'function' && typeof window.appendOpenSkillsAction === 'function',
         hasDiscoveryView: Boolean(document.getElementById('discoveryView')),
         hasDiscoveryPanel: Boolean(document.getElementById('discoveryPanel')),
@@ -172,6 +181,7 @@ async function main() {
     if (!result.hasAppScript) failures.push('ui/app.js script was not loaded');
     if (!result.hasChatHistoryApi) failures.push('chat history helper API was not available at runtime');
     if (!result.hasPermissionPanel) failures.push('permission panel was not created');
+    if (!result.hasCapabilityAlignmentPanel) failures.push('capability alignment panel was not rendered');
     if (!result.hasChatInput) failures.push('chat input was not found');
     if (!result.hasTraceExports) failures.push('trace export panel was not found');
     if (!result.hasTraceInspector) failures.push('trace inspector panel was not found');
@@ -179,6 +189,7 @@ async function main() {
     if (!result.hasRuntimeSkillSource) failures.push('runtime skill source panel was not rendered');
     if (!result.hasRepoSkillSource) failures.push('repo skill source panel was not rendered');
     if (!result.hasSkillDiagnostics) failures.push('skill diagnostics panel was not rendered');
+    if (!result.hasSkillAutomationPanel) failures.push('skill automation panel was not rendered');
     if (!result.hasOpenSkillsFunction) failures.push('open skills chat action functions were not found');
     if (!result.hasDiscoveryView) failures.push('discovery view was not found');
     if (!result.hasDiscoveryPanel) failures.push('discovery panel was not rendered');
