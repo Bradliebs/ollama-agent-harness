@@ -204,7 +204,7 @@ describe('web server API validation', () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       capabilities: {
-        summary: expect.objectContaining({ blocked: 3, gated: 4, 'design-only': 5 }),
+        summary: expect.objectContaining({ blocked: 3, gated: 6, 'design-only': 3 }),
         coverage: expect.objectContaining({ 'self-modifying-code': expect.arrayContaining(['file_edit', 'file_write']) }),
       },
     });

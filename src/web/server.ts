@@ -1086,6 +1086,18 @@ app.get('/api/mycelium', async (_req, res) => {
   }
 });
 
+app.delete('/api/mycelium', async (_req, res) => {
+  try {
+    const { MyceliumGraph, saveMyceliumGraph: save } = await import('../mycelium/graph');
+    await save(PROJECT_DIR, new MyceliumGraph());
+    logger.info('Mycelium', 'Graph reset');
+    res.json({ reset: true });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
 // Enable or disable a single tool at runtime. Disabled tools are filtered out
 // of the agent's tool list before each chat turn.
 app.post('/api/tools/:name/toggle', (req, res) => {
@@ -1266,6 +1278,22 @@ app.post('/api/chat', async (req, res) => {
     myceliumRouter = await createMycelialRouter(PROJECT_DIR);
     const tools = webRuntime.getTools();
     myceliumRouter.seedToolNodes(tools.map((t) => ({ name: t.name, description: t.description })));
+    // Seed skills from runtime and repo directories
+    try {
+      const [runtimeSkills, repoSkills] = await Promise.all([
+        loadSkillsDir(SKILLS_DIR).catch(() => []),
+        loadSkillsDir(REPO_SKILLS_DIR).catch(() => []),
+      ]);
+      const allSkills = [...runtimeSkills, ...repoSkills];
+      myceliumRouter.seedSkillNodes(allSkills.map((s) => ({ name: s.name, description: s.description, domain: s.domain })));
+    } catch { /* skill seeding is optional */ }
+    // Seed semantic memory entries
+    try {
+      const memResults = await searchSemanticMemory(PROJECT_DIR, message.slice(0, 200));
+      if (memResults.length > 0) {
+        myceliumRouter.seedMemoryNodes(memResults.slice(0, 10).map((r) => ({ id: r.entry.id, text: r.entry.text, kind: r.entry.kind })));
+      }
+    } catch { /* memory seeding is optional */ }
     const myceliumResult = myceliumRouter.routeQuery(message);
     if (myceliumResult.nodes.length > 0) {
       myceliumContext = '\n\n--- Mycelium context (adaptive routing) ---\n' + myceliumResult.contextText;
@@ -1337,6 +1365,8 @@ app.post('/api/chat', async (req, res) => {
   messages.push(...trimmedHistory, newUserMessage);
   logger.info('Chat', `User: ${message.slice(0, 80)}`, { model: activeModel, historyTurns: trimmedHistory.length, droppedForTokens, historyTokenBudget });
   let assistantTextBuffer = '';
+  let toolCallCount = 0;
+  let toolSuccessCount = 0;
 
   try {
     if (droppedForTokens > 0) {
@@ -1358,6 +1388,10 @@ app.post('/api/chat', async (req, res) => {
     const seenFallbackKeys = new Set<string>();
     let suppressedFallbacks = 0;
     for await (const event of webRuntime.runQueryLoop(config, deps, messages)) {
+      if (event.type === 'tool_result') {
+        toolCallCount++;
+        if (event.result?.success) toolSuccessCount++;
+      }
       if (event.type === 'output_validation') {
         await recordOutputValidationEvalRun(PROJECT_DIR, event.validation, message.slice(0, 120), {
           selectionSource: activeOutputValidation.selectionSource,
@@ -1461,10 +1495,12 @@ app.post('/api/chat', async (req, res) => {
   // Mycelium reinforcement: strengthen or weaken routes based on outcome
   if (myceliumRouter) {
     const hasOutput = assistantTextBuffer.trim().length > 0;
+    const toolSuccessRate = toolCallCount > 0 ? toolSuccessCount / toolCallCount : 0.5;
     myceliumRouter.reinforce({
       taskSuccess: hasOutput ? 0.7 : 0.2,
-      correctness: hasOutput ? 0.6 : 0.1,
-      usefulness: hasOutput ? 0.6 : 0.1,
+      correctness: hasOutput ? 0.6 + toolSuccessRate * 0.3 : 0.1,
+      usefulness: hasOutput ? 0.5 + toolSuccessRate * 0.3 : 0.1,
+      costEfficiency: toolCallCount <= 5 ? 0.8 : toolCallCount <= 15 ? 0.5 : 0.2,
     });
     myceliumRouter.decay();
     myceliumRouter.save().catch((error) => {

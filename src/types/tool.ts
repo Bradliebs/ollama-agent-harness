@@ -4,7 +4,7 @@ import type { Message } from 'ollama';
 export type ToolRiskLevel = 'low' | 'medium' | 'high';
 
 /** Coarse permission category. Used to render the permission matrix and group tools. */
-export type ToolPermissionCategory = 'read' | 'write' | 'shell' | 'network' | 'media' | 'memory' | 'learning' | 'skills' | 'rag';
+export type ToolPermissionCategory = 'read' | 'write' | 'shell' | 'network' | 'media' | 'memory' | 'learning' | 'skills' | 'rag' | 'desktop' | 'browser';
 
 export interface Tool {
   name: string;

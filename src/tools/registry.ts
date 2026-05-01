@@ -11,6 +11,8 @@ import { RagListIndexesTool, RagSearchTool } from './ragTools';
 import { CreateSkillTool, ListSkillsTool, SkillTool } from './skillTools';
 import { WebFetchTool } from './webFetchTool';
 import { WebReadTool, WebSearchTool } from './webSearchTool';
+import { DesktopScreenshotTool } from './desktopTools';
+import { BrowserBookmarksTool } from './browserTools';
 
 export interface ToolRegistryEntry {
   tool: Tool;
@@ -93,4 +95,6 @@ export const BUILTIN_TOOL_ENTRIES: ToolRegistryEntry[] = [
   { tool: RagSearchTool, toolset: 'rag', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'rag', canDryRun: false },
   { tool: RagListIndexesTool, toolset: 'rag', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'rag', canDryRun: false },
   { tool: CuratorPreviewTool, toolset: 'curator', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
+  { tool: DesktopScreenshotTool, toolset: 'desktop', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'desktop', canDryRun: false },
+  { tool: BrowserBookmarksTool, toolset: 'browser', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'browser', canDryRun: false },
 ];

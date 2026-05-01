@@ -3573,6 +3573,16 @@ function toggleVoiceInput() {
 
 // ─── Mycelium tab ───────────────────────────────────────────────────
 
+async function resetMyceliumGraph() {
+  if (!confirm('Reset the mycelium graph? All learned routes will be lost.')) return;
+  try {
+    const response = await fetch('/api/mycelium', { method: 'DELETE' });
+    const data = await response.json();
+    if (data.error) { alert('Reset failed: ' + data.error); return; }
+    loadMycelium();
+  } catch (error) { alert('Reset failed: ' + (error.message || error)); }
+}
+
 async function loadMycelium() {
   const view = document.getElementById('myceliumView');
   if (!view) return;
@@ -3585,7 +3595,7 @@ async function loadMycelium() {
     const edges = Array.isArray(data.edges) ? data.edges : [];
     const episodes = Array.isArray(data.episodes) ? data.episodes : [];
 
-    const header = '<div class="panel-header" style="border-bottom:none"><h3>🍄 Mycelium Network</h3><div class="inline-actions"><button class="btn-sm" onclick="loadMycelium()">Refresh</button></div></div>';
+    const header = '<div class="panel-header" style="border-bottom:none"><h3>🍄 Mycelium Network</h3><div class="inline-actions"><button class="btn-sm" onclick="loadMycelium()">Refresh</button> <button class="btn-sm danger" onclick="resetMyceliumGraph()">Reset</button></div></div>';
 
     const statsHtml = '<div class="trace-meta" style="padding:0 4px 6px">'
       + 'Nodes: ' + (stats.nodes || 0) + ' · Edges: ' + (stats.edges || 0) + ' · Episodes: ' + (stats.episodes || 0) + ' · Avg weight: ' + (stats.avgWeight || 0)
