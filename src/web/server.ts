@@ -9,6 +9,9 @@ import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { getBuiltinTools } from '../tools';
 import { createBuiltinToolRegistry } from '../tools/registry';
 import { WorkflowRegistry } from '../workflows/workflowRegistry';
+import { runCurator, runDeterministicPhase, readCuratorLog, readCuratorProposals, restoreSkill, type CuratorConfig } from '../curator/curator';
+import { CuratorScheduler } from '../curator/scheduler';
+import { listSkillUsage, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { drainUploadsFallbacks, getUploadsDir, resolveProjectReadPath } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { setSkillsDir } from '../tools/skillTools';
@@ -92,6 +95,7 @@ interface WebSettings {
   modelCatalog: ModelCatalogSettings;
   extensionActivation: ExtensionActivationSettings;
   walkthrough: WalkthroughSettings;
+  curator: CuratorSettings;
 }
 
 interface MediaToolSettings {
@@ -117,6 +121,17 @@ interface EffectiveOutputValidationSettings extends OutputValidationSettings {
 
 interface WalkthroughSettings {
   completed: string[];
+}
+
+interface CuratorSettings {
+  enabled: boolean;
+  intervalHours: number;
+  idleThresholdMinutes: number;
+  staleDays: number;
+  minViewsBeforeArchive: number;
+  maxArchivePerRun: number;
+  enableLlmPhase: boolean;
+  lastRunAt: string;
 }
 
 interface ModelCatalogSettings {
@@ -173,6 +188,10 @@ let settingsLoaded = false;
 let killSwitchActive = false;
 let killSwitchReason = '';
 const disabledTools = new Set<string>();
+
+let curatorSettings: CuratorSettings = sanitizeCuratorSettings({});
+let lastUserActivityMs = Date.now();
+let curatorScheduler: CuratorScheduler | null = null;
 
 function applyToolDisables(tools: Tool[]): Tool[] {
   if (disabledTools.size === 0) return tools;
@@ -279,6 +298,10 @@ app.post('/api/settings', async (req, res) => {
   if (req.body.modelCatalog !== undefined) modelCatalog = sanitizeModelCatalogSettings(req.body.modelCatalog);
   if (req.body.extensionActivation !== undefined) extensionActivation = sanitizeExtensionActivationSettings(req.body.extensionActivation);
   if (req.body.walkthrough !== undefined) walkthrough = sanitizeWalkthroughSettings(req.body.walkthrough);
+  if (req.body.curator !== undefined) {
+    curatorSettings = sanitizeCuratorSettings(req.body.curator);
+    configureCuratorScheduler();
+  }
   if (req.body.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(req.body.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (req.body.temperature !== undefined) temperature = clampNumber(req.body.temperature, 0, 2, 0.7);
   if (req.body.topP !== undefined) topP = clampNumber(req.body.topP, 0, 1, 0.9);
@@ -899,6 +922,7 @@ app.post('/api/permissions/:id/resolve', (req, res) => {
 // Chat endpoint — runs the agent loop and streams events as SSE
 app.post('/api/chat', async (req, res) => {
   await ensureSettingsLoaded();
+  lastUserActivityMs = Date.now();
   const { message, model } = req.body;
   if (!message) { res.status(400).json({ error: 'message is required' }); return; }
 
@@ -1607,6 +1631,81 @@ app.post('/api/skills/scaffold', async (req, res) => {
   }
 });
 
+// Pin / unpin a skill so the curator never archives it.
+app.post('/api/skills/:name/pin', async (req, res) => {
+  const skillName = safeLocalId(req.params.name);
+  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
+  const desired = req.body?.pinned === undefined ? true : Boolean(req.body.pinned);
+  try {
+    const record = await setSkillPinned(PROJECT_DIR, skillName, desired);
+    res.json({ ok: true, record });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/skills/usage', async (_req, res) => {
+  try {
+    const records = await listSkillUsage(PROJECT_DIR);
+    res.json({ records });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// --- API: Curator ---
+app.get('/api/curator', async (_req, res) => {
+  try {
+    const log = await readCuratorLog(PROJECT_DIR, 50);
+    const proposals = await readCuratorProposals(PROJECT_DIR);
+    res.json({
+      settings: curatorSettings,
+      lastUserActivityAt: new Date(lastUserActivityMs).toISOString(),
+      schedulerRunning: Boolean(curatorScheduler),
+      log,
+      proposals,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Manually trigger a curator preview (dry-run, never mutates).
+app.post('/api/curator/preview', async (_req, res) => {
+  try {
+    const summary = await runDeterministicPhase(PROJECT_DIR, curatorConfigFromSettings(), curatorDeps(), { dryRun: true });
+    res.json({ summary });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Manually trigger a curator run. Honors the kill switch.
+app.post('/api/curator/run', async (_req, res) => {
+  try {
+    const summary = await runCurator(PROJECT_DIR, curatorConfigFromSettings(), curatorDeps());
+    if (!summary.dryRun) {
+      curatorSettings = { ...curatorSettings, lastRunAt: new Date().toISOString() };
+      await saveSettingsToDisk().catch(() => {});
+    }
+    res.json({ summary });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Restore an archived skill.
+app.post('/api/curator/restore/:name', async (req, res) => {
+  const skillName = safeLocalId(req.params.name);
+  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
+  try {
+    const result = await restoreSkill(PROJECT_DIR, skillName);
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 // --- API: Agent Memory ---
 app.get('/api/memory', async (_req, res) => {
   const memDir = path.join(PROJECT_DIR, '.harness', 'memory');
@@ -1853,6 +1952,59 @@ export function stopUploadsAutoPrune(): void {
   }
 }
 
+function curatorConfigFromSettings(): CuratorConfig {
+  return {
+    staleDays: curatorSettings.staleDays,
+    minViewsBeforeArchive: curatorSettings.minViewsBeforeArchive,
+    maxArchivePerRun: curatorSettings.maxArchivePerRun,
+    enableLlmPhase: curatorSettings.enableLlmPhase,
+  };
+}
+
+function curatorDeps() {
+  return {
+    isKillSwitchActive: () => killSwitchActive,
+    callModel: async (prompt: string): Promise<string> => {
+      const model = summarizerModel || currentModel;
+      if (!model) throw new Error('No model configured for curator LLM phase');
+      const client = webRuntime.createClient(model, ollamaHost);
+      const response = await client.chat([{ role: 'user', content: prompt }]);
+      return response.message?.content ?? '';
+    },
+  };
+}
+
+function configureCuratorScheduler(): void {
+  if (curatorScheduler) {
+    curatorScheduler.stop();
+    curatorScheduler = null;
+  }
+  if (!curatorSettings.enabled) return;
+  curatorScheduler = new CuratorScheduler({
+    projectDir: PROJECT_DIR,
+    config: curatorConfigFromSettings(),
+    intervalHours: curatorSettings.intervalHours,
+    idleThresholdMinutes: curatorSettings.idleThresholdMinutes,
+    isKillSwitchActive: () => killSwitchActive,
+    isEnabled: () => curatorSettings.enabled,
+    getLastUserActivityMs: () => lastUserActivityMs,
+    getLastRunMs: () => curatorSettings.lastRunAt ? Date.parse(curatorSettings.lastRunAt) || 0 : 0,
+    recordRunMs: (timestamp) => {
+      curatorSettings = { ...curatorSettings, lastRunAt: new Date(timestamp).toISOString() };
+      saveSettingsToDisk().catch(() => {});
+    },
+    callModel: curatorDeps().callModel,
+  });
+  curatorScheduler.start();
+}
+
+export function stopCuratorScheduler(): void {
+  if (curatorScheduler) {
+    curatorScheduler.stop();
+    curatorScheduler = null;
+  }
+}
+
 // --- API: File Tree ---
 app.get('/api/files', async (req, res) => {
   const dir = resolveProjectPath((req.query.path as string) || PROJECT_DIR);
@@ -1972,6 +2124,7 @@ function getCurrentSettings(): WebSettings {
     modelCatalog,
     extensionActivation,
     walkthrough,
+    curator: curatorSettings,
   };
 }
 
@@ -2017,6 +2170,10 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   if (settings.modelCatalog !== undefined) modelCatalog = sanitizeModelCatalogSettings(settings.modelCatalog);
   if (settings.extensionActivation !== undefined) extensionActivation = sanitizeExtensionActivationSettings(settings.extensionActivation);
   if (settings.walkthrough !== undefined) walkthrough = sanitizeWalkthroughSettings(settings.walkthrough);
+  if (settings.curator !== undefined) {
+    curatorSettings = sanitizeCuratorSettings(settings.curator);
+    configureCuratorScheduler();
+  }
   if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (settings.temperature !== undefined) temperature = clampNumber(settings.temperature, 0, 2, 0.7);
   if (settings.topP !== undefined) topP = clampNumber(settings.topP, 0, 1, 0.9);
@@ -2120,6 +2277,26 @@ function sanitizeWalkthroughSettings(value: unknown): WalkthroughSettings {
     ? Array.from(new Set(source.completed.map((item) => String(item)).filter((item) => allowed.has(item))))
     : [];
   return { completed };
+}
+
+function clampInt(value: unknown, min: number, max: number, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(n)));
+}
+
+function sanitizeCuratorSettings(value: unknown): CuratorSettings {
+  const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+  return {
+    enabled: Boolean(source.enabled),
+    intervalHours: clampInt(source.intervalHours, 1, 24 * 365, 168),
+    idleThresholdMinutes: clampInt(source.idleThresholdMinutes, 1, 24 * 60, 120),
+    staleDays: clampInt(source.staleDays, 1, 3650, 60),
+    minViewsBeforeArchive: clampInt(source.minViewsBeforeArchive, 0, 1_000_000, 1),
+    maxArchivePerRun: clampInt(source.maxArchivePerRun, 1, 100, 5),
+    enableLlmPhase: Boolean(source.enableLlmPhase),
+    lastRunAt: typeof source.lastRunAt === 'string' ? source.lastRunAt : '',
+  };
 }
 
 function getOutputValidationProfiles(): WebSettings['outputValidationProfiles'] {

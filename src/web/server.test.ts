@@ -368,6 +368,25 @@ describe('web server API validation', () => {
     expect(typeof runsBody.total).toBe('number');
   });
 
+  it('exposes curator state, runs preview, and toggles pin', async () => {
+    const state = await request('/api/curator');
+    expect(state.status).toBe(200);
+    await expect(state.json()).resolves.toMatchObject({ settings: expect.objectContaining({ enabled: expect.any(Boolean), staleDays: expect.any(Number) }) });
+
+    const preview = await request('/api/curator/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    expect(preview.status).toBe(200);
+    const previewBody = await preview.json() as { summary: { dryRun: boolean; archived: unknown[]; staleCandidates: unknown[] } };
+    expect(previewBody.summary.dryRun).toBe(true);
+    expect(Array.isArray(previewBody.summary.archived)).toBe(true);
+    expect(Array.isArray(previewBody.summary.staleCandidates)).toBe(true);
+
+    const pinResp = await request('/api/skills/api-runtime-skill/pin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned: true }) });
+    expect(pinResp.status).toBe(200);
+    await expect(pinResp.json()).resolves.toMatchObject({ ok: true, record: expect.objectContaining({ name: 'api-runtime-skill', pinned: true }) });
+    const unpin = await request('/api/skills/api-runtime-skill/pin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned: false }) });
+    expect(unpin.status).toBe(200);
+  });
+
   it('refreshes the model catalog and rebuilds the session search index', async () => {
     const catalog = await request('/api/models/catalog/refresh', { method: 'POST' });
     expect(catalog.status).toBe(200);

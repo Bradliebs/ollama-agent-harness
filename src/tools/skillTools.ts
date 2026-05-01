@@ -2,13 +2,17 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
 import { loadSkillsDir, matchSkillTrigger, type SkillDefinition } from '../extensibility/skillLoader';
+import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 
 let cachedSkills: SkillDefinition[] | null = null;
 let skillsDir = '';
+let projectDirForUsage = '';
 
 export function setSkillsDir(dir: string): void {
   skillsDir = dir;
   cachedSkills = null;
+  // Skills directory is .harness/skills, so the project dir is two levels up.
+  projectDirForUsage = path.dirname(path.dirname(dir));
 }
 
 export function invalidateSkillsCache(): void {
@@ -52,6 +56,11 @@ export const SkillTool: Tool = {
       };
     }
 
+    if (projectDirForUsage) {
+      // Best-effort usage tracking; never fail the tool call if this errors.
+      recordSkillUse(projectDirForUsage, skill.name).catch(() => {});
+    }
+
     return {
       success: true,
       output: `--- Skill: ${skill.name} ---\n${skill.description}\n\n${skill.content}`,
@@ -71,6 +80,13 @@ export const ListSkillsTool: Tool = {
     const skills = await getSkills();
     if (skills.length === 0) {
       return { success: true, output: 'No skills installed. Use create_skill to create one.' };
+    }
+
+    if (projectDirForUsage) {
+      // Surface = view event for every listed skill (best-effort).
+      for (const skill of skills) {
+        recordSkillView(projectDirForUsage, skill.name).catch(() => {});
+      }
     }
 
     const listing = skills.map(s =>

@@ -1707,9 +1707,100 @@ async function loadFiles(dir) {
   } catch {}
 }
 
-async function loadSkills() { try { const r = await fetch('/api/skills'); const d = await r.json(); const list = document.getElementById('skillList'); list.innerHTML = ''; const runtime = (d.sources || []).find((source) => source.source === 'runtime') || { skills: d.skills || [], diagnostics: [], mutable: true }; const repo = (d.sources || []).find((source) => source.source === 'repo') || { skills: [], diagnostics: [], mutable: false }; let html = '<div id="runtimeSkillSource" class="trace-list"><div class="trace-title">Runtime Skills</div>'; if (!runtime.skills || !runtime.skills.length) html += '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No runtime skills yet.<br><br>Ask the agent to <strong>"create a skill for..."</strong> and it will build one automatically.</div>'; else html += runtime.skills.map(renderRuntimeSkillItem).join(''); html += '</div>' + renderSkillDiagnostics(runtime.diagnostics || []); html += '<div id="repoSkillSource" class="trace-list"><div class="trace-title">Repo Skills</div>' + ((repo.skills || []).length ? repo.skills.map(renderRepoSkillItem).join('') : '<div class="trace-meta">No repo skills found in .github/skills.</div>') + '</div>'; list.innerHTML = html; } catch {} }
+async function loadSkills() { try { const r = await fetch('/api/skills'); const d = await r.json(); const usageR = await fetch('/api/skills/usage').then((r) => r.json()).catch(() => ({ records: [] })); const curatorR = await fetch('/api/curator').then((r) => r.json()).catch(() => null); const usageMap = new Map((usageR.records || []).map((rec) => [rec.name, rec])); const list = document.getElementById('skillList'); list.innerHTML = ''; const runtime = (d.sources || []).find((source) => source.source === 'runtime') || { skills: d.skills || [], diagnostics: [], mutable: true }; const repo = (d.sources || []).find((source) => source.source === 'repo') || { skills: [], diagnostics: [], mutable: false }; let html = renderCuratorPanel(curatorR); html += '<div id="runtimeSkillSource" class="trace-list"><div class="trace-title">Runtime Skills</div>'; if (!runtime.skills || !runtime.skills.length) html += '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No runtime skills yet.<br><br>Ask the agent to <strong>"create a skill for..."</strong> and it will build one automatically.</div>'; else html += runtime.skills.map((s) => renderRuntimeSkillItem(s, usageMap.get(s.name))).join(''); html += '</div>' + renderSkillDiagnostics(runtime.diagnostics || []); html += '<div id="repoSkillSource" class="trace-list"><div class="trace-title">Repo Skills</div>' + ((repo.skills || []).length ? repo.skills.map(renderRepoSkillItem).join('') : '<div class="trace-meta">No repo skills found in .github/skills.</div>') + '</div>'; list.innerHTML = html; } catch {} }
 
-function renderRuntimeSkillItem(s) { return '<div class="skill-item" onclick="useSkillFromList(\'' + escAttr(s.name) + '\')"><div class="sk-name">' + esc(s.name) + '</div><div class="sk-desc">' + esc(s.description) + '</div><div class="sk-meta"><span>' + esc(s.domain) + '</span><button class="sk-del" onclick="event.stopPropagation();deleteSkill(\'' + escAttr(s.name) + '\')">🗑</button></div></div>'; }
+function renderRuntimeSkillItem(s, usage) {
+  const u = usage || {};
+  const pinned = u.pinned ? ' 📌' : '';
+  const archived = u.archived ? ' <span class="capability-pill" style="border-color:#888;color:#888">archived</span>' : '';
+  const useInfo = (u.useCount || u.viewCount) ? ' · used ' + (u.useCount || 0) + ' / viewed ' + (u.viewCount || 0) : '';
+  const lastUsed = u.lastUsedAt ? ' · last ' + new Date(u.lastUsedAt).toLocaleDateString() : '';
+  const pinBtn = '<button class="sk-install" onclick="event.stopPropagation();togglePinSkill(\'' + escAttr(s.name) + '\', ' + (!u.pinned) + ')" title="' + (u.pinned ? 'Unpin' : 'Pin (curator will not archive)') + '">' + (u.pinned ? 'Unpin' : 'Pin') + '</button>';
+  return '<div class="skill-item" onclick="useSkillFromList(\'' + escAttr(s.name) + '\')"><div class="sk-name">' + esc(s.name) + pinned + '</div><div class="sk-desc">' + esc(s.description) + '</div><div class="sk-meta"><span>' + esc(s.domain) + useInfo + lastUsed + archived + '</span><span>' + pinBtn + ' <button class="sk-del" onclick="event.stopPropagation();deleteSkill(\'' + escAttr(s.name) + '\')">🗑</button></span></div></div>';
+}
+
+async function togglePinSkill(name, pinned) {
+  try {
+    const r = await fetch('/api/skills/' + encodeURIComponent(name) + '/pin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned }) });
+    const data = await r.json();
+    if (data.error) { alert('Pin failed: ' + data.error); return; }
+    await loadSkills();
+  } catch (error) { alert('Pin failed: ' + (error.message || error)); }
+}
+
+function renderCuratorPanel(curator) {
+  if (!curator) return '';
+  const settings = curator.settings || {};
+  const enabled = settings.enabled;
+  const stateBadge = enabled
+    ? '<span class="rag-backend-badge" style="background:rgba(80,200,120,.12);border-color:#50c878;color:#50c878">curator: on</span>'
+    : '<span class="rag-backend-badge">curator: off</span>';
+  const lastRun = settings.lastRunAt ? new Date(settings.lastRunAt).toLocaleString() : 'never';
+  const lastActivity = curator.lastUserActivityAt ? new Date(curator.lastUserActivityAt).toLocaleString() : '?';
+  const runningBadge = curator.schedulerRunning ? ' <span class="capability-pill" style="border-color:#5bb0ff;color:#5bb0ff">scheduler running</span>' : '';
+  const recentLog = (curator.log || []).slice(-5).reverse().map((entry) => '<div class="trace-meta" style="font-size:10px">' + esc(JSON.stringify(entry)) + '</div>').join('');
+  const proposalsBlock = curator.proposals
+    ? '<details style="margin-top:6px"><summary class="trace-meta" style="cursor:pointer">LLM merge proposals (' + (curator.proposals.length) + ' chars)</summary><pre style="white-space:pre-wrap;font-size:11px;color:var(--text-dim);margin-top:4px">' + esc(curator.proposals) + '</pre></details>'
+    : '';
+  return '<div id="curatorPanel" class="trace-item" style="margin-bottom:8px">'
+    + '<div class="trace-title">🧹 Skill Curator ' + stateBadge + runningBadge + '</div>'
+    + '<div class="trace-meta">Maintenance every ' + (settings.intervalHours || 168) + 'h after ' + (settings.idleThresholdMinutes || 120) + ' min idle. Last run: ' + esc(lastRun) + '. Last activity: ' + esc(lastActivity) + '.</div>'
+    + '<div class="trace-meta">Stale threshold: ' + (settings.staleDays || 60) + ' days · max archive/run: ' + (settings.maxArchivePerRun || 5) + ' · LLM phase: ' + (settings.enableLlmPhase ? 'on' : 'off') + '</div>'
+    + '<div class="inline-actions" style="margin-top:6px">'
+    +   '<button class="btn-sm" onclick="curatorPreview()">Preview</button> '
+    +   '<button class="btn-sm" onclick="curatorRunNow()">Run now</button> '
+    +   '<button class="btn-sm" onclick="curatorToggle(' + (!enabled) + ')">' + (enabled ? 'Disable' : 'Enable') + ' scheduler</button>'
+    + '</div>'
+    + '<div id="curatorPreviewOutput" style="margin-top:6px"></div>'
+    + (recentLog ? '<details style="margin-top:6px"><summary class="trace-meta" style="cursor:pointer">Recent log</summary>' + recentLog + '</details>' : '')
+    + proposalsBlock
+    + '</div>';
+}
+
+async function curatorPreview() {
+  const out = document.getElementById('curatorPreviewOutput');
+  if (out) out.textContent = 'Previewing…';
+  try {
+    const r = await fetch('/api/curator/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const data = await r.json();
+    if (data.error) { if (out) out.textContent = 'Preview failed: ' + data.error; return; }
+    if (out) out.innerHTML = renderCuratorSummary(data.summary);
+  } catch (error) { if (out) out.textContent = 'Preview failed: ' + (error.message || error); }
+}
+
+async function curatorRunNow() {
+  if (!confirm('Run the curator now? This may archive stale, unpinned skills.')) return;
+  const out = document.getElementById('curatorPreviewOutput');
+  if (out) out.textContent = 'Running curator…';
+  try {
+    const r = await fetch('/api/curator/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const data = await r.json();
+    if (data.error) { if (out) out.textContent = 'Run failed: ' + data.error; return; }
+    if (out) out.innerHTML = renderCuratorSummary(data.summary);
+    setTimeout(loadSkills, 600);
+  } catch (error) { if (out) out.textContent = 'Run failed: ' + (error.message || error); }
+}
+
+async function curatorToggle(enable) {
+  try {
+    await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ curator: { enabled: enable } }) });
+    await loadSkills();
+  } catch (error) { alert('Toggle failed: ' + (error.message || error)); }
+}
+
+function renderCuratorSummary(summary) {
+  if (!summary) return '<div class="trace-meta">(no summary)</div>';
+  const candidates = (summary.staleCandidates || []).map((a) => '<div class="trace-meta" style="font-size:11px">' + esc(a.kind) + ' · ' + esc(a.skill) + ' · ' + esc(a.reason) + '</div>').join('');
+  const archived = (summary.archived || []).map((a) => '<div class="trace-meta" style="font-size:11px;color:#ffb050">' + esc(a.kind) + ' · ' + esc(a.skill) + ' · ' + esc(a.reason) + '</div>').join('');
+  const dryBadge = summary.dryRun ? ' <span class="capability-pill">dry-run</span>' : '';
+  const llmNote = summary.llmSkipped ? '<div class="trace-meta">LLM phase skipped: ' + esc(summary.llmSkipped) + '</div>' : '';
+  return '<div class="trace-item" style="background:var(--surface)"><div class="trace-title">Curator summary' + dryBadge + '</div>'
+    + '<div class="trace-meta">' + (summary.staleCandidates?.length || 0) + ' candidate(s), ' + (summary.archived?.length || 0) + ' archived</div>'
+    + (archived ? '<div style="margin-top:4px">' + archived + '</div>' : '')
+    + (candidates ? '<details style="margin-top:4px"><summary class="trace-meta" style="cursor:pointer">All candidates</summary>' + candidates + '</details>' : '')
+    + llmNote
+    + '</div>';
+}
 function renderRepoSkillItem(s) { return '<div class="skill-item"><div class="sk-name">' + esc(s.name) + '</div><div class="sk-desc">' + esc(s.description) + '</div><div class="sk-meta"><span>' + esc(s.domain || 'repo') + '</span><span>read-only</span><button class="sk-install" onclick="installRepoSkill(\'' + escAttr(s.name) + '\')">Install to runtime</button></div></div>'; }
 function renderSkillDiagnostics(diagnostics) { if (!diagnostics || diagnostics.length === 0) return '<div id="skillDiagnostics" class="trace-list"><div class="trace-title">Skill Diagnostics</div><div class="trace-meta">No skipped runtime skill folders.</div></div>'; return '<div id="skillDiagnostics" class="trace-list"><div class="trace-title">Skill Diagnostics</div>' + diagnostics.map((item) => '<div class="trace-item"><div class="trace-title">' + esc(item.name) + '</div><div class="trace-meta">' + esc(item.reason) + ' · ' + esc(item.message) + '</div><div class="trace-meta">' + esc(item.filePath) + '</div>' + renderSkillDiagnosticActions(item) + '</div>').join('') + '</div>'; }
 function renderSkillDiagnosticActions(item) { const actions = ['<button class="btn-sm" onclick="copySkillDiagnosticPath(\'' + escAttr(item.filePath) + '\')">Copy path</button>']; if (item.reason === 'missing-skill-file') actions.push('<button class="btn-sm" onclick="scaffoldSkill(\'' + escAttr(item.name) + '\')">Create starter SKILL.md</button>'); return '<div class="skill-diagnostic-actions">' + actions.join(' ') + '</div>'; }
