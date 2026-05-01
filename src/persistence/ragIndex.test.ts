@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { previewBuild, build, search, TEXT_EXTENSIONS } from './ragIndex';
+import { previewBuild, build, search, iterateBuild, TEXT_EXTENSIONS } from './ragIndex';
 
 describe('ragIndex previewBuild', () => {
   let projectDir: string;
@@ -61,5 +61,21 @@ describe('ragIndex previewBuild', () => {
     expect(result.preview.paths.find((p) => p.input === 'missing-folder')?.status).toBe('missing');
     const hits = await search(projectDir, 'preview-test', 'guide', { k: 5, ollamaHost: 'http://127.0.0.1:1' });
     expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('streams build progress events in order with file-by-file updates', async () => {
+    const events: Array<{ stage: string; fileIndex?: number; totalFiles?: number; source?: string }> = [];
+    for await (const event of iterateBuild(projectDir, 'stream-test', ['docs'], { backend: 'hash', ollamaHost: 'http://127.0.0.1:1' })) {
+      events.push({ stage: event.stage, fileIndex: event.fileIndex, totalFiles: event.totalFiles, source: event.source });
+    }
+    const stages = events.map((e) => e.stage);
+    expect(stages[0]).toBe('preview');
+    expect(stages[1]).toBe('backend');
+    expect(stages[stages.length - 1]).toBe('done');
+    const fileEvents = events.filter((e) => e.stage === 'file');
+    expect(fileEvents).toHaveLength(2);
+    expect(fileEvents[0].fileIndex).toBe(1);
+    expect(fileEvents[1].fileIndex).toBe(2);
+    expect(fileEvents[0].totalFiles).toBe(2);
   });
 });

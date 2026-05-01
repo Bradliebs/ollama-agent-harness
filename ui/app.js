@@ -2319,23 +2319,74 @@ async function ragBuild() {
   const paths = ragSelectedPathsList();
   if (!name) { if (status) status.textContent = 'Enter an index name first.'; return; }
   if (paths.length === 0) { if (status) status.textContent = 'Pick at least one file or folder.'; return; }
-  if (status) { status.textContent = 'Building…'; status.dataset.locked = '1'; }
+  if (status) { status.textContent = 'Starting build…'; status.dataset.locked = '1'; }
+  let total = 0;
+  let processed = 0;
+  let lastFile = '';
+  let chunkCount = 0;
+  let resolvedBackend = backend || '';
   try {
-    const r = await fetch('/api/rag/build', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, paths, backend }) });
-    const d = await r.json();
-    if (d.error) { if (status) status.textContent = 'Build failed: ' + d.error; return; }
-    ragState.lastBuild = d;
-    if (d.preview) renderRagPreview({ ...d.preview, backend: d.backend });
-    if (status) {
-      const backendName = d.backend?.name || 'unknown';
-      const summary = d.files === 0
+    const response = await fetch('/api/rag/build/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, paths, backend }) });
+    if (!response.ok || !response.body) {
+      const err = await response.json().catch(() => ({ error: 'Build request failed (' + response.status + ')' }));
+      if (status) status.textContent = 'Build failed: ' + (err.error || response.status);
+      return;
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalEvent = null;
+    let errorMessage = null;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let boundary;
+      while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+        const raw = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        let event = 'message';
+        let dataLine = '';
+        for (const line of raw.split('\n')) {
+          if (line.startsWith('event:')) event = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLine += line.slice(5).trim();
+        }
+        if (!dataLine) continue;
+        let payload;
+        try { payload = JSON.parse(dataLine); } catch { continue; }
+        if (event === 'preview') {
+          total = payload.totalFiles || (payload.preview && payload.preview.totalFiles) || 0;
+          if (status) status.textContent = 'Indexing 0 / ' + total + ' files…';
+        } else if (event === 'backend') {
+          resolvedBackend = payload.backend?.name || resolvedBackend;
+          if (status) status.textContent = 'Using ' + resolvedBackend + ' backend · indexing 0 / ' + total + ' files…';
+        } else if (event === 'file') {
+          processed = payload.fileIndex || processed + 1;
+          lastFile = payload.source ? payload.source.split(/[\\/]/).pop() : '';
+          chunkCount += payload.chunks || 0;
+          if (status) status.textContent = 'Indexing ' + processed + ' / ' + (payload.totalFiles || total) + ' files · ' + chunkCount + ' chunks · ' + lastFile;
+        } else if (event === 'done') {
+          finalEvent = payload;
+        } else if (event === 'error') {
+          errorMessage = payload.message || 'unknown error';
+        }
+      }
+    }
+    if (errorMessage) { if (status) status.textContent = 'Build failed: ' + errorMessage; return; }
+    if (finalEvent) {
+      ragState.lastBuild = { files: finalEvent.files, chunks: finalEvent.totalChunks, backend: finalEvent.backend, preview: finalEvent.preview };
+      if (finalEvent.preview) renderRagPreview({ ...finalEvent.preview, backend: finalEvent.backend });
+      const backendName = finalEvent.backend?.name || resolvedBackend || 'unknown';
+      const summary = (finalEvent.files || 0) === 0
         ? 'Build completed but 0 files matched. See Preview below for which paths were skipped.'
-        : 'Built · ' + d.files + ' file(s), ' + d.chunks + ' chunk(s), backend=' + backendName;
-      status.textContent = summary;
+        : 'Built · ' + finalEvent.files + ' file(s), ' + finalEvent.totalChunks + ' chunk(s), backend=' + backendName;
+      if (status) status.textContent = summary;
+    } else if (status) {
+      status.textContent = 'Build finished without final event.';
     }
     await loadRagTab();
   } catch (e) {
-    if (status) status.textContent = 'Build failed: ' + e.message;
+    if (status) status.textContent = 'Build failed: ' + (e.message || e);
   } finally {
     if (status) status.dataset.locked = '';
   }
@@ -2355,8 +2406,48 @@ async function ragSearch() {
     if (d.error) { out.textContent = d.error; return; }
     const results = (d && d.results) || [];
     if (results.length === 0) { out.textContent = 'No matches.'; return; }
-    out.innerHTML = results.map((row, i) => '<div class="trace-row"><strong>[' + (i + 1) + '] score=' + row.score.toFixed(3) + '</strong> ' + esc(row.source) + ' (chunk ' + row.chunkNo + ')<div style="white-space:pre-wrap;color:var(--text-dim);margin-top:4px">' + esc(row.content.slice(0, 600)) + (row.content.length > 600 ? '…' : '') + '</div></div>').join('');
+    out.innerHTML = results.map((row, i) => renderRagSearchResult(row, i, query)).join('');
   } catch (e) { out.textContent = e.message; }
+}
+
+function renderRagSearchResult(row, i, query) {
+  const sourceShort = String(row.source || '').split(/[\\/]/).slice(-2).join('/');
+  return '<div class="trace-row">'
+    + '<strong>[' + (i + 1) + '] score=' + row.score.toFixed(3) + '</strong> '
+    + esc(sourceShort) + ' (chunk ' + row.chunkNo + ')'
+    + '<div class="rag-result-actions">'
+    +   '<button class="btn-sm" onclick="ragReadInChat(\'' + escAttr(row.source) + '\')">📄 Read in chat</button> '
+    +   '<button class="btn-sm" onclick="ragAskAboutChunk(\'' + escAttr(row.source) + '\', ' + row.chunkNo + ', \'' + escAttr(query) + '\')">💬 Ask about this</button> '
+    +   '<button class="btn-sm" onclick="ragCopyChunk(this)" data-chunk="' + escAttr(row.content) + '">Copy</button>'
+    + '</div>'
+    + '<div style="white-space:pre-wrap;color:var(--text-dim);margin-top:4px">' + esc(row.content.slice(0, 600)) + (row.content.length > 600 ? '…' : '') + '</div>'
+    + '</div>';
+}
+
+function ragReadInChat(sourcePath) {
+  const input = document.getElementById('chatInput');
+  if (!input) return;
+  input.value = 'Read the file ' + sourcePath;
+  sendMessage();
+}
+
+function ragAskAboutChunk(sourcePath, chunkNo, query) {
+  const input = document.getElementById('chatInput');
+  if (!input) return;
+  const shortName = sourcePath.split(/[\\/]/).pop();
+  input.value = 'Look at ' + shortName + ' (chunk ' + chunkNo + ') and answer: ' + query;
+  sendMessage();
+}
+
+function ragCopyChunk(button) {
+  const text = button.dataset.chunk || '';
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      const original = button.textContent;
+      button.textContent = 'Copied';
+      setTimeout(() => { button.textContent = original; }, 1200);
+    }).catch(() => {});
+  }
 }
 
 async function ragDrop(name) {

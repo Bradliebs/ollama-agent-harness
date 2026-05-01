@@ -1161,6 +1161,37 @@ app.post('/api/rag/preview', async (req, res) => {
   }
 });
 
+// Streamed build with progress events (SSE) so the UI can show file-by-file
+// progress for long indexing runs. Body shape matches POST /api/rag/build.
+app.post('/api/rag/build/stream', async (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  const paths = Array.isArray(req.body?.paths) ? req.body.paths.map((p: unknown) => String(p)) : [];
+  const backend = req.body?.backend === 'ollama' || req.body?.backend === 'hash' ? req.body.backend : undefined;
+  if (!name) { res.status(400).json({ error: 'name is required' }); return; }
+  if (paths.length === 0) { res.status(400).json({ error: 'at least one path is required' }); return; }
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+  const writeEvent = (event: string, data: unknown): void => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+  let aborted = false;
+  res.on('close', () => { aborted = true; });
+  try {
+    for await (const event of ragIndex.iterateBuild(PROJECT_DIR, name, paths, { backend, ollamaHost })) {
+      if (aborted) break;
+      writeEvent(event.stage, event);
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    writeEvent('error', { message: msg });
+  } finally {
+    if (!res.writableEnded) res.end();
+  }
+});
+
 app.post('/api/rag/search', async (req, res) => {
   try {
     const name = String(req.body?.name || '').trim();

@@ -288,23 +288,38 @@ async function diagnosePath(
   return { input, resolved: abs, status: 'matched', kind: 'directory', fileCount: matches.length, sampleFiles, message: `Matched ${matches.length} text file(s).` };
 }
 
-export async function build(
+export interface RagBuildProgressEvent {
+  stage: 'preview' | 'backend' | 'file' | 'done' | 'error';
+  fileIndex?: number;
+  totalFiles?: number;
+  source?: string;
+  chunks?: number;
+  backend?: RagBackend;
+  preview?: RagBuildPreview;
+  files?: number;
+  totalChunks?: number;
+  message?: string;
+}
+
+export async function* iterateBuild(
   projectDir: string,
   name: string,
   paths: string[],
   options: { backend?: 'ollama' | 'hash'; ollamaHost: string; chunkChars?: number; overlap?: number } = { ollamaHost: 'http://localhost:11434' },
-): Promise<{ files: number; chunks: number; backend: RagBackend; preview: RagBuildPreview }> {
+): AsyncGenerator<RagBuildProgressEvent> {
   await fs.mkdir(ragDir(projectDir), { recursive: true });
   const preview = await previewBuild(projectDir, paths);
+  yield { stage: 'preview', preview, totalFiles: preview.totalFiles };
   const backend = await selectBackend(options.ollamaHost, options.backend);
+  yield { stage: 'backend', backend };
   const filesToRead: string[] = [];
   for (const raw of paths) {
-    // Resolve relative paths against the project dir; absolute paths are honored as-is.
     const abs = path.isAbsolute(raw) ? raw : path.resolve(projectDir, raw);
     await walkText(abs, projectDir, filesToRead);
   }
   const chunks: RagChunk[] = [];
-  for (const filePath of filesToRead) {
+  for (let fileIndex = 0; fileIndex < filesToRead.length; fileIndex++) {
+    const filePath = filesToRead[fileIndex];
     let content: string;
     try { content = await fs.readFile(filePath, 'utf-8'); } catch { continue; }
     const sha = crypto.createHash('sha1').update(content).digest('hex');
@@ -321,6 +336,7 @@ export async function build(
         sha1: sha,
       });
     });
+    yield { stage: 'file', fileIndex: fileIndex + 1, totalFiles: filesToRead.length, source: filePath, chunks: pieces.length };
   }
   const file: RagIndexFile = {
     version: 1,
@@ -331,7 +347,29 @@ export async function build(
     chunks,
   };
   await fs.writeFile(indexPath(projectDir, name), JSON.stringify(file), 'utf-8');
-  return { files: new Set(chunks.map((c) => c.source)).size, chunks: chunks.length, backend, preview };
+  yield { stage: 'done', files: new Set(chunks.map((c) => c.source)).size, totalChunks: chunks.length, backend, preview };
+}
+
+export async function build(
+  projectDir: string,
+  name: string,
+  paths: string[],
+  options: { backend?: 'ollama' | 'hash'; ollamaHost: string; chunkChars?: number; overlap?: number } = { ollamaHost: 'http://localhost:11434' },
+): Promise<{ files: number; chunks: number; backend: RagBackend; preview: RagBuildPreview }> {
+  let files = 0;
+  let chunks = 0;
+  let backend: RagBackend | undefined;
+  let preview: RagBuildPreview | undefined;
+  for await (const event of iterateBuild(projectDir, name, paths, options)) {
+    if (event.stage === 'done') {
+      files = event.files ?? 0;
+      chunks = event.totalChunks ?? 0;
+      backend = event.backend;
+      preview = event.preview;
+    }
+  }
+  if (!backend || !preview) throw new Error('iterateBuild did not produce a final result');
+  return { files, chunks, backend, preview };
 }
 
 export async function search(

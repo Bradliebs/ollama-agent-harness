@@ -281,6 +281,31 @@ describe('web server API validation', () => {
     expect(response.status).toBe(400);
   });
 
+  it('streams RAG build progress events via SSE', async () => {
+    const response = await request('/api/rag/build/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '_sse_smoke', paths: ['README.md'], backend: 'hash' }),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffered = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffered += decoder.decode(value, { stream: true });
+    }
+    expect(buffered).toContain('event: preview');
+    expect(buffered).toContain('event: backend');
+    expect(buffered).toContain('event: file');
+    expect(buffered).toContain('event: done');
+    // Cleanup the temporary index so it does not leak between runs.
+    const drop = await request('/api/rag/indexes/_sse_smoke', { method: 'DELETE' });
+    expect(drop.status).toBe(200);
+  });
+
   it('refreshes the model catalog and rebuilds the session search index', async () => {
     const catalog = await request('/api/models/catalog/refresh', { method: 'POST' });
     expect(catalog.status).toBe(200);
