@@ -753,6 +753,25 @@
       <div id="releaseVerificationPanel" class="trace-detail initial-hidden"></div>
     </div>
     <div class="settings-section">
+      <h4>Agent Personality</h4>
+      <div class="setting-row">
+        <label>Preset</label>
+        <select id="personalityPreset" onchange="applyPersonalityPreset(this.value)">
+          <option value="">None (default assistant)</option>
+          <option value="professional">Professional — precise, formal, structured</option>
+          <option value="friendly">Friendly — warm, encouraging, uses examples</option>
+          <option value="concise">Concise — minimal words, code-first</option>
+          <option value="mentor">Mentor — teaches as it works, explains reasoning</option>
+          <option value="creative">Creative — imaginative, explores alternatives</option>
+          <option value="pirate">Pirate — arr, does the work but with flair</option>
+          <option value="custom">Custom...</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <textarea id="personalityText" rows="3" placeholder="Describe your agent's personality, voice, and tone..." onchange="updateSetting('agentPersonality',this.value)"></textarea>
+      </div>
+    </div>
+    <div class="settings-section">
       <h4>System Prompt</h4>
       <div class="setting-row">
         <textarea id="sysPrompt" placeholder="Leave empty for default..." onchange="updateSetting('systemPrompt',this.value)"></textarea>
@@ -760,9 +779,10 @@
     </div>
     <div class="settings-section">
       <h4>Safety Mode</h4>
+      <button class="btn-sm full-width-button" style="margin-bottom:8px;background:rgba(80,200,120,.15);border-color:#50c878;color:#50c878" onclick="enableFullAutonomy()">⚡ Full Autonomy — unlock everything</button>
       <div class="mode-opt permission-mode-option active" onclick="setMode('dontAsk',this)">
         <div class="mode-t">🟢 Auto-approve all</div>
-        <div class="mode-d">Tools run without asking.</div>
+        <div class="mode-d">Tools run without asking. All gated capabilities auto-grant.</div>
       </div>
       <div class="mode-opt permission-mode-option" onclick="setMode('acceptEdits',this)">
         <div class="mode-t">🟡 Ask for commands</div>

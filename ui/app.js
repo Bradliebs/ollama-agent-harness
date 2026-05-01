@@ -161,6 +161,7 @@ async function loadSettings() {
     if (s.temperature !== undefined) { document.getElementById('tempSlider').value = s.temperature; document.getElementById('tempVal').textContent = s.temperature; }
     if (s.topP !== undefined) { document.getElementById('topPSlider').value = s.topP; document.getElementById('topPVal').textContent = s.topP; }
     if (s.systemPrompt) document.getElementById('sysPrompt').value = s.systemPrompt;
+    hydratePersonality(s.agentPersonality || '');
     if (s.ollamaHost) document.getElementById('ollamaHost').value = s.ollamaHost;
     if (s.summarizerModel) document.getElementById('summarizerModel').value = s.summarizerModel;
     if (s.contextMaxTokens) document.getElementById('contextMaxTokens').value = s.contextMaxTokens;
@@ -585,6 +586,32 @@ function updateSetting(k, v) {
   return request;
 }
 
+const PERSONALITY_PRESETS = {
+  professional: 'You are a precise, formal professional. Use structured language, clear headers, and avoid casual phrasing. Present information systematically with evidence and reasoning.',
+  friendly: 'You are a warm, encouraging assistant who explains things clearly with relatable examples. Use a conversational tone, celebrate wins, and gently guide through challenges.',
+  concise: 'You are extremely concise. Minimal prose. Lead with code, commands, or direct answers. Skip pleasantries. Use bullet points over paragraphs.',
+  mentor: 'You are a patient mentor who teaches as you work. Explain your reasoning, point out why you chose one approach over another, and help the user learn from each interaction.',
+  creative: 'You are imaginative and creative. Explore multiple approaches before settling on one. Use analogies, think outside the box, and suggest novel solutions the user might not have considered.',
+  pirate: 'Arr! You be a capable and thorough AI pirate. You do the work properly and completely, but you speak like a seasoned buccaneer. Sprinkle in nautical metaphors. Call bugs "barnacles" and good code "seaworthy."',
+};
+
+function hydratePersonality(text) {
+  const el = document.getElementById('personalityText');
+  const sel = document.getElementById('personalityPreset');
+  if (el) el.value = text;
+  if (sel) {
+    const match = Object.entries(PERSONALITY_PRESETS).find(([, v]) => v === text);
+    sel.value = match ? match[0] : text ? 'custom' : '';
+  }
+}
+
+function applyPersonalityPreset(preset) {
+  const text = PERSONALITY_PRESETS[preset] || '';
+  const el = document.getElementById('personalityText');
+  if (el) el.value = text;
+  if (preset !== 'custom') updateSetting('agentPersonality', text);
+}
+
 function updateRoutingSetting(k, v) {
   const next = { ...currentModelRouting };
   if (k === 'confidenceEscalationThreshold' || k.endsWith('Threshold')) {
@@ -976,6 +1003,31 @@ function setMode(m, el) {
   document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
   el.classList.add('active');
   updateSetting('permissionMode', m);
+}
+
+async function enableFullAutonomy() {
+  // Set dontAsk mode
+  document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
+  const dontAskOption = document.querySelectorAll('.permission-mode-option')[0];
+  if (dontAskOption) dontAskOption.classList.add('active');
+  await updateSetting('permissionMode', 'dontAsk');
+
+  // Enable all disabled tools
+  try {
+    const toolsData = await fetch('/api/tools').then((r) => r.json());
+    const disabled = toolsData.disabled || [];
+    for (const name of disabled) {
+      await fetch('/api/tools/' + encodeURIComponent(name) + '/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      });
+    }
+  } catch { /* best effort */ }
+
+  // Refresh the tools dashboard if visible
+  if (typeof loadToolsDashboard === 'function') loadToolsDashboard();
+  alert('Full autonomy enabled. All tools unlocked. All gated capabilities will auto-grant on next chat. Kill switch (Ctrl+Shift+K) is your emergency stop.');
 }
 
 async function handleFileAttach(fileList) {
