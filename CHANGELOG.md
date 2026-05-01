@@ -11,6 +11,32 @@ keywords:
 estimated_reading_time: 8
 ---
 
+## Unreleased
+
+### LocalAgentHarness session
+
+Multi-iteration session that closed the LocalAgentHarness spec gaps against the existing harness and added the Skill Curator, workflow runner, and supporting safety surfaces.
+
+* **Kill switch** (`src/permissions/engine.ts`, `src/web/server.ts`, `ui/app.js`): `PermissionEngine.engageKillSwitch` denies every tool call (including reads) while engaged. Toggle from any view with **Ctrl+Shift+K**; a fixed red banner stays at the top while active. State persists in `.harness/settings.json` so a stop survives restarts.
+* **Tool registry metadata** (`src/types/tool.ts`, `src/tools/registry.ts`): `ToolRegistryEntry` now carries `riskLevel` (low / medium / high), `permissionCategory`, and `canDryRun` for every builtin. `GET /api/tools` exposes the data; the Tools tab renders risk badges, category pills, read-only / dry-run flags, and a per-tool **Disable / Enable** toggle. Disabled tools persist across restarts.
+* **Extended skill schema** (`src/extensibility/skillLoader.ts`): SKILL.md frontmatter now parses optional `when_to_use`, `required_tools`, `risk_level`, `steps`, `examples`, `validation_checks`, `rollback_notes`. Existing skills keep working.
+* **Workflow runner** (`src/workflows/workflowRegistry.ts`): declarative tool-call sequences in `.harness/workflows/<name>.{yaml,json}` with dry-run, pause, resume, cancel, and `${variables.foo}` substitution. Permission denials surface as a distinct `denied` step status. Bundled `project_health_check.yaml` and `nightly_curator.yaml` workflows.
+* **Runs page** (`src/web/server.ts`, `ui/app.js`): dedicated tab with status badges, duration, error rows, transcript open + ID copy actions. Also surfaces the most recent curator audit log entries color-coded by outcome.
+* **Local RAG** (`src/persistence/ragIndex.ts`, `src/web/server.ts`, `ui/app.js`): tree picker with checkboxes (no more typing folder paths), preview with per-path diagnostics (matched / missing / empty / unsupported), backend badge (auto-detects Ollama embeddings vs offline hash fallback), build progress streamed via SSE, search results with **Read in chat / Ask about this / Copy** buttons. Saves picker preferences as a sidecar so **Load paths** and **Rebuild** survive restarts.
+* **`rag_search` and `rag_list_indexes` tools** (`src/tools/ragTools.ts`): builtin tools registered in the `rag` toolset so the agent can query indexes directly. Read-only, default-allowed.
+* **Skill install / scaffold** (`src/web/server.ts`, `ui/app.js`): one-click install of `.github/skills/<name>` into runtime `.harness/skills/<name>` (with overwrite confirmation) plus a starter SKILL.md scaffold for malformed runtime folders. Skill diagnostics surface in both the Skills tab and the Discovery panel.
+* **Skill Curator** (`src/curator/curator.ts`, `src/curator/scheduler.ts`): background skill maintenance with two phases.
+  * Phase 1 (deterministic): `findStaleSkills` flags skills past `staleDays` with at least `minViewsBeforeArchive` views; `runDeterministicPhase` moves up to `maxArchivePerRun` unpinned candidates to `.harness/skills/_archive/<name>/`. Reversible via Restore.
+  * Phase 2 (LLM): asks the configured model to cluster related skills into umbrella merges, writes proposals to `.harness/curator/proposals.md`, parsed into structured cards with **Preview** and **Apply merge** buttons. Pinned source skills are skipped, never archived. Verified end-to-end against gemma4:e4b: model produced a 1-cluster proposal in 57s, parser extracted it correctly, apply path wrote umbrella + archived 3 source skills.
+  * Heartbeat scheduler ticks every 60s, runs an hourly maintenance check, and only triggers the curator when (a) enabled, (b) interval elapsed, (c) idle threshold met, (d) kill switch not active.
+  * Per-skill usage in `.harness/skill-usage.json` tracks `useCount`, `viewCount`, `lastUsedAt`, `lastViewedAt`, `pinned`, `archived`. `SkillTool` and `ListSkillsTool` record use / view; `/api/chat` also records a use when the user message matches a skill trigger phrase.
+  * Audit log at `.harness/curator/log.jsonl`. Settings live in `.harness/settings.json#curator` (Settings panel exposes Enable, Interval (h), Idle threshold (min), Stale (days), Min views before archive, Max archives per run, Enable LLM merge phase). Defaults: weekly interval, 2-hour idle threshold, 60-day stale, 5-archive cap, LLM phase off.
+* **`curator_preview` tool** (`src/tools/curatorTools.ts`): read-only tool that runs the curator's deterministic phase in dry-run mode. Used by the bundled `nightly_curator` workflow.
+* **Discovery panel curator card** (`src/web/server.ts`, `ui/app.js`): scheduler state, last-run timestamp, recent audit events surfaced alongside extensions / automations / session search.
+* **Smoke fixes**: tab discovery in `scripts/ui-smoke.js` and `ui/app.js` now matches by `onclick` substring (icon prefixes broke `textContent === 'Skills'`); `app.js?v=3` cache-buster regex; SSE endpoints use `res.on('close')` not `req.on('close')` (POST request body consumption fires `req.close` too early).
+* **Tests**: 42 suites / 276 tests (up from 228 at session start). New coverage: kill switch, tool registry metadata, extended skill schema, workflow runner (5 cases incl. dry-run + denied + pause/resume + cancel), RAG preview / streaming / tools / prefs, skill install / scaffold / pin, curator deterministic phase / LLM proposals / archive cap / kill-switch gating, scheduler skip conditions, merge proposal parser + apply (name conflict, pinned source skipped), curator_preview tool, /api/curator + /api/curator/proposals + apply round-trip.
+* **Verified live**: kill switch via real HTTP routes; RAG end-to-end with Ollama nomic-embed-text (cosine 0.48 vs hash 0.30); curator preview against real workspace; LLM merge end-to-end (gemma4:e4b returned valid proposal, applied to disk, cleaned up); `nightly_curator` workflow against the live server (all 3 steps completed).
+
 ## Ollama Agent Harness v0.1.14
 
 ## Changes

@@ -353,6 +353,23 @@ describe('web server API validation', () => {
     expect(unknown.status).toBe(404);
   });
 
+  it('persists disabledTools and killSwitch state via /api/settings', async () => {
+    const off = await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+    expect(off.status).toBe(200);
+    const engaged = await request('/api/permissions/kill-switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: true, reason: 'persistence test' }) });
+    expect(engaged.status).toBe(200);
+
+    const settings = await request('/api/settings');
+    expect(settings.status).toBe(200);
+    const body = await settings.json() as { disabledTools: string[]; killSwitch: { active: boolean; reason: string } };
+    expect(body.disabledTools).toEqual(expect.arrayContaining(['bash']));
+    expect(body.killSwitch).toMatchObject({ active: true, reason: 'persistence test' });
+
+    // Cleanup so subsequent tests start in a known state.
+    await request('/api/permissions/kill-switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: false }) });
+    await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true }) });
+  });
+
   it('lists workflows from .harness/workflows and returns enriched runs', async () => {
     const list = await request('/api/workflows');
     expect(list.status).toBe(200);

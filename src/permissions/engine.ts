@@ -1,7 +1,7 @@
 import type { PermissionRule, PermissionMode, PermissionResult, ToolCall } from '../types';
 
 const EDIT_TOOLS = new Set(['file_write', 'file_edit']);
-const READ_TOOLS = new Set(['file_read', 'list_files', 'list_uploads', 'grep', 'glob', 'web_fetch', 'web_search', 'web_read', 'image_analyze', 'pdf_read', 'pdf_metadata', 'pdf_extract_tables', 'rag_search', 'rag_list_indexes', 'curator_preview']);
+const READ_TOOLS = new Set(['file_read', 'list_files', 'list_uploads', 'list_skills', 'grep', 'glob', 'web_fetch', 'web_search', 'web_read', 'image_analyze', 'pdf_read', 'pdf_metadata', 'pdf_extract_tables', 'rag_search', 'rag_list_indexes', 'curator_preview']);
 
 export class PermissionEngine {
   private rules: PermissionRule[];

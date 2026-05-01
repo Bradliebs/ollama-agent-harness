@@ -11,7 +11,7 @@ import { createBuiltinToolRegistry } from '../tools/registry';
 import { WorkflowRegistry } from '../workflows/workflowRegistry';
 import { runCurator, runDeterministicPhase, readCuratorLog, readCuratorProposals, restoreSkill, parseMergeProposals, applyMergeProposal, clearCuratorProposals, type CuratorConfig } from '../curator/curator';
 import { CuratorScheduler } from '../curator/scheduler';
-import { listSkillUsage, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
+import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { drainUploadsFallbacks, getUploadsDir, resolveProjectReadPath } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { setSkillsDir } from '../tools/skillTools';
@@ -27,7 +27,7 @@ import * as ragIndex from '../persistence/ragIndex';
 import { MCP_CATALOG } from '../extensibility/mcpCatalog';
 import { assembleSystemContext, estimateTokenCount } from '../context/assembly';
 import { HookPipeline } from '../extensibility/hookPipeline';
-import { loadSkillsDir, scanSkillsDir } from '../extensibility/skillLoader';
+import { loadSkillsDir, matchSkillTrigger, scanSkillsDir } from '../extensibility/skillLoader';
 import { discoverExtensionManifests } from '../extensibility/extensionManifest';
 import { RateLimiter } from '../core/rateLimiter';
 import { logger } from '../core/logger';
@@ -97,6 +97,10 @@ interface WebSettings {
   extensionActivation: ExtensionActivationSettings;
   walkthrough: WalkthroughSettings;
   curator: CuratorSettings;
+  /** Tool names disabled via the Tools tab. Restored on startup. */
+  disabledTools: string[];
+  /** Last known kill switch state. Restored on startup so a stop persists across restarts. */
+  killSwitch: { active: boolean; reason: string };
 }
 
 interface MediaToolSettings {
@@ -799,6 +803,7 @@ app.post('/api/permissions/kill-switch', (req, res) => {
     logger.info('Permissions', 'Kill switch released');
     runtimeTracer.recordEvent('permission.kill_switch_released', {});
   }
+  saveSettingsToDisk().catch(() => {});
   res.json({ killSwitch: { active: killSwitchActive, reason: killSwitchReason } });
 });
 
@@ -840,6 +845,7 @@ app.post('/api/tools/:name/toggle', (req, res) => {
   if (desiredEnabled) disabledTools.delete(toolName);
   else disabledTools.add(toolName);
   logger.info('Tools', 'Tool toggled', { tool: toolName, enabled: desiredEnabled });
+  saveSettingsToDisk().catch(() => {});
   res.json({ name: toolName, enabled: desiredEnabled, disabled: Array.from(disabledTools).sort() });
 });
 
@@ -940,6 +946,19 @@ app.post('/api/chat', async (req, res) => {
   lastUserActivityMs = Date.now();
   const { message, model } = req.body;
   if (!message) { res.status(400).json({ error: 'message is required' }); return; }
+
+  // Best-effort: if the user message contains a trigger phrase from any
+  // installed skill, record a use event for that skill so the curator can
+  // see real-world relevance, not just explicit `skill` tool calls.
+  const messageText = typeof message === 'string' ? message : (typeof (message as { content?: unknown })?.content === 'string' ? (message as { content: string }).content : '');
+  if (messageText) {
+    loadSkillsDir(SKILLS_DIR)
+      .then((skills) => {
+        const matched = matchSkillTrigger(skills, messageText);
+        if (matched) recordSkillUse(PROJECT_DIR, matched.name).catch(() => {});
+      })
+      .catch(() => {});
+  }
 
   const activeModel = model || currentModel;
   if (!activeModel) { res.status(400).json({ error: 'No model selected.' }); return; }
@@ -2197,6 +2216,8 @@ function getCurrentSettings(): WebSettings {
     extensionActivation,
     walkthrough,
     curator: curatorSettings,
+    disabledTools: Array.from(disabledTools).sort(),
+    killSwitch: { active: killSwitchActive, reason: killSwitchReason },
   };
 }
 
@@ -2245,6 +2266,21 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   if (settings.curator !== undefined) {
     curatorSettings = sanitizeCuratorSettings(settings.curator);
     configureCuratorScheduler();
+  }
+  if (Array.isArray(settings.disabledTools)) {
+    const registry = createBuiltinToolRegistry();
+    disabledTools.clear();
+    for (const name of settings.disabledTools) {
+      const value = String(name).trim();
+      if (value && registry.get(value)) disabledTools.add(value);
+    }
+  }
+  if (settings.killSwitch !== undefined && typeof settings.killSwitch === 'object' && settings.killSwitch !== null) {
+    const ks = settings.killSwitch as { active?: unknown; reason?: unknown };
+    killSwitchActive = Boolean(ks.active);
+    killSwitchReason = killSwitchActive
+      ? (typeof ks.reason === 'string' && ks.reason.trim() ? String(ks.reason).slice(0, 500) : 'Kill switch restored from saved state.')
+      : '';
   }
   if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (settings.temperature !== undefined) temperature = clampNumber(settings.temperature, 0, 2, 0.7);
