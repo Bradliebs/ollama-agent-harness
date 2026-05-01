@@ -7,6 +7,7 @@ import { Ollama } from 'ollama';
 import { OllamaClient } from '../core/ollamaClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { getBuiltinTools } from '../tools';
+import { createBuiltinToolRegistry } from '../tools/registry';
 import { drainUploadsFallbacks, getUploadsDir, resolveProjectReadPath } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { setSkillsDir } from '../tools/skillTools';
@@ -166,6 +167,8 @@ let modelCatalog: ModelCatalogSettings = { url: '', ttlHours: 24 };
 let extensionActivation: ExtensionActivationSettings = { executablePlugins: false, allowedPluginNames: [], requirePermissionReview: true };
 let walkthrough: WalkthroughSettings = { completed: [] };
 let settingsLoaded = false;
+let killSwitchActive = false;
+let killSwitchReason = '';
 const rateLimiter = new RateLimiter(10, 2);
 const hookPipeline = new HookPipeline();
 const permissionPrompts = new PermissionPromptBroker();
@@ -173,7 +176,11 @@ const defaultWebRuntime: WebRuntimeDeps = {
   createClient: (model, host, numCtx) => new OllamaClient({ model, host, numCtx }),
   getModelContextWindow: (model, host) => new OllamaClient({ model, host }).getContextWindow(),
   getTools: getBuiltinTools,
-  createPermissionEngine: (mode) => new PermissionEngine([], mode),
+  createPermissionEngine: (mode) => {
+    const engine = new PermissionEngine([], mode);
+    if (killSwitchActive) engine.engageKillSwitch(killSwitchReason);
+    return engine;
+  },
   createSession: (projectDir, model) => new SessionStorage(projectDir, model),
   startNewSession,
   getEvolvedPrompt,
@@ -716,6 +723,61 @@ app.post('/api/runtime/cleanup', async (req, res) => {
 
 app.get('/api/permissions/pending', (_req, res) => {
   res.json({ prompts: permissionPrompts.list() });
+});
+
+// Read-only view of the permission posture for the Permissions UI.
+app.get('/api/permissions/state', (_req, res) => {
+  res.json({
+    mode: permissionMode,
+    allowedModes: ALLOWED_PERMISSION_MODES,
+    killSwitch: { active: killSwitchActive, reason: killSwitchReason },
+    pendingCount: permissionPrompts.list().length,
+  });
+});
+
+// Engage or release the global kill switch. Once engaged, the permission
+// engine denies every subsequent tool call until released.
+app.post('/api/permissions/kill-switch', (req, res) => {
+  const desired = Boolean(req.body?.active);
+  if (desired) {
+    killSwitchActive = true;
+    killSwitchReason = typeof req.body?.reason === 'string' && req.body.reason.trim()
+      ? String(req.body.reason).trim().slice(0, 500)
+      : 'Kill switch engaged from dashboard.';
+    logger.warn('Permissions', 'Kill switch engaged', { reason: killSwitchReason });
+    runtimeTracer.recordEvent('permission.kill_switch_engaged', { reason: killSwitchReason });
+  } else {
+    killSwitchActive = false;
+    killSwitchReason = '';
+    logger.info('Permissions', 'Kill switch released');
+    runtimeTracer.recordEvent('permission.kill_switch_released', {});
+  }
+  res.json({ killSwitch: { active: killSwitchActive, reason: killSwitchReason } });
+});
+
+// Read-only registry view for the Tools dashboard. Returns one entry per
+// registered tool with risk/category metadata grouped by toolset.
+app.get('/api/tools', (_req, res) => {
+  try {
+    const registry = createBuiltinToolRegistry();
+    const tools = registry.listEntries().map((entry) => ({
+      name: entry.tool.name,
+      description: entry.tool.description,
+      toolset: entry.toolset,
+      source: entry.source,
+      enabledByDefault: entry.enabledByDefault,
+      isReadOnly: entry.tool.isReadOnly,
+      riskLevel: entry.riskLevel,
+      permissionCategory: entry.permissionCategory,
+      canDryRun: entry.canDryRun,
+    }));
+    const toolsets: Record<string, number> = {};
+    for (const tool of tools) toolsets[tool.toolset] = (toolsets[tool.toolset] ?? 0) + 1;
+    res.json({ tools, toolsets });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
 });
 
 app.post('/api/permissions/:id/resolve', (req, res) => {

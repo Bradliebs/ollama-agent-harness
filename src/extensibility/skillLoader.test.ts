@@ -25,4 +25,48 @@ describe('skillLoader', () => {
       await fs.rm(projectDir, { recursive: true, force: true });
     }
   });
+
+  it('parses extended skill schema fields when present', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-skill-extended-'));
+    const skillsDir = path.join(projectDir, 'skills');
+    await fs.mkdir(path.join(skillsDir, 'health-check'), { recursive: true });
+    await fs.writeFile(path.join(skillsDir, 'health-check', 'SKILL.md'), [
+      '---',
+      'name: project-health-check',
+      'description: Run a project health check.',
+      'domain: ops',
+      'triggers:',
+      '  - health',
+      'when_to_use: Before each release.',
+      'risk_level: medium',
+      'required_tools:',
+      '  - bash',
+      '  - file_read',
+      'steps:',
+      '  - Read the package.json.',
+      '  - Run the test suite.',
+      'examples:',
+      '  - "Check the harness before tagging v0.2.0"',
+      'validation_checks:',
+      '  - All tests pass.',
+      'rollback_notes: No state mutated; nothing to roll back.',
+      '---',
+      'Body content.',
+    ].join('\n'), 'utf-8');
+
+    try {
+      const skills = await loadSkillsDir(skillsDir);
+      expect(skills).toHaveLength(1);
+      const skill = skills[0];
+      expect(skill.whenToUse).toBe('Before each release.');
+      expect(skill.riskLevel).toBe('medium');
+      expect(skill.requiredTools).toEqual(['bash', 'file_read']);
+      expect(skill.steps).toEqual(['Read the package.json.', 'Run the test suite.']);
+      expect(skill.examples?.[0]).toContain('v0.2.0');
+      expect(skill.validationChecks).toEqual(['All tests pass.']);
+      expect(skill.rollbackNotes).toContain('nothing to roll back');
+    } finally {
+      await fs.rm(projectDir, { recursive: true, force: true });
+    }
+  });
 });

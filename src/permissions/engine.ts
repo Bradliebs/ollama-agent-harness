@@ -6,13 +6,39 @@ const READ_TOOLS = new Set(['file_read', 'list_files', 'list_uploads', 'grep', '
 export class PermissionEngine {
   private rules: PermissionRule[];
   private mode: PermissionMode;
+  private killSwitchActive = false;
+  private killSwitchReason = '';
 
   constructor(rules: PermissionRule[] = [], mode: PermissionMode = 'default') {
     this.rules = rules;
     this.mode = mode;
   }
 
+  /** Engage the global kill switch. While active, every tool call is denied. */
+  engageKillSwitch(reason: string = 'Kill switch engaged.'): void {
+    this.killSwitchActive = true;
+    this.killSwitchReason = reason;
+  }
+
+  /** Release the kill switch and resume normal evaluation. */
+  releaseKillSwitch(): void {
+    this.killSwitchActive = false;
+    this.killSwitchReason = '';
+  }
+
+  isKillSwitchActive(): boolean {
+    return this.killSwitchActive;
+  }
+
+  getKillSwitchReason(): string {
+    return this.killSwitchReason;
+  }
+
   evaluate(call: ToolCall): PermissionResult {
+    if (this.killSwitchActive) {
+      return { decision: 'deny', reason: this.killSwitchReason || 'Kill switch active.' };
+    }
+
     // Phase 1: Deny rules always evaluated first — deny overrides everything
     for (const rule of this.rules) {
       if (rule.type === 'deny' && this.matchesRule(rule, call)) {

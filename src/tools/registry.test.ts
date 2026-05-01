@@ -24,7 +24,17 @@ describe('ToolRegistry', () => {
     const registry = new ToolRegistry();
     const tool = makeTool('same');
 
-    registry.register({ tool, toolset: 'test', source: 'runtime', enabledByDefault: true });
-    expect(() => registry.register({ tool, toolset: 'test', source: 'runtime', enabledByDefault: true })).toThrow('Tool already registered');
+    registry.register({ tool, toolset: 'test', source: 'runtime', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false });
+    expect(() => registry.register({ tool, toolset: 'test', source: 'runtime', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false })).toThrow('Tool already registered');
+  });
+
+  it('exposes risk and permission category metadata for the dashboard', () => {
+    const registry = createBuiltinToolRegistry();
+    const bash = registry.get('bash');
+    expect(bash?.riskLevel).toBe('high');
+    expect(bash?.permissionCategory).toBe('shell');
+    const fileRead = registry.get('file_read');
+    expect(fileRead?.riskLevel).toBe('low');
+    expect(fileRead?.permissionCategory).toBe('read');
   });
 });

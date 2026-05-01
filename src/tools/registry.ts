@@ -1,4 +1,4 @@
-import type { Tool } from '../types';
+import type { Tool, ToolPermissionCategory, ToolRiskLevel } from '../types';
 import { BashTool } from './bashTool';
 import { FileEditTool, FileReadTool, FileWriteTool, ListFilesTool, ListUploadsTool } from './fileTools';
 import { GrepTool } from './grepTool';
@@ -16,6 +16,12 @@ export interface ToolRegistryEntry {
   toolset: string;
   source: 'builtin' | 'runtime';
   enabledByDefault: boolean;
+  /** Coarse risk used by the dashboard, permission UI, and workflow runner. */
+  riskLevel: ToolRiskLevel;
+  /** Coarse permission category for grouping. */
+  permissionCategory: ToolPermissionCategory;
+  /** True when the tool implements a meaningful dry-run mode. */
+  canDryRun: boolean;
 }
 
 export class ToolRegistry {
@@ -56,33 +62,33 @@ export function createBuiltinToolRegistry(): ToolRegistry {
 }
 
 export const BUILTIN_TOOL_ENTRIES: ToolRegistryEntry[] = [
-  { tool: FileReadTool, toolset: 'files', source: 'builtin', enabledByDefault: true },
-  { tool: FileWriteTool, toolset: 'files', source: 'builtin', enabledByDefault: true },
-  { tool: FileEditTool, toolset: 'files', source: 'builtin', enabledByDefault: true },
-  { tool: ListFilesTool, toolset: 'files', source: 'builtin', enabledByDefault: true },
-  { tool: ListUploadsTool, toolset: 'files', source: 'builtin', enabledByDefault: true },
-  { tool: BashTool, toolset: 'shell', source: 'builtin', enabledByDefault: true },
-  { tool: WebFetchTool, toolset: 'web', source: 'builtin', enabledByDefault: true },
-  { tool: WebSearchTool, toolset: 'web', source: 'builtin', enabledByDefault: true },
-  { tool: WebReadTool, toolset: 'web', source: 'builtin', enabledByDefault: true },
-  { tool: GrepTool, toolset: 'search', source: 'builtin', enabledByDefault: true },
-  { tool: SkillTool, toolset: 'skills', source: 'builtin', enabledByDefault: true },
-  { tool: ListSkillsTool, toolset: 'skills', source: 'builtin', enabledByDefault: true },
-  { tool: CreateSkillTool, toolset: 'skills', source: 'builtin', enabledByDefault: true },
-  { tool: MemoryWriteTool, toolset: 'memory', source: 'builtin', enabledByDefault: true },
-  { tool: MemoryReadTool, toolset: 'memory', source: 'builtin', enabledByDefault: true },
-  { tool: ReflectTool, toolset: 'learning', source: 'builtin', enabledByDefault: true },
-  { tool: AnalyzePatternsTool, toolset: 'learning', source: 'builtin', enabledByDefault: true },
-  { tool: PromotePatternTool, toolset: 'learning', source: 'builtin', enabledByDefault: true },
-  { tool: ConsolidateTool, toolset: 'learning', source: 'builtin', enabledByDefault: true },
-  { tool: EvolveTool, toolset: 'learning', source: 'builtin', enabledByDefault: true },
-  { tool: ImproveSkillTool, toolset: 'learning', source: 'builtin', enabledByDefault: true },
-  { tool: ImageAnalyzeTool, toolset: 'media', source: 'builtin', enabledByDefault: true },
-  { tool: AudioTranscribeTool, toolset: 'media', source: 'builtin', enabledByDefault: true },
-  { tool: PdfReadTool, toolset: 'pdf', source: 'builtin', enabledByDefault: true },
-  { tool: PdfMetadataTool, toolset: 'pdf', source: 'builtin', enabledByDefault: true },
-  { tool: PdfRenderPageTool, toolset: 'pdf', source: 'builtin', enabledByDefault: true },
-  { tool: PdfExtractTablesTool, toolset: 'pdf', source: 'builtin', enabledByDefault: true },
-  { tool: RagSearchTool, toolset: 'rag', source: 'builtin', enabledByDefault: true },
-  { tool: RagListIndexesTool, toolset: 'rag', source: 'builtin', enabledByDefault: true },
+  { tool: FileReadTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
+  { tool: FileWriteTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'high', permissionCategory: 'write', canDryRun: false },
+  { tool: FileEditTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'high', permissionCategory: 'write', canDryRun: false },
+  { tool: ListFilesTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
+  { tool: ListUploadsTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
+  { tool: BashTool, toolset: 'shell', source: 'builtin', enabledByDefault: true, riskLevel: 'high', permissionCategory: 'shell', canDryRun: false },
+  { tool: WebFetchTool, toolset: 'web', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'network', canDryRun: false },
+  { tool: WebSearchTool, toolset: 'web', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'network', canDryRun: false },
+  { tool: WebReadTool, toolset: 'web', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'network', canDryRun: false },
+  { tool: GrepTool, toolset: 'search', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
+  { tool: SkillTool, toolset: 'skills', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'skills', canDryRun: false },
+  { tool: ListSkillsTool, toolset: 'skills', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'skills', canDryRun: false },
+  { tool: CreateSkillTool, toolset: 'skills', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'skills', canDryRun: false },
+  { tool: MemoryWriteTool, toolset: 'memory', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false },
+  { tool: MemoryReadTool, toolset: 'memory', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false },
+  { tool: ReflectTool, toolset: 'learning', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'learning', canDryRun: false },
+  { tool: AnalyzePatternsTool, toolset: 'learning', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'learning', canDryRun: false },
+  { tool: PromotePatternTool, toolset: 'learning', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'learning', canDryRun: false },
+  { tool: ConsolidateTool, toolset: 'learning', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'learning', canDryRun: false },
+  { tool: EvolveTool, toolset: 'learning', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'learning', canDryRun: false },
+  { tool: ImproveSkillTool, toolset: 'learning', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'learning', canDryRun: false },
+  { tool: ImageAnalyzeTool, toolset: 'media', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'media', canDryRun: false },
+  { tool: AudioTranscribeTool, toolset: 'media', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'media', canDryRun: false },
+  { tool: PdfReadTool, toolset: 'pdf', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
+  { tool: PdfMetadataTool, toolset: 'pdf', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
+  { tool: PdfRenderPageTool, toolset: 'pdf', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
+  { tool: PdfExtractTablesTool, toolset: 'pdf', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
+  { tool: RagSearchTool, toolset: 'rag', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'rag', canDryRun: false },
+  { tool: RagListIndexesTool, toolset: 'rag', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'rag', canDryRun: false },
 ];

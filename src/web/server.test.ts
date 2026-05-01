@@ -306,6 +306,42 @@ describe('web server API validation', () => {
     expect(drop.status).toBe(200);
   });
 
+  it('exposes tool registry metadata for the dashboard', async () => {
+    const response = await request('/api/tools');
+    expect(response.status).toBe(200);
+    const data = await response.json() as { tools: Array<{ name: string; toolset: string; riskLevel: string; permissionCategory: string; canDryRun: boolean }>; toolsets: Record<string, number> };
+    const bash = data.tools.find((t) => t.name === 'bash');
+    expect(bash).toMatchObject({ riskLevel: 'high', permissionCategory: 'shell', toolset: 'shell' });
+    const fileRead = data.tools.find((t) => t.name === 'file_read');
+    expect(fileRead).toMatchObject({ riskLevel: 'low', permissionCategory: 'read' });
+    expect(data.toolsets.shell).toBeGreaterThanOrEqual(1);
+  });
+
+  it('reports permission posture and toggles the kill switch', async () => {
+    const initial = await request('/api/permissions/state');
+    expect(initial.status).toBe(200);
+    await expect(initial.json()).resolves.toMatchObject({ killSwitch: { active: false } });
+
+    const engaged = await request('/api/permissions/kill-switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: true, reason: 'test stop' }),
+    });
+    expect(engaged.status).toBe(200);
+    await expect(engaged.json()).resolves.toMatchObject({ killSwitch: { active: true, reason: 'test stop' } });
+
+    const stillActive = await request('/api/permissions/state');
+    await expect(stillActive.json()).resolves.toMatchObject({ killSwitch: { active: true, reason: 'test stop' } });
+
+    const released = await request('/api/permissions/kill-switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: false }),
+    });
+    expect(released.status).toBe(200);
+    await expect(released.json()).resolves.toMatchObject({ killSwitch: { active: false } });
+  });
+
   it('refreshes the model catalog and rebuilds the session search index', async () => {
     const catalog = await request('/api/models/catalog/refresh', { method: 'POST' });
     expect(catalog.status).toBe(200);

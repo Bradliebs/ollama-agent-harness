@@ -101,4 +101,22 @@ describe('PermissionEngine', () => {
       expect(result.decision).toBe('allow');
     });
   });
+
+  describe('kill switch', () => {
+    it('denies every tool call while engaged, even read-only', () => {
+      const engine = new PermissionEngine([], 'dontAsk');
+      engine.engageKillSwitch('manual stop');
+      expect(engine.isKillSwitchActive()).toBe(true);
+      expect(engine.evaluate({ name: 'file_read', input: { path: 'README.md' } })).toMatchObject({ decision: 'deny', reason: 'manual stop' });
+      expect(engine.evaluate({ name: 'bash', input: { command: 'echo hi' } })).toMatchObject({ decision: 'deny' });
+    });
+
+    it('resumes normal evaluation after release', () => {
+      const engine = new PermissionEngine([], 'default');
+      engine.engageKillSwitch();
+      expect(engine.evaluate({ name: 'file_read', input: {} }).decision).toBe('deny');
+      engine.releaseKillSwitch();
+      expect(engine.evaluate({ name: 'file_read', input: {} }).decision).toBe('allow');
+    });
+  });
 });

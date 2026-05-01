@@ -2510,13 +2510,15 @@ async function loadToolsDashboard() {
   if (!view) return;
   view.innerHTML = '<div class="trace-list"><div class="trace-title">Local Tools</div><div class="trace-meta">Loading…</div></div>';
   try {
-    const [snapsR, indexesR, sessionsR, modelsR, storageR, mcpR] = await Promise.allSettled([
+    const [snapsR, indexesR, sessionsR, modelsR, storageR, mcpR, registryR, permR] = await Promise.allSettled([
       fetch('/api/snapshots').then((r) => r.json()),
       fetch('/api/rag/indexes').then((r) => r.json()),
       fetch('/api/sessions').then((r) => r.json()),
       fetch('/api/models').then((r) => r.json()),
       fetch('/api/runtime/storage').then((r) => r.json()),
       fetch('/api/mcp/catalog').then((r) => r.json()),
+      fetch('/api/tools').then((r) => r.json()),
+      fetch('/api/permissions/state').then((r) => r.json()),
     ]);
     const snapsCount = snapsR.status === 'fulfilled' ? (snapsR.value.snapshots || []).length : 0;
     const indexesArr = indexesR.status === 'fulfilled' ? (indexesR.value.indexes || []) : [];
@@ -2524,6 +2526,8 @@ async function loadToolsDashboard() {
     const modelsArr = modelsR.status === 'fulfilled' ? (modelsR.value.models || []) : [];
     const storage = storageR.status === 'fulfilled' ? storageR.value : null;
     const mcpArr = mcpR.status === 'fulfilled' ? (mcpR.value.catalog || []) : [];
+    const registry = registryR.status === 'fulfilled' ? registryR.value : { tools: [], toolsets: {} };
+    const perm = permR.status === 'fulfilled' ? permR.value : null;
 
     const speechSupported = typeof window.SpeechRecognition !== 'undefined' || typeof window.webkitSpeechRecognition !== 'undefined';
     const totalIndexedChunks = indexesArr.reduce((sum, i) => sum + (i.chunks || 0), 0);
@@ -2576,12 +2580,66 @@ async function loadToolsDashboard() {
       + '</div>';
 
     const header = '<div class="panel-header" style="border-bottom:none"><h3>Local Tools</h3><div class="inline-actions"><button class="btn-sm" onclick="loadToolsDashboard()">Refresh</button></div></div>';
-    view.innerHTML = header + '<div class="trace-list">' + cardHtml + mcpHtml + '</div>';
+    view.innerHTML = header + renderPermissionPanel(perm) + renderToolRegistryPanel(registry) + '<div class="trace-list">' + cardHtml + mcpHtml + '</div>';
     window._mcpCatalog = mcpArr;
     renderMcpCatalogList();
   } catch (error) {
     view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message) + '</div>';
   }
+}
+
+function renderPermissionPanel(perm) {
+  if (!perm) return '';
+  const ks = perm.killSwitch || { active: false, reason: '' };
+  const badge = ks.active
+    ? '<span class="rag-backend-badge" style="background:rgba(255,80,80,.15);border-color:#ff5050;color:#ff5050">🛑 KILL SWITCH ACTIVE</span>'
+    : '<span class="rag-backend-badge" style="background:rgba(80,200,120,.12);border-color:#50c878;color:#50c878">✅ Tools allowed</span>';
+  const reasonRow = ks.active && ks.reason ? '<div class="trace-meta">Reason: ' + esc(ks.reason) + '</div>' : '';
+  const button = ks.active
+    ? '<button class="btn-sm" onclick="releaseKillSwitch()">Release kill switch</button>'
+    : '<button class="btn-sm danger" onclick="engageKillSwitch()">🛑 Engage kill switch</button>';
+  return '<div class="trace-item" id="permissionPanel" style="margin-top:8px">'
+    + '<div class="trace-title">🔐 Permissions</div>'
+    + '<div style="margin:4px 0">' + badge + ' <span class="trace-meta">Mode: <strong>' + esc(perm.mode || 'default') + '</strong></span> <span class="trace-meta">Pending: ' + (perm.pendingCount || 0) + '</span></div>'
+    + reasonRow
+    + '<div class="trace-meta" style="margin-top:4px">Engaging the kill switch denies every subsequent tool call (including reads) until released. The agent loop keeps running but cannot touch the system.</div>'
+    + '<div class="inline-actions" style="margin-top:6px">' + button + '</div>'
+    + '</div>';
+}
+
+function renderToolRegistryPanel(registry) {
+  const tools = (registry && registry.tools) || [];
+  if (tools.length === 0) return '';
+  const grouped = new Map();
+  for (const t of tools) {
+    if (!grouped.has(t.toolset)) grouped.set(t.toolset, []);
+    grouped.get(t.toolset).push(t);
+  }
+  const sections = Array.from(grouped.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([toolset, items]) => {
+    const rows = items.map((t) => {
+      const riskColor = t.riskLevel === 'high' ? '#ff5050' : t.riskLevel === 'medium' ? '#ffb050' : '#50c878';
+      const riskBadge = '<span class="capability-pill" style="border-color:' + riskColor + ';color:' + riskColor + '">' + esc(t.riskLevel || 'low') + '</span>';
+      const catBadge = '<span class="capability-pill">' + esc(t.permissionCategory || 'read') + '</span>';
+      const ro = t.isReadOnly ? '<span class="capability-pill">read-only</span>' : '';
+      const dryRun = t.canDryRun ? '<span class="capability-pill">dry-run</span>' : '';
+      return '<div class="trace-row"><strong>' + esc(t.name) + '</strong> ' + riskBadge + ' ' + catBadge + ' ' + ro + ' ' + dryRun + '<div class="trace-meta">' + esc(t.description) + '</div></div>';
+    }).join('');
+    return '<div class="trace-item"><div class="trace-title">' + esc(toolset) + ' (' + items.length + ')</div>' + rows + '</div>';
+  }).join('');
+  return '<div class="trace-list" id="toolRegistryPanel" style="margin-top:8px"><div class="trace-title" style="padding:0 4px">🛠 Tool registry · ' + tools.length + ' total</div>' + sections + '</div>';
+}
+
+async function engageKillSwitch() {
+  const reason = prompt('Why are you engaging the kill switch?', 'Manual stop from dashboard.');
+  if (reason === null) return;
+  await fetch('/api/permissions/kill-switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: true, reason }) });
+  await loadToolsDashboard();
+}
+
+async function releaseKillSwitch() {
+  if (!confirm('Release the kill switch and resume normal tool calls?')) return;
+  await fetch('/api/permissions/kill-switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: false }) });
+  await loadToolsDashboard();
 }
 
 function renderMcpCatalogList() {

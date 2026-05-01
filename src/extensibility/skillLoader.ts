@@ -1,6 +1,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
+export type SkillRiskLevel = 'low' | 'medium' | 'high';
+
 export interface SkillDefinition {
   name: string;
   description: string;
@@ -8,6 +10,20 @@ export interface SkillDefinition {
   triggers: string[];
   content: string;
   filePath: string;
+  /** Optional human-readable hint for when the agent should pick this skill. */
+  whenToUse?: string;
+  /** Optional list of tool names this skill expects to use. */
+  requiredTools?: string[];
+  /** Optional risk classification used by workflow runner and UI. */
+  riskLevel?: SkillRiskLevel;
+  /** Optional ordered list of plain-language steps. */
+  steps?: string[];
+  /** Optional usage examples. */
+  examples?: string[];
+  /** Optional validation checks the agent should run after executing the skill. */
+  validationChecks?: string[];
+  /** Optional notes describing how to roll back if the skill misfires. */
+  rollbackNotes?: string;
 }
 
 export interface SkillLoadDiagnostic {
@@ -80,6 +96,9 @@ export function parseSkillFile(content: string, filePath: string): SkillDefiniti
   const frontmatter = extractFrontmatter(content);
   if (!frontmatter) return null;
 
+  const riskRaw = typeof frontmatter.risk_level === 'string' ? frontmatter.risk_level.toLowerCase() : '';
+  const riskLevel: SkillRiskLevel | undefined = riskRaw === 'low' || riskRaw === 'medium' || riskRaw === 'high' ? riskRaw : undefined;
+
   return {
     name: (frontmatter.name as string) ?? path.basename(path.dirname(filePath)),
     description: (frontmatter.description as string) ?? '',
@@ -87,6 +106,13 @@ export function parseSkillFile(content: string, filePath: string): SkillDefiniti
     triggers: (frontmatter.triggers as string[]) ?? [],
     content: removeFrontmatter(content),
     filePath,
+    whenToUse: typeof frontmatter.when_to_use === 'string' ? frontmatter.when_to_use as string : undefined,
+    requiredTools: Array.isArray(frontmatter.required_tools) ? frontmatter.required_tools as string[] : undefined,
+    riskLevel,
+    steps: Array.isArray(frontmatter.steps) ? frontmatter.steps as string[] : undefined,
+    examples: Array.isArray(frontmatter.examples) ? frontmatter.examples as string[] : undefined,
+    validationChecks: Array.isArray(frontmatter.validation_checks) ? frontmatter.validation_checks as string[] : undefined,
+    rollbackNotes: typeof frontmatter.rollback_notes === 'string' ? frontmatter.rollback_notes as string : undefined,
   };
 }
 
@@ -115,14 +141,23 @@ function extractFrontmatter(content: string): Record<string, unknown> | null {
   // Parse triggers array (YAML list)
   const triggersMatch = yaml.match(/triggers:\n((?:\s+-\s+.+\n?)*)/);
   if (triggersMatch) {
-    result.triggers = triggersMatch[1]
-      .trim()
-      .split('\n')
-      .map((line) => line.replace(/^\s*-\s*/, '').replace(/^"|"$/g, '').trim())
-      .filter(Boolean);
+    result.triggers = parseYamlList(triggersMatch[1]);
+  }
+  for (const key of ['required_tools', 'steps', 'examples', 'validation_checks']) {
+    const re = new RegExp(`${key}:\\n((?:\\s+-\\s+.+\\n?)*)`);
+    const m = yaml.match(re);
+    if (m) result[key] = parseYamlList(m[1]);
   }
 
   return result;
+}
+
+function parseYamlList(block: string): string[] {
+  return block
+    .trim()
+    .split('\n')
+    .map((line) => line.replace(/^\s*-\s*/, '').replace(/^"|"$/g, '').trim())
+    .filter(Boolean);
 }
 
 function removeFrontmatter(content: string): string {
