@@ -60,7 +60,7 @@ npm run smoke:ui -- http://127.0.0.1:3000/
 
 ## UI tabs
 
-The browser UI has 12 tabs in the left sidebar:
+The browser UI has 13 tabs in the left sidebar:
 
 | Tab | What it does |
 |-----|-------------|
@@ -74,8 +74,9 @@ The browser UI has 12 tabs in the left sidebar:
 | 📦 **Snaps** | Skill and memory snapshots for backup/restore |
 | 🔎 **RAG** | Local vector index over chosen files with search and rebuild |
 | 🛠 **Tools** | Tool registry with risk badges, permissions, kill switch, capability grants, shell presets |
-| 📜 **Runs** | Session list with status, duration, errors, curator activity |
+| 📜 **Runs** | Session list, automation jobs, run history, scheduler status |
 | ⚙ **Flows** | Declarative tool-call workflows (YAML/JSON under `.harness/workflows/`) |
+| 🍄 **Mycelium** | Adaptive context routing network — nodes, edges, episodes |
 
 The right side has a **Settings** panel for Ollama host, generation parameters, model routing, media tools, output validation, and safety mode. Settings are saved to `.harness/settings.json`.
 
@@ -134,6 +135,22 @@ Optional deterministic checks on the model's final answer. Built-in profiles: `o
 * **Image analysis** — configure a vision model in Settings or with `HARNESS_VISION_MODEL`
 * **Audio transcription** — configure a transcription command in Settings or with `HARNESS_AUDIO_TRANSCRIBE_COMMAND`
 
+### Agent identity
+
+Give your agent a name, avatar emoji, and personality. Presets include professional, friendly, concise, mentor, creative, and pirate. Save multiple profiles and switch between them. The agent name appears in chat bubbles, the topbar, and session history.
+
+### Full Autonomy mode
+
+Click **⚡ Full Autonomy** in Settings to set `dontAsk` mode and enable all tools in one click. All 9 gated capabilities auto-grant for 8 hours. Kill switch (Ctrl+Shift+K) remains the emergency stop.
+
+### Mycelium context router
+
+An adaptive graph system that learns which combinations of tools, skills, and memories work best for different queries. The network reinforces successful routes and decays unused ones. View the graph in the 🍄 Mycelium tab.
+
+### Automation
+
+Schedule recurring jobs with optional shell commands. Create, edit, toggle, and delete jobs from the Runs tab. The automation scheduler runs due jobs when the system is idle, respecting kill switch and capability grants. Run history with output viewing is available in the Runs tab.
+
 ## Project structure
 
 ```text
@@ -159,9 +176,13 @@ All runtime state goes under `.harness/` in your project directory:
 | `.harness/automations/` | Scheduled job definitions and output |
 | `.harness/curator/` | Skill curator log and merge proposals |
 | `.harness/workflows/` | Declarative workflow definitions |
+| `.harness/mycelium/` | Adaptive routing graph |
+| `.harness/desktop/` | Desktop screenshots |
+| `.harness/email/drafts/` | Email draft files |
 
 ## More information
 
+* **[START-HERE.md](START-HERE.md)** — complete beginner guide (install Node.js, install Ollama, first chat)
 * [Model presets guide](docs/MODEL-PRESETS.md) — beginner-friendly model recommendations
 * [Validation profiles](docs/VALIDATION-PROFILES.md) — output validation reference
 * [GitHub Releases](https://github.com/Bradliebs/ollama-agent-harness/releases/latest) — download the latest release

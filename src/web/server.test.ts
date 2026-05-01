@@ -1523,6 +1523,14 @@ describe('web server API validation', () => {
   });
 
   it('forwards prior chat history to the query loop so context is preserved across turns', async () => {
+    // First set the agent name and personality
+    await request('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentName: 'TestBot', agentPersonality: 'You are helpful and concise.' }),
+    });
+
+    const seenConfigs: Array<{ systemPrompt: string }> = [];
     const seenInitialMessages: Array<Array<{ role: string; content: string }>> = [];
     const restore = setWebRuntimeOverrides({
       createClient: jest.fn(() => ({}) as never),
@@ -1531,6 +1539,7 @@ describe('web server API validation', () => {
       createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
       createSession: () => ({
         initialize: jest.fn().mockResolvedValue(undefined),
+        setMeta: jest.fn(),
         markStatus: jest.fn().mockResolvedValue(undefined),
         append: jest.fn().mockResolvedValue(undefined),
         readAll: jest.fn().mockResolvedValue([]),
@@ -1539,7 +1548,8 @@ describe('web server API validation', () => {
       startNewSession: jest.fn(),
       getEvolvedPrompt: async (basePrompt) => basePrompt,
       assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
-      runQueryLoop: async function* (_config, _deps, initialMessages): AsyncGenerator<LoopEvent> {
+      runQueryLoop: async function* (config, _deps, initialMessages): AsyncGenerator<LoopEvent> {
+        seenConfigs.push({ systemPrompt: config.systemPrompt });
         seenInitialMessages.push(initialMessages.map((m) => ({ role: m.role, content: m.content })));
         yield { type: 'text', content: 'ok' };
         yield { type: 'done', reason: 'completed', turns: 1 };
@@ -1568,7 +1578,17 @@ describe('web server API validation', () => {
         { role: 'assistant', content: 'The dataset covers draws from 2025-11-01 to 2026-04-25.' },
         { role: 'user', content: 'we also have draw date and machine used' },
       ]);
+      // Verify personality and name are injected into the system prompt
+      expect(seenConfigs).toHaveLength(1);
+      expect(seenConfigs[0].systemPrompt).toContain('Your name is TestBot.');
+      expect(seenConfigs[0].systemPrompt).toContain('You are helpful and concise.');
     } finally {
+      // Clean up personality settings
+      await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentName: '', agentPersonality: '' }),
+      });
       restore();
     }
   });
