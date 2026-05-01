@@ -778,6 +778,19 @@
         </div>
       </div>
       <div class="setting-row">
+        <label>Accent color</label>
+        <div style="display:flex;flex-wrap:wrap;gap:4px" id="accentPicker">
+          <button class="btn-sm accent-pick" onclick="setAccentColor('#7c5cff')" style="background:#7c5cff;width:24px;height:24px;border-radius:50%;border:2px solid var(--border)"></button>
+          <button class="btn-sm accent-pick" onclick="setAccentColor('#3b82f6')" style="background:#3b82f6;width:24px;height:24px;border-radius:50%;border:2px solid var(--border)"></button>
+          <button class="btn-sm accent-pick" onclick="setAccentColor('#10b981')" style="background:#10b981;width:24px;height:24px;border-radius:50%;border:2px solid var(--border)"></button>
+          <button class="btn-sm accent-pick" onclick="setAccentColor('#f59e0b')" style="background:#f59e0b;width:24px;height:24px;border-radius:50%;border:2px solid var(--border)"></button>
+          <button class="btn-sm accent-pick" onclick="setAccentColor('#ef4444')" style="background:#ef4444;width:24px;height:24px;border-radius:50%;border:2px solid var(--border)"></button>
+          <button class="btn-sm accent-pick" onclick="setAccentColor('#ec4899')" style="background:#ec4899;width:24px;height:24px;border-radius:50%;border:2px solid var(--border)"></button>
+          <button class="btn-sm accent-pick" onclick="setAccentColor('#8b5cf6')" style="background:#8b5cf6;width:24px;height:24px;border-radius:50%;border:2px solid var(--border)"></button>
+          <button class="btn-sm accent-pick" onclick="setAccentColor('#06b6d4')" style="background:#06b6d4;width:24px;height:24px;border-radius:50%;border:2px solid var(--border)"></button>
+        </div>
+      </div>
+      <div class="setting-row">
         <label>Personality</label>
         <select id="personalityPreset" onchange="applyPersonalityPreset(this.value)">
           <option value="">None (default assistant)</option>

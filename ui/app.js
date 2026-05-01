@@ -3841,6 +3841,22 @@ function restoreTheme() {
     const btn = document.getElementById('themeToggle');
     if (btn) btn.textContent = '☀️';
   }
+  const accent = localStorage.getItem('harness-accent');
+  if (accent) applyAccentColor(accent);
+}
+
+function setAccentColor(color) {
+  applyAccentColor(color);
+  localStorage.setItem('harness-accent', color);
+}
+
+function applyAccentColor(color) {
+  document.documentElement.style.setProperty('--accent', color);
+  document.documentElement.style.setProperty('--accent-hover', color + 'cc');
+  document.documentElement.style.setProperty('--accent-bg', color + '1a');
+  document.querySelectorAll('.accent-pick').forEach((btn) => {
+    btn.style.outline = btn.style.background === color ? '2px solid var(--text)' : 'none';
+  });
 }
 
 // ─── Mycelium tab ───────────────────────────────────────────────────
