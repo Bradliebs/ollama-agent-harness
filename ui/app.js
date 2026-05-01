@@ -1788,7 +1788,7 @@ async function rebuildSessionSearchIndex() { const view = document.getElementByI
 
 async function loadPalaceEntry(id) { const detail = document.getElementById('palaceDetail'); if (!detail) return; detail.classList.remove('initial-hidden'); detail.textContent = 'Loading memory entry...'; try { const entryResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id)); const entryData = await entryResponse.json(); if (entryData.error) { detail.textContent = entryData.error; return; } const contextResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id) + '/context?window=3'); const contextData = await contextResponse.json(); const entry = entryData.entry; const transcriptRows = (contextData.events || []).map((event) => '<div class="transcript-row' + (event.isAnchor ? ' anchor' : '') + '"><div><strong>' + esc(event.kind) + '</strong> · ' + esc(event.timestamp) + '</div><div style="white-space:pre-wrap;color:var(--text)">' + esc(event.text || '[empty]') + '</div></div>').join(''); detail.innerHTML = '<div><strong>Session</strong> ' + esc(entry.sessionId) + '</div><div><strong>Event</strong> ' + esc(entry.id) + '</div><div><strong>Kind</strong> ' + esc(entry.kind) + '</div><div><strong>Time</strong> ' + esc(entry.timestamp) + '</div><div style="margin-top:6px;white-space:pre-wrap;color:var(--text)">' + esc(entry.text) + '</div><div style="margin-top:10px"><strong>Transcript Context</strong>' + (transcriptRows || '<div class="transcript-row">No transcript context found.</div>') + '</div>'; } catch (error) { detail.textContent = error.message; } }
 
-function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); el.classList.add('active'); document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); }
+function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); el.classList.add('active'); document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; const rn = document.getElementById('runsView'); if (rn) rn.style.display = tab === 'runs' ? 'block' : 'none'; const wf = document.getElementById('workflowsView'); if (wf) wf.style.display = tab === 'workflows' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); if (tab === 'runs') loadRuns(); if (tab === 'workflows') loadWorkflows(); }
 function toggleLeft() { document.getElementById('leftPanel').classList.toggle('hidden'); }
 function toggleRight() { document.getElementById('rightPanel').classList.toggle('hidden'); }
 
@@ -2622,11 +2622,26 @@ function renderToolRegistryPanel(registry) {
       const catBadge = '<span class="capability-pill">' + esc(t.permissionCategory || 'read') + '</span>';
       const ro = t.isReadOnly ? '<span class="capability-pill">read-only</span>' : '';
       const dryRun = t.canDryRun ? '<span class="capability-pill">dry-run</span>' : '';
-      return '<div class="trace-row"><strong>' + esc(t.name) + '</strong> ' + riskBadge + ' ' + catBadge + ' ' + ro + ' ' + dryRun + '<div class="trace-meta">' + esc(t.description) + '</div></div>';
+      const enabled = t.enabled !== false;
+      const toggle = '<button class="btn-sm" onclick="toggleTool(\'' + escAttr(t.name) + '\', ' + (!enabled) + ')">' + (enabled ? 'Disable' : 'Enable') + '</button>';
+      const dimmed = enabled ? '' : ' style="opacity:.55"';
+      const stateBadge = enabled ? '' : ' <span class="capability-pill" style="border-color:#ff5050;color:#ff5050">disabled</span>';
+      return '<div class="trace-row"' + dimmed + '><strong>' + esc(t.name) + '</strong> ' + riskBadge + ' ' + catBadge + ' ' + ro + ' ' + dryRun + stateBadge + ' ' + toggle + '<div class="trace-meta">' + esc(t.description) + '</div></div>';
     }).join('');
     return '<div class="trace-item"><div class="trace-title">' + esc(toolset) + ' (' + items.length + ')</div>' + rows + '</div>';
   }).join('');
-  return '<div class="trace-list" id="toolRegistryPanel" style="margin-top:8px"><div class="trace-title" style="padding:0 4px">🛠 Tool registry · ' + tools.length + ' total</div>' + sections + '</div>';
+  const disabledCount = (registry.disabled || []).length;
+  const disabledNote = disabledCount > 0 ? ' · <span style="color:#ff5050">' + disabledCount + ' disabled</span>' : '';
+  return '<div class="trace-list" id="toolRegistryPanel" style="margin-top:8px"><div class="trace-title" style="padding:0 4px">🛠 Tool registry · ' + tools.length + ' total' + disabledNote + '</div>' + sections + '</div>';
+}
+
+async function toggleTool(name, enable) {
+  try {
+    const response = await fetch('/api/tools/' + encodeURIComponent(name) + '/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: enable }) });
+    const data = await response.json();
+    if (data.error) { alert('Toggle failed: ' + data.error); return; }
+    await loadToolsDashboard();
+  } catch (error) { alert('Toggle failed: ' + (error.message || error)); }
 }
 
 async function engageKillSwitch() {
@@ -2640,6 +2655,176 @@ async function releaseKillSwitch() {
   if (!confirm('Release the kill switch and resume normal tool calls?')) return;
   await fetch('/api/permissions/kill-switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: false }) });
   await loadToolsDashboard();
+}
+
+// ─── Runs tab ──────────────────────────────────────────────────────
+async function loadRuns() {
+  const view = document.getElementById('runsView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-list"><div class="trace-title">Runs</div><div class="trace-meta">Loading…</div></div>';
+  try {
+    const response = await fetch('/api/runs');
+    const data = await response.json();
+    if (data.error) { view.innerHTML = '<div class="trace-meta">Failed: ' + esc(data.error) + '</div>'; return; }
+    const runs = data.runs || [];
+    const counts = data.counts || {};
+    const summary = '<div class="panel-header" style="border-bottom:none"><h3>Runs</h3><div class="inline-actions"><button class="btn-sm" onclick="loadRuns()">Refresh</button></div></div>'
+      + '<div class="trace-meta" style="padding:0 4px 6px">' + (data.total || 0) + ' total · '
+      + Object.entries(counts).map(([k, v]) => esc(k) + ': ' + v).join(' · ')
+      + '</div>';
+    if (runs.length === 0) {
+      view.innerHTML = summary + '<div class="trace-meta" style="padding:8px">(no runs yet — start a chat to record one)</div>';
+      return;
+    }
+    const rows = runs.map(renderRunRow).join('');
+    view.innerHTML = summary + '<div class="trace-list">' + rows + '</div>';
+  } catch (error) {
+    view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message || error) + '</div>';
+  }
+}
+
+function renderRunRow(run) {
+  const statusColor = run.status === 'completed' ? '#50c878'
+    : run.status === 'error' ? '#ff5050'
+    : run.status === 'running' ? '#5bb0ff'
+    : run.status === 'aborted' ? '#ffb050'
+    : '#888';
+  const statusBadge = '<span class="capability-pill" style="border-color:' + statusColor + ';color:' + statusColor + '">' + esc(run.status) + '</span>';
+  const created = run.createdAt ? new Date(run.createdAt).toLocaleString() : '?';
+  const duration = run.durationMs ? formatRunDuration(run.durationMs) : (run.status === 'running' ? 'in progress' : '—');
+  const errorRow = run.lastError ? '<div class="trace-meta" style="color:#ff5050">' + esc(run.lastError) + '</div>' : '';
+  const checkpointsRow = run.checkpointCount ? '<div class="trace-meta">Checkpoints: ' + run.checkpointCount + '</div>' : '';
+  return '<div class="trace-item">'
+    + '<div class="trace-title">' + esc(run.title) + ' ' + statusBadge + '</div>'
+    + '<div class="trace-meta">' + esc(created) + ' · ' + esc(run.model || 'unknown model') + ' · ' + esc(duration) + '</div>'
+    + checkpointsRow
+    + errorRow
+    + '<div class="inline-actions" style="margin-top:6px">'
+    +   '<button class="btn-sm" onclick="openRunSession(\'' + escAttr(run.sessionId) + '\')">Open transcript</button> '
+    +   '<button class="btn-sm" onclick="copyRunId(\'' + escAttr(run.sessionId) + '\', this)">Copy ID</button>'
+    + '</div>'
+    + '</div>';
+}
+
+function formatRunDuration(ms) {
+  if (ms < 1000) return ms + 'ms';
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return seconds + 's';
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  return minutes + 'm ' + remSeconds + 's';
+}
+
+function openRunSession(sessionId) {
+  window.open('/api/sessions/' + encodeURIComponent(sessionId), '_blank');
+}
+
+function copyRunId(sessionId, button) {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(sessionId).then(() => {
+      const original = button.textContent;
+      button.textContent = 'Copied';
+      setTimeout(() => { button.textContent = original; }, 1200);
+    }).catch(() => {});
+  }
+}
+
+// ─── Workflows tab ────────────────────────────────────────────────
+async function loadWorkflows() {
+  const view = document.getElementById('workflowsView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-list"><div class="trace-title">Workflows</div><div class="trace-meta">Loading…</div></div>';
+  try {
+    const [defsR, runsR] = await Promise.allSettled([
+      fetch('/api/workflows').then((r) => r.json()),
+      fetch('/api/workflows/runs').then((r) => r.json()),
+    ]);
+    const defs = defsR.status === 'fulfilled' ? (defsR.value.workflows || []) : [];
+    const runs = runsR.status === 'fulfilled' ? (runsR.value.runs || []) : [];
+    const header = '<div class="panel-header" style="border-bottom:none"><h3>Workflows</h3><div class="inline-actions"><button class="btn-sm" onclick="loadWorkflows()">Refresh</button></div></div>';
+    const intro = '<div class="trace-meta" style="padding:0 4px 6px">Declarative tool sequences in <code>.harness/workflows/</code>. Use dry-run first; pause/resume/cancel any in-flight run.</div>';
+    let defsHtml;
+    if (defs.length === 0) {
+      defsHtml = '<div class="trace-meta" style="padding:8px">No workflows yet. Drop a YAML file into <code>.harness/workflows/</code>.</div>';
+    } else {
+      defsHtml = '<div class="trace-list">' + defs.map(renderWorkflowDef).join('') + '</div>';
+    }
+    const runsHtml = runs.length === 0 ? '' : '<div class="trace-title" style="margin-top:12px;padding:0 4px">Recent runs</div><div class="trace-list">' + runs.slice(0, 20).map(renderWorkflowRun).join('') + '</div>';
+    view.innerHTML = header + intro + defsHtml + runsHtml;
+  } catch (error) {
+    view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message || error) + '</div>';
+  }
+}
+
+function renderWorkflowDef(def) {
+  const riskColor = def.riskLevel === 'high' ? '#ff5050' : def.riskLevel === 'medium' ? '#ffb050' : '#50c878';
+  const riskBadge = '<span class="capability-pill" style="border-color:' + riskColor + ';color:' + riskColor + '">' + esc(def.riskLevel || 'low') + '</span>';
+  return '<div class="trace-item">'
+    + '<div class="trace-title">' + esc(def.name) + ' ' + riskBadge + '</div>'
+    + '<div class="trace-meta">' + esc(def.description || '(no description)') + '</div>'
+    + '<div class="trace-meta">' + def.stepCount + ' step(s)</div>'
+    + '<div class="inline-actions" style="margin-top:6px">'
+    +   '<button class="btn-sm" onclick="runWorkflow(\'' + escAttr(def.name) + '\', true)">Dry-run</button> '
+    +   '<button class="btn-sm primary" onclick="runWorkflow(\'' + escAttr(def.name) + '\', false)">Run</button>'
+    + '</div>'
+    + '</div>';
+}
+
+function renderWorkflowRun(run) {
+  const statusColor = run.status === 'completed' ? '#50c878'
+    : run.status === 'failed' ? '#ff5050'
+    : run.status === 'cancelled' ? '#ffb050'
+    : run.status === 'paused' ? '#5bb0ff'
+    : run.status === 'running' ? '#5bb0ff'
+    : '#888';
+  const statusBadge = '<span class="capability-pill" style="border-color:' + statusColor + ';color:' + statusColor + '">' + esc(run.status) + '</span>';
+  const dryBadge = run.dryRun ? ' <span class="capability-pill">dry-run</span>' : '';
+  const completedSteps = (run.steps || []).filter((s) => s.status === 'completed' || s.status === 'failed' || s.status === 'denied' || s.status === 'skipped').length;
+  const totalSteps = (run.steps || []).length;
+  const stepLines = (run.steps || []).map((s) => {
+    const sColor = s.status === 'completed' ? '#50c878' : s.status === 'failed' || s.status === 'denied' ? '#ff5050' : s.status === 'skipped' ? '#888' : s.status === 'running' ? '#5bb0ff' : '#666';
+    const detail = s.error ? ' — ' + esc(s.error) : (s.result?.output ? ' — ' + esc(String(s.result.output).slice(0, 80)) : '');
+    return '<div style="font-size:11px;color:' + sColor + '">' + esc(s.step.id) + ' (' + esc(s.step.tool) + ') · ' + esc(s.status) + detail + '</div>';
+  }).join('');
+  const controls = run.status === 'running'
+    ? '<button class="btn-sm" onclick="pauseWorkflowRun(\'' + escAttr(run.id) + '\')">Pause</button> <button class="btn-sm danger" onclick="cancelWorkflowRun(\'' + escAttr(run.id) + '\')">Cancel</button>'
+    : run.status === 'paused'
+      ? '<button class="btn-sm" onclick="resumeWorkflowRun(\'' + escAttr(run.id) + '\')">Resume</button> <button class="btn-sm danger" onclick="cancelWorkflowRun(\'' + escAttr(run.id) + '\')">Cancel</button>'
+      : '';
+  return '<div class="trace-item">'
+    + '<div class="trace-title">' + esc(run.workflowName) + ' ' + statusBadge + dryBadge + '</div>'
+    + '<div class="trace-meta">' + esc(run.id) + ' · started ' + esc(new Date(run.startedAt).toLocaleString()) + ' · ' + completedSteps + '/' + totalSteps + ' steps</div>'
+    + (stepLines ? '<div style="margin-top:4px">' + stepLines + '</div>' : '')
+    + (controls ? '<div class="inline-actions" style="margin-top:6px">' + controls + '</div>' : '')
+    + '</div>';
+}
+
+async function runWorkflow(name, dryRun) {
+  try {
+    const response = await fetch('/api/workflows/' + encodeURIComponent(name) + '/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dryRun }),
+    });
+    const data = await response.json();
+    if (data.error) { alert('Workflow failed to start: ' + data.error); return; }
+    setTimeout(loadWorkflows, 300);
+  } catch (error) { alert('Workflow failed to start: ' + (error.message || error)); }
+}
+
+async function pauseWorkflowRun(id) {
+  await fetch('/api/workflows/runs/' + encodeURIComponent(id) + '/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  loadWorkflows();
+}
+
+async function resumeWorkflowRun(id) {
+  await fetch('/api/workflows/runs/' + encodeURIComponent(id) + '/resume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  setTimeout(loadWorkflows, 300);
+}
+
+async function cancelWorkflowRun(id) {
+  if (!confirm('Cancel this workflow run?')) return;
+  await fetch('/api/workflows/runs/' + encodeURIComponent(id) + '/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  loadWorkflows();
 }
 
 function renderMcpCatalogList() {

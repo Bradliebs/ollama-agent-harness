@@ -342,6 +342,32 @@ describe('web server API validation', () => {
     await expect(released.json()).resolves.toMatchObject({ killSwitch: { active: false } });
   });
 
+  it('toggles a single tool on and off via the registry endpoint', async () => {
+    const off = await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+    expect(off.status).toBe(200);
+    await expect(off.json()).resolves.toMatchObject({ name: 'bash', enabled: false, disabled: expect.arrayContaining(['bash']) });
+    const back = await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true }) });
+    expect(back.status).toBe(200);
+    await expect(back.json()).resolves.toMatchObject({ name: 'bash', enabled: true });
+    const unknown = await request('/api/tools/no-such-tool/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true }) });
+    expect(unknown.status).toBe(404);
+  });
+
+  it('lists workflows from .harness/workflows and returns enriched runs', async () => {
+    const list = await request('/api/workflows');
+    expect(list.status).toBe(200);
+    const data = await list.json() as { workflows: Array<{ name: string; stepCount: number; riskLevel?: string }> };
+    expect(data.workflows.length).toBeGreaterThan(0);
+    const sample = data.workflows.find((w) => w.name === 'project_health_check');
+    expect(sample?.stepCount).toBeGreaterThan(0);
+
+    const runsBefore = await request('/api/runs');
+    expect(runsBefore.status).toBe(200);
+    const runsBody = await runsBefore.json() as { runs: unknown[]; counts: Record<string, number>; total: number };
+    expect(Array.isArray(runsBody.runs)).toBe(true);
+    expect(typeof runsBody.total).toBe('number');
+  });
+
   it('refreshes the model catalog and rebuilds the session search index', async () => {
     const catalog = await request('/api/models/catalog/refresh', { method: 'POST' });
     expect(catalog.status).toBe(200);

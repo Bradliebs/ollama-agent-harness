@@ -8,6 +8,7 @@ import { OllamaClient } from '../core/ollamaClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { getBuiltinTools } from '../tools';
 import { createBuiltinToolRegistry } from '../tools/registry';
+import { WorkflowRegistry } from '../workflows/workflowRegistry';
 import { drainUploadsFallbacks, getUploadsDir, resolveProjectReadPath } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { setSkillsDir } from '../tools/skillTools';
@@ -66,6 +67,8 @@ const TRACES_DIR = path.join(PROJECT_DIR, '.harness', 'traces');
 const SETTINGS_PATH = path.join(PROJECT_DIR, '.harness', 'settings.json');
 const OUTPUT_VALIDATION_PROFILES_PATH = path.join(PROJECT_DIR, '.harness', 'output-validation-profiles.json');
 const RELEASE_PROVENANCE_PATH = path.join(PROJECT_DIR, 'release-provenance.json');
+const WORKFLOWS_DIR = path.join(PROJECT_DIR, '.harness', 'workflows');
+const workflowRegistry = new WorkflowRegistry(WORKFLOWS_DIR);
 const ALLOWED_PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'dontAsk'];
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9._-]+$/;
 
@@ -169,13 +172,19 @@ let walkthrough: WalkthroughSettings = { completed: [] };
 let settingsLoaded = false;
 let killSwitchActive = false;
 let killSwitchReason = '';
+const disabledTools = new Set<string>();
+
+function applyToolDisables(tools: Tool[]): Tool[] {
+  if (disabledTools.size === 0) return tools;
+  return tools.filter((tool) => !disabledTools.has(tool.name));
+}
 const rateLimiter = new RateLimiter(10, 2);
 const hookPipeline = new HookPipeline();
 const permissionPrompts = new PermissionPromptBroker();
 const defaultWebRuntime: WebRuntimeDeps = {
   createClient: (model, host, numCtx) => new OllamaClient({ model, host, numCtx }),
   getModelContextWindow: (model, host) => new OllamaClient({ model, host }).getContextWindow(),
-  getTools: getBuiltinTools,
+  getTools: () => applyToolDisables(getBuiltinTools()),
   createPermissionEngine: (mode) => {
     const engine = new PermissionEngine([], mode);
     if (killSwitchActive) engine.engageKillSwitch(killSwitchReason);
@@ -766,6 +775,7 @@ app.get('/api/tools', (_req, res) => {
       toolset: entry.toolset,
       source: entry.source,
       enabledByDefault: entry.enabledByDefault,
+      enabled: !disabledTools.has(entry.tool.name),
       isReadOnly: entry.tool.isReadOnly,
       riskLevel: entry.riskLevel,
       permissionCategory: entry.permissionCategory,
@@ -773,11 +783,107 @@ app.get('/api/tools', (_req, res) => {
     }));
     const toolsets: Record<string, number> = {};
     for (const tool of tools) toolsets[tool.toolset] = (toolsets[tool.toolset] ?? 0) + 1;
-    res.json({ tools, toolsets });
+    res.json({ tools, toolsets, disabled: Array.from(disabledTools).sort() });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
   }
+});
+
+// Enable or disable a single tool at runtime. Disabled tools are filtered out
+// of the agent's tool list before each chat turn.
+app.post('/api/tools/:name/toggle', (req, res) => {
+  const toolName = String(req.params.name || '').trim();
+  if (!toolName) { res.status(400).json({ error: 'tool name required' }); return; }
+  const registry = createBuiltinToolRegistry();
+  if (!registry.get(toolName)) { res.status(404).json({ error: 'unknown tool' }); return; }
+  const currentlyEnabled = !disabledTools.has(toolName);
+  const desiredEnabled = req.body?.enabled === undefined ? !currentlyEnabled : Boolean(req.body.enabled);
+  if (desiredEnabled) disabledTools.delete(toolName);
+  else disabledTools.add(toolName);
+  logger.info('Tools', 'Tool toggled', { tool: toolName, enabled: desiredEnabled });
+  res.json({ name: toolName, enabled: desiredEnabled, disabled: Array.from(disabledTools).sort() });
+});
+
+// --- Workflows ---
+// Read the workflow file index. Workflows live under .harness/workflows/<name>.
+app.get('/api/workflows', async (_req, res) => {
+  try {
+    const workflows = await workflowRegistry.list();
+    res.json({ workflows: workflows.map((wf) => ({ ...wf, stepCount: wf.steps.length })) });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/workflows/:name', async (req, res) => {
+  const name = String(req.params.name || '').trim();
+  if (!name) { res.status(400).json({ error: 'workflow name required' }); return; }
+  try {
+    const definition = await workflowRegistry.load(name);
+    if (!definition) { res.status(404).json({ error: 'workflow not found' }); return; }
+    res.json(definition);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Start a run. Optional body: { dryRun: boolean, variables: object }.
+app.post('/api/workflows/:name/run', async (req, res) => {
+  const name = String(req.params.name || '').trim();
+  if (!name) { res.status(400).json({ error: 'workflow name required' }); return; }
+  try {
+    const definition = await workflowRegistry.load(name);
+    if (!definition) { res.status(404).json({ error: 'workflow not found' }); return; }
+    const dryRun = Boolean(req.body?.dryRun);
+    const variables = typeof req.body?.variables === 'object' && req.body.variables !== null ? req.body.variables : undefined;
+    const run = workflowRegistry.startRun(definition, { dryRun, variables });
+    const tools = applyToolDisables(getBuiltinTools());
+    const permissions = webRuntime.createPermissionEngine(permissionMode);
+    // Execute asynchronously so the HTTP request returns immediately with the
+    // initial run state. Errors are captured on the run object itself.
+    workflowRegistry.execute(run.id, { tools, permissions }).catch((error) => {
+      logger.warn('Workflow', 'Workflow run threw', { runId: run.id, error: error instanceof Error ? error.message : String(error) });
+    });
+    res.json({ run });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/workflows/runs', (_req, res) => {
+  res.json({ runs: workflowRegistry.listRuns() });
+});
+
+app.get('/api/workflows/runs/:id', (req, res) => {
+  const run = workflowRegistry.getRun(String(req.params.id || ''));
+  if (!run) { res.status(404).json({ error: 'run not found' }); return; }
+  res.json({ run });
+});
+
+app.post('/api/workflows/runs/:id/pause', (req, res) => {
+  const ok = workflowRegistry.pause(String(req.params.id || ''), typeof req.body?.reason === 'string' ? req.body.reason : undefined);
+  if (!ok) { res.status(409).json({ error: 'run is not running' }); return; }
+  res.json({ ok: true });
+});
+
+app.post('/api/workflows/runs/:id/resume', async (req, res) => {
+  const id = String(req.params.id || '');
+  const run = workflowRegistry.getRun(id);
+  if (!run) { res.status(404).json({ error: 'run not found' }); return; }
+  if (!workflowRegistry.resume(id)) { res.status(409).json({ error: 'run is not paused' }); return; }
+  const tools = applyToolDisables(getBuiltinTools());
+  const permissions = webRuntime.createPermissionEngine(permissionMode);
+  workflowRegistry.execute(id, { tools, permissions }).catch((error) => {
+    logger.warn('Workflow', 'Workflow run threw on resume', { runId: id, error: error instanceof Error ? error.message : String(error) });
+  });
+  res.json({ ok: true });
+});
+
+app.post('/api/workflows/runs/:id/cancel', (req, res) => {
+  const ok = workflowRegistry.cancel(String(req.params.id || ''), typeof req.body?.reason === 'string' ? req.body.reason : undefined);
+  if (!ok) { res.status(409).json({ error: 'run cannot be cancelled' }); return; }
+  res.json({ ok: true });
 });
 
 app.post('/api/permissions/:id/resolve', (req, res) => {
@@ -1034,6 +1140,40 @@ app.get('/api/sessions', async (_req, res) => {
   try {
     const sessions = await SessionStorage.listSessions(PROJECT_DIR);
     res.json({ sessions });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Runs view: same source as /api/sessions but enriched with derived fields
+// (duration, age) the dashboard renders without per-row computation.
+app.get('/api/runs', async (_req, res) => {
+  try {
+    const sessions = await SessionStorage.listSessions(PROJECT_DIR);
+    const now = Date.now();
+    const runs = sessions.map((session) => {
+      const startMs = Date.parse(session.createdAt);
+      const endMs = session.updatedAt ? Date.parse(session.updatedAt) : Number.NaN;
+      const durationMs = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs ? endMs - startMs : null;
+      const ageMs = Number.isFinite(startMs) ? Math.max(0, now - startMs) : null;
+      return {
+        sessionId: session.sessionId,
+        title: session.title || 'Untitled run',
+        model: session.model,
+        status: session.status || 'unknown',
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        durationMs,
+        ageMs,
+        checkpointCount: session.checkpointCount ?? 0,
+        lastError: session.lastError,
+        parentSessionId: session.parentSessionId,
+      };
+    });
+    const counts: Record<string, number> = {};
+    for (const run of runs) counts[run.status] = (counts[run.status] ?? 0) + 1;
+    res.json({ runs, total: runs.length, counts });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });

@@ -330,6 +330,12 @@
       <div class="tab" onclick="showLeftTab('tools',this)" title="Local tools dashboard">
         <div class="tab-icon">🛠</div><div class="tab-label">Tools</div>
       </div>
+      <div class="tab" onclick="showLeftTab('runs',this)" title="Past runs (status, duration, errors)">
+        <div class="tab-icon">📜</div><div class="tab-label">Runs</div>
+      </div>
+      <div class="tab" onclick="showLeftTab('workflows',this)" title="Workflows: declarative tool sequences">
+        <div class="tab-icon">⚙</div><div class="tab-label">Flows</div>
+      </div>
     </div>
     <div class="history-list" id="historyList"></div>
     <div class="file-tree initial-hidden" id="fileTree"></div>
@@ -341,6 +347,8 @@
     <div class="memory-view initial-hidden" id="snapshotsView"></div>
     <div class="memory-view initial-hidden" id="ragView"></div>
     <div class="memory-view initial-hidden" id="toolsDashboardView"></div>
+    <div class="memory-view initial-hidden" id="runsView"></div>
+    <div class="memory-view initial-hidden" id="workflowsView"></div>
   </div>
 
   <div class="main-panel">
