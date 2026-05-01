@@ -453,7 +453,7 @@ app.get('/api/discovery', async (_req, res) => {
   await ensureSettingsLoaded();
   try {
     const ttlMs = modelCatalog.ttlHours * 60 * 60 * 1000;
-    const [catalog, catalogStatus, extensions, automationJobs, dueAutomations, sessionSearch, runtimeSkills, repoSkills] = await Promise.all([
+    const [catalog, catalogStatus, extensions, automationJobs, dueAutomations, sessionSearch, runtimeSkills, repoSkills, curatorLog] = await Promise.all([
       getModelCatalog(PROJECT_DIR, { url: modelCatalog.url || undefined, ttlMs, fetchJson: fetchJsonFromUrl }),
       getModelCatalogCacheStatus(PROJECT_DIR, new Date(), ttlMs),
       discoverExtensionManifests(PROJECT_DIR),
@@ -462,6 +462,7 @@ app.get('/api/discovery', async (_req, res) => {
       getSessionSearchIndexStatus(PROJECT_DIR),
       scanSkillsDir(SKILLS_DIR),
       scanSkillsDir(REPO_SKILLS_DIR),
+      readCuratorLog(PROJECT_DIR, 10),
     ]);
     res.json({
       modelCatalog: { settings: modelCatalog, status: catalogStatus, manifest: catalog },
@@ -475,6 +476,14 @@ app.get('/api/discovery', async (_req, res) => {
       },
       automations: { total: automationJobs.length, due: dueAutomations, jobs: automationJobs },
       sessionSearch,
+      curator: {
+        enabled: curatorSettings.enabled,
+        schedulerRunning: Boolean(curatorScheduler),
+        intervalHours: curatorSettings.intervalHours,
+        idleThresholdMinutes: curatorSettings.idleThresholdMinutes,
+        lastRunAt: curatorSettings.lastRunAt,
+        recentEvents: curatorLog,
+      },
     });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -1658,12 +1667,19 @@ app.get('/api/curator', async (_req, res) => {
   try {
     const log = await readCuratorLog(PROJECT_DIR, 50);
     const proposals = await readCuratorProposals(PROJECT_DIR);
+    let archived: string[] = [];
+    try {
+      const archiveDir = path.join(SKILLS_DIR, '_archive');
+      const entries = await fs.readdir(archiveDir, { withFileTypes: true });
+      archived = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+    } catch { /* archive dir does not exist yet */ }
     res.json({
       settings: curatorSettings,
       lastUserActivityAt: new Date(lastUserActivityMs).toISOString(),
       schedulerRunning: Boolean(curatorScheduler),
       log,
       proposals,
+      archived,
     });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });

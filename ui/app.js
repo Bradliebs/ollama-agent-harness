@@ -1771,6 +1771,10 @@ function renderCuratorPanel(curator) {
   const proposalsBlock = curator.proposals
     ? '<div id="curatorProposalsContainer" style="margin-top:6px"><div class="trace-meta">LLM merge proposals available — loading…</div></div>'
     : '';
+  const archived = Array.isArray(curator.archived) ? curator.archived : [];
+  const archivedBlock = archived.length === 0 ? '' : '<details style="margin-top:6px"><summary class="trace-meta" style="cursor:pointer">📦 Archived skills (' + archived.length + ')</summary><div style="margin-top:4px">'
+    + archived.map((name) => '<div class="trace-row" style="display:flex;align-items:center;gap:6px;padding:4px 0"><span style="flex:1">' + esc(name) + '</span><button class="btn-sm" onclick="restoreArchivedSkill(\'' + escAttr(name) + '\')">Restore</button></div>').join('')
+    + '</div></details>';
   return '<div id="curatorPanel" class="trace-item" style="margin-bottom:8px">'
     + '<div class="trace-title">🧹 Skill Curator ' + stateBadge + runningBadge + '</div>'
     + '<div class="trace-meta">Maintenance every ' + (settings.intervalHours || 168) + 'h after ' + (settings.idleThresholdMinutes || 120) + ' min idle. Last run: ' + esc(lastRun) + '. Last activity: ' + esc(lastActivity) + '.</div>'
@@ -1781,9 +1785,20 @@ function renderCuratorPanel(curator) {
     +   '<button class="btn-sm" onclick="curatorToggle(' + (!enabled) + ')">' + (enabled ? 'Disable' : 'Enable') + ' scheduler</button>'
     + '</div>'
     + '<div id="curatorPreviewOutput" style="margin-top:6px"></div>'
+    + archivedBlock
     + (recentLog ? '<details style="margin-top:6px"><summary class="trace-meta" style="cursor:pointer">Recent log</summary>' + recentLog + '</details>' : '')
     + proposalsBlock
     + '</div>';
+}
+
+async function restoreArchivedSkill(name) {
+  if (!confirm('Restore archived skill "' + name + '" back to the runtime library?')) return;
+  try {
+    const response = await fetch('/api/curator/restore/' + encodeURIComponent(name), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const data = await response.json();
+    if (data.error) { alert('Restore failed: ' + data.error); return; }
+    await loadSkills();
+  } catch (error) { alert('Restore failed: ' + (error.message || error)); }
 }
 
 async function curatorPreview() {
@@ -1933,7 +1948,28 @@ async function loadMemoryPalace() { try { const response = await fetch('/api/mem
 async function loadDiscovery() { const view = document.getElementById('discoveryView'); if (!view) return; view.innerHTML = '<div class="trace-meta">Loading discovery...</div>'; try { const response = await fetch('/api/discovery'); const data = await response.json(); if (data.error) throw new Error(data.error); view.innerHTML = renderDiscoveryPanel(data); } catch (error) { view.innerHTML = '<div class="trace-meta">Discovery unavailable: ' + esc(error.message || error) + '</div>'; } }
 
 function renderDiscoveryPanel(data) {
-  return '<div id="discoveryPanel" class="trace-list">' + renderModelCatalogPanel(data.modelCatalog || {}) + renderExtensionDiscoveryPanel(data.extensions || {}) + renderAutomationDiscoveryPanel(data.automations || {}) + renderSessionSearchDiscoveryPanel(data.sessionSearch || {}) + '</div>';
+  return '<div id="discoveryPanel" class="trace-list">' + renderModelCatalogPanel(data.modelCatalog || {}) + renderExtensionDiscoveryPanel(data.extensions || {}) + renderAutomationDiscoveryPanel(data.automations || {}) + renderSessionSearchDiscoveryPanel(data.sessionSearch || {}) + renderCuratorDiscoveryPanel(data.curator || {}) + '</div>';
+}
+
+function renderCuratorDiscoveryPanel(curator) {
+  const enabled = curator.enabled;
+  const stateColor = enabled ? '#50c878' : '#888';
+  const lastRun = curator.lastRunAt ? new Date(curator.lastRunAt).toLocaleString() : 'never';
+  const events = (curator.recentEvents || []).slice(-5).reverse();
+  const eventsRows = events.map((e) => {
+    const ts = e.timestamp ? new Date(e.timestamp).toLocaleString() : '?';
+    const phase = esc(e.phase || 'curator');
+    const action = e.action ? ' · ' + esc(e.action) : '';
+    const skill = e.skill ? ' · ' + esc(e.skill) : '';
+    const note = e.error ? ' · err: ' + esc(e.error) : e.umbrella ? ' · umbrella: ' + esc(e.umbrella) : '';
+    return '<div class="trace-meta" style="font-size:11px">' + esc(ts) + ' · ' + phase + action + skill + note + '</div>';
+  }).join('');
+  return '<div id="curatorDiscoveryPanel" class="trace-item">'
+    + '<div class="trace-title">Skill Curator <span class="capability-pill" style="border-color:' + stateColor + ';color:' + stateColor + '">' + (enabled ? 'enabled' : 'disabled') + '</span>' + (curator.schedulerRunning ? ' <span class="capability-pill" style="border-color:#5bb0ff;color:#5bb0ff">running</span>' : '') + '</div>'
+    + '<div class="trace-meta">Interval: ' + (curator.intervalHours || 168) + 'h · Idle threshold: ' + (curator.idleThresholdMinutes || 120) + ' min · Last run: ' + esc(lastRun) + '</div>'
+    + (eventsRows ? '<div style="margin-top:6px">' + eventsRows + '</div>' : '<div class="trace-meta">No curator events yet.</div>')
+    + '<button class="btn-sm full-width-button" onclick="openLeftTabByName(\'skills\')">Open Skills tab</button>'
+    + '</div>';
 }
 
 function renderModelCatalogPanel(modelCatalog) {

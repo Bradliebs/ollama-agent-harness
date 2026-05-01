@@ -21,6 +21,38 @@ Ollama Agent Harness is a local-first agent runtime and browser UI for working w
 
 The app is designed for local experimentation. Your runtime state is stored under `.harness/`, while implementation and planning notes from this assistant session are tracked separately under `.copilot-tracking/`.
 
+## What's in the Harness
+
+The browser UI organizes the surfaces below as left-side tabs and a right-side Settings panel.
+
+* **Chats / Files / Memory / Palace / Discover / Learning / Snaps** — original surfaces for chat history, project files, agent memory, the memory palace browser, discovered patterns, learning trends, and skill / memory snapshots.
+* **Skills** — runtime and repo skill libraries with diagnostics for skipped folders, install-from-repo and scaffold-missing actions, and the **Skill Curator** (see below).
+* **RAG** — local vector index over chosen files. Tree picker with checkboxes, preview with per-path diagnostics (matched / missing / empty / unsupported), backend badge, build progress streamed via SSE, search results with **Read in chat / Ask about this / Copy** actions, **Load paths / Rebuild** for existing indexes. Auto-detects an Ollama embedding model (`nomic-embed-text` by default) and falls back to a deterministic offline hash backend.
+* **Tools** — registry view grouped by toolset with risk badge (low / medium / high), permission category, read-only and dry-run pills, and a per-tool **Disable / Enable** toggle. Includes a **Permissions panel** with mode badge and a **🛑 Kill switch** that denies every subsequent tool call (even reads) until released.
+* **Runs** — session list with status badges, duration, error rows, **Open transcript** and **Copy ID** actions, plus the most recent curator activity (color-coded by outcome).
+* **Flows** — declarative tool-call sequences defined under `.harness/workflows/<name>.{yaml,json}`. Supports `dryRun`, `pause`, `resume`, `cancel`, and `${variables.foo}` substitution. Bundled `project_health_check.yaml` exercises `list_files`, `file_read`, and `bash`. Workflow steps that the permission engine denies show a distinct `denied` status.
+
+### Skill Curator
+
+A background skill maintenance loop modeled after the Curator pattern.
+
+* **Phase 1 (deterministic)** flags skills past `staleDays` with at least `minViewsBeforeArchive` views and moves up to `maxArchivePerRun` unpinned candidates into `.harness/skills/_archive/<name>/`. Archive is reversible from the Skills tab.
+* **Phase 2 (LLM)** asks the configured model to cluster related skills into umbrella merges. Proposals land in `.harness/curator/proposals.md`. The Skills tab parses them into cards with **Preview / Apply merge** buttons; applying a merge writes a new umbrella `SKILL.md` (concatenating source bodies) and archives the originals.
+* **Heartbeat scheduler** ticks every 60 seconds, runs an hourly maintenance check, and only triggers the curator when (1) it is enabled, (2) the configured interval has elapsed, (3) the system has been idle for the configured threshold, and (4) the kill switch is not engaged.
+* **Settings** live in `.harness/settings.json` under `curator` (Settings panel exposes Enable, Interval (h), Idle threshold (min), Stale (days), Min views before archive, Max archives per run, Enable LLM merge phase). Defaults: weekly interval, 2-hour idle threshold, 60-day stale, 5-archive cap, LLM phase off.
+* **Audit log** at `.harness/curator/log.jsonl` records every action and is surfaced in both the Runs tab and the Discovery panel.
+* **Per-skill metadata** (`useCount`, `viewCount`, `lastUsedAt`, `lastViewedAt`, `pinned`, `archived`) is persisted in `.harness/skill-usage.json`. The Skills tab shows use/view counts per card and a **Pin** button so the curator never archives chosen skills.
+
+### Safety posture
+
+The harness is a supervised execution surface, not an autonomous agent.
+
+* Every tool call is evaluated by the permission engine in `default`, `acceptEdits`, or `dontAsk` mode.
+* The kill switch denies every call (including read-only ones) until released.
+* Per-tool disables filter `getTools()` before each chat turn so the agent never sees disabled tools.
+* The workflow runner treats the permission engine's `ask` decision as `denied` to keep batch execution deterministic.
+* The curator scheduler is opt-in, gated by the kill switch, and never auto-applies LLM merge proposals — every merge requires an explicit Apply click.
+
 ## Quick Start
 
 Install dependencies:
