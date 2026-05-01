@@ -89,6 +89,7 @@ interface WebSettings {
   ollamaHost: string;
   systemPrompt: string;
   agentPersonality: string;
+  agentName: string;
   summarizerModel: string;
   contextMaxTokens: number;
   context: { configuredMaxTokens: number; detectedMaxTokens: number | null; effectiveMaxTokens: number };
@@ -184,6 +185,7 @@ let permissionMode: PermissionMode = 'default';
 let ollamaHost = 'http://localhost:11434';
 let systemPromptOverride = '';
 let agentPersonality = '';
+let agentName = '';
 let summarizerModel = '';
 const DEFAULT_CONTEXT_MAX_TOKENS = 8192;
 let contextMaxTokens = DEFAULT_CONTEXT_MAX_TOKENS;
@@ -349,6 +351,7 @@ app.post('/api/settings', async (req, res) => {
   }
   if (req.body.systemPrompt !== undefined) systemPromptOverride = String(req.body.systemPrompt).slice(0, 20_000);
   if (req.body.agentPersonality !== undefined) agentPersonality = String(req.body.agentPersonality).slice(0, 5_000);
+  if (req.body.agentName !== undefined) agentName = String(req.body.agentName).slice(0, 100);
   if (req.body.summarizerModel !== undefined) summarizerModel = sanitizeModelName(req.body.summarizerModel);
   if (req.body.modelRouting !== undefined) modelRouting = sanitizeModelRoutingPolicy(req.body.modelRouting);
   if (req.body.mediaTools !== undefined) {
@@ -1282,9 +1285,13 @@ app.post('/api/chat', async (req, res) => {
     '4. Format responses in Markdown.\n' +
     '5. Be direct — do the work, don\'t ask the user to do it themselves.';
 
-  // Inject personality before the base prompt if configured
-  const promptWithPersonality = agentPersonality
-    ? `${agentPersonality}\n\n${basePrompt}`
+  // Inject name and personality before the base prompt
+  const identityPrefix = [
+    agentName ? `Your name is ${agentName}.` : '',
+    agentPersonality || '',
+  ].filter(Boolean).join(' ');
+  const promptWithPersonality = identityPrefix
+    ? `${identityPrefix}\n\n${basePrompt}`
     : basePrompt;
 
   // Use evolved prompt — layers in learned patterns and self-improvements
@@ -2630,6 +2637,7 @@ function getCurrentSettings(): WebSettings {
     ollamaHost,
     systemPrompt: systemPromptOverride,
     agentPersonality,
+    agentName,
     summarizerModel,
     contextMaxTokens,
     context: {
@@ -2687,6 +2695,7 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   }
   if (settings.systemPrompt !== undefined) systemPromptOverride = String(settings.systemPrompt).slice(0, 20_000);
   if (settings.agentPersonality !== undefined) agentPersonality = String(settings.agentPersonality).slice(0, 5_000);
+  if (settings.agentName !== undefined) agentName = String(settings.agentName).slice(0, 100);
   if (settings.summarizerModel !== undefined) summarizerModel = sanitizeModelName(settings.summarizerModel);
   if (settings.modelRouting !== undefined) modelRouting = sanitizeModelRoutingPolicy(settings.modelRouting);
   if (settings.mediaTools !== undefined) {

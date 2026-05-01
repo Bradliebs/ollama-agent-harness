@@ -162,6 +162,7 @@ async function loadSettings() {
     if (s.topP !== undefined) { document.getElementById('topPSlider').value = s.topP; document.getElementById('topPVal').textContent = s.topP; }
     if (s.systemPrompt) document.getElementById('sysPrompt').value = s.systemPrompt;
     hydratePersonality(s.agentPersonality || '');
+    hydrateAgentName(s.agentName || '');
     if (s.ollamaHost) document.getElementById('ollamaHost').value = s.ollamaHost;
     if (s.summarizerModel) document.getElementById('summarizerModel').value = s.summarizerModel;
     if (s.contextMaxTokens) document.getElementById('contextMaxTokens').value = s.contextMaxTokens;
@@ -610,6 +611,28 @@ function applyPersonalityPreset(preset) {
   const el = document.getElementById('personalityText');
   if (el) el.value = text;
   if (preset !== 'custom') updateSetting('agentPersonality', text);
+}
+
+let currentAgentName = '';
+
+function hydrateAgentName(name) {
+  currentAgentName = name;
+  const el = document.getElementById('agentNameInput');
+  if (el) el.value = name;
+  updateTopbarName(name);
+  document.title = name ? name + ' — Ollama Agent Harness' : 'Ollama Agent Harness';
+}
+
+function updateAgentName(name) {
+  currentAgentName = name.trim().slice(0, 100);
+  updateSetting('agentName', currentAgentName);
+  updateTopbarName(currentAgentName);
+  document.title = currentAgentName ? currentAgentName + ' — Ollama Agent Harness' : 'Ollama Agent Harness';
+}
+
+function updateTopbarName(name) {
+  const logo = document.getElementById('topbarLogo');
+  if (logo) logo.textContent = name ? '🤖 ' + name : '🤖 Harness';
 }
 
 function updateRoutingSetting(k, v) {
@@ -1759,15 +1782,30 @@ async function loadChat(id) { try { const r = await fetch('/api/history/' + id);
 async function autoSaveChat() { if (chatMessages.length < 2) return; const title = chatMessages[0].content.slice(0, 60); try { const r = await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: currentChatId, title, messages: chatMessages }) }); const d = await r.json(); if (!currentChatId) currentChatId = d.id; saveChatSession(); loadHistory(); } catch {} }
 async function deleteChat(id) { await fetch('/api/history/' + id, { method: 'DELETE' }); if (id === currentChatId) newChat(); loadHistory(); }
 function newChat() { currentChatId = null; chatMessages = []; resetSessionUsage(); saveChatSession(); document.getElementById('chatArea').innerHTML = welcomeMarkup(); renderModelCapabilityHint(); loadSettings(); loadHistory(); }
+function getPersonalityGreeting(name, personalityText) {
+  const p = personalityText.toLowerCase();
+  if (p.includes('pirate')) return { headline: 'Ahoy! Captain ' + name + ' at yer service!', subtitle: 'Set course for yer next task, matey. I can navigate files, chart code, search the seven seas of the web, and remember every port we visit.' };
+  if (p.includes('mentor')) return { headline: name + ' here — ready to learn together', subtitle: 'Ask me anything and I\'ll walk you through the reasoning. We\'ll read files, write code, and build understanding step by step.' };
+  if (p.includes('concise')) return { headline: name, subtitle: 'Ready. Ask anything.' };
+  if (p.includes('creative')) return { headline: 'Let\'s create something new with ' + name, subtitle: 'I love exploring possibilities. Throw me a challenge — code, research, design, or something nobody\'s tried before.' };
+  if (p.includes('friendly')) return { headline: 'Hey! ' + name + ' here 👋', subtitle: 'So glad you\'re here! I can help with files, code, web searches, skills, and more. What sounds fun to work on?' };
+  if (p.includes('professional')) return { headline: name + ' — Technical Assistant', subtitle: 'Select a model above, then submit your request. Capabilities include file operations, code generation, shell commands, web research, and skill management.' };
+  if (name !== 'Harness') return { headline: 'Meet ' + name, subtitle: 'Pick a model above, then ask me anything. I can read files, write code, run commands, search the web, create skills, and remember things across sessions.' };
+  return { headline: 'What can I help you build?', subtitle: 'Pick a model above, then ask me anything. I can read files, write code, run commands, search the web, create skills, and remember things across sessions.' };
+}
+
 function welcomeMarkup() {
   // Mirrors the redesigned hero in index.html so /new and /reset render
   // the same modern welcome card the page boots into.
+  const name = currentAgentName || 'Harness';
+  const personalityText = document.getElementById('personalityText')?.value || '';
+  const greeting = getPersonalityGreeting(name, personalityText);
   return ''
     + '<div class="welcome" id="welcome">'
     + '<div class="welcome-hero">'
     + '<div class="welcome-eyebrow">Local-first AI agent · Ollama</div>'
-    + '<h2>What can I help you build?</h2>'
-    + '<p>Pick a model above, then ask me anything. I can read files, write code, run commands, search the web, create skills, and remember things across sessions.</p>'
+    + '<h2>' + esc(greeting.headline) + '</h2>'
+    + '<p>' + esc(greeting.subtitle) + '</p>'
     + '</div>'
     + '<div class="quick-suggestions">'
     + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">📂</div><div class="qc-body"><div class="qc-title">List files in this project</div><div class="qc-desc">Tour what\'s here. I\'ll group by folder.</div></div></div>'

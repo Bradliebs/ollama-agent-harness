@@ -358,7 +358,7 @@
   <div class="main-panel">
     <div class="topbar">
       <button class="btn-icon" onclick="toggleLeft()" title="History">☰</button>
-      <div class="logo">🤖 Harness</div>
+      <div class="logo" id="topbarLogo">🤖 Harness</div>
       <div class="model-wrap">
         <select class="model-select" id="modelSelect" title="Model" disabled>
           <option value="">Loading models...</option>
@@ -753,9 +753,13 @@
       <div id="releaseVerificationPanel" class="trace-detail initial-hidden"></div>
     </div>
     <div class="settings-section">
-      <h4>Agent Personality</h4>
+      <h4>Agent Identity</h4>
       <div class="setting-row">
-        <label>Preset</label>
+        <label for="agentNameInput">Name</label>
+        <input type="text" id="agentNameInput" placeholder="e.g. Sage, Atlas, Hermes..." onchange="updateAgentName(this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Personality</label>
         <select id="personalityPreset" onchange="applyPersonalityPreset(this.value)">
           <option value="">None (default assistant)</option>
           <option value="professional">Professional — precise, formal, structured</option>
