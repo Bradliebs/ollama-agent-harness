@@ -1073,6 +1073,18 @@ app.get('/api/automations/output', async (req, res) => {
   }
 });
 
+// ─── Mycelium graph API ──────────────────────────────────────────
+app.get('/api/mycelium', async (_req, res) => {
+  try {
+    const { loadMyceliumGraph: load } = await import('../mycelium/graph');
+    const graph = await load(PROJECT_DIR);
+    res.json({ stats: graph.stats(), nodes: graph.listNodes(), edges: graph.listEdges(), episodes: graph.listEpisodes(20) });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
 // Enable or disable a single tool at runtime. Disabled tools are filtered out
 // of the agent's tool list before each chat turn.
 app.post('/api/tools/:name/toggle', (req, res) => {

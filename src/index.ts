@@ -20,6 +20,10 @@ export { createAutomationJob, deleteAutomationJob, executeDueJobs, listAutomatio
 export type { AutomationJob, AutomationRunUpdate, AutomationSchedule, AutomationScheduleKind } from './automation/jobs';
 export { buildAutomationPrompt, prepareAutomationRun } from './automation/runner';
 export { AutomationScheduler } from './automation/scheduler';
+export { MyceliumGraph, loadMyceliumGraph, saveMyceliumGraph } from './mycelium/graph';
+export { MycelialContextRouter, createMycelialRouter } from './mycelium/router';
+export { spreadActivation, selectRoute } from './mycelium/activation';
+export { reinforceRoute, weakenRoute, decayUnusedEdges, computeReward } from './mycelium/reinforcement';
 export { BUILTIN_MODEL_CATALOG, getModelCatalog, getModelCatalogCacheStatus, listCatalogModels, readModelCatalogCache, validateModelCatalogManifest, writeModelCatalogCache } from './models/modelCatalog';
 export type { GetModelCatalogOptions, ModelCatalogCacheStatus, ModelCatalogManifest, ModelCatalogModel, ModelCatalogProvider } from './models/modelCatalog';
 export { discoverExtensionManifests } from './extensibility/extensionManifest';
