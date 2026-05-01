@@ -166,13 +166,28 @@ export const OUTPUT_VALIDATION_PROFILE_TEMPLATES: OutputValidationProfileTemplat
   },
 ];
 
-export function suggestOutputValidationProfile(input: string, fallback: OutputValidationProfile = 'oracle-prime'): BuiltInOutputValidationProfile {
+export interface OutputValidationProfileSuggestion {
+  profile: BuiltInOutputValidationProfile;
+  matched: boolean;
+}
+
+export function describeOutputValidationProfileSuggestion(input: string, fallback: OutputValidationProfile = 'oracle-prime'): OutputValidationProfileSuggestion {
   const text = input.toLowerCase();
-  if (/\b(command|terminal|stdout|stderr|exit code|log|tool result|returned|output)\b/.test(text)) return 'tool-result-summary';
-  if (/\b(code|coding|implemented|fix|bug|test|typecheck|build|lint|file|repo|pull request|commit|typescript|javascript|python|script)\b/.test(text)) return 'coding-answer';
-  if (/\b(weather|today|current|latest|news|price|stock|who is|what is|when is|where is|source|according to|factual)\b/.test(text)) return 'factual-answer';
-  if (/\b(decision|strategy|risk|scenario|tradeoff|alternative|recommend|confidence|uncertainty|forecast|plan)\b/.test(text)) return 'oracle-prime';
-  return isBuiltInProfile(fallback) ? fallback : 'oracle-prime';
+  const trimmed = text.trim();
+  const fallbackProfile: BuiltInOutputValidationProfile = isBuiltInProfile(fallback) ? fallback : 'oracle-prime';
+  // Very short or vague prompts carry no signal; do not infer coding/tooling intent from them.
+  if (trimmed.length < 12 || /^(you decide|whatever|anything|surprise me|up to you|your choice|idk|dunno)\b/.test(trimmed)) {
+    return { profile: fallbackProfile, matched: false };
+  }
+  if (/\b(stdout|stderr|exit code|tool result|terminal output|command output|stack trace)\b/.test(text)) return { profile: 'tool-result-summary', matched: true };
+  if (/\b(code|coding|implement|implemented|implementing|refactor|debug|typecheck|unit test|pull request|commit|typescript|javascript|python|\.ts|\.tsx|\.js|\.jsx|\.py|npm|yarn|pnpm|jest|eslint|compile|compiler|stack trace|function|class|method|api endpoint)\b/.test(text)) return { profile: 'coding-answer', matched: true };
+  if (/\b(weather|today|current|latest|news|price|stock|who is|what is|when is|where is|source|according to|factual)\b/.test(text)) return { profile: 'factual-answer', matched: true };
+  if (/\b(decision|strategy|risk|scenario|tradeoff|alternative|recommend|confidence|uncertainty|forecast|plan)\b/.test(text)) return { profile: 'oracle-prime', matched: true };
+  return { profile: fallbackProfile, matched: false };
+}
+
+export function suggestOutputValidationProfile(input: string, fallback: OutputValidationProfile = 'oracle-prime'): BuiltInOutputValidationProfile {
+  return describeOutputValidationProfileSuggestion(input, fallback).profile;
 }
 
 export function validateOutput(

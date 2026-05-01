@@ -1,4 +1,4 @@
-import { OUTPUT_VALIDATION_PROFILE_TEMPLATES, getOutputValidationInstructions, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, suggestOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, withOutputValidationInstructions } from './outputValidation';
+import { OUTPUT_VALIDATION_PROFILE_TEMPLATES, describeOutputValidationProfileSuggestion, getOutputValidationInstructions, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, suggestOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, withOutputValidationInstructions } from './outputValidation';
 import { OUTPUT_VALIDATION_PROFILE_TEMPLATES as EXPORTED_TEMPLATES, suggestOutputValidationProfile as exportedSuggestOutputValidationProfile } from '../index';
 
 const validOracleOutput = `🔍 **REFRAME** — [ANALYSIS] The question is whether strict output contracts improve reasoning quality.
@@ -103,6 +103,25 @@ describe('output validation', () => {
     expect(suggestOutputValidationProfile('What is the weather in Bracknell today?')).toBe('factual-answer');
     expect(suggestOutputValidationProfile('Summarize this terminal output and exit code')).toBe('tool-result-summary');
     expect(suggestOutputValidationProfile('Compare the risks and recommend an option')).toBe('oracle-prime');
+  });
+
+  it('does not misclassify vague or data-analysis prompts as coding-answer', () => {
+    // Regression: previously matched on generic words like "file", "repo", "script", "build", "lint", "output".
+    expect(suggestOutputValidationProfile('Analyze this lotto-draw-history.csv file and find frequency patterns')).toBe('oracle-prime');
+    expect(suggestOutputValidationProfile('Summarize the dataset by month and machine')).toBe('oracle-prime');
+    expect(suggestOutputValidationProfile('Which numbers appear most often in the draws?')).toBe('oracle-prime');
+  });
+
+  it('returns the neutral fallback for short or vague prompts and marks them unmatched', () => {
+    // Regression: vague prompts like "you decide" used to inherit a sticky stored coding-answer profile
+    // when callers passed the user's saved profile as the fallback. Callers (server, UI) now pass
+    // 'oracle-prime' as the neutral fallback so vague prompts always land somewhere safe.
+    expect(suggestOutputValidationProfile('you decide')).toBe('oracle-prime');
+    expect(suggestOutputValidationProfile('hello')).toBe('oracle-prime');
+    expect(suggestOutputValidationProfile('whatever')).toBe('oracle-prime');
+    expect(describeOutputValidationProfileSuggestion('you decide', 'oracle-prime')).toEqual({ profile: 'oracle-prime', matched: false });
+    expect(describeOutputValidationProfileSuggestion('hello', 'oracle-prime')).toEqual({ profile: 'oracle-prime', matched: false });
+    expect(describeOutputValidationProfileSuggestion('Refactor the typescript function in src/web/server.ts', 'oracle-prime')).toEqual({ profile: 'coding-answer', matched: true });
   });
 
   it('ships examples with installable validation templates', () => {

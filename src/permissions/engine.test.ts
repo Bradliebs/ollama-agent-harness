@@ -40,6 +40,21 @@ describe('PermissionEngine', () => {
       expect(result.decision).toBe('allow');
     });
 
+    it('default mode auto-approves list_uploads as a read-only tool', () => {
+      const engine = new PermissionEngine([], 'default');
+      const result = engine.evaluate({ name: 'list_uploads', input: {} });
+      expect(result.decision).toBe('allow');
+    });
+
+    it('default mode auto-approves read-only media and PDF tools', () => {
+      const engine = new PermissionEngine([], 'default');
+
+      expect(engine.evaluate({ name: 'image_analyze', input: { path: 'image.png' } }).decision).toBe('allow');
+      expect(engine.evaluate({ name: 'pdf_read', input: { path: 'doc.pdf' } }).decision).toBe('allow');
+      expect(engine.evaluate({ name: 'pdf_metadata', input: { path: 'doc.pdf' } }).decision).toBe('allow');
+      expect(engine.evaluate({ name: 'pdf_extract_tables', input: { path: 'doc.pdf', page: 1 } }).decision).toBe('allow');
+    });
+
     it('default mode asks for non-read tools', () => {
       const engine = new PermissionEngine([], 'default');
       const result = engine.evaluate({ name: 'bash', input: { command: 'rm -rf /' } });

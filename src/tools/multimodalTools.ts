@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { Ollama } from 'ollama';
 import type { Tool, ToolResult } from '../types';
+import { resolveProjectReadPath } from './pathResolution';
 
 const MAX_IMAGE_BYTES = 10_000_000;
 const MAX_TRANSCRIPT_CHARS = 50_000;
@@ -23,7 +24,7 @@ export const ImageAnalyzeTool: Tool = {
   },
   isReadOnly: true,
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
-    const filePath = resolveProjectPath(input.path);
+    const filePath = resolveProjectReadPath(input.path);
     if (!filePath) return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
     if (!isImagePath(filePath)) return { success: false, output: 'File does not look like a supported image type.', error: 'unsupported image type' };
     const model = sanitizeString(input.model) || process.env.HARNESS_VISION_MODEL || process.env.OLLAMA_MODEL;
@@ -67,7 +68,7 @@ export const AudioTranscribeTool: Tool = {
   },
   isReadOnly: false,
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
-    const filePath = resolveProjectPath(input.path);
+    const filePath = resolveProjectReadPath(input.path);
     if (!filePath) return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
     const commandTemplate = process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND;
     if (!commandTemplate) {
@@ -92,14 +93,6 @@ export const AudioTranscribeTool: Tool = {
     }
   },
 };
-
-function resolveProjectPath(value: unknown): string | null {
-  const raw = String(value ?? '');
-  const resolved = path.resolve(raw);
-  const relative = path.relative(process.cwd(), resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  return resolved;
-}
 
 function isImagePath(filePath: string): boolean {
   return IMAGE_EXTENSIONS.has(path.extname(filePath).toLowerCase());

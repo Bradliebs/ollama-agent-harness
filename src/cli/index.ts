@@ -10,6 +10,7 @@ import { assembleSystemContext } from '../context/assembly';
 import { checkSetupHealth, type SetupHealthResult } from '../setup/health';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
 import { OUTPUT_VALIDATION_PROFILES, parseOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
+import { formatCliHelp, resolveCliCommand } from './commands';
 import type { LoopConfig, PermissionMode } from '../types';
 
 interface CliOptions {
@@ -39,8 +40,9 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
     audioSamplePath: '',
   };
 
-  if (args[0] === 'doctor') {
-    options.command = 'doctor';
+  const command = resolveCliCommand(args[0]);
+  if (command?.name === 'doctor') {
+    options.command = command.name;
     args = args.slice(1);
   }
 
@@ -101,31 +103,7 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
 }
 
 function printHelp(): void {
-  console.log(`
-Ollama Agent Harness — local-first agentic coding tool
-
-Usage:
-  harness [options]              Interactive mode
-  harness -p "your prompt"       Headless mode (single prompt)
-  harness doctor [options]       Check Ollama, vision, and audio setup
-
-Options:
-  -m, --model <name>     Ollama model (default: qwen2.5-coder:7b)
-  --host <url>           Ollama host (default: http://localhost:11434)
-  --mode <mode>          Permission mode: default, acceptEdits, dontAsk
-  --max-turns <n>        Max agent loop turns (default: 50)
-  --summarizer-model <n> Optional smaller model for context compaction
-  --small-helper-model <n> Model for bounded read-only helper agents
-  --default-helper-model <n> Model for normal helper agents
-  --strong-helper-model <n> Model for escalated helper agents
-  --helper-confidence-threshold <n> Escalate helpers below this confidence (default: 0.45)
-  --vision-model <name>  Vision model to check in Ollama
-  --audio-command <cmd>  Audio transcription command with {input}
-  --audio-sample <path>  Optional audio file path for an end-to-end transcription check
-  --validate-output <profile> Validate final output against a profile: ${OUTPUT_VALIDATION_PROFILES.map((profile) => profile.profile).join(', ')}
-  -p, --prompt <text>    Run a single prompt (headless mode)
-  -h, --help             Show this help
-`);
+  console.log(formatCliHelp(OUTPUT_VALIDATION_PROFILES.map((profile) => profile.profile)));
 }
 
 export async function main(): Promise<void> {
@@ -199,12 +177,19 @@ export async function main(): Promise<void> {
 }
 
 export function formatSetupHealth(result: SetupHealthResult): string {
-  return [
+  const lines = [
     'Setup doctor',
     formatHealthLine('Ollama', result.ollama.ok, result.ollama.message),
     formatHealthLine('Vision', result.vision.ok, result.vision.message),
     formatHealthLine('Audio', result.audio.ok, result.audio.message),
-  ].join('\n');
+  ];
+  if (result.pdfOcr) lines.push(formatHealthLine('PDF OCR', result.pdfOcr.ok, result.pdfOcr.message));
+  lines.push(formatHealthLine('Node', result.local.node.ok, result.local.node.message));
+  lines.push(formatHealthLine('Package', result.local.package.ok, result.local.package.message));
+  lines.push(formatHealthLine('Sessions', result.local.sessions.ok, result.local.sessions.message));
+  lines.push(formatHealthLine('Tools', result.local.tools.ok, result.local.tools.message));
+  lines.push(formatHealthLine('Automations', result.local.automations.ok, result.local.automations.message));
+  return lines.join('\n');
 }
 
 function formatHealthLine(label: string, ok: boolean, message: string): string {

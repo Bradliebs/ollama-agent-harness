@@ -63,4 +63,26 @@ describe('PdfRenderPageTool', () => {
     expect(call[1][1]).toBe('3');
     expect(call[1][2]).toContain('fixture-p3.png');
   });
+
+  it('supports quoted placeholders without passing literal quote characters', async () => {
+    process.env.HARNESS_PDF_RENDER_COMMAND = 'mockrender "{input}" {page} "{output}"';
+    (childProcess.execFile as unknown as jest.Mock).mockImplementation((_cmd, args, _opts, cb) => {
+      const inputArg = args[0];
+      const outputArg = args[2];
+      if (inputArg.includes('"') || outputArg.includes('"')) {
+        cb(new Error('placeholder retained quote characters'));
+        return;
+      }
+      fs.writeFile(outputArg, Buffer.from([0x89, 0x50, 0x4e, 0x47])).then(() => cb(null, { stdout: '', stderr: '' }));
+    });
+
+    const result = await PdfRenderPageTool.execute({ path: fixturePath, page: 4 });
+
+    expect(result.success).toBe(true);
+    const call = (childProcess.execFile as unknown as jest.Mock).mock.calls[0];
+    expect(call[1][0]).toContain('fixture.pdf');
+    expect(call[1][0]).not.toContain('"');
+    expect(call[1][2]).toContain('fixture-p4.png');
+    expect(call[1][2]).not.toContain('"');
+  });
 });

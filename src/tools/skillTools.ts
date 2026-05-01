@@ -11,6 +11,10 @@ export function setSkillsDir(dir: string): void {
   cachedSkills = null;
 }
 
+export function invalidateSkillsCache(): void {
+  cachedSkills = null;
+}
+
 async function getSkills(): Promise<SkillDefinition[]> {
   if (cachedSkills) return cachedSkills;
   if (!skillsDir) return [];
@@ -140,7 +144,7 @@ ${instructions}
       await fs.writeFile(skillPath, content, 'utf-8');
 
       // Invalidate cache so the new skill is available immediately
-      cachedSkills = null;
+      invalidateSkillsCache();
 
       return {
         success: true,

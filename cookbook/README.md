@@ -22,3 +22,13 @@ These recipes implement patterns from the Claude Code paper:
 - **ollama-client.ts** → Section 3.2 (High-Level System Structure, model call interface)
 - **error-handling.ts** → Section 4.4 (Recovery Mechanisms)
 - **task-loop.ts** → Section 4.1 (The Query Pipeline, autonomous execution)
+
+## Attachments and uploads
+
+Files dragged into the chat input or uploaded via `POST /api/upload` are stored under `.harness/uploads/`. Agents and recipes interact with them through three layers:
+
+- **`list_uploads` tool.** Takes no arguments and returns each attachment as `path<TAB>size<TAB>modified`. Use it before reading any attachment when the conversation does not already include the exact path.
+- **Authoritative system block.** When the chat request includes an `attachments` array, the harness validates each entry and appends a `--- Session Attachments (authoritative) ---` block to the system prompt. The block lists every attachment with its exact `.harness/uploads/<name>` path so the model cannot lose it through paraphrasing.
+- **Uploads-aware path resolver.** `file_read`, `pdf_read`, `pdf_metadata`, `pdf_extract_tables`, `pdf_render` (input only), `image_analyze`, and `audio_transcribe` resolve through `resolveProjectReadPath`. When the model passes a bare filename that does not exist at the cwd, the resolver falls back to `.harness/uploads/<basename>` if present, emits a `PathResolution` warn log, and surfaces a `uploads_fallback` SSE event to the UI trace.
+
+The chat UI surfaces a `⚠️ uploads fallback` trace entry whenever the resolver had to rewrite a path. Treat repeated entries from the same model as a signal to tighten its system prompt or switch to `list_uploads`.

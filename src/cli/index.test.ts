@@ -30,11 +30,19 @@ describe('cli setup doctor', () => {
       ollama: { ok: true, message: 'Connected to Ollama with 2 model(s).', modelCount: 2 },
       vision: { ok: false, message: 'No vision model configured.' },
       audio: { ok: true, message: 'Audio transcription command is configured.' },
+      local: {
+        node: { ok: true, message: 'Node 20.0.0' },
+        package: { ok: true, message: 'package has scripts.' },
+        sessions: { ok: true, message: 'Session storage is writable.' },
+        tools: { ok: true, message: '27 built-in tool(s).' },
+        automations: { ok: true, message: 'Automation storage is writable.' },
+      },
     });
 
     expect(output).toContain('Setup doctor');
     expect(output).toContain('OK Ollama: Connected to Ollama with 2 model(s).');
     expect(output).toContain('WARN Vision: No vision model configured.');
     expect(output).toContain('OK Audio: Audio transcription command is configured.');
+    expect(output).toContain('OK Automations: Automation storage is writable.');
   });
 });

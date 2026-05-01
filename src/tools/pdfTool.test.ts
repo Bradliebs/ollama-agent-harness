@@ -89,7 +89,7 @@ describe('PDF tools', () => {
       await fs.mkdir(ocrOutDir, { recursive: true });
       await fs.writeFile(ocrOutputFile, 'OCR fallback recovered text');
       // Use Node itself as a deterministic OCR command; print the fixed file regardless of input.
-      process.env.HARNESS_PDF_OCR_COMMAND = `node -e "process.stdout.write(require('fs').readFileSync(${JSON.stringify(ocrOutputFile)}, 'utf-8'))" {input}`;
+      process.env.HARNESS_PDF_OCR_COMMAND = `node -e "process.stdout.write('OCR fallback recovered text')" {input}`;
     });
 
     afterAll(async () => {
@@ -109,6 +109,15 @@ describe('PDF tools', () => {
       const result = await PdfReadTool.execute({ path: blankFixtureFile });
       expect(result.success).toBe(true);
       expect(result.output).not.toContain('OCR fallback recovered text');
+    });
+
+    it('supports quoted OCR input placeholders without passing literal quote characters', async () => {
+      process.env.HARNESS_PDF_OCR_COMMAND = `node -e "if (process.argv[1].includes('\\"')) process.exit(2); process.stdout.write('OCR fallback recovered text')" "{input}"`;
+
+      const result = await PdfReadTool.execute({ path: blankFixtureFile, ocr: true });
+
+      expect(result.success).toBe(true);
+      expect(result.output).toContain('OCR fallback recovered text');
     });
   });
 });

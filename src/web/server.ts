@@ -7,39 +7,59 @@ import { Ollama } from 'ollama';
 import { OllamaClient } from '../core/ollamaClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { getBuiltinTools } from '../tools';
-import { iteratePdfPages } from '../tools/pdfTool';
+import { drainUploadsFallbacks, getUploadsDir, resolveProjectReadPath } from '../tools/pathResolution';
+import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { setSkillsDir } from '../tools/skillTools';
 import { PermissionEngine } from '../permissions/engine';
 import { PermissionPromptBroker } from '../permissions/promptBroker';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { forkSession, resumeSession } from '../persistence/resume';
 import { buildMemoryPalace, getSemanticMemoryContext, getSemanticMemoryEntry, rebuildSemanticMemory, searchSemanticMemory } from '../persistence/semanticMemory';
-import { assembleSystemContext } from '../context/assembly';
+import * as snapshots from '../persistence/snapshots';
+import * as ragIndex from '../persistence/ragIndex';
+import { MCP_CATALOG } from '../extensibility/mcpCatalog';
+import { assembleSystemContext, estimateTokenCount } from '../context/assembly';
 import { HookPipeline } from '../extensibility/hookPipeline';
-import { loadSkillsDir } from '../extensibility/skillLoader';
+import { loadSkillsDir, scanSkillsDir } from '../extensibility/skillLoader';
+import { discoverExtensionManifests } from '../extensibility/extensionManifest';
 import { RateLimiter } from '../core/rateLimiter';
 import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
-import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, suggestOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
+import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, describeOutputValidationProfileSuggestion, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
 import { startNewSession, onSessionEnd, getEvolvedPrompt } from '../learning/engine';
-import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordOutputValidationEvalRun, runEvalTraceDataset, summarizeEvalTraceRuns, summarizeOutputValidationRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
+import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
 import { appendLearningCandidate, extractLearningCandidate, getLearningCandidateProvenance, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
 import { listSubagentRoutingMetrics } from '../agents/subagent';
 import { calibrateModelRoutingPolicy, summarizeRoutingMetrics } from '../agents/modelRouting';
 import { checkSetupHealth } from '../setup/health';
+import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCatalog';
+import { listAutomationJobs, listDueAutomationJobs } from '../automation/jobs';
+import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
 import type { LoopConfig, LoopEvent, PermissionMode, Tool } from '../types';
 import type { Message } from 'ollama';
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
-app.use(express.static(path.join(__dirname, '..', '..', 'ui')));
+// Disable browser caching for the SPA shell so users always see the latest
+// UI without having to hard-refresh after upgrades.  setHeaders runs for
+// every served static file; the agent loop sends its own headers so this
+// only affects ui/* (HTML / JS / CSS).
+app.use(express.static(path.join(__dirname, '..', '..', 'ui'), {
+  etag: false,
+  lastModified: false,
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+  },
+}));
 
 const PROJECT_DIR = process.cwd();
 const LOCAL_HOST = process.env.HOST ?? '127.0.0.1';
-const UPLOADS_DIR = path.join(PROJECT_DIR, '.harness', 'uploads');
 const HISTORY_DIR = path.join(PROJECT_DIR, '.harness', 'chat-history');
 const SKILLS_DIR = path.join(PROJECT_DIR, '.harness', 'skills');
+const REPO_SKILLS_DIR = path.join(PROJECT_DIR, '.github', 'skills');
 const TRACES_DIR = path.join(PROJECT_DIR, '.harness', 'traces');
 const SETTINGS_PATH = path.join(PROJECT_DIR, '.harness', 'settings.json');
 const OUTPUT_VALIDATION_PROFILES_PATH = path.join(PROJECT_DIR, '.harness', 'output-validation-profiles.json');
@@ -64,6 +84,8 @@ interface WebSettings {
   outputValidation: OutputValidationSettings;
   outputValidationProfiles: Array<{ profile: string; label: string; description: string }>;
   customOutputValidationProfiles: CustomOutputValidationProfile[];
+  modelCatalog: ModelCatalogSettings;
+  extensionActivation: ExtensionActivationSettings;
   walkthrough: WalkthroughSettings;
 }
 
@@ -71,12 +93,16 @@ interface MediaToolSettings {
   visionModel: string;
   audioTranscribeCommand: string;
   pdfOcrCommand: string;
+  uploadsDir: string;
+  uploadsAutoPruneDays: number;
+  uploadsLastPrunedAt: string;
 }
 
 interface OutputValidationSettings {
   enabled: boolean;
   profile: OutputValidationProfile;
   autoSelect: boolean;
+  skipOnLowSignal: boolean;
 }
 
 interface EffectiveOutputValidationSettings extends OutputValidationSettings {
@@ -86,6 +112,17 @@ interface EffectiveOutputValidationSettings extends OutputValidationSettings {
 
 interface WalkthroughSettings {
   completed: string[];
+}
+
+interface ModelCatalogSettings {
+  url: string;
+  ttlHours: number;
+}
+
+interface ExtensionActivationSettings {
+  executablePlugins: boolean;
+  allowedPluginNames: string[];
+  requirePermissionReview: boolean;
 }
 
 interface WebRuntimeDeps {
@@ -118,9 +155,14 @@ let mediaTools: MediaToolSettings = {
   visionModel: process.env.HARNESS_VISION_MODEL ?? '',
   audioTranscribeCommand: process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND ?? '',
   pdfOcrCommand: process.env.HARNESS_PDF_OCR_COMMAND ?? '',
+  uploadsDir: process.env.HARNESS_UPLOADS_DIR ?? '',
+  uploadsAutoPruneDays: 0,
+  uploadsLastPrunedAt: '',
 };
-let outputValidation: OutputValidationSettings = { enabled: false, profile: 'oracle-prime', autoSelect: true };
+let outputValidation: OutputValidationSettings = { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: false };
 let customOutputValidationProfiles: CustomOutputValidationProfile[] = [];
+let modelCatalog: ModelCatalogSettings = { url: '', ttlHours: 24 };
+let extensionActivation: ExtensionActivationSettings = { executablePlugins: false, allowedPluginNames: [], requirePermissionReview: true };
 let walkthrough: WalkthroughSettings = { completed: [] };
 let settingsLoaded = false;
 const rateLimiter = new RateLimiter(10, 2);
@@ -212,8 +254,11 @@ app.post('/api/settings', async (req, res) => {
   if (req.body.mediaTools !== undefined) {
     mediaTools = sanitizeMediaToolSettings(req.body.mediaTools);
     applyMediaToolEnvironment(mediaTools);
+    configureUploadsAutoPrune();
   }
   if (req.body.outputValidation !== undefined) outputValidation = sanitizeOutputValidationSettings(req.body.outputValidation);
+  if (req.body.modelCatalog !== undefined) modelCatalog = sanitizeModelCatalogSettings(req.body.modelCatalog);
+  if (req.body.extensionActivation !== undefined) extensionActivation = sanitizeExtensionActivationSettings(req.body.extensionActivation);
   if (req.body.walkthrough !== undefined) walkthrough = sanitizeWalkthroughSettings(req.body.walkthrough);
   if (req.body.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(req.body.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (req.body.temperature !== undefined) temperature = clampNumber(req.body.temperature, 0, 2, 0.7);
@@ -235,9 +280,64 @@ app.get('/api/output-validation/templates', async (_req, res) => {
 app.post('/api/output-validation/suggest-profile', async (req, res) => {
   await ensureSettingsLoaded();
   const input = String(req.body?.input ?? req.body?.message ?? '').slice(0, 20_000);
-  const profile = suggestOutputValidationProfile(input, outputValidation.profile);
-  const metadata = OUTPUT_VALIDATION_PROFILES.find((candidate) => candidate.profile === profile);
-  res.json({ profile, label: metadata?.label ?? profile, reason: suggestionReason(profile) });
+  const suggestion = describeOutputValidationProfileSuggestion(input, 'oracle-prime');
+  const metadata = OUTPUT_VALIDATION_PROFILES.find((candidate) => candidate.profile === suggestion.profile);
+  res.json({ profile: suggestion.profile, label: metadata?.label ?? suggestion.profile, reason: suggestionReason(suggestion.profile, suggestion.matched), matched: suggestion.matched });
+});
+
+app.post('/api/output-validation/feedback', async (req, res) => {
+  await ensureSettingsLoaded();
+  const profile = String(req.body?.profile ?? '').trim();
+  const voteRaw = String(req.body?.vote ?? '').trim().toLowerCase();
+  if (!profile) { res.status(400).json({ error: 'profile is required' }); return; }
+  if (voteRaw !== 'up' && voteRaw !== 'down') { res.status(400).json({ error: 'vote must be "up" or "down"' }); return; }
+  const selectionSourceRaw = String(req.body?.selectionSource ?? 'auto-selected');
+  const selectionSource = selectionSourceRaw === 'manual-selected' ? 'manual-selected' : 'auto-selected';
+  const run = await recordProfileFeedbackEvalRun(PROJECT_DIR, {
+    profile,
+    vote: voteRaw,
+    selectionSource,
+    selectionReason: req.body?.selectionReason ? String(req.body.selectionReason).slice(0, 500) : undefined,
+    prompt: req.body?.prompt ? String(req.body.prompt).slice(0, 500) : undefined,
+  });
+  res.json({ ok: true, runId: run.id });
+});
+
+app.get('/api/output-validation/feedback-replay', async (_req, res) => {
+  await ensureSettingsLoaded();
+  const runs = await listEvalTraceRuns(PROJECT_DIR);
+  const PLACEHOLDER_TASK = 'validation profile feedback';
+  const replays: Array<{ originalProfile: string; suggestedProfile: string; matched: boolean; prompt: string; createdAt: string; status: 'fixed' | 'still-misclassified' | 'no-prompt' }> = [];
+  let fixed = 0;
+  let stillMisclassified = 0;
+  let noPrompt = 0;
+  for (const run of runs) {
+    for (const result of run.results) {
+      if (!result.tags.includes('profile-feedback:down')) continue;
+      const originalProfile = result.tags.find((tag) => tag !== 'profile-feedback'
+        && tag !== 'profile-feedback:down'
+        && tag !== 'auto-selected'
+        && tag !== 'manual-selected') ?? 'unknown';
+      const prompt = result.task && result.task !== PLACEHOLDER_TASK ? result.task : '';
+      if (!prompt) {
+        noPrompt++;
+        replays.push({ originalProfile, suggestedProfile: originalProfile, matched: false, prompt: '', createdAt: run.createdAt, status: 'no-prompt' });
+        continue;
+      }
+      const suggestion = describeOutputValidationProfileSuggestion(prompt, 'oracle-prime');
+      const status: 'fixed' | 'still-misclassified' = suggestion.profile !== originalProfile ? 'fixed' : 'still-misclassified';
+      if (status === 'fixed') fixed++; else stillMisclassified++;
+      replays.push({ originalProfile, suggestedProfile: suggestion.profile, matched: suggestion.matched, prompt, createdAt: run.createdAt, status });
+    }
+  }
+  res.json({
+    generatedAt: new Date().toISOString(),
+    totalDownVotes: replays.length,
+    fixed,
+    stillMisclassified,
+    noPrompt,
+    replays: replays.slice(-50).reverse(),
+  });
 });
 
 app.post('/api/output-validation/templates/install', async (req, res) => {
@@ -307,14 +407,70 @@ app.get('/api/setup/health', async (req, res) => {
   }));
 });
 
+app.get('/api/discovery', async (_req, res) => {
+  await ensureSettingsLoaded();
+  try {
+    const ttlMs = modelCatalog.ttlHours * 60 * 60 * 1000;
+    const [catalog, catalogStatus, extensions, automationJobs, dueAutomations, sessionSearch, runtimeSkills, repoSkills] = await Promise.all([
+      getModelCatalog(PROJECT_DIR, { url: modelCatalog.url || undefined, ttlMs, fetchJson: fetchJsonFromUrl }),
+      getModelCatalogCacheStatus(PROJECT_DIR, new Date(), ttlMs),
+      discoverExtensionManifests(PROJECT_DIR),
+      listAutomationJobs(PROJECT_DIR),
+      listDueAutomationJobs(PROJECT_DIR),
+      getSessionSearchIndexStatus(PROJECT_DIR),
+      scanSkillsDir(SKILLS_DIR),
+      scanSkillsDir(REPO_SKILLS_DIR),
+    ]);
+    res.json({
+      modelCatalog: { settings: modelCatalog, status: catalogStatus, manifest: catalog },
+      extensions: {
+        policy: extensionActivation,
+        manifests: extensions.map((manifest) => ({ ...manifest, activation: describeExtensionActivation(manifest.kind, manifest.name, manifest.enabled) })),
+        skills: {
+          runtime: { directory: SKILLS_DIR, total: runtimeSkills.skills.length, diagnosticCount: runtimeSkills.diagnostics.length, diagnostics: runtimeSkills.diagnostics },
+          repo: { directory: REPO_SKILLS_DIR, total: repoSkills.skills.length, diagnosticCount: repoSkills.diagnostics.length },
+        },
+      },
+      automations: { total: automationJobs.length, due: dueAutomations, jobs: automationJobs },
+      sessionSearch,
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/models/catalog/refresh', async (_req, res) => {
+  await ensureSettingsLoaded();
+  try {
+    const ttlMs = modelCatalog.ttlHours * 60 * 60 * 1000;
+    const manifest = await getModelCatalog(PROJECT_DIR, { url: modelCatalog.url || undefined, ttlMs, forceRefresh: true, fetchJson: fetchJsonFromUrl });
+    const status = await getModelCatalogCacheStatus(PROJECT_DIR, new Date(), ttlMs);
+    res.json({ settings: modelCatalog, status, manifest });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/sessions/search-index/rebuild', async (_req, res) => {
+  try {
+    const index = await rebuildSessionSearchIndexWithMetadata(PROJECT_DIR);
+    const status = await getSessionSearchIndexStatus(PROJECT_DIR);
+    res.json({ index, status });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
 app.get('/api/pdf/extract', async (req, res) => {
   const rawPath = typeof req.query.path === 'string' ? req.query.path : '';
   const startPage = typeof req.query.startPage === 'string' ? Number(req.query.startPage) : undefined;
   const endPage = typeof req.query.endPage === 'string' ? Number(req.query.endPage) : undefined;
-  const resolved = path.resolve(rawPath);
-  const relative = path.relative(process.cwd(), resolved);
-  if (!rawPath || relative.startsWith('..') || path.isAbsolute(relative)) {
-    res.status(400).json({ error: 'path is required and must be inside the project directory' });
+  const resolved = rawPath ? resolveProjectReadPath(rawPath) : null;
+  if (!resolved) {
+    res.status(400).json({ error: 'path is required and must be inside the project or uploads directory' });
     return;
   }
   if (path.extname(resolved).toLowerCase() !== '.pdf') {
@@ -332,6 +488,11 @@ app.get('/api/pdf/extract', async (req, res) => {
   let aborted = false;
   req.on('close', () => { aborted = true; });
   try {
+    const stat = await fs.stat(resolved);
+    if (stat.size > MAX_PDF_BYTES) {
+      writeEvent('error', { message: `PDF exceeds ${MAX_PDF_BYTES} bytes (${stat.size}).` });
+      return;
+    }
     const data = await fs.readFile(resolved);
     let count = 0;
     for await (const chunk of iteratePdfPages(data, { startPage, endPage })) {
@@ -424,7 +585,7 @@ app.get('/api/evals/trace-examples/download', async (_req, res) => {
 app.get('/api/evals/runs', async (_req, res) => {
   try {
     const runs = await listEvalTraceRuns(PROJECT_DIR);
-    res.json({ runs, trend: summarizeEvalTraceRuns(runs), outputValidationTrend: summarizeOutputValidationRuns(runs) });
+    res.json({ runs, trend: summarizeEvalTraceRuns(runs), outputValidationTrend: summarizeOutputValidationRuns(runs), profileFeedbackTrend: summarizeProfileFeedbackRuns(runs), contextLossTrend: summarizeContextLossRuns(runs), uploadsFallbackTrend: summarizeUploadsFallbackRuns(runs) });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -573,6 +734,7 @@ app.post('/api/chat', async (req, res) => {
   const activeModel = model || currentModel;
   if (!activeModel) { res.status(400).json({ error: 'No model selected.' }); return; }
 
+  const skipValidationThisTurn = req.body?.skipValidation === true;
   if (!rateLimiter.tryConsume()) {
     res.status(429).json({ error: 'Too many requests. Please slow down.' });
     return;
@@ -589,7 +751,9 @@ app.post('/api/chat', async (req, res) => {
   });
 
   const activeContextMaxTokens = await resolveContextMaxTokens(activeModel);
-  const activeOutputValidation = effectiveOutputValidationForMessage(message);
+  const activeOutputValidation = skipValidationThisTurn
+    ? { ...outputValidation, enabled: false, selectionSource: 'manual-selected' as const, selectionReason: 'Validation skipped for this turn by user request.' }
+    : effectiveOutputValidationForMessage(message);
   const client = webRuntime.createClient(activeModel, ollamaHost, activeContextMaxTokens);
   const tools = webRuntime.getTools();
   const permissions = webRuntime.createPermissionEngine(permissionMode);
@@ -597,6 +761,8 @@ app.post('/api/chat', async (req, res) => {
 
   // Start a new learning session for tracking
   webRuntime.startNewSession();
+  // Drain any stale uploads-fallback records so this turn only sees its own.
+  drainUploadsFallbacks();
 
   const basePrompt = systemPromptOverride ||
     'You are a self-learning AI assistant with full web access and local tool use. IMPORTANT RULES:\n' +
@@ -608,7 +774,9 @@ app.post('/api/chat', async (req, res) => {
 
   // Use evolved prompt — layers in learned patterns and self-improvements
   const evolvedPrompt = await webRuntime.getEvolvedPrompt(basePrompt);
-  const systemPrompt = await webRuntime.assembleSystemContext({ systemPrompt: withRoutingPolicy(evolvedPrompt), projectDir, skillsDir: SKILLS_DIR });
+  const baseSystemPrompt = await webRuntime.assembleSystemContext({ systemPrompt: withRoutingPolicy(evolvedPrompt), projectDir, skillsDir: SKILLS_DIR });
+  const attachmentsBlock = await buildAttachmentsContextBlock(req.body?.attachments);
+  const systemPrompt = attachmentsBlock ? `${baseSystemPrompt}\n\n${attachmentsBlock}` : baseSystemPrompt;
 
   const config: LoopConfig = {
     model: activeModel,
@@ -645,10 +813,42 @@ app.post('/api/chat', async (req, res) => {
     tracer: runtimeTracer,
   };
 
-  const messages = [{ role: 'user' as const, content: message }];
-  logger.info('Chat', `User: ${message.slice(0, 80)}`, { model: activeModel });
+  const messages: Message[] = [];
+  const rawHistory = Array.isArray(req.body?.history) ? req.body.history : [];
+  const sanitizedHistory: Message[] = [];
+  // Cap to the last 50 turns; cap each message to 200KB to bound payload size and let
+  // the existing context compaction (activeContextMaxTokens, summarizerModel) trim further.
+  for (const item of rawHistory.slice(-50)) {
+    const role = item && (item.role === 'assistant' || item.role === 'user') ? item.role : null;
+    if (!role) continue;
+    const content = typeof item.content === 'string' ? item.content.slice(0, 200_000) : '';
+    if (!content) continue;
+    sanitizedHistory.push({ role, content });
+  }
+  // Reserve ~25% of the model context window for the new user message, system prompt,
+  // tool schemas, and assistant reply; spend the rest on prior history. Drop oldest turns
+  // first until the remaining history fits the budget.
+  const newUserMessage: Message = { role: 'user', content: message };
+  const historyTokenBudget = Math.max(512, Math.floor(activeContextMaxTokens * 0.75) - estimateTokenCount([newUserMessage]));
+  let trimmedHistory = sanitizedHistory;
+  let droppedForTokens = 0;
+  while (trimmedHistory.length > 0 && estimateTokenCount(trimmedHistory) > historyTokenBudget) {
+    trimmedHistory = trimmedHistory.slice(1);
+    droppedForTokens++;
+  }
+  messages.push(...trimmedHistory, newUserMessage);
+  logger.info('Chat', `User: ${message.slice(0, 80)}`, { model: activeModel, historyTurns: trimmedHistory.length, droppedForTokens, historyTokenBudget });
+  let assistantTextBuffer = '';
 
   try {
+    if (droppedForTokens > 0) {
+      res.write(`data: ${JSON.stringify({
+        type: 'history_trimmed',
+        droppedTurns: droppedForTokens,
+        keptTurns: trimmedHistory.length,
+        historyTokenBudget,
+      })}\n\n`);
+    }
     if (activeOutputValidation.enabled && activeOutputValidation.selectionSource === 'auto-selected') {
       res.write(`data: ${JSON.stringify({
         type: 'output_validation_profile',
@@ -657,6 +857,8 @@ app.post('/api/chat', async (req, res) => {
         reason: activeOutputValidation.selectionReason,
       })}\n\n`);
     }
+    const seenFallbackKeys = new Set<string>();
+    let suppressedFallbacks = 0;
     for await (const event of webRuntime.runQueryLoop(config, deps, messages)) {
       if (event.type === 'output_validation') {
         await recordOutputValidationEvalRun(PROJECT_DIR, event.validation, message.slice(0, 120), {
@@ -664,8 +866,81 @@ app.post('/api/chat', async (req, res) => {
           selectionReason: activeOutputValidation.selectionReason,
         });
       }
+      if (event.type === 'text' && typeof event.content === 'string') {
+        assistantTextBuffer += event.content;
+      }
       const data = JSON.stringify(event);
       res.write(`data: ${data}\n\n`);
+      if (event.type === 'tool_result') {
+        const fallbacks = drainUploadsFallbacks();
+        for (const fb of fallbacks) {
+          const cwdRel = path.relative(PROJECT_DIR, fb.resolved);
+          const resolvedRel = (cwdRel.startsWith('..') ? fb.resolved : cwdRel).split(path.sep).join('/');
+          const key = `${event.call?.name ?? ''}|${fb.requested}|${resolvedRel}`;
+          if (seenFallbackKeys.has(key)) {
+            suppressedFallbacks++;
+            continue;
+          }
+          seenFallbackKeys.add(key);
+          runtimeTracer.recordEvent('uploads.fallback', {
+            tool: event.call?.name,
+            requested: fb.requested,
+            resolved: resolvedRel,
+          });
+          res.write(`data: ${JSON.stringify({
+            type: 'uploads_fallback',
+            tool: event.call?.name,
+            requested: fb.requested,
+            resolved: resolvedRel,
+            at: fb.at,
+          })}\n\n`);
+        }
+      }
+    }
+    if (suppressedFallbacks > 0) {
+      runtimeTracer.recordEvent('uploads.fallback_summary', {
+        suppressed: suppressedFallbacks,
+        unique: seenFallbackKeys.size,
+      });
+      res.write(`data: ${JSON.stringify({
+        type: 'uploads_fallback_summary',
+        suppressed: suppressedFallbacks,
+        unique: seenFallbackKeys.size,
+      })}\n\n`);
+    }
+    if (seenFallbackKeys.size > 0) {
+      const tools = Array.from(new Set(Array.from(seenFallbackKeys).map((key) => key.split('|')[0]).filter((tool) => tool)));
+      runtimeTracer.recordEvent('uploads.fallback_advice', { unique: seenFallbackKeys.size, tools });
+      res.write(`data: ${JSON.stringify({
+        type: 'uploads_fallback_advice',
+        unique: seenFallbackKeys.size,
+        tools,
+        message: `Model passed bare filenames ${seenFallbackKeys.size} time(s); call list_uploads first or pass the exact attachment path to avoid silent fallbacks.`,
+      })}\n\n`);
+      try {
+        await recordUploadsFallbackEvalRun(PROJECT_DIR, {
+          uniqueFallbacks: seenFallbackKeys.size,
+          suppressedFallbacks,
+          tools,
+          sessionId: session.getSessionId(),
+          task: message.slice(0, 120),
+        });
+      } catch (error) {
+        logger.warn('Chat', 'uploads-fallback eval record failed', { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (assistantTextBuffer.trim() && trimmedHistory.length > 0) {
+      const lastAssistant = [...trimmedHistory].reverse().find((entry) => entry.role === 'assistant');
+      try {
+        await recordContextLossEvalRun(PROJECT_DIR, {
+          priorUserMessage: message,
+          priorAssistantMessage: lastAssistant?.content,
+          assistantResponse: assistantTextBuffer,
+          task: message.slice(0, 120),
+        });
+      } catch (error) {
+        logger.warn('Chat', 'context-loss check failed', { error: error instanceof Error ? error.message : String(error) });
+      }
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -794,6 +1069,130 @@ app.get('/api/memory/palace', async (_req, res) => {
   }
 });
 
+// --- API: Snapshots (skills, memory, config) ---
+// Lightweight point-in-time copies of `.harness/skills`, MEMORY.md,
+// USER.md, SOUL.md so users can roll back self-improvement edits or
+// recover a tree they accidentally clobbered.
+
+app.get('/api/snapshots', async (_req, res) => {
+  try {
+    res.json({ snapshots: await snapshots.list(PROJECT_DIR) });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/snapshots', async (req, res) => {
+  try {
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason : 'manual';
+    const meta = await snapshots.take(PROJECT_DIR, reason);
+    res.json({ snapshot: meta });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/snapshots/:id/diff', async (req, res) => {
+  try {
+    const diff = await snapshots.diff(PROJECT_DIR, req.params.id);
+    if (!diff) { res.status(404).json({ error: 'snapshot not found' }); return; }
+    res.json(diff);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/snapshots/:id/restore', async (req, res) => {
+  try {
+    const result = await snapshots.restore(PROJECT_DIR, req.params.id);
+    if (!result) { res.status(404).json({ error: 'snapshot not found' }); return; }
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.delete('/api/snapshots/:id', async (req, res) => {
+  try {
+    const ok = await snapshots.remove(PROJECT_DIR, req.params.id);
+    if (!ok) { res.status(404).json({ error: 'snapshot not found' }); return; }
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// --- API: Local RAG indexes ---
+// Build, query, and drop semantic indexes over arbitrary local files.
+// Backend is auto-detected: prefers Ollama embeddings when reachable,
+// falls back to a deterministic feature-hash so the UI works offline.
+
+app.get('/api/rag/indexes', async (_req, res) => {
+  try {
+    res.json({ indexes: await ragIndex.listIndexes(PROJECT_DIR) });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/rag/build', async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    const paths = Array.isArray(req.body?.paths) ? req.body.paths.map((p: unknown) => String(p)) : [];
+    const backend = req.body?.backend === 'ollama' || req.body?.backend === 'hash' ? req.body.backend : undefined;
+    if (!name) { res.status(400).json({ error: 'name is required' }); return; }
+    if (paths.length === 0) { res.status(400).json({ error: 'at least one path is required' }); return; }
+    const result = await ragIndex.build(PROJECT_DIR, name, paths, { backend, ollamaHost });
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/rag/preview', async (req, res) => {
+  try {
+    const paths = Array.isArray(req.body?.paths) ? req.body.paths.map((p: unknown) => String(p)) : [];
+    if (paths.length === 0) { res.status(400).json({ error: 'at least one path is required' }); return; }
+    const preview = await ragIndex.previewBuild(PROJECT_DIR, paths);
+    const backend = await ragIndex.selectBackend(ollamaHost, undefined);
+    res.json({ ...preview, backend });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/rag/search', async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    const query = String(req.body?.query || '').trim();
+    const k = Number.isFinite(req.body?.k) ? Math.max(1, Math.min(20, Number(req.body.k))) : 5;
+    if (!name || !query) { res.status(400).json({ error: 'name and query are required' }); return; }
+    const results = await ragIndex.search(PROJECT_DIR, name, query, { k, ollamaHost });
+    res.json({ results });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.delete('/api/rag/indexes/:name', async (req, res) => {
+  try {
+    const ok = await ragIndex.dropIndex(PROJECT_DIR, req.params.name);
+    if (!ok) { res.status(404).json({ error: 'index not found' }); return; }
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// --- API: MCP catalog (curated, in-process; no network call) ---
+// The Harness doesn't run MCP servers itself today; this endpoint is a
+// discovery aid so the UI can show users what's out there with an
+// install command they can paste into a terminal.
+
+app.get('/api/mcp/catalog', (_req, res) => {
+  res.json({ catalog: MCP_CATALOG });
+});
+
 // Pull a model from Ollama
 app.post('/api/models/pull', async (req, res) => {
   const { name } = req.body;
@@ -873,9 +1272,20 @@ app.delete('/api/history/:id', async (req, res) => {
 app.get('/api/skills', async (_req, res) => {
   try {
     await fs.mkdir(SKILLS_DIR, { recursive: true });
-    const skills = await loadSkillsDir(SKILLS_DIR);
-    res.json({ skills: skills.map(s => ({ name: s.name, description: s.description, domain: s.domain, triggers: s.triggers, filePath: s.filePath })) });
-  } catch { res.json({ skills: [] }); }
+    const [runtime, repo] = await Promise.all([
+      scanSkillsDir(SKILLS_DIR),
+      scanSkillsDir(REPO_SKILLS_DIR),
+    ]);
+    const mapSkill = (source: 'runtime' | 'repo') => (s: Awaited<ReturnType<typeof loadSkillsDir>>[number]) => ({ name: s.name, description: s.description, domain: s.domain, triggers: s.triggers, filePath: s.filePath, source });
+    res.json({
+      skills: runtime.skills.map(mapSkill('runtime')),
+      diagnostics: runtime.diagnostics,
+      sources: [
+        { source: 'runtime', label: 'Runtime skills', directory: SKILLS_DIR, skills: runtime.skills.map(mapSkill('runtime')), diagnostics: runtime.diagnostics, mutable: true },
+        { source: 'repo', label: 'Repo skills', directory: REPO_SKILLS_DIR, skills: repo.skills.map(mapSkill('repo')), diagnostics: repo.diagnostics, mutable: false },
+      ],
+    });
+  } catch { res.json({ skills: [], diagnostics: [], sources: [] }); }
 });
 
 app.get('/api/skills/:name', async (req, res) => {
@@ -897,6 +1307,68 @@ app.delete('/api/skills/:name', async (req, res) => {
     await fs.rm(skillDir, { recursive: true });
     res.json({ ok: true });
   } catch { res.status(404).json({ error: 'Skill not found' }); }
+});
+
+// Install a read-only repo skill (.github/skills/<name>) into runtime (.harness/skills/<name>).
+app.post('/api/skills/install', async (req, res) => {
+  const skillName = safeLocalId(req.body?.name);
+  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
+  const overwrite = Boolean(req.body?.overwrite);
+  const sourceDir = path.join(REPO_SKILLS_DIR, skillName);
+  const destDir = path.join(SKILLS_DIR, skillName);
+  try {
+    const sourceStat = await fs.stat(sourceDir).catch(() => null);
+    if (!sourceStat || !sourceStat.isDirectory()) {
+      res.status(404).json({ error: 'Source skill not found in .github/skills.' });
+      return;
+    }
+    const sourceScan = await scanSkillsDir(REPO_SKILLS_DIR);
+    const sourceSkill = sourceScan.skills.find((s) => path.dirname(s.filePath) === sourceDir);
+    if (!sourceSkill) {
+      res.status(400).json({ error: 'Source skill is malformed and cannot be installed. Fix SKILL.md frontmatter first.' });
+      return;
+    }
+    const destStat = await fs.stat(destDir).catch(() => null);
+    if (destStat && !overwrite) {
+      res.status(409).json({ error: 'Runtime skill already exists. Pass overwrite=true to replace it.' });
+      return;
+    }
+    if (destStat) await fs.rm(destDir, { recursive: true, force: true });
+    await fs.mkdir(SKILLS_DIR, { recursive: true });
+    await fs.cp(sourceDir, destDir, { recursive: true });
+    res.json({ ok: true, name: skillName, source: sourceDir, destination: destDir, overwrote: Boolean(destStat) });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Create a starter SKILL.md scaffold for a runtime skill folder that is missing one.
+app.post('/api/skills/scaffold', async (req, res) => {
+  const skillName = safeLocalId(req.body?.name);
+  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
+  const skillDir = path.join(SKILLS_DIR, skillName);
+  const skillFile = path.join(skillDir, 'SKILL.md');
+  try {
+    await fs.mkdir(skillDir, { recursive: true });
+    const existing = await fs.stat(skillFile).catch(() => null);
+    if (existing) {
+      res.status(409).json({ error: 'SKILL.md already exists. Edit the file directly to repair frontmatter.' });
+      return;
+    }
+    const description = typeof req.body?.description === 'string' && req.body.description.trim()
+      ? String(req.body.description).trim()
+      : 'Describe what this skill does.';
+    const domain = typeof req.body?.domain === 'string' && req.body.domain.trim()
+      ? String(req.body.domain).trim()
+      : 'general';
+    const scaffold = `---\nname: ${skillName}\ndescription: ${description}\ndomain: ${domain}\ntriggers: []\n---\n\n# ${skillName}\n\nDescribe how to use this skill here.\n`;
+    await fs.writeFile(skillFile, scaffold, 'utf-8');
+    res.json({ ok: true, name: skillName, filePath: skillFile });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
 });
 
 // --- API: Agent Memory ---
@@ -938,6 +1410,8 @@ app.get('/api/learning', async (_req, res) => {
   result.evalRuns = evalRuns;
   result.evalRunTrend = summarizeEvalTraceRuns(evalRuns);
   result.outputValidationTrend = summarizeOutputValidationRuns(evalRuns);
+  result.profileFeedbackTrend = summarizeProfileFeedbackRuns(evalRuns);
+  result.contextLossTrend = summarizeContextLossRuns(evalRuns);
   try {
     const raw = await fs.readFile(path.join(learningDir, 'tool-usage.jsonl'), 'utf-8');
     const lines = raw.trim().split('\n');
@@ -1023,8 +1497,9 @@ app.post('/api/upload', express.raw({ type: '*/*', limit: '10mb' }), async (req,
   if (!safe) { res.status(400).json({ error: 'Invalid filename' }); return; }
 
   try {
-    await fs.mkdir(UPLOADS_DIR, { recursive: true });
-    const dest = path.join(UPLOADS_DIR, safe);
+    const uploadsDir = getUploadsDir();
+    await fs.mkdir(uploadsDir, { recursive: true });
+    const dest = path.join(uploadsDir, safe);
     await fs.writeFile(dest, req.body);
     logger.info('Upload', `File saved: ${safe} (${req.body.length} bytes)`);
     const mimeType = req.headers['content-type']?.toString() || 'application/octet-stream';
@@ -1047,26 +1522,100 @@ function inferMediaKind(fileName: string, mimeType: string): 'image' | 'audio' |
 }
 
 app.get('/api/uploads', async (_req, res) => {
+  const uploadsDir = getUploadsDir();
   try {
-    await fs.mkdir(UPLOADS_DIR, { recursive: true });
-    const entries = await fs.readdir(UPLOADS_DIR, { withFileTypes: true });
+    await fs.mkdir(uploadsDir, { recursive: true });
+    const entries = await fs.readdir(uploadsDir, { withFileTypes: true });
     const files = [];
+    let totalBytes = 0;
+    let oldestMs: number | null = null;
     for (const e of entries.filter(e => e.isFile())) {
-      const stat = await fs.stat(path.join(UPLOADS_DIR, e.name));
-      files.push({ name: e.name, path: path.join(UPLOADS_DIR, e.name), size: stat.size, modified: stat.mtime.toISOString() });
+      const stat = await fs.stat(path.join(uploadsDir, e.name));
+      const mtime = stat.mtime.getTime();
+      totalBytes += stat.size;
+      if (oldestMs === null || mtime < oldestMs) oldestMs = mtime;
+      files.push({ name: e.name, path: path.join(uploadsDir, e.name), size: stat.size, modified: stat.mtime.toISOString() });
     }
-    res.json({ files });
-  } catch { res.json({ files: [] }); }
+    res.json({
+      files,
+      directory: uploadsDir,
+      totalBytes,
+      oldest: oldestMs !== null ? new Date(oldestMs).toISOString() : null,
+    });
+  } catch { res.json({ files: [], directory: uploadsDir, totalBytes: 0, oldest: null }); }
 });
 
 app.delete('/api/uploads/:name', async (req, res) => {
   const safe = safeLocalId(path.basename(req.params.name));
   if (!safe) { res.status(400).json({ error: 'Invalid upload name.' }); return; }
   try {
-    await fs.unlink(path.join(UPLOADS_DIR, safe));
+    await fs.unlink(path.join(getUploadsDir(), safe));
     res.json({ ok: true });
   } catch { res.status(404).json({ error: 'Not found' }); }
 });
+
+app.post('/api/uploads/cleanup', async (req, res) => {
+  const days = clampNumber(req.body?.olderThanDays, 0, 3650, 30);
+  if (days <= 0) {
+    res.status(400).json({ error: 'olderThanDays must be greater than 0 for manual cleanup.' });
+    return;
+  }
+  try {
+    const result = await pruneUploads(days);
+    res.json(result);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+async function pruneUploads(olderThanDays: number): Promise<{ removed: Array<{ name: string; size: number; modified: string }>; removedBytes: number; olderThanDays: number; lastPrunedAt: string }> {
+  const cutoffMs = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
+  const uploadsDir = getUploadsDir();
+  await fs.mkdir(uploadsDir, { recursive: true });
+  const entries = await fs.readdir(uploadsDir, { withFileTypes: true });
+  const removed: Array<{ name: string; size: number; modified: string }> = [];
+  let removedBytes = 0;
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const full = path.join(uploadsDir, entry.name);
+    const stat = await fs.stat(full);
+    if (stat.mtime.getTime() < cutoffMs) {
+      await fs.unlink(full);
+      removed.push({ name: entry.name, size: stat.size, modified: stat.mtime.toISOString() });
+      removedBytes += stat.size;
+    }
+  }
+  const lastPrunedAt = new Date().toISOString();
+  mediaTools = { ...mediaTools, uploadsLastPrunedAt: lastPrunedAt };
+  await saveSettingsToDisk().catch(() => {});
+  logger.info('Uploads', `Pruned ${removed.length} file(s) older than ${olderThanDays} days`, { removedBytes });
+  return { removed, removedBytes, olderThanDays, lastPrunedAt };
+}
+
+let uploadsAutoPruneTimer: NodeJS.Timeout | null = null;
+const UPLOADS_AUTO_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+function configureUploadsAutoPrune(): void {
+  if (uploadsAutoPruneTimer) {
+    clearInterval(uploadsAutoPruneTimer);
+    uploadsAutoPruneTimer = null;
+  }
+  if (mediaTools.uploadsAutoPruneDays <= 0) return;
+  uploadsAutoPruneTimer = setInterval(() => {
+    pruneUploads(mediaTools.uploadsAutoPruneDays).catch((error) => {
+      logger.warn('Uploads', 'Scheduled auto-prune failed', { error: error instanceof Error ? error.message : String(error) });
+    });
+  }, UPLOADS_AUTO_PRUNE_INTERVAL_MS);
+  if (typeof uploadsAutoPruneTimer.unref === 'function') uploadsAutoPruneTimer.unref();
+}
+
+export function stopUploadsAutoPrune(): void {
+  if (uploadsAutoPruneTimer) {
+    clearInterval(uploadsAutoPruneTimer);
+    uploadsAutoPruneTimer = null;
+  }
+}
 
 // --- API: File Tree ---
 app.get('/api/files', async (req, res) => {
@@ -1076,9 +1625,13 @@ app.get('/api/files', async (req, res) => {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     const items = entries
       .filter(e => !e.name.startsWith('.') && e.name !== 'node_modules' && e.name !== 'dist')
-      .map(e => ({ name: e.name, type: e.isDirectory() ? 'dir' : 'file', path: path.join(dir, e.name) }))
+      .map(e => {
+        const absolute = path.join(dir, e.name);
+        const relative = path.relative(PROJECT_DIR, absolute).split(path.sep).join('/');
+        return { name: e.name, type: e.isDirectory() ? 'dir' : 'file', path: absolute, relative };
+      })
       .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
-    res.json({ items, cwd: dir });
+    res.json({ items, cwd: dir, projectDir: PROJECT_DIR });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(400).json({ error: msg });
@@ -1180,6 +1733,8 @@ function getCurrentSettings(): WebSettings {
     outputValidation,
     outputValidationProfiles: getOutputValidationProfiles(),
     customOutputValidationProfiles,
+    modelCatalog,
+    extensionActivation,
     walkthrough,
   };
 }
@@ -1220,8 +1775,11 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   if (settings.mediaTools !== undefined) {
     mediaTools = sanitizeMediaToolSettings(settings.mediaTools);
     applyMediaToolEnvironment(mediaTools);
+    configureUploadsAutoPrune();
   }
   if (settings.outputValidation !== undefined) outputValidation = sanitizeOutputValidationSettings(settings.outputValidation);
+  if (settings.modelCatalog !== undefined) modelCatalog = sanitizeModelCatalogSettings(settings.modelCatalog);
+  if (settings.extensionActivation !== undefined) extensionActivation = sanitizeExtensionActivationSettings(settings.extensionActivation);
   if (settings.walkthrough !== undefined) walkthrough = sanitizeWalkthroughSettings(settings.walkthrough);
   if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (settings.temperature !== undefined) temperature = clampNumber(settings.temperature, 0, 2, 0.7);
@@ -1243,28 +1801,37 @@ function sanitizeModelRoutingPolicy(value: unknown): ModelRoutingPolicy {
 
 function sanitizeMediaToolSettings(value: unknown): MediaToolSettings {
   const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+  const autoPruneDays = Number.isFinite(Number(source.uploadsAutoPruneDays)) ? clampNumber(source.uploadsAutoPruneDays, 0, 3650, 0) : 0;
   return {
     visionModel: sanitizeModelName(source.visionModel).slice(0, 200),
     audioTranscribeCommand: String(source.audioTranscribeCommand ?? '').trim().slice(0, 5000),
     pdfOcrCommand: String(source.pdfOcrCommand ?? '').trim().slice(0, 5000),
+    uploadsDir: String(source.uploadsDir ?? '').trim().slice(0, 1000),
+    uploadsAutoPruneDays: Math.floor(autoPruneDays),
+    uploadsLastPrunedAt: String(source.uploadsLastPrunedAt ?? '').trim().slice(0, 64),
   };
 }
 
 function sanitizeOutputValidationSettings(value: unknown): OutputValidationSettings {
   const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
   const profile = parseOutputValidationProfile(source.profile, customOutputValidationProfiles) ?? 'oracle-prime';
-  return { enabled: source.enabled === true, profile, autoSelect: source.autoSelect !== false };
+  return { enabled: source.enabled === true, profile, autoSelect: source.autoSelect !== false, skipOnLowSignal: source.skipOnLowSignal === true };
 }
 
 function effectiveOutputValidationForMessage(message: string): EffectiveOutputValidationSettings {
   if (!outputValidation.enabled || !outputValidation.autoSelect) {
     return { ...outputValidation, selectionSource: 'manual-selected', selectionReason: 'Manual profile override is active.' };
   }
-  const profile = suggestOutputValidationProfile(message, outputValidation.profile);
-  return { ...outputValidation, profile, selectionSource: 'auto-selected', selectionReason: suggestionReason(profile) };
+  // Use a neutral fallback so vague or short prompts do not inherit a sticky stored profile (e.g. coding-answer).
+  const suggestion = describeOutputValidationProfileSuggestion(message, 'oracle-prime');
+  if (!suggestion.matched && outputValidation.skipOnLowSignal) {
+    return { ...outputValidation, enabled: false, profile: suggestion.profile, selectionSource: 'auto-selected', selectionReason: 'No strong signal in the prompt; validation skipped (skip-on-low-signal is on).' };
+  }
+  return { ...outputValidation, profile: suggestion.profile, selectionSource: 'auto-selected', selectionReason: suggestionReason(suggestion.profile, suggestion.matched) };
 }
 
-function suggestionReason(profile: OutputValidationProfile): string {
+function suggestionReason(profile: OutputValidationProfile, matched = true): string {
+  if (!matched) return `No strong signal in the prompt; defaulted to ${profile}.`;
   switch (profile) {
     case 'coding-answer': return 'The prompt looks like code, tests, files, or implementation work.';
     case 'factual-answer': return 'The prompt looks like a current or factual answer that should cite evidence and uncertainty.';
@@ -1272,6 +1839,42 @@ function suggestionReason(profile: OutputValidationProfile): string {
     case 'oracle-prime': return 'The prompt looks like a decision, risk, strategy, or uncertainty-heavy answer.';
     default: return 'Using the current custom profile because it is selected manually.';
   }
+}
+
+function sanitizeModelCatalogSettings(value: unknown): ModelCatalogSettings {
+  const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+  const parsedUrl = source.url === undefined || String(source.url).trim() === '' ? '' : parseHttpUrl(source.url) ?? '';
+  return {
+    url: parsedUrl.slice(0, 1000),
+    ttlHours: Math.floor(clampNumber(source.ttlHours, 1, 24 * 30, 24)),
+  };
+}
+
+function sanitizeExtensionActivationSettings(value: unknown): ExtensionActivationSettings {
+  const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+  const allowedPluginNames = Array.isArray(source.allowedPluginNames)
+    ? Array.from(new Set(source.allowedPluginNames.map((item) => sanitizeModelName(item)).filter((item) => item && SAFE_ID_PATTERN.test(item))))
+    : [];
+  return {
+    executablePlugins: source.executablePlugins === true,
+    allowedPluginNames,
+    requirePermissionReview: source.requirePermissionReview !== false,
+  };
+}
+
+function describeExtensionActivation(kind: string, name: string, manifestEnabled: boolean): { status: 'ready' | 'blocked' | 'inactive'; reason: string } {
+  if (kind === 'skill') return { status: 'ready', reason: 'Skill metadata is active when its trigger matches.' };
+  if (!manifestEnabled) return { status: 'inactive', reason: 'Plugin manifest is disabled.' };
+  if (!extensionActivation.executablePlugins) return { status: 'blocked', reason: 'Executable plugin activation is disabled by policy.' };
+  if (!extensionActivation.allowedPluginNames.includes(name)) return { status: 'blocked', reason: 'Plugin is not in the allowed activation list.' };
+  if (extensionActivation.requirePermissionReview) return { status: 'blocked', reason: 'Permission review is required before executable activation.' };
+  return { status: 'ready', reason: 'Policy allows activation, but runtime plugin execution is not implemented in this build.' };
+}
+
+async function fetchJsonFromUrl(url: string): Promise<unknown> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Catalog fetch failed: HTTP ${response.status}`);
+  return response.json();
 }
 
 function sanitizeWalkthroughSettings(value: unknown): WalkthroughSettings {
@@ -1312,12 +1915,51 @@ function applyMediaToolEnvironment(settings: MediaToolSettings): void {
   else delete process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND;
   if (settings.pdfOcrCommand) process.env.HARNESS_PDF_OCR_COMMAND = settings.pdfOcrCommand;
   else delete process.env.HARNESS_PDF_OCR_COMMAND;
+  if (settings.uploadsDir) process.env.HARNESS_UPLOADS_DIR = settings.uploadsDir;
+  else delete process.env.HARNESS_UPLOADS_DIR;
 }
 
 function withRoutingPolicy(prompt: string): string {
   const entries = Object.entries(modelRouting).filter(([, value]) => value !== undefined && value !== '');
   if (entries.length === 0) return prompt;
   return prompt + '\n\n--- Helper Model Routing Policy ---\n' + entries.map(([key, value]) => `${key}: ${value}`).join('\n');
+}
+
+async function buildAttachmentsContextBlock(raw: unknown): Promise<string | null> {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const uploadsDir = getUploadsDir();
+  const lines: string[] = [];
+  for (const entry of raw.slice(0, 20)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const name = typeof (entry as { name?: unknown }).name === 'string' ? (entry as { name: string }).name : null;
+    if (!name) continue;
+    const safeName = path.basename(name).replace(/[^a-zA-Z0-9._-]/g, '_');
+    if (!safeName) continue;
+    const absolute = path.join(uploadsDir, safeName);
+    let exists = false;
+    let size = 0;
+    try {
+      const stat = await fs.stat(absolute);
+      exists = stat.isFile();
+      size = stat.size;
+    } catch {
+      exists = false;
+    }
+    if (!exists) continue;
+    const cwdRel = path.relative(PROJECT_DIR, absolute);
+    const display = cwdRel.startsWith('..') ? absolute : cwdRel;
+    const rel = display.split(path.sep).join('/');
+    const kind = typeof (entry as { mediaKind?: unknown }).mediaKind === 'string' ? (entry as { mediaKind: string }).mediaKind : 'file';
+    lines.push(`- ${kind}: name="${safeName}" path="${rel}" size=${size}`);
+  }
+  if (lines.length === 0) return null;
+  return [
+    '--- Session Attachments (authoritative) ---',
+    'The user attached the following files via the Harness UI. These paths are exact and verified by the harness.',
+    'Always pass the exact "path" string to file_read, pdf_read, image_analyze, or audio_transcribe — never strip the .harness/uploads/ prefix and never pass only the bare filename.',
+    'You may also call list_uploads at any time to re-list every available attachment.',
+    ...lines,
+  ].join('\n');
 }
 
 async function persistSessionLearning(session: SessionStorage, projectDir: string): Promise<void> {

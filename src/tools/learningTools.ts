@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
+import { invalidateSkillsCache } from './skillTools';
 import {
   detectPatterns,
   consolidateMemory,
@@ -149,6 +150,7 @@ Tool sequence: ${pattern.toolSequence.join(' → ')}
       await fs.mkdir(skillDir, { recursive: true });
       await fs.writeFile(skillPath, content);
       await markPatternPromoted(patternId);
+      invalidateSkillsCache();
 
       return {
         success: true,
@@ -266,6 +268,7 @@ export const ImproveSkillTool: Tool = {
 
       // Write improved version
       await fs.writeFile(skillPath, newContent);
+      invalidateSkillsCache();
 
       return {
         success: true,

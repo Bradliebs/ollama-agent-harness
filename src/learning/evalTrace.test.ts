@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { RuntimeTracer } from '../core/tracing';
-import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationEvalRun, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordOutputValidationEvalRun, runEvalTraceDataset, summarizeEvalTraceRuns, summarizeOutputValidationRuns, updateEvalTraceExampleTags } from './evalTrace';
+import { appendEvalTraceExample, createContextLossEvalRun, createEvalTraceExample, createOutputValidationEvalRun, createOutputValidationTrendExport, createProfileFeedbackEvalRun, createReplayEvalExample, createUploadsFallbackEvalRun, deleteEvalTraceExample, detectAssistantContextLoss, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from './evalTrace';
 
 describe('eval trace examples', () => {
   it('creates passing examples from successful traces', () => {
@@ -166,5 +166,109 @@ describe('eval trace examples', () => {
     expect(exported.generatedAt).toBe('2026-04-29T00:00:00.000Z');
     expect(exported.trend.totalResults).toBe(1);
     expect(exported.results).toEqual([expect.objectContaining({ task: 'coding summary', profile: 'coding-answer', status: 'warn', selectionSource: 'auto-selected', passed: false })]);
+  });
+
+  it('summarizes profile feedback votes by profile with calibration insights', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'profile-feedback-'));
+    const downRuns = [
+      createProfileFeedbackEvalRun({ profile: 'coding-answer', vote: 'down', selectionSource: 'auto-selected', prompt: 'analyze csv data' }),
+      createProfileFeedbackEvalRun({ profile: 'coding-answer', vote: 'down', selectionSource: 'auto-selected', prompt: 'summarize report' }),
+      createProfileFeedbackEvalRun({ profile: 'coding-answer', vote: 'down', selectionSource: 'auto-selected', prompt: 'graph trends' }),
+    ];
+    const upRun = createProfileFeedbackEvalRun({ profile: 'factual-answer', vote: 'up', selectionSource: 'auto-selected', prompt: 'weather query' });
+    const recorded = await recordProfileFeedbackEvalRun(projectDir, { profile: 'oracle-prime', vote: 'up' });
+    expect(recorded.results[0].tags).toEqual(expect.arrayContaining(['profile-feedback', 'profile-feedback:up', 'oracle-prime']));
+
+    const trend = summarizeProfileFeedbackRuns([...downRuns, upRun, recorded]);
+
+    expect(trend.totalVotes).toBe(5);
+    expect(trend.byProfile['coding-answer']).toMatchObject({ total: 3, up: 0, down: 3, approvalRate: 0 });
+    expect(trend.byProfile['factual-answer']).toMatchObject({ up: 1, down: 0, approvalRate: 1 });
+    expect(trend.insights).toEqual(expect.arrayContaining([
+      expect.objectContaining({ profile: 'coding-answer', severity: 'warn', downVotes: 3 }),
+    ]));
+    // Oracle-prime got 1 up-vote and 0 downs — should not produce a warning insight.
+    expect(trend.insights.find((insight) => insight.profile === 'oracle-prime')).toBeUndefined();
+    expect(trend.recentVotes[0]).toMatchObject({ profile: 'oracle-prime', vote: 'up' });
+  });
+
+  it('groups profile-feedback votes by day for a sparkline', () => {
+    const day1 = createProfileFeedbackEvalRun({ profile: 'coding-answer', vote: 'down' });
+    day1.createdAt = '2026-04-27T10:00:00.000Z';
+    const day2a = createProfileFeedbackEvalRun({ profile: 'coding-answer', vote: 'up' });
+    day2a.createdAt = '2026-04-28T10:00:00.000Z';
+    const day2b = createProfileFeedbackEvalRun({ profile: 'coding-answer', vote: 'up' });
+    day2b.createdAt = '2026-04-28T11:00:00.000Z';
+
+    const trend = summarizeProfileFeedbackRuns([day1, day2a, day2b]);
+
+    expect(trend.dailyApproval).toEqual([
+      { date: '2026-04-27', total: 1, up: 0, down: 1, approvalRate: 0 },
+      { date: '2026-04-28', total: 2, up: 2, down: 0, approvalRate: 1 },
+    ]);
+  });
+
+  it('detects assistant context loss when the response shares no significant token with prior turns', () => {
+    const lost = detectAssistantContextLoss({
+      priorUserMessage: 'analyze lotto-draw-history.csv with draw date and machine number',
+      priorAssistantMessage: 'The dataset covers lottery draws between November 2025 and April 2026.',
+      assistantResponse: 'Industrial maintenance requires scheduled downtime windows for each manufacturing asset.',
+    });
+    expect(lost.contextLoss).toBe(true);
+    expect(lost.overlapTokens).toEqual([]);
+
+    const ok = detectAssistantContextLoss({
+      priorUserMessage: 'analyze lotto-draw-history.csv with draw date and machine number',
+      assistantResponse: 'The lotto draw dataset shows machine and draw distributions for the recorded history.',
+    });
+    expect(ok.contextLoss).toBe(false);
+    expect(ok.overlapTokens.length).toBeGreaterThan(0);
+
+    expect(createContextLossEvalRun({
+      priorUserMessage: 'analyze lotto draws',
+      assistantResponse: 'Industrial maintenance schedules.',
+    })).toBeNull(); // prior token count too small for the heuristic
+    const run = createContextLossEvalRun({
+      priorUserMessage: 'analyze lotto-draw-history.csv with draw date and machine number',
+      priorAssistantMessage: 'The dataset covers lottery draws between November 2025 and April 2026.',
+      assistantResponse: 'Industrial maintenance requires scheduled downtime windows for each manufacturing asset.',
+    });
+    expect(run).not.toBeNull();
+    expect(run!.results[0].tags).toContain('assistant-context-loss');
+  });
+
+  it('summarizes assistant-context-loss runs with totals and recent entries', () => {
+    const lossRun = createContextLossEvalRun({
+      priorUserMessage: 'analyze lotto-draw-history.csv with draw date and machine number',
+      priorAssistantMessage: 'The dataset covers lottery draws between November 2025 and April 2026.',
+      assistantResponse: 'Industrial maintenance requires scheduled downtime windows for each manufacturing asset.',
+      task: 'lotto follow-up',
+    })!;
+    const passRun = createOutputValidationEvalRun({ profile: 'oracle-prime', status: 'pass', score: 1, findings: [], missingSections: [] }, 'unrelated');
+
+    const trend = summarizeContextLossRuns([passRun, lossRun]);
+
+    expect(trend.total).toBe(1);
+    expect(trend.recent[0]).toMatchObject({ task: 'lotto follow-up' });
+    expect(summarizeContextLossRuns([])).toEqual({ total: 0, recent: [] });
+  });
+
+  it('summarizes uploads-fallback runs by tool with totals and recent entries', () => {
+    const fallbackRun = createUploadsFallbackEvalRun({
+      uniqueFallbacks: 3,
+      suppressedFallbacks: 2,
+      tools: ['file_read', 'pdf_read'],
+      task: 'analyze attachments',
+    })!;
+    const passRun = createOutputValidationEvalRun({ profile: 'oracle-prime', status: 'pass', score: 1, findings: [], missingSections: [] }, 'unrelated');
+
+    const trend = summarizeUploadsFallbackRuns([passRun, fallbackRun]);
+
+    expect(trend.totalSessions).toBe(1);
+    expect(trend.totalFallbacks).toBe(3);
+    expect(trend.byTool.file_read).toBe(3);
+    expect(trend.byTool.pdf_read).toBe(3);
+    expect(trend.recent[0]).toMatchObject({ unique: 3, tools: ['file_read', 'pdf_read'] });
+    expect(createUploadsFallbackEvalRun({ uniqueFallbacks: 0, suppressedFallbacks: 0, tools: [] })).toBeNull();
   });
 });

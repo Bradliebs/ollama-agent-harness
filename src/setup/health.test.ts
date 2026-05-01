@@ -35,12 +35,14 @@ describe('setup health', () => {
         host: `http://127.0.0.1:${address.port}`,
         visionModel: 'llava',
         audioTranscribeCommand: 'whisper "{input}"',
+        projectDir: process.cwd(),
       });
 
       expect(result).toMatchObject({
         ollama: { ok: true, modelCount: 1 },
         vision: { ok: true },
         audio: { ok: true },
+        local: { tools: { ok: true }, automations: { ok: true } },
       });
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
@@ -58,6 +60,7 @@ describe('setup health', () => {
       visionModel: '',
       audioTranscribeCommand: `node "${scriptPath}" "{input}"`,
       audioSamplePath: audioPath,
+      projectDir: process.cwd(),
     });
 
     expect(result.audio).toMatchObject({ ok: true });

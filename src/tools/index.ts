@@ -1,4 +1,4 @@
-import { FileReadTool, FileWriteTool, FileEditTool, ListFilesTool } from './fileTools';
+import { FileReadTool, FileWriteTool, FileEditTool, ListFilesTool, ListUploadsTool } from './fileTools';
 import { BashTool } from './bashTool';
 import { WebFetchTool } from './webFetchTool';
 import { GrepTool } from './grepTool';
@@ -9,39 +9,13 @@ import { WebSearchTool, WebReadTool } from './webSearchTool';
 import { ImageAnalyzeTool, AudioTranscribeTool } from './multimodalTools';
 import { PdfReadTool, PdfMetadataTool, PdfRenderPageTool, PdfExtractTablesTool } from './pdfTool';
 import type { Tool } from '../types';
+import { createBuiltinToolRegistry } from './registry';
 
 export function getBuiltinTools(): Tool[] {
-  return [
-    FileReadTool,
-    FileWriteTool,
-    FileEditTool,
-    ListFilesTool,
-    BashTool,
-    WebFetchTool,
-    GrepTool,
-    SkillTool,
-    ListSkillsTool,
-    CreateSkillTool,
-    MemoryWriteTool,
-    MemoryReadTool,
-    ReflectTool,
-    AnalyzePatternsTool,
-    PromotePatternTool,
-    ConsolidateTool,
-    EvolveTool,
-    ImproveSkillTool,
-    WebSearchTool,
-    WebReadTool,
-    ImageAnalyzeTool,
-    AudioTranscribeTool,
-    PdfReadTool,
-    PdfMetadataTool,
-    PdfRenderPageTool,
-    PdfExtractTablesTool,
-  ];
+  return createBuiltinToolRegistry().listTools();
 }
 
-export { FileReadTool, FileWriteTool, FileEditTool, ListFilesTool } from './fileTools';
+export { FileReadTool, FileWriteTool, FileEditTool, ListFilesTool, ListUploadsTool } from './fileTools';
 export { BashTool } from './bashTool';
 export { WebFetchTool } from './webFetchTool';
 export { GrepTool } from './grepTool';
@@ -52,3 +26,5 @@ export { WebSearchTool, WebReadTool } from './webSearchTool';
 export { ImageAnalyzeTool, AudioTranscribeTool } from './multimodalTools';
 export { PdfReadTool, PdfMetadataTool, PdfRenderPageTool, PdfExtractTablesTool } from './pdfTool';
 export { ToolDispatcher } from './dispatcher';
+export { BUILTIN_TOOL_ENTRIES, ToolRegistry, createBuiltinToolRegistry } from './registry';
+export type { ToolRegistryEntry } from './registry';

@@ -1,12 +1,17 @@
 import type { Server } from 'http';
 import * as fs from 'fs/promises';
 import http from 'http';
+import * as os from 'os';
 import * as path from 'path';
-import { app, setWebRuntimeOverrides } from './server';
+import { app, setWebRuntimeOverrides, stopUploadsAutoPrune } from './server';
 import { runtimeTracer } from '../core/tracing';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { appendLearningCandidate, extractLearningCandidate } from '../learning/sessionLearning';
 import { appendSubagentRoutingMetric } from '../agents/subagent';
+import { FileReadTool } from '../tools/fileTools';
+import { createAutomationJob } from '../automation/jobs';
+import { rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
+import { writeModelCatalogCache } from '../models/modelCatalog';
 import type { LoopEvent, SessionEvent } from '../types';
 
 jest.setTimeout(30_000);
@@ -16,10 +21,12 @@ describe('web server API validation', () => {
   let baseUrl: string;
   let originalSettings: string | null = null;
   let originalValidationProfiles: string | null = null;
+  let logSpy: jest.SpyInstance;
   const settingsPath = path.join(process.cwd(), '.harness', 'settings.json');
   const validationProfilesPath = path.join(process.cwd(), '.harness', 'output-validation-profiles.json');
 
   beforeAll(async () => {
+    logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
     try {
       originalSettings = await fs.readFile(settingsPath, 'utf-8');
     } catch {
@@ -42,6 +49,7 @@ describe('web server API validation', () => {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());
     });
+    stopUploadsAutoPrune();
     if (originalSettings === null) {
       await fs.rm(settingsPath, { force: true });
     } else {
@@ -54,6 +62,7 @@ describe('web server API validation', () => {
       await fs.mkdir(path.dirname(validationProfilesPath), { recursive: true });
       await fs.writeFile(validationProfilesPath, originalValidationProfiles, 'utf-8');
     }
+    logSpy.mockRestore();
   });
 
   async function request(route: string, init?: RequestInit): Promise<Response> {
@@ -125,6 +134,161 @@ describe('web server API validation', () => {
       modelRouting: { smallModel: 'tiny-helper', defaultModel: 'base-helper', strongModel: 'strong-helper', confidenceEscalationThreshold: 0.3 },
       mediaTools: { visionModel: 'llava', audioTranscribeCommand: 'whisper "{input}" --model base' },
     });
+  });
+
+  it('persists model catalog and extension activation policy settings', async () => {
+    const response = await request('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        modelCatalog: { url: 'https://example.com/catalog.json', ttlHours: 12 },
+        extensionActivation: { executablePlugins: true, allowedPluginNames: ['trusted-plugin', 'bad$id'], requirePermissionReview: false },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      modelCatalog: { url: 'https://example.com/catalog.json', ttlHours: 12 },
+      extensionActivation: { executablePlugins: true, allowedPluginNames: ['trusted-plugin'], requirePermissionReview: false },
+    });
+    await expect(fs.readFile(settingsPath, 'utf-8')).resolves.toContain('modelCatalog');
+  });
+
+  it('returns discovery payloads for catalog, extensions, automations, and session search', async () => {
+    const pluginDir = path.join(process.cwd(), '.harness', 'plugins', 'trusted-plugin');
+    const skillDir = path.join(process.cwd(), '.harness', 'skills', 'discovery-skill');
+    await fs.mkdir(pluginDir, { recursive: true });
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(pluginDir, 'plugin.json'), JSON.stringify({ name: 'trusted-plugin', description: 'Discovery test plugin.', version: '1.0.0', providesTools: ['test_tool'], providesHooks: ['beforeRun'] }, null, 2), 'utf-8');
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), '---\nname: discovery-skill\ndescription: Discovery test skill.\ndomain: tests\ntriggers:\n  - discovery\n---\n\n# Discovery Skill\n', 'utf-8');
+    await createAutomationJob(process.cwd(), { name: 'due discovery job', prompt: 'summarize status', schedule: '1 minutes' }, new Date('2026-04-30T00:00:00.000Z'));
+    await writeModelCatalogCache(process.cwd(), { version: 1, updatedAt: new Date().toISOString(), providers: { ollama: { models: [{ id: 'test-model:latest', description: 'Discovery test model' }] } } });
+    await rebuildSessionSearchIndexWithMetadata(process.cwd());
+
+    const response = await request('/api/discovery');
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      modelCatalog: { manifest: { providers: { ollama: { models: expect.arrayContaining([expect.objectContaining({ id: 'test-model:latest' })]) } } } },
+      extensions: {
+        manifests: expect.arrayContaining([expect.objectContaining({ name: 'trusted-plugin', activation: expect.objectContaining({ status: expect.any(String) }) }), expect.objectContaining({ name: 'discovery-skill' })]),
+        skills: {
+          runtime: expect.objectContaining({ total: expect.any(Number), diagnosticCount: expect.any(Number) }),
+          repo: expect.objectContaining({ total: expect.any(Number), diagnosticCount: expect.any(Number) }),
+        },
+      },
+      automations: { total: expect.any(Number), due: expect.arrayContaining([expect.objectContaining({ name: 'due discovery job' })]) },
+      sessionSearch: { exists: true, fresh: true, entryCount: expect.any(Number) },
+    });
+  });
+
+  it('returns runtime skills, repo skills, and runtime skill diagnostics', async () => {
+    const runtimeSkillDir = path.join(process.cwd(), '.harness', 'skills', 'api-runtime-skill');
+    const malformedSkillDir = path.join(process.cwd(), '.harness', 'skills', 'api-malformed-skill');
+    await fs.mkdir(runtimeSkillDir, { recursive: true });
+    await fs.mkdir(malformedSkillDir, { recursive: true });
+    await fs.writeFile(path.join(runtimeSkillDir, 'SKILL.md'), '---\nname: api-runtime-skill\ndescription: Runtime API skill.\ndomain: tests\n---\n\n# Runtime Skill\n', 'utf-8');
+    await fs.writeFile(path.join(malformedSkillDir, 'SKILL.md'), '# No frontmatter\n', 'utf-8');
+
+    try {
+      const response = await request('/api/skills');
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        skills: expect.arrayContaining([expect.objectContaining({ name: 'api-runtime-skill', source: 'runtime' })]),
+        diagnostics: expect.arrayContaining([expect.objectContaining({ name: 'api-malformed-skill', reason: 'missing-frontmatter' })]),
+        sources: expect.arrayContaining([
+          expect.objectContaining({ source: 'runtime', mutable: true, skills: expect.arrayContaining([expect.objectContaining({ name: 'api-runtime-skill' })]) }),
+          expect.objectContaining({ source: 'repo', mutable: false, skills: expect.arrayContaining([expect.objectContaining({ name: 'copilotforge-planner' })]) }),
+        ]),
+      });
+    } finally {
+      await fs.rm(runtimeSkillDir, { recursive: true, force: true });
+      await fs.rm(malformedSkillDir, { recursive: true, force: true });
+    }
+  });
+
+  it('installs a repo skill into runtime skills and prevents accidental overwrite', async () => {
+    const repoSkillDir = path.join(process.cwd(), '.github', 'skills', 'install-test-skill');
+    const runtimeSkillDir = path.join(process.cwd(), '.harness', 'skills', 'install-test-skill');
+    await fs.mkdir(repoSkillDir, { recursive: true });
+    await fs.writeFile(path.join(repoSkillDir, 'SKILL.md'), '---\nname: install-test-skill\ndescription: Installable repo skill.\ndomain: tests\n---\n\n# Install Test Skill\n', 'utf-8');
+
+    try {
+      const installed = await request('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'install-test-skill' }) });
+      expect(installed.status).toBe(200);
+      await expect(installed.json()).resolves.toMatchObject({ ok: true, name: 'install-test-skill', overwrote: false });
+      await expect(fs.readFile(path.join(runtimeSkillDir, 'SKILL.md'), 'utf-8')).resolves.toContain('install-test-skill');
+
+      const conflict = await request('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'install-test-skill' }) });
+      expect(conflict.status).toBe(409);
+
+      const overwrote = await request('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'install-test-skill', overwrite: true }) });
+      expect(overwrote.status).toBe(200);
+      await expect(overwrote.json()).resolves.toMatchObject({ ok: true, overwrote: true });
+
+      const missing = await request('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'install-test-missing' }) });
+      expect(missing.status).toBe(404);
+
+      const invalid = await request('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'bad$name' }) });
+      expect(invalid.status).toBe(400);
+    } finally {
+      await fs.rm(repoSkillDir, { recursive: true, force: true });
+      await fs.rm(runtimeSkillDir, { recursive: true, force: true });
+    }
+  });
+
+  it('scaffolds a starter SKILL.md for a runtime skill folder missing one', async () => {
+    const skillDir = path.join(process.cwd(), '.harness', 'skills', 'scaffold-test-skill');
+    await fs.mkdir(skillDir, { recursive: true });
+
+    try {
+      const scaffolded = await request('/api/skills/scaffold', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'scaffold-test-skill' }) });
+      expect(scaffolded.status).toBe(200);
+      const content = await fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf-8');
+      expect(content).toContain('name: scaffold-test-skill');
+      expect(content).toContain('triggers: []');
+
+      const conflict = await request('/api/skills/scaffold', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'scaffold-test-skill' }) });
+      expect(conflict.status).toBe(409);
+    } finally {
+      await fs.rm(skillDir, { recursive: true, force: true });
+    }
+  });
+
+  it('previews RAG paths with diagnostics before building', async () => {
+    const response = await request('/api/rag/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: ['README.md', 'docs', 'this-folder-does-not-exist'] }),
+    });
+    expect(response.status).toBe(200);
+    const data = await response.json() as { totalFiles: number; paths: Array<{ input: string; status: string; fileCount: number }>; supportedExtensions: string[]; backend: { name: string } };
+    expect(data.paths).toEqual(expect.arrayContaining([
+      expect.objectContaining({ input: 'this-folder-does-not-exist', status: 'missing' }),
+    ]));
+    expect(data.supportedExtensions).toEqual(expect.arrayContaining(['.md']));
+    expect(typeof data.totalFiles).toBe('number');
+    expect(typeof data.backend?.name).toBe('string');
+  });
+
+  it('rejects RAG preview requests with no paths', async () => {
+    const response = await request('/api/rag/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths: [] }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('refreshes the model catalog and rebuilds the session search index', async () => {
+    const catalog = await request('/api/models/catalog/refresh', { method: 'POST' });
+    expect(catalog.status).toBe(200);
+    await expect(catalog.json()).resolves.toMatchObject({ manifest: { version: 1 }, status: expect.objectContaining({ exists: expect.any(Boolean) }) });
+
+    const index = await request('/api/sessions/search-index/rebuild', { method: 'POST' });
+    expect(index.status).toBe(200);
+    await expect(index.json()).resolves.toMatchObject({ status: { exists: true, fresh: true }, index: { metadata: expect.objectContaining({ entryCount: expect.any(Number) }) } });
   });
 
   it('saves custom output validation profiles and exposes them in settings', async () => {
@@ -746,7 +910,7 @@ describe('web server API validation', () => {
       const response = await request('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: 'hello', model: 'test-model' }),
+        body: JSON.stringify({ message: 'Refactor the typescript function in src/web/server.ts and add a unit test', model: 'test-model' }),
       });
       expect(response.status).toBe(200);
       const body = await response.text();
@@ -762,4 +926,612 @@ describe('web server API validation', () => {
       restore();
     }
   });
+
+  it('honors a per-turn skipValidation flag without disabling stored settings', async () => {
+    const seenConfigs: Array<{ outputValidation?: { enabled?: boolean } }> = [];
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('skip-validation-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
+        seenConfigs.push(config);
+        yield { type: 'text', content: 'mocked response' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outputValidation: { enabled: true, profile: 'coding-answer' } }),
+      });
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'Refactor the typescript function in src/web/server.ts', model: 'test-model', skipValidation: true }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).not.toContain('"type":"output_validation_profile"');
+      expect(body).not.toContain('"type":"output_validation"');
+      expect(seenConfigs[0]?.outputValidation).toMatchObject({ enabled: false });
+      const settings = await request('/api/settings');
+      await expect(settings.json()).resolves.toMatchObject({ outputValidation: { enabled: true, profile: 'coding-answer' } });
+    } finally {
+      restore();
+    }
+  });
+
+  it('skips validation on low-signal prompts when skipOnLowSignal is enabled', async () => {
+    const seenConfigs: Array<{ outputValidation?: { enabled?: boolean } }> = [];
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('low-signal-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
+        seenConfigs.push(config);
+        yield { type: 'text', content: 'mocked response' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outputValidation: { enabled: true, profile: 'coding-answer', autoSelect: true, skipOnLowSignal: true } }),
+      });
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'you decide', model: 'test-model' }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).not.toContain('"type":"output_validation"');
+      expect(seenConfigs[0]?.outputValidation).toMatchObject({ enabled: false });
+    } finally {
+      restore();
+    }
+  });
+
+  it('forwards prior chat history to the query loop so context is preserved across turns', async () => {
+    const seenInitialMessages: Array<Array<{ role: string; content: string }>> = [];
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('history-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (_config, _deps, initialMessages): AsyncGenerator<LoopEvent> {
+        seenInitialMessages.push(initialMessages.map((m) => ({ role: m.role, content: m.content })));
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const history = [
+        { role: 'user', content: 'analyze lotto-draw-history.csv' },
+        { role: 'assistant', content: 'The dataset covers draws from 2025-11-01 to 2026-04-25.' },
+        { role: 'bogus', content: 'should be dropped' },
+        { role: 'user', content: '' }, // empty content should be dropped
+      ];
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'we also have draw date and machine used', model: 'test-model', history }),
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(seenInitialMessages).toHaveLength(1);
+      expect(seenInitialMessages[0]).toEqual([
+        { role: 'user', content: 'analyze lotto-draw-history.csv' },
+        { role: 'assistant', content: 'The dataset covers draws from 2025-11-01 to 2026-04-25.' },
+        { role: 'user', content: 'we also have draw date and machine used' },
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  it('drops oldest history turns to stay within the model context token budget', async () => {
+    const seenInitialMessages: Array<Array<{ role: string; content: string }>> = [];
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      // Tiny window so a few turns of large content blow the 75% budget quickly.
+      getModelContextWindow: jest.fn().mockResolvedValue(1024),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('budget-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (_config, _deps, initialMessages): AsyncGenerator<LoopEvent> {
+        seenInitialMessages.push(initialMessages.map((m) => ({ role: m.role, content: m.content })));
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      // Set contextMaxTokens to its minimum (1024) so a few large turns blow the 75% budget quickly.
+      await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contextMaxTokens: 1024 }),
+      });
+      // Each entry ~2000 chars (~500 tokens) — three of them would exceed a 1024-token window.
+      const big = (label: string) => label + ' ' + 'word '.repeat(400);
+      const history = [
+        { role: 'user', content: big('OLDEST') },
+        { role: 'assistant', content: big('OLD-A') },
+        { role: 'user', content: big('MID') },
+        { role: 'assistant', content: big('NEW-A') },
+      ];
+      await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'follow-up question', model: 'test-model', history }),
+      });
+      expect(seenInitialMessages).toHaveLength(1);
+      const sent = seenInitialMessages[0];
+      // Oldest entries must have been dropped first.
+      expect(sent[0].content.startsWith('OLDEST')).toBe(false);
+      // The new user prompt is always last.
+      expect(sent[sent.length - 1]).toEqual({ role: 'user', content: 'follow-up question' });
+      // Total prior content (excluding the new prompt) must fit the 75% budget (~768 tokens).
+      const priorChars = sent.slice(0, -1).reduce((sum, m) => sum + m.content.length, 0);
+      expect(Math.ceil(priorChars / 4)).toBeLessThanOrEqual(768);
+
+      // The same call should have streamed a `history_trimmed` SSE event so the UI can warn.
+      const trimResponse = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'another follow-up', model: 'test-model', history }),
+      });
+      expect(trimResponse.status).toBe(200);
+      const trimBody = await trimResponse.text();
+      expect(trimBody).toContain('"type":"history_trimmed"');
+      expect(trimBody).toMatch(/"droppedTurns":\s*[1-9]/);
+    } finally {
+      restore();
+    }
+  });
+
+  it('records profile feedback votes as eval trace runs', async () => {
+    const upResponse = await request('/api/output-validation/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: 'coding-answer', vote: 'up', selectionSource: 'auto-selected', selectionReason: 'looks like code', prompt: 'refactor src/web/server.ts' }),
+    });
+    expect(upResponse.status).toBe(200);
+    await expect(upResponse.json()).resolves.toMatchObject({ ok: true, runId: expect.stringContaining('profile-feedback-run') });
+
+    const downResponse = await request('/api/output-validation/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: 'coding-answer', vote: 'down', selectionSource: 'auto-selected' }),
+    });
+    expect(downResponse.status).toBe(200);
+
+    const runs = await request('/api/evals/runs');
+    const runsBody = await runs.json() as {
+      runs: Array<{ results: Array<{ tags: string[] }> }>;
+      profileFeedbackTrend?: { totalVotes: number; byProfile: Record<string, { up: number; down: number }> };
+    };
+    const flat = runsBody.runs.flatMap((run) => run.results);
+    expect(flat).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tags: expect.arrayContaining(['profile-feedback', 'profile-feedback:up']) }),
+      expect.objectContaining({ tags: expect.arrayContaining(['profile-feedback', 'profile-feedback:down']) }),
+    ]));
+    expect(runsBody.profileFeedbackTrend).toBeDefined();
+    expect(runsBody.profileFeedbackTrend!.totalVotes).toBeGreaterThanOrEqual(2);
+    expect(runsBody.profileFeedbackTrend!.byProfile['coding-answer']).toMatchObject({ up: expect.any(Number), down: expect.any(Number) });
+
+    const badResponse = await request('/api/output-validation/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: '', vote: 'up' }),
+    });
+    expect(badResponse.status).toBe(400);
+
+    const badVote = await request('/api/output-validation/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: 'coding-answer', vote: 'maybe' }),
+    });
+    expect(badVote.status).toBe(400);
+
+    // Record a down-vote with a vague prompt that should now route to oracle-prime — the replay
+    // endpoint should report it as "fixed" because the suggester no longer picks coding-answer.
+    const downWithPrompt = await request('/api/output-validation/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: 'coding-answer', vote: 'down', prompt: 'you decide what to do' }),
+    });
+    expect(downWithPrompt.status).toBe(200);
+
+    const replay = await request('/api/output-validation/feedback-replay');
+    expect(replay.status).toBe(200);
+    const replayBody = await replay.json() as { totalDownVotes: number; fixed: number; stillMisclassified: number; replays: Array<{ originalProfile: string; suggestedProfile: string; status: string; prompt: string }> };
+    expect(replayBody.totalDownVotes).toBeGreaterThanOrEqual(1);
+    const fixedReplay = replayBody.replays.find((r) => r.prompt === 'you decide what to do');
+    expect(fixedReplay).toMatchObject({ originalProfile: 'coding-answer', suggestedProfile: 'oracle-prime', status: 'fixed' });
+  });
+
+  it('appends an authoritative attachments block to the system prompt for valid uploads', async () => {
+    const uploadsDir = path.join(process.cwd(), '.harness', 'uploads');
+    const uploadName = `attachments-block-${Date.now()}.csv`;
+    const uploadPath = path.join(uploadsDir, uploadName);
+    await fs.mkdir(uploadsDir, { recursive: true });
+    await fs.writeFile(uploadPath, 'one,two\n1,2\n', 'utf-8');
+
+    const seenSystemPrompts: string[] = [];
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('attachments-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
+        seenSystemPrompts.push(config.systemPrompt);
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: 'analyze the csv',
+          model: 'test-model',
+          attachments: [
+            { name: uploadName, path: `.harness/uploads/${uploadName}`, mediaKind: 'data', size: 12 },
+            { name: 'never-existed.txt', path: '.harness/uploads/never-existed.txt', mediaKind: 'text', size: 0 },
+          ],
+        }),
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+
+      expect(seenSystemPrompts).toHaveLength(1);
+      const prompt = seenSystemPrompts[0];
+      expect(prompt).toContain('--- Session Attachments (authoritative) ---');
+      expect(prompt).toContain(`name="${uploadName}"`);
+      expect(prompt).toContain(`path=".harness/uploads/${uploadName}"`);
+      expect(prompt).toContain('size=12');
+      // Missing files must be filtered out so the block stays trustworthy.
+      expect(prompt).not.toContain('never-existed.txt');
+    } finally {
+      restore();
+      await fs.rm(uploadPath, { force: true });
+    }
+  });
+
+  it('streams uploads_fallback events, dedupes duplicates, and records tracer events', async () => {
+    const uploadsDir = path.join(process.cwd(), '.harness', 'uploads');
+    const uploadName = `fallback-trace-${Date.now()}.csv`;
+    const uploadPath = path.join(uploadsDir, uploadName);
+    await fs.mkdir(uploadsDir, { recursive: true });
+    await fs.writeFile(uploadPath, 'x,y\n', 'utf-8');
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    runtimeTracer.clear();
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('fallback-trace-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (): AsyncGenerator<LoopEvent> {
+        // First call triggers a real fallback recording into the buffer.
+        const first = await FileReadTool.execute({ path: uploadName });
+        yield { type: 'tool_call', call: { name: 'file_read', input: { path: uploadName } } };
+        yield { type: 'tool_result', call: { name: 'file_read', input: { path: uploadName } }, result: first };
+        // Second identical fallback should be deduped by the server.
+        const second = await FileReadTool.execute({ path: uploadName });
+        yield { type: 'tool_call', call: { name: 'file_read', input: { path: uploadName } } };
+        yield { type: 'tool_result', call: { name: 'file_read', input: { path: uploadName } }, result: second };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'analyze', model: 'test-model' }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      const fallbackHits = body.match(/"type":"uploads_fallback"/g) ?? [];
+      expect(fallbackHits.length).toBe(1);
+      expect(body).toContain('"type":"uploads_fallback_summary"');
+      expect(body).toContain(`"requested":"${uploadName}"`);
+      const eventNames = runtimeTracer.snapshot().events.map((e) => e.name);
+      expect(eventNames).toContain('uploads.fallback');
+      expect(eventNames).toContain('uploads.fallback_summary');
+    } finally {
+      restore();
+      warnSpy.mockRestore();
+      await fs.rm(uploadPath, { force: true });
+    }
+  });
+
+  it('emits an uploads_fallback_advice event when any fallback occurred', async () => {
+    const uploadsDir = path.join(process.cwd(), '.harness', 'uploads');
+    const uploadName = `fallback-advice-${Date.now()}.csv`;
+    const uploadPath = path.join(uploadsDir, uploadName);
+    await fs.mkdir(uploadsDir, { recursive: true });
+    await fs.writeFile(uploadPath, 'a,b\n', 'utf-8');
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    runtimeTracer.clear();
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('fallback-advice-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (): AsyncGenerator<LoopEvent> {
+        const result = await FileReadTool.execute({ path: uploadName });
+        yield { type: 'tool_call', call: { name: 'file_read', input: { path: uploadName } } };
+        yield { type: 'tool_result', call: { name: 'file_read', input: { path: uploadName } }, result };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'analyze', model: 'test-model' }),
+      });
+      const body = await response.text();
+      expect(body).toContain('"type":"uploads_fallback_advice"');
+      expect(body).toContain('"tools":["file_read"]');
+      expect(runtimeTracer.snapshot().events.map((e) => e.name)).toContain('uploads.fallback_advice');
+
+      const evalsResponse = await request('/api/evals/runs');
+      expect(evalsResponse.status).toBe(200);
+      const evalsBody = await evalsResponse.json() as { uploadsFallbackTrend: { totalSessions: number; totalFallbacks: number; byTool: Record<string, number> } };
+      expect(evalsBody.uploadsFallbackTrend.totalSessions).toBeGreaterThanOrEqual(1);
+      expect(evalsBody.uploadsFallbackTrend.byTool.file_read).toBeGreaterThanOrEqual(1);
+    } finally {
+      restore();
+      warnSpy.mockRestore();
+      await fs.rm(uploadPath, { force: true });
+    }
+  });
+
+  it('uploads cleanup endpoint prunes files older than the requested days', async () => {
+    const uploadsDir = path.join(process.cwd(), '.harness', 'uploads');
+    const oldName = `cleanup-old-${Date.now()}.txt`;
+    const newName = `cleanup-new-${Date.now()}.txt`;
+    const oldPath = path.join(uploadsDir, oldName);
+    const newPath = path.join(uploadsDir, newName);
+    await fs.mkdir(uploadsDir, { recursive: true });
+    await fs.writeFile(oldPath, 'old', 'utf-8');
+    await fs.writeFile(newPath, 'new', 'utf-8');
+    const oldTime = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    await fs.utimes(oldPath, oldTime, oldTime);
+
+    try {
+      const response = await request('/api/uploads/cleanup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ olderThanDays: 5 }),
+      });
+      expect(response.status).toBe(200);
+      const data = await response.json() as { removed: Array<{ name: string }>; removedBytes: number; olderThanDays: number; lastPrunedAt: string };
+      expect(data.olderThanDays).toBe(5);
+      expect(data.removed.map((r) => r.name)).toContain(oldName);
+      expect(data.removed.map((r) => r.name)).not.toContain(newName);
+      expect(typeof data.lastPrunedAt).toBe('string');
+      expect(Number.isFinite(Date.parse(data.lastPrunedAt))).toBe(true);
+      await expect(fs.stat(oldPath)).rejects.toThrow();
+      await expect(fs.stat(newPath)).resolves.toBeDefined();
+
+      const settingsResponse = await request('/api/settings');
+      const settingsBody = await settingsResponse.json() as { mediaTools: { uploadsLastPrunedAt: string } };
+      expect(settingsBody.mediaTools.uploadsLastPrunedAt).toBe(data.lastPrunedAt);
+    } finally {
+      await fs.rm(oldPath, { force: true });
+      await fs.rm(newPath, { force: true });
+    }
+  });
+
+  it('rejects zero-day uploads cleanup without deleting files', async () => {
+    const uploadsDir = path.join(process.cwd(), '.harness', 'uploads');
+    const uploadName = `cleanup-zero-${Date.now()}.txt`;
+    const uploadPath = path.join(uploadsDir, uploadName);
+    await fs.mkdir(uploadsDir, { recursive: true });
+    await fs.writeFile(uploadPath, 'keep', 'utf-8');
+
+    try {
+      const response = await request('/api/uploads/cleanup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ olderThanDays: 0 }),
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining('greater than 0') });
+      await expect(fs.readFile(uploadPath, 'utf-8')).resolves.toBe('keep');
+    } finally {
+      await fs.rm(uploadPath, { force: true });
+    }
+  });
+
+  it('streams PDFs from a configured external uploads directory', async () => {
+    const originalUploadsDir = process.env.HARNESS_UPLOADS_DIR;
+    const externalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-external-uploads-'));
+    const pdfPath = path.join(externalDir, 'external-stream.pdf');
+    process.env.HARNESS_UPLOADS_DIR = externalDir;
+    await fs.writeFile(pdfPath, buildMinimalPdf('External upload PDF stream'));
+
+    try {
+      const response = await request('/api/pdf/extract?path=' + encodeURIComponent(pdfPath));
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain('event: page');
+      expect(body).toContain('External upload PDF stream');
+      expect(body).toContain('event: done');
+    } finally {
+      if (originalUploadsDir === undefined) delete process.env.HARNESS_UPLOADS_DIR;
+      else process.env.HARNESS_UPLOADS_DIR = originalUploadsDir;
+      await fs.rm(externalDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects oversized PDFs before streaming page content', async () => {
+    const fixtureDir = path.join(process.cwd(), '.harness', 'test-web-pdf-stream');
+    const pdfPath = path.join(fixtureDir, 'oversized.pdf');
+    await fs.mkdir(fixtureDir, { recursive: true });
+    await fs.writeFile(pdfPath, Buffer.from('%PDF-1.4\n'));
+    await fs.truncate(pdfPath, 50_000_001);
+
+    try {
+      const response = await request('/api/pdf/extract?path=' + encodeURIComponent(pdfPath));
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain('event: error');
+      expect(body).toContain('PDF exceeds 50000000 bytes');
+      expect(body).not.toContain('event: page');
+    } finally {
+      await fs.rm(fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists uploadsDir media setting and exports HARNESS_UPLOADS_DIR', async () => {
+    const originalEnv = process.env.HARNESS_UPLOADS_DIR;
+    try {
+      const response = await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mediaTools: { uploadsDir: '.harness/test-settings-uploads' } }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { mediaTools: { uploadsDir: string } };
+      expect(body.mediaTools.uploadsDir).toBe('.harness/test-settings-uploads');
+      expect(process.env.HARNESS_UPLOADS_DIR).toBe('.harness/test-settings-uploads');
+    } finally {
+      // Restore env and reset stored setting so subsequent tests use the default uploads dir.
+      await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mediaTools: { uploadsDir: '' } }),
+      });
+      if (originalEnv === undefined) delete process.env.HARNESS_UPLOADS_DIR;
+      else process.env.HARNESS_UPLOADS_DIR = originalEnv;
+    }
+  });
 });
+
+function buildMinimalPdf(text: string): Buffer {
+  const escapeText = (value: string) => value.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+  const stream = text.length > 0
+    ? `BT /F1 24 Tf 72 720 Td (${escapeText(text)}) Tj ET`
+    : 'q Q';
+  const objects = [
+    '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
+    '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj',
+    '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj',
+    `4 0 obj << /Length ${stream.length} >> stream\n${stream}\nendstream endobj`,
+    '5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj',
+  ];
+
+  let pdf = '%PDF-1.4\n';
+  const offsets: number[] = [];
+  for (const obj of objects) {
+    offsets.push(Buffer.byteLength(pdf, 'latin1'));
+    pdf += obj + '\n';
+  }
+  const xrefOffset = Buffer.byteLength(pdf, 'latin1');
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets) {
+    pdf += `${offset.toString().padStart(10, '0')} 00000 n \n`;
+  }
+  pdf += `trailer << /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  return Buffer.from(pdf, 'latin1');
+}

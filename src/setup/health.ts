@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { AudioTranscribeTool } from '../tools/multimodalTools';
 import { PdfReadTool } from '../tools/pdfTool';
+import { createBuiltinToolRegistry } from '../tools/registry';
 
 export interface SetupHealthInput {
   host: string;
@@ -11,6 +12,12 @@ export interface SetupHealthInput {
   audioTranscribeCommand: string;
   audioSamplePath?: string;
   pdfOcrCommand?: string;
+  projectDir?: string;
+}
+
+export interface LocalHealthCheck {
+  ok: boolean;
+  message: string;
 }
 
 export interface SetupHealthResult {
@@ -18,11 +25,19 @@ export interface SetupHealthResult {
   vision: { ok: boolean; message: string };
   audio: { ok: boolean; message: string };
   pdfOcr?: { ok: boolean; message: string };
+  local: {
+    node: LocalHealthCheck;
+    package: LocalHealthCheck;
+    sessions: LocalHealthCheck;
+    tools: LocalHealthCheck;
+    automations: LocalHealthCheck;
+  };
 }
 
 export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHealthResult> {
   const audio = await checkAudioHealth(input.audioTranscribeCommand, input.audioSamplePath);
   const pdfOcr = await checkPdfOcrHealth(input.pdfOcrCommand);
+  const local = await checkLocalHealth(input.projectDir ?? process.cwd());
   try {
     const response = await new Ollama({ host: input.host }).list();
     const modelNames = response.models.map((model) => model.name);
@@ -43,6 +58,7 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
         : { ok: false, message: 'No vision model configured.' },
       audio,
       pdfOcr,
+      local,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -51,7 +67,56 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
       vision: input.visionModel ? { ok: false, message: 'Vision model could not be checked because Ollama is unavailable.' } : { ok: false, message: 'No vision model configured.' },
       audio,
       pdfOcr,
+      local,
     };
+  }
+}
+
+async function checkLocalHealth(projectDir: string): Promise<SetupHealthResult['local']> {
+  const packagePath = path.join(projectDir, 'package.json');
+  const sessionsDir = path.join(projectDir, '.harness', 'sessions');
+  const automationsDir = path.join(projectDir, '.harness', 'automations');
+  const registry = createBuiltinToolRegistry();
+  return {
+    node: checkNodeVersion(),
+    package: await checkPackage(packagePath),
+    sessions: await checkWritableDirectory(sessionsDir, 'Session storage is writable.'),
+    tools: { ok: registry.listTools().length > 0, message: `${registry.listTools().length} built-in tool(s) across ${registry.listToolsets().length} toolset(s).` },
+    automations: await checkWritableDirectory(automationsDir, 'Automation storage is writable.'),
+  };
+}
+
+function checkNodeVersion(): LocalHealthCheck {
+  const major = Number(process.versions.node.split('.')[0]);
+  return Number.isFinite(major) && major >= 20
+    ? { ok: true, message: `Node ${process.versions.node}` }
+    : { ok: false, message: `Node ${process.versions.node}; Node 20+ is recommended.` };
+}
+
+async function checkPackage(packagePath: string): Promise<LocalHealthCheck> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(packagePath, 'utf-8')) as { name?: string; scripts?: Record<string, string> };
+    const hasValidation = Boolean(parsed.scripts?.test && (parsed.scripts.typecheck || parsed.scripts.lint));
+    return {
+      ok: hasValidation,
+      message: hasValidation ? `${parsed.name ?? 'package'} has test and typecheck scripts.` : 'package.json is missing test or typecheck scripts.',
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, message: `Cannot read package.json: ${message}` };
+  }
+}
+
+async function checkWritableDirectory(dirPath: string, okMessage: string): Promise<LocalHealthCheck> {
+  const probe = path.join(dirPath, '.doctor-probe');
+  try {
+    await fs.mkdir(dirPath, { recursive: true });
+    await fs.writeFile(probe, 'ok', 'utf-8');
+    await fs.rm(probe, { force: true });
+    return { ok: true, message: okMessage };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, message: `Directory is not writable: ${message}` };
   }
 }
 

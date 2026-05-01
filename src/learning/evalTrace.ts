@@ -271,6 +271,221 @@ export async function recordOutputValidationEvalRun(
   return run;
 }
 
+export interface UploadsFallbackEvalOptions {
+  uniqueFallbacks: number;
+  suppressedFallbacks: number;
+  tools: string[];
+  sessionId?: string;
+  task?: string;
+}
+
+export function createUploadsFallbackEvalRun(options: UploadsFallbackEvalOptions): EvalTraceRun | null {
+  if (options.uniqueFallbacks <= 0) return null;
+  const tools = Array.from(new Set(options.tools.filter(Boolean)));
+  const result: EvalTraceRunResult = {
+    exampleId: `uploads-fallback:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
+    task: (options.task ?? 'attachment usage check').slice(0, 120),
+    status: 'fail',
+    expectedStatus: 'pass',
+    actualStatus: 'fail',
+    tags: ['uploads-fallback', 'attachments'],
+    message: `Model passed bare filenames ${options.uniqueFallbacks} unique time(s) (${options.suppressedFallbacks} duplicate(s) suppressed); resolver had to rewrite to .harness/uploads. Tools: ${tools.length > 0 ? tools.join(', ') : 'unknown'}.`,
+  };
+  return {
+    id: `uploads-fallback-run:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: new Date().toISOString(),
+    total: 1,
+    passed: 0,
+    failed: 1,
+    passRate: 0,
+    results: [result],
+  };
+}
+
+export async function recordUploadsFallbackEvalRun(projectDir: string, options: UploadsFallbackEvalOptions): Promise<EvalTraceRun | null> {
+  const run = createUploadsFallbackEvalRun(options);
+  if (!run) return null;
+  await appendEvalTraceRun(projectDir, run);
+  return run;
+}
+
+export interface UploadsFallbackTrend {
+  totalSessions: number;
+  totalFallbacks: number;
+  byTool: Record<string, number>;
+  recent: Array<{ at: string; unique: number; tools: string[] }>;
+}
+
+export function summarizeUploadsFallbackRuns(runs: EvalTraceRun[]): UploadsFallbackTrend {
+  const fallbackRuns = runs.filter((run) => run.results.some((result) => result.tags.includes('uploads-fallback')));
+  const byTool: Record<string, number> = {};
+  let totalFallbacks = 0;
+  const recent: Array<{ at: string; unique: number; tools: string[] }> = [];
+  for (const run of fallbackRuns) {
+    for (const result of run.results) {
+      if (!result.tags.includes('uploads-fallback')) continue;
+      const uniqueMatch = result.message.match(/(\d+) unique time/);
+      const unique = uniqueMatch ? Number(uniqueMatch[1]) : 0;
+      totalFallbacks += unique;
+      const toolsMatch = result.message.match(/Tools: ([^.]+)\./);
+      const tools = toolsMatch ? toolsMatch[1].split(',').map((t) => t.trim()).filter((t) => t && t !== 'unknown') : [];
+      for (const tool of tools) byTool[tool] = (byTool[tool] ?? 0) + unique;
+      recent.push({ at: run.createdAt, unique, tools });
+    }
+  }
+  return {
+    totalSessions: fallbackRuns.length,
+    totalFallbacks,
+    byTool,
+    recent: recent.slice(-10),
+  };
+}
+
+export interface ContextLossDetectionInput {
+  priorUserMessage: string;
+  priorAssistantMessage?: string;
+  assistantResponse: string;
+}
+
+export interface ContextLossDetectionResult {
+  contextLoss: boolean;
+  overlapTokens: string[];
+  priorTokens: string[];
+  responseTokens: string[];
+}
+
+const CONTEXT_LOSS_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'that', 'this', 'have', 'has', 'from', 'are', 'was', 'were', 'but',
+  'not', 'you', 'your', 'our', 'their', 'them', 'these', 'those', 'into', 'over', 'under', 'about',
+  'what', 'which', 'when', 'where', 'who', 'why', 'how', 'can', 'will', 'would', 'could', 'should',
+  'all', 'any', 'one', 'two', 'three', 'also', 'just', 'like', 'use', 'used', 'using', 'get', 'got',
+  'now', 'then', 'than', 'some', 'more', 'most', 'less', 'least', 'such', 'each', 'other', 'here',
+  'there', 'its', 'his', 'her', 'him', 'she', 'they', 'been', 'being', 'does', 'did', 'doing',
+  'thanks', 'please', 'okay', 'yeah', 'yes', 'sure', 'recorded', 'good',
+]);
+
+function contextLossTokens(text: string): string[] {
+  if (!text) return [];
+  const tokens = text.toLowerCase().match(/[a-z][a-z0-9_-]{3,}/g) ?? [];
+  return Array.from(new Set(tokens.filter((token) => !CONTEXT_LOSS_STOPWORDS.has(token))));
+}
+
+export function detectAssistantContextLoss(input: ContextLossDetectionInput): ContextLossDetectionResult {
+  const priorTokens = Array.from(new Set([
+    ...contextLossTokens(input.priorUserMessage),
+    ...contextLossTokens(input.priorAssistantMessage ?? ''),
+  ]));
+  const responseTokens = contextLossTokens(input.assistantResponse);
+  // Need enough signal on both sides before the heuristic is meaningful.
+  if (priorTokens.length < 4 || responseTokens.length < 4) {
+    return { contextLoss: false, overlapTokens: [], priorTokens, responseTokens };
+  }
+  const responseSet = new Set(responseTokens);
+  const overlap = priorTokens.filter((token) => responseSet.has(token));
+  return { contextLoss: overlap.length === 0, overlapTokens: overlap, priorTokens, responseTokens };
+}
+
+export interface ContextLossEvalOptions {
+  priorUserMessage: string;
+  priorAssistantMessage?: string;
+  assistantResponse: string;
+  task?: string;
+}
+
+export function createContextLossEvalRun(options: ContextLossEvalOptions): EvalTraceRun | null {
+  const detection = detectAssistantContextLoss({
+    priorUserMessage: options.priorUserMessage,
+    priorAssistantMessage: options.priorAssistantMessage,
+    assistantResponse: options.assistantResponse,
+  });
+  if (!detection.contextLoss) return null;
+  const result: EvalTraceRunResult = {
+    exampleId: `context-loss:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
+    task: (options.task ?? options.priorUserMessage).slice(0, 120),
+    status: 'fail',
+    expectedStatus: 'pass',
+    actualStatus: 'fail',
+    tags: ['assistant-context-loss'],
+    message: `Assistant response shares no significant token with the previous turn (${detection.priorTokens.length} prior token(s) considered).`,
+  };
+  return {
+    id: `context-loss-run:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: new Date().toISOString(),
+    total: 1,
+    passed: 0,
+    failed: 1,
+    passRate: 0,
+    results: [result],
+  };
+}
+
+export async function recordContextLossEvalRun(projectDir: string, options: ContextLossEvalOptions): Promise<EvalTraceRun | null> {
+  const run = createContextLossEvalRun(options);
+  if (!run) return null;
+  await appendEvalTraceRun(projectDir, run);
+  return run;
+}
+
+export interface ContextLossTrend {
+  total: number;
+  recent: Array<{ task: string; createdAt: string; message: string }>;
+}
+
+export function summarizeContextLossRuns(runs: EvalTraceRun[]): ContextLossTrend {
+  const recent: ContextLossTrend['recent'] = [];
+  let total = 0;
+  for (const run of runs) {
+    for (const result of run.results) {
+      if (!result.tags.includes('assistant-context-loss')) continue;
+      total++;
+      recent.push({ task: result.task, createdAt: run.createdAt, message: result.message ?? '' });
+    }
+  }
+  return { total, recent: recent.slice(-5).reverse() };
+}
+
+export type ProfileFeedbackVote = 'up' | 'down';
+
+export interface ProfileFeedbackOptions {
+  profile: string;
+  vote: ProfileFeedbackVote;
+  selectionSource?: OutputValidationSelectionSource;
+  selectionReason?: string;
+  prompt?: string;
+}
+
+export function createProfileFeedbackEvalRun(options: ProfileFeedbackOptions): EvalTraceRun {
+  const status: 'pass' | 'fail' = options.vote === 'up' ? 'pass' : 'fail';
+  const selectionSource = options.selectionSource ?? 'auto-selected';
+  const result: EvalTraceRunResult = {
+    exampleId: `profile-feedback:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
+    task: options.prompt ? options.prompt.slice(0, 120) : 'validation profile feedback',
+    status,
+    expectedStatus: 'pass',
+    actualStatus: status,
+    tags: ['profile-feedback', `profile-feedback:${options.vote}`, options.profile, selectionSource],
+    message: options.vote === 'up'
+      ? `User confirmed ${options.profile} was a good auto-select.`
+      : `User flagged ${options.profile} as a poor auto-select.`,
+    links: options.selectionReason ? { context: options.selectionReason } : undefined,
+  };
+  return {
+    id: `profile-feedback-run:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: new Date().toISOString(),
+    total: 1,
+    passed: status === 'pass' ? 1 : 0,
+    failed: status === 'pass' ? 0 : 1,
+    passRate: status === 'pass' ? 1 : 0,
+    results: [result],
+  };
+}
+
+export async function recordProfileFeedbackEvalRun(projectDir: string, options: ProfileFeedbackOptions): Promise<EvalTraceRun> {
+  const run = createProfileFeedbackEvalRun(options);
+  await appendEvalTraceRun(projectDir, run);
+  return run;
+}
+
 export async function listEvalTraceRuns(projectDir: string, limit = 20): Promise<EvalTraceRun[]> {
   try {
     const raw = await fs.readFile(evalTraceRunsPath(projectDir), 'utf-8');
@@ -510,4 +725,81 @@ function outputValidationSelectionSource(tags: string[]): OutputValidationSelect
   if (tags.includes('auto-selected')) return 'auto-selected';
   if (tags.includes('manual-selected')) return 'manual-selected';
   return 'unknown';
+}
+
+export interface ProfileFeedbackBucket {
+  total: number;
+  up: number;
+  down: number;
+  approvalRate: number;
+}
+
+export interface ProfileFeedbackInsight {
+  profile: string;
+  severity: 'info' | 'warn';
+  message: string;
+  downVotes: number;
+  upVotes: number;
+}
+
+export interface ProfileFeedbackTrend {
+  totalVotes: number;
+  byProfile: Record<string, ProfileFeedbackBucket>;
+  insights: ProfileFeedbackInsight[];
+  recentVotes: Array<{ profile: string; vote: ProfileFeedbackVote; task: string; createdAt: string }>;
+  dailyApproval: Array<{ date: string; total: number; up: number; down: number; approvalRate: number }>;
+}
+
+const PROFILE_FEEDBACK_DOWN_VOTE_WARN = 3;
+
+export function summarizeProfileFeedbackRuns(runs: EvalTraceRun[]): ProfileFeedbackTrend {
+  const byProfile: Record<string, ProfileFeedbackBucket> = {};
+  const recentVotes: ProfileFeedbackTrend['recentVotes'] = [];
+  const byDay = new Map<string, { total: number; up: number; down: number }>();
+  let totalVotes = 0;
+  for (const run of runs) {
+    for (const result of run.results) {
+      if (!result.tags.includes('profile-feedback')) continue;
+      const vote: ProfileFeedbackVote = result.tags.includes('profile-feedback:down') ? 'down' : 'up';
+      const profile = result.tags.find((tag) => tag !== 'profile-feedback'
+        && tag !== 'profile-feedback:up'
+        && tag !== 'profile-feedback:down'
+        && tag !== 'auto-selected'
+        && tag !== 'manual-selected') ?? 'unknown';
+      totalVotes++;
+      const bucket = byProfile[profile] ?? { total: 0, up: 0, down: 0, approvalRate: 0 };
+      bucket.total++;
+      if (vote === 'up') bucket.up++;
+      else bucket.down++;
+      bucket.approvalRate = rate(bucket.up, bucket.total);
+      byProfile[profile] = bucket;
+      recentVotes.push({ profile, vote, task: result.task, createdAt: run.createdAt });
+      const day = (run.createdAt || '').slice(0, 10) || 'unknown';
+      const dayBucket = byDay.get(day) ?? { total: 0, up: 0, down: 0 };
+      dayBucket.total++;
+      if (vote === 'up') dayBucket.up++; else dayBucket.down++;
+      byDay.set(day, dayBucket);
+    }
+  }
+  const insights: ProfileFeedbackInsight[] = [];
+  for (const [profile, bucket] of Object.entries(byProfile)) {
+    if (bucket.down >= PROFILE_FEEDBACK_DOWN_VOTE_WARN) {
+      insights.push({
+        profile,
+        severity: 'warn',
+        message: `${profile} accumulated ${bucket.down} down-votes (${bucket.up} up-votes). Review the auto-select keyword rules in docs/VALIDATION-PROFILES.md or add a custom profile that fits these prompts better.`,
+        downVotes: bucket.down,
+        upVotes: bucket.up,
+      });
+    } else if (bucket.down > 0 && bucket.up === 0) {
+      insights.push({
+        profile,
+        severity: 'info',
+        message: `${profile} has ${bucket.down} down-vote(s) and no up-votes yet. Keep collecting feedback before retuning.`,
+        downVotes: bucket.down,
+        upVotes: bucket.up,
+      });
+    }
+  }
+  return { totalVotes, byProfile, insights, recentVotes: recentVotes.slice(-5).reverse(), dailyApproval: Array.from(byDay.entries()).sort((a, b) => a[0] < b[0] ? -1 : 1).map(([date, bucket]) => ({ date, total: bucket.total, up: bucket.up, down: bucket.down, approvalRate: rate(bucket.up, bucket.total) })) };
 }

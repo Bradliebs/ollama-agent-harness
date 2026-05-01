@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
+import { getUploadsDir, resolveProjectPath, resolveProjectReadPath } from './pathResolution';
 
 const DEFAULT_MAX_READ_BYTES = 100_000;
 const MAX_ALLOWED_READ_BYTES = 1_000_000;
@@ -21,7 +22,7 @@ export const FileReadTool: Tool = {
   },
   isReadOnly: true,
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
-    const filePath = resolveProjectPath(input.path);
+    const filePath = resolveProjectReadPath(input.path);
     if (!filePath) {
       return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
     }
@@ -142,13 +143,48 @@ export const ListFilesTool: Tool = {
   },
 };
 
-function resolveProjectPath(value: unknown): string | null {
-  const raw = String(value ?? '');
-  const resolved = path.resolve(raw);
-  const relative = path.relative(process.cwd(), resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  return resolved;
-}
+export const ListUploadsTool: Tool = {
+  name: 'list_uploads',
+  description: 'List files attached by the user via the Harness UI (stored in .harness/uploads/). Use this to discover the exact path and name of every attachment before reading or analyzing it.',
+  parameters: {
+    type: 'object',
+    properties: {},
+  },
+  isReadOnly: true,
+  async execute(): Promise<ToolResult> {
+    const uploadsDir = getUploadsDir();
+    try {
+      const entries = await fs.readdir(uploadsDir, { withFileTypes: true });
+      const files: Array<{ name: string; path: string; size: number; modified: string }> = [];
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const full = path.join(uploadsDir, entry.name);
+        const stat = await fs.stat(full);
+        const cwdRel = path.relative(process.cwd(), full);
+        const display = cwdRel.startsWith('..') ? full : cwdRel;
+        files.push({
+          name: entry.name,
+          path: display.split(path.sep).join('/'),
+          size: stat.size,
+          modified: stat.mtime.toISOString(),
+        });
+      }
+      if (files.length === 0) {
+        return { success: true, output: '(no uploads)' };
+      }
+      files.sort((a, b) => a.name.localeCompare(b.name));
+      const lines = files.map((f) => `${f.path}\t${f.size} bytes\t${f.modified}`);
+      return { success: true, output: lines.join('\n') };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code === 'ENOENT') {
+        return { success: true, output: '(no uploads)' };
+      }
+      const msg = error instanceof Error ? error.message : String(error);
+      return { success: false, output: `Failed to list uploads: ${msg}`, error: msg };
+    }
+  },
+};
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   const parsed = Number(value);

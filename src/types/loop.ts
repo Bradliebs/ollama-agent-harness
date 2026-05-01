@@ -29,7 +29,8 @@ export type LoopEvent =
   | ToolResultEvent
   | ContextEvent
   | ErrorEvent
-  | DoneEvent;
+  | DoneEvent
+  | UsageEvent;
 
 export interface TextEvent {
   type: 'text';
@@ -74,4 +75,22 @@ export interface DoneEvent {
   type: 'done';
   reason: 'completed' | 'max_turns' | 'aborted' | 'error';
   turns: number;
+}
+
+/** Per-LLM-call usage stats. Emitted after every successful model call so
+ * the UI can show inline cost / token / latency telemetry without scraping
+ * provider-specific log fields.
+ *
+ * `model` is the resolved model name; `turn` is the 1-based loop turn so the
+ * UI can attribute multi-turn usage to the right agent reply. Costs are
+ * intentionally omitted — Ollama is local; if a hosted backend is added,
+ * wire the conversion at emit time using a per-model rate map.
+ */
+export interface UsageEvent {
+  type: 'usage';
+  model: string;
+  turn: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalDurationMs: number;
 }

@@ -1,13 +1,22 @@
 #!/usr/bin/env node
 
-const targetUrl = process.argv[2] || process.env.HARNESS_UI_URL || 'http://127.0.0.1:4300/';
+const { spawn } = require('child_process');
+const fs = require('fs');
+
+const providedTargetUrl = process.argv[2] || process.env.HARNESS_UI_URL || '';
+const targetUrl = providedTargetUrl || 'http://127.0.0.1:4300/';
 
 async function main() {
+  const cleanupServer = await ensureTargetServer();
   let chromium;
   try {
     ({ chromium } = require('playwright'));
   } catch {
-    await runStaticSmoke();
+    try {
+      await runStaticSmoke();
+    } finally {
+      await cleanupServer();
+    }
     return;
   }
 
@@ -15,6 +24,7 @@ async function main() {
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     await page.goto(targetUrl, { waitUntil: 'networkidle' });
+    await page.evaluate(() => { const details = document.getElementById('welcomeFirstRun'); if (details) details.open = true; });
     await page.click('#firstRunSetup button:has-text("Check setup")');
     await page.waitForFunction(() => !document.getElementById('firstRunHealth').classList.contains('initial-hidden'));
     await page.click('text=Verify install');
@@ -42,23 +52,43 @@ async function main() {
     await page.click('#saveProfileFromFormBtn');
     await page.waitForFunction(() => document.getElementById('outputValidationProfilesStatus')?.textContent.includes('custom profiles saved'));
     await page.click('text=Refresh trace exports');
-    await page.evaluate(() => showLeftTab('palace', Array.from(document.querySelectorAll('.tab')).find((element) => element.textContent === 'Palace')));
+    await page.evaluate(() => showLeftTab('skills', Array.from(document.querySelectorAll('.tab')).find((element) => element.getAttribute('onclick')?.includes("showLeftTab('skills'"))));
+    await page.waitForFunction(() => Boolean(document.getElementById('runtimeSkillSource')) && Boolean(document.getElementById('repoSkillSource')) && Boolean(document.getElementById('skillDiagnostics')));
+    const skillsTabVisible = await page.evaluate(() => getComputedStyle(document.getElementById('skillList')).display !== 'none');
+    await page.evaluate(() => showLeftTab('palace', Array.from(document.querySelectorAll('.tab')).find((element) => element.getAttribute('onclick')?.includes("showLeftTab('palace'"))));
     await page.waitForFunction(() => getComputedStyle(document.getElementById('memoryPalaceView')).display !== 'none');
     const palaceTabVisible = await page.evaluate(() => getComputedStyle(document.getElementById('memoryPalaceView')).display !== 'none');
+    await page.evaluate(() => showLeftTab('discovery', Array.from(document.querySelectorAll('.tab')).find((element) => element.getAttribute('onclick')?.includes("showLeftTab('discovery'"))));
+    await page.waitForFunction(() => Boolean(document.getElementById('discoveryPanel')));
+    const discoveryTabVisible = await page.evaluate(() => getComputedStyle(document.getElementById('discoveryView')).display !== 'none');
     await page.evaluate(() => showLeftTab('learning', document.querySelector('[onclick*="learning"]')));
     await page.waitForFunction(() => Boolean(document.getElementById('learningCandidateQueue')));
-    const result = await page.evaluate((palaceWasVisible) => {
+    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible }) => {
       const ids = Array.from(document.querySelectorAll('[id]')).map((element) => element.id);
       const duplicateIds = ids.filter((id, index) => ids.indexOf(id) !== index);
       return {
         title: document.title,
         mode: 'playwright',
-        hasAppScript: Array.from(document.scripts).some((script) => script.src.endsWith('/app.js')),
+        hasAppScript: Array.from(document.scripts).some((script) => /\/app\.js(\?|$)/.test(script.src)),
+        hasChatHistoryApi: typeof window.HarnessChatHistory?.outboundChatHistory === 'function' && typeof window.HarnessChatHistory?.saveChatSession === 'function' && typeof window.HarnessChatHistory?.loadPersistedChatSession === 'function',
         hasPermissionPanel: Boolean(document.getElementById('permissionPanel')),
         hasChatInput: Boolean(document.getElementById('chatInput')),
         hasTraceExports: Boolean(document.getElementById('traceExports')),
         hasTraceInspector: Boolean(document.getElementById('traceInspector')),
         hasRuntimeStorage: Boolean(document.getElementById('runtimeStorageStatus')),
+        hasRuntimeSkillSource: Boolean(document.getElementById('runtimeSkillSource')),
+        hasRepoSkillSource: Boolean(document.getElementById('repoSkillSource')),
+        hasSkillDiagnostics: Boolean(document.getElementById('skillDiagnostics')),
+        hasOpenSkillsFunction: typeof window.openSkillsTab === 'function' && typeof window.appendOpenSkillsAction === 'function',
+        hasDiscoveryView: Boolean(document.getElementById('discoveryView')),
+        hasDiscoveryPanel: Boolean(document.getElementById('discoveryPanel')),
+        hasModelCatalogPanel: Boolean(document.getElementById('modelCatalogPanel')),
+        hasExtensionDiscoveryPanel: Boolean(document.getElementById('extensionDiscoveryPanel')),
+        hasAutomationDiscoveryPanel: Boolean(document.getElementById('automationDiscoveryPanel')),
+        hasSessionSearchDiscoveryPanel: Boolean(document.getElementById('sessionSearchDiscoveryPanel')),
+        hasModelCatalogSettings: Boolean(document.getElementById('modelCatalogUrl')) && Boolean(document.getElementById('modelCatalogTtlHours')) && Boolean(document.getElementById('refreshModelCatalogBtn')),
+        hasExtensionPolicySettings: Boolean(document.getElementById('extensionExecutableToggle')) && Boolean(document.getElementById('extensionPermissionReviewToggle')) && Boolean(document.getElementById('extensionAllowedPluginNames')),
+        hasDiscoveryFunctions: typeof window.loadDiscovery === 'function' && typeof window.refreshModelCatalog === 'function' && typeof window.rebuildSessionSearchIndex === 'function' && typeof window.updateModelCatalogSetting === 'function' && typeof window.toggleExtensionExecutablePlugins === 'function',
         hasRoutingSettings: Boolean(document.getElementById('smallHelperModel')) && Boolean(document.getElementById('strongHelperModel')),
         hasMediaToolSettings: Boolean(document.getElementById('visionModel')) && Boolean(document.getElementById('audioTranscribeCommand')),
         hasSettingsDoctor: Boolean(document.getElementById('settingsAudioSamplePath')) && Boolean(document.getElementById('settingsDoctorHealth')),
@@ -81,6 +111,8 @@ async function main() {
         hasMemoryPalace: Boolean(document.getElementById('memoryPalaceView')),
         hasPalaceDetail: Boolean(document.getElementById('palaceDetail')),
         palaceTabVisible: palaceWasVisible,
+        discoveryTabVisible: discoveryWasVisible,
+        skillsTabVisible: skillsWasVisible,
         learningTabVisible: getComputedStyle(document.getElementById('learningView')).display !== 'none',
         traceInspectButtons: document.querySelectorAll('#traceExports button').length,
         palaceAnchorButtons: document.querySelectorAll('.palace-anchor').length,
@@ -120,6 +152,7 @@ async function main() {
         hasReplaySourceLinkFunction: typeof window.renderReplaySourceLinks === 'function',
         hasReplayFailureFunction: typeof window.renderLatestRunFailures === 'function',
         hasMediaToolSettingFunction: typeof window.updateMediaToolSetting === 'function',
+        hasSkillRefreshFunction: typeof window.refreshSkillSurfacesAfterToolResult === 'function',
         hasFirstRunSetupFunction: typeof window.applyFirstRunSetup === 'function',
         hasFirstRunHealthFunction: typeof window.checkFirstRunHealth === 'function',
         hasOutputValidationSettingFunction: typeof window.updateOutputValidationSetting === 'function' && typeof window.toggleOutputValidation === 'function' && typeof window.toggleOutputValidationAutoSelect === 'function' && typeof window.saveOutputValidationProfiles === 'function' && typeof window.validateOutputValidationProfilesEditor === 'function' && typeof window.saveProfileFromForm === 'function',
@@ -129,16 +162,30 @@ async function main() {
         hasApplyCalibrationFunction: typeof window.applyRoutingCalibration === 'function',
         duplicateIds,
       };
-    }, palaceTabVisible);
+    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible });
 
     const failures = [];
     if (result.title !== 'Ollama Agent Harness') failures.push(`Unexpected title: ${result.title}`);
     if (!result.hasAppScript) failures.push('ui/app.js script was not loaded');
+    if (!result.hasChatHistoryApi) failures.push('chat history helper API was not available at runtime');
     if (!result.hasPermissionPanel) failures.push('permission panel was not created');
     if (!result.hasChatInput) failures.push('chat input was not found');
     if (!result.hasTraceExports) failures.push('trace export panel was not found');
     if (!result.hasTraceInspector) failures.push('trace inspector panel was not found');
     if (!result.hasRuntimeStorage) failures.push('runtime storage panel was not found');
+    if (!result.hasRuntimeSkillSource) failures.push('runtime skill source panel was not rendered');
+    if (!result.hasRepoSkillSource) failures.push('repo skill source panel was not rendered');
+    if (!result.hasSkillDiagnostics) failures.push('skill diagnostics panel was not rendered');
+    if (!result.hasOpenSkillsFunction) failures.push('open skills chat action functions were not found');
+    if (!result.hasDiscoveryView) failures.push('discovery view was not found');
+    if (!result.hasDiscoveryPanel) failures.push('discovery panel was not rendered');
+    if (!result.hasModelCatalogPanel) failures.push('model catalog discovery panel was not rendered');
+    if (!result.hasExtensionDiscoveryPanel) failures.push('extension discovery panel was not rendered');
+    if (!result.hasAutomationDiscoveryPanel) failures.push('automation discovery panel was not rendered');
+    if (!result.hasSessionSearchDiscoveryPanel) failures.push('session search discovery panel was not rendered');
+    if (!result.hasModelCatalogSettings) failures.push('model catalog settings were not found');
+    if (!result.hasExtensionPolicySettings) failures.push('extension activation policy settings were not found');
+    if (!result.hasDiscoveryFunctions) failures.push('discovery functions were not found');
     if (!result.hasRoutingSettings) failures.push('helper routing settings were not found');
     if (!result.hasMediaToolSettings) failures.push('media tool settings were not found');
     if (!result.hasSettingsDoctor) failures.push('settings setup doctor controls were not found');
@@ -163,6 +210,8 @@ async function main() {
     if (!result.hasMemoryPalace) failures.push('memory palace view was not found');
     if (result.palaceAnchorButtons > 0 && !result.hasPalaceDetail) failures.push('palace detail panel was not found');
     if (!result.palaceTabVisible) failures.push('palace tab did not become visible');
+    if (!result.discoveryTabVisible) failures.push('discovery tab did not become visible');
+    if (!result.skillsTabVisible) failures.push('skills tab did not become visible');
     if (!result.learningTabVisible) failures.push('learning tab did not become visible');
     if (!result.hasLearningCandidateQueue) failures.push('learning candidate queue was not rendered');
     if (!result.hasCandidateProvenanceDetail) failures.push('candidate provenance detail panel was not rendered');
@@ -200,6 +249,7 @@ async function main() {
     if (!result.hasReplaySourceLinkFunction) failures.push('replay source link function was not found');
     if (!result.hasReplayFailureFunction) failures.push('replay failure function was not found');
     if (!result.hasMediaToolSettingFunction) failures.push('media tool setting function was not found');
+    if (!result.hasSkillRefreshFunction) failures.push('skill refresh function was not found');
     if (!result.hasFirstRunSetupFunction) failures.push('first-run setup function was not found');
     if (!result.hasFirstRunHealthFunction) failures.push('first-run health function was not found');
     if (!result.hasOutputValidationSettingFunction) failures.push('output validation setting function was not found');
@@ -218,7 +268,85 @@ async function main() {
     console.log(JSON.stringify({ ok: true, url: targetUrl, ...result }, null, 2));
   } finally {
     await browser.close();
+    await cleanupServer();
   }
+}
+
+async function ensureTargetServer() {
+  if (await canReachTarget()) return () => {};
+  if (providedTargetUrl) {
+    throw new Error(`Unable to reach ${targetUrl}. Start the Harness web server first, or omit the URL to let smoke:ui start the default local server.`);
+  }
+
+  const url = new URL(targetUrl);
+  const serverArgs = fs.existsSync('dist/web/server.js')
+    ? ['dist/web/server.js']
+    : ['-r', 'ts-node/register', 'src/web/server.ts'];
+  const server = spawn(process.execPath, serverArgs, {
+    cwd: process.cwd(),
+    env: { ...process.env, PORT: url.port || '4300', NO_OPEN: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const outputChunks = [];
+  const collectOutput = (chunk) => {
+    outputChunks.push(chunk.toString());
+    while (outputChunks.join('').length > 8000) outputChunks.shift();
+  };
+  const getOutput = () => outputChunks.join('');
+  server.stdout.on('data', collectOutput);
+  server.stderr.on('data', collectOutput);
+
+  try {
+    await waitForTarget(server, getOutput);
+  } catch (error) {
+    await stopStartedServer(server, getOutput);
+    throw error;
+  }
+  return () => stopStartedServer(server, getOutput);
+}
+
+async function canReachTarget() {
+  try {
+    const response = await fetch(targetUrl, { method: 'GET' });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForTarget(server, getOutput) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 15_000) {
+    if (server.exitCode !== null) {
+      throw new Error(`Unable to start Harness web server for UI smoke.\n${getOutput()}`);
+    }
+    if (await canReachTarget()) return;
+    await wait(250);
+  }
+  throw new Error(`Timed out waiting for Harness web server at ${targetUrl}.\n${getOutput()}`);
+}
+
+async function stopStartedServer(server, getOutput) {
+  if (server.exitCode !== null || server.signalCode !== null) return;
+  server.kill();
+  const exited = await waitForExit(server, 5000);
+  if (!exited) console.warn(`Timed out waiting for temporary Harness web server to exit.\n${getOutput()}`);
+}
+
+function waitForExit(server, timeoutMs) {
+  if (server.exitCode !== null || server.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    timer.unref?.();
+    server.once('close', () => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function runStaticSmoke() {
@@ -227,6 +355,9 @@ async function runStaticSmoke() {
   const appUrl = new URL('./app.js', targetUrl).toString();
   const appResponse = await fetch(appUrl);
   const appScript = await appResponse.text();
+  const chatHistoryUrl = new URL('./chatHistory.js', targetUrl).toString();
+  const chatHistoryResponse = await fetch(chatHistoryUrl);
+  const chatHistoryScript = await chatHistoryResponse.text();
   const ids = Array.from(html.matchAll(/id="([^"]+)"/g)).map((match) => match[1]);
   const duplicateIds = ids.filter((id, index) => ids.indexOf(id) !== index);
   const result = {
@@ -235,6 +366,8 @@ async function runStaticSmoke() {
     url: targetUrl,
     title: /<title>Ollama Agent Harness<\/title>/.test(html) ? 'Ollama Agent Harness' : '',
     hasAppScript: html.includes('./app.js'),
+    hasChatHistoryScript: html.includes('./chatHistory.js'),
+    hasChatHistoryApi: chatHistoryScript.includes('HarnessChatHistory') && chatHistoryScript.includes('outboundChatHistory') && chatHistoryScript.includes('saveChatSession') && chatHistoryScript.includes('loadPersistedChatSession'),
     hasTraceExports: ids.includes('traceExports'),
     hasTraceInspector: ids.includes('traceInspector'),
     hasRuntimeStorage: ids.includes('runtimeStorageStatus'),
@@ -300,6 +433,8 @@ async function runStaticSmoke() {
   const failures = [];
   if (result.title !== 'Ollama Agent Harness') failures.push('unexpected or missing page title');
   if (!result.hasAppScript) failures.push('ui/app.js script reference was not found');
+  if (!result.hasChatHistoryScript) failures.push('ui/chatHistory.js script reference was not found');
+  if (!result.hasChatHistoryApi) failures.push('ui/chatHistory.js helper API was not found');
   if (!result.hasTraceExports) failures.push('trace export panel was not found');
   if (!result.hasTraceInspector) failures.push('trace inspector panel was not found');
   if (!result.hasRuntimeStorage) failures.push('runtime storage panel was not found');

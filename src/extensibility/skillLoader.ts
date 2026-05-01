@@ -10,8 +10,25 @@ export interface SkillDefinition {
   filePath: string;
 }
 
+export interface SkillLoadDiagnostic {
+  name: string;
+  filePath: string;
+  reason: 'missing-skill-file' | 'unreadable-skill-file' | 'missing-frontmatter';
+  message: string;
+}
+
+export interface SkillDirectoryScan {
+  skills: SkillDefinition[];
+  diagnostics: SkillLoadDiagnostic[];
+}
+
 export async function loadSkillsDir(skillsDir: string): Promise<SkillDefinition[]> {
+  return (await scanSkillsDir(skillsDir)).skills;
+}
+
+export async function scanSkillsDir(skillsDir: string): Promise<SkillDirectoryScan> {
   const skills: SkillDefinition[] = [];
+  const diagnostics: SkillLoadDiagnostic[] = [];
 
   try {
     const entries = await fs.readdir(skillsDir, { withFileTypes: true });
@@ -21,16 +38,42 @@ export async function loadSkillsDir(skillsDir: string): Promise<SkillDefinition[
       try {
         const content = await fs.readFile(skillFile, 'utf-8');
         const skill = parseSkillFile(content, skillFile);
-        if (skill) skills.push(skill);
-      } catch {
-        // Skill directory without SKILL.md — skip
+        if (skill) {
+          skills.push(skill);
+        } else {
+          diagnostics.push({
+            name: entry.name,
+            filePath: skillFile,
+            reason: 'missing-frontmatter',
+            message: 'SKILL.md exists but does not start with YAML frontmatter.',
+          });
+        }
+      } catch (error) {
+        const reason = await skillFileExists(skillFile) ? 'unreadable-skill-file' : 'missing-skill-file';
+        diagnostics.push({
+          name: entry.name,
+          filePath: skillFile,
+          reason,
+          message: reason === 'missing-skill-file'
+            ? 'Skill folder is missing SKILL.md.'
+            : `Could not read SKILL.md: ${error instanceof Error ? error.message : String(error)}`,
+        });
       }
     }
   } catch {
     // Skills directory doesn't exist — return empty
   }
 
-  return skills;
+  return { skills, diagnostics };
+}
+
+async function skillFileExists(filePath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(filePath);
+    return stat.isFile();
+  } catch {
+    return false;
+  }
 }
 
 export function parseSkillFile(content: string, filePath: string): SkillDefinition | null {

@@ -118,6 +118,19 @@ export async function* queryLoop(
       const result = await client.chat(messages, ollamaTools);
       assistantMessage = result.message;
       modelSpan?.end('ok', { toolCalls: assistantMessage.tool_calls?.length ?? 0 });
+      // Surface per-call telemetry so the UI can render an inline footer
+      // (model · tokens · latency) under each assistant turn and roll a
+      // session-total HUD in the topbar.
+      if (result.usage) {
+        yield {
+          type: 'usage',
+          model: config.model,
+          turn,
+          promptTokens: result.usage.promptTokens ?? 0,
+          completionTokens: result.usage.completionTokens ?? 0,
+          totalDurationMs: Math.round((result.usage.totalDurationNs ?? 0) / 1_000_000),
+        };
+      }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       modelSpan?.fail(error);

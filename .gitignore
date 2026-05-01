@@ -8,6 +8,13 @@ dist/
 !scripts/release-smoke.js
 !scripts/ui-smoke.js
 !ui/app.js
+!ui/chatHistory.js
 .env
 .env.local
 .harness/
+
+# Local exploration / vendored sources / large binaries
+2604.14228v1.pdf
+hermes-agent-main/
+release/*.zip
+release/*.zip.sha256.json

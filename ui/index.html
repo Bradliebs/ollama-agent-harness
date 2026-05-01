@@ -39,9 +39,12 @@
     .mem-section{margin-bottom:16px}
     .mem-section h5{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin-bottom:6px}
     .mem-section pre{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;white-space:pre-wrap;font-size:11px;font-family:'Cascadia Code','Fira Code',monospace;color:var(--text-dim)}
-    .tab-bar{display:flex;border-bottom:1px solid var(--border)}
-    .tab{flex:1;padding:10px;text-align:center;font-size:12px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;color:var(--text-dim);transition:all .2s}
-    .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+    .tab-bar{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;border-bottom:1px solid var(--border);background:var(--border)}
+    .tab{padding:8px 4px;text-align:center;font-size:10.5px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;color:var(--text-dim);transition:all .15s;background:var(--surface);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;line-height:1.1;min-height:44px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .tab:hover{color:var(--text);background:var(--surface2)}
+    .tab.active{color:var(--accent);border-bottom-color:var(--accent);background:var(--surface2)}
+    .tab .tab-icon{font-size:14px;line-height:1}
+    .tab .tab-label{font-size:10px;letter-spacing:.2px}
     .topbar{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
     .logo{font-size:18px;font-weight:700;color:var(--accent);display:flex;align-items:center;gap:6px;white-space:nowrap}
     .model-wrap{position:relative;flex:1;max-width:350px}
@@ -87,6 +90,32 @@
     .transcript-row.anchor{border-color:var(--accent);background:var(--accent-bg)}
     .palace-anchor{width:100%;margin-top:6px;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text-dim);font-size:11px;line-height:1.4;text-align:left;cursor:pointer}
     .palace-anchor:hover{border-color:var(--accent);color:var(--text)}
+    .rag-picker{margin:6px 0;border:1px solid var(--border);border-radius:7px;background:var(--surface2);padding:8px}
+    .rag-picker-label{font-size:11px;color:var(--text-dim);margin-bottom:4px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+    .rag-selected{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;min-height:24px}
+    .rag-chip{display:inline-flex;align-items:center;gap:4px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:2px 8px;font-size:11px;color:var(--text)}
+    .rag-chip button{background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:13px;padding:0;line-height:1}
+    .rag-chip button:hover{color:var(--error)}
+    .rag-tree{max-height:240px;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:6px;font-size:12px}
+    .rag-tree-row{display:flex;align-items:center;gap:6px;padding:2px 0;line-height:1.6}
+    .rag-tree-toggle{width:14px;display:inline-block;text-align:center;cursor:pointer;color:var(--text-dim);font-size:10px;user-select:none}
+    .rag-tree-toggle:hover{color:var(--accent)}
+    .rag-tree-name{cursor:default;color:var(--text)}
+    .rag-tree-name.is-dir{cursor:pointer;color:var(--accent)}
+    .rag-tree-name.is-dir:hover{text-decoration:underline}
+    .rag-tree-name.is-file{color:var(--text-dim)}
+    .rag-status{font-size:12px;color:var(--text-dim);min-height:18px}
+    .rag-backend-badge{display:inline-block;background:var(--accent-bg);border:1px solid var(--accent);color:var(--accent);border-radius:4px;padding:2px 6px;font-size:11px}
+    .rag-preview{margin-top:6px}
+    .rag-preview-body{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px}
+    .rag-diagnostic{display:flex;gap:8px;align-items:flex-start;padding:4px 0;border-top:1px solid var(--border);font-size:12px}
+    .rag-diagnostic:first-child{border-top:0}
+    .rag-diag-icon{font-size:14px;line-height:1.4}
+    .btn-sm.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+    .btn-sm.primary:hover{filter:brightness(1.1)}
+    .skill-diagnostic-actions{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+    .sk-install{background:var(--surface);border:1px solid var(--border);color:var(--text-dim);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px}
+    .sk-install:hover{border-color:var(--accent);color:var(--accent)}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
     .topbar-btns{display:flex;gap:6px;margin-left:auto}
     .btn-icon{background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);width:34px;height:34px;border-radius:var(--rs);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;transition:all .2s}
@@ -165,6 +194,11 @@
     .setting-row input,.setting-row select,.setting-row textarea{width:100%;padding:7px 10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px;outline:none;font-family:inherit}
     .setting-row textarea{min-height:80px;resize:vertical}
     .setting-row input:focus,.setting-row textarea:focus{border-color:var(--accent)}
+    .uploads-cleanup-row{display:flex;align-items:center;gap:6px;margin-top:8px}
+    .uploads-cleanup-row input{width:80px}
+    .uploads-list-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}
+    .uploads-list-table th,.uploads-list-table td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--border)}
+    .uploads-list-table button{font-size:11px}
     .profile-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
     .profile-form-grid .wide{grid-column:1/-1}
     .profile-check-list{display:flex;flex-direction:column;gap:6px;margin:6px 0}
@@ -195,6 +229,63 @@
     .mode-opt .mode-t{font-size:13px;font-weight:600;margin-bottom:1px}
     .mode-opt .mode-d{font-size:11px;color:var(--text-dim)}
     @media(max-width:900px){.left-panel,.right-panel{position:fixed;top:0;bottom:0;z-index:100}.left-panel{left:-260px}.left-panel.visible{left:0}.right-panel{right:-320px}.right-panel.visible{right:0}}
+    /* Per-message metadata footer (model · tokens · latency) */
+    .msg-meta{margin-top:6px;font-size:11px;color:var(--text-dim);display:flex;flex-wrap:wrap;gap:6px;align-items:center;line-height:1.4}
+    .msg-meta .meta-sep{opacity:.5}
+    .msg-meta .meta-pill{padding:1px 6px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;font-size:10px;letter-spacing:.2px}
+    .msg-meta .meta-pill.warn{border-color:var(--warning);color:var(--warning)}
+    /* Session totals HUD next to the context HUD */
+    .session-hud{display:flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid var(--border);border-radius:7px;background:var(--surface2);font-size:11px;color:var(--text-dim);white-space:nowrap}
+    .session-hud .session-hud-val{color:var(--text)}
+    .session-hud.empty{opacity:.55}
+    /* Slash-command quick-actions popup above the composer */
+    .slash-palette{position:absolute;left:12px;right:12px;bottom:80px;max-width:760px;margin:0 auto;background:var(--surface);border:1px solid var(--accent);border-radius:var(--r);box-shadow:0 8px 30px rgba(0,0,0,.4);overflow:hidden;z-index:60}
+    .slash-palette.hidden{display:none}
+    .slash-palette-header{padding:6px 12px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px}
+    .slash-palette-list{max-height:280px;overflow-y:auto}
+    .slash-palette-item{padding:8px 12px;cursor:pointer;display:grid;grid-template-columns:140px 1fr;gap:10px;align-items:center;border-top:1px solid var(--border)}
+    .slash-palette-item:first-child{border-top:none}
+    .slash-palette-item:hover,.slash-palette-item.active{background:var(--accent-bg)}
+    .slash-palette-item .sp-cmd{color:var(--accent);font-weight:600;font-size:13px;font-family:'Cascadia Code','Fira Code',monospace}
+    .slash-palette-item .sp-desc{color:var(--text-dim);font-size:12px}
+    /* Voice input toggle: pulse-red when actively recording. */
+    .btn-icon.recording{border-color:var(--error);color:var(--error);animation:voicePulse 1.2s infinite}
+    @keyframes voicePulse{0%,100%{box-shadow:0 0 0 0 rgba(239,83,80,.5)}50%{box-shadow:0 0 0 6px rgba(239,83,80,0)}}
+
+    /* ─── Redesigned welcome screen ────────────────────────────────
+       Goals: less density, bigger typography, real visual hierarchy.
+       Hero → quick suggestions → optional first-run setup (collapsed
+       by default). Old `.beginner-guide` / `.walkthrough-checklist`
+       are kept but now hidden behind a "Show first-run guide" link
+       so they don't cram the hero on every fresh chat. */
+    .welcome{padding:48px 24px 24px;max-width:880px;margin:0 auto;text-align:left;color:var(--text-dim)}
+    .welcome-hero{margin-bottom:24px}
+    .welcome-hero .welcome-eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--accent);margin-bottom:8px;font-weight:600}
+    .welcome-hero h2{font-size:32px;color:var(--text);margin-bottom:6px;font-weight:700;letter-spacing:-.5px}
+    .welcome-hero p{font-size:14px;max-width:640px;margin:0;line-height:1.55;color:var(--text-dim)}
+    .quick-suggestions{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:24px}
+    .quick-card{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;cursor:pointer;transition:all .15s;display:flex;gap:12px;align-items:flex-start;text-align:left}
+    .quick-card:hover{border-color:var(--accent);background:var(--surface3);transform:translateY(-1px)}
+    .quick-card .qc-icon{font-size:22px;line-height:1;flex-shrink:0;width:28px;text-align:center}
+    .quick-card .qc-body{flex:1;min-width:0}
+    .quick-card .qc-title{font-size:13px;font-weight:600;color:var(--text);margin-bottom:3px}
+    .quick-card .qc-desc{font-size:12px;color:var(--text-dim);line-height:1.4}
+    .welcome-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:24px;padding:12px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;font-size:12px}
+    .welcome-tools strong{color:var(--text);font-weight:600;margin-right:4px}
+    .welcome-tool-chip{padding:3px 9px;border:1px solid var(--border);border-radius:999px;color:var(--text-dim);cursor:pointer;background:var(--surface);transition:all .15s}
+    .welcome-tool-chip:hover{border-color:var(--accent);color:var(--accent)}
+    .welcome-disclosure{margin-top:8px}
+    .welcome-disclosure summary{cursor:pointer;font-size:12px;color:var(--text-dim);padding:8px 0;list-style:none;display:flex;align-items:center;gap:6px;user-select:none}
+    .welcome-disclosure summary:hover{color:var(--accent)}
+    .welcome-disclosure summary::before{content:'▸';display:inline-block;transition:transform .15s;font-size:10px}
+    .welcome-disclosure[open] summary::before{transform:rotate(90deg)}
+    .welcome-disclosure[open] summary{color:var(--text)}
+    .welcome-disclosure-body{margin-top:8px;padding:14px;background:var(--surface2);border:1px solid var(--border);border-radius:8px}
+    .welcome-disclosure-body .beginner-guide,
+    .welcome-disclosure-body .walkthrough-checklist,
+    .welcome-disclosure-body .first-run-setup,
+    .welcome-disclosure-body .model-capability-hint{margin:0 0 12px}
+    .welcome-disclosure-body > *:last-child{margin-bottom:0}
   </style>
 </head>
 <body>
@@ -208,19 +299,47 @@
       </div>
     </div>
     <div class="tab-bar">
-      <div class="tab active" onclick="showLeftTab('history',this)">History</div>
-      <div class="tab" onclick="showLeftTab('files',this)">Files</div>
-      <div class="tab" onclick="showLeftTab('skills',this)">Skills</div>
-      <div class="tab" onclick="showLeftTab('memory',this)">Memory</div>
-      <div class="tab" onclick="showLeftTab('palace',this)">Palace</div>
-      <div class="tab" onclick="showLeftTab('learning',this)">🧠</div>
+      <div class="tab active" onclick="showLeftTab('history',this)" title="Chat history">
+        <div class="tab-icon">💬</div><div class="tab-label">Chats</div>
+      </div>
+      <div class="tab" onclick="showLeftTab('files',this)" title="Project files">
+        <div class="tab-icon">📁</div><div class="tab-label">Files</div>
+      </div>
+      <div class="tab" onclick="showLeftTab('skills',this)" title="Installed skills">
+        <div class="tab-icon">⚡</div><div class="tab-label">Skills</div>
+      </div>
+      <div class="tab" onclick="showLeftTab('memory',this)" title="Memory entries">
+        <div class="tab-icon">🧠</div><div class="tab-label">Memory</div>
+      </div>
+      <div class="tab" onclick="showLeftTab('palace',this)" title="Memory palace">
+        <div class="tab-icon">🏛</div><div class="tab-label">Palace</div>
+      </div>
+      <div class="tab" onclick="showLeftTab('discovery',this)" title="Discover patterns">
+        <div class="tab-icon">🔮</div><div class="tab-label">Discover</div>
+      </div>
+      <div class="tab" onclick="showLeftTab('learning',this)" title="Learning trends">
+        <div class="tab-icon">📈</div><div class="tab-label">Learning</div>
+      </div>
+      <div class="tab" onclick="showLeftTab('snapshots',this)" title="Snapshots of skills + memory">
+        <div class="tab-icon">📦</div><div class="tab-label">Snaps</div>
+      </div>
+      <div class="tab" onclick="showLeftTab('rag',this)" title="Local RAG indexes">
+        <div class="tab-icon">🔎</div><div class="tab-label">RAG</div>
+      </div>
+      <div class="tab" onclick="showLeftTab('tools',this)" title="Local tools dashboard">
+        <div class="tab-icon">🛠</div><div class="tab-label">Tools</div>
+      </div>
     </div>
     <div class="history-list" id="historyList"></div>
     <div class="file-tree initial-hidden" id="fileTree"></div>
     <div class="skill-list initial-hidden" id="skillList"></div>
     <div class="memory-view initial-hidden" id="memoryView"></div>
     <div class="memory-view initial-hidden" id="memoryPalaceView"></div>
+    <div class="memory-view initial-hidden" id="discoveryView"></div>
     <div class="memory-view initial-hidden" id="learningView"></div>
+    <div class="memory-view initial-hidden" id="snapshotsView"></div>
+    <div class="memory-view initial-hidden" id="ragView"></div>
+    <div class="memory-view initial-hidden" id="toolsDashboardView"></div>
   </div>
 
   <div class="main-panel">
@@ -236,6 +355,12 @@
         <span id="contextLabel">Context 0%</span>
         <div class="context-meter"><div class="context-fill" id="contextFill"></div></div>
       </div>
+      <div class="session-hud empty" id="sessionHud" title="Session totals (this conversation)">
+        <span>Session</span>
+        <span class="session-hud-val" id="sessionHudTokens">0t</span>
+        <span class="meta-sep">·</span>
+        <span class="session-hud-val" id="sessionHudTime">0s</span>
+      </div>
       <div class="status-dot loading" id="statusDot" title="Connecting..."></div>
       <div class="topbar-btns">
         <button class="btn-icon" onclick="newChat()" title="New chat">✨</button>
@@ -245,47 +370,91 @@
 
     <div class="chat-area" id="chatArea">
       <div class="welcome" id="welcome">
-        <h2>Welcome to Harness</h2>
-        <p>Pick a model above, then ask me anything. I can read files, write code, run commands, search your project, create skills, and remember things across sessions.</p>
-        <div class="beginner-guide" id="beginnerGuide">
-          <div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div>
-          <div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div>
-          <div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div>
+        <div class="welcome-hero">
+          <div class="welcome-eyebrow">Local-first AI agent · Ollama</div>
+          <h2>What can I help you build?</h2>
+          <p>Pick a model above, then ask me anything. I can read files, write code, run commands, search the web, create skills, and remember things across sessions.</p>
         </div>
-        <div class="walkthrough-checklist" id="walkthroughChecklist">
-          <div class="walkthrough-step"><div class="walkthrough-dot">1</div><div><strong>Check setup</strong>Confirm Ollama, optional vision, and optional audio helpers.</div><button class="btn-sm" onclick="openWalkthroughTarget('setup')">Open</button></div>
-          <div class="walkthrough-step"><div class="walkthrough-dot">2</div><div><strong>Create a profile</strong>Use the guided form instead of hand-writing JSON.</div><button class="btn-sm" onclick="openWalkthroughTarget('validation')">Open</button></div>
-          <div class="walkthrough-step"><div class="walkthrough-dot">3</div><div><strong>Export results</strong>Download validation trends from the Learning tab.</div><button class="btn-sm" onclick="openWalkthroughTarget('learning')">Open</button></div>
-          <div class="walkthrough-step"><div class="walkthrough-dot">4</div><div><strong>Verify install</strong>Check the running version and release provenance.</div><button class="btn-sm" onclick="openWalkthroughTarget('about')">Open</button></div>
-        </div>
-        <div class="first-run-setup" id="firstRunSetup">
-          <h3>First-run setup</h3>
-          <p>Set the local Ollama host and optional media helpers before your first chat.</p>
-          <div class="first-run-grid">
-            <div><label for="firstRunOllamaHost">Ollama host</label><input id="firstRunOllamaHost" type="text" value="http://localhost:11434"></div>
-            <div><label for="firstRunVisionModel">Vision model</label><input id="firstRunVisionModel" type="text" placeholder="llava"></div>
-            <div><label for="firstRunAudioCommand">Audio command</label><input id="firstRunAudioCommand" type="text" placeholder='whisper "{input}" --model base'></div>
-            <div><label for="firstRunAudioSamplePath">Audio test file</label><input id="firstRunAudioSamplePath" type="text" placeholder=".harness/uploads/sample.wav"></div>
+
+        <div class="quick-suggestions" id="quickSuggestions">
+          <div class="quick-card" onclick="sendTip(this.querySelector('.qc-title'))">
+            <div class="qc-icon">📂</div>
+            <div class="qc-body"><div class="qc-title">List files in this project</div><div class="qc-desc">Tour what's here. I'll group by folder.</div></div>
           </div>
-          <div class="first-run-actions"><button class="btn-sm" onclick="applyFirstRunSetup()">Save setup</button><button class="btn-sm" onclick="checkFirstRunHealth()">Check setup</button><span class="first-run-status" id="firstRunStatus">Optional. You can change these later in Settings.</span></div>
-          <div class="trace-detail initial-hidden" id="firstRunHealth"></div>
+          <div class="quick-card" onclick="sendTip(this.querySelector('.qc-title'))">
+            <div class="qc-icon">🔍</div>
+            <div class="qc-body"><div class="qc-title">Search for TODO in my code</div><div class="qc-desc">Find loose ends across the whole tree.</div></div>
+          </div>
+          <div class="quick-card" onclick="sendTip(this.querySelector('.qc-title'))">
+            <div class="qc-icon">🐍</div>
+            <div class="qc-body"><div class="qc-title">Help me write a Python script</div><div class="qc-desc">Generate, run, and iterate locally.</div></div>
+          </div>
+          <div class="quick-card" onclick="sendTip(this.querySelector('.qc-title'))">
+            <div class="qc-icon">⚡</div>
+            <div class="qc-body"><div class="qc-title">Create a skill for code review</div><div class="qc-desc">Save a reusable agent capability.</div></div>
+          </div>
+          <div class="quick-card" onclick="openLeftTabByName('snapshots')">
+            <div class="qc-icon">📦</div>
+            <div class="qc-body"><div class="qc-title">Snapshot my skills + memory</div><div class="qc-desc">Reversible backups before risky edits.</div></div>
+          </div>
+          <div class="quick-card" onclick="openLeftTabByName('rag')">
+            <div class="qc-icon">🔎</div>
+            <div class="qc-body"><div class="qc-title">Index my files for semantic search</div><div class="qc-desc">Build a local RAG index in seconds.</div></div>
+          </div>
         </div>
+
+        <div class="welcome-tools">
+          <strong>Try also:</strong>
+          <span class="welcome-tool-chip" onclick="openLeftTabByName('tools')">🛠 Local Tools</span>
+          <span class="welcome-tool-chip" onclick="openLeftTabByName('memory')">🧠 Memory</span>
+          <span class="welcome-tool-chip" onclick="openLeftTabByName('skills')">⚡ Skills</span>
+          <span class="welcome-tool-chip" onclick="toggleVoiceInput()">🎤 Voice input</span>
+          <span class="welcome-tool-chip" onclick="document.getElementById('chatInput').focus(); document.getElementById('chatInput').value='/'; autoSize(document.getElementById('chatInput'));">/ slash commands</span>
+        </div>
+
         <div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div>
-        <div class="tips">
-          <div class="tip" onclick="sendTip(this)">List files in this project</div>
-          <div class="tip" onclick="sendTip(this)">What models do I have?</div>
-          <div class="tip" onclick="sendTip(this)">Help me write a Python script</div>
-          <div class="tip" onclick="sendTip(this)">Create a skill for code review</div>
-          <div class="tip" onclick="sendTip(this)">Search for TODO in my code</div>
-        </div>
+
+        <details class="welcome-disclosure" id="welcomeFirstRun">
+          <summary>First time here? Walk through setup &amp; tutorial</summary>
+          <div class="welcome-disclosure-body">
+            <div class="beginner-guide" id="beginnerGuide">
+              <div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div>
+              <div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div>
+              <div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div>
+            </div>
+            <div class="walkthrough-checklist" id="walkthroughChecklist">
+              <div class="walkthrough-step"><div class="walkthrough-dot">1</div><div><strong>Check setup</strong>Confirm Ollama, optional vision, and optional audio helpers.</div><button class="btn-sm" onclick="openWalkthroughTarget('setup')">Open</button></div>
+              <div class="walkthrough-step"><div class="walkthrough-dot">2</div><div><strong>Create a profile</strong>Use the guided form instead of hand-writing JSON.</div><button class="btn-sm" onclick="openWalkthroughTarget('validation')">Open</button></div>
+              <div class="walkthrough-step"><div class="walkthrough-dot">3</div><div><strong>Export results</strong>Download validation trends from the Learning tab.</div><button class="btn-sm" onclick="openWalkthroughTarget('learning')">Open</button></div>
+              <div class="walkthrough-step"><div class="walkthrough-dot">4</div><div><strong>Verify install</strong>Check the running version and release provenance.</div><button class="btn-sm" onclick="openWalkthroughTarget('about')">Open</button></div>
+            </div>
+            <div class="first-run-setup" id="firstRunSetup">
+              <h3>First-run setup</h3>
+              <p>Set the local Ollama host and optional media helpers before your first chat.</p>
+              <div class="first-run-grid">
+                <div><label for="firstRunOllamaHost">Ollama host</label><input id="firstRunOllamaHost" type="text" value="http://localhost:11434"></div>
+                <div><label for="firstRunVisionModel">Vision model</label><input id="firstRunVisionModel" type="text" placeholder="llava"></div>
+                <div><label for="firstRunAudioCommand">Audio command</label><input id="firstRunAudioCommand" type="text" placeholder='whisper "{input}" --model base'></div>
+                <div><label for="firstRunAudioSamplePath">Audio test file</label><input id="firstRunAudioSamplePath" type="text" placeholder=".harness/uploads/sample.wav"></div>
+              </div>
+              <div class="first-run-actions"><button class="btn-sm" onclick="applyFirstRunSetup()">Save setup</button><button class="btn-sm" onclick="checkFirstRunHealth()">Check setup</button><span class="first-run-status" id="firstRunStatus">Optional. You can change these later in Settings.</span></div>
+              <div class="trace-detail initial-hidden" id="firstRunHealth"></div>
+            </div>
+          </div>
+        </details>
       </div>
     </div>
 
     <div class="input-area">
       <div id="attachedFiles" class="attached-files"></div>
       <div id="attachmentHint" class="attachment-hint">Attach text, data, image, or audio files. Harness will show what the selected model is likely to understand.</div>
+      <div class="slash-palette hidden" id="slashPalette" role="listbox" aria-label="Slash command palette">
+        <div class="slash-palette-header">Slash commands · ↑↓ to choose, Enter to run, Esc to close</div>
+        <div class="slash-palette-list" id="slashPaletteList"></div>
+      </div>
       <div class="input-row">
         <button class="btn-icon attach-btn" onclick="document.getElementById('fileInput').click()" title="Attach files">📎</button>
+        <button class="btn-icon attach-btn" id="voiceBtn" onclick="toggleVoiceInput()" title="Voice input (browser STT)">🎤</button>
         <input type="file" id="fileInput" class="initial-hidden" multiple onchange="handleFileAttach(this.files)">
         <textarea id="chatInput" placeholder="Ask anything... drop files here or click 📎 (Shift+Enter for newline)" rows="1"
           onkeydown="handleKey(event)" oninput="autoSize(this)"
@@ -294,6 +463,9 @@
           ondrop="event.preventDefault();this.style.borderColor='';handleFileAttach(event.dataTransfer.files)"></textarea>
         <button class="send-btn" id="sendBtn" onclick="sendMessage()" disabled>➤</button>
       </div>
+      <label class="attachment-hint" style="display:flex;align-items:center;gap:6px;margin-top:4px;cursor:pointer" title="Skip output validation just for the next message; the global setting is unchanged.">
+        <input type="checkbox" id="skipValidationOnce"> Skip validation for this turn
+      </label>
     </div>
   </div>
 
@@ -361,6 +533,35 @@
       </div>
     </div>
     <div class="settings-section">
+      <h4>Team Model Catalog</h4>
+      <div class="setting-row">
+        <label>Catalog URL</label>
+        <input type="text" id="modelCatalogUrl" placeholder="https://example.com/model-catalog.json" onchange="updateModelCatalogSetting('url',this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Refresh TTL hours</label>
+        <input type="number" id="modelCatalogTtlHours" title="Model catalog refresh TTL hours" placeholder="24" min="1" max="720" value="24" onchange="updateModelCatalogSetting('ttlHours',this.value)" />
+      </div>
+      <button id="refreshModelCatalogBtn" class="btn-sm full-width-button" onclick="refreshModelCatalog()">Refresh catalog</button>
+      <div id="modelCatalogSettingsStatus" class="trace-detail">Built-in catalog is used unless a team URL is configured.</div>
+    </div>
+    <div class="settings-section">
+      <h4>Extension Activation Policy</h4>
+      <div class="mode-opt" id="extensionExecutableToggle" onclick="toggleExtensionExecutablePlugins(this)">
+        <div class="mode-t">Allow executable plugins</div>
+        <div class="mode-d">Manifest discovery is always safe; executable activation stays blocked unless this policy allows it.</div>
+      </div>
+      <div class="mode-opt" id="extensionPermissionReviewToggle" onclick="toggleExtensionPermissionReview(this)">
+        <div class="mode-t">Require permission review</div>
+        <div class="mode-d">Keep executable plugin activation gated by explicit review.</div>
+      </div>
+      <div class="setting-row">
+        <label>Allowed plugin names</label>
+        <input type="text" id="extensionAllowedPluginNames" placeholder="plugin-a, plugin-b" onchange="updateExtensionAllowedPlugins(this.value)" />
+      </div>
+      <div id="extensionPolicyStatus" class="trace-detail">Executable plugin loading is not implemented in this build.</div>
+    </div>
+    <div class="settings-section">
       <h4>Media Tools</h4>
       <div class="setting-row">
         <label>Vision model</label>
@@ -375,12 +576,34 @@
         <input type="text" id="pdfOcrCommand" placeholder="tesseract &quot;{input}&quot; - -l eng" onchange="updateMediaToolSetting('pdfOcrCommand',this.value)" />
       </div>
       <div class="setting-row">
+        <label>Uploads directory</label>
+        <input type="text" id="uploadsDir" placeholder=".harness/uploads (default)" onchange="updateMediaToolSetting('uploadsDir',this.value)" />
+      </div>
+      <div class="setting-row">
         <label>Audio test file</label>
         <input type="text" id="settingsAudioSamplePath" placeholder=".harness/uploads/sample.wav" />
       </div>
       <button class="btn-sm full-width-button" onclick="checkSettingsHealth()">Run setup doctor</button>
-      <div class="trace-detail">Use {input} where the uploaded audio path should be placed.</div>
+      <div class="trace-detail">Use {input} where the uploaded audio path should be placed. Uploads directory accepts an absolute path or a project-relative path; leave empty for the default.</div>
       <div id="settingsDoctorHealth" class="trace-detail initial-hidden"></div>
+      <div class="setting-row uploads-cleanup-row">
+        <label for="uploadsPruneDays">Prune uploads older than</label>
+        <input type="number" id="uploadsPruneDays" min="0" max="3650" value="30" title="Number of days; files older than this will be deleted" placeholder="30" />
+        <span>day(s)</span>
+        <button class="btn-sm" onclick="runUploadsCleanup()">Prune now</button>
+      </div>
+      <div class="setting-row uploads-cleanup-row">
+        <label for="uploadsAutoPruneDays">Auto-prune uploads older than</label>
+        <input type="number" id="uploadsAutoPruneDays" min="0" max="3650" value="0" title="Daily background prune; 0 disables" placeholder="0" onchange="updateMediaToolSetting('uploadsAutoPruneDays', parseInt(this.value || '0', 10))" />
+        <span>day(s) · 0 disables</span>
+        <span id="uploadsLastPrunedAt" class="trace-detail"></span>
+      </div>
+      <div id="uploadsCleanupStatus" class="trace-detail initial-hidden"></div>
+      <div class="setting-row">
+        <h5>Current uploads</h5>
+        <div id="uploadsList" class="trace-detail">Loading...</div>
+        <button class="btn-sm full-width-button" onclick="loadUploadsList()">Refresh uploads</button>
+      </div>
     </div>
     <div class="settings-section">
       <h4>Output Validation</h4>
@@ -400,6 +623,10 @@
       <div class="mode-opt" id="outputValidationAutoSelectToggle" onclick="toggleOutputValidationAutoSelect(this)">
         <div class="mode-t">Auto-select best contract</div>
         <div class="mode-d">Chooses factual, coding, tool-result, or Oracle Prime per prompt. Turn this off to use the selected override.</div>
+      </div>
+      <div class="mode-opt" id="outputValidationSkipLowSignalToggle" onclick="toggleOutputValidationSkipLowSignal(this)">
+        <div class="mode-t">Skip validation on low-signal prompts</div>
+        <div class="mode-d">When auto-select can't detect a strong signal (small talk, "you decide"), skip validation for that turn instead of defaulting to Oracle Prime.</div>
       </div>
       <div class="setting-row">
         <label>Install templates</label>
@@ -500,6 +727,7 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script src="./app.js"></script>
+<script src="./chatHistory.js?v=3"></script>
+<script src="./app.js?v=3"></script>
 </body>
 </html>

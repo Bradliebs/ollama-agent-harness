@@ -4,10 +4,11 @@ import * as path from 'path';
 import * as os from 'os';
 import { promisify } from 'util';
 import type { Tool, ToolResult } from '../types';
+import { resolveProjectPath, resolveProjectReadPath } from './pathResolution';
 
 const DEFAULT_MAX_CHARS = 100_000;
 const MAX_ALLOWED_CHARS = 1_000_000;
-const MAX_PDF_BYTES = 50_000_000;
+export const MAX_PDF_BYTES = 50_000_000;
 const MIN_TEXT_FOR_FALLBACK = 32;
 
 const execFileAsync = promisify(execFile);
@@ -59,7 +60,7 @@ export const PdfReadTool: Tool = {
   },
   isReadOnly: true,
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
-    const filePath = resolveProjectPath(input.path);
+    const filePath = resolveProjectReadPath(input.path);
     if (!filePath) {
       return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
     }
@@ -102,7 +103,7 @@ export const PdfMetadataTool: Tool = {
   },
   isReadOnly: true,
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
-    const filePath = resolveProjectPath(input.path);
+    const filePath = resolveProjectReadPath(input.path);
     if (!filePath) {
       return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
     }
@@ -253,11 +254,10 @@ async function runPdfOcr(data: Buffer, sourcePath?: string): Promise<string> {
   }
 
   try {
-    const rendered = template.replaceAll('{input}', JSON.stringify(inputPath) ?? '""');
-    const tokens = rendered.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
+    const tokens = tokenizeCommandTemplate(template, { input: inputPath });
     if (tokens.length === 0) throw new Error('HARNESS_PDF_OCR_COMMAND is empty after substitution');
-    const command = stripQuotes(tokens[0]!);
-    const args = tokens.slice(1).map(stripQuotes);
+    const command = tokens[0]!;
+    const args = tokens.slice(1);
     const { stdout } = await execFileAsync(command, args, { maxBuffer: 10_000_000 });
     return stdout;
   } finally {
@@ -268,16 +268,23 @@ async function runPdfOcr(data: Buffer, sourcePath?: string): Promise<string> {
 function loadPdfjs(): typeof import('pdfjs-dist/legacy/build/pdf.js') {
   // pdfjs-dist legacy build (CJS) runs in Node without DOM. Loaded lazily so
   // module load stays cheap when the tools are unused.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require('pdfjs-dist/legacy/build/pdf.js');
-}
+  if (!process.env.JEST_WORKER_ID) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require('pdfjs-dist/legacy/build/pdf.js');
+  }
 
-function resolveProjectPath(value: unknown): string | null {
-  const raw = String(value ?? '');
-  const resolved = path.resolve(raw);
-  const relative = path.relative(process.cwd(), resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  return resolved;
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => {
+    const message = args.map((arg) => String(arg)).join(' ');
+    if (message.includes('Cannot polyfill `DOMMatrix`') || message.includes('Cannot polyfill `Path2D`')) return;
+    originalLog(...args);
+  };
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require('pdfjs-dist/legacy/build/pdf.js');
+  } finally {
+    console.log = originalLog;
+  }
 }
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
@@ -308,6 +315,22 @@ function stripQuotes(token: string): string {
     return token.slice(1, -1);
   }
   return token;
+}
+
+function tokenizeCommandTemplate(template: string, replacements: Record<string, string>): string[] {
+  const sentinels = Object.fromEntries(Object.keys(replacements).map((key) => [key, `__HARNESS_${key.toUpperCase()}_${Math.random().toString(36).slice(2)}__`])) as Record<string, string>;
+  let rendered = template;
+  for (const [key, sentinel] of Object.entries(sentinels)) {
+    rendered = rendered.replaceAll(`{${key}}`, sentinel);
+  }
+  const rawTokens = rendered.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
+  return rawTokens.map((token) => {
+    let value = stripQuotes(token);
+    for (const [key, sentinel] of Object.entries(sentinels)) {
+      value = value.replaceAll(sentinel, replacements[key] ?? '');
+    }
+    return value;
+  });
 }
 
 export interface PdfPageChunk {
@@ -369,7 +392,7 @@ export const PdfRenderPageTool: Tool = {
     if (!template) {
       return { success: false, output: 'HARNESS_PDF_RENDER_COMMAND is not set. Configure a renderer such as: pdftoppm -png -r 150 -f {page} -l {page} "{input}" "{output}"', error: 'render command not configured' };
     }
-    const filePath = resolveProjectPath(input.path);
+    const filePath = resolveProjectReadPath(input.path);
     if (!filePath) {
       return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
     }
@@ -391,14 +414,10 @@ export const PdfRenderPageTool: Tool = {
     }
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
     try {
-      const rendered = template
-        .replaceAll('{input}', filePath)
-        .replaceAll('{page}', String(pageNum))
-        .replaceAll('{output}', outputPath);
-      const tokens = rendered.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
+      const tokens = tokenizeCommandTemplate(template, { input: filePath, page: String(pageNum), output: outputPath });
       if (tokens.length === 0) return { success: false, output: 'HARNESS_PDF_RENDER_COMMAND is empty after substitution', error: 'empty command' };
-      const command = stripQuotes(tokens[0]!);
-      const args = tokens.slice(1).map(stripQuotes);
+      const command = tokens[0]!;
+      const args = tokens.slice(1);
       await execFileAsync(command, args, { maxBuffer: 10_000_000 });
       // Some renderers (e.g., pdftoppm) append a suffix like -1 to outputbase. Try to find a matching file.
       let finalPath = outputPath;
@@ -435,7 +454,7 @@ export const PdfExtractTablesTool: Tool = {
   },
   isReadOnly: true,
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
-    const filePath = resolveProjectPath(input.path);
+    const filePath = resolveProjectReadPath(input.path);
     if (!filePath) return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
     if (path.extname(filePath).toLowerCase() !== '.pdf') return { success: false, output: 'File does not have a .pdf extension', error: 'not a pdf' };
     const pageNum = Math.max(1, Math.floor(Number(input.page)));

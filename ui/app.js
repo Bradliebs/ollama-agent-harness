@@ -1,8 +1,23 @@
 marked.setOptions({ breaks: true, gfm: true });
 
 let isSending = false;
+function saveChatSession() {
+  window.HarnessChatHistory.saveChatSession({ chatMessages, currentChatId });
+}
+function loadPersistedChatSession() {
+  return window.HarnessChatHistory.loadPersistedChatSession();
+}
+function outboundChatHistory() {
+  return window.HarnessChatHistory.outboundChatHistory(chatMessages);
+}
 let chatMessages = [];
 let currentChatId = null;
+(() => {
+  const persisted = loadPersistedChatSession();
+  if (!persisted) return;
+  chatMessages = persisted.messages.filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content);
+  currentChatId = persisted.currentChatId || null;
+})();
 let lastSessionId = null;
 let pendingFiles = [];
 let permissionPollTimer = null;
@@ -10,9 +25,15 @@ let activeChatController = null;
 let activeTraceExport = null;
 let currentModelRouting = {};
 let currentMediaTools = {};
-let currentOutputValidation = { enabled: false, profile: 'oracle-prime', autoSelect: true };
+let currentOutputValidation = { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: false };
 let currentOutputValidationProfiles = [];
 let currentOutputValidationTemplates = [];
+let currentModelCatalog = { url: '', ttlHours: 24 };
+let currentExtensionActivation = { executablePlugins: false, allowedPluginNames: [], requirePermissionReview: true };
+const LAST_VALIDATION_PROMPT_KEY = 'harness.lastValidationPrompt';
+let lastValidationPrompt = (() => {
+  try { return localStorage.getItem(LAST_VALIDATION_PROMPT_KEY) || ''; } catch { return ''; }
+})();
 let currentWalkthrough = { completed: [] };
 let availableModels = [];
 
@@ -23,11 +44,23 @@ window.addEventListener('DOMContentLoaded', () => {
   loadFiles();
   loadSettings();
   loadOutputValidationTemplates();
+  loadDiscovery();
   loadAbout();
   loadTraceExports();
   loadRuntimeStorage();
   loadRecovery();
   startPermissionPolling();
+  // Restore prior chat session if the user reloaded mid-conversation.
+  if (chatMessages.length > 0) {
+    const chatArea = document.getElementById('chatArea');
+    const welcome = document.getElementById('welcome');
+    if (welcome) welcome.remove();
+    if (chatArea) for (const m of chatMessages) addMsg(m.role, m.content);
+    // Round-trip into the server-side /api/history store so a persisted-but-unsaved
+    // session also survives clearing localStorage. Save only if we have at least one
+    // assistant turn (autoSaveChat already requires >= 2 messages).
+    if (chatMessages.length >= 2) autoSaveChat();
+  }
   document.getElementById('chatInput').focus();
 });
 
@@ -104,7 +137,21 @@ function renderAttachmentHint() {
     hint.textContent = 'Audio attached. This model is not detected as audio-capable, so transcription tooling may be needed before chat analysis.';
     return;
   }
+  if (pendingFiles.length > 3) {
+    hint.innerHTML = esc(pendingFiles.length + ' files attached.') + ' <a href="#" onclick="suggestScanAllAttachments(event)" style="color:var(--accent)">Ask the model to scan all attachments</a> using <code>list_uploads</code>.';
+    return;
+  }
   hint.textContent = 'Attach text, data, image, or audio files. Harness shows the media type and passes the local file path into your message.';
+}
+
+function suggestScanAllAttachments(event) {
+  if (event && typeof event.preventDefault === 'function') event.preventDefault();
+  const inp = document.getElementById('chatInput');
+  if (!inp) return;
+  const suggestion = 'Call list_uploads first to enumerate every attached file, then read and summarize each one in turn. Use the exact path returned by list_uploads when you call file_read, pdf_read, image_analyze, or audio_transcribe.';
+  inp.value = inp.value ? inp.value.trim() + '\n\n' + suggestion : suggestion;
+  autoSize(inp);
+  inp.focus();
 }
 
 async function loadSettings() {
@@ -120,8 +167,10 @@ async function loadSettings() {
     renderContextDetails(s.context || { configuredMaxTokens: s.contextMaxTokens, detectedMaxTokens: null, effectiveMaxTokens: s.contextMaxTokens });
     currentModelRouting = s.modelRouting || {};
     currentMediaTools = s.mediaTools || {};
-    currentOutputValidation = s.outputValidation || { enabled: false, profile: 'oracle-prime', autoSelect: true };
+    currentOutputValidation = s.outputValidation || { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: false };
     currentOutputValidationProfiles = s.outputValidationProfiles || [];
+    currentModelCatalog = s.modelCatalog || { url: '', ttlHours: 24 };
+    currentExtensionActivation = s.extensionActivation || { executablePlugins: false, allowedPluginNames: [], requirePermissionReview: true };
     currentWalkthrough = s.walkthrough || { completed: [] };
     const small = document.getElementById('smallHelperModel');
     const def = document.getElementById('defaultHelperModel');
@@ -133,6 +182,12 @@ async function loadSettings() {
     const outputProfile = document.getElementById('outputValidationProfile');
     const outputToggle = document.getElementById('outputValidationToggle');
     const outputAutoToggle = document.getElementById('outputValidationAutoSelectToggle');
+    const outputSkipLowSignalToggle = document.getElementById('outputValidationSkipLowSignalToggle');
+    const catalogUrl = document.getElementById('modelCatalogUrl');
+    const catalogTtl = document.getElementById('modelCatalogTtlHours');
+    const extensionExecutableToggle = document.getElementById('extensionExecutableToggle');
+    const extensionPermissionReviewToggle = document.getElementById('extensionPermissionReviewToggle');
+    const extensionAllowedPluginNames = document.getElementById('extensionAllowedPluginNames');
     const firstRunHost = document.getElementById('firstRunOllamaHost');
     const firstRunVision = document.getElementById('firstRunVisionModel');
     const firstRunAudio = document.getElementById('firstRunAudioCommand');
@@ -143,6 +198,17 @@ async function loadSettings() {
     if (vision) vision.value = currentMediaTools.visionModel || '';
     if (audio) audio.value = currentMediaTools.audioTranscribeCommand || '';
     if (pdfOcr) pdfOcr.value = currentMediaTools.pdfOcrCommand || '';
+    if (catalogUrl) catalogUrl.value = currentModelCatalog.url || '';
+    if (catalogTtl) catalogTtl.value = currentModelCatalog.ttlHours || 24;
+    if (extensionExecutableToggle) extensionExecutableToggle.classList.toggle('active', currentExtensionActivation.executablePlugins === true);
+    if (extensionPermissionReviewToggle) extensionPermissionReviewToggle.classList.toggle('active', currentExtensionActivation.requirePermissionReview !== false);
+    if (extensionAllowedPluginNames) extensionAllowedPluginNames.value = (currentExtensionActivation.allowedPluginNames || []).join(', ');
+    const uploadsDirInput = document.getElementById('uploadsDir');
+    if (uploadsDirInput) uploadsDirInput.value = currentMediaTools.uploadsDir || '';
+    const autoPruneInput = document.getElementById('uploadsAutoPruneDays');
+    if (autoPruneInput) autoPruneInput.value = currentMediaTools.uploadsAutoPruneDays || 0;
+    const lastPrunedEl = document.getElementById('uploadsLastPrunedAt');
+    if (lastPrunedEl) lastPrunedEl.textContent = currentMediaTools.uploadsLastPrunedAt ? 'Last pruned ' + new Date(currentMediaTools.uploadsLastPrunedAt).toLocaleString() : 'Never pruned';
     renderOutputValidationProfileOptions(outputProfile, currentOutputValidationProfiles, currentOutputValidation.profile || 'oracle-prime');
     const profilesEditor = document.getElementById('outputValidationProfilesJson');
     if (profilesEditor) {
@@ -155,6 +221,7 @@ async function loadSettings() {
     refreshWalkthroughChecklist();
     if (outputToggle) outputToggle.classList.toggle('active', currentOutputValidation.enabled === true);
     if (outputAutoToggle) outputAutoToggle.classList.toggle('active', currentOutputValidation.autoSelect !== false);
+    if (outputSkipLowSignalToggle) outputSkipLowSignalToggle.classList.toggle('active', currentOutputValidation.skipOnLowSignal === true);
     if (firstRunHost) firstRunHost.value = s.ollamaHost || 'http://localhost:11434';
     if (firstRunVision) firstRunVision.value = currentMediaTools.visionModel || '';
     if (firstRunAudio) firstRunAudio.value = currentMediaTools.audioTranscribeCommand || '';
@@ -268,7 +335,8 @@ function renderAboutPanel(data) {
     ['Manifest', manifestLink],
     ['Release', releaseLink],
   ];
-  panel.innerHTML = '<div class="about-grid">' + rows.map(([label, value]) => '<div><strong>' + esc(label) + '</strong> ' + String(value).replace(/^((?!<a ).)*$/, (text) => esc(text)) + '</div>').join('') + '</div>';
+  const validationDoc = '<div class="trace-detail" style="margin-top:8px"><strong>Validation profiles:</strong> Auto-select picks <code>oracle-prime</code> / <code>factual-answer</code> / <code>coding-answer</code> / <code>tool-result-summary</code> from prompt keywords. Vague prompts default to <code>oracle-prime</code> and can be skipped via <em>Skip validation on low-signal prompts</em>. See <code>docs/VALIDATION-PROFILES.md</code> for the full rules.</div>';
+  panel.innerHTML = '<div class="about-grid">' + rows.map(([label, value]) => '<div><strong>' + esc(label) + '</strong> ' + String(value).replace(/^((?!<a ).)*$/, (text) => esc(text)) + '</div>').join('') + '</div>' + validationDoc;
 }
 
 async function verifyReleaseAsset() {
@@ -342,12 +410,12 @@ function ensureRightPanelVisible() {
 function renderOutputValidationProfileOptions(select, profiles, selected) {
   if (!select) return;
   const knownProfiles = profiles.length ? profiles : [
-    { profile: 'oracle-prime', label: 'Oracle Prime' },
-    { profile: 'factual-answer', label: 'Factual Answer' },
-    { profile: 'coding-answer', label: 'Coding Answer' },
-    { profile: 'tool-result-summary', label: 'Tool Result Summary' },
+    { profile: 'oracle-prime', label: 'Oracle Prime', description: 'Full reasoning contract.' },
+    { profile: 'factual-answer', label: 'Factual Answer', description: 'Direct factual answers.' },
+    { profile: 'coding-answer', label: 'Coding Answer', description: 'Engineering summaries.' },
+    { profile: 'tool-result-summary', label: 'Tool Result Summary', description: 'Command/tool summaries.' },
   ];
-  select.innerHTML = knownProfiles.map((profile) => '<option value="' + escAttr(profile.profile) + '">' + esc(profile.label || profile.profile) + '</option>').join('');
+  select.innerHTML = knownProfiles.map((profile) => '<option value="' + escAttr(profile.profile) + '" title="' + escAttr(profile.description || profile.label || profile.profile) + '">' + esc(profile.label || profile.profile) + '</option>').join('');
   select.value = selected;
 }
 
@@ -529,12 +597,109 @@ function updateRoutingSetting(k, v) {
   updateSetting('modelRouting', next);
 }
 
+function updateModelCatalogSetting(k, v) {
+  const next = { ...currentModelCatalog };
+  if (k === 'ttlHours') {
+    const parsed = Number(v);
+    next.ttlHours = Number.isFinite(parsed) ? Math.max(1, Math.min(720, Math.floor(parsed))) : 24;
+  } else {
+    next[k] = String(v || '').trim();
+  }
+  currentModelCatalog = next;
+  updateSetting('modelCatalog', next).then(loadDiscovery);
+}
+
+function toggleExtensionExecutablePlugins(el) {
+  currentExtensionActivation = { ...currentExtensionActivation, executablePlugins: !currentExtensionActivation.executablePlugins };
+  if (el) el.classList.toggle('active', currentExtensionActivation.executablePlugins === true);
+  updateSetting('extensionActivation', currentExtensionActivation).then(loadDiscovery);
+}
+
+function toggleExtensionPermissionReview(el) {
+  currentExtensionActivation = { ...currentExtensionActivation, requirePermissionReview: currentExtensionActivation.requirePermissionReview === false };
+  if (el) el.classList.toggle('active', currentExtensionActivation.requirePermissionReview !== false);
+  updateSetting('extensionActivation', currentExtensionActivation).then(loadDiscovery);
+}
+
+function updateExtensionAllowedPlugins(value) {
+  currentExtensionActivation = { ...currentExtensionActivation, allowedPluginNames: String(value || '').split(',').map((item) => item.trim()).filter(Boolean) };
+  updateSetting('extensionActivation', currentExtensionActivation).then(loadDiscovery);
+}
+
 function updateMediaToolSetting(k, v) {
   const next = { ...currentMediaTools };
   if (String(v).trim()) next[k] = String(v).trim();
   else delete next[k];
   currentMediaTools = next;
   updateSetting('mediaTools', next);
+}
+
+async function runUploadsCleanup() {
+  const status = document.getElementById('uploadsCleanupStatus');
+  const daysInput = document.getElementById('uploadsPruneDays');
+  const days = Math.max(0, Math.min(3650, parseInt(daysInput?.value || '30', 10) || 0));
+  if (status) {
+    status.classList.remove('initial-hidden');
+    status.textContent = 'Pruning uploads older than ' + days + ' day(s)…';
+  }
+  try {
+    const response = await fetch('/api/uploads/cleanup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ olderThanDays: days }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Cleanup failed');
+    const removed = Array.isArray(data.removed) ? data.removed.length : 0;
+    const bytes = data.removedBytes || 0;
+    if (status) status.textContent = 'Removed ' + removed + ' file(s), ' + bytes + ' bytes.';
+    await loadSettings();
+    await loadUploadsList();
+  } catch (error) {
+    if (status) status.textContent = 'Cleanup failed: ' + (error.message || error);
+  }
+}
+
+async function loadUploadsList() {
+  const el = document.getElementById('uploadsList');
+  if (!el) return;
+  el.textContent = 'Loading...';
+  try {
+    const response = await fetch('/api/uploads');
+    const data = await response.json();
+    const files = Array.isArray(data.files) ? data.files : [];
+    if (files.length === 0) {
+      el.textContent = '(no uploads in ' + (data.directory || 'uploads directory') + ')';
+      return;
+    }
+    const totalKb = ((data.totalBytes || 0) / 1024).toFixed(1);
+    let html = '<div>' + esc(data.directory || '') + ' · ' + files.length + ' file(s) · ' + totalKb + ' KB</div>';
+    html += '<table class="uploads-list-table"><thead><tr><th>Name</th><th>Size</th><th>Modified</th><th></th></tr></thead><tbody>';
+    for (const file of files) {
+      const sizeKb = (file.size / 1024).toFixed(1);
+      html += '<tr><td>' + esc(file.name) + '</td><td>' + sizeKb + ' KB</td><td>' + esc(new Date(file.modified).toLocaleString()) + '</td>' +
+        '<td><button class="btn-sm" onclick="deleteUpload(' + JSON.stringify(file.name).replace(/"/g, '&quot;') + ')">Delete</button></td></tr>';
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  } catch (error) {
+    el.textContent = 'Failed to load uploads: ' + (error.message || error);
+  }
+}
+
+async function deleteUpload(name) {
+  if (!name) return;
+  if (!confirm('Delete upload "' + name + '"?')) return;
+  try {
+    const response = await fetch('/api/uploads/' + encodeURIComponent(name), { method: 'DELETE' });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || ('HTTP ' + response.status));
+    }
+    await loadUploadsList();
+  } catch (error) {
+    alert('Delete failed: ' + (error.message || error));
+  }
 }
 
 function updateOutputValidationSetting() {
@@ -552,6 +717,12 @@ function toggleOutputValidation(el) {
 function toggleOutputValidationAutoSelect(el) {
   currentOutputValidation = { ...currentOutputValidation, autoSelect: currentOutputValidation.autoSelect === false };
   if (el) el.classList.toggle('active', currentOutputValidation.autoSelect !== false);
+  updateSetting('outputValidation', currentOutputValidation);
+}
+
+function toggleOutputValidationSkipLowSignal(el) {
+  currentOutputValidation = { ...currentOutputValidation, skipOnLowSignal: !currentOutputValidation.skipOnLowSignal };
+  if (el) el.classList.toggle('active', currentOutputValidation.skipOnLowSignal === true);
   updateSetting('outputValidation', currentOutputValidation);
 }
 
@@ -829,8 +1000,24 @@ function mediaIcon(file) {
   return '📄';
 }
 function removeAttached(i) { pendingFiles.splice(i, 1); showAttached(); }
-function handleKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }
-function autoSize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 180) + 'px'; }
+function handleKey(e) {
+  // Slash palette intercepts navigation keys when visible.
+  if (slashPaletteState.visible) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); moveSlashSelection(1); return; }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); moveSlashSelection(-1); return; }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); applySelectedSlashCommand(); return; }
+    if (e.key === 'Escape')    { e.preventDefault(); hideSlashPalette(); return; }
+    if (e.key === 'Tab')       { e.preventDefault(); applySelectedSlashCommand(); return; }
+  }
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+function autoSize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 180) + 'px';
+  // Re-evaluate slash palette every keystroke so it appears as soon as the
+  // user types `/` and disappears the moment the prefix becomes invalid.
+  maybeShowSlashPalette(el.value);
+}
 function sendTip(el) { document.getElementById('chatInput').value = el.textContent; sendMessage(); }
 
 async function sendMessage() {
@@ -841,21 +1028,28 @@ async function sendMessage() {
   const inp = document.getElementById('chatInput');
   let text = inp.value.trim();
   const model = document.getElementById('modelSelect').value;
+  let attachmentsForTurn = [];
   if (pendingFiles.length > 0) {
-    const fileInfo = pendingFiles.map((f) => '[Attached ' + mediaKind(f) + ': ' + f.name + ' at ' + f.path + ']').join('\n');
+    attachmentsForTurn = pendingFiles.map((f) => ({ name: f.name, path: f.path, mediaKind: mediaKind(f), size: f.size, mimeType: f.mimeType }));
+    const fileInfo = pendingFiles.map((f) => '- ' + mediaKind(f) + ': name="' + f.name + '" path="' + f.path + '"').join('\n');
     const mediaConfig = '[Media tools: visionModel=' + (currentMediaTools.visionModel || model || 'not configured') + '; audioTranscribeCommand=' + (currentMediaTools.audioTranscribeCommand ? 'configured' : 'not configured') + '; pdfOcrCommand=' + (currentMediaTools.pdfOcrCommand ? 'configured' : 'not configured') + ']';
-    text = (text ? text + '\n\n' : '') + '[Selected model: ' + model + ']\n' + mediaConfig + '\n' + fileInfo + '\n\nPlease analyze the attached file(s). For image attachments, use image_analyze with the configured vision model when available, otherwise use the selected model if it supports vision. For audio attachments, use audio_transcribe first, then analyze the transcript. For PDF attachments, use pdf_read (and pdf_metadata when document properties matter); set ocr=true if the first read returns no extractable text. If a required media tool is not configured, say that clearly.';
+    text = (text ? text + '\n\n' : '') + '[Selected model: ' + model + ']\n' + mediaConfig + '\n[Attached files]\n' + fileInfo + '\n\nIMPORTANT: When you call file_read, pdf_read, image_analyze, or audio_transcribe for an attachment, you MUST pass the exact "path" string above (do not strip the .harness/uploads/ prefix and do not pass only the filename). Call list_uploads first if you are unsure which attachments are available. Please analyze the attached file(s). For image attachments, use image_analyze with the configured vision model when available, otherwise use the selected model if it supports vision. For audio attachments, use audio_transcribe first, then analyze the transcript. For PDF attachments, use pdf_read (and pdf_metadata when document properties matter); set ocr=true if the first read returns no extractable text. If a required media tool is not configured, say that clearly.';
     pendingFiles = [];
     showAttached();
   }
 
   if (!text || isSending) return;
   if (!model) { alert('Select a model first.'); return; }
-  await maybeSuggestOutputValidationProfile(text);
+  const skipOnceEl = document.getElementById('skipValidationOnce');
+  const skipValidationOnce = !!(skipOnceEl && skipOnceEl.checked);
+  if (!skipValidationOnce) await maybeSuggestOutputValidationProfile(text);
+  lastValidationPrompt = text;
+  try { localStorage.setItem(LAST_VALIDATION_PROMPT_KEY, text.slice(0, 500)); } catch {}
   const welcome = document.getElementById('welcome');
   if (welcome) welcome.remove();
   addMsg('user', text);
   chatMessages.push({ role: 'user', content: text });
+  saveChatSession();
   inp.value = '';
   inp.style.height = 'auto';
   isSending = true;
@@ -866,7 +1060,7 @@ async function sendMessage() {
   sendBtn.title = 'Stop';
   const thinkEl = addThinking();
   try {
-    const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text, model }), signal: activeChatController.signal });
+    const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text, model, skipValidation: skipValidationOnce, history: outboundChatHistory(), attachments: attachmentsForTurn }), signal: activeChatController.signal });
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let assistantText = '';
@@ -899,6 +1093,26 @@ async function sendMessage() {
             break;
           case 'tool_result':
             if (toolBox) appendToolItem(toolBox, ev.result.success ? '✅' : '❌', '', ev.result.output.slice(0, 120), !ev.result.success);
+            refreshSkillSurfacesAfterToolResult(ev.call, ev.result, toolBox);
+            break;
+          case 'usage':
+            // Fold per-LLM-call usage into the running session totals (topbar
+            // HUD) and stash the latest values so we can paint the assistant
+            // message footer once the turn finishes.
+            sessionUsage.calls += 1;
+            sessionUsage.promptTokens += ev.promptTokens || 0;
+            sessionUsage.completionTokens += ev.completionTokens || 0;
+            sessionUsage.totalDurationMs += ev.totalDurationMs || 0;
+            sessionUsage.lastModel = ev.model;
+            updateSessionHud();
+            // Per-message footer reflects the most recent LLM call only —
+            // multi-turn sequences accumulate into the topbar instead.
+            currentTurnUsage = {
+              model: ev.model,
+              promptTokens: ev.promptTokens || 0,
+              completionTokens: ev.completionTokens || 0,
+              totalDurationMs: ev.totalDurationMs || 0,
+            };
             break;
           case 'context':
             updateContextHud(ev.pressure, ev.strategy, ev.qualityScore, ev.autosaved);
@@ -915,6 +1129,22 @@ async function sendMessage() {
             toolBox = ensureToolBox(toolBox);
             appendOutputValidationProfileItem(toolBox, ev);
             break;
+          case 'history_trimmed':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '✂️', 'history trimmed', ev.droppedTurns + ' older turn(s) dropped to fit ~' + ev.historyTokenBudget + '-token budget · ' + ev.keptTurns + ' kept', false);
+            break;
+          case 'uploads_fallback':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '⚠️', 'uploads fallback', (ev.tool ? ev.tool + ' ' : '') + 'requested "' + ev.requested + '" → resolved to ' + ev.resolved, false);
+            break;
+          case 'uploads_fallback_summary':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '⚠️', 'uploads fallback summary', ev.suppressed + ' duplicate event(s) suppressed across ' + ev.unique + ' unique fallback(s)', false);
+            break;
+          case 'uploads_fallback_advice':
+            toolBox = ensureToolBox(toolBox);
+            appendUploadsFallbackAdvice(toolBox, ev);
+            break;
           case 'error':
             thinkEl.remove();
             addMsg('assistant', '⚠️ ' + ev.message);
@@ -924,6 +1154,11 @@ async function sendMessage() {
     }
     if (thinkEl.parentNode) thinkEl.remove();
     if (assistantText) chatMessages.push({ role: 'assistant', content: assistantText });
+    if (msgEl && currentTurnUsage) {
+      attachMessageMeta(msgEl, currentTurnUsage);
+      currentTurnUsage = null;
+    }
+    saveChatSession();
     autoSaveChat();
     loadSettings();
   } catch (e) {
@@ -936,7 +1171,34 @@ async function sendMessage() {
   document.getElementById('sendBtn').disabled = false;
   document.getElementById('sendBtn').textContent = '➤';
   document.getElementById('sendBtn').title = 'Send';
+  const skipOnceReset = document.getElementById('skipValidationOnce');
+  if (skipOnceReset) skipOnceReset.checked = false;
   document.getElementById('chatInput').focus();
+}
+
+function refreshSkillSurfacesAfterToolResult(call, result, toolBox) {
+  if (!result || result.success !== true || !call || !call.name) return;
+  const skillMutatingTools = ['create_skill', 'promote_pattern', 'improve_skill'];
+  const output = String(result.output || '');
+  const wroteSkillFile = /(?:^|[\\/.])\.harness[\\/]skills[\\/].*SKILL\.md/i.test(output);
+  if (!skillMutatingTools.includes(call.name) && !wroteSkillFile) return;
+  loadSkills();
+  loadDiscovery();
+  appendOpenSkillsAction(toolBox);
+}
+
+function appendOpenSkillsAction(toolBox) {
+  if (!toolBox) return;
+  const item = document.createElement('div');
+  item.className = 'tool-item';
+  item.innerHTML = '<span>↗</span><span class="tool-name">skill saved</span><span class="tool-detail">Available in the Skills tab.</span><button id="openSkillsAfterSaveBtn" class="btn-sm" onclick="openSkillsTab()">Open Skills</button>';
+  toolBox.appendChild(item);
+  scrollBottom();
+}
+
+function openSkillsTab() {
+  const tab = Array.from(document.querySelectorAll('.tab')).find((element) => element.getAttribute('onclick')?.includes("showLeftTab('skills'"));
+  if (tab) showLeftTab('skills', tab);
 }
 
 async function maybeSuggestOutputValidationProfile(text) {
@@ -961,6 +1223,27 @@ function formatOutputValidation(validation) {
   return validation.profile + ' ' + validation.status + ' · score ' + validation.score + firstFinding;
 }
 
+function appendUploadsFallbackAdvice(toolBox, event) {
+  const item = document.createElement('div');
+  item.className = 'tool-item';
+  const tools = Array.isArray(event.tools) && event.tools.length > 0 ? event.tools.join(', ') : 'a tool';
+  const findingMsg = (event.message || 'Bare-filename attachment access detected.') + ' Tools affected: ' + tools + '.';
+  item.innerHTML = '<span>🧪</span><span class="tool-name">attachment usage</span>' +
+    '<span class="validation-groups">' +
+    '<strong>uploads-fallback warn · ' + esc(String(event.unique || 0)) + ' unique</strong>' +
+    '<div class="validation-group">WARN: bare-filename-attachment - ' + esc(findingMsg) + ' Try: Call list_uploads first or pass the exact .harness/uploads/ path.</div>' +
+    '</span>' +
+    '<span class="profile-feedback" style="margin-left:6px">' +
+    '<button class="btn-sm" data-vote="dismiss" title="Acknowledge and hide this advice for this turn">Dismiss</button>' +
+    '</span>';
+  const dismissBtn = item.querySelector('button[data-vote="dismiss"]');
+  if (dismissBtn) {
+    dismissBtn.addEventListener('click', () => { item.style.display = 'none'; });
+  }
+  toolBox.appendChild(item);
+  scrollBottom();
+}
+
 function appendOutputValidationItem(toolBox, validation) {
   const item = document.createElement('div');
   item.className = 'tool-item' + (validation.status === 'fail' ? ' error' : '');
@@ -980,9 +1263,39 @@ function appendOutputValidationItem(toolBox, validation) {
 function appendOutputValidationProfileItem(toolBox, event) {
   const item = document.createElement('div');
   item.className = 'tool-item';
-  item.innerHTML = '<span>🧭</span><span class="tool-name">validation profile</span><span class="tool-detail">Auto-selected ' + esc(event.profile || 'default') + '. ' + esc(event.reason || '') + '</span>';
+  const reason = event.reason || '';
+  const label = /no strong signal|validation skipped/i.test(reason) ? 'Defaulted to ' : 'Auto-selected ';
+  const profile = event.profile || 'default';
+  const source = event.source || 'auto-selected';
+  item.innerHTML = '<span>🧭</span><span class="tool-name">validation profile</span>' +
+    '<span class="tool-detail">' + label + esc(profile) + '. ' + esc(reason) + '</span>' +
+    '<span class="profile-feedback" style="margin-left:6px">' +
+    '<button class="btn-sm" data-vote="up" title="This profile fits the prompt">👍</button>' +
+    '<button class="btn-sm" data-vote="down" title="This profile does not fit the prompt">👎</button>' +
+    '</span>';
+  const wrapper = item.querySelector('.profile-feedback');
+  if (wrapper) {
+    wrapper.querySelectorAll('button').forEach((button) => {
+      button.addEventListener('click', () => sendProfileFeedback(button, profile, button.getAttribute('data-vote'), source, reason));
+    });
+  }
   toolBox.appendChild(item);
   scrollBottom();
+}
+
+async function sendProfileFeedback(button, profile, vote, selectionSource, selectionReason) {
+  const wrapper = button.parentElement;
+  if (wrapper) wrapper.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+  try {
+    await fetch('/api/output-validation/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile, vote, selectionSource, selectionReason, prompt: lastValidationPrompt }),
+    });
+    if (wrapper) wrapper.innerHTML = '<span class="tool-detail">' + (vote === 'up' ? 'Thanks — recorded as good.' : 'Thanks — recorded as a miss.') + '</span>';
+  } catch {
+    if (wrapper) wrapper.querySelectorAll('button').forEach((b) => { b.disabled = false; });
+  }
 }
 
 function ensureToolBox(toolBox) {
@@ -1117,6 +1430,212 @@ function renderMd(el, text) {
 function addThinking() { const area = document.getElementById('chatArea'); const el = document.createElement('div'); el.className = 'thinking'; el.innerHTML = '<div class="dots"><span></span><span></span><span></span></div> Thinking...'; area.appendChild(el); scrollBottom(); return el; }
 function scrollBottom() { const a = document.getElementById('chatArea'); a.scrollTop = a.scrollHeight; }
 
+// ─── Per-message metadata footer + session totals HUD ──────────────────
+// Folds the new `usage` SSE event into a small dim footer under the
+// finished assistant message and a running total in the topbar HUD.
+// All accumulators reset when the user starts a new chat (`newChat`).
+
+let sessionUsage = { calls: 0, promptTokens: 0, completionTokens: 0, totalDurationMs: 0, lastModel: null };
+let currentTurnUsage = null;
+
+function resetSessionUsage() {
+  sessionUsage = { calls: 0, promptTokens: 0, completionTokens: 0, totalDurationMs: 0, lastModel: null };
+  currentTurnUsage = null;
+  updateSessionHud();
+}
+
+function formatTokensCompact(n) {
+  if (!n) return '0t';
+  if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'kt';
+  return n + 't';
+}
+
+function formatDurationCompact(ms) {
+  if (!ms) return '0s';
+  if (ms < 1000) return ms + 'ms';
+  if (ms < 60000) return (ms / 1000).toFixed(ms < 10000 ? 1 : 0) + 's';
+  const m = Math.floor(ms / 60000);
+  const s = Math.round((ms % 60000) / 1000);
+  return m + 'm' + (s ? s + 's' : '');
+}
+
+function updateSessionHud() {
+  const hud = document.getElementById('sessionHud');
+  const tokensEl = document.getElementById('sessionHudTokens');
+  const timeEl = document.getElementById('sessionHudTime');
+  if (!hud || !tokensEl || !timeEl) return;
+  const totalTokens = (sessionUsage.promptTokens || 0) + (sessionUsage.completionTokens || 0);
+  tokensEl.textContent = formatTokensCompact(totalTokens);
+  timeEl.textContent = formatDurationCompact(sessionUsage.totalDurationMs || 0);
+  hud.classList.toggle('empty', sessionUsage.calls === 0);
+  hud.title = sessionUsage.calls === 0
+    ? 'Session totals (this conversation) — no LLM calls yet'
+    : 'Session totals: ' + sessionUsage.calls + ' call(s) · '
+      + sessionUsage.promptTokens + ' prompt tokens · '
+      + sessionUsage.completionTokens + ' completion tokens · '
+      + formatDurationCompact(sessionUsage.totalDurationMs)
+      + (sessionUsage.lastModel ? ' · last model: ' + sessionUsage.lastModel : '');
+}
+
+function attachMessageMeta(msgEl, usage) {
+  if (!msgEl || !usage) return;
+  const body = msgEl.querySelector('.msg-body');
+  if (!body) return;
+  // Replace any prior footer to stay idempotent if the loop somehow yields
+  // a second usage event for the same message.
+  const existing = body.querySelector('.msg-meta');
+  if (existing) existing.remove();
+  const meta = document.createElement('div');
+  meta.className = 'msg-meta';
+  const tokensTotal = (usage.promptTokens || 0) + (usage.completionTokens || 0);
+  meta.innerHTML =
+    '<span class="meta-pill">' + esc(usage.model || '?') + '</span>'
+    + '<span class="meta-sep">·</span>'
+    + '<span title="' + (usage.promptTokens || 0) + ' prompt + ' + (usage.completionTokens || 0) + ' completion">'
+    + formatTokensCompact(tokensTotal) + '</span>'
+    + '<span class="meta-sep">·</span>'
+    + '<span>' + formatDurationCompact(usage.totalDurationMs || 0) + '</span>';
+  body.appendChild(meta);
+}
+
+// ─── Slash command palette ─────────────────────────────────────────────
+// Opens when the composer's first character is `/`. Up/down to navigate,
+// Enter to apply (replaces the input), Esc/Tab also work. Commands are
+// declared once here and map to existing UI actions.
+
+const SLASH_COMMANDS = [
+  { cmd: '/files',       desc: 'Open the Files tab',
+    apply: () => { hideSlashPalette(); openLeftTabByName('files'); },
+    fallback: '' },
+  { cmd: '/skills',      desc: 'Open the Skills tab',
+    apply: () => { hideSlashPalette(); openSkillsTab(); },
+    fallback: '' },
+  { cmd: '/memory',      desc: 'Open the Memory tab',
+    apply: () => { hideSlashPalette(); openLeftTabByName('memory'); },
+    fallback: '' },
+  { cmd: '/history',     desc: 'Open the History tab',
+    apply: () => { hideSlashPalette(); openLeftTabByName('history'); },
+    fallback: '' },
+  { cmd: '/learning',    desc: 'Open the Learning (🧠) tab',
+    apply: () => { hideSlashPalette(); openLeftTabByName('learning'); },
+    fallback: '' },
+  { cmd: '/discover',    desc: 'Open the Discover tab',
+    apply: () => { hideSlashPalette(); openLeftTabByName('discover'); },
+    fallback: '' },
+  { cmd: '/palace',      desc: 'Open the Memory Palace tab',
+    apply: () => { hideSlashPalette(); openLeftTabByName('palace'); },
+    fallback: '' },
+  { cmd: '/snapshots',   desc: 'Open the Snapshots tab (skills + memory backups)',
+    apply: () => { hideSlashPalette(); openLeftTabByName('snapshots'); },
+    fallback: '' },
+  { cmd: '/rag',         desc: 'Open the Local RAG tab (build + search local indexes)',
+    apply: () => { hideSlashPalette(); openLeftTabByName('rag'); },
+    fallback: '' },
+  { cmd: '/tools',       desc: 'Open the Local Tools dashboard (status of everything)',
+    apply: () => { hideSlashPalette(); openLeftTabByName('tools'); },
+    fallback: '' },
+  { cmd: '/voice',       desc: 'Toggle voice input (browser STT)',
+    apply: () => { hideSlashPalette(); toggleVoiceInput(); },
+    fallback: '' },
+  { cmd: '/new',         desc: 'Start a new chat (clears the current conversation)',
+    apply: () => { hideSlashPalette(); newChat(); },
+    fallback: '' },
+  { cmd: '/export',      desc: 'Export the current chat as Markdown',
+    apply: () => { hideSlashPalette(); exportChat(); },
+    fallback: '' },
+  { cmd: '/settings',    desc: 'Toggle the settings panel',
+    apply: () => { hideSlashPalette(); toggleRight(); },
+    fallback: '' },
+  { cmd: '/stop',        desc: 'Stop the current agent run',
+    apply: () => { hideSlashPalette(); if (activeChatController) activeChatController.abort(); },
+    fallback: '' },
+];
+
+const slashPaletteState = { visible: false, index: 0, filtered: [] };
+
+function maybeShowSlashPalette(value) {
+  if (!value || !value.startsWith('/')) {
+    if (slashPaletteState.visible) hideSlashPalette();
+    return;
+  }
+  // Hide once the user types past the command name (a space marks args mode).
+  if (value.includes(' ')) { hideSlashPalette(); return; }
+  const prefix = value.toLowerCase();
+  const filtered = SLASH_COMMANDS.filter((c) => c.cmd.startsWith(prefix));
+  if (filtered.length === 0) { hideSlashPalette(); return; }
+  slashPaletteState.filtered = filtered;
+  slashPaletteState.index = 0;
+  slashPaletteState.visible = true;
+  renderSlashPalette();
+}
+
+function renderSlashPalette() {
+  const palette = document.getElementById('slashPalette');
+  const list = document.getElementById('slashPaletteList');
+  if (!palette || !list) return;
+  palette.classList.remove('hidden');
+  list.innerHTML = '';
+  slashPaletteState.filtered.forEach((c, i) => {
+    const item = document.createElement('div');
+    item.className = 'slash-palette-item' + (i === slashPaletteState.index ? ' active' : '');
+    item.setAttribute('role', 'option');
+    item.innerHTML = '<span class="sp-cmd">' + esc(c.cmd) + '</span><span class="sp-desc">' + esc(c.desc) + '</span>';
+    item.onmouseenter = () => { slashPaletteState.index = i; renderSlashPalette(); };
+    item.onclick = () => applySelectedSlashCommand();
+    list.appendChild(item);
+  });
+}
+
+function moveSlashSelection(delta) {
+  if (!slashPaletteState.visible) return;
+  const n = slashPaletteState.filtered.length;
+  if (n === 0) return;
+  slashPaletteState.index = (slashPaletteState.index + delta + n) % n;
+  renderSlashPalette();
+}
+
+function applySelectedSlashCommand() {
+  if (!slashPaletteState.visible) return;
+  const choice = slashPaletteState.filtered[slashPaletteState.index];
+  if (!choice) return;
+  const inp = document.getElementById('chatInput');
+  if (inp) { inp.value = choice.fallback || ''; autoSize(inp); inp.focus(); }
+  try { choice.apply(); } catch (e) { console.warn('slash command failed', e); }
+}
+
+function hideSlashPalette() {
+  slashPaletteState.visible = false;
+  slashPaletteState.filtered = [];
+  const palette = document.getElementById('slashPalette');
+  if (palette) palette.classList.add('hidden');
+}
+
+function openLeftTabByName(name) {
+  // Maps friendly slash-command names to (a) the dispatch key showLeftTab
+  // expects and (b) a substring that uniquely identifies the tab DOM node
+  // (text content or emoji). Falls back to a literal text match for
+  // unknown names so adding new tabs doesn't require touching this map.
+  const TAB_MAP = {
+    history: { key: 'history', text: 'chats' },
+    chats: { key: 'history', text: 'chats' },
+    files: { key: 'files', text: 'files' },
+    skills: { key: 'skills', text: 'skills' },
+    memory: { key: 'memory', text: 'memory' },
+    palace: { key: 'palace', text: 'palace' },
+    discover: { key: 'discovery', text: 'discover' },
+    discovery: { key: 'discovery', text: 'discover' },
+    learning: { key: 'learning', text: 'learning' },
+    snapshots: { key: 'snapshots', text: 'snaps' },
+    snaps: { key: 'snapshots', text: 'snaps' },
+    rag: { key: 'rag', text: 'rag' },
+    tools: { key: 'tools', text: 'tools' },
+  };
+  const lookup = TAB_MAP[name.toLowerCase()] || { key: name, text: name.toLowerCase() };
+  const tabs = Array.from(document.querySelectorAll('.tab'));
+  const tab = tabs.find((t) => (t.textContent || '').toLowerCase().includes(lookup.text.toLowerCase()));
+  if (tab) showLeftTab(lookup.key, tab);
+}
+
 async function loadHistory() {
   try {
     const r = await fetch('/api/history');
@@ -1133,12 +1652,46 @@ async function loadHistory() {
   } catch {}
 }
 
-async function loadChat(id) { try { const r = await fetch('/api/history/' + id); const d = await r.json(); currentChatId = id; chatMessages = d.messages || []; document.getElementById('chatArea').innerHTML = ''; for (const m of chatMessages) addMsg(m.role, m.content); loadHistory(); } catch {} }
-async function autoSaveChat() { if (chatMessages.length < 2) return; const title = chatMessages[0].content.slice(0, 60); try { const r = await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: currentChatId, title, messages: chatMessages }) }); const d = await r.json(); if (!currentChatId) currentChatId = d.id; loadHistory(); } catch {} }
+async function loadChat(id) { try { const r = await fetch('/api/history/' + id); const d = await r.json(); currentChatId = id; chatMessages = d.messages || []; document.getElementById('chatArea').innerHTML = ''; for (const m of chatMessages) addMsg(m.role, m.content); saveChatSession(); loadHistory(); } catch {} }
+async function autoSaveChat() { if (chatMessages.length < 2) return; const title = chatMessages[0].content.slice(0, 60); try { const r = await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: currentChatId, title, messages: chatMessages }) }); const d = await r.json(); if (!currentChatId) currentChatId = d.id; saveChatSession(); loadHistory(); } catch {} }
 async function deleteChat(id) { await fetch('/api/history/' + id, { method: 'DELETE' }); if (id === currentChatId) newChat(); loadHistory(); }
-function newChat() { currentChatId = null; chatMessages = []; document.getElementById('chatArea').innerHTML = welcomeMarkup(); renderModelCapabilityHint(); loadSettings(); loadHistory(); }
+function newChat() { currentChatId = null; chatMessages = []; resetSessionUsage(); saveChatSession(); document.getElementById('chatArea').innerHTML = welcomeMarkup(); renderModelCapabilityHint(); loadSettings(); loadHistory(); }
 function welcomeMarkup() {
-  return '<div class="welcome" id="welcome"><h2>Welcome to Harness</h2><p>Pick a model above, then ask me anything. I can read files, write code, run commands, search your project, create skills, and remember things across sessions.</p><div class="beginner-guide" id="beginnerGuide"><div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div><div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div><div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div></div><div class="walkthrough-checklist" id="walkthroughChecklist">' + walkthroughChecklistMarkup() + '</div><div class="first-run-setup" id="firstRunSetup"><h3>First-run setup</h3><p>Set the local Ollama host and optional media helpers before your first chat.</p><div class="first-run-grid"><div><label for="firstRunOllamaHost">Ollama host</label><input id="firstRunOllamaHost" type="text" value="http://localhost:11434"></div><div><label for="firstRunVisionModel">Vision model</label><input id="firstRunVisionModel" type="text" placeholder="llava"></div><div><label for="firstRunAudioCommand">Audio command</label><input id="firstRunAudioCommand" type="text" placeholder="whisper &quot;{input}&quot; --model base"></div><div><label for="firstRunAudioSamplePath">Audio test file</label><input id="firstRunAudioSamplePath" type="text" placeholder=".harness/uploads/sample.wav"></div></div><div class="first-run-actions"><button class="btn-sm" onclick="applyFirstRunSetup()">Save setup</button><button class="btn-sm" onclick="checkFirstRunHealth()">Check setup</button><span class="first-run-status" id="firstRunStatus">Optional. You can change these later in Settings.</span></div><div class="trace-detail initial-hidden" id="firstRunHealth"></div></div><div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div><div class="tips"><div class="tip" onclick="sendTip(this)">List files in this project</div><div class="tip" onclick="sendTip(this)">What models do I have?</div><div class="tip" onclick="sendTip(this)">Create a skill for code review</div></div></div>';
+  // Mirrors the redesigned hero in index.html so /new and /reset render
+  // the same modern welcome card the page boots into.
+  return ''
+    + '<div class="welcome" id="welcome">'
+    + '<div class="welcome-hero">'
+    + '<div class="welcome-eyebrow">Local-first AI agent · Ollama</div>'
+    + '<h2>What can I help you build?</h2>'
+    + '<p>Pick a model above, then ask me anything. I can read files, write code, run commands, search the web, create skills, and remember things across sessions.</p>'
+    + '</div>'
+    + '<div class="quick-suggestions">'
+    + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">📂</div><div class="qc-body"><div class="qc-title">List files in this project</div><div class="qc-desc">Tour what\'s here. I\'ll group by folder.</div></div></div>'
+    + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">🔍</div><div class="qc-body"><div class="qc-title">Search for TODO in my code</div><div class="qc-desc">Find loose ends across the whole tree.</div></div></div>'
+    + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">🐍</div><div class="qc-body"><div class="qc-title">Help me write a Python script</div><div class="qc-desc">Generate, run, and iterate locally.</div></div></div>'
+    + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">⚡</div><div class="qc-body"><div class="qc-title">Create a skill for code review</div><div class="qc-desc">Save a reusable agent capability.</div></div></div>'
+    + '<div class="quick-card" onclick="openLeftTabByName(\'snapshots\')"><div class="qc-icon">📦</div><div class="qc-body"><div class="qc-title">Snapshot my skills + memory</div><div class="qc-desc">Reversible backups before risky edits.</div></div></div>'
+    + '<div class="quick-card" onclick="openLeftTabByName(\'rag\')"><div class="qc-icon">🔎</div><div class="qc-body"><div class="qc-title">Index my files for semantic search</div><div class="qc-desc">Build a local RAG index in seconds.</div></div></div>'
+    + '</div>'
+    + '<div class="welcome-tools">'
+    + '<strong>Try also:</strong>'
+    + '<span class="welcome-tool-chip" onclick="openLeftTabByName(\'tools\')">🛠 Local Tools</span>'
+    + '<span class="welcome-tool-chip" onclick="openLeftTabByName(\'memory\')">🧠 Memory</span>'
+    + '<span class="welcome-tool-chip" onclick="openLeftTabByName(\'skills\')">⚡ Skills</span>'
+    + '<span class="welcome-tool-chip" onclick="toggleVoiceInput()">🎤 Voice input</span>'
+    + '<span class="welcome-tool-chip" onclick="document.getElementById(\'chatInput\').focus(); document.getElementById(\'chatInput\').value=\'/\'; autoSize(document.getElementById(\'chatInput\'));">/ slash commands</span>'
+    + '</div>'
+    + '<div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div>'
+    + '<details class="welcome-disclosure" id="welcomeFirstRun">'
+    + '<summary>First time here? Walk through setup &amp; tutorial</summary>'
+    + '<div class="welcome-disclosure-body">'
+    + '<div class="beginner-guide" id="beginnerGuide"><div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div><div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div><div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div></div>'
+    + '<div class="walkthrough-checklist" id="walkthroughChecklist">' + walkthroughChecklistMarkup() + '</div>'
+    + '<div class="first-run-setup" id="firstRunSetup"><h3>First-run setup</h3><p>Set the local Ollama host and optional media helpers before your first chat.</p><div class="first-run-grid"><div><label for="firstRunOllamaHost">Ollama host</label><input id="firstRunOllamaHost" type="text" value="http://localhost:11434"></div><div><label for="firstRunVisionModel">Vision model</label><input id="firstRunVisionModel" type="text" placeholder="llava"></div><div><label for="firstRunAudioCommand">Audio command</label><input id="firstRunAudioCommand" type="text" placeholder="whisper &quot;{input}&quot; --model base"></div><div><label for="firstRunAudioSamplePath">Audio test file</label><input id="firstRunAudioSamplePath" type="text" placeholder=".harness/uploads/sample.wav"></div></div><div class="first-run-actions"><button class="btn-sm" onclick="applyFirstRunSetup()">Save setup</button><button class="btn-sm" onclick="checkFirstRunHealth()">Check setup</button><span class="first-run-status" id="firstRunStatus">Optional. You can change these later in Settings.</span></div><div class="trace-detail initial-hidden" id="firstRunHealth"></div></div>'
+    + '</div>'
+    + '</details>'
+    + '</div>';
 }
 function exportChat() { if (!chatMessages.length) { alert('No messages.'); return; } let md = '# Chat Export\n\n'; for (const m of chatMessages) md += '## ' + (m.role === 'user' ? 'You' : 'Assistant') + '\n\n' + m.content + '\n\n---\n\n'; const blob = new Blob([md], { type: 'text/markdown' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'chat-' + new Date().toISOString().slice(0, 10) + '.md'; a.click(); }
 
@@ -1154,16 +1707,88 @@ async function loadFiles(dir) {
   } catch {}
 }
 
-async function loadSkills() { try { const r = await fetch('/api/skills'); const d = await r.json(); const list = document.getElementById('skillList'); list.innerHTML = ''; if (!d.skills || !d.skills.length) { list.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No skills yet.<br><br>Ask the agent to <strong>"create a skill for..."</strong> and it will build one automatically.</div>'; return; } for (const s of d.skills) { const el = document.createElement('div'); el.className = 'skill-item'; el.innerHTML = '<div class="sk-name">' + esc(s.name) + '</div><div class="sk-desc">' + esc(s.description) + '</div><div class="sk-meta"><span>' + esc(s.domain) + '</span><button class="sk-del" onclick="event.stopPropagation();deleteSkill(\'' + escAttr(s.name) + '\')">🗑</button></div>'; el.onclick = () => { document.getElementById('chatInput').value = 'Use the skill: ' + s.name; sendMessage(); }; list.appendChild(el); } } catch {} }
+async function loadSkills() { try { const r = await fetch('/api/skills'); const d = await r.json(); const list = document.getElementById('skillList'); list.innerHTML = ''; const runtime = (d.sources || []).find((source) => source.source === 'runtime') || { skills: d.skills || [], diagnostics: [], mutable: true }; const repo = (d.sources || []).find((source) => source.source === 'repo') || { skills: [], diagnostics: [], mutable: false }; let html = '<div id="runtimeSkillSource" class="trace-list"><div class="trace-title">Runtime Skills</div>'; if (!runtime.skills || !runtime.skills.length) html += '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No runtime skills yet.<br><br>Ask the agent to <strong>"create a skill for..."</strong> and it will build one automatically.</div>'; else html += runtime.skills.map(renderRuntimeSkillItem).join(''); html += '</div>' + renderSkillDiagnostics(runtime.diagnostics || []); html += '<div id="repoSkillSource" class="trace-list"><div class="trace-title">Repo Skills</div>' + ((repo.skills || []).length ? repo.skills.map(renderRepoSkillItem).join('') : '<div class="trace-meta">No repo skills found in .github/skills.</div>') + '</div>'; list.innerHTML = html; } catch {} }
+
+function renderRuntimeSkillItem(s) { return '<div class="skill-item" onclick="useSkillFromList(\'' + escAttr(s.name) + '\')"><div class="sk-name">' + esc(s.name) + '</div><div class="sk-desc">' + esc(s.description) + '</div><div class="sk-meta"><span>' + esc(s.domain) + '</span><button class="sk-del" onclick="event.stopPropagation();deleteSkill(\'' + escAttr(s.name) + '\')">🗑</button></div></div>'; }
+function renderRepoSkillItem(s) { return '<div class="skill-item"><div class="sk-name">' + esc(s.name) + '</div><div class="sk-desc">' + esc(s.description) + '</div><div class="sk-meta"><span>' + esc(s.domain || 'repo') + '</span><span>read-only</span><button class="sk-install" onclick="installRepoSkill(\'' + escAttr(s.name) + '\')">Install to runtime</button></div></div>'; }
+function renderSkillDiagnostics(diagnostics) { if (!diagnostics || diagnostics.length === 0) return '<div id="skillDiagnostics" class="trace-list"><div class="trace-title">Skill Diagnostics</div><div class="trace-meta">No skipped runtime skill folders.</div></div>'; return '<div id="skillDiagnostics" class="trace-list"><div class="trace-title">Skill Diagnostics</div>' + diagnostics.map((item) => '<div class="trace-item"><div class="trace-title">' + esc(item.name) + '</div><div class="trace-meta">' + esc(item.reason) + ' · ' + esc(item.message) + '</div><div class="trace-meta">' + esc(item.filePath) + '</div>' + renderSkillDiagnosticActions(item) + '</div>').join('') + '</div>'; }
+function renderSkillDiagnosticActions(item) { const actions = ['<button class="btn-sm" onclick="copySkillDiagnosticPath(\'' + escAttr(item.filePath) + '\')">Copy path</button>']; if (item.reason === 'missing-skill-file') actions.push('<button class="btn-sm" onclick="scaffoldSkill(\'' + escAttr(item.name) + '\')">Create starter SKILL.md</button>'); return '<div class="skill-diagnostic-actions">' + actions.join(' ') + '</div>'; }
+function useSkillFromList(name) { document.getElementById('chatInput').value = 'Use the skill: ' + name; sendMessage(); }
 async function deleteSkill(name) { if (!confirm('Delete skill "' + name + '"?')) return; await fetch('/api/skills/' + name, { method: 'DELETE' }); loadSkills(); }
+async function installRepoSkill(name) {
+  if (!confirm('Install repo skill "' + name + '" into runtime .harness/skills?')) return;
+  try {
+    let response = await fetch('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+    if (response.status === 409) {
+      if (!confirm('Runtime skill "' + name + '" already exists. Overwrite it?')) return;
+      response = await fetch('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, overwrite: true }) });
+    }
+    const data = await response.json();
+    if (data.error) { alert('Install failed: ' + data.error); return; }
+    await loadSkills();
+  } catch (error) { alert('Install failed: ' + (error.message || error)); }
+}
+async function scaffoldSkill(name) {
+  if (!confirm('Create a starter SKILL.md for "' + name + '"?')) return;
+  try {
+    const response = await fetch('/api/skills/scaffold', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+    const data = await response.json();
+    if (data.error) { alert('Scaffold failed: ' + data.error); return; }
+    await loadSkills();
+  } catch (error) { alert('Scaffold failed: ' + (error.message || error)); }
+}
+function copySkillDiagnosticPath(filePath) {
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(filePath).catch(() => {});
+}
 
 async function loadMemory() { try { const r = await fetch('/api/memory'); const d = await r.json(); const view = document.getElementById('memoryView'); if (!d.decisions && !d.patterns && !d.notes) { view.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No memories yet.<br><br>The agent saves decisions, patterns, and notes here as it learns.</div>'; return; } let html = ''; if (d.decisions) html += '<div class="mem-section"><h5>Decisions</h5><pre>' + esc(d.decisions) + '</pre></div>'; if (d.patterns) html += '<div class="mem-section"><h5>Patterns</h5><pre>' + esc(d.patterns) + '</pre></div>'; if (d.notes) html += '<div class="mem-section"><h5>Notes</h5><pre>' + esc(d.notes) + '</pre></div>'; view.innerHTML = html; } catch {} }
 
 async function loadMemoryPalace() { try { const response = await fetch('/api/memory/palace'); const data = await response.json(); const view = document.getElementById('memoryPalaceView'); if (!data.rooms || !data.rooms.length) { view.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No palace rooms yet.</div>'; return; } view.innerHTML = '<div class="palace-grid">' + data.rooms.map((room) => '<div class="palace-room"><div class="palace-title">' + esc(room.title) + '</div><div class="palace-meta">' + room.entryCount + ' memories · ' + room.sessions.length + ' sessions</div>' + room.anchors.map((anchor) => '<button class="palace-anchor" onclick="loadPalaceEntry(\'' + escAttr(anchor.id) + '\')"><strong>' + esc(anchor.kind) + '</strong> · ' + esc(anchor.text) + '</button>').join('') + '</div>').join('') + '</div><div id="palaceDetail" class="palace-detail initial-hidden"></div>'; } catch (error) { document.getElementById('memoryPalaceView').textContent = error.message; } }
 
+async function loadDiscovery() { const view = document.getElementById('discoveryView'); if (!view) return; view.innerHTML = '<div class="trace-meta">Loading discovery...</div>'; try { const response = await fetch('/api/discovery'); const data = await response.json(); if (data.error) throw new Error(data.error); view.innerHTML = renderDiscoveryPanel(data); } catch (error) { view.innerHTML = '<div class="trace-meta">Discovery unavailable: ' + esc(error.message || error) + '</div>'; } }
+
+function renderDiscoveryPanel(data) {
+  return '<div id="discoveryPanel" class="trace-list">' + renderModelCatalogPanel(data.modelCatalog || {}) + renderExtensionDiscoveryPanel(data.extensions || {}) + renderAutomationDiscoveryPanel(data.automations || {}) + renderSessionSearchDiscoveryPanel(data.sessionSearch || {}) + '</div>';
+}
+
+function renderModelCatalogPanel(modelCatalog) {
+  const manifest = modelCatalog.manifest || { providers: {} };
+  const status = modelCatalog.status || {};
+  const providers = Object.entries(manifest.providers || {}).map(([name, provider]) => '<div class="trace-row"><strong>' + esc(name) + '</strong><div class="trace-meta">' + (provider.models || []).length + ' model(s)</div>' + (provider.models || []).slice(0, 5).map((model) => '<div class="trace-meta">' + esc(model.id) + ' · ' + esc(model.description || '') + '</div>').join('') + '</div>').join('');
+  return '<div id="modelCatalogPanel" class="trace-item"><div class="trace-title">Model Catalog</div><div class="trace-meta">' + esc(status.exists ? (status.fresh ? 'cached and fresh' : 'cached but stale') : 'using built-in catalog') + '</div>' + (providers || '<div class="trace-meta">No catalog providers found.</div>') + '<button class="btn-sm full-width-button" onclick="refreshModelCatalog()">Refresh catalog</button></div>';
+}
+
+function renderExtensionDiscoveryPanel(extensions) {
+  const manifests = extensions.manifests || [];
+  const rows = manifests.map((manifest) => '<div class="trace-row"><strong>' + esc(manifest.kind) + ': ' + esc(manifest.name) + '</strong><div class="trace-meta">' + esc(manifest.description || manifest.filePath || '') + '</div><div class="trace-meta">Activation: ' + esc(manifest.activation?.status || 'unknown') + ' · ' + esc(manifest.activation?.reason || '') + '</div>' + renderInlineList('Tools', manifest.providesTools) + renderInlineList('Hooks', manifest.providesHooks) + renderInlineList('Triggers', manifest.triggers) + '</div>').join('');
+  const skills = extensions.skills || {};
+  const runtimeSummary = skills.runtime ? '<div class="trace-meta">Runtime skills: ' + (skills.runtime.total || 0) + ' loaded · ' + (skills.runtime.diagnosticCount || 0) + ' skipped</div>' : '';
+  const repoSummary = skills.repo ? '<div class="trace-meta">Repo skills: ' + (skills.repo.total || 0) + ' available · ' + (skills.repo.diagnosticCount || 0) + ' malformed</div>' : '';
+  const skillsAction = (skills.runtime || skills.repo) ? '<button class="btn-sm full-width-button" onclick="openSkillsTab()">Open Skills tab</button>' : '';
+  return '<div id="extensionDiscoveryPanel" class="trace-item"><div class="trace-title">Extensions</div><div class="trace-meta">' + manifests.length + ' manifest(s) discovered</div>' + runtimeSummary + repoSummary + (rows || '<div class="trace-meta">No extension manifests found.</div>') + skillsAction + '</div>';
+}
+
+function renderAutomationDiscoveryPanel(automations) {
+  const due = automations.due || [];
+  const rows = due.slice(0, 8).map((job) => '<div class="trace-row"><strong>' + esc(job.name) + '</strong><div class="trace-meta">' + esc(job.schedule?.display || '') + ' · next ' + esc(job.nextRunAt || '') + '</div></div>').join('');
+  return '<div id="automationDiscoveryPanel" class="trace-item"><div class="trace-title">Automations</div><div class="trace-meta">' + (automations.total || 0) + ' job(s), ' + due.length + ' due</div>' + (rows || '<div class="trace-meta">No due automations.</div>') + '</div>';
+}
+
+function renderSessionSearchDiscoveryPanel(status) {
+  return '<div id="sessionSearchDiscoveryPanel" class="trace-item"><div class="trace-title">Session Search Index</div><div class="trace-meta">' + esc(status.exists ? (status.fresh ? 'fresh' : 'stale') : 'not built') + ' · ' + (status.entryCount || 0) + ' entries · ' + (status.sessionCount || 0) + ' sessions</div><div class="trace-meta">Last rebuilt: ' + esc(status.rebuiltAt || 'never') + '</div><button id="rebuildSessionSearchIndexBtn" class="btn-sm full-width-button" onclick="rebuildSessionSearchIndex()">Rebuild search index</button></div>';
+}
+
+function renderInlineList(label, values) {
+  return values && values.length ? '<div class="trace-meta">' + esc(label) + ': ' + esc(values.join(', ')) + '</div>' : '';
+}
+
+async function refreshModelCatalog() { const status = document.getElementById('modelCatalogSettingsStatus'); if (status) status.textContent = 'Refreshing catalog...'; try { const response = await fetch('/api/models/catalog/refresh', { method: 'POST' }); const data = await response.json(); if (data.error) throw new Error(data.error); if (status) status.textContent = 'Catalog refreshed: ' + Object.keys(data.manifest?.providers || {}).length + ' provider(s).'; await loadDiscovery(); } catch (error) { if (status) status.textContent = 'Catalog refresh failed: ' + (error.message || error); } }
+
+async function rebuildSessionSearchIndex() { const view = document.getElementById('sessionSearchDiscoveryPanel'); if (view) view.querySelector('.trace-meta').textContent = 'Rebuilding search index...'; try { const response = await fetch('/api/sessions/search-index/rebuild', { method: 'POST' }); const data = await response.json(); if (data.error) throw new Error(data.error); await loadDiscovery(); } catch (error) { alert('Search index rebuild failed: ' + (error.message || error)); } }
+
 async function loadPalaceEntry(id) { const detail = document.getElementById('palaceDetail'); if (!detail) return; detail.classList.remove('initial-hidden'); detail.textContent = 'Loading memory entry...'; try { const entryResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id)); const entryData = await entryResponse.json(); if (entryData.error) { detail.textContent = entryData.error; return; } const contextResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id) + '/context?window=3'); const contextData = await contextResponse.json(); const entry = entryData.entry; const transcriptRows = (contextData.events || []).map((event) => '<div class="transcript-row' + (event.isAnchor ? ' anchor' : '') + '"><div><strong>' + esc(event.kind) + '</strong> · ' + esc(event.timestamp) + '</div><div style="white-space:pre-wrap;color:var(--text)">' + esc(event.text || '[empty]') + '</div></div>').join(''); detail.innerHTML = '<div><strong>Session</strong> ' + esc(entry.sessionId) + '</div><div><strong>Event</strong> ' + esc(entry.id) + '</div><div><strong>Kind</strong> ' + esc(entry.kind) + '</div><div><strong>Time</strong> ' + esc(entry.timestamp) + '</div><div style="margin-top:6px;white-space:pre-wrap;color:var(--text)">' + esc(entry.text) + '</div><div style="margin-top:10px"><strong>Transcript Context</strong>' + (transcriptRows || '<div class="transcript-row">No transcript context found.</div>') + '</div>'; } catch (error) { detail.textContent = error.message; } }
 
-function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); el.classList.add('active'); document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'learning') loadLearning(); }
+function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); el.classList.add('active'); document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); }
 function toggleLeft() { document.getElementById('leftPanel').classList.toggle('hidden'); }
 function toggleRight() { document.getElementById('rightPanel').classList.toggle('hidden'); }
 
@@ -1174,7 +1799,7 @@ async function loadLearning() { try { const r = await fetch('/api/learning'); co
 function renderLearningManager(data) {
   const view = document.getElementById('learningView');
   if (!view) return;
-  view.innerHTML += renderRoutingMetrics(data) + renderCandidateQueue(data) + renderOutputValidationTrends(data) + renderEvalDatasetManager(data);
+  view.innerHTML += renderRoutingMetrics(data) + renderCandidateQueue(data) + renderOutputValidationTrends(data) + renderProfileFeedbackTrends(data) + renderContextLossTrend(data) + renderEvalDatasetManager(data);
 }
 
 function renderOutputValidationTrends(data) {
@@ -1189,6 +1814,70 @@ function renderOutputValidationTrends(data) {
 function downloadOutputValidationTrend() {
   markWalkthroughStep('learning');
   window.location.href = '/api/learning/output-validation-trends/download';
+}
+
+function renderContextLossTrend(data) {
+  const trend = data.contextLossTrend || { total: 0, recent: [] };
+  if (trend.total === 0) return '';
+  const rows = (trend.recent || []).map((entry) => '<div class="trace-meta">⚠️ ' + esc(entry.task) + ' <span style="color:var(--text-dim)">(' + esc((entry.createdAt || '').slice(0, 19)) + ')</span></div>').join('');
+  return '<div id="contextLossTrend" class="trace-list"><div class="trace-title">Assistant Context Loss</div>' +
+    '<div class="trace-meta" style="color:var(--warn,#c98900)"><strong>' + trend.total + '</strong> assistant reply(ies) shared no significant token with the prior turn.</div>' +
+    '<div style="margin-top:6px"><strong>Recent</strong>' + rows + '</div>' +
+    '<div class="trace-meta" style="margin-top:6px">Tag: <code>assistant-context-loss</code>. See <code>.harness/evals/trace-runs.jsonl</code> for full traces.</div>' +
+    '</div>';
+}
+
+function renderProfileFeedbackTrends(data) {
+  const trend = data.profileFeedbackTrend || { totalVotes: 0, byProfile: {}, insights: [], recentVotes: [], dailyApproval: [] };
+  const profileRows = Object.entries(trend.byProfile || {}).map(([profile, bucket]) => '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(profile) + '</span><span>👍 ' + bucket.up + ' · 👎 ' + bucket.down + ' · ' + Math.round((bucket.approvalRate || 0) * 100) + '% approve</span></div>').join('');
+  const insightRows = (trend.insights || []).map((insight) => '<div class="trace-meta" style="color:' + (insight.severity === 'warn' ? 'var(--warn,#c98900)' : 'var(--text-dim)') + '"><strong>' + esc(insight.severity.toUpperCase()) + ':</strong> ' + esc(insight.message) + '</div>').join('');
+  const recentRows = (trend.recentVotes || []).map((vote) => '<div class="trace-meta">' + (vote.vote === 'up' ? '👍' : '👎') + ' ' + esc(vote.profile) + ' · ' + esc(vote.task) + '</div>').join('');
+  const sparkline = renderApprovalSparkline(trend.dailyApproval || []);
+  return '<div id="profileFeedbackTrend" class="trace-list"><div class="trace-title">Validation Profile Feedback</div>' +
+    '<div class="trace-meta">' + trend.totalVotes + ' vote(s) recorded</div>' +
+    (sparkline ? '<div style="margin-top:6px"><strong>Approval rate over time</strong>' + sparkline + '</div>' : '') +
+    '<div style="margin-top:6px"><strong>By profile</strong>' + (profileRows || '<div class="trace-meta">No feedback yet — use 👍 / 👎 on the validation profile event in chat.</div>') + '</div>' +
+    (insightRows ? '<div style="margin-top:6px"><strong>Calibration insights</strong>' + insightRows + '</div>' : '') +
+    (recentRows ? '<div style="margin-top:6px"><strong>Recent votes</strong>' + recentRows + '</div>' : '') +
+    '<div style="margin-top:8px"><button class="btn-sm" onclick="replayProfileFeedback()">Replay down-votes through suggester</button></div>' +
+    '<div id="profileFeedbackReplayResult" class="trace-meta initial-hidden" style="margin-top:6px"></div>' +
+    '</div>';
+}
+
+function renderApprovalSparkline(daily) {
+  if (!daily || daily.length < 2) return '';
+  const w = 220;
+  const h = 32;
+  const pad = 2;
+  const points = daily.map((d, i) => {
+    const x = pad + (i / (daily.length - 1)) * (w - pad * 2);
+    const y = pad + (1 - (d.approvalRate || 0)) * (h - pad * 2);
+    return x.toFixed(1) + ',' + y.toFixed(1);
+  }).join(' ');
+  const lastPct = Math.round((daily[daily.length - 1].approvalRate || 0) * 100);
+  const title = daily.map((d) => d.date + ': ' + Math.round((d.approvalRate || 0) * 100) + '% (' + d.up + '/' + d.total + ')').join(' · ');
+  return '<svg width="' + w + '" height="' + h + '" style="display:block;margin-top:4px" role="img" aria-label="Approval rate sparkline">' +
+    '<title>' + esc(title) + '</title>' +
+    '<polyline points="' + points + '" fill="none" stroke="var(--accent,#4ea1ff)" stroke-width="1.5" />' +
+    '</svg><div class="trace-meta">Latest: ' + lastPct + '% across ' + daily.length + ' day(s)</div>';
+}
+
+async function replayProfileFeedback() {
+  const out = document.getElementById('profileFeedbackReplayResult');
+  if (!out) return;
+  out.classList.remove('initial-hidden');
+  out.textContent = 'Replaying…';
+  try {
+    const res = await fetch('/api/output-validation/feedback-replay');
+    const data = await res.json();
+    const lines = (data.replays || []).slice(0, 10).map((replay) => {
+      const icon = replay.status === 'fixed' ? '✅' : (replay.status === 'still-misclassified' ? '❌' : '⚠️');
+      return icon + ' ' + esc(replay.originalProfile) + ' → ' + esc(replay.suggestedProfile) + (replay.prompt ? ' · ' + esc(replay.prompt.slice(0, 80)) : ' (no prompt captured)');
+    }).join('<br/>');
+    out.innerHTML = '<strong>' + data.totalDownVotes + ' down-vote(s):</strong> ' + data.fixed + ' fixed · ' + data.stillMisclassified + ' still misclassified · ' + data.noPrompt + ' missing prompt' + (lines ? '<br/>' + lines : '');
+  } catch (err) {
+    out.textContent = 'Replay failed: ' + (err && err.message ? err.message : err);
+  }
 }
 
 function renderRoutingMetrics(data) {
@@ -1324,6 +2013,543 @@ function traceRecordText(record) { return JSON.stringify(record || {}).toLowerCa
 async function loadRuntimeStorage() { const box = document.getElementById('runtimeStorageStatus'); if (!box) return; try { const response = await fetch('/api/runtime/storage'); const data = await response.json(); box.innerHTML = '<div><strong>Trace exports</strong> ' + esc(data.traces.count) + ' files · ' + Math.round((data.traces.bytes || 0) / 1024) + ' KB</div><div><strong>Semantic index</strong> ' + (data.semanticIndex.exists ? Math.round((data.semanticIndex.bytes || 0) / 1024) + ' KB' : 'not built') + '</div>'; } catch (error) { box.textContent = error.message; } }
 
 async function cleanupRuntimeStorage(target) { const body = { traces: target === 'traces', semanticIndex: target === 'semanticIndex' }; try { const response = await fetch('/api/runtime/cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const data = await response.json(); if (data.error) { alert(data.error); return; } await loadRuntimeStorage(); if (target === 'traces') await loadTraceExports(); } catch (error) { alert(error.message); } }
+
+// ─── Snapshots tab (skills + memory + config) ──────────────────────
+// Renders a list of snapshots with "Take", "Diff", "Restore", "Delete"
+// actions. Snapshots are stored under .harness/snapshots/<id>.json so
+// they're reversible and survive process restarts.
+
+async function loadSnapshots() {
+  const view = document.getElementById('snapshotsView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-list"><div class="trace-title">Snapshots</div><div class="trace-meta">Loading…</div></div>';
+  try {
+    const r = await fetch('/api/snapshots');
+    const d = await r.json();
+    const snaps = (d && d.snapshots) || [];
+    const header = '<div class="panel-header" style="border-bottom:none"><h3>Snapshots</h3><div class="inline-actions"><button class="btn-sm" onclick="takeSnapshot()">+ Take</button><button class="btn-sm" onclick="loadSnapshots()">Refresh</button></div></div>';
+    const intro = '<div class="trace-meta" style="padding:0 8px 8px">Backs up .harness/skills, MEMORY.md, USER.md, SOUL.md so the agent\'s self-improvement is reversible.</div>';
+    if (snaps.length === 0) {
+      view.innerHTML = header + intro + '<div class="trace-meta" style="padding:8px">(no snapshots yet — click <strong>Take</strong> to capture one)</div>';
+      return;
+    }
+    const rows = snaps.map((s) => '<div class="trace-item"><div class="trace-title">' + esc(s.id) + '</div>'
+      + '<div class="trace-meta">' + esc(new Date(s.createdAt).toLocaleString()) + ' · ' + s.fileCount + ' files · ' + Math.round((s.totalBytes || 0) / 1024) + ' KB</div>'
+      + '<div class="trace-meta">' + esc(s.reason || '') + '</div>'
+      + '<div class="inline-actions" style="margin-top:6px"><button class="btn-sm" onclick="diffSnapshot(\'' + esc(s.id) + '\')">Diff</button>'
+      + '<button class="btn-sm" onclick="restoreSnapshot(\'' + esc(s.id) + '\')">Restore</button>'
+      + '<button class="btn-sm danger" onclick="deleteSnapshot(\'' + esc(s.id) + '\')">Delete</button></div>'
+      + '<div class="trace-detail initial-hidden" id="snapDiff-' + esc(s.id) + '"></div></div>').join('');
+    view.innerHTML = header + intro + '<div class="trace-list">' + rows + '</div>';
+  } catch (error) {
+    view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message) + '</div>';
+  }
+}
+
+async function takeSnapshot() {
+  const reason = window.prompt('Snapshot label (optional):', 'manual');
+  if (reason === null) return;
+  try {
+    const r = await fetch('/api/snapshots', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) });
+    const d = await r.json();
+    if (d.error) { alert(d.error); return; }
+    await loadSnapshots();
+  } catch (e) { alert(e.message); }
+}
+
+async function diffSnapshot(id) {
+  const detail = document.getElementById('snapDiff-' + id);
+  if (!detail) return;
+  detail.classList.remove('initial-hidden');
+  detail.textContent = 'Loading diff…';
+  try {
+    const r = await fetch('/api/snapshots/' + encodeURIComponent(id) + '/diff');
+    const d = await r.json();
+    if (d.error) { detail.textContent = d.error; return; }
+    const sections = [];
+    if (d.added && d.added.length)    sections.push('<div><strong>Added (' + d.added.length + ')</strong><div style="white-space:pre-wrap">' + esc(d.added.join('\n')) + '</div></div>');
+    if (d.modified && d.modified.length) sections.push('<div><strong>Modified (' + d.modified.length + ')</strong><div style="white-space:pre-wrap">' + esc(d.modified.join('\n')) + '</div></div>');
+    if (d.removed && d.removed.length) sections.push('<div><strong>Removed (' + d.removed.length + ')</strong><div style="white-space:pre-wrap">' + esc(d.removed.join('\n')) + '</div></div>');
+    detail.innerHTML = sections.length ? sections.join('<div style="height:6px"></div>') : '<div>No changes since this snapshot.</div>';
+  } catch (e) { detail.textContent = e.message; }
+}
+
+async function restoreSnapshot(id) {
+  if (!confirm('Restore snapshot ' + id + '?\n\nA pre-restore safety snapshot will be taken first so you can undo.')) return;
+  try {
+    const r = await fetch('/api/snapshots/' + encodeURIComponent(id) + '/restore', { method: 'POST' });
+    const d = await r.json();
+    if (d.error) { alert(d.error); return; }
+    alert('Restored ' + d.restoredFiles + ' file(s).\nSafety snapshot: ' + d.safetySnapshotId);
+    await loadSnapshots();
+  } catch (e) { alert(e.message); }
+}
+
+async function deleteSnapshot(id) {
+  if (!confirm('Delete snapshot ' + id + '? This cannot be undone.')) return;
+  try {
+    const r = await fetch('/api/snapshots/' + encodeURIComponent(id), { method: 'DELETE' });
+    const d = await r.json();
+    if (d.error) { alert(d.error); return; }
+    await loadSnapshots();
+  } catch (e) { alert(e.message); }
+}
+
+// ─── Local RAG tab ────────────────────────────────────────────────
+// Build, query, and drop semantic indexes over arbitrary local files.
+// Backend auto-detects between Ollama embeddings and a deterministic
+// hash fallback so the tab always works, even offline.
+
+const ragState = {
+  selectedPaths: new Set(),
+  expanded: new Set(['']),
+  treeCache: new Map(),
+  lastPreview: null,
+  lastBuild: null,
+};
+
+async function loadRagTab() {
+  const view = document.getElementById('ragView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-list"><div class="trace-title">RAG indexes</div><div class="trace-meta">Loading…</div></div>';
+  try {
+    const r = await fetch('/api/rag/indexes');
+    const d = await r.json();
+    const indexes = (d && d.indexes) || [];
+    const header = '<div class="panel-header" style="border-bottom:none"><h3>Local RAG</h3><div class="inline-actions"><button class="btn-sm" onclick="loadRagTab()">Refresh</button></div></div>';
+    if (ragState.selectedPaths.size === 0) {
+      for (const suggestion of ['README.md', 'docs', 'cookbook']) ragState.selectedPaths.add(suggestion);
+    }
+    const builder = '<div class="trace-item">'
+      + '<div class="trace-title">Build index</div>'
+      + '<div class="trace-meta" style="margin-bottom:8px">Pick files and folders to index. Only text files are indexed; <code>node_modules</code>, <code>.git</code>, <code>dist</code>, and <code>.harness</code> are skipped.</div>'
+      + '<div style="display:flex;gap:6px;margin-bottom:6px"><input id="ragBuildName" type="text" placeholder="index name (e.g. docs)" style="flex:1;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px"></div>'
+      + '<div class="rag-picker">'
+      +   '<div class="rag-picker-label">Files & folders to index</div>'
+      +   '<div id="ragSelectedList" class="rag-selected"></div>'
+      +   '<div id="ragFileTree" class="rag-tree"><div class="trace-meta">Loading project files…</div></div>'
+      + '</div>'
+      + '<details style="margin-top:6px"><summary class="trace-meta" style="cursor:pointer">Advanced: type paths manually</summary>'
+      +   '<div style="display:flex;gap:6px;margin-top:6px"><input id="ragBuildPathsManual" type="text" placeholder="comma-separated, e.g. docs,README.md" style="flex:1;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px"><button class="btn-sm" onclick="ragAddManualPaths()">Add</button></div>'
+      + '</details>'
+      + '<div style="display:flex;gap:6px;margin-top:8px"><select id="ragBuildBackend" style="flex:1;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px"><option value="">auto-detect backend</option><option value="ollama">ollama embeddings</option><option value="hash">hash fallback (offline)</option></select></div>'
+      + '<div class="inline-actions" style="margin-top:8px"><button class="btn-sm" onclick="ragPreview()">🔍 Preview matches</button> <button class="btn-sm primary" onclick="ragBuild()">Build index</button></div>'
+      + '<div id="ragBuildStatus" class="rag-status" style="margin-top:8px"></div>'
+      + '<div id="ragPreviewResults" class="rag-preview"></div>'
+      + '</div>';
+    const queryBox = '<div class="trace-item">'
+      + '<div class="trace-title">Search</div>'
+      + '<div style="display:flex;gap:6px;margin-bottom:4px"><select id="ragQueryName" style="flex:1;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px">' + indexes.map((i) => '<option value="' + escAttr(i.name) + '">' + esc(i.name) + ' (' + i.chunks + ')</option>').join('') + '</select></div>'
+      + '<div style="display:flex;gap:6px;margin-bottom:4px"><input id="ragQueryText" type="text" placeholder="natural-language query" style="flex:1;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px" onkeydown="if(event.key===\'Enter\'){ragSearch()}"></div>'
+      + '<button class="btn-sm" onclick="ragSearch()">Search</button>'
+      + '<div class="trace-detail initial-hidden" id="ragQueryResults" style="margin-top:6px"></div>'
+      + '</div>';
+    let listing;
+    if (indexes.length === 0) {
+      listing = '<div class="trace-meta" style="padding:8px">(no indexes yet)</div>';
+    } else {
+      const rows = indexes.map((i) => '<div class="trace-item">'
+        + '<div class="trace-title">' + esc(i.name) + '</div>'
+        + '<div class="trace-meta">' + i.chunks + ' chunks · ' + i.files + ' files · ' + esc(i.backend) + ' (' + esc(i.model) + ', dim=' + i.dim + ')</div>'
+        + '<div class="trace-meta">Updated ' + esc(new Date(i.updatedAt).toLocaleString()) + '</div>'
+        + '<div class="inline-actions" style="margin-top:6px"><button class="btn-sm danger" onclick="ragDrop(\'' + escAttr(i.name) + '\')">Delete</button></div>'
+        + '</div>').join('');
+      listing = '<div class="trace-list">' + rows + '</div>';
+    }
+    view.innerHTML = header + builder + (indexes.length ? queryBox : '') + listing;
+    renderRagSelectedList();
+    await loadRagTreeNode('');
+    await refreshRagBackendBadge();
+  } catch (error) {
+    view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message) + '</div>';
+  }
+}
+
+async function refreshRagBackendBadge() {
+  const status = document.getElementById('ragBuildStatus');
+  if (!status || status.dataset.locked === '1') return;
+  try {
+    const response = await fetch('/api/rag/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paths: ['.'] }) });
+    if (!response.ok) return;
+    const data = await response.json();
+    const backend = data?.backend;
+    if (!backend) return;
+    const note = backend.name === 'ollama' ? 'Backend: ollama embeddings (' + esc(backend.model) + ')' : 'Backend: offline hash fallback. Start Ollama to use semantic embeddings.';
+    status.innerHTML = '<span class="rag-backend-badge">' + note + '</span>';
+  } catch { /* leave status empty */ }
+}
+
+function renderRagSelectedList() {
+  const list = document.getElementById('ragSelectedList');
+  if (!list) return;
+  if (ragState.selectedPaths.size === 0) {
+    list.innerHTML = '<div class="trace-meta">No paths selected. Tick boxes below or expand folders.</div>';
+    return;
+  }
+  list.innerHTML = Array.from(ragState.selectedPaths).sort().map((p) => '<span class="rag-chip">' + esc(p) + '<button onclick="ragRemovePath(\'' + escAttr(p) + '\')" title="Remove">×</button></span>').join('');
+}
+
+function ragRemovePath(path) {
+  ragState.selectedPaths.delete(path);
+  renderRagSelectedList();
+  // Re-render tree so checkboxes reflect selection.
+  const tree = document.getElementById('ragFileTree');
+  if (tree) renderRagTree();
+}
+
+function ragAddManualPaths() {
+  const input = document.getElementById('ragBuildPathsManual');
+  if (!input) return;
+  const raw = (input.value || '').trim();
+  if (!raw) return;
+  for (const part of raw.split(',').map((s) => s.trim()).filter(Boolean)) ragState.selectedPaths.add(part);
+  input.value = '';
+  renderRagSelectedList();
+  renderRagTree();
+}
+
+async function loadRagTreeNode(relativeDir) {
+  if (ragState.treeCache.has(relativeDir)) {
+    renderRagTree();
+    return;
+  }
+  try {
+    const url = '/api/files' + (relativeDir ? '?path=' + encodeURIComponent(relativeDir) : '');
+    const response = await fetch(url);
+    const data = await response.json();
+    if (!data.error) ragState.treeCache.set(relativeDir, data.items || []);
+  } catch { ragState.treeCache.set(relativeDir, []); }
+  renderRagTree();
+}
+
+function renderRagTree() {
+  const root = document.getElementById('ragFileTree');
+  if (!root) return;
+  root.innerHTML = renderRagTreeLevel('', 0);
+}
+
+function renderRagTreeLevel(relativeDir, depth) {
+  const items = ragState.treeCache.get(relativeDir);
+  if (!items) return '<div class="trace-meta" style="padding-left:' + (depth * 14) + 'px">…</div>';
+  if (items.length === 0) return '<div class="trace-meta" style="padding-left:' + (depth * 14) + 'px">(empty)</div>';
+  return items.map((item) => renderRagTreeItem(item, relativeDir, depth)).join('');
+}
+
+function renderRagTreeItem(item, parentRelative, depth) {
+  const relative = typeof item.relative === 'string' && item.relative
+    ? item.relative
+    : (parentRelative ? parentRelative + '/' + item.name : item.name);
+  const isDir = item.type === 'dir';
+  const checked = ragState.selectedPaths.has(relative) ? 'checked' : '';
+  const expanded = ragState.expanded.has(relative);
+  const indent = 'padding-left:' + (depth * 14) + 'px';
+  const toggleSymbol = isDir ? (expanded ? '▾' : '▸') : '·';
+  const onToggle = isDir ? 'onclick="ragToggleDir(\'' + escAttr(relative) + '\')"' : '';
+  const row = '<div class="rag-tree-row" style="' + indent + '">'
+    + '<span class="rag-tree-toggle" ' + onToggle + '>' + toggleSymbol + '</span>'
+    + '<input type="checkbox" ' + checked + ' onchange="ragTogglePath(\'' + escAttr(relative) + '\', this.checked)">'
+    + '<span class="rag-tree-name ' + (isDir ? 'is-dir' : 'is-file') + '" ' + onToggle + '>' + esc(item.name) + (isDir ? '/' : '') + '</span>'
+    + '</div>';
+  if (!isDir || !expanded) return row;
+  return row + renderRagTreeLevel(relative, depth + 1);
+}
+
+function ragTogglePath(path, checked) {
+  if (checked) ragState.selectedPaths.add(path);
+  else ragState.selectedPaths.delete(path);
+  renderRagSelectedList();
+}
+
+async function ragToggleDir(relative) {
+  if (ragState.expanded.has(relative)) {
+    ragState.expanded.delete(relative);
+    renderRagTree();
+    return;
+  }
+  ragState.expanded.add(relative);
+  if (!ragState.treeCache.has(relative)) await loadRagTreeNode(relative);
+  else renderRagTree();
+}
+
+function ragSelectedPathsList() {
+  return Array.from(ragState.selectedPaths);
+}
+
+async function ragPreview() {
+  const status = document.getElementById('ragBuildStatus');
+  const out = document.getElementById('ragPreviewResults');
+  const paths = ragSelectedPathsList();
+  if (paths.length === 0) { if (status) status.textContent = 'Pick at least one file or folder.'; return; }
+  if (status) { status.textContent = 'Previewing…'; status.dataset.locked = '1'; }
+  if (out) out.innerHTML = '';
+  try {
+    const response = await fetch('/api/rag/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paths }) });
+    const data = await response.json();
+    if (data.error) { if (status) status.textContent = 'Preview failed: ' + data.error; return; }
+    ragState.lastPreview = data;
+    renderRagPreview(data);
+    if (status) status.textContent = 'Preview ready · ' + data.totalFiles + ' file(s) would be indexed.';
+  } catch (error) {
+    if (status) status.textContent = 'Preview failed: ' + (error.message || error);
+  } finally {
+    if (status) status.dataset.locked = '';
+  }
+}
+
+function renderRagPreview(data) {
+  const out = document.getElementById('ragPreviewResults');
+  if (!out) return;
+  const rows = (data.paths || []).map((p) => {
+    const icon = p.status === 'matched' ? '✅' : p.status === 'missing' ? '❌' : p.status === 'unsupported-extension' ? '⚠️' : '⚠️';
+    const sample = (p.sampleFiles || []).slice(0, 3).map(esc).join(', ') + ((p.sampleFiles || []).length > 3 ? ', …' : '');
+    return '<div class="rag-diagnostic"><span class="rag-diag-icon">' + icon + '</span>'
+      + '<div><strong>' + esc(p.input) + '</strong> · ' + esc(p.message)
+      + (p.fileCount ? ' <span class="trace-meta">(' + p.fileCount + ' file' + (p.fileCount === 1 ? '' : 's') + ')</span>' : '')
+      + (sample ? '<div class="trace-meta">' + sample + '</div>' : '')
+      + '</div></div>';
+  }).join('');
+  const backend = data.backend ? '<div class="trace-meta" style="margin-top:6px">Detected backend: <strong>' + esc(data.backend.name) + '</strong> (' + esc(data.backend.model) + ', dim=' + data.backend.dim + ')</div>' : '';
+  out.innerHTML = '<div class="rag-preview-body"><div class="trace-title" style="margin-bottom:6px">Preview · ' + (data.totalFiles || 0) + ' file(s) total</div>' + (rows || '<div class="trace-meta">No paths selected.</div>') + backend + '</div>';
+}
+
+async function ragBuild() {
+  const name = (document.getElementById('ragBuildName').value || '').trim();
+  const backend = document.getElementById('ragBuildBackend').value || undefined;
+  const status = document.getElementById('ragBuildStatus');
+  const paths = ragSelectedPathsList();
+  if (!name) { if (status) status.textContent = 'Enter an index name first.'; return; }
+  if (paths.length === 0) { if (status) status.textContent = 'Pick at least one file or folder.'; return; }
+  if (status) { status.textContent = 'Building…'; status.dataset.locked = '1'; }
+  try {
+    const r = await fetch('/api/rag/build', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, paths, backend }) });
+    const d = await r.json();
+    if (d.error) { if (status) status.textContent = 'Build failed: ' + d.error; return; }
+    ragState.lastBuild = d;
+    if (d.preview) renderRagPreview({ ...d.preview, backend: d.backend });
+    if (status) {
+      const backendName = d.backend?.name || 'unknown';
+      const summary = d.files === 0
+        ? 'Build completed but 0 files matched. See Preview below for which paths were skipped.'
+        : 'Built · ' + d.files + ' file(s), ' + d.chunks + ' chunk(s), backend=' + backendName;
+      status.textContent = summary;
+    }
+    await loadRagTab();
+  } catch (e) {
+    if (status) status.textContent = 'Build failed: ' + e.message;
+  } finally {
+    if (status) status.dataset.locked = '';
+  }
+}
+
+async function ragSearch() {
+  const name = document.getElementById('ragQueryName').value || '';
+  const query = (document.getElementById('ragQueryText').value || '').trim();
+  const out = document.getElementById('ragQueryResults');
+  if (!out) return;
+  out.classList.remove('initial-hidden');
+  if (!name || !query) { out.textContent = 'Choose an index and enter a query.'; return; }
+  out.textContent = 'Searching…';
+  try {
+    const r = await fetch('/api/rag/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, query, k: 5 }) });
+    const d = await r.json();
+    if (d.error) { out.textContent = d.error; return; }
+    const results = (d && d.results) || [];
+    if (results.length === 0) { out.textContent = 'No matches.'; return; }
+    out.innerHTML = results.map((row, i) => '<div class="trace-row"><strong>[' + (i + 1) + '] score=' + row.score.toFixed(3) + '</strong> ' + esc(row.source) + ' (chunk ' + row.chunkNo + ')<div style="white-space:pre-wrap;color:var(--text-dim);margin-top:4px">' + esc(row.content.slice(0, 600)) + (row.content.length > 600 ? '…' : '') + '</div></div>').join('');
+  } catch (e) { out.textContent = e.message; }
+}
+
+async function ragDrop(name) {
+  if (!confirm('Delete index "' + name + '"?')) return;
+  try {
+    const r = await fetch('/api/rag/indexes/' + encodeURIComponent(name), { method: 'DELETE' });
+    const d = await r.json();
+    if (d.error) { alert(d.error); return; }
+    await loadRagTab();
+  } catch (e) { alert(e.message); }
+}
+
+// ─── Local Tools dashboard ─────────────────────────────────────────
+// Single-page status of snapshots, RAG indexes, sessions, models, traces,
+// plus the curated MCP catalog. Each section is fetched lazily and shown
+// with its primary one-click action so the user can jump from "what do I
+// have" to "do the thing" without leaving this view.
+
+async function loadToolsDashboard() {
+  const view = document.getElementById('toolsDashboardView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-list"><div class="trace-title">Local Tools</div><div class="trace-meta">Loading…</div></div>';
+  try {
+    const [snapsR, indexesR, sessionsR, modelsR, storageR, mcpR] = await Promise.allSettled([
+      fetch('/api/snapshots').then((r) => r.json()),
+      fetch('/api/rag/indexes').then((r) => r.json()),
+      fetch('/api/sessions').then((r) => r.json()),
+      fetch('/api/models').then((r) => r.json()),
+      fetch('/api/runtime/storage').then((r) => r.json()),
+      fetch('/api/mcp/catalog').then((r) => r.json()),
+    ]);
+    const snapsCount = snapsR.status === 'fulfilled' ? (snapsR.value.snapshots || []).length : 0;
+    const indexesArr = indexesR.status === 'fulfilled' ? (indexesR.value.indexes || []) : [];
+    const sessionsArr = sessionsR.status === 'fulfilled' ? (sessionsR.value.sessions || sessionsR.value || []) : [];
+    const modelsArr = modelsR.status === 'fulfilled' ? (modelsR.value.models || []) : [];
+    const storage = storageR.status === 'fulfilled' ? storageR.value : null;
+    const mcpArr = mcpR.status === 'fulfilled' ? (mcpR.value.catalog || []) : [];
+
+    const speechSupported = typeof window.SpeechRecognition !== 'undefined' || typeof window.webkitSpeechRecognition !== 'undefined';
+    const totalIndexedChunks = indexesArr.reduce((sum, i) => sum + (i.chunks || 0), 0);
+
+    const cards = [
+      {
+        emoji: '📦', title: 'Snapshots', value: snapsCount + ' saved',
+        sub: snapsCount === 0 ? 'No backups yet' : 'Skills + memory + config',
+        action: { label: 'Open', fn: 'openLeftTabByName(\'snapshots\')' },
+      },
+      {
+        emoji: '🔎', title: 'Local RAG', value: indexesArr.length + ' index' + (indexesArr.length === 1 ? '' : 'es'),
+        sub: totalIndexedChunks ? totalIndexedChunks + ' chunks indexed' : 'Build one to enable semantic search',
+        action: { label: 'Open', fn: 'openLeftTabByName(\'rag\')' },
+      },
+      {
+        emoji: '💬', title: 'Sessions', value: sessionsArr.length + ' total',
+        sub: 'JSONL transcripts in .harness/sessions',
+        action: { label: 'Browse', fn: 'openLeftTabByName(\'history\')' },
+      },
+      {
+        emoji: '🤖', title: 'Models', value: modelsArr.length + ' available',
+        sub: modelsArr.length ? 'Configured via Ollama' : 'Install with: ollama pull <name>',
+        action: { label: 'Settings', fn: 'toggleRight()' },
+      },
+      {
+        emoji: '🎤', title: 'Voice input', value: speechSupported ? 'Ready' : 'Not available',
+        sub: speechSupported ? 'Click 🎤 in the composer' : 'Use Chrome / Edge for browser STT',
+        action: speechSupported ? { label: 'Try it', fn: 'toggleVoiceInput()' } : null,
+      },
+      {
+        emoji: '📊', title: 'Runtime storage', value: storage && storage.traces ? (storage.traces.count + ' trace exports') : '—',
+        sub: storage && storage.semanticIndex ? (storage.semanticIndex.exists ? 'Semantic index built' : 'Semantic index not built') : '',
+        action: { label: 'Open settings', fn: 'toggleRight()' },
+      },
+    ];
+
+    const cardHtml = cards.map((c) => '<div class="trace-item">'
+      + '<div class="trace-title">' + c.emoji + ' ' + esc(c.title) + '</div>'
+      + '<div class="trace-meta" style="margin-top:2px;color:var(--text)">' + esc(c.value) + '</div>'
+      + '<div class="trace-meta">' + esc(c.sub) + '</div>'
+      + (c.action ? '<div class="inline-actions" style="margin-top:6px"><button class="btn-sm" onclick="' + c.action.fn + '">' + esc(c.action.label) + '</button></div>' : '')
+      + '</div>').join('');
+
+    const mcpHtml = mcpArr.length === 0 ? '' : '<div class="trace-item">'
+      + '<div class="trace-title">🧩 MCP catalog</div>'
+      + '<div class="trace-meta" style="margin-bottom:6px">Curated MCP servers — copy the install command, run it, then point your MCP client at the new server.</div>'
+      + '<input id="mcpCatalogFilter" type="text" placeholder="filter by name or tag…" style="width:100%;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:6px" oninput="renderMcpCatalogList()">'
+      + '<div id="mcpCatalogList"></div>'
+      + '</div>';
+
+    const header = '<div class="panel-header" style="border-bottom:none"><h3>Local Tools</h3><div class="inline-actions"><button class="btn-sm" onclick="loadToolsDashboard()">Refresh</button></div></div>';
+    view.innerHTML = header + '<div class="trace-list">' + cardHtml + mcpHtml + '</div>';
+    window._mcpCatalog = mcpArr;
+    renderMcpCatalogList();
+  } catch (error) {
+    view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message) + '</div>';
+  }
+}
+
+function renderMcpCatalogList() {
+  const listEl = document.getElementById('mcpCatalogList');
+  const filterEl = document.getElementById('mcpCatalogFilter');
+  if (!listEl || !window._mcpCatalog) return;
+  const q = (filterEl && filterEl.value || '').trim().toLowerCase();
+  const rows = window._mcpCatalog.filter((entry) => {
+    if (!q) return true;
+    const hay = (entry.name + ' ' + entry.description + ' ' + (entry.tags || []).join(' ')).toLowerCase();
+    return hay.includes(q);
+  });
+  if (rows.length === 0) { listEl.innerHTML = '<div class="trace-meta">No matches.</div>'; return; }
+  listEl.innerHTML = rows.map((entry) => {
+    const envLine = (entry.requiresEnv || []).length
+      ? '<div class="trace-meta"><strong>requires</strong> ' + esc((entry.requiresEnv || []).join(', ')) + '</div>'
+      : '';
+    return '<div class="trace-row">'
+      + '<div><strong>' + esc(entry.name) + '</strong> <span class="capability-pill">' + esc((entry.tags || []).join(' · ')) + '</span></div>'
+      + '<div class="trace-meta">' + esc(entry.description) + '</div>'
+      + '<div style="display:flex;gap:6px;align-items:center;margin-top:4px">'
+      + '<code style="flex:1;background:var(--surface3);border:1px solid var(--border);border-radius:5px;padding:4px 6px;font-size:11px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(entry.install) + '</code>'
+      + '<button class="btn-sm" onclick="copyMcpInstall(' + JSON.stringify(entry.install).replace(/"/g, '&quot;') + ', this)">Copy</button>'
+      + '<a class="btn-sm" target="_blank" rel="noopener" href="' + escAttr(entry.homepage) + '">Docs</a>'
+      + '</div>'
+      + envLine
+      + '</div>';
+  }).join('');
+}
+
+function copyMcpInstall(text, btn) {
+  try {
+    navigator.clipboard.writeText(text);
+    if (btn) {
+      const original = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(() => { if (btn) btn.textContent = original; }, 1200);
+    }
+  } catch (e) {
+    alert('Copy failed: ' + e.message);
+  }
+}
+
+// ─── Voice input (browser STT via Web Speech API) ──────────────────
+// Free, no server changes, works fully offline in Chrome/Edge. Toggling
+// 🎤 starts/stops recognition. Recognized phrases append to the chat
+// input so the user can review before sending.
+
+let voiceRecognition = null;
+let voiceActive = false;
+
+function toggleVoiceInput() {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Recognition) {
+    alert('Voice input requires Web Speech API support. Try Chrome or Edge.');
+    return;
+  }
+  const btn = document.getElementById('voiceBtn');
+  if (voiceActive && voiceRecognition) {
+    voiceRecognition.stop();
+    return;
+  }
+  voiceRecognition = new Recognition();
+  voiceRecognition.continuous = true;
+  voiceRecognition.interimResults = false;
+  voiceRecognition.lang = (navigator.language || 'en-US');
+  voiceActive = true;
+  if (btn) { btn.classList.add('recording'); btn.title = 'Stop voice input'; }
+  voiceRecognition.onresult = (event) => {
+    const inp = document.getElementById('chatInput');
+    if (!inp) return;
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const result = event.results[i];
+      if (!result.isFinal) continue;
+      const text = result[0].transcript.trim();
+      if (!text) continue;
+      const sep = inp.value && !/\s$/.test(inp.value) ? ' ' : '';
+      inp.value = inp.value + sep + text;
+      autoSize(inp);
+    }
+  };
+  voiceRecognition.onerror = (event) => {
+    console.warn('voice recognition error:', event.error);
+    if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+      alert('Microphone permission denied. Allow microphone access in your browser to use voice input.');
+    }
+  };
+  voiceRecognition.onend = () => {
+    voiceActive = false;
+    if (btn) { btn.classList.remove('recording'); btn.title = 'Voice input (browser STT)'; }
+    voiceRecognition = null;
+  };
+  try { voiceRecognition.start(); } catch (e) {
+    voiceActive = false;
+    if (btn) { btn.classList.remove('recording'); btn.title = 'Voice input (browser STT)'; }
+    alert('Could not start voice input: ' + e.message);
+  }
+}
 
 function esc(s) { const d = document.createElement('div'); d.textContent = String(s ?? ''); return d.innerHTML; }
 function escAttr(s) { return esc(s).replace(/"/g, '&quot;'); }
