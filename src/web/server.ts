@@ -19,7 +19,7 @@ import { setRagRuntime } from '../tools/ragTools';
 import { setCuratorToolRuntime } from '../tools/curatorTools';
 import { PermissionEngine } from '../permissions/engine';
 import { PermissionPromptBroker } from '../permissions/promptBroker';
-import { createCapabilityGrant, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, summarizeCapabilityAlignment, type CapabilityGrant } from '../permissions/capabilities';
+import { createCapabilityGrant, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, summarizeCapabilityAlignment, autoGrantGatedCapabilities, type CapabilityGrant } from '../permissions/capabilities';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { forkSession, resumeSession } from '../persistence/resume';
 import { buildMemoryPalace, getSemanticMemoryContext, getSemanticMemoryEntry, rebuildSemanticMemory, searchSemanticMemory } from '../persistence/semanticMemory';
@@ -1252,6 +1252,19 @@ app.post('/api/chat', async (req, res) => {
   const tools = webRuntime.getTools();
   const permissions = webRuntime.createPermissionEngine(permissionMode);
   const projectDir = PROJECT_DIR;
+
+  // In dontAsk mode, auto-grant all gated capabilities for full autonomy
+  if (permissionMode === 'dontAsk') {
+    const newGrants = autoGrantGatedCapabilities(capabilityGrants);
+    if (newGrants.length > 0) {
+      capabilityGrants = sanitizeCapabilityGrants([...capabilityGrants, ...newGrants]);
+      for (const grant of newGrants) {
+        await appendCapabilityAuditEvent(PROJECT_DIR, { type: 'grant.created', capabilityId: grant.capabilityId, grantId: grant.id, reason: 'Auto-granted in dontAsk mode.' });
+      }
+      await saveSettingsToDisk();
+      logger.info('Capabilities', `Auto-granted ${newGrants.length} capability(s) in dontAsk mode`, { capabilities: newGrants.map((g) => g.capabilityId) });
+    }
+  }
 
   // Start a new learning session for tracking
   webRuntime.startNewSession();

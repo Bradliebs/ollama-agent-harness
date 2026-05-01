@@ -109,11 +109,11 @@ export const CAPABILITY_POLICIES: CapabilityPolicy[] = [
     id: 'auto-install-third-party-skills',
     label: 'Auto-installing third-party skills',
     category: 'skills',
-    posture: 'design-only',
-    summary: 'Runtime skill creation and repo-skill install exist, but internet third-party skill install is not enabled.',
-    readiness: 'Local skill install/scaffold exists; remote trust flow does not.',
-    existingCoverage: ['create_skill', 'list_skills', 'skill automation', 'snapshots'],
-    missingConnectors: ['signature verification', 'source allowlist', 'provenance capture', 'rollback installer'],
+    posture: 'gated',
+    summary: 'Skill install from URL is available through install_skill. Limited to GitHub, Gist, and GitLab hosts with format validation.',
+    readiness: 'install_skill tool with host allowlist and provenance tracking (disabled by default).',
+    existingCoverage: ['install_skill', 'create_skill', 'list_skills', 'skill automation', 'snapshots'],
+    missingConnectors: ['signature verification', 'malware scanning'],
     requiredControls: ['explicit-grant', 'audit-log', 'sandbox', 'allowlist', 'rollback', 'kill-switch'],
   },
   {
@@ -131,21 +131,21 @@ export const CAPABILITY_POLICIES: CapabilityPolicy[] = [
     id: 'email-sending',
     label: 'Email sending',
     category: 'communications',
-    posture: 'design-only',
-    summary: 'Email sending is not implemented; draft, preview, and human-send confirmation should precede any connector.',
-    readiness: 'No email connector exists.',
-    existingCoverage: ['output validation', 'permission prompts'],
-    missingConnectors: ['email provider adapter', 'recipient allowlist', 'draft approval UI'],
+    posture: 'gated',
+    summary: 'Email draft creation is available through email_draft. Drafts are saved as .eml files for manual review and send.',
+    readiness: 'email_draft tool creates local .eml files (disabled by default). No auto-send.',
+    existingCoverage: ['email_draft', 'output validation', 'permission prompts'],
+    missingConnectors: ['email provider adapter', 'recipient allowlist'],
     requiredControls: ['explicit-grant', 'audit-log', 'dry-run', 'allowlist', 'human-confirmation', 'kill-switch'],
   },
   {
     id: 'calendar-editing',
     label: 'Calendar editing',
     category: 'communications',
-    posture: 'design-only',
-    summary: 'Calendar mutation is not implemented; future support should preview changes before applying them.',
-    readiness: 'No calendar connector exists.',
-    existingCoverage: ['permission prompts'],
+    posture: 'gated',
+    summary: 'Calendar reading is available through calendar_read. Read-only access to .ics files. Mutation is not implemented.',
+    readiness: 'calendar_read tool parses local .ics files. No calendar mutation.',
+    existingCoverage: ['calendar_read', 'permission prompts'],
     missingConnectors: ['calendar provider adapter', 'change preview UI', 'rollback or undo path'],
     requiredControls: ['explicit-grant', 'audit-log', 'dry-run', 'human-confirmation', 'rollback', 'kill-switch'],
   },
@@ -337,4 +337,26 @@ export function mapToolsToCapabilityCoverage(): Record<string, string[]> {
     coverage[policy.id] = policy.existingCoverage.filter((item) => builtinTools.has(item));
   }
   return coverage;
+}
+
+export function autoGrantGatedCapabilities(existingGrants: CapabilityGrant[], now = new Date()): CapabilityGrant[] {
+  const gatedPolicies = CAPABILITY_POLICIES.filter((p) => p.posture === 'gated');
+  const activeGrants = listActiveCapabilityGrants(existingGrants, now);
+  const grantedCapabilities = new Set(activeGrants.map((g) => g.capabilityId));
+  const newGrants: CapabilityGrant[] = [];
+
+  for (const policy of gatedPolicies) {
+    if (grantedCapabilities.has(policy.id)) continue;
+    const result = createCapabilityGrant({
+      id: `auto-${policy.id}-${now.getTime()}`,
+      capabilityId: policy.id,
+      controls: policy.requiredControls,
+      reason: 'Auto-granted in dontAsk mode.',
+      expiresInMinutes: 480,
+      now,
+    });
+    if (result.grant) newGrants.push(result.grant);
+  }
+
+  return newGrants;
 }

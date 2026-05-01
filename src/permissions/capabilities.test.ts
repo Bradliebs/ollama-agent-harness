@@ -19,7 +19,7 @@ describe('capability policies', () => {
   });
 
   it('blocks or design-gates sensitive connector surfaces by default', () => {
-    for (const id of ['password-manager-access', 'live-broker-trading', 'internet-skill-marketplace', 'email-sending', 'calendar-editing']) {
+    for (const id of ['password-manager-access', 'live-broker-trading', 'internet-skill-marketplace']) {
       const result = evaluateCapabilityPolicy({ capabilityId: id, explicitGrant: true, requestedControls: ['explicit-grant', 'audit-log', 'kill-switch'] });
       expect(result.decision).toBe('deny');
       expect(['blocked', 'design-only']).toContain(result.posture);
@@ -55,7 +55,7 @@ describe('capability policies', () => {
     policies[0].existingCoverage.push('mutated');
 
     expect(listCapabilityPolicies()[0].existingCoverage).not.toContain('mutated');
-    expect(summarizeCapabilityAlignment()).toEqual(expect.objectContaining({ gated: 6, blocked: 3, 'design-only': 3 }));
+    expect(summarizeCapabilityAlignment()).toEqual(expect.objectContaining({ gated: 9, blocked: 3, 'design-only': 0 }));
   });
 
   it('maps existing builtin tool names to capability coverage', () => {
