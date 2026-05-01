@@ -820,6 +820,13 @@
       </div>
     </div>
     <div class="settings-section">
+      <h4>Allowed External Paths</h4>
+      <div class="trace-detail">Directories outside the project that file_read and list_files can access. One path per line.</div>
+      <div class="setting-row">
+        <textarea id="allowedExternalPaths" rows="3" placeholder="C:\Users\Brad\Downloads&#10;C:\Users\Brad\Documents" onchange="updateAllowedPaths(this.value)"></textarea>
+      </div>
+    </div>
+    <div class="settings-section">
       <h4>System Prompt</h4>
       <div class="setting-row">
         <textarea id="sysPrompt" placeholder="Leave empty for default..." onchange="updateSetting('systemPrompt',this.value)"></textarea>

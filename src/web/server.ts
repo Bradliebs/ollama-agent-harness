@@ -12,7 +12,7 @@ import { WorkflowRegistry } from '../workflows/workflowRegistry';
 import { runCurator, runDeterministicPhase, readCuratorLog, readCuratorProposals, restoreSkill, parseMergeProposals, applyMergeProposal, clearCuratorProposals, type CuratorConfig } from '../curator/curator';
 import { CuratorScheduler } from '../curator/scheduler';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
-import { drainUploadsFallbacks, getUploadsDir, resolveProjectReadPath } from '../tools/pathResolution';
+import { drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, resolveProjectReadPath, setAllowedExternalPaths } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { invalidateSkillsCache, setSkillsDir } from '../tools/skillTools';
 import { setRagRuntime } from '../tools/ragTools';
@@ -113,6 +113,7 @@ interface WebSettings {
   killSwitch: { active: boolean; reason: string };
   /** Time-limited capability grants for gated high-power surfaces. */
   capabilityGrants: CapabilityGrant[];
+  allowedExternalPaths: string[];
 }
 
 interface MediaToolSettings {
@@ -363,6 +364,10 @@ app.post('/api/settings', async (req, res) => {
   if (req.body.agentName !== undefined) agentName = String(req.body.agentName).slice(0, 100);
   if (req.body.agentAvatar !== undefined) agentAvatar = String(req.body.agentAvatar).slice(0, 10);
   if (req.body.agentProfiles !== undefined && typeof req.body.agentProfiles === 'object') agentProfiles = sanitizeAgentProfiles(req.body.agentProfiles);
+  if (req.body.allowedExternalPaths !== undefined) {
+    const paths = Array.isArray(req.body.allowedExternalPaths) ? req.body.allowedExternalPaths.map((p: unknown) => String(p).slice(0, 500)) : [];
+    setAllowedExternalPaths(paths);
+  }
   if (req.body.summarizerModel !== undefined) summarizerModel = sanitizeModelName(req.body.summarizerModel);
   if (req.body.modelRouting !== undefined) modelRouting = sanitizeModelRoutingPolicy(req.body.modelRouting);
   if (req.body.mediaTools !== undefined) {
@@ -2707,6 +2712,7 @@ function getCurrentSettings(): WebSettings {
     disabledTools: Array.from(disabledTools).sort(),
     killSwitch: { active: killSwitchActive, reason: killSwitchReason },
     capabilityGrants,
+    allowedExternalPaths: getAllowedExternalPaths(),
   };
 }
 
@@ -2745,6 +2751,9 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   if (settings.agentName !== undefined) agentName = String(settings.agentName).slice(0, 100);
   if (settings.agentAvatar !== undefined) agentAvatar = String(settings.agentAvatar).slice(0, 10);
   if (settings.agentProfiles !== undefined && typeof settings.agentProfiles === 'object') agentProfiles = sanitizeAgentProfiles(settings.agentProfiles);
+  if (Array.isArray(settings.allowedExternalPaths)) {
+    setAllowedExternalPaths(settings.allowedExternalPaths.map((p: unknown) => String(p).slice(0, 500)));
+  }
   if (settings.summarizerModel !== undefined) summarizerModel = sanitizeModelName(settings.summarizerModel);
   if (settings.modelRouting !== undefined) modelRouting = sanitizeModelRoutingPolicy(settings.modelRouting);
   if (settings.mediaTools !== undefined) {

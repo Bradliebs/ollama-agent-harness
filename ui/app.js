@@ -193,6 +193,7 @@ async function loadSettings() {
     hydrateAgentName(s.agentName || '');
     hydrateAgentAvatar(s.agentAvatar || '');
     hydrateAgentProfiles(s.agentProfiles || {});
+    hydrateAllowedPaths(s.allowedExternalPaths || []);
     if (s.ollamaHost) document.getElementById('ollamaHost').value = s.ollamaHost;
     if (s.summarizerModel) document.getElementById('summarizerModel').value = s.summarizerModel;
     if (s.contextMaxTokens) document.getElementById('contextMaxTokens').value = s.contextMaxTokens;
@@ -776,6 +777,16 @@ function importAgentProfiles(files) {
   };
   reader.readAsText(files[0]);
   document.getElementById('profileImportFile').value = '';
+}
+
+function hydrateAllowedPaths(paths) {
+  const el = document.getElementById('allowedExternalPaths');
+  if (el) el.value = (paths || []).join('\n');
+}
+
+function updateAllowedPaths(text) {
+  const paths = text.split('\n').map((p) => p.trim()).filter(Boolean);
+  updateSetting('allowedExternalPaths', paths);
 }
 
 function updateRoutingSetting(k, v) {

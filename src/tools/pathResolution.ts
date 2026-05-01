@@ -4,6 +4,21 @@ import { logger } from '../core/logger';
 
 const DEFAULT_UPLOADS_DIRNAME = path.join('.harness', 'uploads');
 
+// ─── Allowed external paths ─────────────────────────────────────────
+// Directories outside the project root that file_read and list_files
+// are permitted to access. Configured via Settings → Allowed External Paths.
+let allowedExternalPaths: string[] = [];
+
+export function setAllowedExternalPaths(paths: string[]): void {
+  allowedExternalPaths = paths
+    .map((p) => path.resolve(p.trim()))
+    .filter((p) => p.length > 3); // reject empty or root-level
+}
+
+export function getAllowedExternalPaths(): string[] {
+  return [...allowedExternalPaths];
+}
+
 /**
  * Resolve the uploads directory. Honors the HARNESS_UPLOADS_DIR env override
  * (absolute or project-relative) and falls back to .harness/uploads. The
@@ -52,8 +67,12 @@ export function resolveProjectPath(value: unknown): string | null {
   const raw = String(value ?? '');
   const resolved = path.resolve(raw);
   const relative = path.relative(process.cwd(), resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  return resolved;
+  if (!relative.startsWith('..') && !path.isAbsolute(relative)) return resolved;
+  // Check allowed external paths
+  for (const allowed of allowedExternalPaths) {
+    if (isInside(resolved, allowed) || resolved === allowed) return resolved;
+  }
+  return null;
 }
 
 /**
