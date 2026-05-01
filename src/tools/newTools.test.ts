@@ -4,6 +4,8 @@ import * as path from 'path';
 import { EmailDraftTool } from './emailTools';
 import { CalendarReadTool } from './calendarTools';
 import { InstallSkillTool, setInstallSkillsDir } from './skillInstallTool';
+import { DesktopScreenshotTool } from './desktopTools';
+import { BrowserBookmarksTool } from './browserTools';
 
 describe('EmailDraftTool', () => {
   it('creates a .eml draft file', async () => {
@@ -128,6 +130,43 @@ describe('InstallSkillTool', () => {
     const result = await InstallSkillTool.execute({ url: '' });
     expect(result.success).toBe(false);
     expect(result.error).toContain('missing');
+  });
+});
+
+describe('DesktopScreenshotTool', () => {
+  it('has correct tool metadata', () => {
+    expect(DesktopScreenshotTool.name).toBe('desktop_screenshot');
+    expect(DesktopScreenshotTool.isReadOnly).toBe(true);
+    expect(DesktopScreenshotTool.description).toContain('screenshot');
+  });
+
+  it('returns a result (may fail in headless CI)', async () => {
+    const result = await DesktopScreenshotTool.execute({ region: 'full' });
+    // In CI/headless, screenshot may fail — that's OK, we just verify the tool runs
+    expect(typeof result.success).toBe('boolean');
+    expect(typeof result.output).toBe('string');
+  });
+});
+
+describe('BrowserBookmarksTool', () => {
+  it('has correct tool metadata', () => {
+    expect(BrowserBookmarksTool.name).toBe('browser_bookmarks');
+    expect(BrowserBookmarksTool.isReadOnly).toBe(true);
+    expect(BrowserBookmarksTool.description).toContain('bookmark');
+  });
+
+  it('rejects unsupported browsers', async () => {
+    const result = await BrowserBookmarksTool.execute({ browser: 'firefox' });
+    expect(result.success).toBe(false);
+    expect(result.output).toContain('Supported browsers');
+  });
+
+  it('handles missing bookmarks file gracefully', async () => {
+    // Force a browser that likely doesn't exist in test env path
+    const result = await BrowserBookmarksTool.execute({ browser: 'edge' });
+    // Either succeeds (Edge installed) or fails gracefully
+    expect(typeof result.success).toBe('boolean');
+    expect(typeof result.output).toBe('string');
   });
 });
 

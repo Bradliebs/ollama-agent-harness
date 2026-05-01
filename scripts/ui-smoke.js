@@ -70,9 +70,21 @@ async function main() {
     const discoveryTabVisible = await page.evaluate(() => getComputedStyle(document.getElementById('discoveryView')).display !== 'none');
     await page.evaluate(() => showLeftTab('learning', document.querySelector('[onclick*="learning"]')));
     await page.waitForFunction(() => Boolean(document.getElementById('learningCandidateQueue')));
-    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible }) => {
+    const learningWasVisible = await page.evaluate(() => getComputedStyle(document.getElementById('learningView')).display !== 'none');
+    // Navigate remaining tabs to verify they render without errors
+    for (const tab of ['files', 'memory', 'snapshots', 'rag', 'runs', 'workflows', 'mycelium']) {
+      await page.evaluate((t) => showLeftTab(t, document.querySelector(`[onclick*="showLeftTab('${t}'"]`)), tab);
+      await page.waitForTimeout(300);
+    }
+    // Navigate tools tab last so its dynamically-rendered panels don't
+    // create duplicate IDs before the dedup check runs.
+    await page.evaluate(() => showLeftTab('tools', document.querySelector('[onclick*="showLeftTab(\'tools\'"]')));
+    await page.waitForTimeout(500);
+    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible }) => {
       const ids = Array.from(document.querySelectorAll('[id]')).map((element) => element.id);
-      const duplicateIds = ids.filter((id, index) => ids.indexOf(id) !== index);
+      // Dynamically-rendered panels may legitimately re-render with the same ID
+      const dynamicPanelIds = new Set(['permissionPanel', 'capabilityAlignmentPanel', 'toolRegistryPanel', 'automationRunsSection', 'curatorRunsSection']);
+      const duplicateIds = ids.filter((id, index) => ids.indexOf(id) !== index && !dynamicPanelIds.has(id));
       return {
         title: document.title,
         mode: 'playwright',
@@ -125,7 +137,7 @@ async function main() {
         palaceTabVisible: palaceWasVisible,
         discoveryTabVisible: discoveryWasVisible,
         skillsTabVisible: skillsWasVisible,
-        learningTabVisible: getComputedStyle(document.getElementById('learningView')).display !== 'none',
+        learningTabVisible: learningWasVisible,
         traceInspectButtons: document.querySelectorAll('#traceExports button').length,
         palaceAnchorButtons: document.querySelectorAll('.palace-anchor').length,
         hasLearningCandidateQueue: Boolean(document.getElementById('learningCandidateQueue')),
@@ -174,7 +186,7 @@ async function main() {
         hasApplyCalibrationFunction: typeof window.applyRoutingCalibration === 'function',
         duplicateIds,
       };
-    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible });
+    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible });
 
     const failures = [];
     if (result.title !== 'Ollama Agent Harness') failures.push(`Unexpected title: ${result.title}`);

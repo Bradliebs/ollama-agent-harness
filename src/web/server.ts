@@ -418,26 +418,32 @@ app.post('/api/output-validation/suggest-profile', async (req, res) => {
 });
 
 app.post('/api/output-validation/feedback', async (req, res) => {
-  await ensureSettingsLoaded();
-  const profile = String(req.body?.profile ?? '').trim();
-  const voteRaw = String(req.body?.vote ?? '').trim().toLowerCase();
-  if (!profile) { res.status(400).json({ error: 'profile is required' }); return; }
-  if (voteRaw !== 'up' && voteRaw !== 'down') { res.status(400).json({ error: 'vote must be "up" or "down"' }); return; }
-  const selectionSourceRaw = String(req.body?.selectionSource ?? 'auto-selected');
-  const selectionSource = selectionSourceRaw === 'manual-selected' ? 'manual-selected' : 'auto-selected';
-  const run = await recordProfileFeedbackEvalRun(PROJECT_DIR, {
-    profile,
-    vote: voteRaw,
-    selectionSource,
-    selectionReason: req.body?.selectionReason ? String(req.body.selectionReason).slice(0, 500) : undefined,
-    prompt: req.body?.prompt ? String(req.body.prompt).slice(0, 500) : undefined,
-  });
-  res.json({ ok: true, runId: run.id });
+  try {
+    await ensureSettingsLoaded();
+    const profile = String(req.body?.profile ?? '').trim();
+    const voteRaw = String(req.body?.vote ?? '').trim().toLowerCase();
+    if (!profile) { res.status(400).json({ error: 'profile is required' }); return; }
+    if (voteRaw !== 'up' && voteRaw !== 'down') { res.status(400).json({ error: 'vote must be "up" or "down"' }); return; }
+    const selectionSourceRaw = String(req.body?.selectionSource ?? 'auto-selected');
+    const selectionSource = selectionSourceRaw === 'manual-selected' ? 'manual-selected' : 'auto-selected';
+    const run = await recordProfileFeedbackEvalRun(PROJECT_DIR, {
+      profile,
+      vote: voteRaw,
+      selectionSource,
+      selectionReason: req.body?.selectionReason ? String(req.body.selectionReason).slice(0, 500) : undefined,
+      prompt: req.body?.prompt ? String(req.body.prompt).slice(0, 500) : undefined,
+    });
+    res.json({ ok: true, runId: run.id });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
 });
 
 app.get('/api/output-validation/feedback-replay', async (_req, res) => {
-  await ensureSettingsLoaded();
-  const runs = await listEvalTraceRuns(PROJECT_DIR);
+  try {
+    await ensureSettingsLoaded();
+    const runs = await listEvalTraceRuns(PROJECT_DIR);
   const PLACEHOLDER_TASK = 'validation profile feedback';
   const replays: Array<{ originalProfile: string; suggestedProfile: string; matched: boolean; prompt: string; createdAt: string; status: 'fixed' | 'still-misclassified' | 'no-prompt' }> = [];
   let fixed = 0;
@@ -470,6 +476,10 @@ app.get('/api/output-validation/feedback-replay', async (_req, res) => {
     noPrompt,
     replays: replays.slice(-50).reverse(),
   });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
 });
 
 app.post('/api/output-validation/templates/install', async (req, res) => {
