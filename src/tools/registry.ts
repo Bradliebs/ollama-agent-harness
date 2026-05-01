@@ -6,6 +6,7 @@ import { AnalyzePatternsTool, ConsolidateTool, EvolveTool, ImproveSkillTool, Pro
 import { MemoryReadTool, MemoryWriteTool } from './memoryTools';
 import { AudioTranscribeTool, ImageAnalyzeTool } from './multimodalTools';
 import { PdfExtractTablesTool, PdfMetadataTool, PdfReadTool, PdfRenderPageTool } from './pdfTool';
+import { RagListIndexesTool, RagSearchTool } from './ragTools';
 import { CreateSkillTool, ListSkillsTool, SkillTool } from './skillTools';
 import { WebFetchTool } from './webFetchTool';
 import { WebReadTool, WebSearchTool } from './webSearchTool';
@@ -82,4 +83,6 @@ export const BUILTIN_TOOL_ENTRIES: ToolRegistryEntry[] = [
   { tool: PdfMetadataTool, toolset: 'pdf', source: 'builtin', enabledByDefault: true },
   { tool: PdfRenderPageTool, toolset: 'pdf', source: 'builtin', enabledByDefault: true },
   { tool: PdfExtractTablesTool, toolset: 'pdf', source: 'builtin', enabledByDefault: true },
+  { tool: RagSearchTool, toolset: 'rag', source: 'builtin', enabledByDefault: true },
+  { tool: RagListIndexesTool, toolset: 'rag', source: 'builtin', enabledByDefault: true },
 ];

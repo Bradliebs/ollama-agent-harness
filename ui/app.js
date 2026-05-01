@@ -2106,6 +2106,7 @@ const ragState = {
   treeCache: new Map(),
   lastPreview: null,
   lastBuild: null,
+  indexCache: new Map(),
 };
 
 async function loadRagTab() {
@@ -2148,12 +2149,24 @@ async function loadRagTab() {
     if (indexes.length === 0) {
       listing = '<div class="trace-meta" style="padding:8px">(no indexes yet)</div>';
     } else {
-      const rows = indexes.map((i) => '<div class="trace-item">'
-        + '<div class="trace-title">' + esc(i.name) + '</div>'
-        + '<div class="trace-meta">' + i.chunks + ' chunks · ' + i.files + ' files · ' + esc(i.backend) + ' (' + esc(i.model) + ', dim=' + i.dim + ')</div>'
-        + '<div class="trace-meta">Updated ' + esc(new Date(i.updatedAt).toLocaleString()) + '</div>'
-        + '<div class="inline-actions" style="margin-top:6px"><button class="btn-sm danger" onclick="ragDrop(\'' + escAttr(i.name) + '\')">Delete</button></div>'
-        + '</div>').join('');
+      ragState.indexCache = new Map(indexes.map((i) => [i.name, i]));
+      const rows = indexes.map((i) => {
+        const prefSummary = i.prefs && Array.isArray(i.prefs.paths) && i.prefs.paths.length
+          ? '<div class="trace-meta">Last paths: ' + esc(i.prefs.paths.slice(0, 4).join(', ')) + (i.prefs.paths.length > 4 ? ', …' : '') + '</div>'
+          : '';
+        const rebuildAttr = i.prefs ? '' : ' disabled title="No saved paths for this index. Pick paths above and Build with the same name."';
+        return '<div class="trace-item">'
+          + '<div class="trace-title">' + esc(i.name) + '</div>'
+          + '<div class="trace-meta">' + i.chunks + ' chunks · ' + i.files + ' files · ' + esc(i.backend) + ' (' + esc(i.model) + ', dim=' + i.dim + ')</div>'
+          + '<div class="trace-meta">Updated ' + esc(new Date(i.updatedAt).toLocaleString()) + '</div>'
+          + prefSummary
+          + '<div class="inline-actions" style="margin-top:6px">'
+          +   '<button class="btn-sm" onclick="ragLoadPrefsIntoPicker(\'' + escAttr(i.name) + '\')"' + rebuildAttr + '>Load paths</button> '
+          +   '<button class="btn-sm" onclick="ragRebuildNow(\'' + escAttr(i.name) + '\')"' + rebuildAttr + '>Rebuild</button> '
+          +   '<button class="btn-sm danger" onclick="ragDrop(\'' + escAttr(i.name) + '\')">Delete</button>'
+          + '</div>'
+          + '</div>';
+      }).join('');
       listing = '<div class="trace-list">' + rows + '</div>';
     }
     view.innerHTML = header + builder + (indexes.length ? queryBox : '') + listing;
@@ -2458,6 +2471,32 @@ async function ragDrop(name) {
     if (d.error) { alert(d.error); return; }
     await loadRagTab();
   } catch (e) { alert(e.message); }
+}
+
+function ragLoadPrefsIntoPicker(name) {
+  const idx = ragState.indexCache.get(name);
+  if (!idx || !idx.prefs || !Array.isArray(idx.prefs.paths)) return;
+  ragState.selectedPaths = new Set(idx.prefs.paths);
+  const nameInput = document.getElementById('ragBuildName');
+  if (nameInput) nameInput.value = name;
+  const backendSelect = document.getElementById('ragBuildBackend');
+  if (backendSelect) backendSelect.value = idx.prefs.backend || '';
+  renderRagSelectedList();
+  renderRagTree();
+  const status = document.getElementById('ragBuildStatus');
+  if (status) status.textContent = 'Loaded ' + idx.prefs.paths.length + ' saved path(s) for "' + name + '". Edit selection or click Build to refresh.';
+}
+
+async function ragRebuildNow(name) {
+  const idx = ragState.indexCache.get(name);
+  if (!idx || !idx.prefs || !Array.isArray(idx.prefs.paths) || idx.prefs.paths.length === 0) return;
+  if (!confirm('Rebuild index "' + name + '" with the same ' + idx.prefs.paths.length + ' path(s)?')) return;
+  ragState.selectedPaths = new Set(idx.prefs.paths);
+  const nameInput = document.getElementById('ragBuildName');
+  if (nameInput) nameInput.value = name;
+  const backendSelect = document.getElementById('ragBuildBackend');
+  if (backendSelect) backendSelect.value = idx.prefs.backend || '';
+  await ragBuild();
 }
 
 // ─── Local Tools dashboard ─────────────────────────────────────────

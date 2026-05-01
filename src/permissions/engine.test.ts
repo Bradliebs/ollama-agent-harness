@@ -53,6 +53,8 @@ describe('PermissionEngine', () => {
       expect(engine.evaluate({ name: 'pdf_read', input: { path: 'doc.pdf' } }).decision).toBe('allow');
       expect(engine.evaluate({ name: 'pdf_metadata', input: { path: 'doc.pdf' } }).decision).toBe('allow');
       expect(engine.evaluate({ name: 'pdf_extract_tables', input: { path: 'doc.pdf', page: 1 } }).decision).toBe('allow');
+      expect(engine.evaluate({ name: 'rag_search', input: { index: 'docs', query: 'q' } }).decision).toBe('allow');
+      expect(engine.evaluate({ name: 'rag_list_indexes', input: {} }).decision).toBe('allow');
     });
 
     it('default mode asks for non-read tools', () => {

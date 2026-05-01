@@ -63,6 +63,8 @@ export interface RagIndexSummary {
   model: string;
   dim: number;
   updatedAt: string;
+  /** Saved picker preferences from the last build, when present. */
+  prefs?: RagIndexPrefs;
 }
 
 export interface RagSearchResult {
@@ -107,6 +109,33 @@ function safeIndexName(name: string): string {
 
 function indexPath(projectDir: string, name: string): string {
   return path.join(ragDir(projectDir), `${safeIndexName(name)}.json`);
+}
+
+function prefsPath(projectDir: string, name: string): string {
+  return path.join(ragDir(projectDir), `${safeIndexName(name)}.prefs.json`);
+}
+
+export interface RagIndexPrefs {
+  /** Last set of paths the user picked when (re)building this index. */
+  paths: string[];
+  /** Backend the user explicitly chose, or undefined for auto. */
+  backend?: 'ollama' | 'hash';
+  updatedAt: string;
+}
+
+export async function readIndexPrefs(projectDir: string, name: string): Promise<RagIndexPrefs | null> {
+  try {
+    const raw = await fs.readFile(prefsPath(projectDir, name), 'utf-8');
+    const parsed = JSON.parse(raw) as RagIndexPrefs;
+    if (!Array.isArray(parsed.paths)) return null;
+    return parsed;
+  } catch { return null; }
+}
+
+export async function writeIndexPrefs(projectDir: string, name: string, prefs: Omit<RagIndexPrefs, 'updatedAt'>): Promise<void> {
+  await fs.mkdir(ragDir(projectDir), { recursive: true });
+  const payload: RagIndexPrefs = { ...prefs, updatedAt: new Date().toISOString() };
+  await fs.writeFile(prefsPath(projectDir, name), JSON.stringify(payload, null, 2), 'utf-8');
 }
 
 async function fileExists(p: string): Promise<boolean> {
@@ -217,11 +246,12 @@ export async function listIndexes(projectDir: string): Promise<RagIndexSummary[]
   try { entries = await fs.readdir(dir); } catch { return []; }
   const out: RagIndexSummary[] = [];
   for (const file of entries) {
-    if (!file.endsWith('.json')) continue;
+    if (!file.endsWith('.json') || file.endsWith('.prefs.json')) continue;
     try {
       const content = await fs.readFile(path.join(dir, file), 'utf-8');
       const idx = JSON.parse(content) as RagIndexFile;
       const sources = new Set(idx.chunks.map((c) => c.source));
+      const prefs = await readIndexPrefs(projectDir, idx.name);
       out.push({
         name: idx.name,
         path: path.join(dir, file),
@@ -231,6 +261,7 @@ export async function listIndexes(projectDir: string): Promise<RagIndexSummary[]
         model: idx.backend.model,
         dim: idx.backend.dim,
         updatedAt: idx.updatedAt,
+        prefs: prefs ?? undefined,
       });
     } catch { /* skip corrupt */ }
   }
@@ -347,6 +378,7 @@ export async function* iterateBuild(
     chunks,
   };
   await fs.writeFile(indexPath(projectDir, name), JSON.stringify(file), 'utf-8');
+  await writeIndexPrefs(projectDir, name, { paths, backend: options.backend });
   yield { stage: 'done', files: new Set(chunks.map((c) => c.source)).size, totalChunks: chunks.length, backend, preview };
 }
 
@@ -410,5 +442,9 @@ export async function search(
 
 export async function dropIndex(projectDir: string, name: string): Promise<boolean> {
   const idxPath = indexPath(projectDir, name);
-  try { await fs.rm(idxPath, { force: true }); return true; } catch { return false; }
+  try {
+    await fs.rm(idxPath, { force: true });
+    await fs.rm(prefsPath(projectDir, name), { force: true });
+    return true;
+  } catch { return false; }
 }

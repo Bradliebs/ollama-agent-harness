@@ -10,6 +10,7 @@ import { getBuiltinTools } from '../tools';
 import { drainUploadsFallbacks, getUploadsDir, resolveProjectReadPath } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { setSkillsDir } from '../tools/skillTools';
+import { setRagRuntime } from '../tools/ragTools';
 import { PermissionEngine } from '../permissions/engine';
 import { PermissionPromptBroker } from '../permissions/promptBroker';
 import { SessionStorage } from '../persistence/sessionStorage';
@@ -185,6 +186,7 @@ let webRuntime: WebRuntimeDeps = defaultWebRuntime;
 
 // Initialize skills directory for SkillTool
 setSkillsDir(SKILLS_DIR);
+setRagRuntime({ projectDir: PROJECT_DIR, ollamaHost });
 
 // --- API Routes ---
 
@@ -247,6 +249,7 @@ app.post('/api/settings', async (req, res) => {
     const parsedHost = parseHttpUrl(req.body.ollamaHost);
     if (!parsedHost) { res.status(400).json({ error: 'Invalid Ollama host.' }); return; }
     ollamaHost = parsedHost;
+    setRagRuntime({ ollamaHost });
   }
   if (req.body.systemPrompt !== undefined) systemPromptOverride = String(req.body.systemPrompt).slice(0, 20_000);
   if (req.body.summarizerModel !== undefined) summarizerModel = sanitizeModelName(req.body.summarizerModel);
@@ -1798,7 +1801,7 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   if (settings.permissionMode !== undefined && ALLOWED_PERMISSION_MODES.includes(settings.permissionMode)) permissionMode = settings.permissionMode;
   if (settings.ollamaHost !== undefined) {
     const parsedHost = parseHttpUrl(settings.ollamaHost);
-    if (parsedHost) ollamaHost = parsedHost;
+    if (parsedHost) { ollamaHost = parsedHost; setRagRuntime({ ollamaHost }); }
   }
   if (settings.systemPrompt !== undefined) systemPromptOverride = String(settings.systemPrompt).slice(0, 20_000);
   if (settings.summarizerModel !== undefined) summarizerModel = sanitizeModelName(settings.summarizerModel);
