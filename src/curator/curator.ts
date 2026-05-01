@@ -100,6 +100,10 @@ async function appendAuditLog(projectDir: string, entry: Record<string, unknown>
   await fs.appendFile(logFile(projectDir), line, 'utf-8');
 }
 
+async function fileExists(filePath: string): Promise<boolean> {
+  try { await fs.access(filePath); return true; } catch { return false; }
+}
+
 /**
  * Phase 1: identify skills the curator considers stale. Pure function over
  * loaded definitions and usage records. Always safe to call.
@@ -322,6 +326,171 @@ export async function readCuratorProposals(projectDir: string): Promise<string |
   try {
     return await fs.readFile(proposalsFile(projectDir), 'utf-8');
   } catch { return null; }
+}
+
+export interface MergeProposal {
+  /** Suggested umbrella name (slugified). */
+  umbrellaName: string;
+  /** Original heading text from the proposal. */
+  heading: string;
+  /** Skills the proposal wants to merge. */
+  mergeSkills: string[];
+  /** Optional rationale line. */
+  rationale?: string;
+  /** Optional proposed description for the new umbrella skill. */
+  proposedDescription?: string;
+}
+
+/**
+ * Parse the proposals markdown into a structured list. The format the LLM is
+ * asked to follow is:
+ *   ### Cluster: <umbrella name>
+ *   - merge: a, b, c
+ *   - rationale: ...
+ *   - proposed description: ...
+ * This parser is intentionally lenient: missing fields are tolerated.
+ */
+export function parseMergeProposals(content: string): MergeProposal[] {
+  if (!content) return [];
+  const proposals: MergeProposal[] = [];
+  const lines = content.split('\n');
+  let current: MergeProposal | null = null;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    const heading = line.match(/^#{2,4}\s*Cluster\s*:\s*(.+)$/i);
+    if (heading) {
+      if (current && current.mergeSkills.length > 0) proposals.push(current);
+      const headingText = heading[1].trim();
+      current = {
+        umbrellaName: slugifySkillName(headingText),
+        heading: headingText,
+        mergeSkills: [],
+      };
+      continue;
+    }
+    if (!current) continue;
+    const mergeMatch = line.match(/^[-*]\s*merge\s*:\s*(.+)$/i);
+    if (mergeMatch) {
+      current.mergeSkills = mergeMatch[1].split(',').map((item) => item.trim()).filter(Boolean);
+      continue;
+    }
+    const rationaleMatch = line.match(/^[-*]\s*rationale\s*:\s*(.+)$/i);
+    if (rationaleMatch) {
+      current.rationale = rationaleMatch[1].trim();
+      continue;
+    }
+    const descMatch = line.match(/^[-*]\s*proposed\s+description\s*:\s*(.+)$/i);
+    if (descMatch) {
+      current.proposedDescription = descMatch[1].trim();
+      continue;
+    }
+  }
+  if (current && current.mergeSkills.length > 0) proposals.push(current);
+  return proposals.filter((p) => p.mergeSkills.length >= 2);
+}
+
+function slugifySkillName(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'umbrella';
+}
+
+export interface ApplyMergeOptions {
+  /** Override the umbrella name from the proposal. */
+  umbrellaName?: string;
+  /** Override the description. */
+  description?: string;
+  /** When true, writes the umbrella but does not archive originals. */
+  dryRun?: boolean;
+}
+
+export interface ApplyMergeResult {
+  umbrellaName: string;
+  umbrellaPath: string;
+  archived: string[];
+  skipped: string[];
+  dryRun: boolean;
+}
+
+/**
+ * Apply a single LLM merge proposal: writes a new umbrella SKILL.md that
+ * concatenates the source skill bodies, then archives the originals.
+ * Pinned skills are not archived (the umbrella still references them in its
+ * body for transparency).
+ */
+export async function applyMergeProposal(
+  projectDir: string,
+  proposal: MergeProposal,
+  options: ApplyMergeOptions = {},
+): Promise<ApplyMergeResult> {
+  const umbrellaName = (options.umbrellaName && slugifySkillName(options.umbrellaName)) || proposal.umbrellaName;
+  const umbrellaDir = path.join(skillsDir(projectDir), umbrellaName);
+  const umbrellaPath = path.join(umbrellaDir, 'SKILL.md');
+  if (await fileExists(umbrellaPath)) {
+    throw new Error(`Umbrella skill '${umbrellaName}' already exists. Choose a different name.`);
+  }
+  const scan = await scanSkillsDir(skillsDir(projectDir));
+  const usage = await loadSkillUsage(projectDir);
+  const sourceSkills = proposal.mergeSkills
+    .map((name) => scan.skills.find((skill) => skill.name === name))
+    .filter((skill): skill is NonNullable<typeof skill> => Boolean(skill));
+  if (sourceSkills.length < 2) {
+    throw new Error('Need at least 2 source skills to merge; some referenced skills were not found.');
+  }
+  const description = options.description?.trim() || proposal.proposedDescription?.trim() || `Umbrella skill merged from: ${sourceSkills.map((s) => s.name).join(', ')}.`;
+
+  const archivedNames: string[] = [];
+  const skipped: string[] = [];
+
+  if (!options.dryRun) {
+    await fs.mkdir(umbrellaDir, { recursive: true });
+    const body = [
+      `---`,
+      `name: ${umbrellaName}`,
+      `description: ${description}`,
+      `domain: umbrella`,
+      `triggers: []`,
+      `---`,
+      ``,
+      `# ${umbrellaName}`,
+      ``,
+      proposal.rationale ? `> ${proposal.rationale}` : '',
+      proposal.rationale ? `` : '',
+      `Merged from ${sourceSkills.length} skill(s) by the curator on ${new Date().toISOString()}.`,
+      ``,
+      ...sourceSkills.flatMap((skill) => [
+        `## ${skill.name}`,
+        ``,
+        skill.description,
+        ``,
+        skill.content,
+        ``,
+      ]),
+    ].filter((line) => line !== null && line !== undefined).join('\n');
+    await fs.writeFile(umbrellaPath, body, 'utf-8');
+
+    for (const skill of sourceSkills) {
+      const record = usage.records[skill.name];
+      if (record?.pinned) {
+        skipped.push(skill.name);
+        continue;
+      }
+      try {
+        await archiveSkill(projectDir, skill.name);
+        archivedNames.push(skill.name);
+        await appendAuditLog(projectDir, { phase: 'merge-applied', umbrella: umbrellaName, archived: skill.name });
+      } catch (error) {
+        skipped.push(skill.name);
+        await appendAuditLog(projectDir, { phase: 'merge-applied', umbrella: umbrellaName, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    runtimeTracer.recordEvent('curator.merge_applied', { umbrella: umbrellaName, archived: archivedNames, skipped });
+  }
+
+  return { umbrellaName, umbrellaPath, archived: archivedNames, skipped, dryRun: Boolean(options.dryRun) };
+}
+
+export async function clearCuratorProposals(projectDir: string): Promise<void> {
+  try { await fs.rm(proposalsFile(projectDir), { force: true }); }
+  catch { /* nothing to clear */ }
 }
 
 // Re-export for tests / convenience

@@ -387,6 +387,49 @@ describe('web server API validation', () => {
     expect(unpin.status).toBe(200);
   });
 
+  it('returns parsed merge proposals and applies them via /api/curator/proposals/apply', async () => {
+    // Seed two runtime skills + a hand-written proposals file so we don't
+    // need to reach an LLM during tests.
+    const skillA = path.join(process.cwd(), '.harness', 'skills', 'apply-test-a');
+    const skillB = path.join(process.cwd(), '.harness', 'skills', 'apply-test-b');
+    const proposalsFile = path.join(process.cwd(), '.harness', 'curator', 'proposals.md');
+    await fs.mkdir(skillA, { recursive: true });
+    await fs.mkdir(skillB, { recursive: true });
+    await fs.writeFile(path.join(skillA, 'SKILL.md'), '---\nname: apply-test-a\ndescription: A\ndomain: t\n---\n# A', 'utf-8');
+    await fs.writeFile(path.join(skillB, 'SKILL.md'), '---\nname: apply-test-b\ndescription: B\ndomain: t\n---\n# B', 'utf-8');
+    await fs.mkdir(path.dirname(proposalsFile), { recursive: true });
+    await fs.writeFile(proposalsFile, '### Cluster: apply-test-umbrella\n- merge: apply-test-a, apply-test-b\n- rationale: testing\n', 'utf-8');
+    try {
+      const list = await request('/api/curator/proposals');
+      expect(list.status).toBe(200);
+      const body = await list.json() as { proposals: Array<{ umbrellaName: string; mergeSkills: string[] }> };
+      const target = body.proposals.find((p) => p.umbrellaName === 'apply-test-umbrella');
+      expect(target).toBeDefined();
+      expect(target?.mergeSkills).toEqual(['apply-test-a', 'apply-test-b']);
+
+      const applied = await request('/api/curator/proposals/apply', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ proposal: target }),
+      });
+      expect(applied.status).toBe(200);
+      const result = (await applied.json()) as { result: { umbrellaName: string; archived: string[] } };
+      expect(result.result.archived).toEqual(['apply-test-a', 'apply-test-b']);
+      const umbrella = await fs.readFile(path.join(process.cwd(), '.harness', 'skills', 'apply-test-umbrella', 'SKILL.md'), 'utf-8');
+      expect(umbrella).toContain('apply-test-a');
+      expect(umbrella).toContain('apply-test-b');
+
+      const dismiss = await request('/api/curator/proposals', { method: 'DELETE' });
+      expect(dismiss.status).toBe(200);
+    } finally {
+      await fs.rm(path.join(process.cwd(), '.harness', 'skills', 'apply-test-umbrella'), { recursive: true, force: true });
+      await fs.rm(path.join(process.cwd(), '.harness', 'skills', '_archive', 'apply-test-a'), { recursive: true, force: true });
+      await fs.rm(path.join(process.cwd(), '.harness', 'skills', '_archive', 'apply-test-b'), { recursive: true, force: true });
+      await fs.rm(skillA, { recursive: true, force: true });
+      await fs.rm(skillB, { recursive: true, force: true });
+      await fs.rm(proposalsFile, { force: true });
+    }
+  });
+
   it('refreshes the model catalog and rebuilds the session search index', async () => {
     const catalog = await request('/api/models/catalog/refresh', { method: 'POST' });
     expect(catalog.status).toBe(200);

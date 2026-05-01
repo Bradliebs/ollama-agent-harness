@@ -9,7 +9,7 @@ import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { getBuiltinTools } from '../tools';
 import { createBuiltinToolRegistry } from '../tools/registry';
 import { WorkflowRegistry } from '../workflows/workflowRegistry';
-import { runCurator, runDeterministicPhase, readCuratorLog, readCuratorProposals, restoreSkill, type CuratorConfig } from '../curator/curator';
+import { runCurator, runDeterministicPhase, readCuratorLog, readCuratorProposals, restoreSkill, parseMergeProposals, applyMergeProposal, clearCuratorProposals, type CuratorConfig } from '../curator/curator';
 import { CuratorScheduler } from '../curator/scheduler';
 import { listSkillUsage, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { drainUploadsFallbacks, getUploadsDir, resolveProjectReadPath } from '../tools/pathResolution';
@@ -1701,6 +1701,56 @@ app.post('/api/curator/restore/:name', async (req, res) => {
   try {
     const result = await restoreSkill(PROJECT_DIR, skillName);
     res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Return the last LLM phase output as a structured proposal list. UI uses
+// this to render Approve / Dismiss buttons per cluster instead of asking the
+// user to read raw markdown.
+app.get('/api/curator/proposals', async (_req, res) => {
+  try {
+    const raw = await readCuratorProposals(PROJECT_DIR);
+    const proposals = raw ? parseMergeProposals(raw) : [];
+    res.json({ proposals, raw });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Apply a single merge proposal: writes a new umbrella SKILL.md and archives
+// the source skills (pinned ones are skipped). Body: { proposal, umbrellaName?, description?, dryRun? }.
+app.post('/api/curator/proposals/apply', async (req, res) => {
+  const proposal = req.body?.proposal;
+  if (!proposal || !Array.isArray(proposal.mergeSkills) || proposal.mergeSkills.length < 2) {
+    res.status(400).json({ error: 'proposal must include at least 2 mergeSkills' });
+    return;
+  }
+  const opts = {
+    umbrellaName: typeof req.body?.umbrellaName === 'string' ? req.body.umbrellaName : undefined,
+    description: typeof req.body?.description === 'string' ? req.body.description : undefined,
+    dryRun: Boolean(req.body?.dryRun),
+  };
+  try {
+    const result = await applyMergeProposal(PROJECT_DIR, {
+      umbrellaName: typeof proposal.umbrellaName === 'string' ? proposal.umbrellaName : 'umbrella',
+      heading: typeof proposal.heading === 'string' ? proposal.heading : '',
+      mergeSkills: proposal.mergeSkills.map((item: unknown) => String(item)),
+      rationale: typeof proposal.rationale === 'string' ? proposal.rationale : undefined,
+      proposedDescription: typeof proposal.proposedDescription === 'string' ? proposal.proposedDescription : undefined,
+    }, opts);
+    res.json({ ok: true, result });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Clear the proposals file (Dismiss all).
+app.delete('/api/curator/proposals', async (_req, res) => {
+  try {
+    await clearCuratorProposals(PROJECT_DIR);
+    res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }

@@ -225,6 +225,7 @@ async function loadSettings() {
     if (firstRunHost) firstRunHost.value = s.ollamaHost || 'http://localhost:11434';
     if (firstRunVision) firstRunVision.value = currentMediaTools.visionModel || '';
     if (firstRunAudio) firstRunAudio.value = currentMediaTools.audioTranscribeCommand || '';
+    hydrateCuratorSettings(s.curator || {});
     document.querySelectorAll('.permission-mode-option').forEach((option) => option.classList.remove('active'));
     const modeIndex = s.permissionMode === 'dontAsk' ? 0 : s.permissionMode === 'acceptEdits' ? 1 : 2;
     const mode = document.querySelectorAll('.permission-mode-option')[modeIndex];
@@ -632,6 +633,34 @@ function updateMediaToolSetting(k, v) {
   else delete next[k];
   currentMediaTools = next;
   updateSetting('mediaTools', next);
+}
+
+let currentCuratorSettings = {};
+function hydrateCuratorSettings(curator) {
+  currentCuratorSettings = curator || {};
+  const set = (id, value) => { const el = document.getElementById(id); if (el && value !== undefined && value !== null) { if (el.type === 'checkbox') el.checked = Boolean(value); else el.value = value; } };
+  set('curatorEnabled', currentCuratorSettings.enabled);
+  set('curatorIntervalHours', currentCuratorSettings.intervalHours);
+  set('curatorIdleMinutes', currentCuratorSettings.idleThresholdMinutes);
+  set('curatorStaleDays', currentCuratorSettings.staleDays);
+  set('curatorMinViews', currentCuratorSettings.minViewsBeforeArchive);
+  set('curatorMaxArchive', currentCuratorSettings.maxArchivePerRun);
+  set('curatorEnableLlm', currentCuratorSettings.enableLlmPhase);
+}
+
+async function updateCuratorSetting(key, value) {
+  const next = { ...currentCuratorSettings, [key]: value };
+  currentCuratorSettings = next;
+  const status = document.getElementById('curatorSettingsStatus');
+  if (status) { status.classList.remove('initial-hidden'); status.textContent = 'Saving…'; }
+  try {
+    await updateSetting('curator', next);
+    if (status) status.textContent = 'Saved.';
+    // Refresh the Skills tab Curator panel if it is open.
+    if (typeof loadSkills === 'function' && document.getElementById('curatorPanel')) loadSkills();
+  } catch (error) {
+    if (status) status.textContent = 'Save failed: ' + (error.message || error);
+  }
 }
 
 async function runUploadsCleanup() {
@@ -1707,7 +1736,7 @@ async function loadFiles(dir) {
   } catch {}
 }
 
-async function loadSkills() { try { const r = await fetch('/api/skills'); const d = await r.json(); const usageR = await fetch('/api/skills/usage').then((r) => r.json()).catch(() => ({ records: [] })); const curatorR = await fetch('/api/curator').then((r) => r.json()).catch(() => null); const usageMap = new Map((usageR.records || []).map((rec) => [rec.name, rec])); const list = document.getElementById('skillList'); list.innerHTML = ''; const runtime = (d.sources || []).find((source) => source.source === 'runtime') || { skills: d.skills || [], diagnostics: [], mutable: true }; const repo = (d.sources || []).find((source) => source.source === 'repo') || { skills: [], diagnostics: [], mutable: false }; let html = renderCuratorPanel(curatorR); html += '<div id="runtimeSkillSource" class="trace-list"><div class="trace-title">Runtime Skills</div>'; if (!runtime.skills || !runtime.skills.length) html += '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No runtime skills yet.<br><br>Ask the agent to <strong>"create a skill for..."</strong> and it will build one automatically.</div>'; else html += runtime.skills.map((s) => renderRuntimeSkillItem(s, usageMap.get(s.name))).join(''); html += '</div>' + renderSkillDiagnostics(runtime.diagnostics || []); html += '<div id="repoSkillSource" class="trace-list"><div class="trace-title">Repo Skills</div>' + ((repo.skills || []).length ? repo.skills.map(renderRepoSkillItem).join('') : '<div class="trace-meta">No repo skills found in .github/skills.</div>') + '</div>'; list.innerHTML = html; } catch {} }
+async function loadSkills() { try { const r = await fetch('/api/skills'); const d = await r.json(); const usageR = await fetch('/api/skills/usage').then((r) => r.json()).catch(() => ({ records: [] })); const curatorR = await fetch('/api/curator').then((r) => r.json()).catch(() => null); const usageMap = new Map((usageR.records || []).map((rec) => [rec.name, rec])); const list = document.getElementById('skillList'); list.innerHTML = ''; const runtime = (d.sources || []).find((source) => source.source === 'runtime') || { skills: d.skills || [], diagnostics: [], mutable: true }; const repo = (d.sources || []).find((source) => source.source === 'repo') || { skills: [], diagnostics: [], mutable: false }; let html = renderCuratorPanel(curatorR); html += '<div id="runtimeSkillSource" class="trace-list"><div class="trace-title">Runtime Skills</div>'; if (!runtime.skills || !runtime.skills.length) html += '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No runtime skills yet.<br><br>Ask the agent to <strong>"create a skill for..."</strong> and it will build one automatically.</div>'; else html += runtime.skills.map((s) => renderRuntimeSkillItem(s, usageMap.get(s.name))).join(''); html += '</div>' + renderSkillDiagnostics(runtime.diagnostics || []); html += '<div id="repoSkillSource" class="trace-list"><div class="trace-title">Repo Skills</div>' + ((repo.skills || []).length ? repo.skills.map(renderRepoSkillItem).join('') : '<div class="trace-meta">No repo skills found in .github/skills.</div>') + '</div>'; list.innerHTML = html; if (curatorR && curatorR.proposals) loadCuratorProposals(); } catch {} }
 
 function renderRuntimeSkillItem(s, usage) {
   const u = usage || {};
@@ -1740,7 +1769,7 @@ function renderCuratorPanel(curator) {
   const runningBadge = curator.schedulerRunning ? ' <span class="capability-pill" style="border-color:#5bb0ff;color:#5bb0ff">scheduler running</span>' : '';
   const recentLog = (curator.log || []).slice(-5).reverse().map((entry) => '<div class="trace-meta" style="font-size:10px">' + esc(JSON.stringify(entry)) + '</div>').join('');
   const proposalsBlock = curator.proposals
-    ? '<details style="margin-top:6px"><summary class="trace-meta" style="cursor:pointer">LLM merge proposals (' + (curator.proposals.length) + ' chars)</summary><pre style="white-space:pre-wrap;font-size:11px;color:var(--text-dim);margin-top:4px">' + esc(curator.proposals) + '</pre></details>'
+    ? '<div id="curatorProposalsContainer" style="margin-top:6px"><div class="trace-meta">LLM merge proposals available — loading…</div></div>'
     : '';
   return '<div id="curatorPanel" class="trace-item" style="margin-bottom:8px">'
     + '<div class="trace-title">🧹 Skill Curator ' + stateBadge + runningBadge + '</div>'
@@ -1800,6 +1829,71 @@ function renderCuratorSummary(summary) {
     + (candidates ? '<details style="margin-top:4px"><summary class="trace-meta" style="cursor:pointer">All candidates</summary>' + candidates + '</details>' : '')
     + llmNote
     + '</div>';
+}
+
+async function loadCuratorProposals() {
+  const container = document.getElementById('curatorProposalsContainer');
+  if (!container) return;
+  try {
+    const data = await fetch('/api/curator/proposals').then((r) => r.json());
+    const proposals = data.proposals || [];
+    if (proposals.length === 0) {
+      container.innerHTML = '<div class="trace-meta">LLM proposals file present but no parseable clusters. <button class="btn-sm" onclick="dismissCuratorProposals()">Clear</button></div>';
+      return;
+    }
+    const rows = proposals.map((p, i) => {
+      const skillList = p.mergeSkills.map(esc).join(', ');
+      const rationale = p.rationale ? '<div class="trace-meta">' + esc(p.rationale) + '</div>' : '';
+      return '<div class="trace-item">'
+        + '<div class="trace-title">Cluster: ' + esc(p.heading) + '</div>'
+        + '<div class="trace-meta">Merge: ' + skillList + '</div>'
+        + (p.proposedDescription ? '<div class="trace-meta">' + esc(p.proposedDescription) + '</div>' : '')
+        + rationale
+        + '<div class="inline-actions" style="margin-top:6px">'
+        +   '<button class="btn-sm" onclick="applyCuratorProposal(' + i + ', true)">Preview</button> '
+        +   '<button class="btn-sm primary" onclick="applyCuratorProposal(' + i + ', false)">Apply merge</button>'
+        + '</div>'
+        + '<div class="trace-meta" id="curatorProposalResult' + i + '"></div>'
+        + '</div>';
+    }).join('');
+    container.innerHTML = '<div class="trace-title" style="padding:0 4px">🧪 LLM Merge Proposals (' + proposals.length + ')</div>'
+      + '<div class="trace-list">' + rows + '</div>'
+      + '<div class="inline-actions" style="margin-top:4px"><button class="btn-sm" onclick="dismissCuratorProposals()">Dismiss all</button></div>';
+    window._curatorProposals = proposals;
+  } catch (error) {
+    container.innerHTML = '<div class="trace-meta">Failed to load proposals: ' + esc(error.message || error) + '</div>';
+  }
+}
+
+async function applyCuratorProposal(index, dryRun) {
+  const proposal = (window._curatorProposals || [])[index];
+  if (!proposal) return;
+  const result = document.getElementById('curatorProposalResult' + index);
+  if (!dryRun && !confirm('Apply merge "' + proposal.heading + '"? This writes a new umbrella skill and archives ' + proposal.mergeSkills.length + ' source skill(s).')) return;
+  if (result) result.textContent = dryRun ? 'Previewing…' : 'Applying…';
+  try {
+    const response = await fetch('/api/curator/proposals/apply', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ proposal, dryRun }),
+    });
+    const data = await response.json();
+    if (data.error) { if (result) result.textContent = 'Failed: ' + data.error; return; }
+    const r = data.result;
+    if (result) {
+      result.textContent = (dryRun ? '[preview] ' : '') + 'umbrella=' + r.umbrellaName + ' · archived=' + r.archived.length + (r.skipped.length ? ' · skipped (pinned)=' + r.skipped.join(', ') : '');
+    }
+    if (!dryRun) setTimeout(loadSkills, 600);
+  } catch (error) {
+    if (result) result.textContent = 'Failed: ' + (error.message || error);
+  }
+}
+
+async function dismissCuratorProposals() {
+  if (!confirm('Clear all current LLM merge proposals?')) return;
+  try {
+    await fetch('/api/curator/proposals', { method: 'DELETE' });
+    await loadSkills();
+  } catch (error) { alert('Dismiss failed: ' + (error.message || error)); }
 }
 function renderRepoSkillItem(s) { return '<div class="skill-item"><div class="sk-name">' + esc(s.name) + '</div><div class="sk-desc">' + esc(s.description) + '</div><div class="sk-meta"><span>' + esc(s.domain || 'repo') + '</span><span>read-only</span><button class="sk-install" onclick="installRepoSkill(\'' + escAttr(s.name) + '\')">Install to runtime</button></div></div>'; }
 function renderSkillDiagnostics(diagnostics) { if (!diagnostics || diagnostics.length === 0) return '<div id="skillDiagnostics" class="trace-list"><div class="trace-title">Skill Diagnostics</div><div class="trace-meta">No skipped runtime skill folders.</div></div>'; return '<div id="skillDiagnostics" class="trace-list"><div class="trace-title">Skill Diagnostics</div>' + diagnostics.map((item) => '<div class="trace-item"><div class="trace-title">' + esc(item.name) + '</div><div class="trace-meta">' + esc(item.reason) + ' · ' + esc(item.message) + '</div><div class="trace-meta">' + esc(item.filePath) + '</div>' + renderSkillDiagnosticActions(item) + '</div>').join('') + '</div>'; }
@@ -2754,24 +2848,49 @@ async function loadRuns() {
   if (!view) return;
   view.innerHTML = '<div class="trace-list"><div class="trace-title">Runs</div><div class="trace-meta">Loading…</div></div>';
   try {
-    const response = await fetch('/api/runs');
-    const data = await response.json();
+    const [runsR, curatorR] = await Promise.allSettled([
+      fetch('/api/runs').then((r) => r.json()),
+      fetch('/api/curator').then((r) => r.json()),
+    ]);
+    const data = runsR.status === 'fulfilled' ? runsR.value : { error: 'failed to load' };
     if (data.error) { view.innerHTML = '<div class="trace-meta">Failed: ' + esc(data.error) + '</div>'; return; }
     const runs = data.runs || [];
     const counts = data.counts || {};
     const summary = '<div class="panel-header" style="border-bottom:none"><h3>Runs</h3><div class="inline-actions"><button class="btn-sm" onclick="loadRuns()">Refresh</button></div></div>'
-      + '<div class="trace-meta" style="padding:0 4px 6px">' + (data.total || 0) + ' total · '
+      + '<div class="trace-meta" style="padding:0 4px 6px">' + (data.total || 0) + ' chat run(s) · '
       + Object.entries(counts).map(([k, v]) => esc(k) + ': ' + v).join(' · ')
       + '</div>';
+    const curatorSection = curatorR.status === 'fulfilled' ? renderCuratorRunsSection(curatorR.value) : '';
     if (runs.length === 0) {
-      view.innerHTML = summary + '<div class="trace-meta" style="padding:8px">(no runs yet — start a chat to record one)</div>';
+      view.innerHTML = summary + curatorSection + '<div class="trace-meta" style="padding:8px">(no chat runs yet — start a chat to record one)</div>';
       return;
     }
     const rows = runs.map(renderRunRow).join('');
-    view.innerHTML = summary + '<div class="trace-list">' + rows + '</div>';
+    view.innerHTML = summary + curatorSection + '<div class="trace-list">' + rows + '</div>';
   } catch (error) {
     view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message || error) + '</div>';
   }
+}
+
+function renderCuratorRunsSection(curator) {
+  if (!curator || !Array.isArray(curator.log) || curator.log.length === 0) return '';
+  // Group entries by run boundary: each scheduled run starts with no prior
+  // archive in the same minute window, so we just show the most recent 15
+  // log lines as a flat list — small surface, no need to over-structure.
+  const recent = curator.log.slice(-15).reverse();
+  const rows = recent.map((entry) => {
+    const ts = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : '?';
+    const phase = esc(entry.phase || 'curator');
+    const action = entry.action ? ' · ' + esc(entry.action) : '';
+    const skill = entry.skill ? ' · ' + esc(entry.skill) : '';
+    const note = entry.error ? ' · err: ' + esc(entry.error) : entry.skipped ? ' · skipped: ' + esc(entry.skipped) : entry.umbrella ? ' · umbrella: ' + esc(entry.umbrella) : entry.archived ? ' · archived: ' + (Array.isArray(entry.archived) ? entry.archived.join(', ') : entry.archived) : '';
+    const color = entry.error ? '#ff5050' : entry.action === 'archive' || entry.phase === 'merge-applied' ? '#ffb050' : '#5bb0ff';
+    return '<div class="trace-meta" style="font-size:11px;color:' + color + '">' + esc(ts) + ' · ' + phase + action + skill + note + '</div>';
+  }).join('');
+  return '<div class="trace-item" id="curatorRunsSection" style="margin:6px 4px"><div class="trace-title">🧹 Curator activity (' + curator.log.length + ' total)</div>'
+    + '<div class="trace-meta">Scheduler: ' + (curator.schedulerRunning ? 'running' : 'idle') + ' · Last run: ' + esc(curator.settings?.lastRunAt ? new Date(curator.settings.lastRunAt).toLocaleString() : 'never') + '</div>'
+    + '<div style="margin-top:6px">' + (rows || '<div class="trace-meta">No log entries.</div>') + '</div>'
+    + '</div>';
 }
 
 function renderRunRow(run) {

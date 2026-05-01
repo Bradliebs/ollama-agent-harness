@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { findStaleSkills, runDeterministicPhase, archiveSkill, restoreSkill, runCurator, DEFAULT_CURATOR_CONFIG } from './curator';
+import { findStaleSkills, runDeterministicPhase, archiveSkill, restoreSkill, runCurator, parseMergeProposals, applyMergeProposal, DEFAULT_CURATOR_CONFIG } from './curator';
 import type { SkillDefinition } from '../extensibility/skillLoader';
 import { loadSkillUsage, saveSkillUsage, recordSkillUse, recordSkillView, setSkillPinned, type SkillUsageStore } from '../extensibility/skillUsage';
 
@@ -99,6 +99,85 @@ describe('Curator deterministic phase', () => {
     expect(written).toContain('Curator merge proposals');
     expect(written).toContain('combined');
 
+    await fs.rm(projectDir, { recursive: true, force: true });
+  });
+});
+
+describe('parseMergeProposals', () => {
+  it('parses cluster headings, merge lists, rationale, and proposed description', () => {
+    const md = [
+      '# Curator merge proposals',
+      '',
+      '### Cluster: review-tooling',
+      '- merge: review-skill, lint-skill, format-skill',
+      '- rationale: All three help prepare a PR review.',
+      '- proposed description: Single skill that lints, formats, and reviews a diff.',
+      '',
+      '### Cluster: misc',
+      '- merge: only-one',
+      '',
+    ].join('\n');
+    const proposals = parseMergeProposals(md);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({
+      umbrellaName: 'review-tooling',
+      heading: 'review-tooling',
+      mergeSkills: ['review-skill', 'lint-skill', 'format-skill'],
+      rationale: 'All three help prepare a PR review.',
+      proposedDescription: 'Single skill that lints, formats, and reviews a diff.',
+    });
+  });
+
+  it('returns empty for "no merges proposed"', () => {
+    expect(parseMergeProposals('No merges proposed.')).toEqual([]);
+  });
+});
+
+describe('applyMergeProposal', () => {
+  it('writes umbrella SKILL.md and archives source skills', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-curator-merge-'));
+    const skillsDir = path.join(projectDir, '.harness', 'skills');
+    for (const name of ['lint', 'format']) {
+      await fs.mkdir(path.join(skillsDir, name), { recursive: true });
+      await fs.writeFile(path.join(skillsDir, name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name} body\ndomain: t\n---\n# ${name}\nbody`, 'utf-8');
+    }
+    const result = await applyMergeProposal(projectDir, {
+      umbrellaName: 'tidy-pr',
+      heading: 'Tidy PR',
+      mergeSkills: ['lint', 'format'],
+      proposedDescription: 'Lint then format.',
+    });
+    expect(result.archived).toEqual(['lint', 'format']);
+    const umbrella = await fs.readFile(result.umbrellaPath, 'utf-8');
+    expect(umbrella).toContain('name: tidy-pr');
+    expect(umbrella).toContain('## lint');
+    expect(umbrella).toContain('## format');
+    await expect(fs.access(path.join(skillsDir, '_archive', 'lint'))).resolves.toBeUndefined();
+    await fs.rm(projectDir, { recursive: true, force: true });
+  });
+
+  it('refuses to overwrite an existing umbrella name', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-curator-merge-conflict-'));
+    const skillsDir = path.join(projectDir, '.harness', 'skills');
+    for (const name of ['a', 'b', 'tidy']) {
+      await fs.mkdir(path.join(skillsDir, name), { recursive: true });
+      await fs.writeFile(path.join(skillsDir, name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name}\ndomain: t\n---\n# ${name}`, 'utf-8');
+    }
+    await expect(applyMergeProposal(projectDir, { umbrellaName: 'tidy', heading: '', mergeSkills: ['a', 'b'] })).rejects.toThrow(/already exists/);
+    await fs.rm(projectDir, { recursive: true, force: true });
+  });
+
+  it('skips pinned source skills (does not archive them)', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-curator-merge-pinned-'));
+    const skillsDir = path.join(projectDir, '.harness', 'skills');
+    for (const name of ['x', 'y']) {
+      await fs.mkdir(path.join(skillsDir, name), { recursive: true });
+      await fs.writeFile(path.join(skillsDir, name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name}\ndomain: t\n---\n# ${name}`, 'utf-8');
+    }
+    await setSkillPinned(projectDir, 'x', true);
+    const result = await applyMergeProposal(projectDir, { umbrellaName: 'paired', heading: '', mergeSkills: ['x', 'y'] });
+    expect(result.archived).toEqual(['y']);
+    expect(result.skipped).toEqual(['x']);
     await fs.rm(projectDir, { recursive: true, force: true });
   });
 });
