@@ -15,7 +15,7 @@ import { WorkflowRegistry } from '../workflows/workflowRegistry';
 import { runCurator, runDeterministicPhase, readCuratorLog, readCuratorProposals, restoreSkill, parseMergeProposals, applyMergeProposal, clearCuratorProposals, type CuratorConfig } from '../curator/curator';
 import { CuratorScheduler } from '../curator/scheduler';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
-import { drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, resolveProjectReadPath, setAllowedExternalPaths } from '../tools/pathResolution';
+import { clearFileWriteRedirectCache, drainUploadsFallbacks, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, resolveProjectReadPath, setAllowedExternalPaths } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { invalidateSkillsCache, setSkillsDir } from '../tools/skillTools';
 import { setRagRuntime } from '../tools/ragTools';
@@ -79,6 +79,7 @@ const REPO_SKILLS_DIR = path.join(PROJECT_DIR, '.github', 'skills');
 const TRACES_DIR = path.join(PROJECT_DIR, '.harness', 'traces');
 const SETTINGS_PATH = path.join(PROJECT_DIR, '.harness', 'settings.json');
 const API_KEYS_PATH = path.join(PROJECT_DIR, '.harness', 'api-keys.json');
+const FILE_REDIRECTS_PATH = path.join(PROJECT_DIR, '.harness', 'file-write-redirects.json');
 const OUTPUT_VALIDATION_PROFILES_PATH = path.join(PROJECT_DIR, '.harness', 'output-validation-profiles.json');
 const RELEASE_PROVENANCE_PATH = path.join(PROJECT_DIR, 'release-provenance.json');
 const WORKFLOWS_DIR = path.join(PROJECT_DIR, '.harness', 'workflows');
@@ -639,6 +640,53 @@ app.post('/api/api-keys', async (req, res) => {
       await fs.writeFile(API_KEYS_PATH, JSON.stringify(stored, null, 2), { encoding: 'utf-8', mode: 0o600 });
     }
     res.json({ ok: true });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// File-write redirect rules. Lets the user route any agent file_write
+// whose path matches a glob into a specific directory (typically a
+// sibling repo). Solves the recurring "another agent keeps dropping
+// lottery scripts in the Harness root" problem at the tool layer
+// rather than relying on .gitignore cleanup.
+app.get('/api/file-redirects', async (_req, res) => {
+  try {
+    const { rules, source } = getFileWriteRedirects();
+    // Defense in depth: also report whether the env var is set so the
+    // UI can show "managed by env var" and disable the editor if so.
+    const envOverride = Boolean(process.env.HARNESS_FILE_WRITE_REDIRECTS?.trim());
+    res.json({ rules, source, envOverride });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/file-redirects', async (req, res) => {
+  try {
+    const incoming = req.body && Array.isArray(req.body.rules) ? req.body.rules : null;
+    if (!incoming) {
+      res.status(400).json({ error: 'Body must be { rules: [...] }' });
+      return;
+    }
+    // Validate + normalize each rule. Skip entries with empty match or
+    // empty redirect rather than rejecting the whole payload \u2014 makes
+    // the form forgiving when the user is mid-edit.
+    const sanitized: Array<{ match: string; redirect: string }> = [];
+    for (const entry of incoming) {
+      if (!entry || typeof entry !== 'object') continue;
+      const match = typeof entry.match === 'string' ? entry.match.trim() : '';
+      const redirect = typeof entry.redirect === 'string' ? entry.redirect.trim() : '';
+      if (!match || !redirect) continue;
+      sanitized.push({ match, redirect });
+    }
+    await fs.mkdir(path.dirname(FILE_REDIRECTS_PATH), { recursive: true });
+    await fs.writeFile(FILE_REDIRECTS_PATH, JSON.stringify(sanitized, null, 2), 'utf-8');
+    // Force the in-process cache to reload on the next file_write.
+    clearFileWriteRedirectCache();
+    res.json({ ok: true, count: sanitized.length });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });

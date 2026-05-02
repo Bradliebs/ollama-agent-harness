@@ -595,6 +595,22 @@
       </div>
     </div>
     <div class="settings-section">
+      <h4>File-Write Redirects</h4>
+      <div class="setting-row" style="font-size:11px;color:var(--text-dim);margin-bottom:10px">
+        Route <code>file_write</code> calls whose path matches a glob into a chosen folder (handy when an agent keeps creating files in the wrong place). Stored in <code>.harness/file-write-redirects.json</code>.
+        Pattern syntax: <code>*</code> matches any chars except <code>/</code>, <code>**</code> matches across separators. First matching rule wins.
+      </div>
+      <div id="fileRedirectsList"></div>
+      <div class="setting-row" style="margin-top:10px;flex-wrap:wrap;gap:6px">
+        <button class="btn-sm" onclick="addFileRedirectRow()">+ Add rule</button>
+        <button class="btn-sm primary" onclick="saveFileRedirects()">💾 Save rules</button>
+        <span id="fileRedirectsStatus" style="margin-left:8px;font-size:11px;color:var(--text-dim)"></span>
+      </div>
+      <div class="setting-row" style="margin-top:6px;font-size:11px;color:var(--text-dim)">
+        Example: <code>{ "match": "lottery-*", "redirect": "C:/AI/Lottery-Toolkit/inbox" }</code>
+      </div>
+    </div>
+    <div class="settings-section">
       <h4>Generation</h4>
       <div class="setting-row">
         <label>Temperature</label>

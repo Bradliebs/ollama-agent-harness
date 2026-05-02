@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
-import { getUploadsDir, maybeRedirectAgentOutput, resolveProjectPath, resolveProjectReadPath } from './pathResolution';
+import { applyFileWriteRedirect, getUploadsDir, maybeRedirectAgentOutput, resolveProjectPath, resolveProjectReadPath } from './pathResolution';
 
 const DEFAULT_MAX_READ_BYTES = 100_000;
 const MAX_ALLOWED_READ_BYTES = 1_000_000;
@@ -56,11 +56,25 @@ export const FileWriteTool: Tool = {
   isReadOnly: false,
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
     const rawPath = String(input.path ?? '');
-    // Bare-filename writes for new files get redirected into agent-outputs/
-    // so the repo root does not become a dumping ground. Preserves intentional
-    // writes to existing files and to explicit subdirectories.
-    const redirected = maybeRedirectAgentOutput(rawPath);
-    const filePath = redirected ?? resolveProjectPath(input.path);
+    // Redirect precedence:
+    //   1. User-defined pattern rules (HARNESS_FILE_WRITE_REDIRECTS env or
+    //      .harness/file-write-redirects.json) — highest priority so the
+    //      user's intent always wins. May target paths OUTSIDE the project
+    //      root (the whole point: route lottery-* into a sibling repo).
+    //   2. Bare-filename agent-outputs/ redirect for new files (existing
+    //      v0.2 behavior — keeps repo root from becoming a dumping ground).
+    //   3. resolveProjectPath: confine to project root unless allowed.
+    let filePath: string | null = applyFileWriteRedirect(rawPath);
+    let redirectKind: 'pattern' | 'agent-outputs' | null = filePath ? 'pattern' : null;
+    if (!filePath) {
+      const bareRedirect = maybeRedirectAgentOutput(rawPath);
+      if (bareRedirect) {
+        filePath = bareRedirect;
+        redirectKind = 'agent-outputs';
+      } else {
+        filePath = resolveProjectPath(input.path);
+      }
+    }
     if (!filePath) {
       return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
     }
@@ -71,7 +85,11 @@ export const FileWriteTool: Tool = {
     try {
       await fs.mkdir(path.dirname(filePath), { recursive: true });
       await fs.writeFile(filePath, content, 'utf-8');
-      const note = redirected ? ` (redirected from bare filename to agent-outputs/)` : '';
+      const note = redirectKind === 'pattern'
+        ? ` (redirected by user pattern rule to '${filePath}')`
+        : redirectKind === 'agent-outputs'
+          ? ` (redirected from bare filename to agent-outputs/)`
+          : '';
       return { success: true, output: `Wrote ${content.length} chars to '${filePath}'${note}` };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);

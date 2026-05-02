@@ -70,6 +70,151 @@ export function maybeRedirectAgentOutput(rawPath: string): string | null {
   return path.join(getAgentOutputDir(), basename);
 }
 
+// ─── User-defined file_write redirect rules ─────────────────────────────
+// Lets the user route any file_write whose path matches a pattern into a
+// specific directory. Solves the recurring "another agent keeps dropping
+// lottery scripts in the Harness root" problem by sending them to
+// C:/AI/Lottery-Toolkit/ instead.
+//
+// Pattern syntax: glob-like, applied to BOTH the basename and the relative
+// path. `*` matches any run of characters except `/`. `**` matches across
+// path separators. Patterns are case-insensitive on Windows.
+//
+// Source precedence:
+//   1. HARNESS_FILE_WRITE_REDIRECTS env var (JSON array, takes priority).
+//   2. .harness/file-write-redirects.json on disk.
+//   3. Empty (no redirects).
+//
+// Example file content:
+//   [
+//     { "match": "lottery-*",  "redirect": "C:/AI/Lottery-Toolkit/inbox" },
+//     { "match": "*.lottery.js", "redirect": "C:/AI/Lottery-Toolkit/scripts" },
+//     { "match": "scratch/**", "redirect": "C:/Users/Brad/Desktop/scratch" }
+//   ]
+//
+// First matching rule wins (order-sensitive). Rules with empty/invalid
+// match or redirect fields are silently dropped.
+
+export interface FileWriteRedirectRule {
+  match: string;
+  redirect: string;
+}
+
+const REDIRECTS_FILE = path.join('.harness', 'file-write-redirects.json');
+let cachedRedirects: FileWriteRedirectRule[] | null = null;
+let cachedRedirectsSource: 'env' | 'file' | 'none' = 'none';
+
+/**
+ * Force a reload of the redirect rules on the next access. Call this from
+ * the UI POST handler so changes take effect immediately without a restart.
+ */
+export function clearFileWriteRedirectCache(): void {
+  cachedRedirects = null;
+  cachedRedirectsSource = 'none';
+}
+
+/**
+ * Returns the active redirect rules and their source (env/file/none).
+ * Cached so the per-write hot path avoids JSON.parse on every call.
+ */
+export function getFileWriteRedirects(): { rules: FileWriteRedirectRule[]; source: 'env' | 'file' | 'none' } {
+  if (cachedRedirects !== null) return { rules: cachedRedirects, source: cachedRedirectsSource };
+  // Prefer env var (handy for one-off CI overrides).
+  const fromEnv = process.env.HARNESS_FILE_WRITE_REDIRECTS?.trim();
+  if (fromEnv) {
+    const parsed = parseRedirectRules(fromEnv);
+    if (parsed) {
+      cachedRedirects = parsed;
+      cachedRedirectsSource = 'env';
+      return { rules: parsed, source: 'env' };
+    }
+  }
+  // Fall back to the JSON file managed by the UI Settings panel.
+  try {
+    const raw = fs.readFileSync(path.resolve(process.cwd(), REDIRECTS_FILE), 'utf-8');
+    const parsed = parseRedirectRules(raw);
+    if (parsed) {
+      cachedRedirects = parsed;
+      cachedRedirectsSource = 'file';
+      return { rules: parsed, source: 'file' };
+    }
+  } catch {
+    // Missing file is the common case — user has not configured any rules.
+  }
+  cachedRedirects = [];
+  cachedRedirectsSource = 'none';
+  return { rules: [], source: 'none' };
+}
+
+function parseRedirectRules(raw: string): FileWriteRedirectRule[] | null {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    const rules: FileWriteRedirectRule[] = [];
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== 'object') continue;
+      const match = typeof entry.match === 'string' ? entry.match.trim() : '';
+      const redirect = typeof entry.redirect === 'string' ? entry.redirect.trim() : '';
+      if (!match || !redirect) continue;
+      rules.push({ match, redirect });
+    }
+    return rules;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Convert a glob-style pattern (`*`, `**`) to a case-insensitive RegExp.
+ * Handles backslash-vs-forward-slash by normalizing to forward slashes
+ * before matching, so Windows paths and pattern authors agree.
+ */
+function compileMatchPattern(pattern: string): RegExp {
+  const normalized = pattern.replace(/\\/g, '/');
+  let regex = '';
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized[i];
+    if (ch === '*') {
+      if (normalized[i + 1] === '*') {
+        regex += '.*';
+        i++;
+      } else {
+        regex += '[^/]*';
+      }
+    } else if (/[.+^$|(){}\[\]\\]/.test(ch)) {
+      regex += '\\' + ch;
+    } else {
+      regex += ch;
+    }
+  }
+  return new RegExp('^' + regex + '$', 'i');
+}
+
+/**
+ * If any redirect rule matches the supplied path, return the absolute
+ * destination path (preserving the original basename). Otherwise null.
+ *
+ * Matching tries both the relative path and the bare basename so simple
+ * patterns like `lottery-*` work without forcing the user to write
+ * `**\/lottery-*` for every variant.
+ */
+export function applyFileWriteRedirect(rawPath: string): string | null {
+  const { rules } = getFileWriteRedirects();
+  if (rules.length === 0) return null;
+  const normalizedPath = rawPath.replace(/\\/g, '/');
+  const basename = path.basename(rawPath);
+  for (const rule of rules) {
+    const re = compileMatchPattern(rule.match);
+    if (re.test(normalizedPath) || re.test(basename)) {
+      const targetDir = path.isAbsolute(rule.redirect)
+        ? rule.redirect
+        : path.resolve(process.cwd(), rule.redirect);
+      return path.join(targetDir, basename);
+    }
+  }
+  return null;
+}
+
 export interface UploadsFallbackRecord {
   requested: string;
   resolved: string;

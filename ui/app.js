@@ -55,6 +55,7 @@ window.addEventListener('DOMContentLoaded', () => {
   startAutonomyPolling();
   setupSettingsCollapse();
   loadApiKeys();
+  loadFileRedirects();
   // Restore prior chat session if the user reloaded mid-conversation.
   if (chatMessages.length > 0) {
     const chatArea = document.getElementById('chatArea');
@@ -3204,6 +3205,98 @@ async function saveApiKeys() {
     setTimeout(() => { status.textContent = ''; }, 3000);
   } catch (e) {
     status.textContent = '❌ ' + e.message;
+  }
+}
+
+// ─── File-write redirect rules ────────────────────────────────────────
+// Matches the Settings panel section "File-Write Redirects". Each rule
+// routes any file_write whose path matches `match` (glob: * = chars, ** =
+// across separators) into `redirect` (absolute or project-relative dir).
+// First matching rule wins. Persisted to .harness/file-write-redirects.json
+// via POST /api/file-redirects which calls clearFileWriteRedirectCache()
+// so changes take effect on the next file_write without a server restart.
+
+async function loadFileRedirects() {
+  const list = document.getElementById('fileRedirectsList');
+  if (!list) return;
+  let data = { rules: [], source: 'none', envOverride: false };
+  try {
+    const r = await fetch('/api/file-redirects');
+    if (r.ok) data = await r.json();
+  } catch {}
+  list.innerHTML = '';
+  // Surface env-var override clearly so the user knows the editor is read-only.
+  if (data.envOverride) {
+    const banner = document.createElement('div');
+    banner.className = 'setting-row';
+    banner.style.cssText = 'font-size:11px;padding:6px 8px;background:var(--surface2);border:1px solid var(--warning);border-radius:6px;margin-bottom:6px';
+    banner.textContent = '⚠ HARNESS_FILE_WRITE_REDIRECTS env var is set — UI rules are ignored until you unset it.';
+    list.appendChild(banner);
+  }
+  const rules = Array.isArray(data.rules) ? data.rules : [];
+  if (rules.length === 0) {
+    addFileRedirectRow();
+  } else {
+    for (const rule of rules) addFileRedirectRow(rule.match, rule.redirect);
+  }
+  const status = document.getElementById('fileRedirectsStatus');
+  if (status) status.textContent = rules.length === 0 ? '' : `${rules.length} rule(s) active (source: ${data.source})`;
+}
+
+function addFileRedirectRow(matchValue = '', redirectValue = '') {
+  const list = document.getElementById('fileRedirectsList');
+  if (!list) return;
+  const row = document.createElement('div');
+  row.className = 'setting-row';
+  row.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:4px';
+  const matchInput = document.createElement('input');
+  matchInput.type = 'text';
+  matchInput.placeholder = 'glob, e.g. lottery-*';
+  matchInput.value = matchValue;
+  matchInput.dataset.field = 'match';
+  matchInput.style.cssText = 'flex:1;min-width:0';
+  const redirectInput = document.createElement('input');
+  redirectInput.type = 'text';
+  redirectInput.placeholder = 'destination dir, e.g. C:/AI/Lottery-Toolkit/inbox';
+  redirectInput.value = redirectValue;
+  redirectInput.dataset.field = 'redirect';
+  redirectInput.style.cssText = 'flex:2;min-width:0';
+  const removeBtn = document.createElement('button');
+  removeBtn.className = 'btn-sm';
+  removeBtn.textContent = '✕';
+  removeBtn.title = 'Remove rule';
+  removeBtn.onclick = () => row.remove();
+  row.appendChild(matchInput);
+  row.appendChild(redirectInput);
+  row.appendChild(removeBtn);
+  list.appendChild(row);
+}
+
+async function saveFileRedirects() {
+  const list = document.getElementById('fileRedirectsList');
+  const status = document.getElementById('fileRedirectsStatus');
+  if (!list) return;
+  const rows = list.querySelectorAll('.setting-row');
+  const rules = [];
+  for (const row of rows) {
+    const match = row.querySelector('input[data-field="match"]')?.value.trim() || '';
+    const redirect = row.querySelector('input[data-field="redirect"]')?.value.trim() || '';
+    if (!match || !redirect) continue;
+    rules.push({ match, redirect });
+  }
+  if (status) status.textContent = 'Saving...';
+  try {
+    const r = await fetch('/api/file-redirects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rules }),
+    });
+    if (!r.ok) throw new Error('Save failed (' + r.status + ')');
+    const d = await r.json();
+    if (status) status.textContent = '✅ Saved ' + d.count + ' rule(s).';
+    setTimeout(() => { if (status) status.textContent = ''; }, 3000);
+  } catch (e) {
+    if (status) status.textContent = '❌ ' + e.message;
   }
 }
 

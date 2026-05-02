@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { FileReadTool, FileWriteTool, ListUploadsTool } from './fileTools';
-import { drainUploadsFallbacks } from './pathResolution';
+import { drainUploadsFallbacks, clearFileWriteRedirectCache } from './pathResolution';
 
 describe('file tools bounds and path safety', () => {
   const fixtureDir = path.join(process.cwd(), '.harness', 'test-fixtures', 'file-tools');
@@ -221,6 +221,122 @@ describe('file tools bounds and path safety', () => {
       } finally {
         await fs.rm(path.dirname(path.resolve(process.cwd(), subPath)), { recursive: true, force: true });
       }
+    });
+  });
+
+  describe('user-defined pattern redirects', () => {
+    // Pin both the agent-outputs directory and the redirect destination to
+    // test-only paths so a misconfigured rule never escapes the test scope.
+    const agentOutputDir = path.join(process.cwd(), '.harness', 'test-agent-outputs-pat');
+    const redirectDir = path.join(process.cwd(), '.harness', 'test-redirect-target');
+
+    beforeEach(async () => {
+      await fs.rm(agentOutputDir, { recursive: true, force: true });
+      await fs.rm(redirectDir, { recursive: true, force: true });
+      process.env.HARNESS_AGENT_OUTPUT_DIR = agentOutputDir;
+      // Clear the rule cache so each test starts from the env value below.
+      clearFileWriteRedirectCache();
+    });
+
+    afterEach(async () => {
+      delete process.env.HARNESS_AGENT_OUTPUT_DIR;
+      delete process.env.HARNESS_FILE_WRITE_REDIRECTS;
+      clearFileWriteRedirectCache();
+      await fs.rm(agentOutputDir, { recursive: true, force: true });
+      await fs.rm(redirectDir, { recursive: true, force: true });
+    });
+
+    it('routes a glob match to the configured redirect dir, preserving basename', async () => {
+      process.env.HARNESS_FILE_WRITE_REDIRECTS = JSON.stringify([
+        { match: 'lottery-*', redirect: redirectDir },
+      ]);
+      clearFileWriteRedirectCache();
+      const result = await FileWriteTool.execute({ path: 'lottery-analyzer.js', content: 'CODE' });
+      expect(result.success).toBe(true);
+      const expected = path.join(redirectDir, 'lottery-analyzer.js');
+      expect(result.output).toContain(expected);
+      expect(result.output).toContain('redirected by user pattern rule');
+      const written = await fs.readFile(expected, 'utf-8');
+      expect(written).toBe('CODE');
+    });
+
+    it('matches against the relative path so directory-prefixed writes still redirect', async () => {
+      // The other agent writes lottery-toolkit/scripts/foo.js — must catch.
+      process.env.HARNESS_FILE_WRITE_REDIRECTS = JSON.stringify([
+        { match: 'lottery-toolkit/**', redirect: redirectDir },
+      ]);
+      clearFileWriteRedirectCache();
+      const result = await FileWriteTool.execute({
+        path: 'lottery-toolkit/scripts/foo.js',
+        content: 'NESTED',
+      });
+      expect(result.success).toBe(true);
+      // basename is preserved; the matched directory tree is collapsed into
+      // the redirect target so files do not recreate the original layout
+      // inside the redirect dir.
+      const expected = path.join(redirectDir, 'foo.js');
+      expect(result.output).toContain(expected);
+      expect(result.output).toContain('redirected by user pattern rule');
+    });
+
+    it('first matching rule wins (order-sensitive)', async () => {
+      const winnerDir = path.join(redirectDir, 'winner');
+      const loserDir = path.join(redirectDir, 'loser');
+      process.env.HARNESS_FILE_WRITE_REDIRECTS = JSON.stringify([
+        { match: 'lottery-*', redirect: winnerDir },
+        { match: '*.js', redirect: loserDir },
+      ]);
+      clearFileWriteRedirectCache();
+      const result = await FileWriteTool.execute({ path: 'lottery-foo.js', content: 'X' });
+      expect(result.success).toBe(true);
+      expect(result.output).toContain(path.join(winnerDir, 'lottery-foo.js'));
+      expect(result.output).not.toContain('loser');
+    });
+
+    it('falls through to agent-outputs when no rule matches', async () => {
+      process.env.HARNESS_FILE_WRITE_REDIRECTS = JSON.stringify([
+        { match: 'never-matches-*', redirect: redirectDir },
+      ]);
+      clearFileWriteRedirectCache();
+      const result = await FileWriteTool.execute({ path: `unrelated-${Date.now()}.txt`, content: 'F' });
+      expect(result.success).toBe(true);
+      expect(result.output).toContain(agentOutputDir);
+      expect(result.output).toContain('redirected from bare filename');
+      expect(result.output).not.toContain('redirected by user pattern rule');
+    });
+
+    it('pattern rule WINS over agent-outputs when both could fire', async () => {
+      process.env.HARNESS_FILE_WRITE_REDIRECTS = JSON.stringify([
+        { match: '*.scratch.js', redirect: redirectDir },
+      ]);
+      clearFileWriteRedirectCache();
+      const result = await FileWriteTool.execute({ path: 'foo.scratch.js', content: 'P' });
+      expect(result.success).toBe(true);
+      expect(result.output).toContain(path.join(redirectDir, 'foo.scratch.js'));
+      expect(result.output).toContain('redirected by user pattern rule');
+      // Agent-outputs path must NOT be involved.
+      expect(result.output).not.toContain(agentOutputDir);
+    });
+
+    it('rejects malformed env JSON silently (no rules applied)', async () => {
+      process.env.HARNESS_FILE_WRITE_REDIRECTS = 'this is not JSON';
+      clearFileWriteRedirectCache();
+      // Should fall through to agent-outputs (no rules → normal behavior).
+      const result = await FileWriteTool.execute({ path: `safe-${Date.now()}.txt`, content: 'S' });
+      expect(result.success).toBe(true);
+      expect(result.output).toContain(agentOutputDir);
+    });
+
+    it('skips rule entries with empty match or empty redirect', async () => {
+      process.env.HARNESS_FILE_WRITE_REDIRECTS = JSON.stringify([
+        { match: '', redirect: redirectDir },
+        { match: 'foo-*', redirect: '' },
+        { match: 'good-*', redirect: redirectDir },
+      ]);
+      clearFileWriteRedirectCache();
+      const result = await FileWriteTool.execute({ path: 'good-thing.js', content: 'G' });
+      expect(result.success).toBe(true);
+      expect(result.output).toContain(path.join(redirectDir, 'good-thing.js'));
     });
   });
 });
