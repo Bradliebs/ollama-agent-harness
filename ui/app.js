@@ -36,6 +36,7 @@ let lastValidationPrompt = (() => {
 })();
 let currentWalkthrough = { completed: [] };
 let availableModels = [];
+let compareEnabled = false;
 
 window.addEventListener('DOMContentLoaded', () => {
   restoreTheme();
@@ -85,6 +86,14 @@ async function loadModels() {
     sel.onchange = () => { renderModelCapabilityHint(); if (sel.value) { updateSetting('model', sel.value); document.getElementById('sendBtn').disabled = false; } };
     if (models.length === 1) { sel.value = models[0].name; sel.dispatchEvent(new Event('change')); }
     renderModelCapabilityHint();
+    // Compare-with selector mirrors the primary model list.
+    const cmp = document.getElementById('compareModelSelect');
+    if (cmp) {
+      cmp.innerHTML = '<option value="">Compare with...</option>' + models.map((m) => {
+        const size = m.parameterSize ? ' (' + m.parameterSize + ')' : '';
+        return '<option value="' + escAttr(m.name) + '">' + esc(m.name + size) + '</option>';
+      }).join('');
+    }
   } catch {
     dot.className = 'status-dot';
     sel.innerHTML = '<option>Server not running</option>';
@@ -1310,6 +1319,22 @@ async function sendMessage(opts) {
     activeChatController.abort();
     return;
   }
+  // Side-by-side compare mode: route to the parallel runner instead.
+  // Only triggers for fresh sends (regenerate stays single-model so
+  // history slicing stays simple).
+  if (compareEnabled && !(opts && typeof opts.regenerateFromIndex === 'number')) {
+    const inp = document.getElementById('chatInput');
+    const text = inp.value.trim();
+    if (!text) return;
+    const modelA = document.getElementById('modelSelect').value;
+    const modelB = document.getElementById('compareModelSelect').value;
+    if (!modelA || !modelB) { alert('Pick a primary model AND a compare model first.'); return; }
+    if (modelA === modelB) { alert('Pick two different models to compare.'); return; }
+    inp.value = '';
+    inp.style.height = 'auto';
+    runCompareSend(text, modelA, modelB);
+    return;
+  }
   const inp = document.getElementById('chatInput');
   const isRegenerate = opts && typeof opts.regenerateFromIndex === 'number';
   let text;
@@ -1371,6 +1396,10 @@ async function sendMessage(opts) {
   // Strip any prior follow-up chips so they don't pile up.
   document.querySelectorAll('.followup-chips').forEach((n) => n.remove());
   isSending = true;
+  // Per-turn citation collector: every successful web_read becomes a
+  // numbered source under the assistant reply. Keeps the model from
+  // having to parrot the URL inline.
+  const turnCitations = [];
   activeChatController = new AbortController();
   const sendBtn = document.getElementById('sendBtn');
   sendBtn.disabled = false;
@@ -1378,6 +1407,22 @@ async function sendMessage(opts) {
   sendBtn.title = 'Stop';
   const thinkEl = addThinking();
   updateThinkingStatus(thinkEl, 'Preparing model...');
+  // Live tok/s estimate: count characters streaming in, divide by
+  // elapsed seconds, convert to ~tokens (chars/4). Updates the thinking
+  // pill on a 250ms interval so the user sees real-time speed.
+  const streamStartedAt = Date.now();
+  let streamedChars = 0;
+  let tokRateTimer = null;
+  const updateTokRate = () => {
+    if (!thinkEl.parentNode) return;
+    const elapsedSec = (Date.now() - streamStartedAt) / 1000;
+    if (elapsedSec < 0.4 || streamedChars === 0) return;
+    const tokPerSec = (streamedChars / 4) / elapsedSec;
+    if (tokPerSec >= 0.5) {
+      updateThinkingStatus(thinkEl, 'Streaming · ~' + tokPerSec.toFixed(1) + ' tok/s');
+    }
+  };
+  tokRateTimer = setInterval(updateTokRate, 250);
   try {
     const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text, model, skipValidation: skipValidationOnce, history: outboundChatHistory(), attachments: attachmentsForTurn }), signal: activeChatController.signal });
     const reader = res.body.getReader();
@@ -1420,6 +1465,7 @@ async function sendMessage(opts) {
             thinkEl.remove();
             if (!msgEl) msgEl = addMsg('assistant', '');
             assistantText += ev.content;
+            streamedChars += (ev.content || '').length;
             renderMd(msgEl.querySelector('.msg-content'), assistantText);
             scrollBottom();
             break;
@@ -1437,6 +1483,13 @@ async function sendMessage(opts) {
             break;
           case 'tool_result':
             if (toolBox) appendToolItem(toolBox, ev.result.success ? '✅' : '❌', '', ev.result.output.slice(0, 120), !ev.result.success);
+            // Capture web_read sources for citation rendering.
+            if (ev.result.success && ev.call && ev.call.name === 'web_read' && ev.call.input && typeof ev.call.input.url === 'string') {
+              const url = ev.call.input.url;
+              if (!turnCitations.find((c) => c.url === url)) {
+                turnCitations.push({ url, title: extractCitationTitle(ev.result.output, url) });
+              }
+            }
             refreshSkillSurfacesAfterToolResult(ev.call, ev.result, toolBox);
             break;
           case 'usage':
@@ -1519,6 +1572,11 @@ async function sendMessage(opts) {
       attachMessageMeta(msgEl, currentTurnUsage);
       currentTurnUsage = null;
     }
+    // Citations: render numbered source list under the assistant reply
+    // and rewrite any URL mentions in the visible text to [n] superscripts.
+    if (msgEl && turnCitations.length > 0) {
+      attachCitations(msgEl, turnCitations, assistantText);
+    }
     // Per-message actions: 🔁 Regenerate + 📋 Copy. Index points at the
     // assistant message we just appended, so regenerate slices history
     // back to right before it.
@@ -1538,6 +1596,7 @@ async function sendMessage(opts) {
     if (e.name === 'AbortError') addMsg('assistant', 'Stopped.');
     else addMsg('assistant', '⚠️ ' + e.message);
   }
+  if (tokRateTimer) clearInterval(tokRateTimer);
   isSending = false;
   activeChatController = null;
   document.getElementById('sendBtn').disabled = false;
@@ -2077,6 +2136,138 @@ function downloadArtifact() {
   URL.revokeObjectURL(url);
 }
 
+// ─── Side-by-side model compare ───────────────────────────────────────
+function toggleCompare() {
+  compareEnabled = !compareEnabled;
+  const btn = document.getElementById('compareBtn');
+  const sel = document.getElementById('compareModelSelect');
+  if (compareEnabled) {
+    btn.classList.add('active');
+    btn.style.background = 'var(--accent-bg)';
+    btn.style.borderColor = 'var(--accent)';
+    sel.style.display = '';
+  } else {
+    btn.classList.remove('active');
+    btn.style.background = '';
+    btn.style.borderColor = '';
+    sel.style.display = 'none';
+  }
+}
+
+/**
+ * Run the same prompt against two models in parallel and render the
+ * replies side-by-side. Each column is independent; choosing "Keep ✅"
+ * promotes that column's text into chatMessages history and discards
+ * the other. Tool traces and citations are intentionally omitted in
+ * compare mode to keep the columns scannable.
+ */
+async function runCompareSend(text, modelA, modelB) {
+  const welcome = document.getElementById('welcome');
+  if (welcome) welcome.remove();
+  addMsg('user', text);
+  chatMessages.push({ role: 'user', content: text });
+  saveChatSession();
+  document.querySelectorAll('.followup-chips').forEach((n) => n.remove());
+
+  const area = document.getElementById('chatArea');
+  const row = document.createElement('div');
+  row.className = 'compare-row';
+  const colA = makeCompareColumn(modelA);
+  const colB = makeCompareColumn(modelB);
+  row.appendChild(colA.wrap);
+  row.appendChild(colB.wrap);
+  area.appendChild(row);
+  scrollBottom();
+
+  isSending = true;
+  const sendBtn = document.getElementById('sendBtn');
+  sendBtn.textContent = '■';
+
+  const runOne = async (model, col) => {
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, model, skipValidation: true, history: outboundChatHistory(), attachments: [] }),
+      });
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      let assistantText = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6);
+          if (payload === '[DONE]') continue;
+          let ev;
+          try { ev = JSON.parse(payload); } catch { continue; }
+          if (ev.type === 'text') {
+            assistantText += ev.content;
+            renderMd(col.contentEl, assistantText);
+            scrollBottom();
+          } else if (ev.type === 'usage') {
+            col.metaEl.textContent = (ev.completionTokens || 0) + ' tokens · ' + Math.round((ev.totalDurationMs || 0) / 100) / 10 + 's';
+          } else if (ev.type === 'error') {
+            col.contentEl.innerHTML = '<em>⚠️ ' + esc(ev.message) + '</em>';
+          }
+        }
+      }
+      col.text = assistantText;
+      col.keepBtn.disabled = false;
+      col.keepBtn.style.opacity = '1';
+    } catch (e) {
+      col.contentEl.innerHTML = '<em>⚠️ ' + esc(e.message) + '</em>';
+    }
+  };
+
+  await Promise.all([runOne(modelA, colA), runOne(modelB, colB)]);
+
+  isSending = false;
+  sendBtn.textContent = '➤';
+  document.getElementById('chatInput').focus();
+}
+
+function makeCompareColumn(model) {
+  const wrap = document.createElement('div');
+  wrap.className = 'compare-col';
+  const header = document.createElement('div');
+  header.className = 'compare-col-header';
+  const pill = document.createElement('span');
+  pill.className = 'compare-pill';
+  pill.textContent = model;
+  const meta = document.createElement('span');
+  meta.className = 'meta-sep';
+  const keepBtn = document.createElement('button');
+  keepBtn.className = 'compare-keep-btn';
+  keepBtn.textContent = '✅ Keep this';
+  keepBtn.disabled = true;
+  keepBtn.style.opacity = '0.5';
+  keepBtn.onclick = () => {
+    chatMessages.push({ role: 'assistant', content: ref.text || '' });
+    saveChatSession();
+    autoSaveChat();
+    // Replace the entire compare row with a single assistant bubble for
+    // the chosen reply, so the history reads cleanly going forward.
+    const replacement = addMsg('assistant', ref.text || '');
+    wrap.parentNode.parentNode.insertBefore(replacement, wrap.parentNode);
+    wrap.parentNode.remove();
+  };
+  header.appendChild(pill);
+  header.appendChild(meta);
+  header.appendChild(keepBtn);
+  const content = document.createElement('div');
+  content.className = 'msg-content';
+  wrap.appendChild(header);
+  wrap.appendChild(content);
+  const ref = { wrap, contentEl: content, metaEl: meta, keepBtn, text: '' };
+  return ref;
+}
+
 function addThinking() { const area = document.getElementById('chatArea'); const el = document.createElement('div'); el.className = 'thinking'; el.innerHTML = '<div class="dots"><span></span><span></span><span></span></div> <span class="thinking-status">Thinking...</span>'; area.appendChild(el); scrollBottom(); return el; }
 function updateThinkingStatus(el, text) { const status = el && el.querySelector ? el.querySelector('.thinking-status') : null; if (status) status.textContent = text; }
 function scrollBottom() { const a = document.getElementById('chatArea'); a.scrollTop = a.scrollHeight; }
@@ -2184,6 +2375,66 @@ function attachMessageActions(msgEl, messageIndex) {
   row.appendChild(regen);
   row.appendChild(copy);
   body.appendChild(row);
+}
+
+/**
+ * Pull a human-friendly title for a citation from the web_read output.
+ * The web_read tool prepends "Content from <url>:" then the body. We
+ * try to find the first non-trivial line that looks like a title.
+ */
+function extractCitationTitle(toolOutput, url) {
+  if (!toolOutput) return url;
+  const lines = String(toolOutput).split('\n').map((l) => l.trim()).filter(Boolean);
+  // Skip the "Content from <url>:" header.
+  for (const line of lines) {
+    if (line.startsWith('Content from ')) continue;
+    if (line.length < 8 || line.length > 120) continue;
+    return line;
+  }
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
+}
+
+/**
+ * Attach a numbered citation list under an assistant message and
+ * rewrite raw URL mentions in the visible reply to [n] superscripts.
+ * Mutates the rendered DOM only — chatMessages history keeps the
+ * original text so regenerate / save / copy stay clean.
+ */
+function attachCitations(msgEl, citations, originalText) {
+  if (!msgEl || !citations || citations.length === 0) return;
+  const body = msgEl.querySelector('.msg-body');
+  const content = msgEl.querySelector('.msg-content');
+  if (!body || !content) return;
+
+  // Rewrite URL mentions in the rendered HTML to [n] superscript links.
+  citations.forEach((c, i) => {
+    const n = i + 1;
+    const url = c.url;
+    const escapedUrl = url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Replace bare URL text (not already inside <a>) with the original
+    // URL plus a [n] superscript link.
+    const re = new RegExp('(?<![">\\w/])' + escapedUrl + '(?![">\\w/])', 'g');
+    content.innerHTML = content.innerHTML.replace(re, function (match) {
+      return match + '<sup><a href="' + url + '" target="_blank" rel="noopener" class="citation-sup" title="' + esc(c.title) + '">[' + n + ']</a></sup>';
+    });
+  });
+
+  // Append the source list.
+  const wrap = document.createElement('div');
+  wrap.className = 'citations';
+  wrap.innerHTML = '<div class="citations-label">Sources</div>';
+  citations.forEach((c, i) => {
+    const item = document.createElement('a');
+    item.className = 'citation-item';
+    item.href = c.url;
+    item.target = '_blank';
+    item.rel = 'noopener';
+    let host = c.url;
+    try { host = new URL(c.url).hostname.replace(/^www\./, ''); } catch {}
+    item.innerHTML = '<span class="citation-num">[' + (i + 1) + ']</span><span class="citation-title">' + esc(c.title) + '</span><span class="citation-host">' + esc(host) + '</span>';
+    wrap.appendChild(item);
+  });
+  body.appendChild(wrap);
 }
 
 /**
