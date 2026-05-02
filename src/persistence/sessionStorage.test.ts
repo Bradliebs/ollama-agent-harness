@@ -18,8 +18,8 @@ describe('SessionStorage', () => {
   });
 
   test('appends and reads events', async () => {
-    await storage.append('message', { kind: 'message', message: { role: 'user', content: 'hello' } });
-    await storage.append('message', { kind: 'message', message: { role: 'assistant', content: 'hi' } });
+    await storage.append('user_message', { kind: 'message', message: { role: 'user', content: 'hello' } });
+    await storage.append('assistant_message', { kind: 'message', message: { role: 'assistant', content: 'hi' } });
     const events = await storage.readAll();
     expect(events).toHaveLength(2);
     expect(events[0].data.kind).toBe('message');
@@ -33,8 +33,8 @@ describe('SessionStorage', () => {
 
   test('verify-session-resume-truncated: recovers gracefully from truncated last line', async () => {
     // Write a complete event first
-    await storage.append('message', { kind: 'message', message: { role: 'user', content: 'first message' } });
-    await storage.append('message', { kind: 'message', message: { role: 'assistant', content: 'first response' } });
+    await storage.append('user_message', { kind: 'message', message: { role: 'user', content: 'first message' } });
+    await storage.append('assistant_message', { kind: 'message', message: { role: 'assistant', content: 'first response' } });
 
     // Get the transcript path and manually truncate the last line
     const transcriptPath = storage.getTranscriptPath();

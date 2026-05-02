@@ -82,6 +82,63 @@ Override the model, host, prompt size, timeout, or context window with
 `HARNESS_LONG_PROMPT_MODEL`, `OLLAMA_HOST`, `HARNESS_LONG_PROMPT_LINES`,
 `HARNESS_LONG_PROMPT_TIMEOUT_MS`, and `HARNESS_LONG_PROMPT_NUM_CTX`.
 
+## Autonomy mode
+
+Run the harness against itself, draining `IMPLEMENTATION_PLAN.md` task by
+task, with no human in the loop:
+
+```powershell
+$env:HARNESS_MODEL = "kimi-k2.5:cloud"   # see model matrix below
+$env:FORGE_MAX_ITERATIONS = "10"
+npm run autonomy            # full run
+npm run autonomy:dry        # preview one iteration without spending tokens
+npm run autonomy:stop       # graceful stop signal
+npm run autonomy:reset      # clear .forge-state.json + .forge-stop
+```
+
+Tasks in `IMPLEMENTATION_PLAN.md` may declare anchors (read-only file
+context the model gets inline) and a target (the file to edit):
+
+```markdown
+- [ ] verify-permissions-deny-first — Add a focused jest test under `src/permissions/`...
+  - anchor: src/permissions/engine.ts
+  - anchor: src/permissions/engine.test.ts
+  - target: src/permissions/engine.test.ts
+```
+
+Live progress: `.forge-state.json` (one-shot), `.forge-history.jsonl`
+(append-only per iteration), `.forge-run.log` (mirrored console output),
+`.forge-debug.jsonl` (raw model exchanges, only with `HARNESS_DEBUG_LOG`
+set or `npm run autonomy:debug`). The web UI surfaces the autonomy HUD
+in the topbar with a click-through log tail modal.
+
+### Model capability matrix
+
+What we measured running real autonomy iterations on this codebase
+(May 2026). "Writes correct code" means the model picked the task,
+called `file_write`/`file_edit`, and produced output that passed
+`npm run typecheck`.
+
+| Model | Backend | Tool calls | Writes correct code | Notes |
+|---|---|---|---|---|
+| `kimi-k2.5:cloud` | ollama (Pro) | ✅ native | ✅ **yes** with anchors | First model to land an autonomy commit end-to-end. Recommended. |
+| `gpt-oss:120b-cloud` | ollama | ✅ native | ⚠️ writes code, often wrong code | Explores well but may scaffold generic structure instead of doing the task. |
+| `gpt-oss:20b-cloud` | ollama | ✅ native | ❓ untested at length | Same family as 120b, ~6× faster. |
+| `qwen3-coder:480b-cloud` | ollama | ❌ chats | ❌ no | Refuses to use tools on this codebase. |
+| `deepseek-v3.1:671b-cloud` | ollama | ❓ untested | ❓ untested |  |
+| `qwen2.5-coder:14b` | ollama (local, ~9GB) | ✅ but wrong tools | ❌ no | Loops on `reflect`/`promote_pattern`, ignores tool whitelist. |
+| `qwen2.5-coder:7b` | ollama (local, ~4GB) | ⚠️ JSON-as-text | ❌ no | Mitigated by inline tool-call parser; still picks wrong tools. |
+| `gemma4:e4b`, `gemma4:26b` | ollama (local) | ❌ chats | ❌ no | Conversational only. |
+| `llama3.1-8b` | cerebras | ✅ but wrong tools | ❌ no | Hallucinates `recall`/`remember`; only Cerebras free model accessible. |
+| `gpt-oss-120b` | cerebras | ❌ 404 on free | ❌ no | Listed in `/v1/models` but free tier returns 404. |
+| `qwen-3-235b-a22b-instruct-2507` | cerebras | ⚠️ rate-limited | ❓ untested | Free RPM is shared at the tier level; usually 429s. |
+| `gpt-4.1`, `gpt-4.1-mini`, `o3-mini` | github | ❓ untested | ❓ untested | High expected value; needs `GITHUB_TOKEN` with Models scope. 50-150 RPD free. |
+| `kimi-k2-instruct` | groq | ❓ untested | ❓ untested | Same Kimi lineage; free, 14,400 RPD. |
+
+Backends are configured via `HARNESS_BACKEND` (or `--backend` flag) plus
+the appropriate `*_API_KEY` env var. `harness doctor` lists every
+configured backend and reports whether its key is set.
+
 ## UI tabs
 
 The browser UI has 13 tabs in the left sidebar:

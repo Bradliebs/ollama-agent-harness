@@ -208,8 +208,17 @@ function buildTaskPrompt(task: Task): string {
       ``,
       targetLine,
       ``,
-      `Required first action: call file_edit (preferred) or file_write to modify the target file.`,
+      `Required first action: call file_edit (preferred) to add only what is needed.`,
       `Do NOT call list_files or file_read first — you already have what you need.`,
+      ``,
+      `EDIT-STYLE RULES (critical):`,
+      `  * Prefer file_edit over file_write. file_write replaces the ENTIRE file.`,
+      `  * If the target file already has tests/code, ADD a new it(...)/test(...)/function block.`,
+      `    Do NOT remove or modify existing tests, imports, or unrelated code.`,
+      `  * Use file_write ONLY when the target file does not yet exist.`,
+      `  * For file_edit, set old_string to a UNIQUE existing block (e.g. the closing \`});\``,
+      `    of the relevant describe), and set new_string to that same block PLUS your`,
+      `    additions. Never use empty old_string.`,
     );
   } else {
     sections.push(
