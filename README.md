@@ -2,7 +2,7 @@
 title: Ollama Agent Harness
 description: Local-first Ollama agent harness with tools, tracing, learning, multimodal helpers, and a browser UI
 author: Bradliebs
-ms.date: 2026-05-01
+ms.date: 2026-05-02
 ms.topic: overview
 keywords:
   - ollama
@@ -57,6 +57,18 @@ With the UI server running, smoke-test the browser:
 ```powershell
 npm run smoke:ui -- http://127.0.0.1:3000/
 ```
+
+For local timeout checks against a real Ollama model, run the optional
+long-prompt smoke after building:
+
+```powershell
+npm run build
+npm run smoke:long-prompt
+```
+
+Override the model, host, prompt size, timeout, or context window with
+`HARNESS_LONG_PROMPT_MODEL`, `OLLAMA_HOST`, `HARNESS_LONG_PROMPT_LINES`,
+`HARNESS_LONG_PROMPT_TIMEOUT_MS`, and `HARNESS_LONG_PROMPT_NUM_CTX`.
 
 ## UI tabs
 
