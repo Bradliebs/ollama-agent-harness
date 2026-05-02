@@ -33,6 +33,7 @@ export interface LoopConfig {
 export type LoopEvent =
   | TextEvent
   | OutputValidationEvent
+  | OutputValidationProfilePromotedEvent
   | ToolCallEvent
   | ToolResultEvent
   | ContextEvent
@@ -48,6 +49,19 @@ export interface TextEvent {
 export interface OutputValidationEvent {
   type: 'output_validation';
   validation: OutputValidationResult;
+}
+
+/**
+ * Emitted when the loop silently swaps the configured validation profile
+ * for a better-fitting one (currently: oracle-prime → coding-answer when
+ * productive tools succeeded). Surfaces the magic so users can see why
+ * the validation result references a profile they did not configure.
+ */
+export interface OutputValidationProfilePromotedEvent {
+  type: 'output_validation_profile_promoted';
+  from: string;
+  to: string;
+  reason: string;
 }
 
 export interface ToolCallEvent {

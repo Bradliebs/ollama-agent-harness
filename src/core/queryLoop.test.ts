@@ -146,6 +146,15 @@ describe('queryLoop runtime behavior', () => {
       type: 'output_validation',
       validation: { profile: 'coding-answer' },
     });
+    // Promotion event must precede the validation event so UIs can
+    // explain the swap before the validation result lands.
+    const promotion = events.find((e) => e.type === 'output_validation_profile_promoted');
+    expect(promotion).toMatchObject({
+      type: 'output_validation_profile_promoted',
+      from: 'oracle-prime',
+      to: 'coding-answer',
+    });
+    expect(events.indexOf(promotion as never)).toBeLessThan(events.indexOf(validation as never));
   });
 
   it('does NOT auto-promote when no productive tools fired', async () => {
@@ -162,6 +171,8 @@ describe('queryLoop runtime behavior', () => {
       type: 'output_validation',
       validation: { profile: 'oracle-prime' },
     });
+    // No promotion event when nothing fired.
+    expect(events.find((e) => e.type === 'output_validation_profile_promoted')).toBeUndefined();
   });
 
   it('pairs enabled output validation with profile instructions in the system prompt', async () => {

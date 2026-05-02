@@ -1424,6 +1424,13 @@ async function sendMessage() {
             toolBox = ensureToolBox(toolBox);
             appendOutputValidationItem(toolBox, ev.validation);
             break;
+          case 'output_validation_profile_promoted':
+            // Auto-promotion from oracle-prime to coding-answer when
+            // productive tools succeeded. Surface it so the validation
+            // result's profile name doesn't look mysterious.
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '🧭', 'profile auto-promoted', esc(ev.from) + ' → ' + esc(ev.to) + ' (' + esc(ev.reason) + ')', false);
+            break;
           case 'output_validation_profile':
             toolBox = ensureToolBox(toolBox);
             appendOutputValidationProfileItem(toolBox, ev);

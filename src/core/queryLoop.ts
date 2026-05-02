@@ -165,9 +165,16 @@ export async function* queryLoop(
         // edited files. oracle-prime is the default fallback for ambiguous
         // prompts; using it on a coding session produces FAIL findings
         // for missing reasoning sections that the user never asked for.
-        const effectiveProfile = (validationProfile === 'oracle-prime' && anyProductiveToolSucceeded)
-          ? 'coding-answer'
-          : validationProfile;
+        const shouldPromote = validationProfile === 'oracle-prime' && anyProductiveToolSucceeded;
+        const effectiveProfile = shouldPromote ? 'coding-answer' : validationProfile;
+        if (shouldPromote) {
+          yield {
+            type: 'output_validation_profile_promoted',
+            from: 'oracle-prime',
+            to: 'coding-answer',
+            reason: 'productive tool calls succeeded during this run',
+          };
+        }
         const validation = validateOutput(assistantMessage.content ?? '', effectiveProfile, customValidationProfiles);
         tracer?.recordEvent('output.validation', {
           profile: validation.profile,
