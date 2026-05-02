@@ -40,7 +40,7 @@ export interface SetupHealthResult {
   ollama: { ok: boolean; message: string; modelCount: number };
   vision: { ok: boolean; message: string };
   audio: { ok: boolean; message: string };
-  pdfOcr?: { ok: boolean; message: string };
+  pdfOcr: { ok: boolean; message: string };
   local: {
     node: LocalHealthCheck;
     package: LocalHealthCheck;

@@ -135,6 +135,7 @@ export async function main(): Promise<void> {
       visionModel: options.visionModel,
       audioTranscribeCommand: options.audioTranscribeCommand,
       audioSamplePath: options.audioSamplePath || undefined,
+      pdfOcrCommand: process.env.HARNESS_PDF_OCR_COMMAND,
     });
     console.log(formatSetupHealth(result));
     if (!result.ollama.ok || (options.visionModel ? !result.vision.ok : false) || (options.audioTranscribeCommand ? !result.audio.ok : false)) {

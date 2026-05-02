@@ -16,10 +16,14 @@
 - [x] implement-cli — Create interactive CLI entry point with streaming output and permission dialogs
 - [x] add-error-recovery — Add recovery mechanisms: retry with backoff, context overflow handling, graceful degradation
 - [x] add-tests — Write Jest test suite covering agent loop, permissions, tool dispatch, context, and persistence
-- [!] verify-doctor-clean — Run `harness doctor` and add any missing checks reported as warnings to the doctor output without changing public CLI flags
-- [!] verify-headless-smoke — Add a `scripts/headless-smoke.js` that runs `harness -p "say hello"` against the configured model and exits non-zero on failure
+- [x] verify-doctor-clean — Run `harness doctor` and add any missing checks reported as warnings to the doctor output without changing public CLI flags
+  - anchor: src/setup/health.ts
+  - anchor: src/cli/index.ts
+  - target: src/setup/health.ts
+- [ ] verify-headless-smoke — Add a `scripts/headless-smoke.js` that runs `harness -p "say hello"` against the configured model and exits non-zero on failure
+  - anchor: scripts/transport-smoke.js
   - target: scripts/headless-smoke.js
-- [!] verify-permissions-deny-first — Add a focused jest test under `src/permissions/` proving that a deny rule overrides an allow rule for the same tool/path. Append the test to the existing `describe('PermissionEngine', ...)` block in engine.test.ts.
+- [ ] verify-permissions-deny-first — Add a focused jest test under `src/permissions/` proving that a deny rule overrides an allow rule for the same tool/path. Append the test to the existing `describe('PermissionEngine', ...)` block in engine.test.ts.
   - anchor: src/permissions/engine.ts
   - anchor: src/permissions/engine.test.ts
   - target: src/permissions/engine.test.ts
