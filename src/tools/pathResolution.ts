@@ -201,6 +201,40 @@ function compileMatchPattern(pattern: string): RegExp {
 export function applyFileWriteRedirect(rawPath: string): string | null {
   const { rules } = getFileWriteRedirects();
   if (rules.length === 0) return null;
+  return matchRedirectRules(rawPath, rules);
+}
+
+/**
+ * Pure (no env / no file IO) variant used by the UI preview endpoint.
+ * Lets the user see which rule (if any) would match a typed path,
+ * BEFORE saving the rules. Returns the matched rule + destination, or
+ * null when no rule matches.
+ */
+export function previewFileWriteRedirect(
+  rawPath: string,
+  rules: FileWriteRedirectRule[],
+): { rule: FileWriteRedirectRule; destination: string } | null {
+  if (!Array.isArray(rules) || rules.length === 0) return null;
+  const normalizedPath = rawPath.replace(/\\/g, '/');
+  const basename = path.basename(rawPath);
+  for (const rule of rules) {
+    if (!rule || !rule.match || !rule.redirect) continue;
+    const re = compileMatchPattern(rule.match);
+    if (re.test(normalizedPath) || re.test(basename)) {
+      const targetDir = path.isAbsolute(rule.redirect)
+        ? rule.redirect
+        : path.resolve(process.cwd(), rule.redirect);
+      return { rule, destination: path.join(targetDir, basename) };
+    }
+  }
+  return null;
+}
+
+/**
+ * Internal helper used by both applyFileWriteRedirect (active rules) and
+ * the preview endpoint. Returns the destination path or null.
+ */
+function matchRedirectRules(rawPath: string, rules: FileWriteRedirectRule[]): string | null {
   const normalizedPath = rawPath.replace(/\\/g, '/');
   const basename = path.basename(rawPath);
   for (const rule of rules) {

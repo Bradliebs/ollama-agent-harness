@@ -606,6 +606,11 @@
         <button class="btn-sm primary" onclick="saveFileRedirects()">💾 Save rules</button>
         <span id="fileRedirectsStatus" style="margin-left:8px;font-size:11px;color:var(--text-dim)"></span>
       </div>
+      <div class="setting-row" style="margin-top:10px;display:flex;gap:6px;align-items:center">
+        <input type="text" id="fileRedirectsPreviewInput" placeholder="Preview a path, e.g. lottery-foo.js" style="flex:1;min-width:0">
+        <button class="btn-sm" onclick="previewFileRedirects()">🔍 Preview</button>
+      </div>
+      <div id="fileRedirectsPreviewResult" style="margin-top:6px;font-size:11px;color:var(--text-dim)"></div>
       <div class="setting-row" style="margin-top:6px;font-size:11px;color:var(--text-dim)">
         Example: <code>{ "match": "lottery-*", "redirect": "C:/AI/Lottery-Toolkit/inbox" }</code>
       </div>

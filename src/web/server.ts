@@ -15,7 +15,7 @@ import { WorkflowRegistry } from '../workflows/workflowRegistry';
 import { runCurator, runDeterministicPhase, readCuratorLog, readCuratorProposals, restoreSkill, parseMergeProposals, applyMergeProposal, clearCuratorProposals, type CuratorConfig } from '../curator/curator';
 import { CuratorScheduler } from '../curator/scheduler';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
-import { clearFileWriteRedirectCache, drainUploadsFallbacks, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, resolveProjectReadPath, setAllowedExternalPaths } from '../tools/pathResolution';
+import { clearFileWriteRedirectCache, drainUploadsFallbacks, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { invalidateSkillsCache, setSkillsDir } from '../tools/skillTools';
 import { setRagRuntime } from '../tools/ragTools';
@@ -687,6 +687,40 @@ app.post('/api/file-redirects', async (req, res) => {
     // Force the in-process cache to reload on the next file_write.
     clearFileWriteRedirectCache();
     res.json({ ok: true, count: sanitized.length });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Preview endpoint: takes ad-hoc rules + a sample path and returns
+// which rule (if any) would catch it and where the file would land.
+// Lets the user verify their rules before saving — catches typos like
+// `lottery_*` (underscore) when they meant `lottery-*` (hyphen). The
+// rules in the body are NOT persisted; this is read-only.
+app.post('/api/file-redirects/preview', async (req, res) => {
+  try {
+    const samplePath = typeof req.body?.path === 'string' ? req.body.path.trim() : '';
+    const rawRules = Array.isArray(req.body?.rules) ? req.body.rules : null;
+    if (!samplePath || !rawRules) {
+      res.status(400).json({ error: 'Body must be { path: string, rules: [...] }' });
+      return;
+    }
+    // Same sanitization as POST so empty mid-edit rows are skipped here too.
+    const rules: Array<{ match: string; redirect: string }> = [];
+    for (const entry of rawRules) {
+      if (!entry || typeof entry !== 'object') continue;
+      const match = typeof entry.match === 'string' ? entry.match.trim() : '';
+      const redirect = typeof entry.redirect === 'string' ? entry.redirect.trim() : '';
+      if (!match || !redirect) continue;
+      rules.push({ match, redirect });
+    }
+    const result = previewFileWriteRedirect(samplePath, rules);
+    if (result) {
+      res.json({ matched: true, rule: result.rule, destination: result.destination });
+    } else {
+      res.json({ matched: false });
+    }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });

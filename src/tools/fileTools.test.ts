@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { FileReadTool, FileWriteTool, ListUploadsTool } from './fileTools';
-import { drainUploadsFallbacks, clearFileWriteRedirectCache } from './pathResolution';
+import { drainUploadsFallbacks, clearFileWriteRedirectCache, previewFileWriteRedirect } from './pathResolution';
 
 describe('file tools bounds and path safety', () => {
   const fixtureDir = path.join(process.cwd(), '.harness', 'test-fixtures', 'file-tools');
@@ -337,6 +337,50 @@ describe('file tools bounds and path safety', () => {
       const result = await FileWriteTool.execute({ path: 'good-thing.js', content: 'G' });
       expect(result.success).toBe(true);
       expect(result.output).toContain(path.join(redirectDir, 'good-thing.js'));
+    });
+  });
+
+  describe('previewFileWriteRedirect', () => {
+    // Pure helper used by the UI preview endpoint. Does NOT touch env or
+    // the .harness/file-write-redirects.json file — takes ad-hoc rules.
+    it('returns the matched rule + destination for a matching path', () => {
+      const result = previewFileWriteRedirect('lottery-foo.js', [
+        { match: 'lottery-*', redirect: 'C:/AI/Lottery-Toolkit/inbox' },
+      ]);
+      expect(result).not.toBeNull();
+      expect(result!.rule.match).toBe('lottery-*');
+      // Path is normalized through Node's path.join — on Windows that
+      // gives backslashes. Match the basename to stay portable.
+      expect(path.basename(result!.destination)).toBe('lottery-foo.js');
+    });
+
+    it('returns null when no rule matches', () => {
+      const result = previewFileWriteRedirect('package.json', [
+        { match: 'lottery-*', redirect: 'C:/x' },
+        { match: '*.tmp', redirect: 'C:/y' },
+      ]);
+      expect(result).toBeNull();
+    });
+
+    it('first matching rule wins', () => {
+      const result = previewFileWriteRedirect('lottery-foo.js', [
+        { match: 'lottery-*', redirect: 'C:/winner' },
+        { match: '*.js', redirect: 'C:/loser' },
+      ]);
+      expect(result?.rule.redirect).toBe('C:/winner');
+    });
+
+    it('skips entries with empty match or redirect', () => {
+      const result = previewFileWriteRedirect('foo.js', [
+        { match: '', redirect: 'C:/x' },
+        { match: 'foo-*', redirect: '' },
+        { match: '*.js', redirect: 'C:/yes' },
+      ]);
+      expect(result?.rule.redirect).toBe('C:/yes');
+    });
+
+    it('returns null when no rules supplied', () => {
+      expect(previewFileWriteRedirect('anything.txt', [])).toBeNull();
     });
   });
 });

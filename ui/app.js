@@ -3300,6 +3300,48 @@ async function saveFileRedirects() {
   }
 }
 
+// Posts the currently-typed (unsaved) rules + a sample path to the
+// preview endpoint and renders which rule (if any) would catch the
+// path. Catches typos like `lottery_*` before they get saved.
+async function previewFileRedirects() {
+  const list = document.getElementById('fileRedirectsList');
+  const input = document.getElementById('fileRedirectsPreviewInput');
+  const out = document.getElementById('fileRedirectsPreviewResult');
+  if (!list || !input || !out) return;
+  const samplePath = input.value.trim();
+  if (!samplePath) {
+    out.innerHTML = '<span style="color:var(--text-dim)">Type a sample path first.</span>';
+    return;
+  }
+  // Read the rules from the form (NOT the server) so the preview
+  // reflects unsaved edits.
+  const rows = list.querySelectorAll('.setting-row');
+  const rules = [];
+  for (const row of rows) {
+    const match = row.querySelector('input[data-field="match"]')?.value.trim() || '';
+    const redirect = row.querySelector('input[data-field="redirect"]')?.value.trim() || '';
+    if (!match || !redirect) continue;
+    rules.push({ match, redirect });
+  }
+  out.innerHTML = '<span style="color:var(--text-dim)">Checking...</span>';
+  try {
+    const r = await fetch('/api/file-redirects/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: samplePath, rules }),
+    });
+    if (!r.ok) throw new Error('Preview failed (' + r.status + ')');
+    const d = await r.json();
+    if (d.matched) {
+      out.innerHTML = '✅ <strong>Matched</strong> rule <code>' + esc(d.rule.match) + '</code> → would write to <code>' + esc(d.destination) + '</code>';
+    } else {
+      out.innerHTML = '⚠️ <strong>No rule matches.</strong> A bare-filename write would still go to <code>agent-outputs/</code>; a path with subdirectories would write as-is into the project.';
+    }
+  } catch (e) {
+    out.innerHTML = '❌ ' + esc(e.message);
+  }
+}
+
 async function pullModel() { const name = document.getElementById('pullName').value.trim(); if (!name) return; const prog = document.getElementById('pullProgress'); prog.textContent = 'Starting...'; try { const res = await fetch('/api/models/pull', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }); const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = ''; while (true) { const { done, value } = await reader.read(); if (done) break; buf += dec.decode(value, { stream: true }); const lines = buf.split('\n'); buf = lines.pop() || ''; for (const line of lines) { if (!line.startsWith('data: ')) continue; const p = line.slice(6); if (p === '[DONE]') { prog.textContent = 'Done!'; loadModels(); return; } try { const d = JSON.parse(p); if (d.error) { prog.textContent = 'Error: ' + d.error; return; } if (d.status) { const pct = d.completed && d.total ? ' (' + Math.round(d.completed / d.total * 100) + '%)' : ''; prog.textContent = d.status + pct; } } catch {} } } } catch (e) { prog.textContent = 'Failed: ' + e.message; } }
 
 async function loadLearning() { try { const r = await fetch('/api/learning'); const d = await r.json(); const view = document.getElementById('learningView'); let html = '<div style="padding:4px 0"><h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin-bottom:8px">🧠 Self-Learning Status</h5>'; html += '<div style="display:flex;gap:4px;margin-bottom:8px"><input id="semanticQuery" placeholder="Search session memory" style="flex:1;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px"><button class="btn-sm" onclick="searchSemanticMemory()">Search</button></div><div id="semanticResults"></div>'; html += '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Total tool calls tracked: <strong style="color:var(--text)">' + ((d.totalToolCalls) || 0) + '</strong></div>'; if (d.toolBreakdown && Object.keys(d.toolBreakdown).length > 0) { html += '<div style="margin-bottom:12px">'; for (const [tool, count] of Object.entries(d.toolBreakdown || {})) html += '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(tool) + '</span><span style="color:var(--accent)">' + count + '</span></div>'; html += '</div>'; } const patterns = d.patterns || []; if (patterns.length > 0) { html += '<h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin:8px 0">Detected Patterns</h5>'; for (const p of patterns.slice(0, 5)) html += '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:4px;font-size:11px"><div style="color:var(--accent);font-weight:600">' + esc(p.toolSequence.join(' → ')) + '</div><div style="color:var(--text-dim)">' + p.occurrences + 'x across sessions' + (p.promoted ? ' ✅ promoted' : '') + '</div></div>'; } const reflections = d.reflections || []; if (reflections.length > 0) { html += '<h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin:8px 0">Recent Reflections</h5>'; for (const item of reflections.slice(-3)) { html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;padding:6px;background:var(--surface2);border-radius:6px"><div>Success: ' + Math.round(item.successRate * 100) + '% | Tools: ' + item.toolsUsed.join(', ') + '</div>'; if (item.insights.length) html += '<div style="color:var(--warning);margin-top:2px">' + esc(item.insights.join('; ')) + '</div>'; html += '</div>'; } } if (d.evolvedPrompt) html += '<h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin:8px 0">Evolved Instructions</h5><pre style="font-size:10px;background:var(--surface2);padding:6px;border-radius:6px;white-space:pre-wrap;color:var(--text-dim)">' + esc(d.evolvedPrompt) + '</pre>'; html += '</div>'; view.innerHTML = html; renderLearningManager(d); } catch { document.getElementById('learningView').innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No learning data yet. Start chatting and the agent will begin tracking patterns.</div>'; } }
