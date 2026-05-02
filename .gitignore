@@ -20,3 +20,6 @@ Network.md
 hermes-agent-main/
 release/*.zip
 release/*.zip.sha256.json
+
+# autonomy run logs
+.forge-run*.log

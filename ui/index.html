@@ -375,7 +375,7 @@
         <span class="meta-sep">·</span>
         <span class="session-hud-val" id="sessionHudTime">0s</span>
       </div>
-      <div class="session-hud" id="autonomyHud" title="Autonomy loop progress (.forge-state.json)" style="display:none;cursor:default;">
+      <div class="session-hud" id="autonomyHud" title="Autonomy loop progress (.forge-state.json)" style="display:none;cursor:pointer;" onclick="toggleAutonomyLog()">
         <span>🤖 Autonomy</span>
         <span class="session-hud-val" id="autonomyHudTask">idle</span>
         <span class="meta-sep">·</span>
@@ -863,6 +863,17 @@
       <button class="btn-sm full-width-button" onclick="pullModel()">⬇️ Download</button>
       <div id="pullProgress" class="pull-progress"></div>
     </div>
+  </div>
+</div>
+
+<div id="autonomyLogModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;align-items:center;justify-content:center;" onclick="if(event.target===this)toggleAutonomyLog()">
+  <div style="background:var(--surface,#1e1e1e);color:var(--fg,#eee);width:min(900px,92vw);height:min(70vh,640px);border-radius:8px;padding:16px;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.4);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <strong>Autonomy log <span style="opacity:0.6;font-weight:normal;font-size:0.85em;">(.forge-run.log)</span></strong>
+      <button class="btn-icon" onclick="toggleAutonomyLog()" title="Close">✕</button>
+    </div>
+    <pre id="autonomyLogBody" style="flex:1;overflow:auto;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.4;background:#000;color:#0f0;padding:12px;border-radius:4px;margin:0;white-space:pre-wrap;word-break:break-all;">Loading…</pre>
+    <div style="margin-top:8px;font-size:11px;opacity:0.6;">Auto-refreshes while open. Click outside or press ✕ to close.</div>
   </div>
 </div>
 

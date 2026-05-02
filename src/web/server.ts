@@ -332,6 +332,29 @@ app.get('/api/autonomy/state', async (_req, res) => {
   }
 });
 
+// Tail the autonomy loop log (.forge-run.log). `?lines=N` selects how many
+// trailing lines to return (default 50, max 500). Returns 204 when no log
+// exists yet so the UI can hide the panel without surfacing an error.
+app.get('/api/autonomy/log', async (req, res) => {
+  const logPath = path.join(process.cwd(), '.forge-run.log');
+  const requested = parseInt(String(req.query.lines ?? '50'), 10);
+  const lineCount = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 500) : 50;
+  try {
+    const raw = await fs.readFile(logPath, 'utf-8');
+    const lines = raw.split(/\r?\n/);
+    if (lines[lines.length - 1] === '') lines.pop();
+    res.json({ lines: lines.slice(-lineCount), total: lines.length });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      res.status(204).end();
+      return;
+    }
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
 // List available models from Ollama
 app.get('/api/models', async (_req, res) => {
   try {

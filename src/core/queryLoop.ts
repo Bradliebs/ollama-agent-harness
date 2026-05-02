@@ -44,6 +44,9 @@ export async function* queryLoop(
   ];
 
   let turn = 0;
+  let unproductiveTurns = 0;
+  const PRODUCTIVE_TOOLS = new Set(['file_write', 'file_edit']);
+  const unproductiveLimit = config.unproductiveTurnLimit ?? 0;
 
   if (session) {
     await appendStatus(session, 'running', undefined, tracer);
@@ -174,6 +177,7 @@ export async function* queryLoop(
     }));
 
     const toolResults = await dispatcher.dispatch(toolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer });
+    let producedFileChange = false;
     for (const { call, result } of toolResults) {
       yield { type: 'tool_call', call };
       if (session) {
@@ -184,6 +188,32 @@ export async function* queryLoop(
         await appendSession(session, 'tool_result', { kind: 'tool_result', call, result }, tracer);
       }
       messages.push({ role: 'tool', content: result.output });
+      if (result.success && PRODUCTIVE_TOOLS.has(call.name)) {
+        producedFileChange = true;
+      }
+    }
+
+    // Tool-quality kill: terminate when the agent loops on non-productive
+    // tools (reflect/consolidate/grep/list_files) without ever editing a
+    // file. Bounded by `unproductiveTurnLimit` from LoopConfig.
+    if (unproductiveLimit > 0) {
+      if (producedFileChange) {
+        unproductiveTurns = 0;
+      } else {
+        unproductiveTurns++;
+        if (unproductiveTurns >= unproductiveLimit) {
+          if (session) {
+            await appendStatus(session, 'error', `${unproductiveTurns} consecutive unproductive turns`, tracer);
+          }
+          yield {
+            type: 'error',
+            message: `Stopping: ${unproductiveTurns} consecutive turns without file edits (limit ${unproductiveLimit}).`,
+            recoverable: false,
+          };
+          yield { type: 'done', reason: 'unproductive', turns: turn };
+          return;
+        }
+      }
     }
   }
 

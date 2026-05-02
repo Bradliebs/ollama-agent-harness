@@ -1662,6 +1662,36 @@ async function pollAutonomy() {
   }
 }
 
+let autonomyLogTimer = null;
+function toggleAutonomyLog() {
+  const modal = document.getElementById('autonomyLogModal');
+  if (!modal) return;
+  const isOpen = modal.style.display !== 'none';
+  if (isOpen) {
+    modal.style.display = 'none';
+    if (autonomyLogTimer) { clearInterval(autonomyLogTimer); autonomyLogTimer = null; }
+    return;
+  }
+  modal.style.display = 'flex';
+  refreshAutonomyLog();
+  autonomyLogTimer = setInterval(refreshAutonomyLog, 2000);
+}
+
+async function refreshAutonomyLog() {
+  const body = document.getElementById('autonomyLogBody');
+  if (!body) return;
+  try {
+    const r = await fetch('/api/autonomy/log?lines=200');
+    if (r.status === 204) { body.textContent = '(no autonomy run yet — start one with `npm run autonomy`)'; return; }
+    if (!r.ok) { body.textContent = `error: HTTP ${r.status}`; return; }
+    const d = await r.json();
+    body.textContent = (d.lines || []).join('\n');
+    body.scrollTop = body.scrollHeight;
+  } catch (err) {
+    body.textContent = `error: ${err && err.message ? err.message : String(err)}`;
+  }
+}
+
 async function pollPermissions() {
   try {
     const r = await fetch('/api/permissions/pending');

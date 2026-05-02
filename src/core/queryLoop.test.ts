@@ -227,4 +227,82 @@ describe('queryLoop runtime behavior', () => {
       expect.objectContaining({ name: 'session.append' }),
     ]));
   });
+
+  describe('unproductiveTurnLimit', () => {
+    function makeToolCallMessage(name: string): Message {
+      return {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ function: { name, arguments: {} } }],
+      } as Message;
+    }
+
+    it('terminates with reason "unproductive" after N consecutive non-edit turns', async () => {
+      const reflect = makeTool('reflect', false, async () => ({ success: true, output: 'noted' }));
+      const client = makeClient([
+        makeToolCallMessage('reflect'),
+        makeToolCallMessage('reflect'),
+        makeToolCallMessage('reflect'),
+      ]);
+
+      const events = await collectEvents(client, [reflect], {
+        config: { maxTurns: 10, unproductiveTurnLimit: 3 },
+      });
+
+      const done = events.find((e) => e.type === 'done');
+      expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'unproductive' }));
+      const error = events.find((e) => e.type === 'error');
+      expect(error).toEqual(expect.objectContaining({ recoverable: false, message: expect.stringContaining('without file edits') }));
+    });
+
+    it('resets the unproductive counter when file_edit succeeds', async () => {
+      const reflect = makeTool('reflect', false, async () => ({ success: true, output: 'noted' }));
+      const fileEdit = makeTool('file_edit', false, async () => ({ success: true, output: 'edited' }));
+      const client = makeClient([
+        makeToolCallMessage('reflect'),
+        makeToolCallMessage('reflect'),
+        makeToolCallMessage('file_edit'),
+        makeToolCallMessage('reflect'),
+        { role: 'assistant', content: 'finished' },
+      ]);
+
+      const events = await collectEvents(client, [reflect, fileEdit], {
+        config: { maxTurns: 10, unproductiveTurnLimit: 3 },
+      });
+
+      const done = events.find((e) => e.type === 'done');
+      expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'completed' }));
+    });
+
+    it('does not trigger when unproductiveTurnLimit is unset', async () => {
+      const reflect = makeTool('reflect', false, async () => ({ success: true, output: 'noted' }));
+      const client = makeClient([
+        makeToolCallMessage('reflect'),
+        makeToolCallMessage('reflect'),
+        { role: 'assistant', content: 'done' },
+      ]);
+
+      const events = await collectEvents(client, [reflect], {
+        config: { maxTurns: 5 },
+      });
+
+      const done = events.find((e) => e.type === 'done');
+      expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'completed' }));
+    });
+
+    it('does not count failed file_edit calls as productive', async () => {
+      const fileEdit = makeTool('file_edit', false, async () => ({ success: false, output: 'failed', error: 'boom' }));
+      const client = makeClient([
+        makeToolCallMessage('file_edit'),
+        makeToolCallMessage('file_edit'),
+      ]);
+
+      const events = await collectEvents(client, [fileEdit], {
+        config: { maxTurns: 10, unproductiveTurnLimit: 2 },
+      });
+
+      const done = events.find((e) => e.type === 'done');
+      expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'unproductive' }));
+    });
+  });
 });

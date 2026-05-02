@@ -28,6 +28,7 @@ interface CliOptions {
   audioTranscribeCommand: string;
   audioSamplePath: string;
   outputValidation?: OutputValidationProfile;
+  unproductiveTurnLimit?: number;
 }
 
 export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
@@ -91,6 +92,9 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
         break;
       case '--validate-output':
         options.outputValidation = parseOutputValidationProfile(args[++i]);
+        break;
+      case '--unproductive-turn-limit':
+        options.unproductiveTurnLimit = parseInt(args[++i], 10);
         break;
       case '--helper-confidence-threshold':
         options.modelRouting.confidenceEscalationThreshold = parseFloat(args[++i]);
@@ -167,6 +171,7 @@ export async function main(): Promise<void> {
     model: options.model,
     systemPrompt,
     maxTurns: options.maxTurns,
+    unproductiveTurnLimit: options.unproductiveTurnLimit,
     outputValidation: options.outputValidation ? { enabled: true, profile: options.outputValidation } : undefined,
   };
 

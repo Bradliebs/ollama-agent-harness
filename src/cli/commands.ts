@@ -23,6 +23,7 @@ export const CLI_COMMAND_REGISTRY: CliCommandDef[] = [
       { flags: ['--host'], valueName: '<url>', description: 'Ollama host (default: http://localhost:11434)' },
       { flags: ['--mode'], valueName: '<mode>', description: 'Permission mode: default, acceptEdits, dontAsk' },
       { flags: ['--max-turns'], valueName: '<n>', description: 'Max agent loop turns (default: 50)' },
+      { flags: ['--unproductive-turn-limit'], valueName: '<n>', description: 'Stop early after N consecutive turns with no file edits (default: off)' },
       { flags: ['--summarizer-model'], valueName: '<name>', description: 'Optional smaller model for context compaction' },
       { flags: ['--small-helper-model'], valueName: '<name>', description: 'Model for bounded read-only helper agents' },
       { flags: ['--default-helper-model'], valueName: '<name>', description: 'Model for normal helper agents' },

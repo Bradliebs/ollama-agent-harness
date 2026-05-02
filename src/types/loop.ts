@@ -6,6 +6,14 @@ export interface LoopConfig {
   systemPrompt: string;
   maxTurns: number;
   abortSignal?: AbortSignal;
+  /**
+   * Terminate the loop early when the agent runs `unproductiveTurnLimit`
+   * consecutive turns without invoking a file-mutating tool
+   * (file_write / file_edit). Prevents runaway sessions where the model
+   * loops on reflect/consolidate/grep without ever changing code.
+   * Set to 0 or undefined to disable.
+   */
+  unproductiveTurnLimit?: number;
   context?: {
     enabled?: boolean;
     maxTokens?: number;
@@ -73,7 +81,7 @@ export interface ErrorEvent {
 
 export interface DoneEvent {
   type: 'done';
-  reason: 'completed' | 'max_turns' | 'aborted' | 'error';
+  reason: 'completed' | 'max_turns' | 'aborted' | 'error' | 'unproductive';
   turns: number;
 }
 

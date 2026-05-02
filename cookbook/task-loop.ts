@@ -59,6 +59,23 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } fr
 import { join } from "node:path";
 import { execSync } from "node:child_process";
 
+// --- Log mirror ---
+//
+// Every console line from the autonomy loop is mirrored to .forge-run.log
+// so the web UI (and `Get-Content -Wait`) can stream progress without
+// scraping a terminal. Truncated on each new run.
+const LOG_PATH = ".forge-run.log";
+try { writeFileSync(LOG_PATH, ""); } catch { /* best-effort */ }
+function mirrorLine(prefix: string, line: string): void {
+  try { appendFileSync(LOG_PATH, `[${new Date().toISOString()}] ${prefix} ${line}\n`); } catch { /* best-effort */ }
+}
+const _origLog = console.log.bind(console);
+const _origWarn = console.warn.bind(console);
+const _origErr = console.error.bind(console);
+console.log = (...args: unknown[]): void => { _origLog(...args); mirrorLine("LOG ", args.map(String).join(" ")); };
+console.warn = (...args: unknown[]): void => { _origWarn(...args); mirrorLine("WARN", args.map(String).join(" ")); };
+console.error = (...args: unknown[]): void => { _origErr(...args); mirrorLine("ERR ", args.map(String).join(" ")); };
+
 // --- Types ---
 
 type TaskStatus = "pending" | "done" | "failed";
@@ -114,6 +131,7 @@ const HARNESS_MODEL = process.env.HARNESS_MODEL ?? "gemma4:e4b";
 const HARNESS_HOST = process.env.HARNESS_HOST ?? "http://localhost:11434";
 const HARNESS_PERMISSION_MODE = process.env.HARNESS_PERMISSION_MODE ?? "acceptEdits";
 const HARNESS_MAX_TURNS = process.env.HARNESS_MAX_TURNS ?? "30";
+const HARNESS_UNPRODUCTIVE_TURN_LIMIT = process.env.HARNESS_UNPRODUCTIVE_TURN_LIMIT ?? "6";
 const HARNESS_VALIDATE_CMD = process.env.HARNESS_VALIDATE_CMD ?? "npm run typecheck";
 
 /**
@@ -123,32 +141,24 @@ const HARNESS_VALIDATE_CMD = process.env.HARNESS_VALIDATE_CMD ?? "npm run typech
  */
 function buildTaskPrompt(task: Task): string {
   return [
-    `You are an autonomous coding agent inside the Ollama Agent Harness repository.`,
-    `Your job is to ACTUALLY EDIT FILES using the available tools — not to chat.`,
+    `IMMEDIATE TASK — start working now. Do not ask for clarification. Do not greet me.`,
     ``,
-    `You MUST use these tools to do the work:`,
-    `  - file_read   — read a file before editing it`,
-    `  - file_write  — create or overwrite a file`,
-    `  - file_edit   — make a targeted edit to an existing file`,
-    `  - list_files  — list directory contents`,
-    `  - grep        — search for patterns in files`,
-    `  - bash        — run shell commands (tests, builds)`,
+    `Task: ${task.title}`,
+    `Task id: ${task.id}`,
     ``,
-    `If you finish without invoking any tool, you have FAILED the task.`,
-    `Conversational replies are not acceptable. Make code changes.`,
+    `Steps you MUST execute in this order, calling the listed tool each time:`,
+    `  1. Call list_files on the relevant directory to confirm layout.`,
+    `  2. Call file_read on the existing files you will modify.`,
+    `  3. Call file_write or file_edit to make the actual code change.`,
+    `  4. Optionally call bash to run \`npm run typecheck\` to verify.`,
+    `  5. Reply with a one-line summary and stop.`,
     ``,
-    `Task id:    ${task.id}`,
-    `Task title: ${task.title}`,
+    `Tool whitelist (use exactly these names): file_read, file_write, file_edit, list_files, grep, bash.`,
+    `Forbidden (do not call): calendar_read, web_search, image_analyze, audio_transcribe, analyze_patterns, promote_pattern, reflect, consolidate, evolve, improve_skill.`,
     ``,
-    `Workflow:`,
-    `  1. Use list_files / grep / file_read to inspect the relevant code.`,
-    `  2. Use file_write or file_edit to make the change.`,
-    `  3. Optionally run \`npm run typecheck\` or \`npm test\` via bash.`,
-    `  4. Briefly summarize what you changed and stop.`,
-    ``,
-    `Constraints:`,
-    `  - Make the smallest change that satisfies the task.`,
-    `  - Do not modify IMPLEMENTATION_PLAN.md, .forge-state.json, or files under .copilot-tracking/.`,
+    `If your first response is text instead of a tool call, you have FAILED.`,
+    `Do not modify IMPLEMENTATION_PLAN.md, .forge-state.json, or .copilot-tracking/.`,
+    `Make the smallest change that satisfies the task.`,
   ].join("\n");
 }
 
@@ -167,6 +177,7 @@ function implementTask(task: Task): void {
     `--host "${HARNESS_HOST}"`,
     `--mode ${HARNESS_PERMISSION_MODE}`,
     `--max-turns ${HARNESS_MAX_TURNS}`,
+    `--unproductive-turn-limit ${HARNESS_UNPRODUCTIVE_TURN_LIMIT}`,
     `-p "${prompt}"`,
   ].join(" ");
 
