@@ -42,7 +42,7 @@ describe('setup health', () => {
         ollama: { ok: true, modelCount: 1 },
         vision: { ok: true },
         audio: { ok: true },
-        local: { tools: { ok: true }, automations: { ok: true } },
+        local: { tools: { ok: true }, automations: { ok: true }, mycelium: { ok: true } },
       });
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

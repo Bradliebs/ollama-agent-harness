@@ -48,6 +48,25 @@ export const CLI_COMMAND_REGISTRY: CliCommandDef[] = [
       { flags: ['--audio-sample'], valueName: '<path>', description: 'Optional audio sample for transcription verification' },
     ],
   },
+  {
+    name: 'mycelium',
+    description: 'Inspect and manage the mycelial context router graph',
+    aliases: [],
+    usage: 'harness mycelium <subcommand> [options]',
+    options: [
+      { flags: ['init'], description: 'Create the mycelium graph store' },
+      { flags: ['seed'], description: 'Seed generic safety/agent/verifier/workflow nodes' },
+      { flags: ['status'], description: 'Show counts and recent reward' },
+      { flags: ['route', '--query'], valueName: '"..."', description: 'Classify, route, and explain a query (add --dry-run to skip mutation)' },
+      { flags: ['show-route'], description: 'Show the most recent episode + route' },
+      { flags: ['show-node'], valueName: '<id>', description: 'Show details for a node' },
+      { flags: ['show-edges'], valueName: '<id>', description: 'Show incoming/outgoing edges for a node' },
+      { flags: ['decay'], description: 'Apply one decay cycle' },
+      { flags: ['prune'], description: 'Archive weak edges' },
+      { flags: ['export'], valueName: '<path>', description: 'Export graph as JSON' },
+      { flags: ['classify', '--query'], valueName: '"..."', description: 'Print task classifier verdict' },
+    ],
+  },
 ];
 
 export function resolveCliCommand(name: string | undefined): CliCommandDef | undefined {

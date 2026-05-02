@@ -36,6 +36,7 @@ describe('cli setup doctor', () => {
         sessions: { ok: true, message: 'Session storage is writable.' },
         tools: { ok: true, message: '27 built-in tool(s).' },
         automations: { ok: true, message: 'Automation storage is writable.' },
+        mycelium: { ok: true, message: 'Mycelium graph is empty.' },
       },
     });
 

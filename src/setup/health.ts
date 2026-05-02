@@ -31,6 +31,7 @@ export interface SetupHealthResult {
     sessions: LocalHealthCheck;
     tools: LocalHealthCheck;
     automations: LocalHealthCheck;
+    mycelium: LocalHealthCheck;
   };
 }
 
@@ -83,7 +84,31 @@ async function checkLocalHealth(projectDir: string): Promise<SetupHealthResult['
     sessions: await checkWritableDirectory(sessionsDir, 'Session storage is writable.'),
     tools: { ok: registry.listTools().length > 0, message: `${registry.listTools().length} built-in tool(s) across ${registry.listToolsets().length} toolset(s).` },
     automations: await checkWritableDirectory(automationsDir, 'Automation storage is writable.'),
+    mycelium: await checkMyceliumHealth(projectDir),
   };
+}
+
+async function checkMyceliumHealth(projectDir: string): Promise<LocalHealthCheck> {
+  // Lazy-load to avoid importing the mycelium module unless health checks run.
+  try {
+    const { loadMyceliumGraph } = await import('../mycelium/graph');
+    const graph = await loadMyceliumGraph(projectDir);
+    const stats = graph.stats();
+    if (stats.nodes === 0) {
+      return { ok: true, message: 'Mycelium graph is empty (run `harness mycelium seed` to populate).' };
+    }
+    const recent = graph.listEpisodes(20);
+    const avgReward = recent.length > 0
+      ? recent.reduce((sum, e) => sum + e.reward, 0) / recent.length
+      : 0;
+    return {
+      ok: true,
+      message: `${stats.nodes} nodes, ${stats.edges} edges (${stats.protectedEdges} protected, ${stats.archivedEdges} archived), avg reward ${avgReward.toFixed(2)} over last ${recent.length} episode(s).`,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, message: `Cannot read mycelium graph: ${message}` };
+  }
 }
 
 function checkNodeVersion(): LocalHealthCheck {

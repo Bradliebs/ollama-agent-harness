@@ -11,10 +11,12 @@ import { checkSetupHealth, type SetupHealthResult } from '../setup/health';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
 import { OUTPUT_VALIDATION_PROFILES, parseOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
 import { formatCliHelp, resolveCliCommand } from './commands';
+import { runMyceliumCli } from '../mycelium/cli';
 import type { LoopConfig, PermissionMode } from '../types';
 
 interface CliOptions {
-  command?: 'doctor';
+  command?: 'doctor' | 'mycelium';
+  myceliumArgs?: string[];
   model: string;
   host: string;
   permissionMode: PermissionMode;
@@ -44,6 +46,11 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
   if (command?.name === 'doctor') {
     options.command = command.name;
     args = args.slice(1);
+  } else if (command?.name === 'mycelium') {
+    options.command = 'mycelium';
+    // Everything after 'mycelium' is forwarded to the subcommand handler.
+    options.myceliumArgs = args.slice(1);
+    args = [];
   }
 
   for (let i = 0; i < args.length; i++) {
@@ -123,6 +130,13 @@ export async function main(): Promise<void> {
     return;
   }
 
+  if (options.command === 'mycelium') {
+    const result = await runMyceliumCli({ projectDir: process.cwd(), args: options.myceliumArgs ?? [] });
+    console.log(result.output);
+    process.exitCode = result.exitCode;
+    return;
+  }
+
   const projectDir = process.cwd();
 
   // Initialize client
@@ -189,6 +203,7 @@ export function formatSetupHealth(result: SetupHealthResult): string {
   lines.push(formatHealthLine('Sessions', result.local.sessions.ok, result.local.sessions.message));
   lines.push(formatHealthLine('Tools', result.local.tools.ok, result.local.tools.message));
   lines.push(formatHealthLine('Automations', result.local.automations.ok, result.local.automations.message));
+  lines.push(formatHealthLine('Mycelium', result.local.mycelium.ok, result.local.mycelium.message));
   return lines.join('\n');
 }
 
