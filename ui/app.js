@@ -1367,6 +1367,17 @@ async function sendMessage() {
         let ev;
         try { ev = JSON.parse(payload); } catch { continue; }
         sawModelEvent = true;
+        // First real model event — update the thinking status from
+        // "Preparing model..." to something concrete. Without this, runs
+        // that go through tool_calls before producing text leave the
+        // user staring at "Preparing model..." for the entire tool phase.
+        if (thinkEl.parentNode && ev.type !== 'text' && ev.type !== 'error') {
+          const label = ev.type === 'tool_call' ? 'Calling tools...'
+            : ev.type === 'usage' ? 'Working...'
+            : ev.type === 'context' ? 'Compacting context...'
+            : 'Working...';
+          updateThinkingStatus(thinkEl, label);
+        }
         switch (ev.type) {
           case 'text':
             thinkEl.remove();
@@ -1436,6 +1447,16 @@ async function sendMessage() {
           case 'error':
             thinkEl.remove();
             addMsg('assistant', '⚠️ ' + ev.message);
+            break;
+          case 'done':
+            // Surface the completed-but-validation-failed reason so users
+            // do not mistake it for an early stop. The 🧪 validation
+            // detail already rendered above; this is just a one-line
+            // badge under the assistant message.
+            if (ev.reason === 'completed_with_validation_failures') {
+              toolBox = ensureToolBox(toolBox);
+              appendToolItem(toolBox, '⚠️', 'completed with validation failures', 'work finished but the output validator rejected the final reply', true);
+            }
             break;
         }
       }

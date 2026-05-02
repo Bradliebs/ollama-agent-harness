@@ -48,6 +48,12 @@ export async function* queryLoop(
   let unproductiveTurns = 0;
   const PRODUCTIVE_TOOLS = new Set(['file_write', 'file_edit']);
   const unproductiveLimit = config.unproductiveTurnLimit ?? 0;
+  // Tracks whether ANY productive tool succeeded across the whole run.
+  // Used to auto-promote the validation profile from oracle-prime to
+  // coding-answer at the end — oracle-prime expects reasoning sections
+  // (REFRAME / SCENARIO MAP / etc) and FAILs on legitimate code-edit
+  // sessions whose final reply is a tool-result summary.
+  let anyProductiveToolSucceeded = false;
 
   if (session) {
     await appendStatus(session, 'running', undefined, tracer);
@@ -155,7 +161,14 @@ export async function* queryLoop(
     if (!assistantMessage.tool_calls?.length) {
       let validationFailed = false;
       if (config.outputValidation?.enabled) {
-        const validation = validateOutput(assistantMessage.content ?? '', validationProfile, customValidationProfiles);
+        // Auto-promote oracle-prime → coding-answer when the run actually
+        // edited files. oracle-prime is the default fallback for ambiguous
+        // prompts; using it on a coding session produces FAIL findings
+        // for missing reasoning sections that the user never asked for.
+        const effectiveProfile = (validationProfile === 'oracle-prime' && anyProductiveToolSucceeded)
+          ? 'coding-answer'
+          : validationProfile;
+        const validation = validateOutput(assistantMessage.content ?? '', effectiveProfile, customValidationProfiles);
         tracer?.recordEvent('output.validation', {
           profile: validation.profile,
           status: validation.status,
@@ -197,6 +210,7 @@ export async function* queryLoop(
       messages.push({ role: 'tool', content: result.output });
       if (result.success && PRODUCTIVE_TOOLS.has(call.name)) {
         producedFileChange = true;
+        anyProductiveToolSucceeded = true;
       }
     }
 

@@ -121,6 +121,49 @@ describe('queryLoop runtime behavior', () => {
     expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'completed' }));
   });
 
+  it('auto-promotes oracle-prime to coding-answer when productive tools succeeded', async () => {
+    // Repro of the user-reported confusion: oracle-prime is the default
+    // fallback profile, but applying it to a coding session that wrote
+    // files produces FAIL findings for missing reasoning sections that
+    // were never asked for. When the run actually edited files, swap
+    // profiles automatically so the validator matches the work done.
+    const fileWrite = makeTool('file_write', false, async () => ({ success: true, output: 'wrote' }));
+    const client = makeClient([
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ function: { name: 'file_write', arguments: {} } }],
+      } as Message,
+      { role: 'assistant', content: 'Edited src/foo.ts and ran typecheck — no errors.' },
+    ]);
+
+    const events = await collectEvents(client, [fileWrite], {
+      config: { outputValidation: { enabled: true, profile: 'oracle-prime' } },
+    });
+
+    const validation = events.find((e) => e.type === 'output_validation');
+    expect(validation).toMatchObject({
+      type: 'output_validation',
+      validation: { profile: 'coding-answer' },
+    });
+  });
+
+  it('does NOT auto-promote when no productive tools fired', async () => {
+    // A pure Q&A turn with oracle-prime should still validate against
+    // oracle-prime — auto-promotion is for runs that did real edits.
+    const client = makeClient([{ role: 'assistant', content: 'A short answer.' }]);
+
+    const events = await collectEvents(client, [], {
+      config: { outputValidation: { enabled: true, profile: 'oracle-prime' } },
+    });
+
+    const validation = events.find((e) => e.type === 'output_validation');
+    expect(validation).toMatchObject({
+      type: 'output_validation',
+      validation: { profile: 'oracle-prime' },
+    });
+  });
+
   it('pairs enabled output validation with profile instructions in the system prompt', async () => {
     const client = makeClient([{ role: 'assistant', content: 'Implemented changes in src/core/queryLoop.ts and ran tests.' }]);
 
