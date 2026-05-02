@@ -129,6 +129,7 @@ function writePlan(filePath: string, tasks: Task[]): void {
 
 const HARNESS_MODEL = process.env.HARNESS_MODEL ?? "gemma4:e4b";
 const HARNESS_HOST = process.env.HARNESS_HOST ?? "http://localhost:11434";
+const HARNESS_BACKEND = process.env.HARNESS_BACKEND ?? "ollama";
 const HARNESS_PERMISSION_MODE = process.env.HARNESS_PERMISSION_MODE ?? "acceptEdits";
 const HARNESS_MAX_TURNS = process.env.HARNESS_MAX_TURNS ?? "30";
 const HARNESS_UNPRODUCTIVE_TURN_LIMIT = process.env.HARNESS_UNPRODUCTIVE_TURN_LIMIT ?? "6";
@@ -173,6 +174,7 @@ function implementTask(task: Task): void {
   const prompt = buildTaskPrompt(task).replace(/"/g, '\\"');
   const cmd = [
     "npx ts-node src/cli/index.ts",
+    `--backend "${HARNESS_BACKEND}"`,
     `--model "${HARNESS_MODEL}"`,
     `--host "${HARNESS_HOST}"`,
     `--mode ${HARNESS_PERMISSION_MODE}`,

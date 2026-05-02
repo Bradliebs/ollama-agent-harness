@@ -3,6 +3,9 @@ import type { ChatRequest, ChatResponse, Message, Tool, ToolCall } from 'ollama'
 import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import { appendFileSync } from 'fs';
+import type { ChatResult, IChatClient, StreamChunk, TokenUsage } from './chatClient';
+
+export type { ChatResult, StreamChunk, TokenUsage } from './chatClient';
 
 export interface OllamaClientConfig {
   host?: string;
@@ -11,24 +14,7 @@ export interface OllamaClientConfig {
   numCtx?: number;
 }
 
-export interface TokenUsage {
-  promptTokens: number;
-  completionTokens: number;
-  totalDurationNs: number;
-}
-
-export interface ChatResult {
-  message: Message;
-  usage: TokenUsage;
-}
-
-export interface StreamChunk {
-  content: string;
-  done: boolean;
-  toolCalls?: Message['tool_calls'];
-}
-
-export class OllamaClient {
+export class OllamaClient implements IChatClient {
   private client: Ollama;
   private model: string;
   private keepAlive: string;

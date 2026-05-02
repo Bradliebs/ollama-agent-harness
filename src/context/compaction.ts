@@ -1,5 +1,6 @@
 import type { Message } from 'ollama';
 import { OllamaClient } from '../core/ollamaClient';
+import type { IChatClient } from '../core/chatClient';
 import { estimateTokenCount } from './assembly';
 
 export interface CompactionConfig {
@@ -83,7 +84,7 @@ export function applySnip(
 
 export async function applyAutoCompact(
   messages: Message[],
-  client: OllamaClient,
+  client: IChatClient,
   minSummaryQuality = DEFAULT_COMPACTION_CONFIG.minSummaryQuality ?? 0,
 ): Promise<CompactionResult> {
   // Separate system messages from conversation
@@ -134,7 +135,7 @@ export async function applyAutoCompact(
 export async function compactIfNeeded(
   messages: Message[],
   config: CompactionConfig,
-  client: OllamaClient,
+  client: IChatClient,
 ): Promise<CompactionResult> {
   // Layer 1: Budget reduction (always runs)
   let result = applyBudgetReduction(messages, config.budgetPerToolResult);

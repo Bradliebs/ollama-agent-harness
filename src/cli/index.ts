@@ -2,6 +2,7 @@
 
 import * as readline from 'readline';
 import { OllamaClient } from '../core/ollamaClient';
+import { createChatClient } from '../core/chatClientFactory';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { getBuiltinTools } from '../tools';
 import { PermissionEngine } from '../permissions/engine';
@@ -29,6 +30,7 @@ interface CliOptions {
   audioSamplePath: string;
   outputValidation?: OutputValidationProfile;
   unproductiveTurnLimit?: number;
+  backend?: string;
 }
 
 export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
@@ -96,6 +98,9 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
       case '--unproductive-turn-limit':
         options.unproductiveTurnLimit = parseInt(args[++i], 10);
         break;
+      case '--backend':
+        options.backend = args[++i];
+        break;
       case '--helper-confidence-threshold':
         options.modelRouting.confidenceEscalationThreshold = parseFloat(args[++i]);
         break;
@@ -143,8 +148,10 @@ export async function main(): Promise<void> {
 
   const projectDir = process.cwd();
 
-  // Initialize client
-  const client = new OllamaClient({
+  // Initialize client (Ollama by default; OpenAI-compatible providers via
+  // --backend or HARNESS_BACKEND env var).
+  const client = createChatClient({
+    backend: options.backend,
     model: options.model,
     host: options.host,
   });
@@ -181,7 +188,7 @@ export async function main(): Promise<void> {
     permissionCheck: (call) => permissionEngine.evaluateAsync(call),
     session,
     summarizerClient: options.summarizerModel
-      ? new OllamaClient({ model: options.summarizerModel, host: options.host })
+      ? createChatClient({ backend: options.backend, model: options.summarizerModel, host: options.host })
       : undefined,
   };
 

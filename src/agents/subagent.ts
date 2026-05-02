@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
 import { OllamaClient } from '../core/ollamaClient';
+import type { IChatClient } from '../core/chatClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { createHelperAgentConfig, type HelperTaskType, type ModelRoutingDecision, type ModelRoutingInput, type ModelRoutingPolicy } from './modelRouting';
 
@@ -55,7 +56,7 @@ export const AgentTool: Tool = {
 export async function runSubagent(
   config: SubagentConfig,
   prompt: string,
-  parentClient: OllamaClient,
+  parentClient: IChatClient,
   availableTools: Tool[],
 ): Promise<string> {
   const effectiveConfig = resolveSubagentConfig(config, prompt);

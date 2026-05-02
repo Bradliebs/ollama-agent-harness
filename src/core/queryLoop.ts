@@ -1,5 +1,6 @@
 import type { Message } from 'ollama';
 import { OllamaClient } from './ollamaClient';
+import type { IChatClient } from './chatClient';
 import type { Tool, ToolCall, LoopConfig, LoopEvent } from '../types';
 import { toolToSchema } from '../types/tool';
 import type { HookPipeline } from '../extensibility/hookPipeline';
@@ -12,12 +13,12 @@ import type { RuntimeTracer } from './tracing';
 import { validateOutput, withOutputValidationInstructions } from './outputValidation';
 
 export interface QueryLoopDeps {
-  client: OllamaClient;
+  client: IChatClient;
   tools: Tool[];
   permissionCheck?: (call: ToolCall) => Promise<{ allowed: boolean; reason?: string }>;
   hooks?: HookPipeline;
   session?: SessionStorage;
-  summarizerClient?: OllamaClient;
+  summarizerClient?: IChatClient;
   tracer?: RuntimeTracer;
 }
 
