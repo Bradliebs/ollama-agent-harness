@@ -300,6 +300,20 @@ describe('OpenAIClient retry + credential pool', () => {
       .rejects.toThrow(/HTTP 401/);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('does not exceed maxRetries attempts on persistent 429', async () => {
+    // Always return 429; the client should stop after exactly maxRetries attempts.
+    fetchSpy.mockResolvedValue(make429('0'));
+    const maxRetries = 3;
+    const client = new OpenAIClient({
+      baseUrl: 'https://x', apiKey: 'k', model: 'm',
+      providerLabel: 'TestProv',
+      maxRetries, retryBaseDelayMs: 1,
+    });
+    await expect(client.chat([{ role: 'user', content: 'hi' }]))
+      .rejects.toThrow(/TestProv HTTP 429/);
+    expect(fetchSpy).toHaveBeenCalledTimes(maxRetries);
+  });
 });
 
 describe('OpenAIClient streaming', () => {

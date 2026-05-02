@@ -38,10 +38,7 @@
   - target: src/tools/dispatcher.test.ts
 - [x] verify-task-loop-dry-run — Add a `--dry-run` mode to `cookbook/task-loop.ts` that prints what each iteration would do without invoking the model or git
 - [x] verify-autonomy-stop-signal — Add a jest test for `shouldStop()` covering both the `.forge-stop` file and the `FORGE_STOP` env var paths
-
-# Verification cycle B (autonomy fuel — anchored, scoped to a single test file each)
-
-- [ ] verify-openai-retry-backoff-cap — Add a jest test that asserts OpenAIClient.invoke does NOT exceed `maxRetries` attempts on persistent 429 (i.e. caps at the configured limit). Append to the existing `describe('OpenAIClient retry + credential pool', ...)` block. Use the `make429` helper that already exists in the file.
+- [x] verify-openai-retry-backoff-cap — Add a jest test that asserts OpenAIClient.invoke does NOT exceed `maxRetries` attempts on persistent 429 (i.e. caps at the configured limit). Append to the existing `describe('OpenAIClient retry + credential pool', ...)` block. Use the `make429` helper that already exists in the file.
   - anchor: src/core/openaiClient.test.ts
   - target: src/core/openaiClient.test.ts
 - [ ] verify-credential-pool-rotates-on-success — Add a jest test that asserts OpenAIClient does NOT rotate keys on a successful 200 response (only on 429/5xx). Append to the same describe block. Mock 3 successful responses and assert all 3 used the same Bearer token.
