@@ -56,6 +56,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setupSettingsCollapse();
   loadApiKeys();
   loadFileRedirects();
+  loadAgentOutputDir();
   // Restore prior chat session if the user reloaded mid-conversation.
   if (chatMessages.length > 0) {
     const chatArea = document.getElementById('chatArea');
@@ -3216,6 +3217,51 @@ async function saveApiKeys() {
 // via POST /api/file-redirects which calls clearFileWriteRedirectCache()
 // so changes take effect on the next file_write without a server restart.
 
+// ─── Simple "all agent files go here" folder ─────────────────────────
+// One-input version of the redirect feature. Persists to the standard
+// /api/settings endpoint as `agentOutputDir`. Empty string = use the
+// built-in default (<project>/agent-outputs). Power users can still set
+// per-pattern overrides in the Advanced sub-section below.
+
+async function loadAgentOutputDir() {
+  const input = document.getElementById('agentOutputDirInput');
+  const status = document.getElementById('agentOutputDirStatus');
+  if (!input) return;
+  try {
+    const r = await fetch('/api/settings');
+    if (!r.ok) throw new Error('settings fetch failed (' + r.status + ')');
+    const d = await r.json();
+    input.value = typeof d.agentOutputDir === 'string' ? d.agentOutputDir : '';
+    if (status) status.textContent = input.value
+      ? 'Currently using: ' + input.value
+      : 'Currently using default: <project>/agent-outputs';
+  } catch (e) {
+    if (status) status.textContent = '⚠ ' + e.message;
+  }
+}
+
+async function saveAgentOutputDir() {
+  const input = document.getElementById('agentOutputDirInput');
+  const status = document.getElementById('agentOutputDirStatus');
+  if (!input) return;
+  const value = input.value.trim();
+  if (status) status.textContent = 'Saving...';
+  try {
+    const r = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agentOutputDir: value }),
+    });
+    if (!r.ok) throw new Error('save failed (' + r.status + ')');
+    if (status) status.textContent = value
+      ? '✅ Saved. New agent files now go to: ' + value
+      : '✅ Cleared. Using default: <project>/agent-outputs';
+    setTimeout(() => loadAgentOutputDir(), 2000);
+  } catch (e) {
+    if (status) status.textContent = '❌ ' + e.message;
+  }
+}
+
 async function loadFileRedirects() {
   const list = document.getElementById('fileRedirectsList');
   if (!list) return;
@@ -4357,6 +4403,25 @@ document.addEventListener('keydown', (event) => {
   if (event.key === '?' && !event.ctrlKey && !event.metaKey && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA' && document.activeElement?.tagName !== 'SELECT') {
     event.preventDefault();
     showKeyboardShortcuts();
+  }
+  // Universal escape hatch: closes any overlay panel that might have its
+  // close button rendered offscreen at narrow viewport widths. Prefer
+  // closing the artifact panel first (it sits above the right panel),
+  // then the right Settings panel. Stops at the first one closed so
+  // users can press Escape repeatedly to dismiss layered overlays.
+  if (event.key === 'Escape' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    const artifact = document.getElementById('artifactPanel');
+    if (artifact && artifact.classList.contains('open')) {
+      event.preventDefault();
+      try { closeArtifact(); } catch { artifact.classList.remove('open'); }
+      return;
+    }
+    const right = document.getElementById('rightPanel');
+    if (right && !right.classList.contains('hidden')) {
+      event.preventDefault();
+      right.classList.add('hidden');
+      right.classList.remove('visible');
+    }
   }
 });
 

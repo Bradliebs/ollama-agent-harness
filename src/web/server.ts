@@ -120,6 +120,11 @@ interface WebSettings {
   /** Time-limited capability grants for gated high-power surfaces. */
   capabilityGrants: CapabilityGrant[];
   allowedExternalPaths: string[];
+  /** User-set folder where new agent file_write outputs go. Empty string
+   * means use the default <project>/agent-outputs. Persisted to settings
+   * AND mirrored into HARNESS_AGENT_OUTPUT_DIR so the file_write tool
+   * picks it up on the next call. */
+  agentOutputDir: string;
 }
 
 interface MediaToolSettings {
@@ -212,6 +217,10 @@ let mediaTools: MediaToolSettings = {
   uploadsAutoPruneDays: 0,
   uploadsLastPrunedAt: '',
 };
+// Simple "put all agent files here" override. Empty string means use the
+// built-in default (<project>/agent-outputs). Mirrored into the env var
+// HARNESS_AGENT_OUTPUT_DIR on every change so getAgentOutputDir() picks it up.
+let agentOutputDir: string = process.env.HARNESS_AGENT_OUTPUT_DIR ?? '';
 let outputValidation: OutputValidationSettings = { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: true };
 let customOutputValidationProfiles: CustomOutputValidationProfile[] = [];
 let modelCatalog: ModelCatalogSettings = { url: '', ttlHours: 24 };
@@ -785,6 +794,12 @@ app.post('/api/settings', async (req, res) => {
   if (req.body.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(req.body.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (req.body.temperature !== undefined) temperature = clampNumber(req.body.temperature, 0, 2, 0.7);
   if (req.body.topP !== undefined) topP = clampNumber(req.body.topP, 0, 1, 0.9);
+  if (req.body.agentOutputDir !== undefined) {
+    // Trim whitespace; empty string means "use the default agent-outputs/".
+    agentOutputDir = String(req.body.agentOutputDir).trim().slice(0, 500);
+    if (agentOutputDir) process.env.HARNESS_AGENT_OUTPUT_DIR = agentOutputDir;
+    else delete process.env.HARNESS_AGENT_OUTPUT_DIR;
+  }
   await saveSettingsToDisk();
   logger.info('Settings', 'Updated', { model: currentModel, permissionMode, temperature, topP });
   res.json(getCurrentSettings());
@@ -3272,6 +3287,7 @@ function getCurrentSettings(): WebSettings {
     killSwitch: { active: killSwitchActive, reason: killSwitchReason },
     capabilityGrants,
     allowedExternalPaths: getAllowedExternalPaths(),
+    agentOutputDir,
   };
 }
 
@@ -3403,6 +3419,10 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (settings.temperature !== undefined) temperature = clampNumber(settings.temperature, 0, 2, 0.7);
   if (settings.topP !== undefined) topP = clampNumber(settings.topP, 0, 1, 0.9);
+  if (settings.agentOutputDir !== undefined) {
+    agentOutputDir = String(settings.agentOutputDir).trim().slice(0, 500);
+    if (agentOutputDir) process.env.HARNESS_AGENT_OUTPUT_DIR = agentOutputDir;
+  }
 }
 
 function sanitizeModelRoutingPolicy(value: unknown): ModelRoutingPolicy {
