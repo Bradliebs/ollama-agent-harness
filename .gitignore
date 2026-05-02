@@ -12,6 +12,8 @@ dist/
 .env
 .env.local
 .harness/
+.copilot-tracking/
+Network.md
 
 # Local exploration / vendored sources / large binaries
 2604.14228v1.pdf
