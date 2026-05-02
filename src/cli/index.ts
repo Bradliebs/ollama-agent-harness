@@ -32,6 +32,8 @@ interface CliOptions {
   outputValidation?: OutputValidationProfile;
   unproductiveTurnLimit?: number;
   backend?: string;
+  /** When set, doctor re-runs every `watchIntervalMs` instead of exiting. */
+  watchIntervalMs?: number;
 }
 
 export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
@@ -102,6 +104,16 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
       case '--backend':
         options.backend = args[++i];
         break;
+      case '--watch': {
+        // Optional numeric arg: --watch 10 or just --watch (defaults to 5s).
+        // Min 1s to avoid hammering Ollama; max 3600s (1h) as a sanity cap.
+        const next = args[i + 1];
+        let seconds = 5;
+        if (next && /^\d+$/.test(next)) { seconds = parseInt(next, 10); i++; }
+        seconds = Math.max(1, Math.min(3600, seconds));
+        options.watchIntervalMs = seconds * 1000;
+        break;
+      }
       case '--helper-confidence-threshold':
         options.modelRouting.confidenceEscalationThreshold = parseFloat(args[++i]);
         break;
@@ -130,17 +142,44 @@ export async function main(): Promise<void> {
   const options = parseArgs();
 
   if (options.command === 'doctor') {
-    const result = await checkSetupHealth({
-      host: options.host,
-      visionModel: options.visionModel,
-      audioTranscribeCommand: options.audioTranscribeCommand,
-      audioSamplePath: options.audioSamplePath || undefined,
-      pdfOcrCommand: process.env.HARNESS_PDF_OCR_COMMAND,
-    });
-    console.log(formatSetupHealth(result));
-    if (!result.ollama.ok || (options.visionModel ? !result.vision.ok : false) || (options.audioTranscribeCommand ? !result.audio.ok : false)) {
-      process.exitCode = 1;
+    const runOnce = async () => {
+      const result = await checkSetupHealth({
+        host: options.host,
+        visionModel: options.visionModel,
+        audioTranscribeCommand: options.audioTranscribeCommand,
+        audioSamplePath: options.audioSamplePath || undefined,
+        pdfOcrCommand: process.env.HARNESS_PDF_OCR_COMMAND,
+      });
+      console.log(formatSetupHealth(result));
+      const failedRequired = !result.ollama.ok
+        || (options.visionModel ? !result.vision.ok : false)
+        || (options.audioTranscribeCommand ? !result.audio.ok : false);
+      return failedRequired;
+    };
+
+    if (options.watchIntervalMs !== undefined) {
+      // Watch mode: redraw on every tick. Useful when toggling API keys
+      // in the UI to confirm doctor reflects them, or when bringing
+      // Ollama up/down. Ctrl+C stops the loop. Exit code stays 0 in
+      // watch mode — it's a monitoring view, not a one-shot check.
+      const seconds = Math.round(options.watchIntervalMs / 1000);
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        // Best-effort screen clear. process.stdout.write avoids the extra
+        // blank line console.clear() sometimes leaves on Windows.
+        if (process.stdout.isTTY) process.stdout.write('\x1B[2J\x1B[0f');
+        console.log(`harness doctor --watch (every ${seconds}s, Ctrl+C to stop) — ${new Date().toISOString()}`);
+        try {
+          await runOnce();
+        } catch (error) {
+          console.error(`doctor failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, options.watchIntervalMs));
+      }
     }
+
+    const failedRequired = await runOnce();
+    if (failedRequired) process.exitCode = 1;
     return;
   }
 

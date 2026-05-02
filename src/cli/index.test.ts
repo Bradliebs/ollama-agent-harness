@@ -25,6 +25,27 @@ describe('cli setup doctor', () => {
     });
   });
 
+  it('parses --watch with default 5s interval', () => {
+    const options = parseArgs(['doctor', '--watch']);
+    expect(options.command).toBe('doctor');
+    expect(options.watchIntervalMs).toBe(5000);
+  });
+
+  it('parses --watch with custom seconds and clamps out-of-range values', () => {
+    expect(parseArgs(['doctor', '--watch', '10']).watchIntervalMs).toBe(10000);
+    // Below 1 second is clamped to 1 second.
+    expect(parseArgs(['doctor', '--watch', '0']).watchIntervalMs).toBe(1000);
+    // Above 1 hour is clamped to 1 hour.
+    expect(parseArgs(['doctor', '--watch', '99999']).watchIntervalMs).toBe(3600000);
+  });
+
+  it('treats --watch followed by a non-numeric arg as default 5s', () => {
+    // --vision-model needs to keep its value, not be eaten by --watch.
+    const options = parseArgs(['doctor', '--watch', '--vision-model', 'llava']);
+    expect(options.watchIntervalMs).toBe(5000);
+    expect(options.visionModel).toBe('llava');
+  });
+
   it('formats setup health for terminal output', () => {
     const output = formatSetupHealth({
       ollama: { ok: true, message: 'Connected to Ollama with 2 model(s).', modelCount: 2 },

@@ -393,6 +393,51 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Cross-checks UI Settings panel API key entries against backend presets.
+ *
+ * Reads the REMOTE_API_KEY_FIELDS array (already in the fetched appScript)
+ * and the OPENAI_COMPATIBLE_PRESETS table from src/core/chatClientFactory.ts
+ * on disk. Returns the set of UI key NAMES that have no matching preset
+ * apiKeyEnvVars entry — those are orphans like the v0.2.2 Anthropic row
+ * (UI offered to save a key the harness had no client to invoke).
+ *
+ * Returns { orphans: string[], error?: string }. Errors are non-fatal
+ * (treated as a verification failure, not a smoke crash).
+ */
+function checkApiKeyAlignment(appScript) {
+  // Extract UI-side names from REMOTE_API_KEY_FIELDS array literal.
+  const uiArrayMatch = appScript.match(/const\s+REMOTE_API_KEY_FIELDS\s*=\s*\[([\s\S]*?)\];/);
+  if (!uiArrayMatch) {
+    return { orphans: [], error: 'REMOTE_API_KEY_FIELDS array not found in ui/app.js' };
+  }
+  const uiNames = Array.from(uiArrayMatch[1].matchAll(/name:\s*['"]([A-Z0-9_]+)['"]/g)).map((m) => m[1]);
+  if (uiNames.length === 0) {
+    return { orphans: [], error: 'no name entries parsed from REMOTE_API_KEY_FIELDS' };
+  }
+
+  // Extract preset env var names from chatClientFactory.ts (local file).
+  let factorySource;
+  try {
+    factorySource = fs.readFileSync('src/core/chatClientFactory.ts', 'utf-8');
+  } catch (error) {
+    return { orphans: [], error: `cannot read src/core/chatClientFactory.ts: ${error.message}` };
+  }
+  const presetEnvNames = new Set();
+  for (const match of factorySource.matchAll(/apiKeyEnvVars:\s*\[([^\]]+)\]/g)) {
+    for (const inner of match[1].matchAll(/['"]([A-Z0-9_]+)['"]/g)) {
+      presetEnvNames.add(inner[1]);
+    }
+  }
+  if (presetEnvNames.size === 0) {
+    return { orphans: [], error: 'no apiKeyEnvVars parsed from chatClientFactory.ts' };
+  }
+
+  const orphans = uiNames.filter((name) => !presetEnvNames.has(name));
+  return { orphans };
+}
+
+
 async function runStaticSmoke() {
   const pageResponse = await fetch(targetUrl);
   const html = await pageResponse.text();
@@ -486,6 +531,12 @@ async function runStaticSmoke() {
     hasSettingsOpenSectionsRead: appScript.includes("localStorage.getItem('settingsOpenSections'"),
     hasSettingsOpenSectionsWrite: appScript.includes("localStorage.setItem('settingsOpenSections'"),
     hasSettingsSearch: appScript.includes('panel-search') && appScript.includes('settingsSearch'),
+    // UI/preset alignment: every key NAME the Settings panel offers must
+    // map to a backend preset in src/core/chatClientFactory.ts. An entry
+    // here without a matching preset means the user can save a key that
+    // no chat client will ever read (the Anthropic drift bug). The check
+    // grep-extracts both lists and reports missing names.
+    apiKeyAlignment: checkApiKeyAlignment(appScript),
     duplicateIds,
   };
   const failures = [];
@@ -565,6 +616,11 @@ async function runStaticSmoke() {
   if (!result.hasSettingsOpenSectionsRead) failures.push('settingsOpenSections localStorage read was not found');
   if (!result.hasSettingsOpenSectionsWrite) failures.push('settingsOpenSections localStorage write was not found');
   if (!result.hasSettingsSearch) failures.push('panel-search / settingsSearch input was not found');
+  if (result.apiKeyAlignment.error) {
+    failures.push(`could not verify UI/preset alignment: ${result.apiKeyAlignment.error}`);
+  } else if (result.apiKeyAlignment.orphans.length > 0) {
+    failures.push(`UI Settings panel offers API key fields with no backend preset: ${result.apiKeyAlignment.orphans.join(', ')}. Add the backend in src/core/chatClientFactory.ts or remove the entry from REMOTE_API_KEY_FIELDS in ui/app.js.`);
+  }
   if (duplicateIds.length > 0) failures.push(`duplicate ids found: ${duplicateIds.join(', ')}`);
   if (failures.length > 0) {
     console.error(failures.join('\n'));

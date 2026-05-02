@@ -39,6 +39,7 @@ release/*.zip.sha256.json
 lottery-*.js
 lottery-*.html
 lottery-toolkit/
+lottery-*/
 *-lottery.js
 syndicate-optimizer.js
 historical-win-checker.js

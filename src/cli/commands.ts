@@ -48,6 +48,7 @@ export const CLI_COMMAND_REGISTRY: CliCommandDef[] = [
       { flags: ['--vision-model'], valueName: '<name>', description: 'Vision model to check in Ollama' },
       { flags: ['--audio-command'], valueName: '<cmd>', description: 'Audio transcription command with {input}' },
       { flags: ['--audio-sample'], valueName: '<path>', description: 'Optional audio sample for transcription verification' },
+      { flags: ['--watch'], valueName: '[seconds]', description: 'Re-run every N seconds (default 5). Press Ctrl+C to stop.' },
     ],
   },
   {
