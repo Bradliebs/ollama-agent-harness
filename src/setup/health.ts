@@ -32,6 +32,12 @@ export interface BackendHealthCheck {
   message: string;
   /** Env var that supplied the key, if any. Useful for debugging precedence. */
   apiKeyEnvVar?: string;
+  /**
+   * Number of keys parsed from the env var (1 for a single key, >1 for a
+   * comma-separated credential pool). Reports count only — never the keys
+   * themselves, which would leak via the doctor output.
+   */
+  keyCount?: number;
   /** Optional signup link for missing keys. */
   signupUrl?: string;
 }
@@ -112,12 +118,18 @@ function checkBackendAuth(): BackendHealthCheck[] {
     const key = readApiKey(preset);
     if (key) {
       const sourceEnv = preset.apiKeyEnvVars.find((name) => process.env[name] && process.env[name]!.trim().length > 0);
+      // Count credential-pool entries without ever surfacing the keys
+      // themselves. A single key reports as 1, a comma-separated list
+      // reports its parsed count.
+      const keyCount = key.split(',').map((k) => k.trim()).filter(Boolean).length;
+      const poolNote = keyCount > 1 ? ` (pool of ${keyCount} keys)` : '';
       checks.push({
         id,
         label: preset.label,
         ok: true,
-        message: `API key configured (via ${sourceEnv}).`,
+        message: `API key configured (via ${sourceEnv})${poolNote}.`,
         apiKeyEnvVar: sourceEnv,
+        keyCount,
         signupUrl: preset.signupUrl,
       });
     } else {

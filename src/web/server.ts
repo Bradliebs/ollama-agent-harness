@@ -1,6 +1,7 @@
 import express from 'express';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { watch as fsWatch } from 'fs';
 import * as net from 'net';
 import * as crypto from 'crypto';
 import { Ollama } from 'ollama';
@@ -330,6 +331,75 @@ app.get('/api/autonomy/state', async (_req, res) => {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
   }
+});
+
+/**
+ * Server-Sent Events stream of autonomy checkpoint updates. Replaces the
+ * UI's prior 3-second polling loop on /api/autonomy/state with push-based
+ * delivery. Emits an event whenever .forge-state.json changes, plus an
+ * initial snapshot on connect and a heartbeat every 25s to defeat
+ * intermediate idle-connection timeouts.
+ *
+ * Event format (matches EventSource defaults):
+ *   data: { ...checkpoint }
+ *   data: null  (when state file is absent or unreadable)
+ */
+app.get('/api/autonomy/state/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const statePath = path.join(process.cwd(), '.forge-state.json');
+
+  const sendSnapshot = async (): Promise<void> => {
+    try {
+      const raw = await fs.readFile(statePath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      res.write(`data: ${JSON.stringify(parsed)}\n\n`);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') {
+        res.write('data: null\n\n');
+      } else {
+        // Don't kill the stream on a transient read error — log and move on.
+        const msg = error instanceof Error ? error.message : String(error);
+        res.write(`event: error\ndata: ${JSON.stringify({ message: msg })}\n\n`);
+      }
+    }
+  };
+
+  // Initial snapshot.
+  void sendSnapshot();
+
+  // Watch the parent directory because watching a file directly is
+  // unreliable across platforms (Windows requires the file to exist;
+  // editor save-and-replace breaks file-targeted watchers). A short
+  // debounce coalesces save bursts.
+  let debounce: NodeJS.Timeout | null = null;
+  let watcher: ReturnType<typeof fsWatch> | null = null;
+  try {
+    watcher = fsWatch(process.cwd(), (_event, filename) => {
+      if (!filename || filename.toString() !== '.forge-state.json') return;
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(() => { void sendSnapshot(); }, 100);
+    });
+  } catch {
+    // Best-effort; if watching the cwd fails fall back to keepalive only.
+  }
+
+  // Heartbeat every 25s to keep proxies / browsers from idling out.
+  const heartbeat = setInterval(() => res.write(': keepalive\n\n'), 25_000);
+
+  // Use res.on('close') (NOT req.on('close')) to detect client disconnect
+  // on long-lived SSE responses — req-close fires too early on some
+  // node versions.
+  res.on('close', () => {
+    clearInterval(heartbeat);
+    if (debounce) clearTimeout(debounce);
+    watcher?.close();
+  });
 });
 
 // Tail the autonomy loop log (.forge-run.log). `?lines=N` selects how many

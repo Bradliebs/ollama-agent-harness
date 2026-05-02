@@ -71,4 +71,41 @@ describe('cli setup doctor', () => {
     expect(output).toContain('OK Cerebras: API key configured');
     expect(output).toContain('WARN GitHub Models: No API key.');
   });
+
+  it('renders multi-key credential pools without leaking the keys themselves', () => {
+    // The credential pool feature lets users set CEREBRAS_API_KEY="k1,k2,k3"
+    // for round-robin on 429s. The doctor must report the COUNT but never
+    // the values — leaking keys via doctor output would be a credential
+    // exposure incident.
+    const sensitiveKeys = ['ck-secret-1', 'ck-secret-2', 'ck-secret-3'];
+    const output = formatSetupHealth({
+      ollama: { ok: true, message: 'ok', modelCount: 1 },
+      vision: { ok: false, message: 'no' },
+      audio: { ok: true, message: 'ok' },
+      local: {
+        node: { ok: true, message: 'ok' },
+        package: { ok: true, message: 'ok' },
+        sessions: { ok: true, message: 'ok' },
+        tools: { ok: true, message: 'ok' },
+        automations: { ok: true, message: 'ok' },
+        mycelium: { ok: true, message: 'ok' },
+      },
+      backends: [
+        {
+          id: 'cerebras',
+          label: 'Cerebras',
+          ok: true,
+          message: 'API key configured (via CEREBRAS_API_KEY) (pool of 3 keys).',
+          apiKeyEnvVar: 'CEREBRAS_API_KEY',
+          keyCount: 3,
+        },
+      ],
+    });
+
+    expect(output).toContain('CEREBRAS_API_KEY');
+    expect(output).toContain('pool of 3 keys');
+    for (const key of sensitiveKeys) {
+      expect(output).not.toContain(key);
+    }
+  });
 });

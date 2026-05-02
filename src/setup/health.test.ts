@@ -126,5 +126,26 @@ describe('setup health', () => {
       expect(github.ok).toBe(true);
       expect(github.apiKeyEnvVar).toBe('GITHUB_TOKEN');
     });
+
+    it('counts comma-separated credential pools without exposing the keys', async () => {
+      process.env.CEREBRAS_API_KEY = 'k1, k2 , k3';
+      const result = await probe();
+      const cerebras = result.backends.find((b) => b.id === 'cerebras')!;
+      expect(cerebras.ok).toBe(true);
+      expect(cerebras.keyCount).toBe(3);
+      expect(cerebras.message).toContain('pool of 3 keys');
+      expect(cerebras.message).not.toContain('k1');
+      expect(cerebras.message).not.toContain('k2');
+      expect(cerebras.message).not.toContain('k3');
+    });
+
+    it('reports keyCount=1 for a single key (no pool note)', async () => {
+      process.env.CEREBRAS_API_KEY = 'just-one-key';
+      const result = await probe();
+      const cerebras = result.backends.find((b) => b.id === 'cerebras')!;
+      expect(cerebras.keyCount).toBe(1);
+      expect(cerebras.message).not.toContain('pool of');
+      expect(cerebras.message).not.toContain('just-one-key');
+    });
   });
 });

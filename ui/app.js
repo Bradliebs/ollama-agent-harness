@@ -1626,39 +1626,74 @@ function startPermissionPolling() {
 }
 
 let autonomyPollTimer = null;
+let autonomyEventSource = null;
 function startAutonomyPolling() {
   if (autonomyPollTimer) clearInterval(autonomyPollTimer);
-  pollAutonomy();
-  // Poll every 3s — the autonomy loop only writes the checkpoint at task
-  // boundaries (start + finish), so a tight interval would be wasteful.
-  autonomyPollTimer = setInterval(pollAutonomy, 3000);
+  if (autonomyEventSource) { autonomyEventSource.close(); autonomyEventSource = null; }
+
+  // Prefer SSE: pushes updates the moment the autonomy loop writes its
+  // checkpoint, with zero polling overhead. Fall back to 3s polling if
+  // EventSource is unavailable, the stream errors, or the server response
+  // is non-event-stream (e.g. running an older server build).
+  if (typeof window.EventSource !== 'function') {
+    pollAutonomy();
+    autonomyPollTimer = setInterval(pollAutonomy, 3000);
+    return;
+  }
+
+  try {
+    autonomyEventSource = new EventSource('/api/autonomy/state/stream');
+    autonomyEventSource.onmessage = (evt) => {
+      try {
+        const data = evt.data === 'null' ? null : JSON.parse(evt.data);
+        renderAutonomyState(data);
+      } catch { /* ignore malformed frames */ }
+    };
+    autonomyEventSource.onerror = () => {
+      // Browsers auto-reconnect on transient errors; only switch to
+      // polling if reconnect is impossible (readyState === CLOSED).
+      if (autonomyEventSource && autonomyEventSource.readyState === EventSource.CLOSED) {
+        autonomyEventSource = null;
+        pollAutonomy();
+        autonomyPollTimer = setInterval(pollAutonomy, 3000);
+      }
+    };
+  } catch {
+    pollAutonomy();
+    autonomyPollTimer = setInterval(pollAutonomy, 3000);
+  }
+}
+
+function renderAutonomyState(s) {
+  const hud = document.getElementById('autonomyHud');
+  if (!hud) return;
+  if (!s) { hud.style.display = 'none'; return; }
+  hud.style.display = '';
+  const taskEl = document.getElementById('autonomyHudTask');
+  const countsEl = document.getElementById('autonomyHudCounts');
+  const status = s.lastTaskStatus || 'idle';
+  const icon = status === 'running' ? '⏳' : status === 'done' ? '✅' : status === 'failed' ? '❌' : '•';
+  if (taskEl) taskEl.textContent = `${icon} ${s.lastTaskId || 'idle'}`;
+  if (countsEl) {
+    const done = s.totalDone ?? 0;
+    const failed = s.totalFailed ?? 0;
+    const pending = s.totalPending ?? 0;
+    countsEl.textContent = `${done}✓ ${failed}✗ ${pending}⋯`;
+  }
+  const elapsed = s.lastTaskElapsedMs ? `${Math.round(s.lastTaskElapsedMs / 1000)}s` : '';
+  const files = (s.lastTaskFilesChanged ?? null) !== null ? `${s.lastTaskFilesChanged} files` : '';
+  hud.title = [s.lastTaskTitle, elapsed, files].filter(Boolean).join(' · ');
 }
 
 async function pollAutonomy() {
-  const hud = document.getElementById('autonomyHud');
-  if (!hud) return;
   try {
     const r = await fetch('/api/autonomy/state');
-    if (r.status === 204) { hud.style.display = 'none'; return; }
-    if (!r.ok) { hud.style.display = 'none'; return; }
+    if (r.status === 204) { renderAutonomyState(null); return; }
+    if (!r.ok) { renderAutonomyState(null); return; }
     const s = await r.json();
-    hud.style.display = '';
-    const taskEl = document.getElementById('autonomyHudTask');
-    const countsEl = document.getElementById('autonomyHudCounts');
-    const status = s.lastTaskStatus || 'idle';
-    const icon = status === 'running' ? '⏳' : status === 'done' ? '✅' : status === 'failed' ? '❌' : '•';
-    if (taskEl) taskEl.textContent = `${icon} ${s.lastTaskId || 'idle'}`;
-    if (countsEl) {
-      const done = s.totalDone ?? 0;
-      const failed = s.totalFailed ?? 0;
-      const pending = s.totalPending ?? 0;
-      countsEl.textContent = `${done}✓ ${failed}✗ ${pending}⋯`;
-    }
-    const elapsed = s.lastTaskElapsedMs ? `${Math.round(s.lastTaskElapsedMs / 1000)}s` : '';
-    const files = (s.lastTaskFilesChanged ?? null) !== null ? `${s.lastTaskFilesChanged} files` : '';
-    hud.title = [s.lastTaskTitle, elapsed, files].filter(Boolean).join(' · ');
+    renderAutonomyState(s);
   } catch {
-    hud.style.display = 'none';
+    renderAutonomyState(null);
   }
 }
 
