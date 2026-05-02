@@ -32,6 +32,16 @@ describe('PermissionEngine', () => {
       const result = engine.evaluate({ name: 'file_read', input: { path: 'test.txt' } });
       expect(result.decision).toBe('deny');
     });
+
+    it('deny rule overrides allow rule for same tool and pattern', () => {
+      const rules: PermissionRule[] = [
+        { type: 'allow', tool: 'file_read', pattern: 'secrets.txt' },
+        { type: 'deny', tool: 'file_read', pattern: 'secrets.txt' },
+      ];
+      const engine = new PermissionEngine(rules);
+      const result = engine.evaluate({ name: 'file_read', input: { path: 'secrets.txt' } });
+      expect(result.decision).toBe('deny');
+    });
   });
 
   describe('permission modes', () => {

@@ -20,10 +20,10 @@
   - anchor: src/setup/health.ts
   - anchor: src/cli/index.ts
   - target: src/setup/health.ts
-- [ ] verify-headless-smoke — Add a `scripts/headless-smoke.js` that runs `harness -p "say hello"` against the configured model and exits non-zero on failure
+- [!] verify-headless-smoke — Add a `scripts/headless-smoke.js` that runs `harness -p "say hello"` against the configured model and exits non-zero on failure
   - anchor: scripts/transport-smoke.js
   - target: scripts/headless-smoke.js
-- [ ] verify-permissions-deny-first — Add a focused jest test under `src/permissions/` proving that a deny rule overrides an allow rule for the same tool/path. Append the test to the existing `describe('PermissionEngine', ...)` block in engine.test.ts.
+- [x] verify-permissions-deny-first — Add a focused jest test under `src/permissions/` proving that a deny rule overrides an allow rule for the same tool/path. Append the test to the existing `describe('PermissionEngine', ...)` block in engine.test.ts.
   - anchor: src/permissions/engine.ts
   - anchor: src/permissions/engine.test.ts
   - target: src/permissions/engine.test.ts
