@@ -6,6 +6,8 @@ import * as net from 'net';
 import * as crypto from 'crypto';
 import { Ollama } from 'ollama';
 import { OllamaClient } from '../core/ollamaClient';
+import { createChatClient, OPENAI_COMPATIBLE_PRESETS, readApiKey } from '../core/chatClientFactory';
+import type { IChatClient } from '../core/chatClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { getBuiltinTools } from '../tools';
 import { createBuiltinToolRegistry } from '../tools/registry';
@@ -171,7 +173,7 @@ interface ExtensionActivationSettings {
 }
 
 interface WebRuntimeDeps {
-  createClient(model: string, host: string, numCtx?: number): OllamaClient;
+  createClient(model: string, host: string, numCtx?: number): IChatClient;
   getModelContextWindow(model: string, host: string): Promise<number | null>;
   getTools(): Tool[];
   createPermissionEngine(mode: PermissionMode): PermissionEngine;
@@ -237,8 +239,28 @@ const rateLimiter = new RateLimiter(10, 2);
 const hookPipeline = new HookPipeline();
 const permissionPrompts = new PermissionPromptBroker();
 const defaultWebRuntime: WebRuntimeDeps = {
-  createClient: (model, host, numCtx) => new OllamaClient({ model, host, numCtx }),
-  getModelContextWindow: (model, host) => new OllamaClient({ model, host }).getContextWindow(),
+  createClient: (model, host, numCtx) => {
+    // Model id may be backend-prefixed: "mistral/mistral-medium-latest"
+    // dispatches to the Mistral preset; bare names route to Ollama.
+    const slash = model.indexOf('/');
+    if (slash > 0) {
+      const backend = model.slice(0, slash).toLowerCase();
+      const realModel = model.slice(slash + 1);
+      if (OPENAI_COMPATIBLE_PRESETS[backend]) {
+        return createChatClient({ backend, model: realModel, host, numCtx });
+      }
+    }
+    return new OllamaClient({ model, host, numCtx });
+  },
+  getModelContextWindow: (model, host) => {
+    const slash = model.indexOf('/');
+    if (slash > 0 && OPENAI_COMPATIBLE_PRESETS[model.slice(0, slash).toLowerCase()]) {
+      // OpenAI-compatible backends: use a generous default; the harness
+      // lets the model itself enforce its real context window.
+      return Promise.resolve(128_000);
+    }
+    return new OllamaClient({ model, host }).getContextWindow();
+  },
   getTools: () => applyToolDisables(getBuiltinTools()),
   createPermissionEngine: (mode) => {
     const engine = new PermissionEngine([], mode);
@@ -458,21 +480,90 @@ app.get('/api/models', async (_req, res) => {
   try {
     await ensureSettingsLoaded();
     const ollama = new Ollama({ host: ollamaHost });
-    const response = await ollama.list();
-    const models = response.models.map((m) => ({
-      name: m.name,
-      size: m.size,
-      modified: m.modified_at,
-      family: (m.details as unknown as Record<string, unknown>)?.family ?? '',
-      parameterSize: (m.details as unknown as Record<string, unknown>)?.parameter_size ?? '',
-      capabilities: inferModelCapabilities(m.name, m.details as unknown as Record<string, unknown>),
-    }));
+    let models: Array<{
+      name: string;
+      size?: number;
+      modified?: string | Date;
+      family?: string;
+      parameterSize?: string;
+      capabilities: ReturnType<typeof inferModelCapabilities>;
+      backend?: string;
+    }> = [];
+    try {
+      const response = await ollama.list();
+      models = response.models.map((m) => ({
+        name: m.name,
+        size: m.size,
+        modified: m.modified_at,
+        family: String((m.details as unknown as Record<string, unknown>)?.family ?? ''),
+        parameterSize: String((m.details as unknown as Record<string, unknown>)?.parameter_size ?? ''),
+        capabilities: inferModelCapabilities(m.name, m.details as unknown as Record<string, unknown>),
+        backend: 'ollama',
+      }));
+    } catch (ollamaErr) {
+      // Ollama may be down; still return remote-backend models so the UI
+      // is usable for users who only configured cloud keys.
+      logger.warn('Models', 'Ollama list failed, returning remote backends only', {
+        error: ollamaErr instanceof Error ? ollamaErr.message : String(ollamaErr),
+      });
+    }
+    // Append OpenAI-compatible backends whose API keys are configured.
+    for (const [backendId, preset] of Object.entries(OPENAI_COMPATIBLE_PRESETS)) {
+      if (!readApiKey(preset)) continue;
+      const remoteModels = REMOTE_MODEL_CATALOG[backendId] || [];
+      for (const m of remoteModels) {
+        models.push({
+          name: backendId + '/' + m.id,
+          parameterSize: m.label,
+          capabilities: inferModelCapabilities(m.id, {}),
+          backend: backendId,
+        });
+      }
+    }
     res.json({ models });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    res.status(503).json({ error: `Cannot connect to Ollama: ${msg}` });
+    res.status(503).json({ error: `Failed to list models: ${msg}` });
   }
 });
+
+/**
+ * Curated catalog of widely-available models per remote backend. The
+ * harness does not ship a per-provider model-list call (each provider
+ * has its own auth + endpoint shape); instead we expose the most
+ * useful defaults and let users type a custom backend/model id directly.
+ */
+const REMOTE_MODEL_CATALOG: Record<string, Array<{ id: string; label: string }>> = {
+  mistral: [
+    { id: 'mistral-large-latest', label: 'Mistral Large' },
+    { id: 'mistral-medium-latest', label: 'Mistral Medium 3' },
+    { id: 'mistral-small-latest', label: 'Mistral Small' },
+    { id: 'codestral-latest', label: 'Codestral' },
+    { id: 'open-mistral-nemo', label: 'Mistral Nemo' },
+  ],
+  cerebras: [
+    { id: 'llama3.1-8b', label: 'Llama 3.1 8B' },
+    { id: 'llama3.1-70b', label: 'Llama 3.1 70B' },
+  ],
+  groq: [
+    { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B' },
+    { id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B' },
+    { id: 'kimi-k2-instruct', label: 'Kimi K2' },
+  ],
+  github: [
+    { id: 'gpt-4o', label: 'GPT-4o' },
+    { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+    { id: 'Phi-3.5-MoE-instruct', label: 'Phi 3.5 MoE' },
+  ],
+  openrouter: [
+    { id: 'google/gemini-2.0-flash-exp:free', label: 'Gemini 2.0 Flash (free)' },
+    { id: 'meta-llama/llama-3.3-70b-instruct:free', label: 'Llama 3.3 70B (free)' },
+  ],
+  openai: [
+    { id: 'gpt-4o', label: 'GPT-4o' },
+    { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+  ],
+};
 
 // Get/set current settings
 app.get('/api/settings', async (_req, res) => {
