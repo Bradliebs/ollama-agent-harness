@@ -461,6 +461,20 @@ function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: boolean
       return;
     }
 
+    // Wall-clock budget cap: HARNESS_TIME_BUDGET_MS hard-stops the loop
+    // when total elapsed time exceeds the cap. Prevents a long-running
+    // overnight autonomy session from burning paid backend tokens
+    // unbounded. Disabled when env var is unset or 0.
+    const timeBudgetMs = parseInt(process.env.HARNESS_TIME_BUDGET_MS ?? "0", 10);
+    if (timeBudgetMs > 0 && Date.now() - startTime > timeBudgetMs) {
+      const tasks = parsePlan(planPath);
+      const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+      const budgetSec = Math.round(timeBudgetMs / 1000);
+      console.warn(`[Ralph] 💰 Time budget exhausted: ${elapsedSec}s > ${budgetSec}s. Halting.`);
+      writeHealthSummary(tasks, startTime, `time budget exhausted (${elapsedSec}s of ${budgetSec}s)`);
+      return;
+    }
+
     // Fresh read from disk on every iteration (key principle).
     const tasks = parsePlan(planPath);
 
@@ -501,6 +515,16 @@ function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: boolean
       totalFailed: tasks.filter((t) => t.status === "failed").length,
       totalPending: tasks.filter((t) => t.status === "pending").length,
     });
+
+    // Snapshot the git HEAD before each iteration so a failed run can be
+    // rolled back atomically. Disable by setting HARNESS_AUTONOMY_SNAPSHOT=0.
+    // Stash includes untracked files so a half-applied edit doesn't leak
+    // into the next iteration's beforeFiles set.
+    const snapshotEnabled = process.env.HARNESS_AUTONOMY_SNAPSHOT !== "0";
+    const preIterationHead = snapshotEnabled
+      ? execSync("git rev-parse HEAD", { stdio: "pipe" }).toString().trim()
+      : null;
+
     // Snapshot the working tree before implementation so we can stage
     // exactly the files this task touched (no `git add -A`).
     const beforeFiles = new Set(
@@ -555,6 +579,32 @@ function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: boolean
       consecutiveFailures++;
       totalFailures++;
       console.log(`[Ralph] ❌ Task ${pending.id} failed — marked as failed, continuing.`);
+
+      // Restore the working tree to the pre-iteration snapshot so the next
+      // iteration starts from a clean state. Without this, half-applied
+      // model edits and untracked files from the failed iteration would
+      // bleed into the next iteration's beforeFiles diff.
+      if (snapshotEnabled && preIterationHead) {
+        try {
+          // Drop any uncommitted edits and untracked files the model may
+          // have created. Keep .forge-* (state, debug logs, history).
+          execSync(`git reset --hard ${preIterationHead}`, { stdio: "pipe" });
+          execSync("git clean -fd -e '.forge-*'", { stdio: "pipe" });
+          // Re-apply the failed marker to the plan because git reset wiped
+          // the uncommitted plan edit. Without this, the next iteration
+          // would pick the same task again and loop forever.
+          const restoredTasks = parsePlan(planPath);
+          const restoredTarget = restoredTasks.find((t) => t.id === pending.id);
+          if (restoredTarget) {
+            restoredTarget.status = "failed";
+            writePlan(planPath, restoredTasks);
+          }
+          console.log(`[Ralph] ↻ Snapshot restore: working tree reset to ${preIterationHead.slice(0, 8)}.`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[Ralph] ⚠️ Snapshot restore failed: ${msg}`);
+        }
+      }
 
       // Tier 3: Pause and warn after 3 consecutive failures
       if (consecutiveFailures >= 3) {
