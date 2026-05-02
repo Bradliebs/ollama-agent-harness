@@ -58,6 +58,18 @@ With the UI server running, smoke-test the browser:
 npm run smoke:ui -- http://127.0.0.1:3000/
 ```
 
+Smoke-test the Mycelium API route-inspection surface with a temporary seeded
+graph:
+
+```powershell
+npm run build
+npm run smoke:mycelium
+```
+
+Tests and smoke scripts that need `.harness/**` state should create the fixture
+inside the test or script and restore the prior state before exiting. Do not
+depend on ignored local files already existing in a developer checkout.
+
 For local timeout checks against a real Ollama model, run the optional
 long-prompt smoke after building:
 

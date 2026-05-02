@@ -37,6 +37,9 @@ jobs:
       - name: Smoke transport
         run: npm run smoke:transport
 
+      - name: Smoke mycelium API
+        run: npm run smoke:mycelium
+
       - name: Install browser for interactive smoke
         run: npx playwright install --with-deps chromium
 

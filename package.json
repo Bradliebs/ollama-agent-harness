@@ -14,6 +14,7 @@
     "ui": "ts-node src/web/server.ts",
     "serve": "node dist/web/server.js",
     "smoke:transport": "node scripts/transport-smoke.js",
+    "smoke:mycelium": "node scripts/mycelium-smoke.js",
     "smoke:long-prompt": "node scripts/live-long-prompt-smoke.js",
     "smoke:ui": "node scripts/ui-smoke.js",
     "smoke:release": "node scripts/release-smoke.js",
