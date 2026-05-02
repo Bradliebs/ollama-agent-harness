@@ -1301,16 +1301,49 @@ function autoSize(el) {
 }
 function sendTip(el) { document.getElementById('chatInput').value = el.textContent; sendMessage(); }
 
-async function sendMessage() {
+async function sendMessage(opts) {
+  // opts.regenerateFromIndex: when set, drop chatMessages from that index
+  // onwards (typically a stale assistant reply) and re-run with the
+  // existing user prompt that lives at index-1. Used by the per-message
+  // 🔁 Regenerate button.
   if (isSending && activeChatController) {
     activeChatController.abort();
     return;
   }
   const inp = document.getElementById('chatInput');
-  let text = inp.value.trim();
-  const model = document.getElementById('modelSelect').value;
+  const isRegenerate = opts && typeof opts.regenerateFromIndex === 'number';
+  let text;
   let attachmentsForTurn = [];
-  if (pendingFiles.length > 0) {
+  if (isRegenerate) {
+    const userMsg = chatMessages[opts.regenerateFromIndex - 1];
+    if (!userMsg || userMsg.role !== 'user') return;
+    text = userMsg.content;
+    // Drop the stale assistant reply (and any later turns) from history
+    // and from the DOM so the regenerated reply takes its place.
+    chatMessages = chatMessages.slice(0, opts.regenerateFromIndex);
+    const area = document.getElementById('chatArea');
+    const allMsgs = Array.from(area.querySelectorAll('.msg, .tool-box, .followup-chips'));
+    // Find the user message DOM index that corresponds to opts.regenerateFromIndex - 1
+    // and remove every node that follows it.
+    let userMsgCount = 0;
+    let truncateAt = -1;
+    for (let i = 0; i < allMsgs.length; i++) {
+      if (allMsgs[i].classList.contains('msg') && allMsgs[i].classList.contains('user')) {
+        if (userMsgCount === opts.regenerateFromIndex - 1) {
+          truncateAt = i + 1;
+          break;
+        }
+        userMsgCount++;
+      }
+    }
+    if (truncateAt >= 0) {
+      for (let i = allMsgs.length - 1; i >= truncateAt; i--) allMsgs[i].remove();
+    }
+  } else {
+    text = inp.value.trim();
+  }
+  const model = document.getElementById('modelSelect').value;
+  if (!isRegenerate && pendingFiles.length > 0) {
     attachmentsForTurn = pendingFiles.map((f) => ({ name: f.name, path: f.path, mediaKind: mediaKind(f), size: f.size, mimeType: f.mimeType }));
     const fileInfo = pendingFiles.map((f) => '- ' + mediaKind(f) + ': name="' + f.name + '" path="' + f.path + '"').join('\n');
     const mediaConfig = '[Media tools: visionModel=' + (currentMediaTools.visionModel || model || 'not configured') + '; audioTranscribeCommand=' + (currentMediaTools.audioTranscribeCommand ? 'configured' : 'not configured') + '; pdfOcrCommand=' + (currentMediaTools.pdfOcrCommand ? 'configured' : 'not configured') + ']';
@@ -1328,11 +1361,15 @@ async function sendMessage() {
   try { localStorage.setItem(LAST_VALIDATION_PROMPT_KEY, text.slice(0, 500)); } catch {}
   const welcome = document.getElementById('welcome');
   if (welcome) welcome.remove();
-  addMsg('user', text);
-  chatMessages.push({ role: 'user', content: text });
-  saveChatSession();
-  inp.value = '';
-  inp.style.height = 'auto';
+  if (!isRegenerate) {
+    addMsg('user', text);
+    chatMessages.push({ role: 'user', content: text });
+    saveChatSession();
+    inp.value = '';
+    inp.style.height = 'auto';
+  }
+  // Strip any prior follow-up chips so they don't pile up.
+  document.querySelectorAll('.followup-chips').forEach((n) => n.remove());
   isSending = true;
   activeChatController = new AbortController();
   const sendBtn = document.getElementById('sendBtn');
@@ -1388,7 +1425,15 @@ async function sendMessage() {
             break;
           case 'tool_call':
             toolBox = ensureToolBox(toolBox);
-            appendToolItem(toolBox, '🔧', ev.call.name, JSON.stringify(ev.call.input).slice(0, 80), false);
+            if (ev.call.name === 'file_edit' && ev.call.input && typeof ev.call.input.old_string === 'string' && typeof ev.call.input.new_string === 'string') {
+              appendDiffToolItem(toolBox, ev.call.name, String(ev.call.input.path || '?'), ev.call.input.old_string, ev.call.input.new_string);
+            } else if (ev.call.name === 'file_write' && ev.call.input && typeof ev.call.input.content === 'string') {
+              const len = ev.call.input.content.length;
+              const preview = ev.call.input.content.split('\n').slice(0, 3).join('\n');
+              appendToolItem(toolBox, '📝', 'file_write', String(ev.call.input.path || '?') + ' (' + len + ' chars) — ' + preview.slice(0, 80), false);
+            } else {
+              appendToolItem(toolBox, '🔧', ev.call.name, JSON.stringify(ev.call.input).slice(0, 80), false);
+            }
             break;
           case 'tool_result':
             if (toolBox) appendToolItem(toolBox, ev.result.success ? '✅' : '❌', '', ev.result.output.slice(0, 120), !ev.result.success);
@@ -1473,6 +1518,17 @@ async function sendMessage() {
     if (msgEl && currentTurnUsage) {
       attachMessageMeta(msgEl, currentTurnUsage);
       currentTurnUsage = null;
+    }
+    // Per-message actions: 🔁 Regenerate + 📋 Copy. Index points at the
+    // assistant message we just appended, so regenerate slices history
+    // back to right before it.
+    if (msgEl && assistantText) {
+      attachMessageActions(msgEl, chatMessages.length - 1);
+    }
+    // Follow-up chips: 3 short suggested next prompts derived from the
+    // latest exchange. Computed client-side (no extra round-trip).
+    if (assistantText && text) {
+      renderFollowUpChips(text, assistantText);
     }
     saveChatSession();
     autoSaveChat();
@@ -1626,6 +1682,45 @@ function appendToolItem(toolBox, icon, name, detail, isError) {
   const item = document.createElement('div');
   item.className = 'tool-item' + (isError ? ' error' : '');
   item.innerHTML = '<span>' + icon + '</span>' + (name ? '<span class="tool-name">' + esc(name) + '</span>' : '') + '<span class="tool-detail">' + esc(detail) + '</span>';
+  toolBox.appendChild(item);
+  scrollBottom();
+}
+
+/**
+ * Render a unified-diff-style preview of a file_edit tool call. Shows up
+ * to 12 lines from old + 12 from new with - / + prefixes, color-coded.
+ * Truncated long lines and large blocks are summarized so the trace
+ * stays scannable.
+ */
+function appendDiffToolItem(toolBox, name, filePath, oldStr, newStr) {
+  const item = document.createElement('div');
+  item.className = 'tool-item tool-item-diff';
+  const oldLines = String(oldStr).split(/\r?\n/);
+  const newLines = String(newStr).split(/\r?\n/);
+  const MAX_LINES = 12;
+  const MAX_LINE_LEN = 160;
+  const trim = (lines) => {
+    const slice = lines.slice(0, MAX_LINES);
+    const trimmed = slice.map((line) => line.length > MAX_LINE_LEN ? line.slice(0, MAX_LINE_LEN) + ' …' : line);
+    return { trimmed, overflow: lines.length - slice.length };
+  };
+  const oldT = trim(oldLines);
+  const newT = trim(newLines);
+  const summary = oldLines.length + ' line(s) → ' + newLines.length + ' line(s)';
+  const renderBlock = (lines, prefix, cls, overflow) => {
+    let html = '';
+    for (const line of lines) html += '<div class="diff-line ' + cls + '">' + esc(prefix + line) + '</div>';
+    if (overflow > 0) html += '<div class="diff-line diff-overflow">… ' + overflow + ' more line(s)</div>';
+    return html;
+  };
+  item.innerHTML =
+    '<span>📝</span>'
+    + '<span class="tool-name">' + esc(name) + '</span>'
+    + '<span class="tool-detail">' + esc(filePath) + ' · ' + esc(summary) + '</span>'
+    + '<div class="diff-block">'
+    + renderBlock(oldT.trimmed, '- ', 'diff-del', oldT.overflow)
+    + renderBlock(newT.trimmed, '+ ', 'diff-add', newT.overflow)
+    + '</div>';
   toolBox.appendChild(item);
   scrollBottom();
 }
@@ -1843,6 +1938,143 @@ function renderMd(el, text) {
     pre.style.position = 'relative';
     pre.appendChild(btn);
   });
+  // Artifact extraction: any fenced code block of ≥ 8 lines, OR any
+  // HTML/SVG block, becomes an artifact tab in the side panel. The
+  // chat keeps the inline rendering; the panel adds preview + download.
+  maybeExtractArtifacts(el, text);
+}
+
+// ─── Artifact panel ───────────────────────────────────────────────────
+// Stores up to 12 artifacts per session; each has source code, language,
+// and a synthesized title. The panel always shows the most-recently
+// activated one with prior tabs accessible.
+const artifacts = [];
+const MAX_ARTIFACTS = 12;
+let activeArtifactIdx = -1;
+let artifactPreviewMode = true; // true = preview, false = source
+
+function maybeExtractArtifacts(msgContentEl, rawText) {
+  if (!rawText) return;
+  const fence = /```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g;
+  let m;
+  while ((m = fence.exec(rawText)) !== null) {
+    const lang = (m[1] || '').toLowerCase();
+    const code = m[2];
+    const lineCount = code.split('\n').length;
+    const previewable = lang === 'html' || lang === 'svg' || lang === 'mermaid' || lang === 'markdown' || lang === 'md';
+    if (lineCount >= 8 || previewable) {
+      const title = synthesizeArtifactTitle(code, lang);
+      addArtifact({ title, lang: lang || 'text', code });
+    }
+  }
+}
+
+function synthesizeArtifactTitle(code, lang) {
+  // First non-empty comment-or-heading-looking line; otherwise lang + size.
+  const lines = code.split('\n').slice(0, 8);
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    const cleaned = line.replace(/^[\/#*<!\->\s]+/, '').replace(/\s*-->$/, '').trim();
+    if (cleaned.length >= 4 && cleaned.length <= 60) return cleaned;
+  }
+  return (lang || 'text') + ' · ' + code.length + ' chars';
+}
+
+function addArtifact(artifact) {
+  // Dedup against the immediately previous artifact (model frequently
+  // re-emits the same code while iterating).
+  const prev = artifacts[artifacts.length - 1];
+  if (prev && prev.code === artifact.code && prev.lang === artifact.lang) return;
+  artifacts.push(artifact);
+  while (artifacts.length > MAX_ARTIFACTS) artifacts.shift();
+  activeArtifactIdx = artifacts.length - 1;
+  renderArtifactTabs();
+  openArtifact(activeArtifactIdx);
+}
+
+function renderArtifactTabs() {
+  const tabs = document.getElementById('artifactTabs');
+  if (!tabs) return;
+  tabs.innerHTML = '';
+  artifacts.forEach((art, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'artifact-tab' + (i === activeArtifactIdx ? ' active' : '');
+    btn.textContent = (i + 1) + '. ' + art.title.slice(0, 32);
+    btn.title = art.title + ' (' + art.lang + ', ' + art.code.length + ' chars)';
+    btn.onclick = () => openArtifact(i);
+    tabs.appendChild(btn);
+  });
+}
+
+function openArtifact(i) {
+  if (i < 0 || i >= artifacts.length) return;
+  activeArtifactIdx = i;
+  artifactPreviewMode = isPreviewable(artifacts[i].lang);
+  document.getElementById('artifactTitle').textContent = artifacts[i].title;
+  document.getElementById('artifactPanel').classList.add('open');
+  document.getElementById('artifactPanel').setAttribute('aria-hidden', 'false');
+  renderArtifactTabs();
+  refreshArtifactPreview();
+}
+
+function closeArtifact() {
+  document.getElementById('artifactPanel').classList.remove('open');
+  document.getElementById('artifactPanel').setAttribute('aria-hidden', 'true');
+}
+
+function isPreviewable(lang) {
+  return lang === 'html' || lang === 'svg' || lang === 'markdown' || lang === 'md' || lang === 'mermaid';
+}
+
+function refreshArtifactPreview() {
+  const body = document.getElementById('artifactBody');
+  const toggle = document.getElementById('artifactViewToggle');
+  if (!body || activeArtifactIdx < 0) return;
+  const art = artifacts[activeArtifactIdx];
+  const previewable = isPreviewable(art.lang);
+  toggle.style.display = previewable ? '' : 'none';
+  toggle.textContent = artifactPreviewMode ? 'Source' : 'Preview';
+  if (previewable && artifactPreviewMode) {
+    body.innerHTML = '';
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('sandbox', 'allow-scripts');
+    iframe.setAttribute('title', 'artifact preview');
+    body.appendChild(iframe);
+    let html;
+    if (art.lang === 'svg') html = '<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;padding:12px;background:#fff}svg{max-width:100%;height:auto}</style></head><body>' + art.code + '</body></html>';
+    else if (art.lang === 'markdown' || art.lang === 'md') html = '<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:system-ui,sans-serif;padding:18px;max-width:780px;margin:0 auto;line-height:1.55;color:#111}h1,h2,h3{margin-top:1.2em}pre{background:#f4f4f4;padding:10px;border-radius:6px;overflow:auto}code{background:#f4f4f4;padding:1px 4px;border-radius:3px}</style></head><body>' + (window.marked ? window.marked.parse(art.code) : ('<pre>' + esc(art.code) + '</pre>')) + '</body></html>';
+    else if (art.lang === 'mermaid') html = '<!doctype html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script></head><body><div class="mermaid">' + esc(art.code) + '</div><script>mermaid.initialize({startOnLoad:true})</script></body></html>';
+    else html = art.code; // raw HTML
+    iframe.srcdoc = html;
+  } else {
+    body.innerHTML = '<pre>' + esc(art.code) + '</pre>';
+  }
+}
+
+function toggleArtifactView() {
+  artifactPreviewMode = !artifactPreviewMode;
+  refreshArtifactPreview();
+}
+
+function copyArtifact() {
+  if (activeArtifactIdx < 0) return;
+  navigator.clipboard.writeText(artifacts[activeArtifactIdx].code);
+}
+
+function downloadArtifact() {
+  if (activeArtifactIdx < 0) return;
+  const art = artifacts[activeArtifactIdx];
+  const ext = ({ html: 'html', svg: 'svg', md: 'md', markdown: 'md', mermaid: 'mmd', javascript: 'js', typescript: 'ts', python: 'py', json: 'json', sh: 'sh', bash: 'sh' })[art.lang] || 'txt';
+  const blob = new Blob([art.code], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = art.title.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 40) + '.' + ext;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 function addThinking() { const area = document.getElementById('chatArea'); const el = document.createElement('div'); el.className = 'thinking'; el.innerHTML = '<div class="dots"><span></span><span></span><span></span></div> <span class="thinking-status">Thinking...</span>'; area.appendChild(el); scrollBottom(); return el; }
@@ -1915,6 +2147,103 @@ function attachMessageMeta(msgEl, usage) {
     + '<span class="meta-sep">·</span>'
     + '<span>' + formatDurationCompact(usage.totalDurationMs || 0) + '</span>';
   body.appendChild(meta);
+}
+
+/**
+ * Attach 🔁 Regenerate + 📋 Copy buttons to an assistant message.
+ * `messageIndex` is the position in `chatMessages` of THIS assistant
+ * reply, so regenerate can slice history just before it.
+ */
+function attachMessageActions(msgEl, messageIndex) {
+  if (!msgEl) return;
+  const body = msgEl.querySelector('.msg-body');
+  if (!body) return;
+  const existing = body.querySelector('.msg-actions');
+  if (existing) existing.remove();
+  const row = document.createElement('div');
+  row.className = 'msg-actions';
+  const regen = document.createElement('button');
+  regen.className = 'msg-action-btn';
+  regen.title = 'Re-run the prompt that produced this reply';
+  regen.innerHTML = '🔁 Regenerate';
+  regen.onclick = () => {
+    if (isSending) return;
+    sendMessage({ regenerateFromIndex: messageIndex });
+  };
+  const copy = document.createElement('button');
+  copy.className = 'msg-action-btn';
+  copy.title = 'Copy reply text';
+  copy.innerHTML = '📋 Copy';
+  copy.onclick = () => {
+    const content = (chatMessages[messageIndex] && chatMessages[messageIndex].content) || '';
+    navigator.clipboard.writeText(content).then(() => {
+      copy.innerHTML = '✅ Copied';
+      setTimeout(() => { copy.innerHTML = '📋 Copy'; }, 1500);
+    });
+  };
+  row.appendChild(regen);
+  row.appendChild(copy);
+  body.appendChild(row);
+}
+
+/**
+ * Render 3 follow-up suggestion chips after an assistant reply.
+ * Heuristics-only (no model call): inspect the assistant text for code
+ * blocks, file references, and tool-result markers, plus the user's
+ * intent, and offer the 3 most likely next moves.
+ */
+function renderFollowUpChips(userText, assistantText) {
+  const suggestions = computeFollowUps(userText, assistantText);
+  if (!suggestions.length) return;
+  const area = document.getElementById('chatArea');
+  if (!area) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'followup-chips';
+  wrap.setAttribute('aria-label', 'Suggested follow-up prompts');
+  wrap.innerHTML = '<div class="followup-label">Try next:</div>';
+  for (const s of suggestions) {
+    const chip = document.createElement('button');
+    chip.className = 'followup-chip';
+    chip.textContent = s;
+    chip.onclick = () => {
+      const inp = document.getElementById('chatInput');
+      inp.value = s;
+      inp.focus();
+      sendMessage();
+    };
+    wrap.appendChild(chip);
+  }
+  area.appendChild(wrap);
+  scrollBottom();
+}
+
+function computeFollowUps(userText, assistantText) {
+  const out = [];
+  const ut = (userText || '').toLowerCase();
+  const at = assistantText || '';
+  const hasCode = /```[\s\S]+?```/.test(at);
+  const hasFiles = /(?:[\w./-]+\.(?:ts|tsx|js|jsx|py|md|json|yml|yaml|sh|html|css|sql))/.test(at);
+  const hasError = /(error|failed|exception|stack trace)/i.test(at);
+  const hasNumbers = /\d{2,}/.test(at);
+  const askedHow = /\b(how|why|explain|what)\b/.test(ut);
+  if (hasError) out.push('Diagnose the error and propose a fix.');
+  if (hasCode && !hasError) out.push('Add tests for that code.');
+  if (hasFiles) out.push('Show a diff of the changes.');
+  if (askedHow) out.push('Give me a worked example.');
+  if (hasNumbers) out.push('Where do those numbers come from?');
+  // Generic fallbacks always offered last.
+  out.push('Summarize this in 3 bullets.');
+  out.push('What would you do differently next?');
+  // Dedup + cap at 3.
+  const seen = new Set();
+  const final = [];
+  for (const s of out) {
+    if (seen.has(s)) continue;
+    seen.add(s);
+    final.push(s);
+    if (final.length >= 3) break;
+  }
+  return final;
 }
 
 // ─── Slash command palette ─────────────────────────────────────────────
