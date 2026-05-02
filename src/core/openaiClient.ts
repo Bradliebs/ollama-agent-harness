@@ -24,8 +24,8 @@ import { liftInlineToolCalls } from './ollamaClient';
 export interface OpenAIClientConfig {
   /** OpenAI-compatible base URL, e.g. https://api.cerebras.ai/v1 */
   baseUrl: string;
-  /** Bearer token for Authorization header. */
-  apiKey: string;
+  /** Bearer token. Single string, or comma-separated list for round-robin on 429. */
+  apiKey: string | string[];
   /** Provider model id, e.g. gpt-oss-120b or gpt-4.1 */
   model: string;
   /** Optional fallback context window (rarely served by these APIs). */
@@ -34,6 +34,10 @@ export interface OpenAIClientConfig {
   timeoutMs?: number;
   /** Identifier surfaced in errors / debug logs. */
   providerLabel?: string;
+  /** Max attempts on 429/5xx before surfacing the error (default 3). */
+  maxRetries?: number;
+  /** Initial backoff in ms; doubled per attempt. Capped at 30s. (default 2000) */
+  retryBaseDelayMs?: number;
 }
 
 interface OpenAIChatResponse {
@@ -65,11 +69,14 @@ interface OpenAIErrorResponse {
 
 export class OpenAIClient implements IChatClient {
   private readonly baseUrl: string;
-  private readonly apiKey: string;
+  private readonly apiKeys: string[];
+  private keyIndex = 0;
   private readonly model: string;
   private readonly contextWindow?: number;
   private readonly timeoutMs: number;
   private readonly providerLabel: string;
+  private readonly maxRetries: number;
+  private readonly retryBaseDelayMs: number;
 
   constructor(config: OpenAIClientConfig) {
     if (!config.apiKey) {
@@ -79,11 +86,28 @@ export class OpenAIClient implements IChatClient {
       throw new Error('OpenAIClient requires a baseUrl.');
     }
     this.baseUrl = config.baseUrl.replace(/\/$/, '');
-    this.apiKey = config.apiKey;
+    this.apiKeys = Array.isArray(config.apiKey)
+      ? config.apiKey.filter((k) => k && k.trim().length > 0)
+      : [config.apiKey];
+    if (this.apiKeys.length === 0) {
+      throw new Error('OpenAIClient requires at least one non-empty apiKey.');
+    }
     this.model = config.model;
     this.contextWindow = config.contextWindow;
     this.timeoutMs = config.timeoutMs ?? 120_000;
     this.providerLabel = config.providerLabel ?? 'openai-compatible';
+    this.maxRetries = config.maxRetries ?? 3;
+    this.retryBaseDelayMs = config.retryBaseDelayMs ?? 2000;
+  }
+
+  /** Get the active key. Rotates after retryable failures. */
+  private currentKey(): string {
+    return this.apiKeys[this.keyIndex % this.apiKeys.length];
+  }
+
+  /** Move to the next key in the pool. No-op when only one key configured. */
+  private rotateKey(): void {
+    if (this.apiKeys.length > 1) this.keyIndex = (this.keyIndex + 1) % this.apiKeys.length;
   }
 
   async chat(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): Promise<ChatResult> {
@@ -119,7 +143,7 @@ export class OpenAIClient implements IChatClient {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          authorization: `Bearer ${this.apiKey}`,
+          authorization: `Bearer ${this.currentKey()}`,
           accept: 'text/event-stream',
         },
         body: JSON.stringify(body),
@@ -255,13 +279,6 @@ export class OpenAIClient implements IChatClient {
     abortSignal?: AbortSignal,
     extras: { maxTokens?: number } = {},
   ): Promise<ChatResult> {
-    const controller = new AbortController();
-    const timeoutHandle = setTimeout(() => controller.abort(), this.timeoutMs);
-    if (abortSignal) {
-      if (abortSignal.aborted) controller.abort();
-      else abortSignal.addEventListener('abort', () => controller.abort(), { once: true });
-    }
-
     const body: Record<string, unknown> = {
       model: this.model,
       messages: messages.map(toOpenAIMessage),
@@ -269,67 +286,118 @@ export class OpenAIClient implements IChatClient {
     };
     if (extras.maxTokens) body.max_tokens = extras.maxTokens;
     if (tools && tools.length > 0) body.tools = tools.map(toOpenAITool);
+    const bodyString = JSON.stringify(body);
 
-    const startedAt = Date.now();
-    let response: Response;
-    try {
-      response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${this.apiKey}`,
-          accept: 'application/json',
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`${this.providerLabel} request failed: ${message}`);
-    } finally {
-      clearTimeout(timeoutHandle);
-    }
-
-    const elapsedNs = (Date.now() - startedAt) * 1_000_000;
-
-    if (!response.ok) {
-      let detail = '';
-      try {
-        const errBody = (await response.json()) as OpenAIErrorResponse;
-        detail = errBody.error?.message ?? '';
-      } catch {
-        try { detail = await response.text(); } catch { /* ignore */ }
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+      const controller = new AbortController();
+      const timeoutHandle = setTimeout(() => controller.abort(), this.timeoutMs);
+      if (abortSignal) {
+        if (abortSignal.aborted) controller.abort();
+        else abortSignal.addEventListener('abort', () => controller.abort(), { once: true });
       }
-      throw new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
+
+      const startedAt = Date.now();
+      let response: Response;
+      try {
+        response = await fetch(`${this.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${this.currentKey()}`,
+            accept: 'application/json',
+          },
+          body: bodyString,
+          signal: controller.signal,
+        });
+      } catch (error) {
+        clearTimeout(timeoutHandle);
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`${this.providerLabel} request failed: ${message}`);
+      }
+      clearTimeout(timeoutHandle);
+
+      const elapsedNs = (Date.now() - startedAt) * 1_000_000;
+
+      // Retryable: 429 (rate limit), 502/503/504 (transient gateway errors).
+      if (response.status === 429 || (response.status >= 502 && response.status <= 504)) {
+        const retryAfter = parseRetryAfter(response.headers.get('retry-after'));
+        const backoff = retryAfter ?? Math.min(this.retryBaseDelayMs * Math.pow(2, attempt), 30_000);
+        const remaining = this.maxRetries - attempt - 1;
+        let detail = '';
+        try { const e = (await response.json()) as OpenAIErrorResponse; detail = e.error?.message ?? ''; } catch { /* ignore */ }
+        lastError = new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
+        if (remaining <= 0) throw lastError;
+        console.warn(`[OpenAIClient] ${this.providerLabel} HTTP ${response.status} (${detail.slice(0, 80) || response.statusText}); waiting ${Math.round(backoff)}ms then retrying (${remaining} attempts left, key ${this.keyIndex + 1}/${this.apiKeys.length}).`);
+        // Rotate key before next attempt — useful when 429 is account-scoped
+        // and the user has provisioned multiple keys for round-robin.
+        this.rotateKey();
+        await sleep(backoff);
+        continue;
+      }
+
+      if (!response.ok) {
+        let detail = '';
+        try {
+          const errBody = (await response.json()) as OpenAIErrorResponse;
+          detail = errBody.error?.message ?? '';
+        } catch {
+          try { detail = await response.text(); } catch { /* ignore */ }
+        }
+        throw new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
+      }
+
+      const json = (await response.json()) as OpenAIChatResponse;
+      const choice = json.choices?.[0];
+      if (!choice) {
+        throw new Error(`${this.providerLabel} returned no choices`);
+      }
+
+      const message: Message = {
+        role: choice.message.role ?? 'assistant',
+        content: choice.message.content ?? '',
+      };
+      if (choice.message.tool_calls?.length) {
+        message.tool_calls = choice.message.tool_calls.map(fromOpenAIToolCall);
+      } else {
+        // Some smaller models on these gateways still emit JSON tool-call
+        // shapes inside content. Reuse the existing fallback parser so the
+        // OpenAI backend benefits from the same robustness as Ollama.
+        liftInlineToolCalls(message);
+      }
+
+      const usage: TokenUsage = {
+        promptTokens: json.usage?.prompt_tokens ?? 0,
+        completionTokens: json.usage?.completion_tokens ?? 0,
+        totalDurationNs: elapsedNs,
+      };
+
+      return { message, usage };
     }
-
-    const json = (await response.json()) as OpenAIChatResponse;
-    const choice = json.choices?.[0];
-    if (!choice) {
-      throw new Error(`${this.providerLabel} returned no choices`);
-    }
-
-    const message: Message = {
-      role: choice.message.role ?? 'assistant',
-      content: choice.message.content ?? '',
-    };
-    if (choice.message.tool_calls?.length) {
-      message.tool_calls = choice.message.tool_calls.map(fromOpenAIToolCall);
-    } else {
-      // Some smaller models on these gateways still emit JSON tool-call
-      // shapes inside content. Reuse the existing fallback parser so the
-      // OpenAI backend benefits from the same robustness as Ollama.
-      liftInlineToolCalls(message);
-    }
-
-    const usage: TokenUsage = {
-      promptTokens: json.usage?.prompt_tokens ?? 0,
-      completionTokens: json.usage?.completion_tokens ?? 0,
-      totalDurationNs: elapsedNs,
-    };
-
-    return { message, usage };
+    // Loop exited without returning — should not happen because the retryable
+    // branch throws when remaining <= 0, but TS needs the assertion.
+    throw lastError ?? new Error(`${this.providerLabel}: invoke exhausted retries`);
   }
+}
+
+/** Sleep for ms milliseconds. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Parse a Retry-After header into a millisecond delay.
+ * Accepts either a delta-seconds integer or an HTTP-date.
+ * Returns undefined when missing or unparseable.
+ */
+function parseRetryAfter(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const date = Date.parse(header);
+  if (!Number.isFinite(date)) return undefined;
+  const delta = date - Date.now();
+  return delta > 0 ? delta : 0;
 }
 
 // --- Translation helpers ---

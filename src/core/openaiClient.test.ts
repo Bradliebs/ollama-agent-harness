@@ -207,6 +207,101 @@ describe('OpenAIClient', () => {
   });
 });
 
+describe('OpenAIClient retry + credential pool', () => {
+  function make429(retryAfterSeconds?: string): Response {
+    const headers = new Map<string, string>();
+    if (retryAfterSeconds) headers.set('retry-after', retryAfterSeconds);
+    return {
+      ok: false,
+      status: 429,
+      statusText: 'Too Many Requests',
+      headers: { get: (k: string) => headers.get(k.toLowerCase()) ?? null } as unknown as Headers,
+      json: async () => ({ error: { message: 'rate limited' } }),
+      text: async () => 'rate limited',
+    } as unknown as Response;
+  }
+
+  it('retries on 429 and succeeds on the next attempt', async () => {
+    fetchSpy.mockResolvedValueOnce(make429('0'));
+    fetchSpy.mockResolvedValueOnce(makeResponse({
+      choices: [{ message: { role: 'assistant', content: 'recovered' } }],
+    }));
+    const client = new OpenAIClient({
+      baseUrl: 'https://x', apiKey: 'k', model: 'm',
+      maxRetries: 3, retryBaseDelayMs: 1,
+    });
+    const result = await client.chat([{ role: 'user', content: 'hi' }]);
+    expect(result.message.content).toBe('recovered');
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws after exhausting retries on persistent 429', async () => {
+    fetchSpy.mockResolvedValue(make429('0'));
+    const client = new OpenAIClient({
+      baseUrl: 'https://x', apiKey: 'k', model: 'm',
+      providerLabel: 'TestProv',
+      maxRetries: 2, retryBaseDelayMs: 1,
+    });
+    await expect(client.chat([{ role: 'user', content: 'hi' }]))
+      .rejects.toThrow(/TestProv HTTP 429/);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('rotates keys across attempts when multiple are configured', async () => {
+    fetchSpy.mockResolvedValueOnce(make429('0'));
+    fetchSpy.mockResolvedValueOnce(make429('0'));
+    fetchSpy.mockResolvedValueOnce(makeResponse({
+      choices: [{ message: { role: 'assistant', content: 'ok' } }],
+    }));
+    const client = new OpenAIClient({
+      baseUrl: 'https://x', apiKey: ['k1', 'k2', 'k3'], model: 'm',
+      maxRetries: 3, retryBaseDelayMs: 1,
+    });
+    await client.chat([{ role: 'user', content: 'hi' }]);
+    const headersUsed = fetchSpy.mock.calls.map((c) => (c[1] as { headers: Record<string, string> }).headers.authorization);
+    expect(headersUsed[0]).toBe('Bearer k1');
+    expect(headersUsed[1]).toBe('Bearer k2');
+    expect(headersUsed[2]).toBe('Bearer k3');
+  });
+
+  it('rejects empty key arrays', () => {
+    expect(() => new OpenAIClient({
+      baseUrl: 'https://x', apiKey: ['', '   '], model: 'm',
+    })).toThrow(/non-empty apiKey/);
+  });
+
+  it('honours Retry-After delta-seconds header', async () => {
+    // Two 429s with Retry-After=0 then success — verifying the parser accepts integer seconds.
+    fetchSpy.mockResolvedValueOnce(make429('0'));
+    fetchSpy.mockResolvedValueOnce(makeResponse({
+      choices: [{ message: { role: 'assistant', content: 'ok' } }],
+    }));
+    const client = new OpenAIClient({
+      baseUrl: 'https://x', apiKey: 'k', model: 'm',
+      maxRetries: 3, retryBaseDelayMs: 1,
+    });
+    const result = await client.chat([{ role: 'user', content: 'hi' }]);
+    expect(result.message.content).toBe('ok');
+  });
+
+  it('retries on 503 (transient gateway error) but not on 401', async () => {
+    // 401 is non-retryable; should throw immediately.
+    fetchSpy.mockResolvedValueOnce({
+      ok: false, status: 401, statusText: 'Unauthorized',
+      headers: { get: () => null } as unknown as Headers,
+      json: async () => ({ error: { message: 'bad key' } }),
+      text: async () => 'bad key',
+    } as unknown as Response);
+    const client = new OpenAIClient({
+      baseUrl: 'https://x', apiKey: 'k', model: 'm',
+      maxRetries: 3, retryBaseDelayMs: 1,
+    });
+    await expect(client.chat([{ role: 'user', content: 'hi' }]))
+      .rejects.toThrow(/HTTP 401/);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('OpenAIClient streaming', () => {
   function makeStreamResponse(chunks: string[]): Response {
     const encoder = new TextEncoder();

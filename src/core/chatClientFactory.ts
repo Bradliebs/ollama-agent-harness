@@ -96,9 +96,13 @@ export function createChatClient(config: CreateClientConfig): IChatClient {
     const signup = preset.signupUrl ? ` Get a key at ${preset.signupUrl}.` : '';
     throw new Error(`${preset.label} backend selected but no API key found. Set ${envVarList}.${signup}`);
   }
+  // Credential pool: a single env var may contain comma-separated keys.
+  // OpenAIClient rotates them on 429 / 5xx so accounts that share an
+  // RPM quota across keys (Cerebras free tier, etc.) survive throttling.
+  const apiKeys = apiKey.split(',').map((k) => k.trim()).filter(Boolean);
   return new OpenAIClient({
     baseUrl: preset.baseUrl,
-    apiKey,
+    apiKey: apiKeys.length > 1 ? apiKeys : apiKeys[0],
     model: config.model,
     contextWindow: config.numCtx,
     providerLabel: preset.label,
