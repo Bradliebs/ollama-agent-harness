@@ -312,6 +312,26 @@ app.get('/api/about/verify', async (_req, res) => {
   }
 });
 
+// Surface the autonomy loop's checkpoint so the UI can show a live progress
+// banner. Returns 204 when no autonomy run has occurred (file absent), 200
+// with the parsed checkpoint otherwise. Read-only; never blocks on disk.
+app.get('/api/autonomy/state', async (_req, res) => {
+  const statePath = path.join(process.cwd(), '.forge-state.json');
+  try {
+    const raw = await fs.readFile(statePath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    res.json(parsed);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      res.status(204).end();
+      return;
+    }
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
 // List available models from Ollama
 app.get('/api/models', async (_req, res) => {
   try {

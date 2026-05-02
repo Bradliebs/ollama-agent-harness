@@ -4,6 +4,24 @@ import { BUILTIN_TOOL_ENTRIES } from '../tools/registry';
 const EDIT_TOOLS = new Set(['file_write', 'file_edit']);
 const READ_TOOLS = new Set(BUILTIN_TOOL_ENTRIES.filter((entry) => entry.tool.isReadOnly).map((entry) => entry.tool.name));
 
+/**
+ * META_TOOLS are harness-internal learning/memory tools that mutate only
+ * `.harness/` scratch space — never user code, never the shell. They are
+ * harmless to auto-approve under `acceptEdits`, and blocking them wastes
+ * autonomous turns when an agent tries to record reflections or consolidate
+ * memory between substantive tool calls.
+ */
+const META_TOOLS = new Set([
+  'reflect',
+  'analyze_patterns',
+  'promote_pattern',
+  'consolidate',
+  'evolve',
+  'improve_skill',
+  'memory_write',
+  'memory_read',
+]);
+
 export class PermissionEngine {
   private rules: PermissionRule[];
   private mode: PermissionMode;
@@ -90,9 +108,10 @@ export class PermissionEngine {
         return { decision: 'allow', reason: 'Mode: dontAsk — no matching deny rule' };
 
       case 'acceptEdits':
-        // Auto-approve reads and file edits; ask for everything else
-        if (READ_TOOLS.has(call.name) || EDIT_TOOLS.has(call.name)) {
-          return { decision: 'allow', reason: 'Mode: acceptEdits — read/edit auto-approved' };
+        // Auto-approve reads, file edits, and harness-internal meta tools;
+        // ask for everything else (notably bash and arbitrary executors).
+        if (READ_TOOLS.has(call.name) || EDIT_TOOLS.has(call.name) || META_TOOLS.has(call.name)) {
+          return { decision: 'allow', reason: 'Mode: acceptEdits — read/edit/meta auto-approved' };
         }
         return { decision: 'ask', reason: 'Mode: acceptEdits — requires approval' };
 

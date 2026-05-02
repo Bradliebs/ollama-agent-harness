@@ -28,8 +28,31 @@ export const ReflectTool: Tool = {
   },
   isReadOnly: false,
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
-    const observation = input.observation as string;
-    const category = (input.category as string) ?? 'insight';
+    // Some models call reflect with a synonym key (issue/reason/message/details/note)
+    // or with a non-string body. Coerce defensively so we never throw on input.slice().
+    const rawObservation =
+      (input.observation as unknown) ??
+      (input.issue as unknown) ??
+      (input.reason as unknown) ??
+      (input.message as unknown) ??
+      (input.details as unknown) ??
+      (input.note as unknown) ??
+      (input.text as unknown);
+
+    if (rawObservation === undefined || rawObservation === null) {
+      return {
+        success: false,
+        output: 'reflect requires an "observation" string (also accepts issue, reason, message, details, note, or text).',
+        error: 'missing observation',
+      };
+    }
+
+    const observation = typeof rawObservation === 'string' ? rawObservation : JSON.stringify(rawObservation);
+    if (!observation.trim()) {
+      return { success: false, output: 'reflect observation is empty.', error: 'empty observation' };
+    }
+
+    const category = typeof input.category === 'string' && input.category ? input.category : 'insight';
 
     const memDir = path.join(process.cwd(), '.harness', 'memory');
     await fs.mkdir(memDir, { recursive: true });

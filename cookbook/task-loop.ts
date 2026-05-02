@@ -155,6 +155,9 @@ function buildTaskPrompt(task: Task): string {
 /**
  * Called once per task. Shells out to the harness CLI in headless mode.
  * The CLI handles model calls, tool dispatch, file edits, and permissions.
+ *
+ * HARNESS_TASK_TIMEOUT_MS caps wallclock per task so a runaway model that
+ * burns its turn budget doing nothing useful cannot stall the autonomy loop.
  */
 function implementTask(task: Task): void {
   const prompt = buildTaskPrompt(task).replace(/"/g, '\\"');
@@ -167,8 +170,18 @@ function implementTask(task: Task): void {
     `-p "${prompt}"`,
   ].join(" ");
 
+  const timeoutMs = parseInt(process.env.HARNESS_TASK_TIMEOUT_MS ?? "600000", 10);
   console.log(`[Ralph] >>> ${cmd}`);
-  execSync(cmd, { stdio: "inherit" });
+  console.log(`[Ralph] (per-task timeout: ${Math.round(timeoutMs / 1000)}s)`);
+  try {
+    execSync(cmd, { stdio: "inherit", timeout: timeoutMs, killSignal: "SIGKILL" });
+  } catch (err) {
+    const e = err as { signal?: string; status?: number; message?: string };
+    if (e?.signal === "SIGKILL" || e?.signal === "SIGTERM") {
+      throw new Error(`harness CLI killed after ${timeoutMs}ms timeout`);
+    }
+    throw err;
+  }
 }
 
 // --- Validation — runs the project's own checks ---
