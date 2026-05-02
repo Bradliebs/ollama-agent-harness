@@ -8,7 +8,10 @@ async function main() {
   // package.json bin entry maps `harness` -> dist/cli/index.js, not dist/cli.js.
   // The previous path silently exited non-zero with a Node "Cannot find module"
   // error and was never traced because the smoke wrapper swallowed it.
-  const harnessPath = path.resolve(__dirname, '../dist/cli/index.js');
+  // HARNESS_SMOKE_CLI_PATH lets tests inject a fake binary so the wrapper's
+  // own bugs are catchable without standing up the full harness build.
+  const harnessPath = process.env.HARNESS_SMOKE_CLI_PATH
+    || path.resolve(__dirname, '../dist/cli/index.js');
   if (!existsSync(harnessPath)) {
     throw new Error(`harness CLI not built at ${harnessPath} — run \`npm run build\` first`);
   }
