@@ -44,11 +44,11 @@
 - [x] verify-credential-pool-rotates-on-success — Add a jest test that asserts OpenAIClient does NOT rotate keys on a successful 200 response (only on 429/5xx). Append to the same describe block. Mock 3 successful responses and assert all 3 used the same Bearer token.
   - anchor: src/core/openaiClient.test.ts
   - target: src/core/openaiClient.test.ts
-- [ ] verify-snapshot-restore-preserves-history — Add a jest test for the autonomy snapshot/restore behavior in `cookbook/task-loop.ts` that confirms `.forge-history.jsonl` is preserved across a snapshot restore (because git clean is invoked with `-e '.forge-*'`). Use the existing `shouldStop()` test pattern as a template.
+- [x] verify-snapshot-restore-preserves-history — Add a jest test for the autonomy snapshot/restore behavior in `cookbook/task-loop.ts` that confirms `.forge-history.jsonl` is preserved across a snapshot restore (because git clean is invoked with `-e '.forge-*'`). Use the existing `shouldStop()` test pattern as a template.
   - anchor: cookbook/task-loop.ts
   - anchor: src/automation/taskLoopShouldStop.test.ts
   - target: src/automation/taskLoopSnapshot.test.ts
-- [ ] verify-time-budget-halt — Add a jest test that exercises the `HARNESS_TIME_BUDGET_MS` halt path. Call `ralphLoop` (export it first if needed) with a tiny budget and a fast-failing implementTask stub, assert it exits with `time budget exhausted` reason.
+- [!] verify-time-budget-halt — Add a jest test that exercises the `HARNESS_TIME_BUDGET_MS` halt path. Call `ralphLoop` (export it first if needed) with a tiny budget and a fast-failing implementTask stub, assert it exits with `time budget exhausted` reason.
   - anchor: cookbook/task-loop.ts
   - target: src/automation/taskLoopBudget.test.ts
 - [ ] verify-doctor-renders-multi-key-pool — Add a jest test that confirms `formatSetupHealth` renders multi-key pools without leaking the keys themselves (only the env var name should appear, not the values). Append to the existing `cli/index.test.ts`.

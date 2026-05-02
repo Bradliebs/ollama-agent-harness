@@ -588,8 +588,11 @@ function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: boolean
         try {
           // Drop any uncommitted edits and untracked files the model may
           // have created. Keep .forge-* (state, debug logs, history).
+          // NOTE: pattern is unquoted so cmd.exe on Windows doesn't pass
+          // the literal quotes to git (which would void the exclude and
+          // wipe .forge-history.jsonl).
           execSync(`git reset --hard ${preIterationHead}`, { stdio: "pipe" });
-          execSync("git clean -fd -e '.forge-*'", { stdio: "pipe" });
+          execSync("git clean -fd -e .forge-*", { stdio: "pipe" });
           // Re-apply the failed marker to the plan because git reset wiped
           // the uncommitted plan edit. Without this, the next iteration
           // would pick the same task again and loop forever.
