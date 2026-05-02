@@ -20,7 +20,7 @@
   - anchor: src/setup/health.ts
   - anchor: src/cli/index.ts
   - target: src/setup/health.ts
-- [!] verify-headless-smoke — Add a `scripts/headless-smoke.js` that runs `harness -p "say hello"` against the configured model and exits non-zero on failure
+- [x] verify-headless-smoke — Add a `scripts/headless-smoke.js` that runs `harness -p "say hello"` against the configured model and exits non-zero on failure
   - anchor: scripts/transport-smoke.js
   - target: scripts/headless-smoke.js
 - [x] verify-permissions-deny-first — Add a focused jest test under `src/permissions/` proving that a deny rule overrides an allow rule for the same tool/path. Append the test to the existing `describe('PermissionEngine', ...)` block in engine.test.ts.
@@ -48,10 +48,10 @@
   - anchor: cookbook/task-loop.ts
   - anchor: src/automation/taskLoopShouldStop.test.ts
   - target: src/automation/taskLoopSnapshot.test.ts
-- [!] verify-time-budget-halt — Add a jest test that exercises the `HARNESS_TIME_BUDGET_MS` halt path. Call `ralphLoop` (export it first if needed) with a tiny budget and a fast-failing implementTask stub, assert it exits with `time budget exhausted` reason.
+- [x] verify-time-budget-halt — Add a jest test that exercises the `HARNESS_TIME_BUDGET_MS` halt path. Call `ralphLoop` (export it first if needed) with a tiny budget and a fast-failing implementTask stub, assert it exits with `time budget exhausted` reason.
   - anchor: cookbook/task-loop.ts
   - target: src/automation/taskLoopBudget.test.ts
-- [ ] verify-doctor-renders-multi-key-pool — Add a jest test that confirms `formatSetupHealth` renders multi-key pools without leaking the keys themselves (only the env var name should appear, not the values). Append to the existing `cli/index.test.ts`.
+- [x] verify-doctor-renders-multi-key-pool — Add a jest test that confirms `formatSetupHealth` renders multi-key pools without leaking the keys themselves (only the env var name should appear, not the values). Append to the existing `cli/index.test.ts`.
   - anchor: src/cli/index.ts
   - anchor: src/cli/index.test.ts
   - target: src/cli/index.test.ts

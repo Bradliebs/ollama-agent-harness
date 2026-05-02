@@ -428,7 +428,21 @@ function writeHealthSummary(tasks: Task[], startTime: number, reason: string): v
 
 // --- Ralph Loop ---
 
-function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: boolean = false): void {
+/**
+ * Optional dependency-injection hooks for tests. Production callers leave
+ * these undefined and get the real implementations. The autonomy loop's
+ * happy path is too slow + side-effecting (real harness CLI, real npm
+ * typecheck) to exercise in jest, but the budget/halt control flow can
+ * be covered by stubbing both.
+ */
+export interface RalphLoopHooks {
+  implementTask?: (task: Task) => void;
+  validateTask?: (task: Task) => boolean;
+}
+
+export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: boolean = false, hooks: RalphLoopHooks = {}): void {
+  const doImplement = hooks.implementTask ?? implementTask;
+  const doValidate = hooks.validateTask ?? validateTask;
   if (!existsSync(planPath)) {
     console.error(`[Ralph] Plan not found: ${planPath}`);
     console.error("[Ralph] Create an IMPLEMENTATION_PLAN.md with tasks like:");
@@ -538,7 +552,7 @@ function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: boolean
     // Implement
     let implementError: unknown = null;
     try {
-      implementTask(pending);
+      doImplement(pending);
     } catch (err) {
       implementError = err;
       console.error(`[Ralph] implementTask threw for ${pending.id}:`, err instanceof Error ? err.message : err);
@@ -553,7 +567,7 @@ function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: boolean
     const changedFiles = afterFiles.filter((f) => !beforeFiles.has(f) && !f.startsWith(".forge-"));
 
     // Validate (skip if implement crashed; treat as failure)
-    let passed = implementError ? false : validateTask(pending);
+    let passed = implementError ? false : doValidate(pending);
 
     // No-op guard: a task that changed zero files is almost certainly a
     // failed autonomous run (model refused, hallucinated completion, etc.).
