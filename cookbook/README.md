@@ -10,7 +10,7 @@ Copy-paste-ready code recipes for the Ollama Agent Harness. Each recipe demonstr
 | **Ollama Client** | [ollama-client.ts](ollama-client.ts) | Thin wrapper around the official `ollama-js` library with streaming chat, tool calling, token tracking, and health checks |
 | **Error Handling** | [error-handling.ts](error-handling.ts) | Typed error hierarchy (HarnessError → ToolExecutionError, PermissionDeniedError, etc.) with error-to-tool-result conversion and retry logic |
 | **Hello World** | [hello-world.ts](hello-world.ts) | Starter recipe |
-| **Task Loop** | [task-loop.ts](task-loop.ts) | Autonomous task execution — reads IMPLEMENTATION_PLAN.md and works through tasks |
+| **Task Loop** | [task-loop.ts](task-loop.ts) | Autonomous task execution — reads IMPLEMENTATION_PLAN.md and works through tasks. Exports `ralphLoop(planPath, maxIterations, dryRun, hooks?)` and the `RalphLoopHooks { implementTask?, validateTask? }` interface so tests can drive the budget/halt/snapshot-restore control flow without spawning the real harness CLI. |
 | **Summarize a PDF** | [pdf-summarize.ts](pdf-summarize.ts) | Calls `PdfMetadataTool` and `PdfReadTool` from the public API, then asks Ollama to summarize the extracted text |
 | **Render a PDF page for a vision model** | [pdf-render-vision.ts](pdf-render-vision.ts) | Calls `PdfRenderPageTool` (needs `HARNESS_PDF_RENDER_COMMAND`) to rasterize a page and asks a vision model to describe it |
 

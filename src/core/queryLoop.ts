@@ -153,6 +153,7 @@ export async function* queryLoop(
 
     // Stop condition: text-only response (no tool calls)
     if (!assistantMessage.tool_calls?.length) {
+      let validationFailed = false;
       if (config.outputValidation?.enabled) {
         const validation = validateOutput(assistantMessage.content ?? '', validationProfile, customValidationProfiles);
         tracer?.recordEvent('output.validation', {
@@ -162,12 +163,17 @@ export async function* queryLoop(
           findings: validation.findings.length,
         });
         yield { type: 'output_validation', validation };
+        validationFailed = validation.status === 'fail';
       }
       yield { type: 'text', content: assistantMessage.content };
       if (session) {
         await appendStatus(session, 'completed', undefined, tracer);
       }
-      yield { type: 'done', reason: 'completed', turns: turn };
+      yield {
+        type: 'done',
+        reason: validationFailed ? 'completed_with_validation_failures' : 'completed',
+        turns: turn,
+      };
       return;
     }
 

@@ -88,6 +88,39 @@ describe('queryLoop runtime behavior', () => {
     });
   });
 
+  it('reports reason "completed_with_validation_failures" when validation fails', async () => {
+    // Without this, the "fail" finding is silently overwritten by reason:
+    // "completed" and the user has no machine-readable signal that the
+    // validator rejected the final response.
+    const client = makeClient([{ role: 'assistant', content: 'All done.' }]);
+
+    const events = await collectEvents(client, [], {
+      config: { outputValidation: { enabled: true, profile: 'oracle-prime' } },
+    });
+
+    const done = events.find((e) => e.type === 'done');
+    expect(done).toEqual(expect.objectContaining({
+      type: 'done',
+      reason: 'completed_with_validation_failures',
+    }));
+  });
+
+  it('reports reason "completed" when validation passes', async () => {
+    // tool-result-summary is the most permissive built-in profile; a
+    // simple outcome-bearing summary should pass it cleanly.
+    const client = makeClient([{
+      role: 'assistant',
+      content: 'Success: wrote 12 lines to src/foo.ts (typecheck passed, exit code 0).',
+    }]);
+
+    const events = await collectEvents(client, [], {
+      config: { outputValidation: { enabled: true, profile: 'tool-result-summary' } },
+    });
+
+    const done = events.find((e) => e.type === 'done');
+    expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'completed' }));
+  });
+
   it('pairs enabled output validation with profile instructions in the system prompt', async () => {
     const client = makeClient([{ role: 'assistant', content: 'Implemented changes in src/core/queryLoop.ts and ran tests.' }]);
 

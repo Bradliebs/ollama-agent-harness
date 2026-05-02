@@ -4,9 +4,11 @@ dist/
 *.js.map
 *.d.ts
 !jest.config.js
-!scripts/release-notes.js
-!scripts/release-smoke.js
-!scripts/ui-smoke.js
+# All hand-written scripts in scripts/ are real source. Without this
+# blanket un-ignore, new scripts/*.js files get silently dropped from
+# `git status` (see scripts/headless-smoke.js, scripts/autonomy-docker.js
+# which both fell into this trap before the rule was added).
+!scripts/*.js
 !ui/app.js
 !ui/chatHistory.js
 .env

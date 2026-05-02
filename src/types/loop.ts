@@ -81,7 +81,7 @@ export interface ErrorEvent {
 
 export interface DoneEvent {
   type: 'done';
-  reason: 'completed' | 'max_turns' | 'aborted' | 'error' | 'unproductive';
+  reason: 'completed' | 'completed_with_validation_failures' | 'max_turns' | 'aborted' | 'error' | 'unproductive';
   turns: number;
 }
 
