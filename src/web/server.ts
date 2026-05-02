@@ -44,6 +44,7 @@ import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCata
 import { createAutomationJob, deleteAutomationJob, executeDueJobs, listAutomationJobs, listDueAutomationJobs, readAutomationRunLog, updateAutomationJob } from '../automation/jobs';
 import { AutomationScheduler } from '../automation/scheduler';
 import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
+import { heuristicVerifier } from '../mycelium/verifier';
 import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
 import { listShellCommandAllowlistPresets } from '../automation/runner';
 import { appendCapabilityAuditEvent, readCapabilityAuditEvents } from '../permissions/capabilityAudit';
@@ -1121,7 +1122,37 @@ app.get('/api/mycelium', async (_req, res) => {
   try {
     const { loadMyceliumGraph: load } = await import('../mycelium/graph');
     const graph = await load(PROJECT_DIR);
-    res.json({ stats: graph.stats(), nodes: graph.listNodes(), edges: graph.listEdges(), episodes: graph.listEpisodes(20) });
+    res.json({
+      stats: graph.stats(),
+      nodes: graph.listNodes(),
+      edges: graph.listEdges(),
+      episodes: graph.listEpisodes(20),
+      archivedEdges: graph.listArchivedEdges().slice(-20),
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Last episode + its selection reasons / route ordering for the UI.
+app.get('/api/mycelium/last-route', async (_req, res) => {
+  try {
+    const { loadMyceliumGraph: load } = await import('../mycelium/graph');
+    const graph = await load(PROJECT_DIR);
+    const episodes = graph.listEpisodes(1);
+    const lastEpisode = episodes[episodes.length - 1] ?? null;
+    if (!lastEpisode) {
+      res.json({ episode: null, nodes: [], edges: [] });
+      return;
+    }
+    // Hydrate the route's node references and any edges between them.
+    const nodes = lastEpisode.route
+      .map((id) => graph.getNode(id))
+      .filter((n): n is NonNullable<typeof n> => Boolean(n));
+    const idSet = new Set(lastEpisode.route);
+    const edges = graph.listEdges().filter((e) => idSet.has(e.source) && idSet.has(e.target));
+    res.json({ episode: lastEpisode, nodes, edges });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -1136,6 +1167,38 @@ app.delete('/api/mycelium', async (_req, res) => {
     res.json({ reset: true });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Apply explicit user feedback (👍 / 👎) to the most recent route. The
+// feedback is recorded as a fresh episode tagged with userFeedback so the
+// router learns from human judgment, not just the heuristic verifier.
+app.post('/api/mycelium/feedback', async (req, res) => {
+  const vote = req.body?.vote;
+  const note = typeof req.body?.note === 'string' ? req.body.note : undefined;
+  if (vote !== 'up' && vote !== 'down' && vote !== 'neutral') {
+    res.status(400).json({ error: 'vote must be "up", "down", or "neutral"' });
+    return;
+  }
+  try {
+    const router = await createMycelialRouter(PROJECT_DIR);
+    // Re-hydrate lastRoute from the most recent episode so feedback works
+    // across requests (the chat handler's router instance is per-request).
+    const lastEpisode = router.getGraph().listEpisodes(1)[0];
+    if (!lastEpisode) {
+      res.status(404).json({ error: 'no recent episode to apply feedback to' });
+      return;
+    }
+    // The router doesn't expose setLastRoute; reconstruct via a private cast.
+    (router as unknown as { lastRoute: string[] }).lastRoute = lastEpisode.route;
+    (router as unknown as { lastQuery: string }).lastQuery = lastEpisode.query;
+    const result = router.applyUserFeedback(vote, note);
+    await router.save();
+    res.json(result);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    logger.warn('Mycelium', 'Feedback failed', { error: msg });
     res.status(500).json({ error: msg });
   }
 });
@@ -1347,8 +1410,13 @@ app.post('/api/chat', async (req, res) => {
   // Mycelium routing: grow adaptive context from the message
   let myceliumRouter: MycelialContextRouter | null = null;
   let myceliumContext = '';
+  let myceliumClassification: ReturnType<MycelialContextRouter['getLastClassification']> = null;
+  let myceliumContextPackage: ReturnType<MycelialContextRouter['getLastContextPackage']> = null;
   try {
     myceliumRouter = await createMycelialRouter(PROJECT_DIR);
+    // Seed the generic safety / agent / verifier / workflow / prompt nodes
+    // exactly once. seedGeneric() is idempotent so this is cheap on repeat.
+    myceliumRouter.seedGeneric();
     const tools = webRuntime.getTools();
     myceliumRouter.seedToolNodes(tools.map((t) => ({ name: t.name, description: t.description })));
     // Seed skills from runtime and repo directories
@@ -1367,9 +1435,18 @@ app.post('/api/chat', async (req, res) => {
         myceliumRouter.seedMemoryNodes(memResults.slice(0, 10).map((r) => ({ id: r.entry.id, text: r.entry.text, kind: r.entry.kind })));
       }
     } catch { /* memory seeding is optional */ }
-    const myceliumResult = myceliumRouter.routeQuery(message);
+    const myceliumResult = myceliumRouter.routeQueryRich(message);
+    myceliumClassification = myceliumResult.classification;
+    myceliumContextPackage = myceliumResult.contextPackage;
     if (myceliumResult.nodes.length > 0) {
-      myceliumContext = '\n\n--- Mycelium context (adaptive routing) ---\n' + myceliumResult.contextText;
+      const safetyBlock = myceliumResult.contextPackage.safety_notes.length > 0
+        ? '\n[Safety notes]\n  - ' + myceliumResult.contextPackage.safety_notes.join('\n  - ')
+        : '';
+      myceliumContext =
+        `\n\n--- Mycelium context (adaptive routing) ---\n` +
+        `[Task type: ${myceliumResult.classification.type}; high_risk: ${myceliumResult.classification.highRisk}; exploration: ${myceliumResult.classification.explorationRate}]\n` +
+        myceliumResult.contextText +
+        safetyBlock;
     }
   } catch (error) {
     logger.warn('Mycelium', 'Context routing failed', { error: error instanceof Error ? error.message : String(error) });
@@ -1395,8 +1472,10 @@ app.post('/api/chat', async (req, res) => {
   }, 15_000);
   keepAlive.unref?.();
   const session = webRuntime.createSession(projectDir, activeModel);
-  if (agentName) session.setMeta('agentName', agentName);
-  if (agentAvatar) session.setMeta('agentAvatar', agentAvatar);
+  // Guard setMeta with a typeof check so the handler tolerates partial
+  // session mocks in tests (real SessionStorage always implements setMeta).
+  if (agentName && typeof session.setMeta === 'function') session.setMeta('agentName', agentName);
+  if (agentAvatar && typeof session.setMeta === 'function') session.setMeta('agentAvatar', agentAvatar);
   await session.initialize();
 
   const deps: QueryLoopDeps = {
@@ -1445,9 +1524,17 @@ app.post('/api/chat', async (req, res) => {
   messages.push(...trimmedHistory, newUserMessage);
   logger.info('Chat', `User: ${message.slice(0, 80)}`, { model: activeModel, historyTurns: trimmedHistory.length, droppedForTokens, historyTokenBudget });
   let assistantTextBuffer = '';
+  // Last output_validation event seen during the run. Used to feed the
+  // mycelium heuristic verifier with a real-validator signal so reinforcement
+  // reflects ground truth rather than text-shape heuristics alone.
+  let lastValidationStatus: 'pass' | 'warn' | 'fail' | undefined;
+  let lastValidationScore: number | undefined;
   let toolCallCount = 0;
   let toolSuccessCount = 0;
   const toolCallSequence: string[] = [];
+  // Per-tool success/total counters so the verifier can spot silent failures
+  // in failure-prone tools (web_fetch, pdf_*) that the aggregate ratio dilutes.
+  const toolStats = new Map<string, { success: number; total: number }>();
 
   try {
     if (droppedForTokens > 0) {
@@ -1472,9 +1559,17 @@ app.post('/api/chat', async (req, res) => {
       if (event.type === 'tool_result') {
         toolCallCount++;
         if (event.result?.success) toolSuccessCount++;
-        if (event.call?.name) toolCallSequence.push(event.call.name);
+        if (event.call?.name) {
+          toolCallSequence.push(event.call.name);
+          const stats = toolStats.get(event.call.name) ?? { success: 0, total: 0 };
+          stats.total++;
+          if (event.result?.success) stats.success++;
+          toolStats.set(event.call.name, stats);
+        }
       }
       if (event.type === 'output_validation') {
+        lastValidationStatus = event.validation.status as 'pass' | 'warn' | 'fail';
+        lastValidationScore = event.validation.score;
         await recordOutputValidationEvalRun(PROJECT_DIR, event.validation, message.slice(0, 120), {
           selectionSource: activeOutputValidation.selectionSource,
           selectionReason: activeOutputValidation.selectionReason,
@@ -1576,29 +1671,84 @@ app.post('/api/chat', async (req, res) => {
   persistSessionLearning(session, projectDir).catch(() => {});
   webRuntime.rebuildSemanticMemory(projectDir).catch(() => {});
 
-  // Mycelium reinforcement: strengthen or weaken routes based on outcome
+  // Mycelium reinforcement: strengthen or weaken routes based on outcome.
+  // Run a heuristic verifier first so the reward reflects safety + tool reliability.
   if (myceliumRouter) {
     const hasOutput = assistantTextBuffer.trim().length > 0;
     const toolSuccessRate = toolCallCount > 0 ? toolSuccessCount / toolCallCount : 0.5;
+    let verifierScore = 0.5;
+    let verifierBlocked = false;
+    let verifierBlockReason: string | undefined;
+    let verifierAppliedVerifiers: string[] = [];
+    if (myceliumContextPackage) {
+      try {
+        // Build per-tool success ratios for high-cost / failure-prone tools.
+        // The verifier uses the worst ratio to pull tool_reliability down so
+        // silent web/pdf failures aren't masked by an otherwise-healthy run.
+        const TRACKED_TOOLS = ['web_fetch', 'pdf_read', 'pdf_metadata', 'pdf_render_page', 'pdf_extract_tables'];
+        const toolSuccessRatios: Record<string, number> = {};
+        for (const tool of TRACKED_TOOLS) {
+          const stats = toolStats.get(tool);
+          if (stats && stats.total > 0) toolSuccessRatios[tool] = stats.success / stats.total;
+        }
+        const realSignals = (lastValidationScore !== undefined || Object.keys(toolSuccessRatios).length > 0)
+          ? {
+              outputValidationScore: lastValidationScore,
+              outputValidationStatus: lastValidationStatus,
+              toolSuccessRatios: Object.keys(toolSuccessRatios).length > 0 ? toolSuccessRatios : undefined,
+            }
+          : undefined;
+        const v = heuristicVerifier({
+          response: assistantTextBuffer,
+          contextPackage: myceliumContextPackage,
+          toolCallCount,
+          toolSuccessCount,
+          errored: !hasOutput,
+          realSignals,
+        });
+        verifierScore = v.score;
+        verifierAppliedVerifiers = v.appliedVerifiers;
+        if (v.failedHardCheck) {
+          verifierBlocked = true;
+          // Compose a short reason from the most relevant note.
+          verifierBlockReason = v.notes.find((n) => /fail|hard|irreversible/i.test(n)) ?? v.notes[0] ?? 'verifier_hard_check';
+          logger.warn('Mycelium', 'Heuristic verifier failed hard safety check', { notes: v.notes, blockReason: verifierBlockReason });
+        }
+      } catch { /* verifier is optional */ }
+    }
     myceliumRouter.reinforce({
       taskSuccess: hasOutput ? 0.7 : 0.2,
       correctness: hasOutput ? 0.6 + toolSuccessRate * 0.3 : 0.1,
       usefulness: hasOutput ? 0.5 + toolSuccessRate * 0.3 : 0.1,
       costEfficiency: toolCallCount <= 5 ? 0.8 : toolCallCount <= 15 ? 0.5 : 0.2,
+      // The heuristic verifier signal is fed back as user_satisfaction so it
+      // contributes ~10% of the final reward without re-weighting the formula.
+      userSatisfaction: verifierScore,
+    }, {
+      blocked: verifierBlocked,
+      blockReason: verifierBlockReason,
+      appliedVerifiers: verifierAppliedVerifiers,
     });
-    // Auto-create edges between consecutive tools in the call sequence
+    // Auto-create edges between consecutive tools in the call sequence.
+    // Tag with origin='sequence' + relation='sequence_learning' so the UI
+    // can distinguish learned tool chains from human-seeded edges.
     const graph = myceliumRouter.getGraph();
     for (let i = 0; i < toolCallSequence.length - 1; i++) {
       const srcId = `tool.${toolCallSequence[i]}`;
       const tgtId = `tool.${toolCallSequence[i + 1]}`;
       if (graph.getNode(srcId) && graph.getNode(tgtId)) {
-        graph.addEdge(srcId, tgtId, 0.3);
+        graph.addEdge(srcId, tgtId, 0.3, { relation: 'sequence_learning', origin: 'sequence' });
       }
     }
     myceliumRouter.decay();
-    myceliumRouter.save().catch((error) => {
+    // Await the graph write so callers (and integration tests) that read
+    // /api/mycelium/last-route immediately after the chat completes see
+    // the just-recorded episode rather than racing the disk flush.
+    try {
+      await myceliumRouter.save();
+    } catch (error) {
       logger.warn('Mycelium', 'Failed to save graph', { error: error instanceof Error ? error.message : String(error) });
-    });
+    }
   }
 
   res.write('data: [DONE]\n\n');
