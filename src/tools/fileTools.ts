@@ -187,6 +187,110 @@ function findOriginalSpan(original: string, normStart: number, normLength: numbe
   return { start, end: oi };
 }
 
+/**
+ * Move (or rename) a file. The destination is created in its parent
+ * directory; existing files at the destination are NOT overwritten by
+ * default. Both source and destination must pass resolveProjectPath
+ * confinement, so absolute paths into the user's configured Agent Files
+ * folder work because that folder is auto-added to the allowed-paths
+ * list when set in Settings.
+ *
+ * The agent uses this when the user asks "move my files to X". Without
+ * this tool, the model can only emulate a move via file_read + file_write
+ * which leaves the original in place — a frequent point of confusion.
+ */
+export const FileMoveTool: Tool = {
+  name: 'file_move',
+  description: 'Move or rename a file from one path to another. Both paths must be inside the project or an allowed external folder. Refuses to overwrite an existing file at the destination unless overwrite=true.',
+  parameters: {
+    type: 'object',
+    properties: {
+      from: { type: 'string', description: 'Source file path' },
+      to: { type: 'string', description: 'Destination file path' },
+      overwrite: { type: 'boolean', description: 'When true, replace the destination if it already exists. Defaults to false.' },
+    },
+    required: ['from', 'to'],
+  },
+  isReadOnly: false,
+  async execute(input: Record<string, unknown>): Promise<ToolResult> {
+    const fromPath = resolveProjectPath(input.from);
+    const toPath = resolveProjectPath(input.to);
+    if (!fromPath) return { success: false, output: 'Source path is outside the project directory', error: 'from outside project' };
+    if (!toPath) return { success: false, output: 'Destination path is outside the project directory', error: 'to outside project' };
+    if (fromPath === toPath) return { success: false, output: 'Source and destination are the same path', error: 'same path' };
+    const overwrite = input.overwrite === true;
+    try {
+      // Source must exist and be a regular file. We reject directory
+      // moves explicitly so an accidental "move my folder" call doesn't
+      // sweep an entire subtree without the user realizing.
+      const srcStat = await fs.stat(fromPath);
+      if (!srcStat.isFile()) {
+        return { success: false, output: `Source '${fromPath}' is not a regular file (file_move does not move directories)`, error: 'source not a file' };
+      }
+      // Destination existence check (unless overwrite). fs.rename on Windows
+      // throws EEXIST in the cross-device case anyway; the explicit check
+      // gives a clearer message.
+      const dstExists = await fs.stat(toPath).then(() => true, () => false);
+      if (dstExists && !overwrite) {
+        return { success: false, output: `Destination '${toPath}' already exists. Pass overwrite=true to replace it.`, error: 'destination exists' };
+      }
+      await fs.mkdir(path.dirname(toPath), { recursive: true });
+      try {
+        await fs.rename(fromPath, toPath);
+      } catch (renameErr) {
+        // Cross-device move (e.g. project root on C:, target on D:): fs.rename
+        // throws EXDEV. Fall back to copy + unlink so the move still succeeds.
+        const code = (renameErr as NodeJS.ErrnoException).code;
+        if (code === 'EXDEV') {
+          await fs.copyFile(fromPath, toPath);
+          await fs.unlink(fromPath);
+        } else {
+          throw renameErr;
+        }
+      }
+      return { success: true, output: `Moved '${fromPath}' → '${toPath}'${overwrite && dstExists ? ' (replaced existing)' : ''}` };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return { success: false, output: `Failed to move '${fromPath}' → '${toPath}': ${msg}`, error: msg };
+    }
+  },
+};
+
+/**
+ * Delete a single file. Refuses to delete directories (even empty ones)
+ * to avoid accidental subtree wipes — directory deletion remains a
+ * deliberate operation done via bash with explicit user awareness.
+ */
+export const FileDeleteTool: Tool = {
+  name: 'file_delete',
+  description: 'Delete a single file. Refuses to delete directories. Path must be inside the project or an allowed external folder.',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'File path to delete' },
+    },
+    required: ['path'],
+  },
+  isReadOnly: false,
+  async execute(input: Record<string, unknown>): Promise<ToolResult> {
+    const filePath = resolveProjectPath(input.path);
+    if (!filePath) {
+      return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
+    }
+    try {
+      const stat = await fs.stat(filePath);
+      if (!stat.isFile()) {
+        return { success: false, output: `'${filePath}' is not a regular file (file_delete refuses to remove directories)`, error: 'not a file' };
+      }
+      await fs.unlink(filePath);
+      return { success: true, output: `Deleted '${filePath}'` };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return { success: false, output: `Failed to delete '${filePath}': ${msg}`, error: msg };
+    }
+  },
+};
+
 export const ListFilesTool: Tool = {
   name: 'list_files',
   description: 'List files and directories at the given path',

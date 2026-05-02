@@ -1,4 +1,4 @@
-import { FileReadTool, FileWriteTool, FileEditTool, ListFilesTool, ListUploadsTool } from './fileTools';
+import { FileReadTool, FileWriteTool, FileEditTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool } from './fileTools';
 import { BashTool } from './bashTool';
 import { WebFetchTool } from './webFetchTool';
 import { GrepTool } from './grepTool';
@@ -17,7 +17,7 @@ export function getBuiltinTools(): Tool[] {
   return createBuiltinToolRegistry().listTools();
 }
 
-export { FileReadTool, FileWriteTool, FileEditTool, ListFilesTool, ListUploadsTool } from './fileTools';
+export { FileReadTool, FileWriteTool, FileEditTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool } from './fileTools';
 export { BashTool } from './bashTool';
 export { WebFetchTool } from './webFetchTool';
 export { GrepTool } from './grepTool';

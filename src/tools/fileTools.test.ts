@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { FileReadTool, FileWriteTool, ListUploadsTool } from './fileTools';
+import { FileReadTool, FileWriteTool, FileMoveTool, FileDeleteTool, ListUploadsTool } from './fileTools';
 import { drainUploadsFallbacks, clearFileWriteRedirectCache, previewFileWriteRedirect } from './pathResolution';
 
 describe('file tools bounds and path safety', () => {
@@ -382,5 +382,144 @@ describe('file tools bounds and path safety', () => {
     it('returns null when no rules supplied', () => {
       expect(previewFileWriteRedirect('anything.txt', [])).toBeNull();
     });
+  });
+});
+
+describe('FileMoveTool', () => {
+  // Pin a per-test scratch dir under .harness/ so cleanup is easy and we
+  // never touch real files. All paths inside the project root pass
+  // resolveProjectPath so we can exercise the success cases without
+  // needing to also test the allowed-external-path mechanism here (that
+  // is covered by the agentOutputDir auto-include in server.test.ts).
+  const scratchDir = path.join(process.cwd(), '.harness', 'test-file-move');
+
+  beforeEach(async () => { await fs.mkdir(scratchDir, { recursive: true }); });
+  afterEach(async () => { await fs.rm(scratchDir, { recursive: true, force: true }); });
+
+  it('moves a file to a new path inside the scratch dir', async () => {
+    const from = path.join(scratchDir, 'src.txt');
+    const to = path.join(scratchDir, 'dst.txt');
+    await fs.writeFile(from, 'payload', 'utf-8');
+    const result = await FileMoveTool.execute({ from, to });
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('Moved');
+    expect(result.output).toContain(to);
+    await expect(fs.readFile(to, 'utf-8')).resolves.toBe('payload');
+    await expect(fs.access(from)).rejects.toThrow();
+  });
+
+  it('refuses to overwrite an existing destination by default', async () => {
+    const from = path.join(scratchDir, 'a.txt');
+    const to = path.join(scratchDir, 'b.txt');
+    await fs.writeFile(from, 'A', 'utf-8');
+    await fs.writeFile(to, 'B', 'utf-8');
+    const result = await FileMoveTool.execute({ from, to });
+    expect(result.success).toBe(false);
+    expect(result.output).toContain('already exists');
+    // Both files unchanged.
+    await expect(fs.readFile(from, 'utf-8')).resolves.toBe('A');
+    await expect(fs.readFile(to, 'utf-8')).resolves.toBe('B');
+  });
+
+  it('overwrites the destination when overwrite=true', async () => {
+    const from = path.join(scratchDir, 'src.txt');
+    const to = path.join(scratchDir, 'dst.txt');
+    await fs.writeFile(from, 'NEW', 'utf-8');
+    await fs.writeFile(to, 'OLD', 'utf-8');
+    const result = await FileMoveTool.execute({ from, to, overwrite: true });
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('replaced existing');
+    await expect(fs.readFile(to, 'utf-8')).resolves.toBe('NEW');
+    await expect(fs.access(from)).rejects.toThrow();
+  });
+
+  it('refuses to move a directory', async () => {
+    const from = path.join(scratchDir, 'subdir');
+    const to = path.join(scratchDir, 'dst');
+    await fs.mkdir(from);
+    const result = await FileMoveTool.execute({ from, to });
+    expect(result.success).toBe(false);
+    expect(result.output).toContain('not a regular file');
+    await expect(fs.access(from)).resolves.toBeUndefined();
+  });
+
+  it('rejects source paths outside the project root', async () => {
+    const result = await FileMoveTool.execute({
+      from: path.resolve(process.cwd(), '..', 'outside-src.txt'),
+      to: path.join(scratchDir, 'dst.txt'),
+    });
+    expect(result.success).toBe(false);
+    expect(result.output).toContain('Source path is outside');
+  });
+
+  it('rejects destination paths outside the project root', async () => {
+    const from = path.join(scratchDir, 'safe.txt');
+    await fs.writeFile(from, 'x', 'utf-8');
+    const result = await FileMoveTool.execute({
+      from,
+      to: path.resolve(process.cwd(), '..', 'outside-dst.txt'),
+    });
+    expect(result.success).toBe(false);
+    expect(result.output).toContain('Destination path is outside');
+    // Original must remain.
+    await expect(fs.access(from)).resolves.toBeUndefined();
+  });
+
+  it('rejects same-path moves', async () => {
+    const p = path.join(scratchDir, 'same.txt');
+    await fs.writeFile(p, 'x', 'utf-8');
+    const result = await FileMoveTool.execute({ from: p, to: p });
+    expect(result.success).toBe(false);
+    expect(result.output).toContain('same path');
+    // Untouched.
+    await expect(fs.readFile(p, 'utf-8')).resolves.toBe('x');
+  });
+
+  it('creates parent directories at the destination', async () => {
+    const from = path.join(scratchDir, 'src.txt');
+    const to = path.join(scratchDir, 'nested', 'deep', 'dst.txt');
+    await fs.writeFile(from, 'p', 'utf-8');
+    const result = await FileMoveTool.execute({ from, to });
+    expect(result.success).toBe(true);
+    await expect(fs.readFile(to, 'utf-8')).resolves.toBe('p');
+  });
+});
+
+describe('FileDeleteTool', () => {
+  const scratchDir = path.join(process.cwd(), '.harness', 'test-file-delete');
+
+  beforeEach(async () => { await fs.mkdir(scratchDir, { recursive: true }); });
+  afterEach(async () => { await fs.rm(scratchDir, { recursive: true, force: true }); });
+
+  it('deletes a regular file', async () => {
+    const target = path.join(scratchDir, 'doomed.txt');
+    await fs.writeFile(target, 'bye', 'utf-8');
+    const result = await FileDeleteTool.execute({ path: target });
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('Deleted');
+    expect(result.output).toContain(target);
+    await expect(fs.access(target)).rejects.toThrow();
+  });
+
+  it('refuses to delete a directory', async () => {
+    const dirPath = path.join(scratchDir, 'subdir');
+    await fs.mkdir(dirPath);
+    const result = await FileDeleteTool.execute({ path: dirPath });
+    expect(result.success).toBe(false);
+    expect(result.output).toContain('not a regular file');
+    await expect(fs.access(dirPath)).resolves.toBeUndefined();
+  });
+
+  it('rejects paths outside the project root', async () => {
+    const result = await FileDeleteTool.execute({ path: path.resolve(process.cwd(), '..', 'outside.txt') });
+    expect(result.success).toBe(false);
+    expect(result.output).toContain('outside the project directory');
+  });
+
+  it('reports a clear error when the file does not exist', async () => {
+    const missing = path.join(scratchDir, 'never-was.txt');
+    const result = await FileDeleteTool.execute({ path: missing });
+    expect(result.success).toBe(false);
+    expect(result.output).toContain('Failed to delete');
   });
 });

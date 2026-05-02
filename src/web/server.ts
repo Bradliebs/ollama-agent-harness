@@ -1801,14 +1801,23 @@ app.post('/api/chat', async (req, res) => {
   // Drain any stale uploads-fallback records so this turn only sees its own.
   drainUploadsFallbacks();
 
+  // Build the file-system rule dynamically so the agent knows about the
+  // user-configured Agent Files folder (when set) and the explicit allowed
+  // external paths. Without this the agent reflexively says "I can only
+  // write inside my project directory" even after the user has explicitly
+  // configured a writable folder elsewhere.
+  const writableExternals = getAllowedExternalPaths();
+  const writableNote = writableExternals.length > 0
+    ? `\n6. file_read, file_write, file_edit, file_move, file_delete, and list_files work in the project directory AND in these user-allowed external folders: ${writableExternals.join(', ')}. You can write directly to any path inside those folders. Use file_move when the user asks you to move files; do NOT emulate moves with read+write (that leaves the original behind).`
+    : `\n6. file_read, file_write, file_edit, file_move, file_delete, and list_files work inside the project directory. To access files outside the project, ask the user to set an Agent Files folder in Settings (it gets auto-added to the allowed-write list); only fall back to bash/dir/cat/type when the user has not configured a folder.`;
   const basePrompt = systemPromptOverride ||
     'You are a self-learning AI assistant with full web access and local tool use. IMPORTANT RULES:\n' +
     '1. When the user asks about something on the web (weather, news, docs, prices, etc.), ALWAYS use web_search to find it, then web_read to fetch the actual content. NEVER just suggest links — fetch the data yourself and show the results.\n' +
-    '2. You can read files, write files, edit code, run commands, search files with grep, search the web, and read web pages.\n' +
+    '2. You can read files, write files, edit code, move files, delete files, run commands, search files with grep, search the web, and read web pages.\n' +
     '3. When you notice a reusable pattern, create a skill. When you learn something important, use the remember tool.\n' +
     '4. Format responses in Markdown.\n' +
-    '5. Be direct — do the work, don\'t ask the user to do it themselves.\n' +
-    '6. file_read and list_files only work inside the project directory. To access files outside the project (Downloads, Desktop, other drives), use the bash tool with dir, cat, or type commands instead.';
+    '5. Be direct — do the work, don\'t ask the user to do it themselves.' +
+    writableNote;
 
   // Inject name and personality before the base prompt
   const identityPrefix = [
