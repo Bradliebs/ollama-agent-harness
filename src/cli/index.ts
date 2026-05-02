@@ -233,6 +233,13 @@ export function formatSetupHealth(result: SetupHealthResult): string {
     for (const backend of result.backends) {
       lines.push('  ' + formatHealthLine(backend.label, backend.ok, backend.message));
     }
+    // Discoverability: when at least one backend is configured, point
+    // users at the smoke that exercises end-to-end CLI round-trips for
+    // every configured backend. Skipped backends are clearly skipped,
+    // so this is safe to surface even with a single key set.
+    if (result.backends.some((b) => b.ok)) {
+      lines.push('  Tip: run `npm run smoke:remote-backends` to round-trip every configured backend through the CLI.');
+    }
   }
   return lines.join('\n');
 }
