@@ -11,6 +11,30 @@ keywords:
 estimated_reading_time: 9
 ---
 
+## v0.2.4 (2026-05-02)
+
+Follow-up release on the same day as v0.2.3. Three real user-visible bugs found while shipping v0.2.3 and fixed before the next user touch.
+
+### Headline: chat agents can now move files into a user-chosen folder
+
+* **`file_move` tool.** New built-in. Cross-device fallback to copy+unlink on EXDEV. Refuses to overwrite without `overwrite=true`. Refuses to move directories so an accidental "move my folder" call cannot sweep a subtree. Resolves the recurring "I cannot move files outside the project" agent claim by actually giving it the tool.
+* **`file_delete` tool.** New built-in. Refuses to delete directories.
+* **System prompt rule #6 is built dynamically.** When `getAllowedExternalPaths()` is non-empty (the Agent Files folder is set), the prompt lists those folders and tells the agent it can write to any path inside them, AND tells it to use `file_move` instead of `read+write` for move requests. Stops the false "I cannot write outside my project directory" refusal that v0.2.3 still had.
+* **`agentOutputDir` auto-allows writes.** Setting an Agent Files folder in Settings now also adds it to the allowed-external-paths list, so `file_write`/`file_read`/`list_files`/`file_move`/`file_delete` accept absolute paths into it. Previously the redirect existed but the path-confinement check still rejected absolute writes outside the project.
+
+### UI / dashboard
+* **Settings panel + artifact panel never push content offscreen.** Right Settings panel becomes a fixed overlay starting at 1400px viewport (was 900px). Artifact panel is `position:fixed` instead of `position:absolute` so it never anchors to an offscreen container. Both close on **Escape** via a global keydown handler.
+* **Simple "Agent Files" folder field replaces the dense pattern-rules editor at the top of the Files section.** Pattern rules are still available under a collapsed "⚙ Advanced" sub-section. One input + Save covers the 95% case.
+* **🗂 Browse button + inline directory picker** for the Agent Files input. Preset chips (Home, Desktop, Documents, Downloads, Project root, agent-outputs/), Up button, current path, "Use this folder" action, immediate subdirectory list. Eliminates the typo failure mode and discoverability problem.
+
+### Tests + smoke
+* **12 new tests** for `FileMoveTool` and `FileDeleteTool` (move success, overwrite refusal/with-flag, directory rejection, source/destination outside-project rejection, same-path rejection, parent-dir creation, delete success, delete-dir refusal, missing-file error).
+* **Release smoke** updated: the assertion was looking for an old start.bat phrase ('Installing dependencies with npm ci'); current bootstrapper says 'call npm ci'. Loosened to `assertContains('npm ci')` which is the load-bearing part.
+
+### New API endpoints
+* `GET /api/browse-dirs` — directory browser for the folder picker (NOT confined to PROJECT_DIR; the whole point is picking a folder elsewhere).
+* Top-level `agentOutputDir` field in `/api/settings` (GET + POST), persisted to `.harness/settings.json`.
+
 ## v0.2.3 (2026-05-02)
 
 Hardening release on top of v0.2.2. Five batches of verification, one user-driven feature (`file_write` pattern redirects), no new chat-surface features. 12 new tests, 590/590 jest pass.
