@@ -41,7 +41,7 @@
 - [x] verify-openai-retry-backoff-cap — Add a jest test that asserts OpenAIClient.invoke does NOT exceed `maxRetries` attempts on persistent 429 (i.e. caps at the configured limit). Append to the existing `describe('OpenAIClient retry + credential pool', ...)` block. Use the `make429` helper that already exists in the file.
   - anchor: src/core/openaiClient.test.ts
   - target: src/core/openaiClient.test.ts
-- [ ] verify-credential-pool-rotates-on-success — Add a jest test that asserts OpenAIClient does NOT rotate keys on a successful 200 response (only on 429/5xx). Append to the same describe block. Mock 3 successful responses and assert all 3 used the same Bearer token.
+- [x] verify-credential-pool-rotates-on-success — Add a jest test that asserts OpenAIClient does NOT rotate keys on a successful 200 response (only on 429/5xx). Append to the same describe block. Mock 3 successful responses and assert all 3 used the same Bearer token.
   - anchor: src/core/openaiClient.test.ts
   - target: src/core/openaiClient.test.ts
 - [ ] verify-snapshot-restore-preserves-history — Add a jest test for the autonomy snapshot/restore behavior in `cookbook/task-loop.ts` that confirms `.forge-history.jsonl` is preserved across a snapshot restore (because git clean is invoked with `-e '.forge-*'`). Use the existing `shouldStop()` test pattern as a template.

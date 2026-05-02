@@ -314,6 +314,31 @@ describe('OpenAIClient retry + credential pool', () => {
       .rejects.toThrow(/TestProv HTTP 429/);
     expect(fetchSpy).toHaveBeenCalledTimes(maxRetries);
   });
+
+  it('does NOT rotate keys on successful 200 responses; only on 429/5xx', async () => {
+    // Mock 3 successful responses
+    fetchSpy
+      .mockResolvedValueOnce(makeResponse({ choices: [{ message: { role: 'assistant', content: 'r1' } }] }))
+      .mockResolvedValueOnce(makeResponse({ choices: [{ message: { role: 'assistant', content: 'r2' } }] }))
+      .mockResolvedValueOnce(makeResponse({ choices: [{ message: { role: 'assistant', content: 'r3' } }] }));
+
+    const client = new OpenAIClient({
+      baseUrl: 'https://x', apiKey: ['k1', 'k2', 'k3'], model: 'm',
+      maxRetries: 3, retryBaseDelayMs: 1,
+    });
+
+    // Make 3 separate requests (not retries - new calls)
+    await client.chat([{ role: 'user', content: 'req1' }]);
+    await client.chat([{ role: 'user', content: 'req2' }]);
+    await client.chat([{ role: 'user', content: 'req3' }]);
+
+    // All 3 requests should use the same Bearer token (k1) since 200s don't rotate
+    const headersUsed = fetchSpy.mock.calls.map((c) => (c[1] as { headers: Record<string, string> }).headers.authorization);
+    expect(headersUsed).toHaveLength(3);
+    expect(headersUsed[0]).toBe('Bearer k1');
+    expect(headersUsed[1]).toBe('Bearer k1');
+    expect(headersUsed[2]).toBe('Bearer k1');
+  });
 });
 
 describe('OpenAIClient streaming', () => {
