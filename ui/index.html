@@ -13,10 +13,13 @@
     .left-panel{width:260px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;transition:margin-left .3s}
     .left-panel.hidden{margin-left:-260px}
     .main-panel{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
-    .right-panel{width:320px;background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto;transition:margin-right .3s}
-    .right-panel.hidden{margin-right:-320px}
-    .panel-header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border)}
+    .right-panel{width:480px;background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto;transition:margin-right .3s}
+    .right-panel.hidden{margin-right:-480px}
+    .panel-header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:5}
     .panel-header h3{font-size:14px;font-weight:600}
+    .panel-search{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:48px;z-index:4}
+    .panel-search input{width:100%;padding:7px 10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px;outline:none}
+    .panel-search input:focus{border-color:var(--accent)}
     .btn-sm{background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s}
     .btn-sm:hover{border-color:var(--accent);color:var(--text)}
     .history-list,.file-tree,.skill-list,.memory-view{flex:1;overflow-y:auto;padding:8px}
@@ -214,8 +217,13 @@
     .send-btn{width:44px;height:44px;border-radius:var(--r);background:var(--accent);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;transition:background .2s;flex-shrink:0}
     .send-btn:hover{background:var(--accent-hover)}
     .send-btn:disabled{opacity:.4;cursor:not-allowed}
-    .settings-section{padding:14px 16px;border-bottom:1px solid var(--border)}
-    .settings-section h4{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);margin-bottom:8px}
+    .settings-section{padding:0;border-bottom:1px solid var(--border)}
+    .settings-section h4{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--text);margin:0;padding:12px 16px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px;background:var(--surface);transition:background .15s}
+    .settings-section h4:hover{background:var(--surface2)}
+    .settings-section h4::before{content:'▶';font-size:9px;transition:transform .2s;color:var(--text-dim)}
+    .settings-section.open h4::before{transform:rotate(90deg)}
+    .settings-section-body{display:none;padding:8px 16px 14px}
+    .settings-section.open .settings-section-body{display:block}
     .setting-row{margin-bottom:10px}
     .setting-row label{display:block;font-size:12px;color:var(--text-dim);margin-bottom:3px}
     .setting-row input,.setting-row select,.setting-row textarea{width:100%;padding:7px 10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px;outline:none;font-family:inherit}
@@ -255,7 +263,7 @@
     .mode-opt.active{border-color:var(--accent);background:var(--accent-bg)}
     .mode-opt .mode-t{font-size:13px;font-weight:600;margin-bottom:1px}
     .mode-opt .mode-d{font-size:11px;color:var(--text-dim)}
-    @media(max-width:900px){.left-panel,.right-panel{position:fixed;top:0;bottom:0;z-index:100}.left-panel{left:-260px}.left-panel.visible{left:0}.right-panel{right:-320px}.right-panel.visible{right:0}}
+    @media(max-width:900px){.left-panel,.right-panel{position:fixed;top:0;bottom:0;z-index:100}.left-panel{left:-260px}.left-panel.visible{left:0}.right-panel{right:-480px;width:min(480px,90vw)}.right-panel.visible{right:0}}
     /* Per-message metadata footer (model · tokens · latency) */
     .msg-meta{margin-top:6px;font-size:11px;color:var(--text-dim);display:flex;flex-wrap:wrap;gap:6px;align-items:center;line-height:1.4}
     .msg-meta .meta-sep{opacity:.5}
@@ -573,6 +581,17 @@
       <div class="setting-row">
         <label>Ollama Host</label>
         <input type="text" id="ollamaHost" title="Ollama Host" value="http://localhost:11434" onchange="updateSetting('ollamaHost',this.value)" />
+      </div>
+    </div>
+    <div class="settings-section">
+      <h4>Remote API Keys</h4>
+      <div class="setting-row" style="font-size:11px;color:var(--text-dim);margin-bottom:10px">
+        Stored locally in <code>.harness/api-keys.json</code> (chmod 600). Env-var keys take precedence. Saving an empty value clears the stored key.
+      </div>
+      <div id="apiKeysList"></div>
+      <div class="setting-row" style="margin-top:10px">
+        <button class="btn-sm primary" onclick="saveApiKeys()">💾 Save keys</button>
+        <span id="apiKeysStatus" style="margin-left:8px;font-size:11px;color:var(--text-dim)"></span>
       </div>
     </div>
     <div class="settings-section">

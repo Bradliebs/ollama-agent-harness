@@ -11,6 +11,38 @@ keywords:
 estimated_reading_time: 8
 ---
 
+## v0.2.2 (2026-05-02)
+
+Dashboard 100x release. Brings the harness UI up to parity with leading AI chat UIs (Claude artifacts, ChatGPT regenerate, Cursor diffs, Perplexity citations, Open WebUI tok/s, t3.chat compare) while keeping the unique surfaces (Mycelium, output validation, capability gating, agent-outputs).
+
+### Dashboard
+- **Per-message regenerate + copy.** 🔁/📋 buttons under every assistant message; regenerate slices history and re-runs from the original user prompt.
+- **Follow-up suggestion chips.** 3 heuristic next-prompt chips after every reply ("Add tests for that code", "Show a diff", "Diagnose the error", etc).
+- **Inline diff preview for `file_edit`.** Unified-diff style trace items with red `-` / green `+` lines, capped at 12 per side. `file_write` shows a 3-line content preview + char count.
+- **Artifact panel.** Side panel slides in for fenced code blocks ≥ 8 lines OR HTML/SVG/markdown/mermaid blocks. Tabs across the top for recent artifacts (max 12). Sandboxed iframe preview, source view, copy + download.
+- **Web citations.** Successful `web_read` calls add to a per-turn citation list rendered as numbered Sources under the reply, plus `[n]` superscript links rewriting raw URLs in the visible text.
+- **Live tok/s indicator.** Thinking pill updates every 250ms during streaming with `~N.N tok/s` (chars/4 / elapsed).
+- **Side-by-side model compare.** ⚖️ button toggles compare mode + reveals a second-model picker; next prompt is sent in parallel to two models with a `✅ Keep this` button on each column.
+- **"Preparing model..." pill no longer stuck.** Updates label on first model event of any type (`tool_call → 'Calling tools...'`, `usage → 'Working...'`, `context → 'Compacting context...'`).
+- **Validation-failed badge.** UI surfaces a ⚠️ row when `done.reason === 'completed_with_validation_failures'`.
+- **Auto-promote `oracle-prime` → `coding-answer`** when productive tools succeeded; emits new `output_validation_profile_promoted` SSE event so the swap is visible.
+
+### Settings panel UX
+- **Wider panel** (480px from 320px) with a sticky header and search bar.
+- **Collapsible sections.** All 20+ settings groups are now `<details>`-style — click the heading to fold/unfold. Open state persists in localStorage.
+- **Filter by text.** Type any term in the search bar to surface only matching sections.
+
+### Backends
+- **Mistral, Cerebras, Groq, GitHub Models, OpenRouter, OpenAI** are now selectable from the UI dropdown (`<backend>/<model>` ids). Falls back gracefully — UI still works if Ollama is down but you have remote keys.
+- **`agent-outputs/` directory.** `file_write` redirects bare-filename writes for new files into `<project>/agent-outputs/` so scratch files stop piling up at the repo root. Configurable via `HARNESS_AGENT_OUTPUT_DIR`. Existing files and explicit subdirectory paths are unchanged.
+- **API key entry in Settings.** New "Remote API Keys" section with masked input fields for each backend. Stored in `.harness/api-keys.json` (chmod 600). `GET /api/api-keys` returns which keys are configured (without revealing values) and whether each comes from env or file. Env vars always take precedence.
+- **Backend pill on dropdown.** Remote models display `[backend]` next to the model name so you can tell at a glance whether a pick will burn API credits.
+
+### Test count
+- 572 → 579+ (added per-message regenerate, follow-up chip, validation auto-promotion, agent-outputs redirect, smoke wrapper, and snapshot E2E tests).
+
+---
+
 ## v0.2.1 (2026-05-02)
 
 Patch release focused on autonomy-loop hardening, validation UX, and headless reliability after a session of bug-hunting.

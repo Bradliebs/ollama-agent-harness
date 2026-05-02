@@ -78,6 +78,7 @@ const SKILLS_DIR = path.join(PROJECT_DIR, '.harness', 'skills');
 const REPO_SKILLS_DIR = path.join(PROJECT_DIR, '.github', 'skills');
 const TRACES_DIR = path.join(PROJECT_DIR, '.harness', 'traces');
 const SETTINGS_PATH = path.join(PROJECT_DIR, '.harness', 'settings.json');
+const API_KEYS_PATH = path.join(PROJECT_DIR, '.harness', 'api-keys.json');
 const OUTPUT_VALIDATION_PROFILES_PATH = path.join(PROJECT_DIR, '.harness', 'output-validation-profiles.json');
 const RELEASE_PROVENANCE_PATH = path.join(PROJECT_DIR, 'release-provenance.json');
 const WORKFLOWS_DIR = path.join(PROJECT_DIR, '.harness', 'workflows');
@@ -564,6 +565,74 @@ const REMOTE_MODEL_CATALOG: Record<string, Array<{ id: string; label: string }>>
     { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
   ],
 };
+
+// API key management for remote backends. Returns which key NAMES are
+// configured (not the values themselves) and whether each comes from
+// process env or the .harness/api-keys.json file.
+app.get('/api/api-keys', async (_req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    let stored: Record<string, unknown> = {};
+    try {
+      const raw = await fs.readFile(API_KEYS_PATH, 'utf-8');
+      stored = JSON.parse(raw);
+    } catch {}
+    const status: Record<string, { configured: boolean; source: 'env' | 'file' | 'none' }> = {};
+    for (const name of ALLOWED_API_KEY_NAMES) {
+      const envValue = process.env[name];
+      const fileValue = stored[name];
+      const fromEnv = typeof envValue === 'string' && envValue.trim().length > 0;
+      const fromFile = typeof fileValue === 'string' && (fileValue as string).trim().length > 0;
+      status[name] = {
+        configured: fromEnv || fromFile,
+        source: fromEnv ? 'env' : (fromFile ? 'file' : 'none'),
+      };
+    }
+    res.json({ keys: status });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Save API keys to .harness/api-keys.json. Empty/whitespace strings
+// REMOVE the key from the file. Refuses unknown key names. Loads the
+// new values into process.env immediately so subsequent /api/chat
+// requests see them without a server restart.
+app.post('/api/api-keys', async (req, res) => {
+  try {
+    const incoming = req.body && typeof req.body === 'object' ? req.body : {};
+    let stored: Record<string, string> = {};
+    try {
+      const raw = await fs.readFile(API_KEYS_PATH, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') stored = parsed as Record<string, string>;
+    } catch {}
+    let changed = false;
+    for (const [name, rawValue] of Object.entries(incoming)) {
+      if (!ALLOWED_API_KEY_NAMES.has(name)) continue;
+      const value = typeof rawValue === 'string' ? rawValue.trim() : '';
+      if (value) {
+        stored[name] = value;
+        if (!process.env[name] || !process.env[name]!.trim()) {
+          process.env[name] = value;
+        }
+      } else if (stored[name]) {
+        delete stored[name];
+        changed = true;
+      }
+      changed = true;
+    }
+    if (changed) {
+      await fs.mkdir(path.dirname(API_KEYS_PATH), { recursive: true });
+      await fs.writeFile(API_KEYS_PATH, JSON.stringify(stored, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
 
 // Get/set current settings
 app.get('/api/settings', async (_req, res) => {
@@ -3127,6 +3196,7 @@ async function ensureSettingsLoaded(): Promise<void> {
   if (settingsLoaded) return;
   settingsLoaded = true;
   await loadCustomOutputValidationProfiles();
+  await loadStoredApiKeys();
   try {
     const raw = await fs.readFile(SETTINGS_PATH, 'utf-8');
     const settings = JSON.parse(raw) as Partial<WebSettings>;
@@ -3135,6 +3205,44 @@ async function ensureSettingsLoaded(): Promise<void> {
     // Missing or malformed settings should not prevent the local UI from starting.
   }
 }
+
+/**
+ * Load API keys from `.harness/api-keys.json` into `process.env` so the
+ * remote-backend factory can pick them up. Lets users configure keys
+ * via the UI without touching system env vars.
+ *
+ * Format: { "MISTRAL_API_KEY": "...", "GROQ_API_KEY": "...", ... }
+ *
+ * Environment variables that are ALREADY set (e.g. exported in the
+ * shell) take precedence — the file only fills in the blanks. This
+ * preserves the principle of least surprise for users who have keys
+ * exported globally.
+ */
+async function loadStoredApiKeys(): Promise<void> {
+  try {
+    const raw = await fs.readFile(API_KEYS_PATH, 'utf-8');
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value !== 'string' || !value.trim()) continue;
+      if (!ALLOWED_API_KEY_NAMES.has(key)) continue;
+      if (process.env[key] && process.env[key]!.trim().length > 0) continue;
+      process.env[key] = value.trim();
+    }
+  } catch {
+    // Missing file is fine — user simply hasn't entered any keys yet.
+  }
+}
+
+const ALLOWED_API_KEY_NAMES = new Set([
+  'OPENAI_API_KEY',
+  'CEREBRAS_API_KEY',
+  'GROQ_API_KEY',
+  'GITHUB_TOKEN',
+  'GITHUB_MODELS_TOKEN',
+  'MISTRAL_API_KEY',
+  'OPENROUTER_API_KEY',
+  'ANTHROPIC_API_KEY',
+]);
 
 function applyStoredSettings(settings: Partial<WebSettings>): void {
   if (settings.model !== undefined) currentModel = sanitizeModelName(settings.model);

@@ -53,6 +53,8 @@ window.addEventListener('DOMContentLoaded', () => {
   loadRecovery();
   startPermissionPolling();
   startAutonomyPolling();
+  setupSettingsCollapse();
+  loadApiKeys();
   // Restore prior chat session if the user reloaded mid-conversation.
   if (chatMessages.length > 0) {
     const chatArea = document.getElementById('chatArea');
@@ -80,7 +82,8 @@ async function loadModels() {
     if (!models.length) { sel.innerHTML = '<option value="">No models installed</option>'; return; }
     sel.innerHTML = '<option value="">— Select model —</option>' + models.map((m) => {
       const size = m.parameterSize ? ' (' + m.parameterSize + ')' : '';
-      return '<option value="' + escAttr(m.name) + '">' + esc(m.name + size) + '</option>';
+      const backendBadge = m.backend && m.backend !== 'ollama' ? ' [' + m.backend + ']' : '';
+      return '<option value="' + escAttr(m.name) + '">' + esc(m.name + size + backendBadge) + '</option>';
     }).join('');
     sel.disabled = false;
     sel.onchange = () => { renderModelCapabilityHint(); if (sel.value) { updateSetting('model', sel.value); document.getElementById('sendBtn').disabled = false; } };
@@ -91,7 +94,8 @@ async function loadModels() {
     if (cmp) {
       cmp.innerHTML = '<option value="">Compare with...</option>' + models.map((m) => {
         const size = m.parameterSize ? ' (' + m.parameterSize + ')' : '';
-        return '<option value="' + escAttr(m.name) + '">' + esc(m.name + size) + '</option>';
+        const backendBadge = m.backend && m.backend !== 'ollama' ? ' [' + m.backend + ']' : '';
+        return '<option value="' + escAttr(m.name) + '">' + esc(m.name + size + backendBadge) + '</option>';
       }).join('');
     }
   } catch {
@@ -3059,6 +3063,144 @@ async function loadPalaceEntry(id) { const detail = document.getElementById('pal
 function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); el.classList.add('active'); document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; const rn = document.getElementById('runsView'); if (rn) rn.style.display = tab === 'runs' ? 'block' : 'none'; const wf = document.getElementById('workflowsView'); if (wf) wf.style.display = tab === 'workflows' ? 'block' : 'none'; const my = document.getElementById('myceliumView'); if (my) my.style.display = tab === 'mycelium' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); if (tab === 'runs') loadRuns(); if (tab === 'workflows') loadWorkflows(); if (tab === 'mycelium') loadMycelium(); }
 function toggleLeft() { document.getElementById('leftPanel').classList.toggle('hidden'); }
 function toggleRight() { document.getElementById('rightPanel').classList.toggle('hidden'); }
+
+/**
+ * Convert each `.settings-section` in the right panel into a collapsible
+ * details-style block (header click toggles its `.open` class). Also
+ * inject a search box that filters sections by title + content text.
+ * Without this, the 20+ section panel is unusable on smaller viewports.
+ */
+function setupSettingsCollapse() {
+  const panel = document.getElementById('rightPanel');
+  if (!panel) return;
+  // Inject search input directly after the panel-header.
+  const header = panel.querySelector('.panel-header');
+  if (header && !panel.querySelector('.panel-search')) {
+    const search = document.createElement('div');
+    search.className = 'panel-search';
+    search.innerHTML = '<input type="text" id="settingsSearch" placeholder="🔍 Filter settings..." autocomplete="off">';
+    header.insertAdjacentElement('afterend', search);
+    search.querySelector('input').addEventListener('input', filterSettingsSections);
+  }
+  // Wrap each section's body content in `.settings-section-body` and
+  // make the h4 toggle the parent's `.open` class.
+  const sections = panel.querySelectorAll('.settings-section');
+  const remembered = (() => { try { return JSON.parse(localStorage.getItem('settingsOpenSections') || '[]'); } catch { return []; } })();
+  const rememberSet = new Set(remembered);
+  sections.forEach((section, idx) => {
+    if (section.dataset.collapseInit === '1') return;
+    section.dataset.collapseInit = '1';
+    const h4 = section.querySelector('h4');
+    if (!h4) return;
+    // Wrap everything after h4 in .settings-section-body.
+    const body = document.createElement('div');
+    body.className = 'settings-section-body';
+    let next = h4.nextSibling;
+    while (next) {
+      const after = next.nextSibling;
+      body.appendChild(next);
+      next = after;
+    }
+    section.appendChild(body);
+    const titleKey = (h4.textContent || ('section-' + idx)).trim();
+    section.dataset.titleKey = titleKey;
+    h4.addEventListener('click', () => {
+      section.classList.toggle('open');
+      const open = Array.from(panel.querySelectorAll('.settings-section.open')).map((s) => s.dataset.titleKey);
+      try { localStorage.setItem('settingsOpenSections', JSON.stringify(open)); } catch {}
+    });
+    if (rememberSet.has(titleKey) || (rememberSet.size === 0 && idx === 0)) {
+      // Default state: only the first section open, otherwise restore.
+      section.classList.add('open');
+    }
+  });
+}
+
+function filterSettingsSections(event) {
+  const q = (event.target.value || '').trim().toLowerCase();
+  const panel = document.getElementById('rightPanel');
+  if (!panel) return;
+  panel.querySelectorAll('.settings-section').forEach((section) => {
+    if (!q) {
+      section.style.display = '';
+      return;
+    }
+    const text = (section.textContent || '').toLowerCase();
+    if (text.includes(q)) {
+      section.style.display = '';
+      section.classList.add('open');
+    } else {
+      section.style.display = 'none';
+    }
+  });
+}
+
+// ─── Remote API key entry ─────────────────────────────────────────────
+const REMOTE_API_KEY_FIELDS = [
+  { name: 'MISTRAL_API_KEY', label: 'Mistral AI', signup: 'https://console.mistral.ai/api-keys' },
+  { name: 'GROQ_API_KEY', label: 'Groq', signup: 'https://console.groq.com/keys' },
+  { name: 'CEREBRAS_API_KEY', label: 'Cerebras', signup: 'https://cloud.cerebras.ai/' },
+  { name: 'GITHUB_MODELS_TOKEN', label: 'GitHub Models', signup: 'https://github.com/marketplace/models' },
+  { name: 'OPENROUTER_API_KEY', label: 'OpenRouter', signup: 'https://openrouter.ai/keys' },
+  { name: 'OPENAI_API_KEY', label: 'OpenAI', signup: 'https://platform.openai.com/api-keys' },
+  { name: 'ANTHROPIC_API_KEY', label: 'Anthropic', signup: 'https://console.anthropic.com/settings/keys' },
+];
+
+async function loadApiKeys() {
+  const list = document.getElementById('apiKeysList');
+  if (!list) return;
+  let status = {};
+  try {
+    const r = await fetch('/api/api-keys');
+    const d = await r.json();
+    status = d.keys || {};
+  } catch {}
+  list.innerHTML = '';
+  for (const field of REMOTE_API_KEY_FIELDS) {
+    const info = status[field.name] || { configured: false, source: 'none' };
+    const row = document.createElement('div');
+    row.className = 'setting-row';
+    const sourceBadge = info.source === 'env'
+      ? '<span style="font-size:10px;color:var(--text-dim);background:var(--surface2);padding:1px 6px;border-radius:8px;margin-left:6px">from env</span>'
+      : info.source === 'file' ? '<span style="font-size:10px;color:var(--accent);background:var(--accent-bg);padding:1px 6px;border-radius:8px;margin-left:6px">stored</span>' : '';
+    row.innerHTML = '<label>' + esc(field.label) + ' (' + esc(field.name) + ')' + sourceBadge + ' <a href="' + field.signup + '" target="_blank" rel="noopener" style="font-size:10px;color:var(--accent);margin-left:4px">get key</a></label>'
+      + '<input type="password" data-key-name="' + esc(field.name) + '" placeholder="' + (info.configured ? '••••••••• (already set, leave blank to keep)' : 'paste key here') + '" autocomplete="off">';
+    list.appendChild(row);
+  }
+}
+
+async function saveApiKeys() {
+  const inputs = document.querySelectorAll('#apiKeysList input[data-key-name]');
+  const payload = {};
+  let count = 0;
+  for (const input of inputs) {
+    const name = input.getAttribute('data-key-name');
+    const value = input.value.trim();
+    // Only POST keys the user actually filled in. Empty inputs preserve
+    // existing value (server treats them as no-op for non-explicit empty).
+    if (value) {
+      payload[name] = value;
+      count++;
+      input.value = '';
+    }
+  }
+  const status = document.getElementById('apiKeysStatus');
+  if (count === 0) {
+    status.textContent = 'No new keys entered.';
+    return;
+  }
+  status.textContent = 'Saving...';
+  try {
+    const r = await fetch('/api/api-keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    if (!r.ok) throw new Error('Save failed');
+    status.textContent = '✅ Saved ' + count + ' key(s). Refreshing model list...';
+    await loadApiKeys();
+    await loadModels();
+    setTimeout(() => { status.textContent = ''; }, 3000);
+  } catch (e) {
+    status.textContent = '❌ ' + e.message;
+  }
+}
 
 async function pullModel() { const name = document.getElementById('pullName').value.trim(); if (!name) return; const prog = document.getElementById('pullProgress'); prog.textContent = 'Starting...'; try { const res = await fetch('/api/models/pull', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }); const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = ''; while (true) { const { done, value } = await reader.read(); if (done) break; buf += dec.decode(value, { stream: true }); const lines = buf.split('\n'); buf = lines.pop() || ''; for (const line of lines) { if (!line.startsWith('data: ')) continue; const p = line.slice(6); if (p === '[DONE]') { prog.textContent = 'Done!'; loadModels(); return; } try { const d = JSON.parse(p); if (d.error) { prog.textContent = 'Error: ' + d.error; return; } if (d.status) { const pct = d.completed && d.total ? ' (' + Math.round(d.completed / d.total * 100) + '%)' : ''; prog.textContent = d.status + pct; } } catch {} } } } catch (e) { prog.textContent = 'Failed: ' + e.message; } }
 
