@@ -16,6 +16,7 @@
     "smoke:transport": "node scripts/transport-smoke.js",
     "smoke:mycelium": "node scripts/mycelium-smoke.js",
     "smoke:long-prompt": "node scripts/live-long-prompt-smoke.js",
+    "smoke:headless": "node scripts/headless-smoke.js",
     "smoke:ui": "node scripts/ui-smoke.js",
     "smoke:release": "node scripts/release-smoke.js",
     "release:notes": "node scripts/release-notes.js",

@@ -21,9 +21,15 @@ async function main() {
     // `--max-turns 3` caps the loop so weak open-weight models that get
     // stuck in a reflect/promote_pattern self-loop (gemma4:e4b, qwen
     // coder series) still terminate before the smoke times out.
-    const child = spawn('node', [harnessPath, '-p', 'say hello', '--mode', 'dontAsk', '--max-turns', '3'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    // `--unproductive-turn-limit 2` short-circuits as soon as the model
+    // has called two non-edit tools in a row — e.g. reflect, reflect.
+    // The smoke is proving the CLI completes a round-trip; chasing
+    // models that loop on reflect is out of scope.
+    const child = spawn(
+      'node',
+      [harnessPath, '-p', 'say hello', '--mode', 'dontAsk', '--max-turns', '3', '--unproductive-turn-limit', '2'],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
 
     // Hard timeout — without this, a stuck Ollama backend or a model
     // that quietly never responds will hang the smoke run indefinitely
