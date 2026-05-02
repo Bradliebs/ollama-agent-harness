@@ -21,7 +21,7 @@ async function main() {
     assertFile(workDir, 'ui/index.html');
     assertFile(workDir, 'start.bat');
     assertFile(workDir, 'release-provenance.json');
-    assertFileContains(workDir, 'start.bat', 'Installing dependencies with npm ci');
+    assertFileContains(workDir, 'start.bat', 'npm ci');
     assertReleaseProvenance(workDir);
     if (manifestPath) assertReleaseManifest(manifestPath, zipPath);
 

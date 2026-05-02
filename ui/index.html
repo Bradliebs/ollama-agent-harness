@@ -607,8 +607,10 @@
       </div>
       <div class="setting-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
         <input type="text" id="agentOutputDirInput" placeholder="C:/AI/Harness/agent-outputs (default)" style="flex:1;min-width:0">
+        <button class="btn-sm" onclick="toggleAgentOutputDirBrowser()" title="Browse for a folder">🗂 Browse</button>
         <button class="btn-sm primary" onclick="saveAgentOutputDir()">💾 Save</button>
       </div>
+      <div id="agentOutputDirBrowser" style="display:none;margin-bottom:8px;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px"></div>
       <div id="agentOutputDirStatus" style="font-size:11px;color:var(--text-dim);min-height:14px"></div>
 
       <details style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px">

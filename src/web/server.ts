@@ -4,6 +4,7 @@ import * as fs from 'fs/promises';
 import { watch as fsWatch } from 'fs';
 import * as net from 'net';
 import * as crypto from 'crypto';
+import * as os from 'os';
 import { Ollama } from 'ollama';
 import { OllamaClient } from '../core/ollamaClient';
 import { createChatClient, OPENAI_COMPATIBLE_PRESETS, readApiKey } from '../core/chatClientFactory';
@@ -799,6 +800,13 @@ app.post('/api/settings', async (req, res) => {
     agentOutputDir = String(req.body.agentOutputDir).trim().slice(0, 500);
     if (agentOutputDir) process.env.HARNESS_AGENT_OUTPUT_DIR = agentOutputDir;
     else delete process.env.HARNESS_AGENT_OUTPUT_DIR;
+    // Make this folder writable by file_write/file_read/list_files even
+    // when it lives outside the project. Without this, an agent calling
+    // file_write directly to "C:/Users/Brad/Documents/Oracle/foo.js"
+    // gets "Path is outside the project directory" rejected. Merge with
+    // any existing user-managed allowed paths so we never silently drop
+    // their config.
+    syncAgentOutputDirIntoAllowedPaths();
   }
   await saveSettingsToDisk();
   logger.info('Settings', 'Updated', { model: currentModel, permissionMode, temperature, topP });
@@ -3179,6 +3187,53 @@ app.get('/api/files', async (req, res) => {
   }
 });
 
+// --- API: Directory Browser (for the Agent Files folder picker) ---
+// Lists subdirectories of any path on disk so the user can navigate to
+// the destination folder for agent file_write outputs without typing.
+// NOT confined to PROJECT_DIR — the whole point is the user picking a
+// folder OUTSIDE the project (e.g. C:/AI/Lottery-Toolkit/inbox).
+//
+// Returns: { cwd, parent, presets, dirs[] }. presets are platform-aware
+// quick-jump locations (home, Desktop, Documents, Downloads, project,
+// project/agent-outputs). dirs is the immediate subdirectory listing.
+app.get('/api/browse-dirs', async (req, res) => {
+  try {
+    const queryPath = typeof req.query.path === 'string' ? req.query.path.trim() : '';
+    const home = os.homedir();
+    const cwd = queryPath
+      ? path.resolve(queryPath)
+      : home;
+    let parent: string | null = path.dirname(cwd);
+    if (parent === cwd) parent = null;
+    const presets: Array<{ label: string; path: string }> = [
+      { label: 'Home', path: home },
+      { label: 'Desktop', path: path.join(home, 'Desktop') },
+      { label: 'Documents', path: path.join(home, 'Documents') },
+      { label: 'Downloads', path: path.join(home, 'Downloads') },
+      { label: 'Project root', path: PROJECT_DIR },
+      { label: 'agent-outputs (default)', path: path.join(PROJECT_DIR, 'agent-outputs') },
+    ];
+    let dirs: Array<{ name: string; path: string }> = [];
+    try {
+      const entries = await fs.readdir(cwd, { withFileTypes: true });
+      dirs = entries
+        .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+        .map((e) => ({ name: e.name, path: path.join(cwd, e.name) }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    } catch (error) {
+      // If the path is unreadable (permission denied, doesn't exist), still
+      // return the presets so the UI stays useful.
+      const msg = error instanceof Error ? error.message : String(error);
+      res.json({ cwd, parent, presets, dirs: [], error: msg });
+      return;
+    }
+    res.json({ cwd, parent, presets, dirs });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
 // --- Start ---
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -3423,6 +3478,9 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
     agentOutputDir = String(settings.agentOutputDir).trim().slice(0, 500);
     if (agentOutputDir) process.env.HARNESS_AGENT_OUTPUT_DIR = agentOutputDir;
   }
+  // Always re-sync after the allowed-path list and agentOutputDir have
+  // both been loaded so the auto-include works regardless of order.
+  syncAgentOutputDirIntoAllowedPaths();
 }
 
 function sanitizeModelRoutingPolicy(value: unknown): ModelRoutingPolicy {
@@ -3590,6 +3648,24 @@ async function saveCustomOutputValidationProfiles(): Promise<void> {
 
 function cloneTemplate(template: CustomOutputValidationProfile): CustomOutputValidationProfile {
   return JSON.parse(JSON.stringify(template)) as CustomOutputValidationProfile;
+}
+
+/**
+ * Ensure the user-chosen agentOutputDir is treated as an allowed external
+ * path so file_write/file_read/list_files accept absolute paths into it.
+ * Without this, an agent calling file_write directly into a folder OUTSIDE
+ * the project (e.g. C:/Users/Brad/Documents/Oracle) gets confined-to-project
+ * rejected. Idempotent — only adds when the dir is non-empty AND not already
+ * in the allowed list. Preserves any user-managed entries.
+ */
+function syncAgentOutputDirIntoAllowedPaths(): void {
+  if (!agentOutputDir) return;
+  const resolved = path.resolve(agentOutputDir);
+  const existing = getAllowedExternalPaths();
+  for (const p of existing) {
+    if (path.resolve(p) === resolved) return;
+  }
+  setAllowedExternalPaths([...existing, resolved]);
 }
 
 function applyMediaToolEnvironment(settings: MediaToolSettings): void {

@@ -3254,12 +3254,92 @@ async function saveAgentOutputDir() {
     });
     if (!r.ok) throw new Error('save failed (' + r.status + ')');
     if (status) status.textContent = value
-      ? '✅ Saved. New agent files now go to: ' + value
+      ? '✅ Saved. New agent files now go to: ' + value + ' (also writable by file_write)'
       : '✅ Cleared. Using default: <project>/agent-outputs';
     setTimeout(() => loadAgentOutputDir(), 2000);
   } catch (e) {
     if (status) status.textContent = '❌ ' + e.message;
   }
+}
+
+// ─── Folder picker for the Agent Files input ─────────────────────────
+// Inline expandable directory browser. Lists subdirectories of any path
+// on disk via /api/browse-dirs (NOT confined to the project root). Click
+// a folder name to drill in; click "Use this folder" to copy the current
+// path back to the input. Preset chips jump to common locations.
+
+function toggleAgentOutputDirBrowser() {
+  const browser = document.getElementById('agentOutputDirBrowser');
+  if (!browser) return;
+  if (browser.style.display === 'none' || !browser.style.display) {
+    browser.style.display = 'block';
+    // If the input has a value already, start the picker there; otherwise home.
+    const input = document.getElementById('agentOutputDirInput');
+    loadAgentOutputDirBrowser(input?.value.trim() || '');
+  } else {
+    browser.style.display = 'none';
+  }
+}
+
+async function loadAgentOutputDirBrowser(targetPath) {
+  const browser = document.getElementById('agentOutputDirBrowser');
+  if (!browser) return;
+  browser.innerHTML = '<div style="font-size:11px;color:var(--text-dim)">Loading…</div>';
+  try {
+    const url = '/api/browse-dirs' + (targetPath ? '?path=' + encodeURIComponent(targetPath) : '');
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('browse failed (' + r.status + ')');
+    const d = await r.json();
+    renderAgentOutputDirBrowser(d);
+  } catch (e) {
+    browser.innerHTML = '<div style="font-size:11px;color:var(--warning)">❌ ' + esc(e.message) + '</div>';
+  }
+}
+
+function renderAgentOutputDirBrowser(data) {
+  const browser = document.getElementById('agentOutputDirBrowser');
+  if (!browser) return;
+  let html = '';
+  // Quick-jump preset chips at the top.
+  html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;font-size:10px">';
+  for (const preset of (data.presets || [])) {
+    html += '<button class="btn-sm" onclick="loadAgentOutputDirBrowser(' + JSON.stringify(preset.path) + ')" style="font-size:10px;padding:2px 8px" title="' + esc(preset.path) + '">' + esc(preset.label) + '</button>';
+  }
+  html += '</div>';
+  // Current path + Use-this-folder action.
+  html += '<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;padding:4px 6px;background:var(--surface);border-radius:4px">';
+  html += '<span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(data.cwd) + '"><code>' + esc(data.cwd) + '</code></span>';
+  html += '<button class="btn-sm primary" onclick="useAgentOutputDir(' + JSON.stringify(data.cwd) + ')" style="font-size:10px;padding:3px 8px">✓ Use this folder</button>';
+  html += '</div>';
+  // Up button if we can go up.
+  if (data.parent) {
+    html += '<div style="margin-bottom:4px"><button class="btn-sm" onclick="loadAgentOutputDirBrowser(' + JSON.stringify(data.parent) + ')" style="font-size:11px">⬆ Up</button></div>';
+  }
+  // Error from the server (e.g. permission denied) shown but presets still available.
+  if (data.error) {
+    html += '<div style="font-size:11px;color:var(--warning);margin-bottom:6px">⚠ ' + esc(data.error) + '</div>';
+  }
+  // Subdirectory list.
+  const dirs = data.dirs || [];
+  if (dirs.length === 0) {
+    html += '<div style="font-size:11px;color:var(--text-dim);padding:6px">No subfolders here.</div>';
+  } else {
+    html += '<div style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:4px">';
+    for (const dir of dirs.slice(0, 200)) {
+      html += '<div onclick="loadAgentOutputDirBrowser(' + JSON.stringify(dir.path) + ')" style="padding:4px 8px;cursor:pointer;font-size:11px;border-bottom:1px solid var(--border)" onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'\'">📁 ' + esc(dir.name) + '</div>';
+    }
+    html += '</div>';
+    if (dirs.length > 200) html += '<div style="font-size:10px;color:var(--text-dim);margin-top:4px">' + (dirs.length - 200) + ' more not shown</div>';
+  }
+  browser.innerHTML = html;
+}
+
+function useAgentOutputDir(folderPath) {
+  const input = document.getElementById('agentOutputDirInput');
+  if (input) input.value = folderPath;
+  // Close the browser to keep the panel tidy after selection.
+  const browser = document.getElementById('agentOutputDirBrowser');
+  if (browser) browser.style.display = 'none';
 }
 
 async function loadFileRedirects() {
