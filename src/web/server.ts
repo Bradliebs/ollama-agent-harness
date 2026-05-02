@@ -355,6 +355,34 @@ app.get('/api/autonomy/log', async (req, res) => {
   }
 });
 
+// Return the autonomy iteration history (.forge-history.jsonl) as a parsed
+// array. `?limit=N` returns the most recent N entries (default 100, max
+// 1000). Returns 204 when no history exists yet. Malformed lines are
+// skipped, not surfaced as errors, since the file is append-only and a
+// half-written tail is recoverable on the next iteration.
+app.get('/api/autonomy/history', async (req, res) => {
+  const historyPath = path.join(process.cwd(), '.forge-history.jsonl');
+  const requested = parseInt(String(req.query.limit ?? '100'), 10);
+  const limit = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 1000) : 100;
+  try {
+    const raw = await fs.readFile(historyPath, 'utf-8');
+    const entries: unknown[] = [];
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try { entries.push(JSON.parse(line)); } catch { /* skip malformed */ }
+    }
+    res.json({ entries: entries.slice(-limit), total: entries.length });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      res.status(204).end();
+      return;
+    }
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
 // List available models from Ollama
 app.get('/api/models', async (_req, res) => {
   try {

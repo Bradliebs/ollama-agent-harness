@@ -23,3 +23,5 @@ release/*.zip.sha256.json
 
 # autonomy run logs
 .forge-run*.log
+.forge-debug.jsonl
+.forge-history.jsonl

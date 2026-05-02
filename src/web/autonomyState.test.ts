@@ -128,3 +128,79 @@ describe('GET /api/autonomy/log', () => {
     expect(b1000.lines).toHaveLength(30);
   });
 });
+
+describe('GET /api/autonomy/history', () => {
+  let server: Server;
+  let baseUrl: string;
+  const historyPath = path.join(process.cwd(), '.forge-history.jsonl');
+  let originalHistory: string | null = null;
+
+  beforeAll(async () => {
+    try { originalHistory = await fs.readFile(historyPath, 'utf-8'); } catch { originalHistory = null; }
+    await new Promise<void>((resolve) => {
+      server = app.listen(0, '127.0.0.1', () => resolve());
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Failed to bind test server');
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+    stopUploadsAutoPrune();
+    if (originalHistory === null) await fs.rm(historyPath, { force: true });
+    else await fs.writeFile(historyPath, originalHistory, 'utf-8');
+  });
+
+  it('returns 204 when no history exists', async () => {
+    await fs.rm(historyPath, { force: true });
+    const response = await fetch(`${baseUrl}/api/autonomy/history`);
+    expect(response.status).toBe(204);
+  });
+
+  it('returns parsed entries from JSONL', async () => {
+    const entries = [
+      { timestamp: '2026-05-02T10:00:00Z', taskId: 'a', status: 'done', elapsedMs: 1000, filesChanged: 2, model: 'm1' },
+      { timestamp: '2026-05-02T10:01:00Z', taskId: 'b', status: 'failed', elapsedMs: 500, filesChanged: 0, model: 'm1' },
+    ];
+    await fs.writeFile(historyPath, entries.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf-8');
+
+    const response = await fetch(`${baseUrl}/api/autonomy/history`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { entries: typeof entries; total: number };
+    expect(body.total).toBe(2);
+    expect(body.entries).toEqual(entries);
+  });
+
+  it('honours ?limit=N and clamps to 1000', async () => {
+    const entries = Array.from({ length: 50 }, (_, i) => ({ taskId: `t${i}`, iteration: i }));
+    await fs.writeFile(historyPath, entries.map((e) => JSON.stringify(e)).join('\n'), 'utf-8');
+
+    const r5 = await fetch(`${baseUrl}/api/autonomy/history?limit=5`);
+    const b5 = (await r5.json()) as { entries: Array<{ taskId: string }> };
+    expect(b5.entries).toHaveLength(5);
+    expect(b5.entries[0].taskId).toBe('t45');
+
+    const r5000 = await fetch(`${baseUrl}/api/autonomy/history?limit=5000`);
+    const b5000 = (await r5000.json()) as { entries: unknown[] };
+    expect(b5000.entries).toHaveLength(50);
+  });
+
+  it('skips malformed lines without failing the request', async () => {
+    const lines = [
+      JSON.stringify({ taskId: 'good-1' }),
+      '{ this is not json',
+      JSON.stringify({ taskId: 'good-2' }),
+      '',
+    ];
+    await fs.writeFile(historyPath, lines.join('\n'), 'utf-8');
+
+    const response = await fetch(`${baseUrl}/api/autonomy/history`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { entries: Array<{ taskId: string }>; total: number };
+    expect(body.total).toBe(2);
+    expect(body.entries.map((e) => e.taskId)).toEqual(['good-1', 'good-2']);
+  });
+});

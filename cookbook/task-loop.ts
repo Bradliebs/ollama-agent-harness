@@ -284,6 +284,30 @@ function loadCheckpoint(): LoopState | null {
   }
 }
 
+// --- Iteration history ---
+
+interface HistoryEntry {
+  timestamp: string;
+  iteration: number;
+  taskId: string;
+  taskTitle: string;
+  status: "done" | "failed";
+  elapsedMs: number;
+  filesChanged: number;
+  changedFiles: string[];
+  model: string;
+}
+
+const HISTORY_PATH = ".forge-history.jsonl";
+
+function appendHistoryEntry(entry: HistoryEntry): void {
+  try {
+    appendFileSync(HISTORY_PATH, JSON.stringify(entry) + "\n", "utf-8");
+  } catch {
+    // best-effort; never fail the loop because history disk write failed
+  }
+}
+
 // --- Health Summary ---
 
 function writeHealthSummary(tasks: Task[], startTime: number, reason: string): void {
@@ -412,7 +436,7 @@ function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: boolean
       .split("\n")
       .map((l) => l.slice(3).trim())
       .filter(Boolean);
-    const changedFiles = afterFiles.filter((f) => !beforeFiles.has(f) && !f.startsWith(".forge-state"));
+    const changedFiles = afterFiles.filter((f) => !beforeFiles.has(f) && !f.startsWith(".forge-"));
 
     // Validate (skip if implement crashed; treat as failure)
     let passed = implementError ? false : validateTask(pending);
@@ -471,6 +495,21 @@ function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: boolean
       totalDone: freshTasks.filter((t) => t.status === "done").length,
       totalFailed: freshTasks.filter((t) => t.status === "failed").length,
       totalPending: freshTasks.filter((t) => t.status === "pending").length,
+    });
+
+    // Append an immutable history record so the UI / scripts can chart
+    // throughput over time without scraping logs. JSONL keeps the format
+    // append-only and trivially parseable.
+    appendHistoryEntry({
+      timestamp: new Date(taskStartedAt).toISOString(),
+      iteration,
+      taskId: pending.id,
+      taskTitle: pending.title,
+      status: passed ? "done" : "failed",
+      elapsedMs,
+      filesChanged: changedFiles.length,
+      changedFiles: changedFiles.slice(0, 50),
+      model: HARNESS_MODEL,
     });
   }
 

@@ -14,11 +14,56 @@ export interface DispatchOptions {
   tracer?: RuntimeTracer;
 }
 
+/**
+ * Common hallucinated tool names mapped to their real builtin equivalents.
+ * Live autonomy runs showed every cloud and local model occasionally calls
+ * these names instead of the canonical ones; without aliasing, the model
+ * burns turns on permission-denial loops trying \`search\`, \`edit\`, etc.
+ */
+const TOOL_NAME_ALIASES: Record<string, string> = {
+  search: 'grep',
+  search_files: 'grep',
+  ripgrep: 'grep',
+  rg: 'grep',
+  find: 'grep',
+  read_file: 'file_read',
+  read: 'file_read',
+  cat: 'file_read',
+  write_file: 'file_write',
+  write: 'file_write',
+  create_file: 'file_write',
+  edit: 'file_edit',
+  edit_file: 'file_edit',
+  patch: 'file_edit',
+  ls: 'list_files',
+  list: 'list_files',
+  list_dir: 'list_files',
+  ls_dir: 'list_files',
+  shell: 'bash',
+  exec: 'bash',
+  run: 'bash',
+  run_command: 'bash',
+  terminal: 'bash',
+};
+
 export class ToolDispatcher {
   private toolMap: Map<string, Tool>;
 
   constructor(tools: Tool[]) {
     this.toolMap = new Map(tools.map((t) => [t.name, t]));
+  }
+
+  /**
+   * Resolve `requested` to a canonical tool name. If `requested` is already
+   * a registered tool, returns it unchanged. If it matches a known alias
+   * AND the alias target is registered, returns the canonical name.
+   * Otherwise returns `requested` (caller will surface "unknown tool").
+   */
+  private resolveName(requested: string): string {
+    if (this.toolMap.has(requested)) return requested;
+    const aliased = TOOL_NAME_ALIASES[requested];
+    if (aliased && this.toolMap.has(aliased)) return aliased;
+    return requested;
   }
 
   async dispatch(
@@ -30,7 +75,9 @@ export class ToolDispatcher {
     const readOnly: ToolCall[] = [];
     const exclusive: ToolCall[] = [];
 
-    for (const call of calls) {
+    for (const original of calls) {
+      const canonical = this.resolveName(original.name);
+      const call: ToolCall = canonical === original.name ? original : { ...original, name: canonical };
       const tool = this.toolMap.get(call.name);
       if (tool?.isReadOnly) {
         readOnly.push(call);

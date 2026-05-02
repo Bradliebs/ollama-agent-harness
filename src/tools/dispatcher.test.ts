@@ -115,4 +115,61 @@ describe('ToolDispatcher', () => {
       expect.objectContaining({ name: 'tool.execute', status: 'ok' }),
     ]));
   });
+
+  describe('tool name aliases', () => {
+    it.each([
+      ['search', 'grep'],
+      ['ripgrep', 'grep'],
+      ['rg', 'grep'],
+      ['read_file', 'file_read'],
+      ['cat', 'file_read'],
+      ['write_file', 'file_write'],
+      ['create_file', 'file_write'],
+      ['edit', 'file_edit'],
+      ['patch', 'file_edit'],
+      ['ls', 'list_files'],
+      ['list_dir', 'list_files'],
+      ['shell', 'bash'],
+      ['exec', 'bash'],
+      ['run', 'bash'],
+    ])('aliases %s -> %s when the canonical tool is registered', async (alias, canonical) => {
+      const tool = makeTool(canonical, false, async () => ({ success: true, output: `${canonical} executed` }));
+      const dispatcher = new ToolDispatcher([tool]);
+
+      const results = await dispatcher.dispatch([{ name: alias, input: { x: 1 } }]);
+
+      expect(results).toHaveLength(1);
+      expect(results[0].result.success).toBe(true);
+      expect(results[0].result.output).toBe(`${canonical} executed`);
+      // The dispatched call should be rewritten to the canonical name so
+      // tracing, hooks, and learning all see a consistent identifier.
+      expect(results[0].call.name).toBe(canonical);
+      expect(results[0].call.input).toEqual({ x: 1 });
+    });
+
+    it('does not alias when the canonical tool is not registered', async () => {
+      // No file_write tool registered, so 'write_file' should fall through
+      // and surface as an unknown tool rather than silently succeeding.
+      const dispatcher = new ToolDispatcher([makeTool('grep', true)]);
+
+      const results = await dispatcher.dispatch([{ name: 'write_file', input: {} }]);
+
+      expect(results[0].result.success).toBe(false);
+      expect(results[0].result.output).toContain('Unknown tool');
+      expect(results[0].result.output).toContain('write_file');
+    });
+
+    it('does not alias when the requested name is itself a registered tool', async () => {
+      // If a project happens to register a literal 'search' tool, the alias
+      // must defer to the real registration rather than rewriting it to grep.
+      const realSearch = makeTool('search', true, async () => ({ success: true, output: 'real search' }));
+      const realGrep = makeTool('grep', true, async () => ({ success: true, output: 'real grep' }));
+      const dispatcher = new ToolDispatcher([realSearch, realGrep]);
+
+      const results = await dispatcher.dispatch([{ name: 'search', input: {} }]);
+
+      expect(results[0].call.name).toBe('search');
+      expect(results[0].result.output).toBe('real search');
+    });
+  });
 });

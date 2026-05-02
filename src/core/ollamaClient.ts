@@ -2,6 +2,7 @@ import { Ollama } from 'ollama';
 import type { ChatRequest, ChatResponse, Message, Tool, ToolCall } from 'ollama';
 import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
+import { appendFileSync } from 'fs';
 
 export interface OllamaClientConfig {
   host?: string;
@@ -54,11 +55,14 @@ export class OllamaClient {
       options: this.numCtx ? { num_ctx: this.numCtx } : undefined,
     });
 
+    let result: ChatResult;
     if (isAsyncIterable<ChatResponse>(response)) {
-      return collectStreamingChatResponse(response, abortSignal);
+      result = await collectStreamingChatResponse(response, abortSignal);
+    } else {
+      result = chatResponseToResult(response);
     }
-
-    return chatResponseToResult(response);
+    writeDebugLog(this.model, messages, tools, result);
+    return result;
   }
 
   async chatOnce(
@@ -194,12 +198,45 @@ function chatResponseToResult(response: ChatResponse): ChatResult {
 }
 
 /**
+ * Append the raw chat exchange to HARNESS_DEBUG_LOG when the env var is
+ * set. Each entry is a single-line JSON record so the file is JSONL and
+ * trivially greppable. Disabled (free) when the env is unset, which keeps
+ * production runs zero-overhead.
+ */
+function writeDebugLog(model: string, messages: Message[], tools: Tool[] | undefined, result: ChatResult): void {
+  const debugPath = process.env.HARNESS_DEBUG_LOG;
+  if (!debugPath) return;
+  try {
+    const entry = {
+      timestamp: new Date().toISOString(),
+      model,
+      messageCount: messages.length,
+      lastUserMessage: typeof messages[messages.length - 1]?.content === 'string'
+        ? (messages[messages.length - 1].content as string).slice(0, 500)
+        : null,
+      toolNames: tools?.map((t) => t.function?.name).filter(Boolean) ?? [],
+      response: {
+        role: result.message.role,
+        content: typeof result.message.content === 'string' ? result.message.content.slice(0, 2000) : null,
+        toolCalls: result.message.tool_calls?.map((tc) => ({
+          name: tc.function?.name,
+          arguments: tc.function?.arguments,
+        })) ?? [],
+      },
+      usage: result.usage,
+    };
+    appendFileSync(debugPath, JSON.stringify(entry) + '\n', 'utf-8');
+  } catch {
+    // best-effort; debug logging must never break the main flow
+  }
+}
+
+/**
  * Some Ollama models (notably qwen2.5-coder, several gemma variants, and
  * older deepseek builds) ignore the structured `tool_calls` field and emit
  * tool invocations as JSON inside `message.content`. The agent loop only
  * dispatches when `message.tool_calls` is populated, so without this lift
  * the harness sees a chatty model and stops after one turn.
- *
  * This function scans `message.content` for objects shaped like
  * `{ "name": "...", "arguments": {...} }` (also accepting the OpenAI
  * `function_call` shape) and promotes them to `message.tool_calls`. It
