@@ -123,17 +123,32 @@ const HARNESS_VALIDATE_CMD = process.env.HARNESS_VALIDATE_CMD ?? "npm run typech
  */
 function buildTaskPrompt(task: Task): string {
   return [
-    `You are working autonomously inside the Ollama Agent Harness repository.`,
-    `Implement the following task end-to-end, then stop:`,
+    `You are an autonomous coding agent inside the Ollama Agent Harness repository.`,
+    `Your job is to ACTUALLY EDIT FILES using the available tools — not to chat.`,
+    ``,
+    `You MUST use these tools to do the work:`,
+    `  - file_read   — read a file before editing it`,
+    `  - file_write  — create or overwrite a file`,
+    `  - file_edit   — make a targeted edit to an existing file`,
+    `  - list_files  — list directory contents`,
+    `  - grep        — search for patterns in files`,
+    `  - bash        — run shell commands (tests, builds)`,
+    ``,
+    `If you finish without invoking any tool, you have FAILED the task.`,
+    `Conversational replies are not acceptable. Make code changes.`,
     ``,
     `Task id:    ${task.id}`,
     `Task title: ${task.title}`,
     ``,
+    `Workflow:`,
+    `  1. Use list_files / grep / file_read to inspect the relevant code.`,
+    `  2. Use file_write or file_edit to make the change.`,
+    `  3. Optionally run \`npm run typecheck\` or \`npm test\` via bash.`,
+    `  4. Briefly summarize what you changed and stop.`,
+    ``,
     `Constraints:`,
-    `- Make the smallest change that satisfies the task.`,
-    `- Prefer hardening, verification, and tests over new features.`,
-    `- Do not modify IMPLEMENTATION_PLAN.md, .forge-state.json, or files under .copilot-tracking/.`,
-    `- When done, briefly summarize what you changed.`,
+    `  - Make the smallest change that satisfies the task.`,
+    `  - Do not modify IMPLEMENTATION_PLAN.md, .forge-state.json, or files under .copilot-tracking/.`,
   ].join("\n");
 }
 
