@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
-import { OllamaClient, longLivedFetch } from './ollamaClient';
+import { OllamaClient, longLivedFetch, liftInlineToolCalls } from './ollamaClient';
 
 const mockChat = jest.fn();
 const mockShow = jest.fn();
@@ -158,4 +158,85 @@ describe('longLivedFetch transport', () => {
     if (!address || typeof address === 'string') throw new Error('server did not bind to a TCP port');
     return `http://127.0.0.1:${address.port}/`;
   }
+});
+
+describe('liftInlineToolCalls fallback parser', () => {
+  it('extracts a {name, arguments} object from message content', () => {
+    const message: any = {
+      role: 'assistant',
+      content: 'Sure! {"name": "file_read", "arguments": {"path": "README.md"}}',
+    };
+    liftInlineToolCalls(message);
+    expect(message.tool_calls).toEqual([
+      { function: { name: 'file_read', arguments: { path: 'README.md' } } },
+    ]);
+    expect(message.content).toBe('Sure!');
+  });
+
+  it('handles fenced ```json blocks and strips the fence', () => {
+    const message: any = {
+      role: 'assistant',
+      content: 'Here you go:\n```json\n{"name":"bash","arguments":{"command":"npm test"}}\n```',
+    };
+    liftInlineToolCalls(message);
+    expect(message.tool_calls).toHaveLength(1);
+    expect(message.tool_calls[0].function.name).toBe('bash');
+    expect(message.content).not.toContain('```');
+    expect(message.content).not.toContain('"name"');
+  });
+
+  it('lifts the OpenAI {function: {name, arguments}} shape with stringified args', () => {
+    const message: any = {
+      role: 'assistant',
+      content: '{"function": {"name": "grep", "arguments": "{\\"pattern\\":\\"todo\\"}"}}',
+    };
+    liftInlineToolCalls(message);
+    expect(message.tool_calls).toEqual([
+      { function: { name: 'grep', arguments: { pattern: 'todo' } } },
+    ]);
+  });
+
+  it('lifts multiple back-to-back tool-call JSON blobs', () => {
+    const message: any = {
+      role: 'assistant',
+      content: '{"name":"a","arguments":{}}\n{"name":"b","arguments":{"x":1}}',
+    };
+    liftInlineToolCalls(message);
+    expect(message.tool_calls.map((tc: any) => tc.function.name)).toEqual(['a', 'b']);
+  });
+
+  it('does nothing when tool_calls already populated by the model', () => {
+    const message: any = {
+      role: 'assistant',
+      content: '{"name":"file_read","arguments":{"path":"x"}}',
+      tool_calls: [{ function: { name: 'real', arguments: {} } }],
+    };
+    liftInlineToolCalls(message);
+    expect(message.tool_calls).toEqual([{ function: { name: 'real', arguments: {} } }]);
+  });
+
+  it('does nothing on plain prose with no JSON', () => {
+    const message: any = { role: 'assistant', content: 'Just chatting, no tools today.' };
+    liftInlineToolCalls(message);
+    expect(message.tool_calls).toBeUndefined();
+    expect(message.content).toBe('Just chatting, no tools today.');
+  });
+
+  it('ignores non-tool JSON objects in the content', () => {
+    const message: any = {
+      role: 'assistant',
+      content: 'Here is some data: {"foo": 1, "bar": 2}',
+    };
+    liftInlineToolCalls(message);
+    expect(message.tool_calls).toBeUndefined();
+  });
+
+  it('survives malformed JSON without throwing', () => {
+    const message: any = {
+      role: 'assistant',
+      content: '{"name": "broken", "arguments": {oops not json',
+    };
+    expect(() => liftInlineToolCalls(message)).not.toThrow();
+    expect(message.tool_calls).toBeUndefined();
+  });
 });

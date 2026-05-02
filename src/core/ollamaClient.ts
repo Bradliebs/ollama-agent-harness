@@ -176,18 +176,139 @@ async function collectStreamingChatResponse(
 
   const message: Message = { role, content };
   if (toolCalls.length > 0) message.tool_calls = toolCalls;
+  liftInlineToolCalls(message);
   return { message, usage };
 }
 
 function chatResponseToResult(response: ChatResponse): ChatResult {
+  const message: Message = response.message;
+  liftInlineToolCalls(message);
   return {
-    message: response.message,
+    message,
     usage: {
       promptTokens: response.prompt_eval_count ?? 0,
       completionTokens: response.eval_count ?? 0,
       totalDurationNs: response.total_duration ?? 0,
     },
   };
+}
+
+/**
+ * Some Ollama models (notably qwen2.5-coder, several gemma variants, and
+ * older deepseek builds) ignore the structured `tool_calls` field and emit
+ * tool invocations as JSON inside `message.content`. The agent loop only
+ * dispatches when `message.tool_calls` is populated, so without this lift
+ * the harness sees a chatty model and stops after one turn.
+ *
+ * This function scans `message.content` for objects shaped like
+ * `{ "name": "...", "arguments": {...} }` (also accepting the OpenAI
+ * `function_call` shape) and promotes them to `message.tool_calls`. It
+ * preserves any pre-existing structured tool_calls, never throws on
+ * malformed JSON, and removes only the matched JSON spans from the
+ * surfaced text content so the UI does not double-render the call.
+ */
+export function liftInlineToolCalls(message: Message | undefined): void {
+  if (!message || message.tool_calls?.length) return;
+  const text = typeof message.content === 'string' ? message.content : '';
+  if (!text || (text.indexOf('"name"') === -1 && text.indexOf('"function"') === -1)) return;
+
+  const lifted: ToolCall[] = [];
+  const removalSpans: Array<[number, number]> = [];
+
+  for (const span of findJsonObjectSpans(text)) {
+    const candidate = text.slice(span[0], span[1] + 1);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+    const call = coerceToolCall(parsed);
+    if (call) {
+      lifted.push(call);
+      removalSpans.push(span);
+    }
+  }
+
+  if (lifted.length === 0) return;
+  message.tool_calls = lifted;
+
+  // Strip lifted JSON (and surrounding ```json fences) from the visible content.
+  let cleaned = text;
+  for (let i = removalSpans.length - 1; i >= 0; i--) {
+    const [start, end] = removalSpans[i];
+    let dropStart = start;
+    let dropEnd = end + 1;
+    const before = cleaned.slice(Math.max(0, start - 16), start);
+    const fenceBefore = before.match(/```(?:json)?\s*$/);
+    if (fenceBefore) dropStart = start - fenceBefore[0].length;
+    const after = cleaned.slice(dropEnd, dropEnd + 16);
+    const fenceAfter = after.match(/^\s*```/);
+    if (fenceAfter) dropEnd += fenceAfter[0].length;
+    cleaned = cleaned.slice(0, dropStart) + cleaned.slice(dropEnd);
+  }
+  message.content = cleaned.trim();
+}
+
+/** Find balanced `{...}` spans at the top level of `text`. */
+function findJsonObjectSpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escape = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\' && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        spans.push([start, i]);
+        start = -1;
+      }
+      if (depth < 0) { depth = 0; start = -1; }
+    }
+  }
+  return spans;
+}
+
+/** Accept either `{name, arguments}` or `{function: {name, arguments}}`. */
+function coerceToolCall(value: unknown): ToolCall | null {
+  if (!value || typeof value !== 'object') return null;
+  const obj = value as Record<string, unknown>;
+
+  let name: unknown = obj.name;
+  let args: unknown = obj.arguments ?? obj.parameters ?? obj.args;
+
+  if (!name && obj.function && typeof obj.function === 'object') {
+    const fn = obj.function as Record<string, unknown>;
+    name = fn.name;
+    args = fn.arguments ?? fn.parameters ?? args;
+  }
+
+  if (typeof name !== 'string' || !name) return null;
+
+  let parsedArgs: Record<string, unknown> = {};
+  if (args && typeof args === 'object' && !Array.isArray(args)) {
+    parsedArgs = args as Record<string, unknown>;
+  } else if (typeof args === 'string' && args.trim()) {
+    try {
+      const maybe = JSON.parse(args);
+      if (maybe && typeof maybe === 'object' && !Array.isArray(maybe)) {
+        parsedArgs = maybe as Record<string, unknown>;
+      }
+    } catch {
+      // leave as empty
+    }
+  }
+
+  return { function: { name, arguments: parsedArgs as Record<string, any> } } as ToolCall;
 }
 
 function extractContextWindow(modelInfo: unknown): number | null {

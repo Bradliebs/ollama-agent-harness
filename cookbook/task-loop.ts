@@ -218,7 +218,7 @@ function gitCommit(message: string, files: string[]): void {
 
 // --- Graceful Shutdown ---
 
-function shouldStop(): boolean {
+export function shouldStop(): boolean {
   if (existsSync(".forge-stop")) {
     console.log("[Ralph] 🛑 Stop signal detected (.forge-stop file). Shutting down gracefully.");
     return true;
@@ -236,8 +236,15 @@ interface LoopState {
   iteration: number;
   startedAt: string;
   lastTaskId: string;
+  lastTaskTitle?: string;
+  lastTaskStatus?: "pending" | "done" | "failed" | "running";
+  lastTaskStartedAt?: string;
+  lastTaskElapsedMs?: number;
+  lastTaskTurns?: number;
+  lastTaskFilesChanged?: number;
   totalDone: number;
   totalFailed: number;
+  totalPending?: number;
 }
 
 function saveCheckpoint(state: LoopState): void {
@@ -283,20 +290,24 @@ function writeHealthSummary(tasks: Task[], startTime: number, reason: string): v
 
 // --- Ralph Loop ---
 
-function ralphLoop(planPath: string, maxIterations: number = 10): void {
+function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: boolean = false): void {
   if (!existsSync(planPath)) {
     console.error(`[Ralph] Plan not found: ${planPath}`);
     console.error("[Ralph] Create an IMPLEMENTATION_PLAN.md with tasks like:");
-    console.error("  - [ ] task-id — Task title");
+    console.error("  - [ ] task-id \u2014 Task title");
     return;
+  }
+
+  if (dryRun) {
+    console.log("[Ralph] DRY RUN \u2014 no model calls, no file edits, no git commits.");
   }
 
   const startTime = Date.now();
   let consecutiveFailures = 0;
   let totalFailures = 0;
 
-  // Resume from checkpoint if available
-  const checkpoint = loadCheckpoint();
+  // Resume from checkpoint if available (skip in dry-run to keep state pristine)
+  const checkpoint = dryRun ? null : loadCheckpoint();
   let iteration = checkpoint ? checkpoint.iteration : 0;
   if (checkpoint) {
     console.log(`[Ralph] Resuming from checkpoint — iteration ${checkpoint.iteration}, last task: ${checkpoint.lastTaskId}`);
@@ -330,7 +341,28 @@ function ralphLoop(planPath: string, maxIterations: number = 10): void {
 
     console.log(`[Ralph] === Iteration ${iteration}/${maxIterations} ===`);
     console.log(`[Ralph] Picked task: ${pending.id} — "${pending.title}"`);
+    if (dryRun) {
+      console.log(`[Ralph] [dry-run] Would invoke harness CLI for ${pending.id}`);
+      console.log(`[Ralph] [dry-run] Would validate via: ${process.env.HARNESS_VALIDATE_CMD ?? "npm run typecheck"}`);
+      console.log(`[Ralph] [dry-run] Would commit changed files (none in dry-run)`);
+      // Stop after one task in dry-run so the user sees a single full preview
+      console.log("[Ralph] [dry-run] Stopping after one preview iteration.");
+      return;
+    }
 
+    // Per-task progress: mark this task as running for live observers
+    const taskStartedAt = Date.now();
+    saveCheckpoint({
+      iteration,
+      startedAt: new Date(startTime).toISOString(),
+      lastTaskId: pending.id,
+      lastTaskTitle: pending.title,
+      lastTaskStatus: "running",
+      lastTaskStartedAt: new Date(taskStartedAt).toISOString(),
+      totalDone: tasks.filter((t) => t.status === "done").length,
+      totalFailed: tasks.filter((t) => t.status === "failed").length,
+      totalPending: tasks.filter((t) => t.status === "pending").length,
+    });
     // Snapshot the working tree before implementation so we can stage
     // exactly the files this task touched (no `git add -A`).
     const beforeFiles = new Set(
@@ -402,12 +434,19 @@ function ralphLoop(planPath: string, maxIterations: number = 10): void {
     }
 
     // Save checkpoint after each iteration
+    const elapsedMs = Date.now() - taskStartedAt;
     saveCheckpoint({
       iteration,
       startedAt: new Date(startTime).toISOString(),
       lastTaskId: pending.id,
+      lastTaskTitle: pending.title,
+      lastTaskStatus: passed ? "done" : "failed",
+      lastTaskStartedAt: new Date(taskStartedAt).toISOString(),
+      lastTaskElapsedMs: elapsedMs,
+      lastTaskFilesChanged: changedFiles.length,
       totalDone: freshTasks.filter((t) => t.status === "done").length,
       totalFailed: freshTasks.filter((t) => t.status === "failed").length,
+      totalPending: freshTasks.filter((t) => t.status === "pending").length,
     });
   }
 
@@ -418,6 +457,13 @@ function ralphLoop(planPath: string, maxIterations: number = 10): void {
 
 // --- Entry Point ---
 
-const maxIterations = parseInt(process.env.FORGE_MAX_ITERATIONS || "10", 10);
-const planFile = join(".", "IMPLEMENTATION_PLAN.md");
-ralphLoop(planFile, maxIterations);
+// Only run the loop when invoked as a script. Importing this module from
+// tests must not start an autonomy run.
+const isMain = require.main === module;
+if (isMain) {
+  const cliArgs = process.argv.slice(2);
+  const dryRun = cliArgs.includes("--dry-run") || cliArgs.includes("-n");
+  const maxIterations = parseInt(process.env.FORGE_MAX_ITERATIONS || "10", 10);
+  const planFile = join(".", "IMPLEMENTATION_PLAN.md");
+  ralphLoop(planFile, maxIterations, dryRun);
+}

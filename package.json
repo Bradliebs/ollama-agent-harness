@@ -24,6 +24,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
     "autonomy": "ts-node cookbook/task-loop.ts",
+    "autonomy:dry": "ts-node cookbook/task-loop.ts --dry-run",
     "autonomy:stop": "node -e \"require('fs').writeFileSync('.forge-stop','stop')\"",
     "autonomy:reset": "node -e \"['.forge-stop','.forge-state.json'].forEach(f=>{try{require('fs').unlinkSync(f)}catch{}})\""
   },
