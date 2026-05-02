@@ -583,9 +583,15 @@ app.get('/api/api-keys', async (_req, res) => {
       const fileValue = stored[name];
       const fromEnv = typeof envValue === 'string' && envValue.trim().length > 0;
       const fromFile = typeof fileValue === 'string' && (fileValue as string).trim().length > 0;
+      // Source precedence: 'file' if the value originated from the JSON
+      // file (either still file-only or promoted into env by
+      // loadStoredApiKeys), otherwise 'env' if shell-exported, otherwise
+      // 'none'. This matches what users see in the UI and avoids the
+      // 'I entered it in the panel but it shows from env' confusion.
+      const sourceIsFile = fromFile || (fromEnv && FILE_SOURCED_KEYS.has(name));
       status[name] = {
         configured: fromEnv || fromFile,
-        source: fromEnv ? 'env' : (fromFile ? 'file' : 'none'),
+        source: sourceIsFile ? 'file' : (fromEnv ? 'env' : 'none'),
       };
     }
     res.json({ keys: status });
@@ -617,8 +623,13 @@ app.post('/api/api-keys', async (req, res) => {
         if (!process.env[name] || !process.env[name]!.trim()) {
           process.env[name] = value;
         }
+        // Newly stored via the UI — mark as file-sourced so the GET
+        // handler reports 'stored' rather than 'from env' on the next
+        // refresh, even though we just populated process.env above.
+        FILE_SOURCED_KEYS.add(name);
       } else if (stored[name]) {
         delete stored[name];
+        FILE_SOURCED_KEYS.delete(name);
         changed = true;
       }
       changed = true;
@@ -3227,11 +3238,24 @@ async function loadStoredApiKeys(): Promise<void> {
       if (!ALLOWED_API_KEY_NAMES.has(key)) continue;
       if (process.env[key] && process.env[key]!.trim().length > 0) continue;
       process.env[key] = value.trim();
+      // Remember that this env var was populated from the file, so the
+      // GET /api/api-keys handler can report source='file' rather than
+      // 'env' (which was misleading — the user never set it in the shell).
+      FILE_SOURCED_KEYS.add(key);
     }
   } catch {
     // Missing file is fine — user simply hasn't entered any keys yet.
   }
 }
+
+/**
+ * Tracks env vars that were populated from `.harness/api-keys.json`
+ * by loadStoredApiKeys(). Consulted by the GET /api/api-keys handler
+ * so users see 'stored' (file) instead of 'from env' for keys they
+ * entered through the UI. Also updated by POST /api/api-keys when a
+ * file-stored key is freshly written into process.env.
+ */
+const FILE_SOURCED_KEYS = new Set<string>();
 
 const ALLOWED_API_KEY_NAMES = new Set([
   'OPENAI_API_KEY',

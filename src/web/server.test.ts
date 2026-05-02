@@ -2133,15 +2133,18 @@ describe('web server API validation', () => {
       const text = await response.text();
       assertNoSecretLeaks(text);
       const body = JSON.parse(text) as { keys: Record<string, { configured: boolean; source: 'env' | 'file' | 'none' }> };
-      // Stored keys should report configured: true. Source may be reported
-      // as either 'file' or 'env' depending on whether ensureSettingsLoaded
-      // has already promoted the file values into process.env (the server
-      // does this on first settings access). The leak guarantee above is
-      // the contract that actually matters.
-      for (const name of [...Object.keys(SECRETS), 'GITHUB_TOKEN'] as const) {
-        expect(body.keys[name].configured).toBe(true);
-        expect(['env', 'file']).toContain(body.keys[name].source);
-      }
+      // File-stored keys should report source 'file' even after
+      // loadStoredApiKeys has promoted them into process.env. The
+      // FILE_SOURCED_KEYS tracker preserves provenance across that
+      // promotion so users see 'stored' (file) in the UI rather than
+      // the misleading 'from env'.
+      expect(body.keys.OPENAI_API_KEY).toEqual({ configured: true, source: 'file' });
+      expect(body.keys.MISTRAL_API_KEY).toEqual({ configured: true, source: 'file' });
+      expect(body.keys.CEREBRAS_API_KEY).toEqual({ configured: true, source: 'file' });
+      expect(body.keys.GROQ_API_KEY).toEqual({ configured: true, source: 'file' });
+      // GITHUB_TOKEN was set directly in process.env (not via the file)
+      // so it must still report as 'env'.
+      expect(body.keys.GITHUB_TOKEN).toEqual({ configured: true, source: 'env' });
       // A backend with no key set should report none.
       expect(body.keys.ANTHROPIC_API_KEY).toEqual({ configured: false, source: 'none' });
     });

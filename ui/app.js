@@ -3136,6 +3136,12 @@ function filterSettingsSections(event) {
 }
 
 // ─── Remote API key entry ─────────────────────────────────────────────
+// Backend-aligned key list. Entries here MUST correspond to a backend
+// in src/core/chatClientFactory.ts OPENAI_COMPATIBLE_PRESETS — otherwise
+// users save a key the harness has no client to invoke. ANTHROPIC_API_KEY
+// was removed in v0.2.3 because no Anthropic chat client is wired (the
+// storage path remains in ALLOWED_API_KEY_NAMES so users with an existing
+// Anthropic key in env get it forwarded to the autonomy container).
 const REMOTE_API_KEY_FIELDS = [
   { name: 'MISTRAL_API_KEY', label: 'Mistral AI', signup: 'https://console.mistral.ai/api-keys' },
   { name: 'GROQ_API_KEY', label: 'Groq', signup: 'https://console.groq.com/keys' },
@@ -3143,7 +3149,6 @@ const REMOTE_API_KEY_FIELDS = [
   { name: 'GITHUB_MODELS_TOKEN', label: 'GitHub Models', signup: 'https://github.com/marketplace/models' },
   { name: 'OPENROUTER_API_KEY', label: 'OpenRouter', signup: 'https://openrouter.ai/keys' },
   { name: 'OPENAI_API_KEY', label: 'OpenAI', signup: 'https://platform.openai.com/api-keys' },
-  { name: 'ANTHROPIC_API_KEY', label: 'Anthropic', signup: 'https://console.anthropic.com/settings/keys' },
 ];
 
 async function loadApiKeys() {
