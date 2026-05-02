@@ -25,6 +25,7 @@ interface CliOptions {
   summarizerModel?: string;
   modelRouting: ModelRoutingPolicy;
   prompt?: string;
+  promptFile?: string;
   visionModel: string;
   audioTranscribeCommand: string;
   audioSamplePath: string;
@@ -107,6 +108,9 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
       case '-p':
       case '--prompt':
         options.prompt = args[++i];
+        break;
+      case '--prompt-file':
+        options.promptFile = args[++i];
         break;
       case '--help':
       case '-h':
@@ -192,9 +196,16 @@ export async function main(): Promise<void> {
       : undefined,
   };
 
-  // Headless mode
-  if (options.prompt) {
-    await runHeadless(config, deps, session, options.prompt);
+  // Headless mode — accept either an inline prompt or a path to read from.
+  // --prompt-file lets callers pass large prompts (e.g. inline file contents)
+  // that would otherwise overflow shell command-line size limits.
+  let headlessPrompt: string | undefined = options.prompt;
+  if (!headlessPrompt && options.promptFile) {
+    const fs = await import('fs/promises');
+    headlessPrompt = await fs.readFile(options.promptFile, 'utf-8');
+  }
+  if (headlessPrompt) {
+    await runHeadless(config, deps, session, headlessPrompt);
     return;
   }
 

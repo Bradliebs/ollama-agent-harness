@@ -25,3 +25,4 @@ release/*.zip.sha256.json
 .forge-run*.log
 .forge-debug.jsonl
 .forge-history.jsonl
+.forge-prompt.txt

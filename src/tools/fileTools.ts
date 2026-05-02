@@ -96,23 +96,72 @@ export const FileEditTool: Tool = {
     const newStr = input.new_string as string;
     try {
       const content = await fs.readFile(filePath, 'utf-8');
-      const idx = content.indexOf(oldStr);
+
+      // First try exact match.
+      let idx = content.indexOf(oldStr);
+      let matched = oldStr;
+
+      // Fallback 1: normalize line endings on both sides. Models frequently
+      // emit \n while Windows-checked-out files have \r\n; without this the
+      // edit fails even when the model has correct content.
+      if (idx === -1) {
+        const normalizedContent = content.replace(/\r\n/g, '\n');
+        const normalizedOld = oldStr.replace(/\r\n/g, '\n');
+        const normIdx = normalizedContent.indexOf(normalizedOld);
+        if (normIdx !== -1) {
+          // Find the actual span in the original content by walking forward
+          // and counting characters, accounting for \r\n vs \n.
+          const span = findOriginalSpan(content, normIdx, normalizedOld.length);
+          if (span) {
+            idx = span.start;
+            matched = content.slice(span.start, span.end);
+          }
+        }
+      }
+
       if (idx === -1) {
         return { success: false, output: `String not found in '${filePath}'`, error: 'old_string not found' };
       }
-      // Ensure unique match
-      if (content.indexOf(oldStr, idx + 1) !== -1) {
+      // Ensure unique match (against the same normalization that found idx)
+      if (content.indexOf(matched, idx + 1) !== -1) {
         return { success: false, output: `Multiple matches for old_string in '${filePath}'`, error: 'ambiguous match' };
       }
-      const updated = content.replace(oldStr, newStr);
+      const updated = content.slice(0, idx) + newStr + content.slice(idx + matched.length);
       await fs.writeFile(filePath, updated, 'utf-8');
-      return { success: true, output: `Edited '${filePath}': replaced ${oldStr.length} chars with ${newStr.length} chars` };
+      return { success: true, output: `Edited '${filePath}': replaced ${matched.length} chars with ${newStr.length} chars` };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return { success: false, output: `Failed to edit '${filePath}': ${msg}`, error: msg };
     }
   },
 };
+
+/**
+ * Given the original (CRLF-mixed) file content and a position in its
+ * line-ending-normalized projection, return the [start, end) span in the
+ * original content that corresponds to `length` normalized characters.
+ *
+ * Walks both views in lockstep: each `\n` in the normalized projection
+ * may correspond to either `\n` or `\r\n` in the original. Returns null
+ * if the boundaries don't align (defensive — should not happen).
+ */
+function findOriginalSpan(original: string, normStart: number, normLength: number): { start: number; end: number } | null {
+  let oi = 0; // index into original
+  let ni = 0; // index into normalized projection
+  while (ni < normStart && oi < original.length) {
+    if (original[oi] === '\r' && original[oi + 1] === '\n') { oi += 2; ni += 1; }
+    else { oi += 1; ni += 1; }
+  }
+  if (ni !== normStart) return null;
+  const start = oi;
+  let remaining = normLength;
+  while (remaining > 0 && oi < original.length) {
+    if (original[oi] === '\r' && original[oi + 1] === '\n') { oi += 2; remaining -= 1; }
+    else { oi += 1; remaining -= 1; }
+  }
+  if (remaining !== 0) return null;
+  return { start, end: oi };
+}
 
 export const ListFilesTool: Tool = {
   name: 'list_files',

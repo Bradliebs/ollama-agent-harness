@@ -84,43 +84,74 @@ interface Task {
   id: string;
   title: string;
   status: TaskStatus;
+  /** Files to embed (read-only) in the per-task prompt for context. */
+  anchors: string[];
+  /** Optional explicit target file the model should edit. */
+  target?: string;
 }
 
 // --- Plan Parser ---
 
 /**
  * Parses IMPLEMENTATION_PLAN.md into a list of tasks.
- * Expected format — one task per line:
- *   - [ ] task-id — Task title
- *   - [x] task-id — Task title        (done)
- *   - [!] task-id — Task title        (failed)
+ *
+ * Top-level task format — one task per line:
+ *   - [ ] task-id — Task title          (pending)
+ *   - [x] task-id — Task title          (done)
+ *   - [!] task-id — Task title          (failed)
+ *
+ * Optional indented sub-bullets attach context to the immediately
+ * preceding task. They survive plan rewrites because writePlan re-emits
+ * them verbatim.
+ *   - anchor: relative/path/to/file.ts   (model gets this file inline)
+ *   - target: relative/path/to/file.ts   (file the model should edit)
  */
 function parsePlan(filePath: string): Task[] {
   const content = readFileSync(filePath, "utf-8");
   const tasks: Task[] = [];
+  let current: Task | null = null;
 
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.replace(/\s+$/, "");
-    const match = line.match(/^- \[(.)\] (\S+)\s*[—\-]\s*(.+)$/);
-    if (!match) continue;
+    const taskMatch = line.match(/^- \[(.)\] (\S+)\s*[—\-]\s*(.+)$/);
+    if (taskMatch) {
+      const [, marker, id, title] = taskMatch;
+      let status: TaskStatus = "pending";
+      if (marker === "x") status = "done";
+      else if (marker === "!") status = "failed";
+      current = { id, title: title.trim(), status, anchors: [] };
+      tasks.push(current);
+      continue;
+    }
 
-    const [, marker, id, title] = match;
-    let status: TaskStatus = "pending";
-    if (marker === "x") status = "done";
-    else if (marker === "!") status = "failed";
-
-    tasks.push({ id, title: title.trim(), status });
+    if (!current) continue;
+    const anchorMatch = line.match(/^\s+- anchor:\s*(\S+)\s*$/);
+    if (anchorMatch) {
+      current.anchors.push(anchorMatch[1]);
+      continue;
+    }
+    const targetMatch = line.match(/^\s+- target:\s*(\S+)\s*$/);
+    if (targetMatch) {
+      current.target = targetMatch[1];
+      continue;
+    }
   }
 
   return tasks;
 }
 
-/** Writes the task list back to IMPLEMENTATION_PLAN.md. */
+/** Writes the task list back to IMPLEMENTATION_PLAN.md, preserving anchors and target sub-bullets. */
 function writePlan(filePath: string, tasks: Task[]): void {
   const lines = ["# Implementation Plan", ""];
   for (const task of tasks) {
     const marker = task.status === "done" ? "x" : task.status === "failed" ? "!" : " ";
     lines.push(`- [${marker}] ${task.id} — ${task.title}`);
+    for (const anchor of task.anchors) {
+      lines.push(`  - anchor: ${anchor}`);
+    }
+    if (task.target) {
+      lines.push(`  - target: ${task.target}`);
+    }
   }
   writeFileSync(filePath, lines.join("\n") + "\n", "utf-8");
 }
@@ -136,32 +167,74 @@ const HARNESS_UNPRODUCTIVE_TURN_LIMIT = process.env.HARNESS_UNPRODUCTIVE_TURN_LI
 const HARNESS_VALIDATE_CMD = process.env.HARNESS_VALIDATE_CMD ?? "npm run typecheck";
 
 /**
- * Build the prompt sent to the harness for a single task. The harness has
- * built-in file-edit tools and will work the task to completion under the
- * configured permission mode.
+ * Build the prompt sent to the harness for a single task. When the task
+ * declares anchors, their full file contents are embedded inline so the
+ * model has zero need to explore — it can immediately call file_edit /
+ * file_write. Without this, even strong agent models (Kimi K2.5,
+ * gpt-oss:120b) get stuck in 30-turn read-everything loops.
  */
 function buildTaskPrompt(task: Task): string {
-  return [
-    `IMMEDIATE TASK — start working now. Do not ask for clarification. Do not greet me.`,
+  const anchorBlocks: string[] = [];
+  for (const anchor of task.anchors) {
+    try {
+      const contents = readFileSync(anchor, "utf-8");
+      const truncated = contents.length > MAX_ANCHOR_BYTES
+        ? contents.slice(0, MAX_ANCHOR_BYTES) + `\n... [truncated at ${MAX_ANCHOR_BYTES} bytes]`
+        : contents;
+      anchorBlocks.push(
+        `\n--- BEGIN FILE: ${anchor} ---\n${truncated}\n--- END FILE: ${anchor} ---\n`,
+      );
+    } catch (err) {
+      anchorBlocks.push(`\n--- ANCHOR MISSING: ${anchor} (${err instanceof Error ? err.message : String(err)}) ---\n`);
+    }
+  }
+
+  const targetLine = task.target
+    ? `Target file (edit this exact path): ${task.target}`
+    : `No explicit target file. Pick the most appropriate file from the anchors above.`;
+
+  const sections: string[] = [
+    `IMMEDIATE TASK — start working now. Do not ask for clarification. Do not greet me. Do not explore.`,
     ``,
     `Task: ${task.title}`,
     `Task id: ${task.id}`,
     ``,
-    `Steps you MUST execute in this order, calling the listed tool each time:`,
-    `  1. Call list_files on the relevant directory to confirm layout.`,
-    `  2. Call file_read on the existing files you will modify.`,
-    `  3. Call file_write or file_edit to make the actual code change.`,
-    `  4. Optionally call bash to run \`npm run typecheck\` to verify.`,
-    `  5. Reply with a one-line summary and stop.`,
+  ];
+
+  if (anchorBlocks.length > 0) {
+    sections.push(
+      `RELEVANT FILES (already read for you — do NOT re-read them):`,
+      ...anchorBlocks,
+      ``,
+      targetLine,
+      ``,
+      `Required first action: call file_edit (preferred) or file_write to modify the target file.`,
+      `Do NOT call list_files or file_read first — you already have what you need.`,
+    );
+  } else {
+    sections.push(
+      `Steps you MUST execute in this order:`,
+      `  1. Call file_edit or file_write to make the actual code change.`,
+      `  2. Optionally call bash to run \`npm run typecheck\` to verify.`,
+      `  3. Reply with a one-line summary and stop.`,
+    );
+  }
+
+  sections.push(
     ``,
-    `Tool whitelist (use exactly these names): file_read, file_write, file_edit, list_files, grep, bash.`,
-    `Forbidden (do not call): calendar_read, web_search, image_analyze, audio_transcribe, analyze_patterns, promote_pattern, reflect, consolidate, evolve, improve_skill.`,
+    `Tool whitelist: file_read, file_write, file_edit, list_files, grep, bash.`,
+    `Forbidden: calendar_read, web_search, image_analyze, audio_transcribe, analyze_patterns, promote_pattern, reflect, consolidate, evolve, improve_skill.`,
     ``,
-    `If your first response is text instead of a tool call, you have FAILED.`,
+    `If your first response is text instead of a file_edit/file_write tool call, you have FAILED.`,
     `Do not modify IMPLEMENTATION_PLAN.md, .forge-state.json, or .copilot-tracking/.`,
     `Make the smallest change that satisfies the task.`,
-  ].join("\n");
+  );
+
+  return sections.join("\n");
 }
+
+/** Hard cap per anchor file. Keeps prompts under typical 32K-128K context limits. */
+const MAX_ANCHOR_BYTES = 24_000;
 
 /**
  * Called once per task. Shells out to the harness CLI in headless mode.
@@ -171,7 +244,13 @@ function buildTaskPrompt(task: Task): string {
  * burns its turn budget doing nothing useful cannot stall the autonomy loop.
  */
 function implementTask(task: Task): void {
-  const prompt = buildTaskPrompt(task).replace(/"/g, '\\"');
+  const prompt = buildTaskPrompt(task);
+  // Always pass the prompt via a temp file so anchor-file inlining (which
+  // can produce 50+ KB prompts) doesn't hit Windows shell command-line
+  // length limits. The CLI's --prompt-file flag handles either source.
+  const promptPath = ".forge-prompt.txt";
+  writeFileSync(promptPath, prompt, "utf-8");
+
   const cmd = [
     "npx ts-node src/cli/index.ts",
     `--backend "${HARNESS_BACKEND}"`,
@@ -180,12 +259,12 @@ function implementTask(task: Task): void {
     `--mode ${HARNESS_PERMISSION_MODE}`,
     `--max-turns ${HARNESS_MAX_TURNS}`,
     `--unproductive-turn-limit ${HARNESS_UNPRODUCTIVE_TURN_LIMIT}`,
-    `-p "${prompt}"`,
+    `--prompt-file "${promptPath}"`,
   ].join(" ");
 
   const timeoutMs = parseInt(process.env.HARNESS_TASK_TIMEOUT_MS ?? "600000", 10);
   console.log(`[Ralph] >>> ${cmd}`);
-  console.log(`[Ralph] (per-task timeout: ${Math.round(timeoutMs / 1000)}s)`);
+  console.log(`[Ralph] (per-task timeout: ${Math.round(timeoutMs / 1000)}s, prompt size: ${prompt.length} bytes, anchors: ${task.anchors.length})`);
   try {
     execSync(cmd, { stdio: "inherit", timeout: timeoutMs, killSignal: "SIGKILL" });
   } catch (err) {
