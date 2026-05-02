@@ -19,6 +19,7 @@
     "smoke:headless": "node scripts/headless-smoke.js",
     "smoke:ui": "node scripts/ui-smoke.js",
     "smoke:release": "node scripts/release-smoke.js",
+    "smoke:remote-backends": "node scripts/remote-backend-smoke.js",
     "release:notes": "node scripts/release-notes.js",
     "release:manifest": "node scripts/release-manifest.js",
     "test": "jest",

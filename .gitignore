@@ -32,3 +32,14 @@ release/*.zip.sha256.json
 .forge-debug.jsonl
 .forge-history.jsonl
 .forge-prompt.txt
+
+# Defensive: prior agent sessions dropped non-Harness lottery scripts
+# into the repo root. They have been relocated to C:\AI\Lottery-Toolkit\.
+# These patterns prevent re-creation from being silently committed.
+lottery-*.js
+lottery-*.html
+lottery-toolkit/
+*-lottery.js
+syndicate-optimizer.js
+historical-win-checker.js
+machine-bias-detector.js

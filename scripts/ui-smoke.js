@@ -477,6 +477,15 @@ async function runStaticSmoke() {
     hasRecoveryCopy: appScript.includes('Unfinished chat available') && appScript.includes('Fork starts a copy'),
     hasApplyCalibrationFunction: appScript.includes('function applyRoutingCalibration'),
     hasWeatherReplayEvalFunction: appScript.includes('function createWeatherReplayEval'),
+    // Settings panel collapsibility (v0.2.2): the helper must be defined,
+    // the localStorage key must be referenced for both read and write, and
+    // the helper must be called from initialization. Drift in any of these
+    // breaks settings-section persistence across reloads.
+    hasSettingsCollapseFunction: appScript.includes('function setupSettingsCollapse'),
+    hasSettingsCollapseInit: /\bsetupSettingsCollapse\(\)/.test(appScript),
+    hasSettingsOpenSectionsRead: appScript.includes("localStorage.getItem('settingsOpenSections'"),
+    hasSettingsOpenSectionsWrite: appScript.includes("localStorage.setItem('settingsOpenSections'"),
+    hasSettingsSearch: appScript.includes('panel-search') && appScript.includes('settingsSearch'),
     duplicateIds,
   };
   const failures = [];
@@ -551,6 +560,11 @@ async function runStaticSmoke() {
   if (!result.hasRecoveryCopy) failures.push('recovery explanation copy was not found');
   if (!result.hasApplyCalibrationFunction) failures.push('apply calibration function was not found');
   if (!result.hasWeatherReplayEvalFunction) failures.push('weather replay eval function was not found');
+  if (!result.hasSettingsCollapseFunction) failures.push('setupSettingsCollapse function was not found');
+  if (!result.hasSettingsCollapseInit) failures.push('setupSettingsCollapse is not invoked at init');
+  if (!result.hasSettingsOpenSectionsRead) failures.push('settingsOpenSections localStorage read was not found');
+  if (!result.hasSettingsOpenSectionsWrite) failures.push('settingsOpenSections localStorage write was not found');
+  if (!result.hasSettingsSearch) failures.push('panel-search / settingsSearch input was not found');
   if (duplicateIds.length > 0) failures.push(`duplicate ids found: ${duplicateIds.join(', ')}`);
   if (failures.length > 0) {
     console.error(failures.join('\n'));

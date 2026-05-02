@@ -2056,6 +2056,134 @@ describe('web server API validation', () => {
       else process.env.HARNESS_UPLOADS_DIR = originalEnv;
     }
   });
+
+  // Regression guard: GET/POST /api/api-keys must report key status
+  // (configured + source) without ever returning the actual secret values.
+  // The .harness/api-keys.json file uses 0o600 mode bits on Unix; the API
+  // surface is the only protection on Windows. Any leak here would expose
+  // user-entered remote backend tokens through the dashboard.
+  describe('/api/api-keys leak protection', () => {
+    const apiKeysPath = path.join(process.cwd(), '.harness', 'api-keys.json');
+    let originalApiKeysFile: string | null = null;
+    const SECRETS = {
+      OPENAI_API_KEY: 'sk-leak-test-OPENAI-9d8f7a6b5c4e3f2a1b0c9d8e7f6a5b4c',
+      MISTRAL_API_KEY: 'leak-test-MISTRAL-1122334455667788aabbccddeeff0011',
+      CEREBRAS_API_KEY: 'csk-leak-test-CEREBRAS-deadbeefcafebabef00dfacef00dface',
+      GROQ_API_KEY: 'gsk_leak_test_GROQ_abcdef0123456789abcdef0123456789',
+    } as const;
+    const ENV_SECRET = 'ghp_leak-test-GITHUB_aaaabbbbccccddddeeeeffff0000111122';
+    let originalGithubEnv: string | undefined;
+    const savedEnv: Record<string, string | undefined> = {};
+
+    beforeAll(async () => {
+      try {
+        originalApiKeysFile = await fs.readFile(apiKeysPath, 'utf-8');
+      } catch {
+        originalApiKeysFile = null;
+      }
+      // Save and clear any pre-existing real keys in process.env so the
+      // 'file' source assertions below are deterministic. Real user keys
+      // would otherwise win over the file values in /api/api-keys.
+      for (const name of Object.keys(SECRETS)) {
+        savedEnv[name] = process.env[name];
+        delete process.env[name];
+      }
+      savedEnv.OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+      delete process.env.OPENROUTER_API_KEY;
+      originalGithubEnv = process.env.GITHUB_TOKEN;
+      await fs.mkdir(path.dirname(apiKeysPath), { recursive: true });
+      await fs.writeFile(apiKeysPath, JSON.stringify(SECRETS, null, 2), 'utf-8');
+      process.env.GITHUB_TOKEN = ENV_SECRET;
+    });
+
+    afterAll(async () => {
+      if (originalApiKeysFile === null) {
+        await fs.rm(apiKeysPath, { force: true });
+      } else {
+        await fs.writeFile(apiKeysPath, originalApiKeysFile, 'utf-8');
+      }
+      if (originalGithubEnv === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = originalGithubEnv;
+      // Clear values that the POST test loaded into process.env so they
+      // do not bleed into other tests, then restore the originals.
+      for (const name of Object.keys(SECRETS)) delete process.env[name];
+      delete process.env.OPENROUTER_API_KEY;
+      for (const [name, value] of Object.entries(savedEnv)) {
+        if (value !== undefined) process.env[name] = value;
+      }
+    });
+
+    function assertNoSecretLeaks(payload: string): void {
+      for (const [name, value] of Object.entries(SECRETS)) {
+        expect(payload).not.toContain(value);
+        // Defense-in-depth: also reject any non-trivial substring of the
+        // secret. Catches accidental partial echoes (e.g. truncated keys).
+        expect(payload).not.toContain(value.slice(8, 24));
+        // The key NAME is allowed; the test exists to prove the value is not.
+        // (Asserted separately below to keep failure messages readable.)
+        void name;
+      }
+      expect(payload).not.toContain(ENV_SECRET);
+      expect(payload).not.toContain(ENV_SECRET.slice(4, 20));
+    }
+
+    it('GET returns status (configured + source) without exposing key values', async () => {
+      const response = await request('/api/api-keys');
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      assertNoSecretLeaks(text);
+      const body = JSON.parse(text) as { keys: Record<string, { configured: boolean; source: 'env' | 'file' | 'none' }> };
+      // Stored keys should report configured: true. Source may be reported
+      // as either 'file' or 'env' depending on whether ensureSettingsLoaded
+      // has already promoted the file values into process.env (the server
+      // does this on first settings access). The leak guarantee above is
+      // the contract that actually matters.
+      for (const name of [...Object.keys(SECRETS), 'GITHUB_TOKEN'] as const) {
+        expect(body.keys[name].configured).toBe(true);
+        expect(['env', 'file']).toContain(body.keys[name].source);
+      }
+      // A backend with no key set should report none.
+      expect(body.keys.ANTHROPIC_API_KEY).toEqual({ configured: false, source: 'none' });
+    });
+
+    it('POST then GET round-trip never echoes the submitted key value', async () => {
+      const NEW_SECRET = 'sk-or-leak-test-OPENROUTER-roundtrip-7f6e5d4c3b2a19283746556677889900';
+      const postResponse = await request('/api/api-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ OPENROUTER_API_KEY: NEW_SECRET }),
+      });
+      expect(postResponse.status).toBe(200);
+      const postText = await postResponse.text();
+      expect(postText).not.toContain(NEW_SECRET);
+
+      const getResponse = await request('/api/api-keys');
+      expect(getResponse.status).toBe(200);
+      const getText = await getResponse.text();
+      expect(getText).not.toContain(NEW_SECRET);
+      assertNoSecretLeaks(getText);
+      const body = JSON.parse(getText) as { keys: Record<string, { configured: boolean; source: 'env' | 'file' | 'none' }> };
+      expect(body.keys.OPENROUTER_API_KEY.configured).toBe(true);
+    });
+
+    it('POST refuses unknown key names and does not echo their values', async () => {
+      const SNEAKY_SECRET = 'sneaky-leak-test-NOT_ALLOWED-99887766554433221100ffeeddccbbaa';
+      const response = await request('/api/api-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ NOT_A_REAL_API_KEY: SNEAKY_SECRET }),
+      });
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).not.toContain(SNEAKY_SECRET);
+      expect(text).not.toContain('NOT_A_REAL_API_KEY');
+
+      const getResponse = await request('/api/api-keys');
+      const getText = await getResponse.text();
+      expect(getText).not.toContain('NOT_A_REAL_API_KEY');
+      expect(getText).not.toContain(SNEAKY_SECRET);
+    });
+  });
 });
 
 function buildMinimalPdf(text: string): Buffer {
