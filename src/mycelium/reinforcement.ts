@@ -9,10 +9,12 @@ export interface ReinforcementConfig {
   beta?: number;
   /** Cost penalty factor (default 0.01). */
   gamma?: number;
-  /** Minimum weight before an unprotected edge is pruned (default 0.03). */
+  /** Minimum weight before an unprotected edge is archived (default 0.03). */
   pruneThreshold?: number;
   /** Maximum number of decay cycles before force-pruning (default 100). */
   maxIdleCycles?: number;
+  /** Floor below which protected edges never decay (default 0.25). */
+  protectedFloor?: number;
 }
 
 const DEFAULT_CONFIG: Required<ReinforcementConfig> = {
@@ -21,15 +23,28 @@ const DEFAULT_CONFIG: Required<ReinforcementConfig> = {
   gamma: 0.01,
   pruneThreshold: 0.03,
   maxIdleCycles: 100,
+  protectedFloor: 0.25,
 };
 
 // ─── Reinforce a successful route ───────────────────────────────────
+
+export interface EpisodeExtras {
+  query?: string;
+  taskType?: string;
+  selectionReasons?: Record<string, string>;
+  rewardComponents?: Record<string, number>;
+  dryRun?: boolean;
+  blocked?: boolean;
+  blockReason?: string;
+  appliedVerifiers?: string[];
+}
 
 export function reinforceRoute(
   graph: MyceliumGraph,
   route: string[],
   reward: number,
   config: ReinforcementConfig = {},
+  episode?: EpisodeExtras,
 ): void {
   const { alpha, gamma } = { ...DEFAULT_CONFIG, ...config };
 
@@ -55,7 +70,15 @@ export function reinforceRoute(
     }
   }
 
-  graph.recordEpisode('', route, reward);
+  graph.recordEpisode(episode?.query ?? '', route, reward, {
+    taskType: episode?.taskType,
+    selectionReasons: episode?.selectionReasons,
+    rewardComponents: episode?.rewardComponents,
+    dryRun: episode?.dryRun,
+    blocked: episode?.blocked,
+    blockReason: episode?.blockReason,
+    appliedVerifiers: episode?.appliedVerifiers,
+  });
 }
 
 // ─── Weaken a failed route ──────────────────────────────────────────
@@ -66,11 +89,20 @@ export function weakenRoute(
   penalty: number,
   config: ReinforcementConfig = {},
 ): void {
-  const { alpha } = { ...DEFAULT_CONFIG, ...config };
+  const { alpha, protectedFloor } = { ...DEFAULT_CONFIG, ...config };
 
   for (let i = 0; i < route.length - 1; i++) {
     const edge = graph.getEdge(route[i], route[i + 1]);
     if (!edge) continue;
+
+    // Protected safety/verifier edges that correctly blocked or required
+    // verification must not be punished for a failed downstream outcome.
+    if (edge.protected) {
+      edge.lastUsed = new Date().toISOString();
+      // Floor protects them from sliding below the configured minimum.
+      if (edge.weight < protectedFloor) edge.weight = protectedFloor;
+      continue;
+    }
 
     edge.weight -= alpha * penalty;
     edge.weight = clamp(edge.weight);
@@ -78,7 +110,7 @@ export function weakenRoute(
     edge.lastUsed = new Date().toISOString();
 
     const target = graph.getNode(edge.target);
-    if (target) {
+    if (target && !target.protected) {
       target.trust = clamp(target.trust - alpha * penalty * 0.3);
     }
   }
@@ -90,29 +122,43 @@ export function decayUnusedEdges(
   graph: MyceliumGraph,
   config: ReinforcementConfig = {},
 ): number {
-  const { beta } = { ...DEFAULT_CONFIG, ...config };
+  const { beta, protectedFloor } = { ...DEFAULT_CONFIG, ...config };
   let decayed = 0;
 
   for (const edge of graph.listEdges()) {
-    // Skip recently used edges (within last hour for real-time, but
-    // effectively this runs per-session so everything not in the
-    // current route decays slightly).
     edge.weight *= (1 - beta);
     edge.weight = clamp(edge.weight);
+    // Protected edges never fall below the floor, even after many cycles.
+    if (edge.protected && edge.weight < protectedFloor) {
+      edge.weight = protectedFloor;
+    }
     decayed++;
   }
 
   return decayed;
 }
 
-// ─── Prune dead edges ───────────────────────────────────────────────
+// ─── Archive ("prune") weak edges ───────────────────────────────────
+//
+// Soft-delete edges whose weight has decayed below the configured
+// threshold. Protected edges are never archived. Returns the number
+// of edges archived.
 
 export function pruneDeadEdges(
   graph: MyceliumGraph,
   config: ReinforcementConfig = {},
 ): number {
   const { pruneThreshold } = { ...DEFAULT_CONFIG, ...config };
-  return graph.filterEdges((edge) => edge.protected || edge.weight >= pruneThreshold);
+  let archived = 0;
+  // Snapshot via listEdges() because archiveEdge mutates the underlying array.
+  for (const edge of graph.listEdges()) {
+    if (edge.protected) continue;
+    if (edge.weight >= pruneThreshold) continue;
+    if (graph.archiveEdge(edge.source, edge.target, `weight ${edge.weight.toFixed(3)} below threshold ${pruneThreshold}`)) {
+      archived++;
+    }
+  }
+  return archived;
 }
 
 // ─── Compute reward score ───────────────────────────────────────────

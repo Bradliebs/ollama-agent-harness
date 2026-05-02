@@ -1,6 +1,9 @@
 import { MyceliumGraph, loadMyceliumGraph, saveMyceliumGraph, type MyceliumNode, type MyceliumNodeType } from './graph';
 import { spreadActivation, selectRoute, type SelectedRoute } from './activation';
 import { reinforceRoute, weakenRoute, decayUnusedEdges, pruneDeadEdges, computeReward, type RewardInput } from './reinforcement';
+import { classifyTask, type MyceliumTaskClassification } from './taskClassifier';
+import { seedGenericGraph, type SeedSummary } from './seeds';
+import { buildContextPackage, buildRouteExplanation, formatRouteExplanation, type ContextPackage, type RouteExplanation } from './contextPackage';
 import { logger } from '../core/logger';
 
 // ─── Router configuration ───────────────────────────────────────────
@@ -30,7 +33,25 @@ export interface MycelialContextResult {
   /** Graph stats after routing. */
   stats: ReturnType<MyceliumGraph['stats']>;
 }
+// ─── Rich routing result (v2) ───────────────────────────────────
 
+export interface RouteQueryOptions {
+  /** If true, log the route but do not let the harness execute external actions. */
+  dryRun?: boolean;
+  /** Pre-computed semantic relevance scores for candidate nodes. */
+  relevanceScores?: Map<string, number>;
+  /** Override the rule-based classifier (e.g. for tests). */
+  classification?: MyceliumTaskClassification;
+  /** Override the random source for deterministic exploration in tests. */
+  random?: () => number;
+}
+
+export interface MycelialRichResult extends MycelialContextResult {
+  classification: MyceliumTaskClassification;
+  contextPackage: ContextPackage;
+  explanation: RouteExplanation;
+  selectedRoute: SelectedRoute;
+}
 // ─── Router ─────────────────────────────────────────────────────────
 
 export class MycelialContextRouter {
@@ -38,6 +59,12 @@ export class MycelialContextRouter {
   private projectDir: string;
   private config: Required<MycelialRouterConfig>;
   private lastRoute: string[] = [];
+  private lastQuery: string = '';
+  private lastDryRun: boolean = false;
+  private lastSelectionReasons: Record<string, string> = {};
+  private lastExplanation: RouteExplanation | null = null;
+  private lastContextPackage: ContextPackage | null = null;
+  private lastClassification: MyceliumTaskClassification | null = null;
 
   constructor(projectDir: string, graph: MyceliumGraph, config: MycelialRouterConfig = {}) {
     this.projectDir = projectDir;
@@ -107,13 +134,36 @@ export class MycelialContextRouter {
     }
   }
 
+  /** Seed the generic safety / agent / workflow / verifier / prompt nodes. Idempotent. */
+  seedGeneric(): SeedSummary {
+    return seedGenericGraph(this.graph);
+  }
+
   // ─── Route a query ────────────────────────────────────────
 
   routeQuery(query: string, relevanceScores?: Map<string, number>): MycelialContextResult {
+    const rich = this.routeQueryRich(query, { relevanceScores });
+    return {
+      nodes: rich.nodes,
+      route: rich.route,
+      contextText: rich.contextText,
+      stats: rich.stats,
+    };
+  }
+
+  /**
+   * Route a query and return the rich result: classification, structured
+   * context package, route explanation, and the SelectedRoute itself.
+   * The legacy routeQuery() above delegates here.
+   */
+  routeQueryRich(query: string, options: RouteQueryOptions = {}): MycelialRichResult {
+    const classification = options.classification ?? classifyTask(query);
+    const dryRun = options.dryRun ?? false;
+
     // Step A: Create temporary query node
     const queryId = 'query.current';
     this.graph.removeNode(queryId);
-    const queryNode = this.graph.addNode({
+    this.graph.addNode({
       id: queryId,
       type: 'query',
       label: query.slice(0, 120),
@@ -124,22 +174,28 @@ export class MycelialContextRouter {
     // Step B: Connect query to candidate nodes based on relevance
     const allNodes = this.graph.listNodes().filter((n) => n.type !== 'query');
     for (const node of allNodes) {
-      const relevance = relevanceScores?.get(node.id) ?? estimateRelevance(query, node);
+      const relevance = options.relevanceScores?.get(node.id) ?? estimateRelevance(query, node);
       if (relevance > 0.1) {
         this.graph.addEdge(queryId, node.id, relevance);
       }
     }
 
-    // Step C: Spread activation
+    // Step C: Spread activation (depth from classification, not config).
     const activated = spreadActivation(this.graph, queryId, {
-      hops: this.config.hops,
+      hops: classification.maxDepth,
       threshold: 0.05,
     });
 
-    // Step D: Select route
+    // Step D: Select route. Task-specific exploration / node limits;
+    // high-risk tasks are clamped near zero exploration regardless of config.
+    const exploreRate = classification.highRisk
+      ? Math.min(this.config.exploreRate, classification.explorationRate)
+      : classification.explorationRate;
     const route = selectRoute(this.graph, activated, {
-      maxNodes: this.config.maxNodes,
-      exploreRate: this.config.exploreRate,
+      maxNodes: Math.min(this.config.maxNodes, classification.maxSelectedNodes),
+      maxEdges: classification.maxSelectedEdges,
+      exploreRate,
+      random: options.random,
     });
 
     // Step E: Collect context
@@ -149,13 +205,32 @@ export class MycelialContextRouter {
 
     this.lastRoute = route.nodes.map((n) => n.id);
 
+    // Build structured outputs while the query node is still in the graph
+    // so route metadata / IDs are consistent.
+    const contextPackage = buildContextPackage({ query, classification, route, dryRun });
+    const explanation = buildRouteExplanation({ classification, route, graph: this.graph });
+
     // Clean up temporary query node
     this.graph.removeNode(queryId);
 
+    this.lastClassification = classification;
+    this.lastContextPackage = contextPackage;
+    this.lastExplanation = explanation;
+    this.lastQuery = query;
+    this.lastDryRun = dryRun;
+    // Convert the per-edge selection reasons map into a plain object so it
+    // serialises cleanly into episode metadata.
+    this.lastSelectionReasons = Object.fromEntries(route.selectionReasons.entries());
+
     logger.info('Mycelium', 'Route selected', {
+      taskType: classification.type,
+      highRisk: classification.highRisk,
       activated: activated.length,
       selected: route.nodes.length,
       edges: route.edges.length,
+      protectedRequired: route.protectedRequiredEdges.length,
+      exploration: route.exploratoryEdges.length,
+      dryRun,
     });
 
     return {
@@ -163,18 +238,51 @@ export class MycelialContextRouter {
       route: this.lastRoute.filter((id) => id !== queryId),
       contextText: contextParts.join('\n'),
       stats: this.graph.stats(),
+      classification,
+      contextPackage,
+      explanation,
+      selectedRoute: route,
     };
   }
 
   // ─── Reinforce after response ─────────────────────────────
 
-  reinforce(reward: RewardInput): void {
+  reinforce(reward: RewardInput, verifierInfo?: { blocked?: boolean; blockReason?: string; appliedVerifiers?: string[] }): void {
     if (this.lastRoute.length === 0) return;
     const score = computeReward(reward);
-    if (score > 0.3) {
-      reinforceRoute(this.graph, this.lastRoute, score, { alpha: this.config.alpha });
+    // Capture the reward components so episode metadata can show what
+    // drove the final score (visible in the UI's "Last route" panel).
+    const rewardComponents: Record<string, number> = {};
+    for (const [k, v] of Object.entries(reward)) {
+      if (typeof v === 'number') rewardComponents[k] = v;
+    }
+    rewardComponents.final = score;
+
+    const blocked = verifierInfo?.blocked ?? false;
+    const episodeExtras = {
+      query: this.lastQuery,
+      taskType: this.lastClassification?.type,
+      selectionReasons: this.lastSelectionReasons,
+      rewardComponents,
+      dryRun: this.lastDryRun,
+      blocked,
+      blockReason: verifierInfo?.blockReason,
+      appliedVerifiers: verifierInfo?.appliedVerifiers,
+    };
+
+    if (blocked) {
+      // Hard verifier failures: bump per-edge blockedCount so the UI can
+      // surface persistently risky routes. Do not reinforce; weaken instead.
+      this.graph.markRouteBlocked(this.lastRoute);
+      weakenRoute(this.graph, this.lastRoute, 1, { alpha: this.config.alpha });
+      this.graph.recordEpisode(this.lastQuery, this.lastRoute, score, episodeExtras);
+    } else if (score > 0.3) {
+      reinforceRoute(this.graph, this.lastRoute, score, { alpha: this.config.alpha }, episodeExtras);
     } else {
+      // Failed runs still record the episode for inspection; weakenRoute
+      // doesn't record episodes itself, so we add one here.
       weakenRoute(this.graph, this.lastRoute, 1 - score, { alpha: this.config.alpha });
+      this.graph.recordEpisode(this.lastQuery, this.lastRoute, score, episodeExtras);
     }
   }
 
@@ -200,8 +308,55 @@ export class MycelialContextRouter {
     return [...this.lastRoute];
   }
 
+  getLastExplanation(): RouteExplanation | null {
+    return this.lastExplanation;
+  }
+
+  getLastContextPackage(): ContextPackage | null {
+    return this.lastContextPackage;
+  }
+
+  getLastClassification(): MyceliumTaskClassification | null {
+    return this.lastClassification;
+  }
+
+  /** Convenience for CLI / debug surfaces. */
+  formatLastExplanation(): string {
+    return this.lastExplanation ? formatRouteExplanation(this.lastExplanation) : '(no route selected yet)';
+  }
+
   stats(): ReturnType<MyceliumGraph['stats']> {
     return this.graph.stats();
+  }
+
+  /**
+   * Apply explicit user feedback (thumbs-up = 1.0, thumbs-down = 0.0,
+   * neutral = 0.5) to the most recent episode's route. Re-runs reinforcement
+   * with the feedback as `userSatisfaction`, which carries 10% of the
+   * reward formula. Episodes record `userFeedback` so the UI can show what
+   * was overridden.
+   */
+  applyUserFeedback(feedback: 'up' | 'down' | 'neutral', note?: string): { applied: boolean; previousReward?: number; newReward?: number } {
+    if (this.lastRoute.length === 0) return { applied: false };
+    const satisfaction = feedback === 'up' ? 1 : feedback === 'down' ? 0 : 0.5;
+    // Build a reward focused on user signal; other components default to neutral.
+    const reward = {
+      taskSuccess: feedback === 'down' ? 0.3 : 0.7,
+      correctness: feedback === 'down' ? 0.3 : 0.7,
+      usefulness: feedback === 'down' ? 0.2 : 0.8,
+      costEfficiency: 0.5,
+      userSatisfaction: satisfaction,
+    };
+    const previousEpisodes = this.graph.listEpisodes(1);
+    const previousReward = previousEpisodes[0]?.reward;
+    // Reinforce again with the feedback signal and tag the new episode.
+    this.reinforce(reward, { blockReason: note });
+    const newEpisodes = this.graph.listEpisodes(1);
+    if (newEpisodes[0]) {
+      // Tag the just-recorded episode with the explicit feedback channel.
+      (newEpisodes[0] as { userFeedback?: 'up' | 'down' | 'neutral' }).userFeedback = feedback;
+    }
+    return { applied: true, previousReward, newReward: newEpisodes[0]?.reward };
   }
 }
 

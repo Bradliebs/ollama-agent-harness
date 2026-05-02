@@ -24,6 +24,13 @@ export { MyceliumGraph, loadMyceliumGraph, saveMyceliumGraph } from './mycelium/
 export { MycelialContextRouter, createMycelialRouter, computeSemanticRelevance } from './mycelium/router';
 export { spreadActivation, selectRoute } from './mycelium/activation';
 export { reinforceRoute, weakenRoute, decayUnusedEdges, computeReward } from './mycelium/reinforcement';
+export { classifyTask, getExplorationRate, getNodeLimit, isHighRiskTaskType } from './mycelium/taskClassifier';
+export type { MyceliumTaskType, MyceliumTaskClassification } from './mycelium/taskClassifier';
+export { seedGenericGraph, SAFETY_NODES, GENERIC_AGENT_NODES, GENERIC_PROMPT_NODES, GENERIC_WORKFLOW_NODES, GENERIC_VERIFIER_NODES, USER_PREFERENCE_NODES, GENERIC_EDGES } from './mycelium/seeds';
+export { buildContextPackage, buildRouteExplanation, formatRouteExplanation } from './mycelium/contextPackage';
+export type { ContextPackage, ContextPackageItem, RouteExplanation } from './mycelium/contextPackage';
+export { heuristicVerifier } from './mycelium/verifier';
+export type { VerifierInput, VerifierResult } from './mycelium/verifier';
 export { BUILTIN_MODEL_CATALOG, getModelCatalog, getModelCatalogCacheStatus, listCatalogModels, readModelCatalogCache, validateModelCatalogManifest, writeModelCatalogCache } from './models/modelCatalog';
 export type { GetModelCatalogOptions, ModelCatalogCacheStatus, ModelCatalogManifest, ModelCatalogModel, ModelCatalogProvider } from './models/modelCatalog';
 export { discoverExtensionManifests } from './extensibility/extensionManifest';
