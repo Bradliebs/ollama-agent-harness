@@ -33,7 +33,7 @@
 - [x] verify-compaction-budget — Add a jest test asserting context compaction stays under the configured token budget across 3 sequential snip cycles
   - anchor: src/context/compaction.ts
   - target: src/context/compaction.test.ts
-- [ ] verify-tool-dispatch-parallel-reads — Add a jest test asserting two read-only tool calls run concurrently while a write tool serializes after them
+- [x] verify-tool-dispatch-parallel-reads — Add a jest test asserting two read-only tool calls run concurrently while a write tool serializes after them
   - anchor: src/tools/dispatcher.ts
   - target: src/tools/dispatcher.test.ts
 - [x] verify-task-loop-dry-run — Add a `--dry-run` mode to `cookbook/task-loop.ts` that prints what each iteration would do without invoking the model or git

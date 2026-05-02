@@ -73,6 +73,55 @@ describe('ToolDispatcher', () => {
     expect(order).toEqual(['first', 'second']);
   });
 
+  it('runs two read-only tools concurrently while a write tool serializes after them', async () => {
+    const order: string[] = [];
+    const read1 = makeTool('read1', true, async () => {
+      order.push('read1-start');
+      await new Promise((r) => setTimeout(r, 30));
+      order.push('read1-end');
+      return { success: true, output: 'read1 done' };
+    });
+    const read2 = makeTool('read2', true, async () => {
+      order.push('read2-start');
+      await new Promise((r) => setTimeout(r, 30));
+      order.push('read2-end');
+      return { success: true, output: 'read2 done' };
+    });
+    const write = makeTool('write', false, async () => {
+      order.push('write');
+      return { success: true, output: 'write done' };
+    });
+
+    const dispatcher = new ToolDispatcher([read1, read2, write]);
+    await dispatcher.dispatch([
+      { name: 'read1', input: {} },
+      { name: 'read2', input: {} },
+      { name: 'write', input: {} },
+    ]);
+
+    // Both read-only tools should start before either ends (parallel execution)
+    const read1StartIdx = order.indexOf('read1-start');
+    const read2StartIdx = order.indexOf('read2-start');
+    const read1EndIdx = order.indexOf('read1-end');
+    const read2EndIdx = order.indexOf('read2-end');
+    const writeIdx = order.indexOf('write');
+
+    // Both reads start before either ends
+    expect(read1StartIdx).toBeLessThan(read1EndIdx);
+    expect(read2StartIdx).toBeLessThan(read2EndIdx);
+    expect(read1StartIdx).toBeLessThan(read2EndIdx);
+    expect(read2StartIdx).toBeLessThan(read1EndIdx);
+
+    // Write happens only after both read-only tools complete
+    expect(writeIdx).toBeGreaterThan(read1EndIdx);
+    expect(writeIdx).toBeGreaterThan(read2EndIdx);
+
+    // Full sequence: both reads start, both reads end, then write
+    expect(order.slice(0, 2).sort()).toEqual(['read1-start', 'read2-start']);
+    expect(order.slice(2, 4).sort()).toEqual(['read1-end', 'read2-end']);
+    expect(order[4]).toBe('write');
+  });
+
   it('catches tool execution errors and returns them as results', async () => {
     const failing = makeTool('fail', false, async () => {
       throw new Error('kaboom');
