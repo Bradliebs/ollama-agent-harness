@@ -82,8 +82,9 @@ function parsePlan(filePath: string): Task[] {
   const content = readFileSync(filePath, "utf-8");
   const tasks: Task[] = [];
 
-  for (const line of content.split("\n")) {
-    const match = line.match(/^- \[(.)\] (\S+)\s*—\s*(.+)$/);
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+$/, "");
+    const match = line.match(/^- \[(.)\] (\S+)\s*[—\-]\s*(.+)$/);
     if (!match) continue;
 
     const [, marker, id, title] = match;
@@ -107,39 +108,68 @@ function writePlan(filePath: string, tasks: Task[]): void {
   writeFileSync(filePath, lines.join("\n") + "\n", "utf-8");
 }
 
-// --- Implementation — WIRE YOUR AI HERE ---
+// --- Implementation — wired to the local Ollama Agent Harness CLI ---
+
+const HARNESS_MODEL = process.env.HARNESS_MODEL ?? "gemma4:e4b";
+const HARNESS_HOST = process.env.HARNESS_HOST ?? "http://localhost:11434";
+const HARNESS_PERMISSION_MODE = process.env.HARNESS_PERMISSION_MODE ?? "acceptEdits";
+const HARNESS_MAX_TURNS = process.env.HARNESS_MAX_TURNS ?? "30";
+const HARNESS_VALIDATE_CMD = process.env.HARNESS_VALIDATE_CMD ?? "npm run typecheck";
 
 /**
- * Called once per task. Replace this body with your actual AI call.
- *
- * Example using the Anthropic SDK:
- *   const Anthropic = require("@anthropic-ai/sdk");
- *   const client = new Anthropic();
- *   const msg = await client.messages.create({
- *     model: "claude-sonnet-4-6",
- *     max_tokens: 4096,
- *     messages: [{ role: "user", content: `Implement this task: ${task.title}` }],
- *   });
- *   // write msg.content[0].text to the appropriate file
+ * Build the prompt sent to the harness for a single task. The harness has
+ * built-in file-edit tools and will work the task to completion under the
+ * configured permission mode.
  */
-function implementTask(task: Task): void {
-  // TODO: replace with your AI call (see comment above)
-  throw new Error(`implementTask not wired up — see the comment in this function for how to connect your AI for task: ${task.id}`);
+function buildTaskPrompt(task: Task): string {
+  return [
+    `You are working autonomously inside the Ollama Agent Harness repository.`,
+    `Implement the following task end-to-end, then stop:`,
+    ``,
+    `Task id:    ${task.id}`,
+    `Task title: ${task.title}`,
+    ``,
+    `Constraints:`,
+    `- Make the smallest change that satisfies the task.`,
+    `- Prefer hardening, verification, and tests over new features.`,
+    `- Do not modify IMPLEMENTATION_PLAN.md, .forge-state.json, or files under .copilot-tracking/.`,
+    `- When done, briefly summarize what you changed.`,
+  ].join("\n");
 }
 
-// --- Validation — WIRE YOUR CHECKS HERE ---
+/**
+ * Called once per task. Shells out to the harness CLI in headless mode.
+ * The CLI handles model calls, tool dispatch, file edits, and permissions.
+ */
+function implementTask(task: Task): void {
+  const prompt = buildTaskPrompt(task).replace(/"/g, '\\"');
+  const cmd = [
+    "npx ts-node src/cli/index.ts",
+    `--model "${HARNESS_MODEL}"`,
+    `--host "${HARNESS_HOST}"`,
+    `--mode ${HARNESS_PERMISSION_MODE}`,
+    `--max-turns ${HARNESS_MAX_TURNS}`,
+    `-p "${prompt}"`,
+  ].join(" ");
+
+  console.log(`[Ralph] >>> ${cmd}`);
+  execSync(cmd, { stdio: "inherit" });
+}
+
+// --- Validation — runs the project's own checks ---
 
 /**
- * Called after implementTask. Return true if the task output is acceptable.
- * Common choices: run your test suite, do a build check, or lint the output.
- *
- * Example:
- *   execSync("npm test", { stdio: "inherit" });
- *   return true; // if execSync didn't throw
+ * Returns true when the configured validation command exits 0.
+ * Override with HARNESS_VALIDATE_CMD (e.g. "npm test" or "npm run typecheck && npm test").
  */
 function validateTask(task: Task): boolean {
-  // TODO: replace with a real check (see comment above)
-  throw new Error(`validateTask not wired up — see the comment in this function for how to add validation for task: ${task.id}`);
+  console.log(`[Ralph] Validating ${task.id} via: ${HARNESS_VALIDATE_CMD}`);
+  try {
+    execSync(HARNESS_VALIDATE_CMD, { stdio: "inherit" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // --- Git Helpers ---
@@ -286,12 +316,43 @@ function ralphLoop(planPath: string, maxIterations: number = 10): void {
     console.log(`[Ralph] === Iteration ${iteration}/${maxIterations} ===`);
     console.log(`[Ralph] Picked task: ${pending.id} — "${pending.title}"`);
 
-    // Implement
-    implementTask(pending);
-    const implementedFile = join("src", `${pending.id}.ts`);
+    // Snapshot the working tree before implementation so we can stage
+    // exactly the files this task touched (no `git add -A`).
+    const beforeFiles = new Set(
+      execSync("git status --porcelain", { stdio: "pipe" })
+        .toString()
+        .split("\n")
+        .map((l) => l.slice(3).trim())
+        .filter(Boolean),
+    );
 
-    // Validate
-    const passed = validateTask(pending);
+    // Implement
+    let implementError: unknown = null;
+    try {
+      implementTask(pending);
+    } catch (err) {
+      implementError = err;
+      console.error(`[Ralph] implementTask threw for ${pending.id}:`, err instanceof Error ? err.message : err);
+    }
+
+    // Collect files changed during this iteration
+    const afterFiles = execSync("git status --porcelain", { stdio: "pipe" })
+      .toString()
+      .split("\n")
+      .map((l) => l.slice(3).trim())
+      .filter(Boolean);
+    const changedFiles = afterFiles.filter((f) => !beforeFiles.has(f) && !f.startsWith(".forge-state"));
+
+    // Validate (skip if implement crashed; treat as failure)
+    let passed = implementError ? false : validateTask(pending);
+
+    // No-op guard: a task that changed zero files is almost certainly a
+    // failed autonomous run (model refused, hallucinated completion, etc.).
+    // Do not mark such a task done.
+    if (passed && changedFiles.length === 0) {
+      console.warn(`[Ralph] ⚠️ ${pending.id} validated clean but produced 0 file changes — treating as failed.`);
+      passed = false;
+    }
 
     // Update status on disk
     const freshTasks = parsePlan(planPath);
@@ -303,8 +364,8 @@ function ralphLoop(planPath: string, maxIterations: number = 10): void {
 
     if (passed) {
       consecutiveFailures = 0;
-      console.log(`[Ralph] ✅ Task ${pending.id} passed — committing.`);
-      gitCommit(`feat: ${pending.id} — ${pending.title}`, [implementedFile]);
+      console.log(`[Ralph] ✅ Task ${pending.id} passed — committing ${changedFiles.length} file(s).`);
+      gitCommit(`chore(autonomy): ${pending.id} — ${pending.title}`, changedFiles);
     } else {
       consecutiveFailures++;
       totalFailures++;

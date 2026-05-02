@@ -22,7 +22,10 @@
     "release:manifest": "node scripts/release-manifest.js",
     "test": "jest",
     "typecheck": "tsc --noEmit",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "autonomy": "ts-node cookbook/task-loop.ts",
+    "autonomy:stop": "node -e \"require('fs').writeFileSync('.forge-stop','stop')\"",
+    "autonomy:reset": "node -e \"['.forge-stop','.forge-state.json'].forEach(f=>{try{require('fs').unlinkSync(f)}catch{}})\""
   },
   "keywords": [
     "ollama",

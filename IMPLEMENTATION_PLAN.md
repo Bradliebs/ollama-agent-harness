@@ -16,7 +16,7 @@
 - [x] implement-cli — Create interactive CLI entry point with streaming output and permission dialogs
 - [x] add-error-recovery — Add recovery mechanisms: retry with backoff, context overflow handling, graceful degradation
 - [x] add-tests — Write Jest test suite covering agent loop, permissions, tool dispatch, context, and persistence
-- [x] verify-doctor-clean — Run `harness doctor` and add any missing checks reported as warnings to the doctor output without changing public CLI flags
+- [ ] verify-doctor-clean — Run `harness doctor` and add any missing checks reported as warnings to the doctor output without changing public CLI flags
 - [ ] verify-headless-smoke — Add a `scripts/headless-smoke.js` that runs `harness -p "say hello"` against the configured model and exits non-zero on failure
 - [ ] verify-permissions-deny-first — Add a focused jest test under `src/permissions/` proving that a deny rule overrides an allow rule for the same tool/path
 - [ ] verify-session-resume-truncated — Add a jest test that resumes from a JSONL transcript whose last line is truncated mid-record, asserting no crash and a clean recovery
