@@ -11,6 +11,39 @@ keywords:
 estimated_reading_time: 8
 ---
 
+## v0.2.1 (2026-05-02)
+
+Patch release focused on autonomy-loop hardening, validation UX, and headless reliability after a session of bug-hunting.
+
+### Critical fixes
+- **Snapshot-restore data loss on Windows.** `git clean -fd -e '.forge-*'` was passing literal single quotes to git on cmd.exe, voiding the exclude. Every failed-iteration restore was silently wiping `.forge-history.jsonl` and `.forge-state.json`. Drop the quotes; pinned by `src/automation/taskLoopSnapshot.test.ts` + an end-to-end test that drives the actual `ralphLoop` failure path.
+- **`/api/chat` `done.reason` was misleading.** When output validation failed the loop still emitted `reason: 'completed'`, contradicting the FAIL findings the UI rendered. Now emits `reason: 'completed_with_validation_failures'` so the contradiction is machine-readable. UI surfaces it as a ⚠️ badge.
+- **`oracle-prime` validator rejecting legitimate coding work.** `oracle-prime` is the fallback profile for ambiguous prompts, but applying it to a session that wrote files produced FAIL findings for missing reasoning sections (REFRAME / SCENARIO MAP / etc) the user never asked for. Loop now silently auto-promotes `oracle-prime` → `coding-answer` when productive tools (file_write/file_edit) succeeded. Emits a new `output_validation_profile_promoted` SSE event so the swap is auditable.
+
+### UX
+- **"Preparing model..." pill stuck through tool-call phase.** The thinking element only updated on SSE keepalive comments and only got removed on `text` events. If the model went through tool calls first, users saw the static label for the entire run. Now updates on the first model event of any type (`tool_call → 'Calling tools...'`, `usage → 'Working...'`, `context → 'Compacting context...'`).
+- **Bare-filename writes now redirect to `agent-outputs/`.** `file_write` was letting the model dump scratch files (`run-all-analysis.js`, etc.) straight into the repo root, where they cluttered git status and were hard to find. New behavior: bare filename + no existing file → write goes to `<project>/agent-outputs/<filename>`. Existing files and explicit subdirectory paths are unchanged. Configurable via `HARNESS_AGENT_OUTPUT_DIR`. `agent-outputs/` is gitignored.
+
+### Autonomy loop
+- **`ralphLoop` is now exported with optional `RalphLoopHooks { implementTask?, validateTask? }`** so tests can drive the budget/halt/snapshot-restore control flow without spawning the real harness CLI. Production callers omit hooks and get unchanged behavior.
+- **`HARNESS_TIME_BUDGET_MS` halt path** now covered by `src/automation/taskLoopBudget.test.ts`.
+- **End-to-end snapshot-restore test** (`src/automation/taskLoopSnapshotE2E.test.ts`) drives the actual failure branch and asserts `.forge-history.jsonl` survives, stray files are wiped, and the plan is re-marked failed.
+
+### Headless smoke
+- **`scripts/headless-smoke.js` had four silent regressions** (wrong CLI path, no timeout, no `--mode dontAsk`, no `--unproductive-turn-limit`). All fixed. Wrapper now hardened with a 60s default timeout (`HARNESS_SMOKE_TIMEOUT_MS`), a build-presence check, and a `HARNESS_SMOKE_CLI_PATH` env override for tests.
+- **Wrapper-layer test suite** (`src/automation/headlessSmokeWrapper.test.ts`) pins the smoke wrapper's contracts so the same class of regression cannot recur silently.
+- **`npm run smoke:headless`** registered as a runnable script.
+
+### Repo hygiene
+- **`.gitignore` `*.js` exception is now `!scripts/*.js`** (blanket un-ignore) instead of per-file. Two real source files (`scripts/headless-smoke.js`, `scripts/autonomy-docker.js`) were silently dropped from `git status` by the per-file rules.
+- **`scripts/autonomy-docker.js`** added to tracked sources (was untracked).
+- **`cookbook/README.md`** documents the exported `ralphLoop` signature and `RalphLoopHooks` interface.
+
+### Test count
+- 559 → 572 (+13: snapshot/budget/auto-promote/wrapper/agent-outputs).
+
+---
+
 ## v0.2.0 (2026-05-01)
 
 Major release adding the mycelial context router, agent identity system, full autonomy mode, 5 new tools, automation CRUD, and beginner-friendly setup.

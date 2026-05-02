@@ -2117,6 +2117,7 @@ function welcomeMarkup() {
     + '<span class="welcome-tool-chip" onclick="document.getElementById(\'chatInput\').focus(); document.getElementById(\'chatInput\').value=\'/\'; autoSize(document.getElementById(\'chatInput\'));">/ slash commands</span>'
     + '</div>'
     + '<div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div>'
+    + '<div class="model-capability-hint" style="margin-top:6px">📁 New scratch files (e.g. <code>analysis.md</code>) are written to <code>agent-outputs/</code> so the repo root stays clean. Existing files and explicit subdirectory paths are unchanged.</div>'
     + '<details class="welcome-disclosure" id="welcomeFirstRun">'
     + '<summary>New here? Quick guided tour (2 minutes)</summary>'
     + '<div class="welcome-disclosure-body">'
