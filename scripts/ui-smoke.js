@@ -72,15 +72,18 @@ async function main() {
     await page.waitForFunction(() => Boolean(document.getElementById('learningCandidateQueue')));
     const learningWasVisible = await page.evaluate(() => getComputedStyle(document.getElementById('learningView')).display !== 'none');
     // Navigate remaining tabs to verify they render without errors
-    for (const tab of ['files', 'memory', 'snapshots', 'rag', 'runs', 'workflows', 'mycelium']) {
+    for (const tab of ['files', 'memory', 'snapshots', 'rag', 'runs', 'workflows']) {
       await page.evaluate((t) => showLeftTab(t, document.querySelector(`[onclick*="showLeftTab('${t}'"]`)), tab);
       await page.waitForTimeout(300);
     }
+    await page.evaluate(() => showLeftTab('mycelium', document.querySelector('[onclick*="showLeftTab(\'mycelium\'"]')));
+    await page.waitForFunction(() => document.getElementById('myceliumView')?.textContent.includes('Mycelium Network'));
+    const myceliumTabVisible = await page.evaluate(() => getComputedStyle(document.getElementById('myceliumView')).display !== 'none');
     // Navigate tools tab last so its dynamically-rendered panels don't
     // create duplicate IDs before the dedup check runs.
     await page.evaluate(() => showLeftTab('tools', document.querySelector('[onclick*="showLeftTab(\'tools\'"]')));
     await page.waitForTimeout(500);
-    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible }) => {
+    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible }) => {
       const ids = Array.from(document.querySelectorAll('[id]')).map((element) => element.id);
       // Dynamically-rendered panels may legitimately re-render with the same ID
       const dynamicPanelIds = new Set(['permissionPanel', 'capabilityAlignmentPanel', 'toolRegistryPanel', 'automationRunsSection', 'curatorRunsSection']);
@@ -138,6 +141,12 @@ async function main() {
         discoveryTabVisible: discoveryWasVisible,
         skillsTabVisible: skillsWasVisible,
         learningTabVisible: learningWasVisible,
+        myceliumTabVisible: myceliumWasVisible,
+        hasMyceliumView: Boolean(document.getElementById('myceliumView')),
+        hasMyceliumNetworkPanel: document.getElementById('myceliumView')?.textContent.includes('Mycelium Network'),
+        hasMyceliumRouteInspection: document.getElementById('myceliumView')?.textContent.includes('Last route') && document.getElementById('myceliumView')?.textContent.includes('Blocked routes'),
+        hasMyceliumGraphSections: document.getElementById('myceliumView')?.textContent.includes('Nodes') && document.getElementById('myceliumView')?.textContent.includes('Edges') && document.getElementById('myceliumView')?.textContent.includes('Episodes'),
+        hasMyceliumFunctions: typeof window.loadMycelium === 'function' && typeof window.resetMyceliumGraph === 'function',
         traceInspectButtons: document.querySelectorAll('#traceExports button').length,
         palaceAnchorButtons: document.querySelectorAll('.palace-anchor').length,
         hasLearningCandidateQueue: Boolean(document.getElementById('learningCandidateQueue')),
@@ -186,7 +195,7 @@ async function main() {
         hasApplyCalibrationFunction: typeof window.applyRoutingCalibration === 'function',
         duplicateIds,
       };
-    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible });
+    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible, myceliumWasVisible: myceliumTabVisible });
 
     const failures = [];
     if (!result.title.endsWith('Ollama Agent Harness')) failures.push(`Unexpected title: ${result.title}`);
@@ -242,6 +251,12 @@ async function main() {
     if (!result.discoveryTabVisible) failures.push('discovery tab did not become visible');
     if (!result.skillsTabVisible) failures.push('skills tab did not become visible');
     if (!result.learningTabVisible) failures.push('learning tab did not become visible');
+    if (!result.myceliumTabVisible) failures.push('mycelium tab did not become visible');
+    if (!result.hasMyceliumView) failures.push('mycelium view was not found');
+    if (!result.hasMyceliumNetworkPanel) failures.push('mycelium network panel did not render');
+    if (!result.hasMyceliumRouteInspection) failures.push('mycelium route inspection panels were not rendered');
+    if (!result.hasMyceliumGraphSections) failures.push('mycelium graph sections were not rendered');
+    if (!result.hasMyceliumFunctions) failures.push('mycelium functions were not found');
     if (!result.hasLearningCandidateQueue) failures.push('learning candidate queue was not rendered');
     if (!result.hasCandidateProvenanceDetail) failures.push('candidate provenance detail panel was not rendered');
     if (!result.hasEvalDatasetManager) failures.push('eval dataset manager was not rendered');
@@ -417,6 +432,11 @@ async function runStaticSmoke() {
     hasModelCapabilityHint: ids.includes('modelCapabilityHint'),
     hasAttachmentHint: ids.includes('attachmentHint'),
     hasMemoryPalace: ids.includes('memoryPalaceView'),
+    hasMyceliumView: ids.includes('myceliumView'),
+    hasMyceliumTab: html.includes("showLeftTab('mycelium'") && html.includes('Mycelium'),
+    hasMyceliumFunctions: appScript.includes('function loadMycelium') && appScript.includes('function resetMyceliumGraph'),
+    hasMyceliumRouteInspection: appScript.includes('Last route') && appScript.includes('Blocked routes') && appScript.includes('/api/mycelium/last-route'),
+    hasMyceliumGraphSections: appScript.includes('Nodes') && appScript.includes('Edges') && appScript.includes('Episodes'),
     hasTraceInspectorFunction: appScript.includes('function inspectTraceExport'),
     hasTraceFilterFunction: appScript.includes('function renderTraceInspector'),
     hasPalaceEntryFunction: appScript.includes('function loadPalaceEntry'),
@@ -486,6 +506,11 @@ async function runStaticSmoke() {
   if (!result.hasModelCapabilityHint) failures.push('model capability hint was not found');
   if (!result.hasAttachmentHint) failures.push('attachment hint was not found');
   if (!result.hasMemoryPalace) failures.push('memory palace view was not found');
+  if (!result.hasMyceliumView) failures.push('mycelium view was not found');
+  if (!result.hasMyceliumTab) failures.push('mycelium tab was not found');
+  if (!result.hasMyceliumFunctions) failures.push('mycelium functions were not found');
+  if (!result.hasMyceliumRouteInspection) failures.push('mycelium route inspection support was not found');
+  if (!result.hasMyceliumGraphSections) failures.push('mycelium graph section support was not found');
   if (!result.hasTraceInspectorFunction) failures.push('trace inspector function was not found');
   if (!result.hasTraceFilterFunction) failures.push('trace filtering function was not found');
   if (!result.hasPalaceEntryFunction) failures.push('palace entry function was not found');
