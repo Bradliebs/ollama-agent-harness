@@ -2,14 +2,42 @@
 title: Ollama Agent Harness Changelog
 description: Release notes generated from local RPI changes logs for Ollama Agent Harness
 author: Bradliebs
-ms.date: 2026-04-29
+ms.date: 2026-05-02
 ms.topic: reference
 keywords:
 	- ollama
 	- release notes
 	- changelog
-estimated_reading_time: 8
+estimated_reading_time: 9
 ---
+
+## v0.2.3 (2026-05-02)
+
+Hardening release on top of v0.2.2. Five batches of verification, one user-driven feature (`file_write` pattern redirects), no new chat-surface features. 12 new tests, 590/590 jest pass.
+
+### file_write pattern redirects (the headline)
+- **`File-Write Redirects` section in Settings.** Route any agent `file_write` whose path matches a glob into a chosen folder (typically a sibling repo). Solves the recurring "another agent keeps dropping files in my repo root" problem at the tool layer rather than relying on `.gitignore`. Persisted to `.harness/file-write-redirects.json`; env override via `HARNESS_FILE_WRITE_REDIRECTS`.
+- **Pattern syntax:** `*` matches any chars except `/`, `**` matches across separators, case-insensitive. First matching rule wins. Basename always preserved at destination.
+- **Rule preview.** Type a sample path → click 🔍 Preview → see which rule (if any) catches it and where the file would land. Reads from the form (not the server) so unsaved edits show. Catches typos like `lottery_*` (underscore) before saving.
+- **Priority:** user pattern rules > bare-filename `agent-outputs/` redirect > project root. Tool result message tells the agent where the file actually landed.
+- **API:** `GET /api/file-redirects` returns rules + source + envOverride flag; `POST /api/file-redirects` persists + invalidates cache; `POST /api/file-redirects/preview` is read-only (rules in body, NOT persisted).
+- **12 new tests** for the redirect logic (matching, ordering, fall-through, JSON tolerance, preview helper).
+
+### Doctor + smoke surfaces
+- **`harness doctor --watch [seconds]`.** Re-runs setup health on a fixed interval (default 5s, clamped 1..3600). Useful when toggling API keys in the UI to confirm doctor reflects them, or when bringing Ollama up/down. Watch mode stays exit 0 — it's a monitoring view, not a one-shot check.
+- **`npm run smoke:remote-backends`.** Exercises one cheap model per OpenAI-compatible backend (Cerebras, Groq, GitHub Models, Mistral, OpenRouter, OpenAI) end-to-end through the CLI. Skips backends with no configured key.
+- **`npm run diagnose:mistral`.** One-shot direct call to `api.mistral.ai` with a clear PASS/FAIL plus actionable hints for 401 (re-check key), 422 (try a different model id), 429 (rate limited).
+- **doctor → smoke discoverability.** `formatSetupHealth` now prints a tip pointing at `npm run smoke:remote-backends` when at least one backend is configured.
+- **UI/preset alignment smoke.** `scripts/ui-smoke.js` now cross-checks `REMOTE_API_KEY_FIELDS` (UI) against `OPENAI_COMPATIBLE_PRESETS` (factory) and reports orphan key entries with no backend client. Catches the v0.2.2 Anthropic drift bug class.
+- **Settings-collapse persistence smoke.** Five static checks assert `setupSettingsCollapse` exists, is invoked at init, reads + writes `settingsOpenSections`, and renders the search input.
+
+### API key surface (security + clarity)
+- **API-key leak protection tests.** Three jest tests assert that `GET /api/api-keys`, `POST` round-trip, and `POST` of disallowed key names never echo any secret value (file-stored or env-stored).
+- **File-source provenance preserved across env promotion.** `loadStoredApiKeys()` copies `.harness/api-keys.json` values into `process.env` so the chat client factory can read them. New `FILE_SOURCED_KEYS` tracker means `GET /api/api-keys` correctly reports `source: 'file'` for keys you entered through the UI, not the misleading `source: 'env'`. UI badge now shows `stored` instead of `from env`.
+- **Removed orphan Anthropic UI row.** No Anthropic chat client was wired in `OPENAI_COMPATIBLE_PRESETS` so saving a key there had no client to invoke. The env var name remains in `ALLOWED_API_KEY_NAMES` for autonomy-container passthrough.
+
+### Repo hygiene
+- Relocated unrelated lottery scripts (created in the Harness root by another agent session) to `C:/AI/Lottery-Toolkit/`. Broadened `.gitignore` to catch `lottery-*/`, `lottery-*.js`, `lottery-*.html`, and individual orphan filenames.
 
 ## v0.2.2 (2026-05-02)
 
