@@ -216,6 +216,12 @@ export function formatSetupHealth(result: SetupHealthResult): string {
   lines.push(formatHealthLine('Tools', result.local.tools.ok, result.local.tools.message));
   lines.push(formatHealthLine('Automations', result.local.automations.ok, result.local.automations.message));
   lines.push(formatHealthLine('Mycelium', result.local.mycelium.ok, result.local.mycelium.message));
+  if (result.backends && result.backends.length > 0) {
+    lines.push('Backends (OpenAI-compatible):');
+    for (const backend of result.backends) {
+      lines.push('  ' + formatHealthLine(backend.label, backend.ok, backend.message));
+    }
+  }
   return lines.join('\n');
 }
 

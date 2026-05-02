@@ -5,6 +5,7 @@ import * as path from 'path';
 import { AudioTranscribeTool } from '../tools/multimodalTools';
 import { PdfReadTool } from '../tools/pdfTool';
 import { createBuiltinToolRegistry } from '../tools/registry';
+import { OPENAI_COMPATIBLE_PRESETS, readApiKey } from '../core/chatClientFactory';
 
 export interface SetupHealthInput {
   host: string;
@@ -20,6 +21,21 @@ export interface LocalHealthCheck {
   message: string;
 }
 
+export interface BackendHealthCheck {
+  /** Backend identifier matching HARNESS_BACKEND values (cerebras, groq, github, ...). */
+  id: string;
+  /** Human-readable provider label. */
+  label: string;
+  /** True when an API key is present in one of the configured env vars. */
+  ok: boolean;
+  /** Status message shown by the doctor. */
+  message: string;
+  /** Env var that supplied the key, if any. Useful for debugging precedence. */
+  apiKeyEnvVar?: string;
+  /** Optional signup link for missing keys. */
+  signupUrl?: string;
+}
+
 export interface SetupHealthResult {
   ollama: { ok: boolean; message: string; modelCount: number };
   vision: { ok: boolean; message: string };
@@ -33,12 +49,21 @@ export interface SetupHealthResult {
     automations: LocalHealthCheck;
     mycelium: LocalHealthCheck;
   };
+  /**
+   * Auth check for each known OpenAI-compatible backend preset.
+   * Reports one entry per preset so the doctor surfaces "key present /
+   * not present" without making a network call. Backends that require a
+   * subscription still appear here as `ok: true` if the key is set; the
+   * subscription gate only triggers on actual chat calls.
+   */
+  backends: BackendHealthCheck[];
 }
 
 export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHealthResult> {
   const audio = await checkAudioHealth(input.audioTranscribeCommand, input.audioSamplePath);
   const pdfOcr = await checkPdfOcrHealth(input.pdfOcrCommand);
   const local = await checkLocalHealth(input.projectDir ?? process.cwd());
+  const backends = checkBackendAuth();
   try {
     const response = await new Ollama({ host: input.host }).list();
     const modelNames = response.models.map((model) => model.name);
@@ -60,6 +85,7 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
       audio,
       pdfOcr,
       local,
+      backends,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -69,8 +95,43 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
       audio,
       pdfOcr,
       local,
+      backends,
     };
   }
+}
+
+/**
+ * Inspect process.env to determine which OpenAI-compatible backends have a
+ * key configured. No network calls are made here — actual chat health is
+ * exercised by the agent loop on first use, and we want `harness doctor`
+ * to be fast and offline-safe.
+ */
+function checkBackendAuth(): BackendHealthCheck[] {
+  const checks: BackendHealthCheck[] = [];
+  for (const [id, preset] of Object.entries(OPENAI_COMPATIBLE_PRESETS)) {
+    const key = readApiKey(preset);
+    if (key) {
+      const sourceEnv = preset.apiKeyEnvVars.find((name) => process.env[name] && process.env[name]!.trim().length > 0);
+      checks.push({
+        id,
+        label: preset.label,
+        ok: true,
+        message: `API key configured (via ${sourceEnv}).`,
+        apiKeyEnvVar: sourceEnv,
+        signupUrl: preset.signupUrl,
+      });
+    } else {
+      const envVarList = preset.apiKeyEnvVars.join(' or ');
+      checks.push({
+        id,
+        label: preset.label,
+        ok: false,
+        message: `No API key. Set ${envVarList}${preset.signupUrl ? ` (get one at ${preset.signupUrl})` : ''}.`,
+        signupUrl: preset.signupUrl,
+      });
+    }
+  }
+  return checks;
 }
 
 async function checkLocalHealth(projectDir: string): Promise<SetupHealthResult['local']> {

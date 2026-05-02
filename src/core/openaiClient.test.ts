@@ -206,3 +206,99 @@ describe('OpenAIClient', () => {
     expect(toolMsg.tool_call_id).toBeDefined();
   });
 });
+
+describe('OpenAIClient streaming', () => {
+  function makeStreamResponse(chunks: string[]): Response {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      },
+    });
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      body,
+    } as unknown as Response;
+  }
+
+  it('yields content deltas as separate chunks and a final done chunk', async () => {
+    fetchSpy.mockResolvedValueOnce(makeStreamResponse([
+      'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]));
+    const client = new OpenAIClient({ baseUrl: 'https://x', apiKey: 'k', model: 'm' });
+    const chunks: Array<{ content: string; done: boolean; toolCalls?: unknown }> = [];
+    for await (const c of client.chatStream([{ role: 'user', content: 'hi' }])) chunks.push(c);
+
+    expect(chunks).toHaveLength(3);
+    expect(chunks[0]).toEqual({ content: 'Hel', done: false });
+    expect(chunks[1]).toEqual({ content: 'lo', done: false });
+    expect(chunks[2].done).toBe(true);
+    expect(chunks[2].toolCalls).toBeUndefined();
+  });
+
+  it('accumulates fragmented tool-call deltas across SSE frames', async () => {
+    fetchSpy.mockResolvedValueOnce(makeStreamResponse([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"file_read"}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"pa"}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\\":\\"README.md\\"}"}}]}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]));
+    const client = new OpenAIClient({ baseUrl: 'https://x', apiKey: 'k', model: 'm' });
+    const chunks = [];
+    for await (const c of client.chatStream([{ role: 'user', content: 'hi' }])) chunks.push(c);
+
+    const final = chunks[chunks.length - 1] as { done: boolean; toolCalls?: Array<{ function: { name: string; arguments: Record<string, unknown> } }> };
+    expect(final.done).toBe(true);
+    expect(final.toolCalls).toHaveLength(1);
+    expect(final.toolCalls?.[0].function.name).toBe('file_read');
+    expect(final.toolCalls?.[0].function.arguments).toEqual({ path: 'README.md' });
+  });
+
+  it('handles SSE frames split across read boundaries', async () => {
+    fetchSpy.mockResolvedValueOnce(makeStreamResponse([
+      'data: {"choices":[{"delta":{"content":"par',
+      't1"}}]}\n\ndata: {"choices":[{"delta":{"content":"part2"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]));
+    const client = new OpenAIClient({ baseUrl: 'https://x', apiKey: 'k', model: 'm' });
+    const text = [];
+    for await (const c of client.chatStream([{ role: 'user', content: 'hi' }])) {
+      if (c.content) text.push(c.content);
+    }
+    expect(text.join('')).toBe('part1part2');
+  });
+
+  it('skips malformed JSON frames without crashing', async () => {
+    fetchSpy.mockResolvedValueOnce(makeStreamResponse([
+      'data: not json\n\n',
+      'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]));
+    const client = new OpenAIClient({ baseUrl: 'https://x', apiKey: 'k', model: 'm' });
+    const text = [];
+    for await (const c of client.chatStream([{ role: 'user', content: 'hi' }])) {
+      if (c.content) text.push(c.content);
+    }
+    expect(text.join('')).toBe('hi');
+  });
+
+  it('throws a labelled error when the stream HTTP status is non-2xx', async () => {
+    fetchSpy.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      body: null,
+      text: async () => 'invalid_api_key',
+    } as unknown as Response);
+    const client = new OpenAIClient({
+      baseUrl: 'https://x', apiKey: 'k', model: 'm', providerLabel: 'TestProv',
+    });
+    const it = client.chatStream([{ role: 'user', content: 'hi' }]);
+    await expect(it.next()).rejects.toThrow(/TestProv stream HTTP 401/);
+  });
+});

@@ -38,6 +38,7 @@ describe('cli setup doctor', () => {
         automations: { ok: true, message: 'Automation storage is writable.' },
         mycelium: { ok: true, message: 'Mycelium graph is empty.' },
       },
+      backends: [],
     });
 
     expect(output).toContain('Setup doctor');
@@ -45,5 +46,29 @@ describe('cli setup doctor', () => {
     expect(output).toContain('WARN Vision: No vision model configured.');
     expect(output).toContain('OK Audio: Audio transcription command is configured.');
     expect(output).toContain('OK Automations: Automation storage is writable.');
+  });
+
+  it('renders the Backends section when at least one preset is reported', () => {
+    const output = formatSetupHealth({
+      ollama: { ok: true, message: 'ok', modelCount: 1 },
+      vision: { ok: false, message: 'no' },
+      audio: { ok: true, message: 'ok' },
+      local: {
+        node: { ok: true, message: 'ok' },
+        package: { ok: true, message: 'ok' },
+        sessions: { ok: true, message: 'ok' },
+        tools: { ok: true, message: 'ok' },
+        automations: { ok: true, message: 'ok' },
+        mycelium: { ok: true, message: 'ok' },
+      },
+      backends: [
+        { id: 'cerebras', label: 'Cerebras', ok: true, message: 'API key configured (via CEREBRAS_API_KEY).' },
+        { id: 'github', label: 'GitHub Models', ok: false, message: 'No API key. Set GITHUB_MODELS_TOKEN or GITHUB_TOKEN.' },
+      ],
+    });
+
+    expect(output).toContain('Backends (OpenAI-compatible):');
+    expect(output).toContain('OK Cerebras: API key configured');
+    expect(output).toContain('WARN GitHub Models: No API key.');
   });
 });

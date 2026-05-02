@@ -97,17 +97,120 @@ export class OpenAIClient implements IChatClient {
   }
 
   /**
-   * Single-event "stream" — collect the full response and yield it as one
-   * chunk. The agent loop already handles non-streaming gracefully and the
-   * UI does not depend on token-by-token streaming for OpenAI-compatible
-   * backends today.
+   * Real SSE streaming. Yields one StreamChunk per delta the provider
+   * emits. The final chunk has done=true. Tool-call deltas are
+   * accumulated by index because OpenAI streams them as fragmented JSON
+   * over multiple chunks (`name` arrives once, `arguments` builds up).
    */
   async *chatStream(messages: Message[], tools?: Tool[]): AsyncGenerator<StreamChunk> {
-    const result = await this.invoke(messages, tools);
+    const body: Record<string, unknown> = {
+      model: this.model,
+      messages: messages.map(toOpenAIMessage),
+      stream: true,
+    };
+    if (tools && tools.length > 0) body.tools = tools.map(toOpenAITool);
+
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${this.apiKey}`,
+          accept: 'text/event-stream',
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      clearTimeout(timeoutHandle);
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`${this.providerLabel} stream request failed: ${message}`);
+    }
+
+    if (!response.ok) {
+      clearTimeout(timeoutHandle);
+      let detail = '';
+      try { detail = await response.text(); } catch { /* ignore */ }
+      throw new Error(`${this.providerLabel} stream HTTP ${response.status}: ${detail || response.statusText}`);
+    }
+
+    if (!response.body) {
+      clearTimeout(timeoutHandle);
+      throw new Error(`${this.providerLabel} stream returned no body`);
+    }
+
+    // Accumulate tool-call deltas by their `index` because OpenAI sends
+    // pieces of the same call across chunks: index 0 gets {name}, then
+    // later chunks get {arguments: "..."} appended.
+    const toolCallAccum: Map<number, { id?: string; name: string; argumentsText: string }> = new Map();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      const reader = (response.body as unknown as ReadableStream<Uint8Array>).getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE frames are separated by \n\n. Split on that, keep the trailing partial.
+        let nlnl: number;
+        while ((nlnl = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, nlnl).trim();
+          buffer = buffer.slice(nlnl + 2);
+          if (!frame) continue;
+
+          // Each frame may have multiple lines; we only care about data: lines.
+          for (const line of frame.split(/\r?\n/)) {
+            if (!line.startsWith('data:')) continue;
+            const payload = line.slice(5).trim();
+            if (!payload || payload === '[DONE]') continue;
+            let parsed: any;
+            try { parsed = JSON.parse(payload); } catch { continue; }
+            const delta = parsed?.choices?.[0]?.delta;
+            if (!delta) continue;
+
+            const contentDelta = typeof delta.content === 'string' ? delta.content : '';
+
+            if (Array.isArray(delta.tool_calls)) {
+              for (const tcDelta of delta.tool_calls) {
+                const idx = typeof tcDelta.index === 'number' ? tcDelta.index : 0;
+                const existing = toolCallAccum.get(idx) ?? { name: '', argumentsText: '' };
+                if (tcDelta.id) existing.id = tcDelta.id;
+                if (tcDelta.function?.name) existing.name = tcDelta.function.name;
+                if (typeof tcDelta.function?.arguments === 'string') {
+                  existing.argumentsText += tcDelta.function.arguments;
+                }
+                toolCallAccum.set(idx, existing);
+              }
+            }
+
+            if (contentDelta) {
+              yield { content: contentDelta, done: false };
+            }
+          }
+        }
+      }
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
+
+    // Emit a final done chunk carrying any accumulated tool calls.
+    const finalToolCalls = Array.from(toolCallAccum.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([, tc]) => fromOpenAIToolCall({
+        id: tc.id,
+        function: { name: tc.name, arguments: tc.argumentsText },
+      }));
+
     yield {
-      content: typeof result.message.content === 'string' ? result.message.content : '',
+      content: '',
       done: true,
-      toolCalls: result.message.tool_calls,
+      toolCalls: finalToolCalls.length > 0 ? finalToolCalls : undefined,
     };
   }
 
