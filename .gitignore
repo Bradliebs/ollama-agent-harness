@@ -17,6 +17,10 @@ dist/
 .copilot-tracking/
 Network.md
 
+# Bare-filename agent writes (file_write redirects scratch output here so
+# it does not pile up at the repo root). Force-add intentional outputs.
+agent-outputs/
+
 # Local exploration / vendored sources / large binaries
 2604.14228v1.pdf
 hermes-agent-main/

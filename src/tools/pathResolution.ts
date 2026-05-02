@@ -32,6 +32,44 @@ export function getUploadsDir(): string {
   return path.join(process.cwd(), DEFAULT_UPLOADS_DIRNAME);
 }
 
+const DEFAULT_AGENT_OUTPUT_DIRNAME = 'agent-outputs';
+
+/**
+ * Resolve the agent-outputs directory. Honors HARNESS_AGENT_OUTPUT_DIR
+ * (absolute or project-relative) and falls back to <project>/agent-outputs.
+ * Used by file_write to corral bare-filename writes (e.g. analysis.md,
+ * run-all-analysis.js) into a single directory so the repo root does not
+ * become a dumping ground for model-generated files.
+ */
+export function getAgentOutputDir(): string {
+  const override = process.env.HARNESS_AGENT_OUTPUT_DIR?.trim();
+  if (override) {
+    return path.isAbsolute(override) ? override : path.resolve(process.cwd(), override);
+  }
+  return path.join(process.cwd(), DEFAULT_AGENT_OUTPUT_DIRNAME);
+}
+
+/**
+ * Decide whether a file_write target should be redirected to the
+ * agent-outputs directory. Returns the redirected absolute path, or null
+ * when the original path should be used as-is. Redirects only when:
+ *   - the path is a bare filename (no directory component), AND
+ *   - no file already exists at that bare name in the project root.
+ *
+ * This preserves intentional edits to existing files (package.json,
+ * tsconfig.json) and intentional writes to subdirectories
+ * (src/foo.ts, scripts/bar.js), while corralling new scratch files.
+ */
+export function maybeRedirectAgentOutput(rawPath: string): string | null {
+  const dir = path.dirname(rawPath);
+  if (dir !== '.' && dir !== '') return null;
+  const basename = path.basename(rawPath);
+  if (!basename) return null;
+  const directTarget = path.resolve(process.cwd(), basename);
+  if (fs.existsSync(directTarget)) return null;
+  return path.join(getAgentOutputDir(), basename);
+}
+
 export interface UploadsFallbackRecord {
   requested: string;
   resolved: string;

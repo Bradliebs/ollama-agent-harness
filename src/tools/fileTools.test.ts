@@ -163,4 +163,64 @@ describe('file tools bounds and path safety', () => {
       }
     });
   });
+
+  describe('agent-outputs redirect', () => {
+    // Pin to a test-only directory so tests never touch the real
+    // <project>/agent-outputs/.
+    const overrideDir = path.join(process.cwd(), '.harness', 'test-agent-outputs');
+
+    beforeEach(async () => {
+      await fs.rm(overrideDir, { recursive: true, force: true });
+      process.env.HARNESS_AGENT_OUTPUT_DIR = overrideDir;
+    });
+
+    afterEach(async () => {
+      delete process.env.HARNESS_AGENT_OUTPUT_DIR;
+      await fs.rm(overrideDir, { recursive: true, force: true });
+    });
+
+    it('redirects bare-filename writes for new files into the agent-outputs dir', async () => {
+      const bareName = `redir-${Date.now()}.txt`;
+      const result = await FileWriteTool.execute({ path: bareName, content: 'hello' });
+      expect(result.success).toBe(true);
+      const expected = path.join(overrideDir, bareName);
+      expect(result.output).toContain(expected);
+      expect(result.output).toContain('redirected from bare filename');
+      const written = await fs.readFile(expected, 'utf-8');
+      expect(written).toBe('hello');
+      // Must NOT have been written to the project root.
+      const rootStray = path.resolve(process.cwd(), bareName);
+      await expect(fs.access(rootStray)).rejects.toThrow();
+    });
+
+    it('does NOT redirect when the bare filename already exists at the project root', async () => {
+      // Create a sentinel file at the project root so we can prove the
+      // redirect respects existing files without ever touching package.json.
+      const sentinelName = `_redir-sentinel-${Date.now()}.txt`;
+      const sentinelPath = path.resolve(process.cwd(), sentinelName);
+      await fs.writeFile(sentinelPath, 'original', 'utf-8');
+      try {
+        const result = await FileWriteTool.execute({ path: sentinelName, content: 'updated' });
+        expect(result.success).toBe(true);
+        expect(result.output).not.toContain('redirected');
+        expect(result.output).toContain(sentinelPath);
+        const after = await fs.readFile(sentinelPath, 'utf-8');
+        expect(after).toBe('updated');
+      } finally {
+        await fs.rm(sentinelPath, { force: true });
+      }
+    });
+
+    it('does NOT redirect when the path has a directory component', async () => {
+      const subPath = path.join('.harness', 'test-agent-outputs-sub', `keep-${Date.now()}.txt`);
+      const result = await FileWriteTool.execute({ path: subPath, content: 'subdir' });
+      try {
+        expect(result.success).toBe(true);
+        expect(result.output).not.toContain('redirected');
+        expect(result.output).toContain(path.resolve(process.cwd(), subPath));
+      } finally {
+        await fs.rm(path.dirname(path.resolve(process.cwd(), subPath)), { recursive: true, force: true });
+      }
+    });
+  });
 });

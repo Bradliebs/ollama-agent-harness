@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
-import { getUploadsDir, resolveProjectPath, resolveProjectReadPath } from './pathResolution';
+import { getUploadsDir, maybeRedirectAgentOutput, resolveProjectPath, resolveProjectReadPath } from './pathResolution';
 
 const DEFAULT_MAX_READ_BYTES = 100_000;
 const MAX_ALLOWED_READ_BYTES = 1_000_000;
@@ -55,7 +55,12 @@ export const FileWriteTool: Tool = {
   },
   isReadOnly: false,
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
-    const filePath = resolveProjectPath(input.path);
+    const rawPath = String(input.path ?? '');
+    // Bare-filename writes for new files get redirected into agent-outputs/
+    // so the repo root does not become a dumping ground. Preserves intentional
+    // writes to existing files and to explicit subdirectories.
+    const redirected = maybeRedirectAgentOutput(rawPath);
+    const filePath = redirected ?? resolveProjectPath(input.path);
     if (!filePath) {
       return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
     }
@@ -66,7 +71,8 @@ export const FileWriteTool: Tool = {
     try {
       await fs.mkdir(path.dirname(filePath), { recursive: true });
       await fs.writeFile(filePath, content, 'utf-8');
-      return { success: true, output: `Wrote ${content.length} chars to '${filePath}'` };
+      const note = redirected ? ` (redirected from bare filename to agent-outputs/)` : '';
+      return { success: true, output: `Wrote ${content.length} chars to '${filePath}'${note}` };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return { success: false, output: `Failed to write '${filePath}': ${msg}`, error: msg };
