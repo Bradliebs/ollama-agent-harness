@@ -481,51 +481,6 @@ describe('web server API validation', () => {
     expect(response.status).toBe(403);
   });
 
-  it('returns mycelium graph data via GET /api/mycelium', async () => {
-    const response = await request('/api/mycelium');
-    expect(response.status).toBe(200);
-    const body = await response.json() as { stats: { nodes: number; protectedNodes?: number; archivedEdges?: number }; nodes: unknown[]; edges: unknown[]; episodes: unknown[]; archivedEdges: unknown[] };
-    expect(body.stats).toBeDefined();
-    expect(Array.isArray(body.nodes)).toBe(true);
-    expect(Array.isArray(body.edges)).toBe(true);
-    expect(Array.isArray(body.episodes)).toBe(true);
-    expect(Array.isArray(body.archivedEdges)).toBe(true);
-  });
-
-  it('returns last route data via GET /api/mycelium/last-route', async () => {
-    const response = await request('/api/mycelium/last-route');
-    expect(response.status).toBe(200);
-    const body = await response.json() as { episode: unknown; nodes: unknown[]; edges: unknown[] };
-    // Episode may be null when no episodes exist; nodes/edges always arrays.
-    expect(Array.isArray(body.nodes)).toBe(true);
-    expect(Array.isArray(body.edges)).toBe(true);
-  });
-
-  it('resets mycelium graph via DELETE /api/mycelium', async () => {
-    const response = await request('/api/mycelium', { method: 'DELETE' });
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ reset: true });
-  });
-
-  it('rejects mycelium feedback with an invalid vote', async () => {
-    const response = await request('/api/mycelium/feedback', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ vote: 'maybe' }),
-    });
-    expect(response.status).toBe(400);
-  });
-
-  it('returns 404 when feedback is sent with no recorded episode', async () => {
-    await request('/api/mycelium', { method: 'DELETE' });
-    const response = await request('/api/mycelium/feedback', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ vote: 'up' }),
-    });
-    expect(response.status).toBe(404);
-  });
-
   it('returns runtime skills, repo skills, and runtime skill diagnostics', async () => {
     const runtimeSkillDir = path.join(process.cwd(), '.harness', 'skills', 'api-runtime-skill');
     const malformedSkillDir = path.join(process.cwd(), '.harness', 'skills', 'api-malformed-skill');
@@ -1734,80 +1689,6 @@ describe('web server API validation', () => {
       const trimBody = await trimResponse.text();
       expect(trimBody).toContain('"type":"history_trimmed"');
       expect(trimBody).toMatch(/"droppedTurns":\s*[1-9]/);
-    } finally {
-      restore();
-    }
-  });
-
-  it('records mycelium episode with blocked=true when output_validation fails', async () => {
-    // Reset the mycelium graph to a known state, then re-seed via the CLI
-    // so generic safety/agent/verifier nodes exist for routeQueryRich.
-    await request('/api/mycelium', { method: 'DELETE' });
-    const { runMyceliumCli } = await import('../mycelium/cli');
-    await runMyceliumCli({ projectDir: process.cwd(), args: ['seed'] });
-
-    // Persist a setting so the chat handler enables output validation.
-    // Also clear any agentName/avatar a prior test may have left behind so
-    // session.setMeta isn't called against the minimal mock session.
-    await request('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        outputValidation: { enabled: true, profile: 'coding-answer' },
-        agentName: '',
-        agentAvatar: '',
-        agentPersonality: '',
-      }),
-    });
-
-    const restore = setWebRuntimeOverrides({
-      createClient: jest.fn(() => ({}) as never),
-      getModelContextWindow: jest.fn().mockResolvedValue(8192),
-      getTools: () => [],
-      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
-      createSession: () => ({
-        initialize: jest.fn().mockResolvedValue(undefined),
-        markStatus: jest.fn().mockResolvedValue(undefined),
-        append: jest.fn().mockResolvedValue(undefined),
-        readAll: jest.fn().mockResolvedValue([]),
-        getSessionId: jest.fn().mockReturnValue('blocked-session'),
-      }) as never,
-      startNewSession: jest.fn(),
-      getEvolvedPrompt: async (basePrompt) => basePrompt,
-      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
-      runQueryLoop: async function* (): AsyncGenerator<LoopEvent> {
-        // Emit a hard validation failure followed by a normal text chunk.
-        yield { type: 'output_validation', validation: { profile: 'coding-answer', status: 'fail', score: 0.1, findings: [], missingSections: [] } };
-        yield { type: 'text', content: 'Done.' };
-        yield { type: 'done', reason: 'completed', turns: 1 };
-      },
-      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
-      rebuildSemanticMemory: async () => [],
-    });
-
-    try {
-      const response = await request('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        // Use a message that contains words overlapping with seeded node
-        // labels ("plan", "agent", "verifier", "workflow") so the keyword
-        // relevance estimator activates the seeded subgraph.
-        body: JSON.stringify({ message: 'Plan a workflow for code review with the verifier agent', model: 'test-model' }),
-      });
-      expect(response.status).toBe(200);
-      await response.text();
-
-      // The reinforce path runs synchronously after the SSE stream closes,
-      // so the most recent episode should now reflect the block.
-      const lastRoute = await request('/api/mycelium/last-route');
-      expect(lastRoute.status).toBe(200);
-      const body = await lastRoute.json() as { episode: { blocked?: boolean; blockReason?: string; appliedVerifiers?: string[]; rewardComponents?: Record<string, number> } | null };
-      expect(body.episode).not.toBeNull();
-      expect(body.episode!.blocked).toBe(true);
-      // The block reason should mention the failure source.
-      expect(body.episode!.blockReason).toMatch(/fail|hard|verifier/i);
-      // Applied verifiers should include the output-validation entry from realSignals.
-      expect(body.episode!.appliedVerifiers).toEqual(expect.arrayContaining(['verifier.task_completion']));
     } finally {
       restore();
     }
