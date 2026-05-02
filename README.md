@@ -197,4 +197,5 @@ All runtime state goes under `.harness/` in your project directory:
 * **[START-HERE.md](START-HERE.md)** — complete beginner guide (install Node.js, install Ollama, first chat)
 * [Model presets guide](docs/MODEL-PRESETS.md) — beginner-friendly model recommendations
 * [Validation profiles](docs/VALIDATION-PROFILES.md) — output validation reference
+* [Mycelium router](docs/MYCELIUM-ROUTER.md) — adaptive context routing reference
 * [GitHub Releases](https://github.com/Bradliebs/ollama-agent-harness/releases/latest) — download the latest release

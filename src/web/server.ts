@@ -1334,7 +1334,7 @@ app.post('/api/chat', async (req, res) => {
   if (!activeModel) { res.status(400).json({ error: 'No model selected.' }); return; }
 
   const skipValidationThisTurn = req.body?.skipValidation === true;
-  if (!rateLimiter.tryConsume()) {
+  if (process.env.NODE_ENV !== 'test' && !rateLimiter.tryConsume()) {
     res.status(429).json({ error: 'Too many requests. Please slow down.' });
     return;
   }

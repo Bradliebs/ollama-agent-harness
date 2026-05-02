@@ -750,18 +750,47 @@ describe('web server API validation', () => {
   });
 
   it('lists workflows from .harness/workflows and returns enriched runs', async () => {
-    const list = await request('/api/workflows');
-    expect(list.status).toBe(200);
-    const data = await list.json() as { workflows: Array<{ name: string; stepCount: number; riskLevel?: string }> };
-    expect(data.workflows.length).toBeGreaterThan(0);
-    const sample = data.workflows.find((w) => w.name === 'project_health_check');
-    expect(sample?.stepCount).toBeGreaterThan(0);
+    const workflowsDir = path.join(process.cwd(), '.harness', 'workflows');
+    const workflowPath = path.join(workflowsDir, 'project_health_check.yaml');
+    let originalWorkflow: string | null = null;
+    try {
+      originalWorkflow = await fs.readFile(workflowPath, 'utf-8');
+    } catch {
+      originalWorkflow = null;
+    }
 
-    const runsBefore = await request('/api/runs');
-    expect(runsBefore.status).toBe(200);
-    const runsBody = await runsBefore.json() as { runs: unknown[]; counts: Record<string, number>; total: number };
-    expect(Array.isArray(runsBody.runs)).toBe(true);
-    expect(typeof runsBody.total).toBe('number');
+    try {
+      await fs.mkdir(workflowsDir, { recursive: true });
+      await fs.writeFile(workflowPath, [
+        'name: project_health_check',
+        'description: Test workflow fixture.',
+        'risk_level: low',
+        'steps:',
+        '  - id: list',
+        '    tool: list_files',
+        '    input:',
+        '      path: .',
+      ].join('\n'), 'utf-8');
+
+      const list = await request('/api/workflows');
+      expect(list.status).toBe(200);
+      const data = await list.json() as { workflows: Array<{ name: string; stepCount: number; riskLevel?: string }> };
+      expect(data.workflows.length).toBeGreaterThan(0);
+      const sample = data.workflows.find((w) => w.name === 'project_health_check');
+      expect(sample?.stepCount).toBeGreaterThan(0);
+
+      const runsBefore = await request('/api/runs');
+      expect(runsBefore.status).toBe(200);
+      const runsBody = await runsBefore.json() as { runs: unknown[]; counts: Record<string, number>; total: number };
+      expect(Array.isArray(runsBody.runs)).toBe(true);
+      expect(typeof runsBody.total).toBe('number');
+    } finally {
+      if (originalWorkflow === null) {
+        await fs.rm(workflowPath, { force: true });
+      } else {
+        await fs.writeFile(workflowPath, originalWorkflow, 'utf-8');
+      }
+    }
   });
 
   it('exposes curator state, runs preview, and toggles pin', async () => {
