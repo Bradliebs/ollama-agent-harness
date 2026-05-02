@@ -30,7 +30,7 @@
 - [x] verify-session-resume-truncated — Add a jest test that resumes from a JSONL transcript whose last line is truncated mid-record, asserting no crash and a clean recovery
   - anchor: src/persistence/sessionStorage.ts
   - target: src/persistence/sessionStorage.test.ts
-- [ ] verify-compaction-budget — Add a jest test asserting context compaction stays under the configured token budget across 3 sequential snip cycles
+- [x] verify-compaction-budget — Add a jest test asserting context compaction stays under the configured token budget across 3 sequential snip cycles
   - anchor: src/context/compaction.ts
   - target: src/context/compaction.test.ts
 - [ ] verify-tool-dispatch-parallel-reads — Add a jest test asserting two read-only tool calls run concurrently while a write tool serializes after them

@@ -3,6 +3,33 @@ import { estimateTokenCount } from './assembly';
 import type { Message } from 'ollama';
 
 describe('Context Compaction', () => {
+  describe('verify-compaction-budget', () => {
+    it('stays under the configured token budget across 3 sequential snip cycles', () => {
+      const maxTokens = 500;
+      // Create messages that will exceed the budget
+      const messages: Message[] = [
+        { role: 'system', content: 'system prompt' },
+        { role: 'user', content: 'x'.repeat(200) },
+        { role: 'assistant', content: 'y'.repeat(200) },
+        { role: 'user', content: 'x'.repeat(200) },
+        { role: 'assistant', content: 'y'.repeat(200) },
+        { role: 'user', content: 'x'.repeat(200) },
+        { role: 'assistant', content: 'y'.repeat(200) },
+        { role: 'user', content: 'x'.repeat(200) },
+        { role: 'assistant', content: 'y'.repeat(200) },
+        { role: 'user', content: 'latest' },
+      ];
+
+      let current = messages;
+      for (let i = 0; i < 3; i++) {
+        const snipResult = applySnip(current, 4);
+        current = snipResult.messages;
+        const tokenCount = estimateTokenCount(current);
+        expect(tokenCount).toBeLessThanOrEqual(maxTokens);
+      }
+    });
+  });
+
   describe('applyBudgetReduction', () => {
     it('truncates oversized tool results', () => {
       const longContent = 'x'.repeat(10_000);
