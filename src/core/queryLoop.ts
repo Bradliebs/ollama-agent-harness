@@ -115,7 +115,7 @@ export async function* queryLoop(
     let assistantMessage: Message;
     const modelSpan = tracer?.startSpan('model.chat', { model: config.model, turn });
     try {
-      const result = await client.chat(messages, ollamaTools);
+      const result = await client.chat(messages, ollamaTools, abortSignal);
       assistantMessage = result.message;
       modelSpan?.end('ok', { toolCalls: assistantMessage.tool_calls?.length ?? 0 });
       // Surface per-call telemetry so the UI can render an inline footer

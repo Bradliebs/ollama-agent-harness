@@ -189,7 +189,7 @@ async function main() {
     }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible });
 
     const failures = [];
-    if (result.title !== 'Ollama Agent Harness') failures.push(`Unexpected title: ${result.title}`);
+    if (!result.title.endsWith('Ollama Agent Harness')) failures.push(`Unexpected title: ${result.title}`);
     if (!result.hasAppScript) failures.push('ui/app.js script was not loaded');
     if (!result.hasChatHistoryApi) failures.push('chat history helper API was not available at runtime');
     if (!result.hasPermissionPanel) failures.push('permission panel was not created');

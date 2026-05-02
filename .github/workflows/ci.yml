@@ -34,6 +34,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Smoke transport
+        run: npm run smoke:transport
+
       - name: Install browser for interactive smoke
         run: npx playwright install --with-deps chromium
 

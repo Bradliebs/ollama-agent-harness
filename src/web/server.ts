@@ -1279,10 +1279,18 @@ app.post('/api/chat', async (req, res) => {
   // SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
+  // Use 'close' rather than 'keep-alive' for SSE: keep-alive on a stream
+  // that ends quickly can race with undici's connection reuse on the
+  // client side and surface as `TypeError: terminated` mid-body. SSE works
+  // fine over a single connection that closes when the stream ends.
+  res.setHeader('Connection', 'close');
   res.flushHeaders();
   const abortController = new AbortController();
-  req.on('close', () => {
+  // Use res.on('close') instead of req.on('close') on POST SSE routes:
+  // req 'close' can fire as soon as the request body is fully consumed,
+  // before any SSE event is written, which would abort the stream
+  // immediately and surface as `TypeError: terminated` on the client.
+  res.on('close', () => {
     if (!res.writableEnded) abortController.abort();
   });
 
@@ -1381,6 +1389,11 @@ app.post('/api/chat', async (req, res) => {
       customProfiles: customOutputValidationProfiles,
     },
   };
+
+  const keepAlive = setInterval(() => {
+    if (!res.writableEnded) res.write(': keepalive\n\n');
+  }, 15_000);
+  keepAlive.unref?.();
   const session = webRuntime.createSession(projectDir, activeModel);
   if (agentName) session.setMeta('agentName', agentName);
   if (agentAvatar) session.setMeta('agentAvatar', agentAvatar);
@@ -1547,6 +1560,8 @@ app.post('/api/chat', async (req, res) => {
     const msg = error instanceof Error ? error.message : String(error);
     logger.error('Chat', 'Loop error', { error: msg });
     res.write(`data: ${JSON.stringify({ type: 'error', message: msg, recoverable: false })}\n\n`);
+  } finally {
+    clearInterval(keepAlive);
   }
 
   // Auto-reflection: analyze this session's tool usage (runs silently, non-blocking)

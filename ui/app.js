@@ -1339,6 +1339,7 @@ async function sendMessage() {
   sendBtn.textContent = '■';
   sendBtn.title = 'Stop';
   const thinkEl = addThinking();
+  updateThinkingStatus(thinkEl, 'Preparing model...');
   try {
     const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text, model, skipValidation: skipValidationOnce, history: outboundChatHistory(), attachments: attachmentsForTurn }), signal: activeChatController.signal });
     const reader = res.body.getReader();
@@ -1347,6 +1348,7 @@ async function sendMessage() {
     let msgEl = null;
     let toolBox = null;
     let buf = '';
+    let sawModelEvent = false;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -1354,11 +1356,16 @@ async function sendMessage() {
       const lines = buf.split('\n');
       buf = lines.pop() || '';
       for (const line of lines) {
+        if (line.startsWith(':')) {
+          if (!sawModelEvent) updateThinkingStatus(thinkEl, 'Model is loading or evaluating the prompt...');
+          continue;
+        }
         if (!line.startsWith('data: ')) continue;
         const payload = line.slice(6);
         if (payload === '[DONE]') continue;
         let ev;
         try { ev = JSON.parse(payload); } catch { continue; }
+        sawModelEvent = true;
         switch (ev.type) {
           case 'text':
             thinkEl.remove();
@@ -1707,7 +1714,8 @@ function renderMd(el, text) {
   });
 }
 
-function addThinking() { const area = document.getElementById('chatArea'); const el = document.createElement('div'); el.className = 'thinking'; el.innerHTML = '<div class="dots"><span></span><span></span><span></span></div> Thinking...'; area.appendChild(el); scrollBottom(); return el; }
+function addThinking() { const area = document.getElementById('chatArea'); const el = document.createElement('div'); el.className = 'thinking'; el.innerHTML = '<div class="dots"><span></span><span></span><span></span></div> <span class="thinking-status">Thinking...</span>'; area.appendChild(el); scrollBottom(); return el; }
+function updateThinkingStatus(el, text) { const status = el && el.querySelector ? el.querySelector('.thinking-status') : null; if (status) status.textContent = text; }
 function scrollBottom() { const a = document.getElementById('chatArea'); a.scrollTop = a.scrollHeight; }
 
 // ─── Per-message metadata footer + session totals HUD ──────────────────
