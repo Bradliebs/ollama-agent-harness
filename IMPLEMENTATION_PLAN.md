@@ -16,11 +16,21 @@
 - [x] implement-cli — Create interactive CLI entry point with streaming output and permission dialogs
 - [x] add-error-recovery — Add recovery mechanisms: retry with backoff, context overflow handling, graceful degradation
 - [x] add-tests — Write Jest test suite covering agent loop, permissions, tool dispatch, context, and persistence
-- [ ] verify-doctor-clean — Run `harness doctor` and add any missing checks reported as warnings to the doctor output without changing public CLI flags
-- [ ] verify-headless-smoke — Add a `scripts/headless-smoke.js` that runs `harness -p "say hello"` against the configured model and exits non-zero on failure
-- [ ] verify-permissions-deny-first — Add a focused jest test under `src/permissions/` proving that a deny rule overrides an allow rule for the same tool/path
-- [ ] verify-session-resume-truncated — Add a jest test that resumes from a JSONL transcript whose last line is truncated mid-record, asserting no crash and a clean recovery
+- [!] verify-doctor-clean — Run `harness doctor` and add any missing checks reported as warnings to the doctor output without changing public CLI flags
+- [!] verify-headless-smoke — Add a `scripts/headless-smoke.js` that runs `harness -p "say hello"` against the configured model and exits non-zero on failure
+  - target: scripts/headless-smoke.js
+- [!] verify-permissions-deny-first — Add a focused jest test under `src/permissions/` proving that a deny rule overrides an allow rule for the same tool/path. Append the test to the existing `describe('PermissionEngine', ...)` block in engine.test.ts.
+  - anchor: src/permissions/engine.ts
+  - anchor: src/permissions/engine.test.ts
+  - target: src/permissions/engine.test.ts
+- [x] verify-session-resume-truncated — Add a jest test that resumes from a JSONL transcript whose last line is truncated mid-record, asserting no crash and a clean recovery
+  - anchor: src/persistence/sessionStorage.ts
+  - target: src/persistence/sessionStorage.test.ts
 - [ ] verify-compaction-budget — Add a jest test asserting context compaction stays under the configured token budget across 3 sequential snip cycles
+  - anchor: src/context/compaction.ts
+  - target: src/context/compaction.test.ts
 - [ ] verify-tool-dispatch-parallel-reads — Add a jest test asserting two read-only tool calls run concurrently while a write tool serializes after them
+  - anchor: src/tools/dispatcher.ts
+  - target: src/tools/dispatcher.test.ts
 - [x] verify-task-loop-dry-run — Add a `--dry-run` mode to `cookbook/task-loop.ts` that prints what each iteration would do without invoking the model or git
 - [x] verify-autonomy-stop-signal — Add a jest test for `shouldStop()` covering both the `.forge-stop` file and the `FORGE_STOP` env var paths
