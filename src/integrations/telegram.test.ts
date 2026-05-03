@@ -1,4 +1,7 @@
-import { buildTelegramEmptyModelResponse, normalizeTelegramChatText, summarizeTelegramToolResult } from './telegram';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+import { buildTelegramEmptyModelResponse, getTelegramPollingLockInfo, normalizeTelegramChatText, summarizeTelegramToolResult } from './telegram';
 
 describe('Telegram bridge responses', () => {
   it('summarizes successful tool results when the model returns empty final text', () => {
@@ -30,6 +33,7 @@ describe('Telegram bridge responses', () => {
 
   it('normalizes journal slash commands into readable chat requests', () => {
     expect(normalizeTelegramChatText('/add cut up decking')).toContain('Add a task to my bullet journal to cut up decking');
+    expect(normalizeTelegramChatText('/complete cut up decking')).toContain('Close task cut up decking');
     expect(normalizeTelegramChatText('/log')).toContain('concise, readable summary');
   });
 
@@ -37,5 +41,17 @@ describe('Telegram bridge responses', () => {
     expect(summarizeTelegramToolResult('list_files', true, '[file] journal.md')).toBe('');
     expect(summarizeTelegramToolResult('bash', true, 'STDOUT: + Task added: Cut up decking')).toBe('✅ Added task: Cut up decking');
     expect(summarizeTelegramToolResult('bash', true, 'STDOUT: [OK] Telegram message sent successfully!')).toBe('');
+  });
+
+  it('reports active Telegram poller lock ownership', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-telegram-lock-'));
+    await fs.mkdir(path.join(projectDir, '.harness'), { recursive: true });
+    await fs.writeFile(path.join(projectDir, '.harness', 'telegram-poller.lock.json'), JSON.stringify({ pid: process.pid }), 'utf-8');
+
+    expect(getTelegramPollingLockInfo(projectDir)).toMatchObject({
+      pid: process.pid,
+      active: true,
+      ownedByCurrentProcess: true,
+    });
   });
 });

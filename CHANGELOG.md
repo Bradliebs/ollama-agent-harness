@@ -11,6 +11,21 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.6
+
+Patch release for Telegram response cleanup and duplicate-poller diagnostics.
+
+### Telegram reliability
+
+* Added a local Telegram poller lock so duplicate Harness server processes do not silently compete for bot updates.
+* Exposed Telegram poller lock status through `/api/telegram/status` for faster diagnostics.
+* Updated Telegram `/help` with bullet journal shortcuts: `/add`, `/complete`, and `/log`.
+
+### Tool-only responses
+
+* Cleaned Telegram fallback replies so internal tool output such as `skill`, `list_files`, `file_read`, and `recall` is not shown to users.
+* Added readable terminal and browser fallbacks when a model completes a tool-only turn without final text.
+
 ## Ollama Agent Harness v0.3.5
 
 Patch release for CI release validation and release metadata accuracy.

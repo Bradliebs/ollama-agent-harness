@@ -55,7 +55,7 @@ import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/ro
 import { heuristicVerifier } from '../mycelium/verifier';
 import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
 import { appendRunEvidence, readRunEvidence, type StoredRunEvidence } from '../persistence/evidenceStore';
-import { startTelegramBot, stopTelegramBot, isTelegramBotRunning, sendTelegramNotification, loadPersistedChatIds } from '../integrations/telegram';
+import { startTelegramBot, stopTelegramBot, isTelegramBotRunning, sendTelegramNotification, loadPersistedChatIds, getTelegramPollingLockInfo } from '../integrations/telegram';
 import { addWebhook, removeWebhook, listWebhooks, loadWebhooksFromEnv, sendWebhookNotification } from '../integrations/webhooks';
 import { NervousSystemController } from '../nervous';
 import { listShellCommandAllowlistPresets } from '../automation/runner';
@@ -1364,6 +1364,7 @@ app.get('/api/telegram/status', (_req, res) => {
     configured: Boolean(telegramBotToken),
     running: isTelegramBotRunning(),
     hasAllowedChatIds: Boolean(telegramAllowedChatIds),
+    pollingLock: getTelegramPollingLockInfo(PROJECT_DIR),
   });
 });
 

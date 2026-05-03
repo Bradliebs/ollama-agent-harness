@@ -14,14 +14,18 @@
 
 import TelegramBot from 'node-telegram-bot-api';
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
 import * as path from 'path';
 import { logger } from '../core/logger';
 
 const MAX_TELEGRAM_MESSAGE_LENGTH = 4096;
+const TELEGRAM_LOCK_FILENAME = '.harness/telegram-poller.lock.json';
 
 let activeBotInstance: TelegramBot | null = null;
 let activeBotToken = '';
 let activeServerUrl = '';
+let activeLockPath = '';
+let ownsPollingLock = false;
 /** Chat IDs that have sent at least one message — used for broadcast notifications. */
 const knownChatIds = new Set<string>();
 
@@ -34,6 +38,8 @@ export function startTelegramBot(token: string, serverUrl: string, allowedChatId
 
   // Stop previous instance if token changed.
   stopTelegramBot();
+
+  if (!acquireTelegramPollingLock(process.cwd(), serverUrl)) return null;
 
   const allowedIds = new Set(
     (allowedChatIds ?? (process.env.HARNESS_TELEGRAM_ALLOWED_CHAT_IDS ?? '').split(','))
@@ -98,12 +104,17 @@ export function startTelegramBot(token: string, serverUrl: string, allowedChatId
           + '📎 *File* — Send PDF, CSV, Excel for processing\n'
           + '🎤 *Voice* — Send a voice note to transcribe\n\n'
           + '*Slash commands:*\n'
+          + '/add _task_ — Add a task to your bullet journal\n'
+          + '/complete _task_ — Close a bullet journal task\n'
+          + '/log — Show a concise bullet journal summary\n'
           + '/task _description_ — Add a task to the autonomy plan\n'
           + '/schedule every 6h _prompt_ — Create a recurring job\n'
           + '/status — Check readiness scores\n'
           + '/nervous — Show nervous system status\n'
           + '/help — Show this message\n\n'
           + '*Examples:*\n'
+          + '• /add cut up decking\n'
+          + '• /log\n'
           + '• "Create an Excel spreadsheet of recipe costs"\n'
           + '• /task Write a business plan PDF\n'
           + '• /schedule every 24h Send me a daily task summary email\n'
@@ -232,6 +243,7 @@ export function startTelegramBot(token: string, serverUrl: string, allowedChatId
     logger.info('Telegram', 'Bot started', { allowedChatIds: allowedIds.size || 'any' });
     return bot;
   } catch (err) {
+    releaseTelegramPollingLock();
     logger.warn('Telegram', 'Failed to start bot', { error: err instanceof Error ? err.message : String(err) });
     return null;
   }
@@ -526,6 +538,18 @@ export function getKnownTelegramChatIds(): string[] {
   return Array.from(knownChatIds);
 }
 
+export function getTelegramPollingLockInfo(projectDir = process.cwd()): { path: string; pid: number | null; active: boolean; ownedByCurrentProcess: boolean } {
+  const lockPath = telegramLockPath(projectDir);
+  const lock = readTelegramLock(lockPath);
+  const active = lock?.pid ? isProcessAlive(lock.pid) : false;
+  return {
+    path: lockPath,
+    pid: lock?.pid ?? null,
+    active,
+    ownedByCurrentProcess: active && lock?.pid === process.pid,
+  };
+}
+
 const CHAT_IDS_FILENAME = '.harness/telegram-chat-ids.json';
 
 async function persistChatIds(projectDir: string): Promise<void> {
@@ -558,7 +582,59 @@ export function stopTelegramBot(): void {
     activeBotInstance.stopPolling();
     activeBotInstance = null;
     activeBotToken = '';
+    releaseTelegramPollingLock();
     logger.info('Telegram', 'Bot stopped');
+  }
+}
+
+function acquireTelegramPollingLock(projectDir: string, serverUrl: string): boolean {
+  const lockPath = telegramLockPath(projectDir);
+  const existing = readTelegramLock(lockPath);
+  if (existing?.pid && existing.pid !== process.pid && isProcessAlive(existing.pid)) {
+    logger.warn('Telegram', 'Polling disabled because another local Harness process owns the Telegram poller lock', { pid: existing.pid, lockPath });
+    return false;
+  }
+  try {
+    fsSync.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fsSync.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, serverUrl, startedAt: new Date().toISOString() }, null, 2), 'utf-8');
+    activeLockPath = lockPath;
+    ownsPollingLock = true;
+    return true;
+  } catch (err) {
+    logger.warn('Telegram', 'Polling disabled because the Telegram poller lock could not be written', { error: err instanceof Error ? err.message : String(err), lockPath });
+    return false;
+  }
+}
+
+function releaseTelegramPollingLock(): void {
+  if (!ownsPollingLock || !activeLockPath) return;
+  const lock = readTelegramLock(activeLockPath);
+  if (lock?.pid === process.pid) {
+    try { fsSync.unlinkSync(activeLockPath); } catch { /* best effort */ }
+  }
+  ownsPollingLock = false;
+  activeLockPath = '';
+}
+
+function telegramLockPath(projectDir: string): string {
+  return path.join(projectDir, TELEGRAM_LOCK_FILENAME);
+}
+
+function readTelegramLock(lockPath: string): { pid?: number } | null {
+  try {
+    return JSON.parse(fsSync.readFileSync(lockPath, 'utf-8')) as { pid?: number };
+  } catch {
+    return null;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 
