@@ -2075,6 +2075,54 @@ describe('web server API validation', () => {
     }
   });
 
+  it('defaults low-signal validation skipping on when the setting is omitted', async () => {
+    const seenConfigs: Array<{ outputValidation?: { enabled?: boolean } }> = [];
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('default-low-signal-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
+        seenConfigs.push(config);
+        yield { type: 'text', content: 'mocked response' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outputValidation: { enabled: true, profile: 'oracle-prime', autoSelect: true } }),
+      });
+      const settings = await request('/api/settings');
+      await expect(settings.json()).resolves.toMatchObject({ outputValidation: { skipOnLowSignal: true } });
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'hello', model: 'test-model' }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).not.toContain('missing-section');
+      expect(seenConfigs[0]?.outputValidation).toMatchObject({ enabled: false });
+    } finally {
+      restore();
+    }
+  });
+
   it('forwards prior chat history to the query loop so context is preserved across turns', async () => {
     // First set the agent name and personality
     await request('/api/settings', {

@@ -4466,7 +4466,7 @@ function sanitizeMediaToolSettings(value: unknown): MediaToolSettings {
 function sanitizeOutputValidationSettings(value: unknown): OutputValidationSettings {
   const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
   const profile = parseOutputValidationProfile(source.profile, customOutputValidationProfiles) ?? 'oracle-prime';
-  return { enabled: source.enabled === true, profile, autoSelect: source.autoSelect !== false, skipOnLowSignal: source.skipOnLowSignal === true };
+  return { enabled: source.enabled === true, profile, autoSelect: source.autoSelect !== false, skipOnLowSignal: source.skipOnLowSignal !== false };
 }
 
 function effectiveOutputValidationForMessage(message: string): EffectiveOutputValidationSettings {

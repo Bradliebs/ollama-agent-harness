@@ -26,7 +26,7 @@ let activeTraceExport = null;
 let latestEvidenceObject = null;
 let currentModelRouting = {};
 let currentMediaTools = {};
-let currentOutputValidation = { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: false };
+let currentOutputValidation = { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: true };
 let currentOutputValidationProfiles = [];
 let currentOutputValidationTemplates = [];
 let currentModelCatalog = { url: '', ttlHours: 24 };
@@ -507,7 +507,7 @@ async function loadSettings() {
     renderContextDetails(s.context || { configuredMaxTokens: s.contextMaxTokens, detectedMaxTokens: null, effectiveMaxTokens: s.contextMaxTokens });
     currentModelRouting = s.modelRouting || {};
     currentMediaTools = s.mediaTools || {};
-    currentOutputValidation = s.outputValidation || { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: false };
+    currentOutputValidation = s.outputValidation || { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: true };
     currentOutputValidationProfiles = s.outputValidationProfiles || [];
     currentModelCatalog = s.modelCatalog || { url: '', ttlHours: 24 };
     currentExtensionActivation = s.extensionActivation || { executablePlugins: false, allowedPluginNames: [], requirePermissionReview: true };
