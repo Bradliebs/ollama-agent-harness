@@ -92,16 +92,21 @@ describe('web server API validation', () => {
   });
 
   it('returns installed version metadata for the About panel', async () => {
+    const packageJson = JSON.parse(await fs.readFile(path.join(process.cwd(), 'package.json'), 'utf-8')) as { version: string };
     const response = await request('/api/about');
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      version: expect.stringMatching(/^\d+\.\d+\.\d+/),
+    const body = await response.json() as { assetName: string; manifestUrl: string; releaseUrl: string; version: string; manifestName: string };
+    expect(body).toMatchObject({
+      version: packageJson.version,
       assetName: expect.stringContaining('ollama-agent-harness-v'),
       manifestName: expect.stringContaining('.zip.sha256.json'),
       manifestUrl: expect.stringContaining('/download/v'),
       releaseUrl: expect.stringContaining('/releases/tag/v'),
     });
+    expect(body.assetName).toContain(`v${packageJson.version}`);
+    expect(body.manifestUrl).toContain(`/download/v${packageJson.version}/`);
+    expect(body.releaseUrl).toContain(`/releases/tag/v${packageJson.version}`);
   });
 
   it('persists validated settings to runtime storage', async () => {

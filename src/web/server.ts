@@ -4706,7 +4706,8 @@ async function getRuntimeStorageSummary(): Promise<{ traces: { count: number; by
 
 async function getAboutInfo(): Promise<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string; manifestName: string; manifestUrl: string }> {
   const packageJson = JSON.parse(await fs.readFile(path.join(PROJECT_DIR, 'package.json'), 'utf-8')) as { version?: string };
-  const provenance = await readReleaseProvenance();
+  const rawProvenance = await readReleaseProvenance();
+  const provenance = packageJson.version && rawProvenance.version && rawProvenance.version !== packageJson.version ? {} : rawProvenance;
   const version = packageJson.version ?? provenance.version ?? 'unknown';
   const releaseUrl = provenance.releaseUrl ?? `https://github.com/Bradliebs/ollama-agent-harness/releases/tag/v${version}`;
   const manifestName = provenance.manifestName ?? `ollama-agent-harness-v${version}.zip.sha256.json`;

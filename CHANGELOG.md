@@ -11,6 +11,15 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.4
+
+Patch release for release metadata accuracy.
+
+### About panel
+
+* Ignored stale `release-provenance.json` fields when they belong to a different package version.
+* Added regression coverage so `/api/about` reports the current package version archive, manifest, and release URLs after a version bump.
+
 ## Ollama Agent Harness v0.3.3
 
 Patch release for Telegram bullet-journal task routing.
