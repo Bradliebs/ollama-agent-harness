@@ -2024,6 +2024,8 @@ function autoSize(el) {
 function sendTip(el) { document.getElementById('chatInput').value = el.textContent; sendMessage(); }
 
 async function sendMessage(opts) {
+  // Mark guided tour as seen on first send
+  try { localStorage.setItem('harness_tour_seen', '1'); } catch {}
   // opts.regenerateFromIndex: when set, drop chatMessages from that index
   // onwards (typically a stale assistant reply) and re-run with the
   // existing user prompt that lives at index-1. Used by the per-message
@@ -3521,7 +3523,7 @@ function getPersonalityGreeting(name, personalityText) {
   if (p.includes('friendly')) return { headline: 'Hey! ' + name + ' here 👋', subtitle: 'So glad you\'re here! I can help with files, code, web searches, skills, and more. What sounds fun to work on?' };
   if (p.includes('professional')) return { headline: name + ' — Technical Assistant', subtitle: 'Select a model above, then submit your request. Capabilities include file operations, code generation, shell commands, web research, and skill management.' };
   if (name !== 'Harness') return { headline: 'Meet ' + name, subtitle: 'Pick a model above, then ask me anything. I can read files, write code, run commands, search the web, create skills, and remember things across sessions.' };
-  return { headline: 'What can I help you build?', subtitle: 'Pick a model above, then ask me anything. I can read files, write code, run commands, search the web, create skills, and remember things across sessions.' };
+  return { headline: 'What can I help you with?', subtitle: 'Type a message below and press Enter. I can read files, write code, search the web, and remember things across sessions.' };
 }
 
 function welcomeMarkup() {
@@ -3537,7 +3539,9 @@ function welcomeMarkup() {
     + '<h2>' + esc(greeting.headline) + '</h2>'
     + '<p>' + esc(greeting.subtitle) + '</p>'
     + '</div>'
+    + '<details class="welcome-disclosure" id="missionControlDisclosure"><summary>Advanced: Mission Control &amp; Nervous System</summary>'
     + '<div class="mission-control" id="missionControlPanel"><div class="readiness-empty">Loading readiness...</div></div>'
+    + '</details>'
     + '<div class="quick-suggestions">'
     + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">📂</div><div class="qc-body"><div class="qc-title">List files in this project</div><div class="qc-desc">Tour what\'s here. I\'ll group by folder.</div></div></div>'
     + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">🔍</div><div class="qc-body"><div class="qc-title">Search for TODO in my code</div><div class="qc-desc">Find loose ends across the whole tree.</div></div></div>'
@@ -3547,16 +3551,14 @@ function welcomeMarkup() {
     + '<div class="quick-card" onclick="openLeftTabByName(\'rag\')"><div class="qc-icon">🔎</div><div class="qc-body"><div class="qc-title">Index my files for semantic search</div><div class="qc-desc">Build a local RAG index in seconds.</div></div></div>'
     + '</div>'
     + '<div class="welcome-tools">'
-    + '<strong>Try also:</strong>'
-    + '<span class="welcome-tool-chip" onclick="openLeftTabByName(\'tools\')">🛠 Local Tools</span>'
+    + '<strong>Explore:</strong>'
+    + '<span class="welcome-tool-chip" onclick="openLeftTabByName(\'files\')">📁 Files</span>'
     + '<span class="welcome-tool-chip" onclick="openLeftTabByName(\'memory\')">🧠 Memory</span>'
     + '<span class="welcome-tool-chip" onclick="openLeftTabByName(\'skills\')">⚡ Skills</span>'
     + '<span class="welcome-tool-chip" onclick="toggleVoiceInput()">🎤 Voice input</span>'
-    + '<span class="welcome-tool-chip" onclick="document.getElementById(\'chatInput\').focus(); document.getElementById(\'chatInput\').value=\'/\'; autoSize(document.getElementById(\'chatInput\'));">/ slash commands</span>'
     + '</div>'
-    + '<div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div>'
-    + '<div class="model-capability-hint" style="margin-top:6px">📁 New scratch files (e.g. <code>analysis.md</code>) are written to <code>agent-outputs/</code> so the repo root stays clean. Existing files and explicit subdirectory paths are unchanged.</div>'
-    + '<details class="welcome-disclosure" id="welcomeFirstRun">'
+    + '<div class="model-capability-hint" id="modelCapabilityHint">Pick a model from the dropdown above to get started.</div>'
+    + '<details class="welcome-disclosure" id="welcomeFirstRun"' + (localStorage.getItem('harness_tour_seen') ? '' : ' open') + '>'
     + '<summary>New here? Quick guided tour (2 minutes)</summary>'
     + '<div class="welcome-disclosure-body">'
     + '<div class="guided-tour" id="guidedTour" style="margin-bottom:12px">'

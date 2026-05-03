@@ -525,13 +525,15 @@
       <div class="welcome" id="welcome">
         <div class="welcome-hero">
           <div class="welcome-eyebrow">Local-first AI agent · Ollama</div>
-          <h2>What can I help you build?</h2>
-          <p>Pick a model above, then ask me anything. I can read files, write code, run commands, search the web, create skills, and remember things across sessions.</p>
+          <h2>What can I help you with?</h2>
+          <p>Type a message below and press Enter. I can read files, write code, search the web, and remember things across sessions.</p>
         </div>
 
+        <details class="welcome-disclosure"><summary>Advanced: Mission Control &amp; Nervous System</summary>
         <div class="mission-control" id="missionControlPanel">
           <div class="readiness-empty">Loading readiness...</div>
         </div>
+        </details>
 
         <div class="quick-suggestions" id="quickSuggestions">
           <div class="quick-card" onclick="sendTip(this.querySelector('.qc-title'))">
