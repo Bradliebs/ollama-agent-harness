@@ -11,6 +11,43 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.9
+
+Beginner-friendly UI overhaul, multi-backend model routing, agentic OS services, Windows installer, and npm global install.
+
+### Beginner UX
+
+* Simplified welcome screen — Mission Control hidden behind an "Advanced" toggle.
+* Guided tour opens automatically for first-time visitors.
+* Cleaner greeting, tool chips, and model hint text.
+
+### New services
+
+* Model router with multi-backend support and fallback chat client.
+* Capability registry for runtime service inventory with dynamic health checks.
+* Worker queue for local-model background task processing.
+* Mode classifier mapping user intent to six operating modes.
+* Command extractor for structured JSON service commands.
+* Replicate client integration.
+
+### API routes
+
+* `GET /api/worker/status` — worker queue pending/history.
+* `GET /api/modes/classify?message=...` — mode classification with confidence scores.
+
+### Distribution
+
+* Published to npm: `npm install -g ollama-agent-harness`.
+* NSIS Windows installer (855KB) with Node.js/Ollama checks and desktop shortcut.
+* `prepublishOnly` script ensures build runs before publish.
+* `files` and `engines` fields added to package.json.
+
+### Housekeeping
+
+* Removed non-project files from tracking (Bracknell, forge-memory, copilot-tracking).
+* Secrets audit — clean, no API keys in repo.
+* Fixed audit event type allowlist in server tests.
+
 ## Ollama Agent Harness v0.3.8
 
 Patch release for output validation defaults, secret-safe Telegram release smoke coverage, audit triage visibility, and safer Agent Files guidance.

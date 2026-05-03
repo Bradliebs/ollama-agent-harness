@@ -32,14 +32,31 @@ New in v0.3.0: document generation (CSV, Excel, Word, PDF), Telegram bot integra
 * [Node.js](https://nodejs.org/) 18+
 * [Ollama](https://ollama.com/) running locally with at least one model pulled (e.g. `ollama pull llama3.2`)
 
-### Install and run
+### Option A — Windows installer (easiest)
+
+Download **Harness-Setup.exe** from the [latest release](https://github.com/Bradliebs/ollama-agent-harness/releases/latest), run it, and double-click the desktop shortcut. The installer checks for Node.js and Ollama automatically.
+
+### Option B — npm global install
+
+```powershell
+npm install -g ollama-agent-harness
+harness
+```
+
+### Option C — Double-click (from source)
+
+1. Clone this repo
+2. Double-click `start.bat` (Windows) or run `./start.sh` (Mac/Linux)
+3. Open **http://127.0.0.1:4000** in your browser
+
+### Option D — Terminal (from source)
 
 ```powershell
 npm install
 npm run ui
 ```
 
-Open the URL printed by the server (default `http://127.0.0.1:3000`, or `http://127.0.0.1:4000` via `start.bat`). That is the full UI. Start chatting in the main panel.
+Open **http://127.0.0.1:4000** in your browser. That is the full UI — start chatting in the main panel.
 
 ### CLI mode
 
