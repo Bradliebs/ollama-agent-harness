@@ -29,6 +29,7 @@ agent-outputs/
 # Local exploration / vendored sources / large binaries
 2604.14228v1.pdf
 hermes-agent-main/
+Harness-Setup.exe
 release/*.zip
 release/*.zip.sha256.json
 
