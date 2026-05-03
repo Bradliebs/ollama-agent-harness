@@ -322,14 +322,90 @@ describe('web server API validation', () => {
     expect(chat.status).toBe(200);
     await chat.text();
 
-    const list = await request('/api/services');
+    const list = await request('/api/services?limit=1&offset=0');
     expect(list.status).toBe(200);
-    const listBody = await list.json() as { services: Array<{ service: { service_id: string; mode: string }; stateSummary: { tasks: number; notes: number } }> };
+    const listBody = await list.json() as { total: number; limit: number; offset: number; lifecycle: { model_agnostic: boolean }; services: Array<{ service: { service_id: string; mode: string }; stateSummary: { tasks: number; notes: number } }> };
+    expect(listBody).toMatchObject({ total: expect.any(Number), limit: 1, offset: 0, lifecycle: { model_agnostic: true } });
     expect(listBody.services).toEqual(expect.arrayContaining([expect.objectContaining({ service: expect.objectContaining({ service_id: 'bullet_journal', mode: 'operate' }), stateSummary: expect.objectContaining({ tasks: expect.any(Number), notes: expect.any(Number) }) })]));
 
     const detail = await request('/api/services/bullet_journal');
     expect(detail.status).toBe(200);
     await expect(detail.json()).resolves.toMatchObject({ service: { service_id: 'bullet_journal', mode: 'operate' }, state: { service_id: 'bullet_journal', mode: 'operate' } });
+  });
+
+  it('exports and imports operating services via API', async () => {
+    const chat = await request('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'check https://example.com/api-export-service daily to see if it is available' }),
+    });
+    expect(chat.status).toBe(200);
+    await chat.text();
+
+    const exported = await request('/api/services/export');
+    expect(exported.status).toBe(200);
+    const payload = await exported.json() as { version: number; services: Array<{ service: { service_id: string } }> };
+    expect(payload.version).toBe(1);
+    expect(payload.services.length).toBeGreaterThan(0);
+
+    const duplicateImport = await request('/api/services/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    expect(duplicateImport.status).toBe(200);
+    const duplicateImportBody = await duplicateImport.json() as { ok: boolean; imported: string[]; skipped: string[] };
+    expect(duplicateImportBody.ok).toBe(true);
+    expect(duplicateImportBody.imported).toEqual([]);
+    expect(Array.isArray(duplicateImportBody.skipped)).toBe(true);
+    expect(duplicateImportBody.skipped.length).toBeGreaterThan(0);
+
+    const invalidImport = await request('/api/services/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: 99, services: [] }) });
+    expect(invalidImport.status).toBe(400);
+    await expect(invalidImport.json()).resolves.toMatchObject({ error: expect.stringContaining('Invalid operating services export payload') });
+
+    const badEntryImport = await request('/api/services/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: 1, services: [{ service: { service_id: '../bad', service_name: 'Bad Service', mode: 'operate', purpose: 'bad' }, state: {} }] }) });
+    expect(badEntryImport.status).toBe(400);
+    await expect(badEntryImport.json()).resolves.toMatchObject({ error: expect.stringContaining('Invalid service id') });
+
+    const evidence = await request('/api/evidence/runs');
+    expect(evidence.status).toBe(200);
+    const evidenceBody = await evidence.json() as { evidence: Array<{ runName?: string; tools: Array<{ name: string }>; artifacts: Array<{ title: string }> }> };
+    expect(evidenceBody.evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ runName: 'Operating service export', tools: expect.arrayContaining([expect.objectContaining({ name: 'operating_services_export' })]) }),
+      expect.objectContaining({ runName: 'Operating service import', tools: expect.arrayContaining([expect.objectContaining({ name: 'operating_services_import' })]) }),
+    ]));
+  });
+
+  it('keeps operate mode deterministic when a model is supplied', async () => {
+    const createClient = jest.fn(() => ({}) as never);
+    const runQueryLoop = jest.fn(async function* (): AsyncGenerator<LoopEvent> {
+      yield { type: 'text', content: 'should not run' };
+    });
+    const restore = setWebRuntimeOverrides({
+      createClient,
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({}) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop,
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'send me a telegram reminder', model: 'github/gpt-4.1' }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain('"mode":"OPERATE_MODE"');
+      expect(createClient).not.toHaveBeenCalled();
+      expect(runQueryLoop).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
   });
 
   it('rejects invalid service ids and returns not found for missing services', async () => {

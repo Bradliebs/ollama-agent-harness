@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { classifyAgenticMode, handleOperateModeRequest, type BulletJournalState, type GenericOperateState } from './agenticServiceMode';
+import { classifyAgenticMode, exportAgenticServices, handleOperateModeRequest, importAgenticServices, type BulletJournalState, type GenericOperateState } from './agenticServiceMode';
 import { executeDueJobs, listAutomationJobs } from '../automation/jobs';
 
 describe('agentic service mode', () => {
@@ -11,6 +11,31 @@ describe('agentic service mode', () => {
     expect(classifyAgenticMode('send me a telegram reminder')).toMatchObject({ mode: 'operate' });
     expect(classifyAgenticMode('Build an app that reminds me daily')).toMatchObject({ mode: 'build' });
     expect(classifyAgenticMode('Generate a document template that reminds me daily')).toMatchObject({ mode: 'build' });
+  });
+
+  it('classifies model-agnostic operating aliases and preserves explicit build overrides', () => {
+    const operatingAliases = [
+      'please keep me honest on overdue invoices',
+      'update for me when the room availability changes',
+      'send me reminders if the broker sync fails',
+      'telegram reminder for weekly review',
+      'check https://example.com/rooms every morning and tell me if one opens',
+      'watch https://example.com/status daily for outages',
+      'status for site monitor',
+    ];
+    const buildOverrides = [
+      'write code that sends me reminders',
+      'make a website that monitors room availability',
+      'create a dashboard app that reminds me daily',
+      'generate an artifact that tracks tasks and reminders',
+    ];
+
+    for (const message of operatingAliases) {
+      expect(classifyAgenticMode(message)).toMatchObject({ mode: 'operate' });
+    }
+    for (const message of buildOverrides) {
+      expect(classifyAgenticMode(message)).toMatchObject({ mode: 'build' });
+    }
   });
 
   it('classifies explicit ongoing service trigger phrases as operate mode', () => {
@@ -167,6 +192,20 @@ describe('agentic service mode', () => {
     expect(output).toContain('Do not build an app, UI, markdown task file, or code project');
   });
 
+  it('does not execute paused site monitor schedules and resumes cleanly', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-site-monitor-paused-run-'));
+    const request = 'check https://example.com/rooms daily to see if a room is free';
+    await handleOperateModeRequest(projectDir, request, new Date('2026-05-03T08:00:00.000Z'));
+    await handleOperateModeRequest(projectDir, 'site monitor pause reminders', new Date('2026-05-03T08:10:00.000Z'));
+
+    await expect(executeDueJobs(projectDir, {}, new Date('2026-05-03T09:00:00.000Z'))).resolves.toEqual([]);
+    await handleOperateModeRequest(projectDir, 'site monitor resume reminders', new Date('2026-05-03T08:30:00.000Z'));
+    const results = await executeDueJobs(projectDir, {}, new Date('2026-05-03T09:00:00.000Z'));
+
+    expect(results).toHaveLength(1);
+    expect(results[0].name).toContain('Site Monitor Agent');
+  });
+
   it('mutates generic operating service state through deterministic commands', async () => {
     const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-site-monitor-command-'));
     await handleOperateModeRequest(projectDir, 'check https://example.com/rooms daily to see if a room is free', new Date('2026-05-03T08:00:00.000Z'));
@@ -208,5 +247,75 @@ describe('agentic service mode', () => {
       expect.objectContaining({ name: 'Bullet Journal daily check-in', enabled: false }),
       expect.objectContaining({ name: expect.stringContaining('Site Monitor Agent'), enabled: false }),
     ]));
+  });
+
+  it('targets generic operating service commands by URL or service id when multiple services exist', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-service-targeting-'));
+    const rooms = await handleOperateModeRequest(projectDir, 'check https://example.com/rooms daily to see if a room is free', new Date('2026-05-03T08:00:00.000Z'));
+    const prices = await handleOperateModeRequest(projectDir, 'check https://example.org/prices daily to see if the price drops', new Date('2026-05-03T08:01:00.000Z'));
+
+    const ambiguous = await handleOperateModeRequest(projectDir, 'show status', new Date('2026-05-03T08:02:00.000Z'));
+    expect(ambiguous.response).toContain('Multiple generic operating services are configured');
+    expect(ambiguous.response).toContain(rooms.service!.service_id);
+    expect(ambiguous.response).toContain(prices.service!.service_id);
+
+    const targetedStatus = await handleOperateModeRequest(projectDir, `show status for ${rooms.service!.service_id}`, new Date('2026-05-03T08:03:00.000Z'));
+    expect(targetedStatus.service).toMatchObject({ service_id: rooms.service!.service_id });
+
+    const targetedNote = await handleOperateModeRequest(projectDir, 'site monitor https://example.org/prices add note Watch weekend discounts', new Date('2026-05-03T08:04:00.000Z'));
+    expect(targetedNote.service).toMatchObject({ service_id: prices.service!.service_id });
+    expect(targetedNote.state?.notes).toEqual([expect.objectContaining({ content: 'Watch weekend discounts' })]);
+  });
+
+  it('exports and imports operating services as portable JSON', async () => {
+    const sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-service-export-source-'));
+    const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-service-export-target-'));
+    await handleOperateModeRequest(sourceDir, 'Create a bullet journal agent and remind me daily at 9am', new Date('2026-05-03T08:00:00.000Z'));
+    await handleOperateModeRequest(sourceDir, 'add task Export service state', new Date('2026-05-03T08:01:00.000Z'));
+
+    const exported = await exportAgenticServices(sourceDir, undefined, new Date('2026-05-03T08:02:00.000Z'));
+    expect(exported).toMatchObject({ version: 1, source: 'ollama-agent-harness', exported_at: '2026-05-03T08:02:00.000Z' });
+    expect(exported.services).toEqual([expect.objectContaining({ service: expect.objectContaining({ service_id: 'bullet_journal' }) })]);
+
+    const imported = await importAgenticServices(targetDir, exported);
+    expect(imported).toEqual({ imported: ['bullet_journal'], skipped: [] });
+    await expect(fs.readFile(path.join(targetDir, '.harness', 'services', 'bullet_journal', 'state.json'), 'utf-8')).resolves.toContain('Export service state');
+
+    await expect(importAgenticServices(targetDir, exported)).resolves.toEqual({ imported: [], skipped: ['bullet_journal'] });
+    await expect(importAgenticServices(targetDir, exported, { overwrite: true })).resolves.toEqual({ imported: ['bullet_journal'], skipped: [] });
+  });
+
+  it('rejects malformed operating service imports', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-service-import-invalid-'));
+
+    await expect(importAgenticServices(projectDir, { version: 99, services: [] })).rejects.toThrow('Invalid operating services export payload');
+    await expect(importAgenticServices(projectDir, { version: 1, services: [{ service: { service_id: 'missing_name', mode: 'operate', purpose: 'bad' }, state: {} }] })).rejects.toThrow('Invalid operating service entry');
+    await expect(importAgenticServices(projectDir, {
+      version: 1,
+      services: [{ service: { service_id: '../bad', service_name: 'Bad Service', mode: 'operate', purpose: 'bad', storage_location: '.harness/services/bad' }, state: {} }],
+    })).rejects.toThrow('Invalid service id');
+  });
+
+  it('recreates local automation schedules for imported enabled services', async () => {
+    const sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-service-import-schedule-source-'));
+    const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-service-import-schedule-target-'));
+    const request = 'check https://example.com/imported-schedule daily to see if it is available';
+    await handleOperateModeRequest(sourceDir, request, new Date('2026-05-03T08:00:00.000Z'));
+
+    const exported = await exportAgenticServices(sourceDir, undefined, new Date('2026-05-03T08:01:00.000Z'));
+    const imported = await importAgenticServices(targetDir, exported, {}, new Date('2026-05-03T08:02:00.000Z'));
+
+    expect(imported.imported).toEqual([expect.stringMatching(/^site_monitor_/)]);
+    const jobs = await listAutomationJobs(targetDir);
+    expect(jobs).toEqual([expect.objectContaining({ name: expect.stringContaining('Site Monitor Agent'), enabled: true })]);
+    const stored = JSON.parse(await fs.readFile(path.join(targetDir, '.harness', 'services', exported.services[0].service.service_id, 'service.json'), 'utf-8')) as { automation_job_id?: string; schedules: Array<{ automation_job_id?: string }> };
+    expect(stored.automation_job_id).toBe(jobs[0].id);
+    expect(stored.schedules[0].automation_job_id).toBe(jobs[0].id);
+
+    const results = await executeDueJobs(targetDir, {}, new Date('2026-05-03T09:00:00.000Z'));
+    expect(results).toHaveLength(1);
+    const output = await fs.readFile(results[0].run.outputPath, 'utf-8');
+    expect(output).toContain('.harness/services/' + exported.services[0].service.service_id + '/state.json');
+    expect(output).toContain('Do not build an app, UI, markdown task file, or code project');
   });
 });

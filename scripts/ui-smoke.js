@@ -2,6 +2,8 @@
 
 const { spawn } = require('child_process');
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const providedTargetUrl = process.argv[2] || process.env.HARNESS_UI_URL || '';
 const targetUrl = providedTargetUrl || 'http://127.0.0.1:4300/';
@@ -71,16 +73,62 @@ async function main() {
     const operateModeSmoke = await page.evaluate(async () => {
       const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'check https://example.com/ui-smoke-agentic-service daily to see if it is available' }) });
       const body = await response.text();
+      const secondResponse = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'check https://example.org/ui-smoke-agentic-service daily to see if the price drops' }) });
+      const secondBody = await secondResponse.text();
+      const selectedModelResponse = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'send me a telegram reminder', model: 'github/gpt-4.1' }) });
+      const selectedModelBody = await selectedModelResponse.text();
       await loadDiscovery();
-      const serviceButton = Array.from(document.querySelectorAll('#operatingServicesDiscoveryPanel button')).find((button) => button.textContent?.includes('Details'));
+      await loadOperatingServiceDetail('not_configured');
+      const missingDetailUnavailable = document.getElementById('operatingServiceDetail')?.textContent.includes('Service details unavailable');
+      const serviceButtons = Array.from(document.querySelectorAll('#operatingServicesDiscoveryPanel button')).filter((button) => button.textContent?.includes('Details'));
+      const serviceButton = serviceButtons[0];
       if (serviceButton) serviceButton.click();
       return {
         status: response.status,
+        secondStatus: secondResponse.status,
+        selectedModelStatus: selectedModelResponse.status,
         body,
+        secondBody,
+        selectedModelBody,
+        serviceButtonCount: serviceButtons.length,
+        missingDetailUnavailable,
+        hasExportControl: Boolean(Array.from(document.querySelectorAll('#operatingServicesDiscoveryPanel button')).find((button) => button.textContent?.includes('Export JSON'))),
+        hasImportControl: Boolean(document.getElementById('operatingServiceImportFile')),
         hasServicePanelText: document.getElementById('operatingServicesDiscoveryPanel')?.textContent.includes('Site Monitor Agent'),
       };
     });
     await page.waitForFunction(() => document.getElementById('operatingServiceDetail')?.textContent.includes('storage'));
+    const exportDownload = await Promise.all([
+      page.waitForEvent('download'),
+      page.click('#operatingServicesDiscoveryPanel button:has-text("Export JSON")'),
+    ]).then(([download]) => download);
+    let exportPath = await exportDownload.path();
+    if (!exportPath) {
+      exportPath = path.join(os.tmpdir(), `harness-operating-services-export-${Date.now()}.json`);
+      await exportDownload.saveAs(exportPath);
+    }
+    const exportedServicesPayload = JSON.parse(fs.readFileSync(exportPath, 'utf-8'));
+    const importPath = path.join(os.tmpdir(), `harness-operating-services-import-${Date.now()}.json`);
+    fs.writeFileSync(importPath, JSON.stringify(exportedServicesPayload, null, 2), 'utf-8');
+    const importDialogPromise = new Promise((resolve) => page.once('dialog', async (dialog) => {
+      const message = dialog.message();
+      await dialog.accept();
+      resolve(message);
+    }));
+    const fileChooser = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.click('#operatingServicesDiscoveryPanel button:has-text("Import JSON")'),
+    ]).then(([chooser]) => chooser);
+    await fileChooser.setFiles(importPath);
+    const importDialogMessage = await importDialogPromise;
+    await page.waitForFunction(() => document.getElementById('operatingServicesDiscoveryPanel')?.textContent.includes('service(s) configured'));
+    await page.evaluate(() => Array.from(document.querySelectorAll('#operatingServicesDiscoveryPanel button')).find((button) => button.textContent?.includes('Details'))?.click());
+    await page.waitForFunction(() => document.getElementById('operatingServiceDetail')?.textContent.includes('storage'));
+    fs.rmSync(importPath, { force: true });
+    const operatingServiceExportImportRoundTrip = {
+      exportedServiceCount: Array.isArray(exportedServicesPayload.services) ? exportedServicesPayload.services.length : 0,
+      importDialogMessage,
+    };
     const discoveryTabVisible = await page.evaluate(() => getComputedStyle(document.getElementById('discoveryView')).display !== 'none');
     await page.evaluate(() => showLeftTab('learning', document.querySelector('[onclick*="learning"]')));
     await page.waitForFunction(() => Boolean(document.getElementById('learningCandidateQueue')));
@@ -97,7 +145,7 @@ async function main() {
     // create duplicate IDs before the dedup check runs.
     await page.evaluate(() => showLeftTab('tools', document.querySelector('[onclick*="showLeftTab(\'tools\'"]')));
     await page.waitForTimeout(500);
-    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke }) => {
+    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip }) => {
       const ids = Array.from(document.querySelectorAll('[id]')).map((element) => element.id);
       // Dynamically-rendered panels may legitimately re-render with the same ID
       const dynamicPanelIds = new Set(['permissionPanel', 'capabilityAlignmentPanel', 'toolRegistryPanel', 'automationRunsSection', 'curatorRunsSection']);
@@ -126,7 +174,13 @@ async function main() {
         hasOperatingServiceDetailFunction: typeof window.loadOperatingServiceDetail === 'function',
         operatingServiceDetailRendered: document.getElementById('operatingServiceDetail')?.textContent.includes('storage'),
         operateModeSmokeStatus: operateModeSmoke.status,
-        operateModeSmokeHandled: operateModeSmoke.body.includes('"mode":"OPERATE_MODE"') && operateModeSmoke.body.includes('Site Monitor Agent is set up') && Boolean(operateModeSmoke.hasServicePanelText),
+        operateModeSmokeHandled: operateModeSmoke.body.includes('"mode":"OPERATE_MODE"') && operateModeSmoke.body.includes('Site Monitor Agent is set up') && operateModeSmoke.secondBody.includes('"mode":"OPERATE_MODE"') && operateModeSmoke.secondBody.includes('Site Monitor Agent is set up') && operateModeSmoke.selectedModelBody.includes('"mode":"OPERATE_MODE"') && Boolean(operateModeSmoke.hasServicePanelText),
+        operateModeSmokeSecondStatus: operateModeSmoke.secondStatus,
+        operateModeSmokeSelectedModelStatus: operateModeSmoke.selectedModelStatus,
+        operatingServiceButtonCount: operateModeSmoke.serviceButtonCount,
+        missingOperatingServiceDetailHandled: Boolean(operateModeSmoke.missingDetailUnavailable),
+        hasOperatingServiceExportImport: Boolean(operateModeSmoke.hasExportControl) && Boolean(operateModeSmoke.hasImportControl),
+        operatingServiceExportImportRoundTrip,
         hasAutomationDiscoveryPanel: Boolean(document.getElementById('automationDiscoveryPanel')),
         hasSessionSearchDiscoveryPanel: Boolean(document.getElementById('sessionSearchDiscoveryPanel')),
         hasCuratorDiscoveryPanel: Boolean(document.getElementById('curatorDiscoveryPanel')),
@@ -225,7 +279,7 @@ async function main() {
         hasApplyCalibrationFunction: typeof window.applyRoutingCalibration === 'function',
         duplicateIds,
       };
-    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke });
+    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip });
 
     const failures = [];
     if (!result.title.endsWith('Ollama Agent Harness')) failures.push(`Unexpected title: ${result.title}`);
@@ -249,7 +303,11 @@ async function main() {
     if (!result.hasOperatingServicesDiscoveryPanel) failures.push('operating services discovery panel was not rendered');
     if (!result.hasOperatingServiceDetailFunction) failures.push('operating service detail function was not loaded');
     if (!result.operatingServiceDetailRendered) failures.push('operating service detail did not render');
-    if (result.operateModeSmokeStatus !== 200 || !result.operateModeSmokeHandled) failures.push('operate mode chat smoke did not create a visible operating service');
+    if (result.operateModeSmokeStatus !== 200 || result.operateModeSmokeSecondStatus !== 200 || result.operateModeSmokeSelectedModelStatus !== 200 || !result.operateModeSmokeHandled) failures.push('operate mode chat smoke did not create visible operating services');
+    if (result.operatingServiceButtonCount < 2) failures.push('operating services discovery panel did not render multiple service detail controls');
+    if (!result.missingOperatingServiceDetailHandled) failures.push('missing operating service detail did not render an unavailable message');
+    if (!result.hasOperatingServiceExportImport) failures.push('operating service export/import controls were not rendered');
+    if (!result.operatingServiceExportImportRoundTrip || result.operatingServiceExportImportRoundTrip.exportedServiceCount < 1 || !/Imported \d+ service\(s\); skipped \d+\./.test(result.operatingServiceExportImportRoundTrip.importDialogMessage)) failures.push('operating service export/import browser round trip failed');
     if (!result.hasAutomationDiscoveryPanel) failures.push('automation discovery panel was not rendered');
     if (!result.hasSessionSearchDiscoveryPanel) failures.push('session search discovery panel was not rendered');
     if (!result.hasCuratorDiscoveryPanel) failures.push('curator discovery panel was not rendered');

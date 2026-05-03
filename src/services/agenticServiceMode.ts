@@ -92,6 +92,18 @@ export interface StoredAgenticService {
   state: BulletJournalState | GenericOperateState | Record<string, unknown>;
 }
 
+export interface AgenticServicesExport {
+  version: 1;
+  exported_at: string;
+  source: 'ollama-agent-harness';
+  services: StoredAgenticService[];
+}
+
+export interface ImportAgenticServicesResult {
+  imported: string[];
+  skipped: string[];
+}
+
 export interface OperateServiceResult {
   handled: boolean;
   response: string;
@@ -257,6 +269,67 @@ export async function getAgenticService(projectDir: string, serviceId: string): 
   } catch {
     return null;
   }
+}
+
+export async function exportAgenticServices(projectDir: string, serviceIds?: string[], now = new Date()): Promise<AgenticServicesExport> {
+  const requestedIds = serviceIds?.map((id) => id.trim()).filter(Boolean);
+  const services = requestedIds && requestedIds.length > 0
+    ? (await Promise.all(requestedIds.map((id) => getAgenticService(projectDir, id)))).filter((item): item is StoredAgenticService => Boolean(item))
+    : await listAgenticServices(projectDir);
+  return { version: 1, exported_at: now.toISOString(), source: 'ollama-agent-harness', services };
+}
+
+export async function importAgenticServices(projectDir: string, payload: unknown, options: { overwrite?: boolean } = {}, now = new Date()): Promise<ImportAgenticServicesResult> {
+  const source = typeof payload === 'object' && payload !== null ? payload as Partial<AgenticServicesExport> : {};
+  if (source.version !== 1 || !Array.isArray(source.services)) throw new Error('Invalid operating services export payload.');
+  const imported: string[] = [];
+  const skipped: string[] = [];
+  for (const item of source.services) {
+    if (!isStoredAgenticService(item)) throw new Error('Invalid operating service entry.');
+    const serviceId = item.service.service_id;
+    if (!/^[a-zA-Z0-9._-]+$/.test(serviceId)) throw new Error(`Invalid service id: ${serviceId}`);
+    const existing = await getAgenticService(projectDir, serviceId);
+    if (existing && !options.overwrite) {
+      skipped.push(serviceId);
+      continue;
+    }
+    const service: AgenticServiceDefinition = { ...item.service, storage_location: `.harness/services/${serviceId}` };
+    delete service.automation_job_id;
+    const state = typeof item.state === 'object' && item.state !== null ? { ...item.state, service_id: serviceId, mode: 'operate' } as StoredAgenticService['state'] : item.state;
+    const dir = path.join(servicesDir(projectDir), serviceId);
+    service.schedules = (service.schedules || []).map((entry) => ({ ...entry, automation_job_id: null, enabled: serviceStateEnabled(state) }));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'service.json'), JSON.stringify(service, null, 2), 'utf-8');
+    await fs.writeFile(path.join(dir, 'state.json'), JSON.stringify(state, null, 2), 'utf-8');
+    if (serviceStateEnabled(state)) {
+      const schedule = serviceId === 'bullet_journal'
+        ? await ensureBulletJournalSchedule(projectDir, service, typeof (state as Partial<BulletJournalState>).reminder_time === 'string' ? (state as Partial<BulletJournalState>).reminder_time! : '09:00', now)
+        : await ensureGenericOperateSchedule(projectDir, service, service.purpose, extractUrl(service.purpose), now);
+      service.automation_job_id = schedule?.id;
+      service.schedules = (service.schedules || []).map((entry) => ({ ...entry, automation_job_id: schedule?.id ?? null, enabled: Boolean(schedule) }));
+      service.updated_at = now.toISOString();
+      await fs.writeFile(path.join(dir, 'service.json'), JSON.stringify(service, null, 2), 'utf-8');
+    }
+    imported.push(serviceId);
+  }
+  return { imported, skipped };
+}
+
+function serviceStateEnabled(state: StoredAgenticService['state']): boolean {
+  const source = state as Partial<BulletJournalState | GenericOperateState>;
+  return source.enabled !== false && source.reminders_paused !== true;
+}
+
+function isStoredAgenticService(value: unknown): value is StoredAgenticService {
+  if (typeof value !== 'object' || value === null) return false;
+  const item = value as Partial<StoredAgenticService>;
+  const service = item.service as Partial<AgenticServiceDefinition> | undefined;
+  return typeof service?.service_id === 'string'
+    && typeof service.service_name === 'string'
+    && service.mode === 'operate'
+    && typeof service.purpose === 'string'
+    && typeof item.state === 'object'
+    && item.state !== null;
 }
 
 export async function createOrUpdateGenericOperateService(projectDir: string, request: string, now = new Date()): Promise<{ service: AgenticServiceDefinition; state: GenericOperateState; schedule: AutomationJob | null }> {
@@ -427,10 +500,10 @@ type BulletJournalCommand =
   | { name: 'set_reminder_time'; time: string };
 
 type GenericOperateCommand =
-  | { name: 'show_status' }
-  | { name: 'add_note'; content: string }
-  | { name: 'record_observation'; content: string }
-  | { name: 'pause_reminders' | 'resume_reminders' };
+  | { name: 'show_status'; target?: string }
+  | { name: 'add_note'; content: string; target?: string }
+  | { name: 'record_observation'; content: string; target?: string }
+  | { name: 'pause_reminders' | 'resume_reminders'; target?: string };
 
 function parseBulletJournalCommand(message: string): BulletJournalCommand | null {
   const trimmed = message.trim();
@@ -462,8 +535,9 @@ function parseBulletJournalCommand(message: string): BulletJournalCommand | null
 }
 
 async function applyGenericOperateCommand(projectDir: string, command: GenericOperateCommand, now: Date): Promise<{ response: string; service?: AgenticServiceDefinition; state?: GenericOperateState; schedule: AutomationJob | null }> {
-  const serviceRecord = await findGenericOperateService(projectDir);
-  if (!serviceRecord) return { response: 'No generic operating service is configured yet.', schedule: null };
+  const serviceRecord = await findGenericOperateService(projectDir, command.target);
+  if (serviceRecord.status === 'missing') return { response: 'No generic operating service is configured yet.', schedule: null };
+  if (serviceRecord.status === 'ambiguous') return { response: `Multiple generic operating services are configured. Target one with its service id, URL, or service name: ${serviceRecord.services.map((item) => item.service.service_id).join(', ')}.`, schedule: null };
   const service = serviceRecord.service;
   const state = normalizeGenericOperateState(serviceRecord.state, service.service_id, now, service.created_at);
   let response = '';
@@ -494,22 +568,55 @@ async function applyGenericOperateCommand(projectDir: string, command: GenericOp
 function parseGenericOperateCommand(message: string): GenericOperateCommand | null {
   const trimmed = message.trim();
   const lower = trimmed.toLowerCase();
-  if (/^(show status|status)(?:\s+(?:for|of)\s+.+)?$/i.test(trimmed)) return { name: 'show_status' };
-  const scopedNote = trimmed.match(/^(?:site monitor|operating service)\s+add note[:\s]+(.+)$/i);
-  if (scopedNote) return { name: 'add_note', content: scopedNote[1].trim() };
-  const note = trimmed.match(/^add note(?:\s+(?:to|for)\s+(?:site monitor|operating service))?[:\s]+(.+)$/i);
-  if (note) return { name: 'add_note', content: note[1].trim() };
-  const observation = trimmed.match(/^(?:record observation|observed|site monitor record observation)[:\s]+(.+)$/i);
-  if (observation) return { name: 'record_observation', content: observation[1].trim() };
-  if (/^(?:site monitor\s+)?pause reminders$/i.test(lower)) return { name: 'pause_reminders' };
-  if (/^(?:site monitor\s+)?resume reminders$/i.test(lower)) return { name: 'resume_reminders' };
+  const status = trimmed.match(/^(?:show status|status)(?:\s+(?:for|of)\s+(.+))?$/i);
+  if (status) return { name: 'show_status', target: normalizeGenericCommandTarget(status[1]) };
+  const scopedNote = trimmed.match(/^(?:site monitor|operating service)(?:\s+(.+?))?\s+add note[:\s]+(.+)$/i);
+  if (scopedNote) return { name: 'add_note', target: normalizeGenericCommandTarget(scopedNote[1]), content: scopedNote[2].trim() };
+  const note = trimmed.match(/^add note(?:\s+(?:to|for)\s+(.+?))?[:\s]+(.+)$/i);
+  if (note) return { name: 'add_note', target: normalizeGenericCommandTarget(note[1]), content: note[2].trim() };
+  const observation = trimmed.match(/^(?:(?:site monitor|operating service)(?:\s+(.+?))?\s+)?(?:record observation|observed)[:\s]+(.+)$/i);
+  if (observation) return { name: 'record_observation', target: normalizeGenericCommandTarget(observation[1]), content: observation[2].trim() };
+  const reminders = trimmed.match(/^(?:(?:site monitor|operating service)(?:\s+(.+?))?\s+)?(pause|resume) reminders$/i);
+  if (reminders) return { name: reminders[2].toLowerCase() === 'pause' ? 'pause_reminders' : 'resume_reminders', target: normalizeGenericCommandTarget(reminders[1]) };
   return null;
 }
 
-async function findGenericOperateService(projectDir: string): Promise<StoredAgenticService | null> {
+function normalizeGenericCommandTarget(value: string | undefined): string | undefined {
+  const target = value?.trim();
+  if (!target) return undefined;
+  if (/^(site monitor|operating service)$/i.test(target)) return undefined;
+  return target;
+}
+
+type GenericServiceLookup =
+  | { status: 'found'; service: AgenticServiceDefinition; state: StoredAgenticService['state'] }
+  | { status: 'missing' }
+  | { status: 'ambiguous'; services: StoredAgenticService[] };
+
+async function findGenericOperateService(projectDir: string, target?: string): Promise<GenericServiceLookup> {
   const services = await listAgenticServices(projectDir);
   const genericServices = services.filter((item) => item.service.service_id !== 'bullet_journal');
-  return genericServices[0] ?? null;
+  if (genericServices.length === 0) return { status: 'missing' };
+  if (target) {
+    const matches = genericServices.filter((item) => genericServiceMatchesTarget(item.service, target));
+    if (matches.length === 1) return { status: 'found', service: matches[0].service, state: matches[0].state };
+    if (matches.length > 1) return { status: 'ambiguous', services: matches };
+    return { status: 'missing' };
+  }
+  if (genericServices.length === 1) return { status: 'found', service: genericServices[0].service, state: genericServices[0].state };
+  return { status: 'ambiguous', services: genericServices };
+}
+
+function genericServiceMatchesTarget(service: AgenticServiceDefinition, target: string): boolean {
+  const normalizedTarget = target.trim().toLowerCase();
+  const url = extractUrl(target);
+  const urlServiceId = url ? `site_monitor_${shortHash(url)}` : null;
+  return service.service_id.toLowerCase() === normalizedTarget
+    || service.service_name.toLowerCase() === normalizedTarget
+    || service.storage_location.toLowerCase().endsWith(`/${normalizedTarget}`)
+    || (urlServiceId !== null && service.service_id === urlServiceId)
+    || (url !== null && service.purpose.toLowerCase().includes(url.toLowerCase()))
+    || service.purpose.toLowerCase().includes(normalizedTarget);
 }
 
 async function saveGenericOperateService(projectDir: string, service: AgenticServiceDefinition, state: GenericOperateState): Promise<void> {
@@ -698,7 +805,7 @@ function looksLikeBulletJournalCommand(lower: string): boolean {
 }
 
 function looksLikeGenericOperateCommand(lower: string): boolean {
-  return /^(show status|status|site monitor add note|operating service add note|add note (to|for) (site monitor|operating service)|record observation|observed|site monitor record observation|site monitor pause reminders|site monitor resume reminders)\b/.test(lower.trim());
+  return /^(show status|status|site monitor\b|operating service\b|add note (to|for) .+|record observation|observed)\b/.test(lower.trim());
 }
 
 function explicitlyRequestsSoftwareBuild(lower: string): boolean {

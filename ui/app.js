@@ -3436,7 +3436,42 @@ function renderOperatingServicesPanel(servicesData) {
     const job = service.automation_job_id ? ' · job ' + esc(service.automation_job_id) : '';
     return '<div class="trace-row"><strong>' + esc(service.service_name || service.service_id) + '</strong><div class="trace-meta">' + esc(service.mode || 'operate') + ' · updated ' + esc(updated) + job + '</div><div class="trace-meta">' + esc(service.purpose || '') + '</div><button class="btn-sm" onclick="loadOperatingServiceDetail(\'' + escAttr(service.service_id || '') + '\')">Details</button></div>';
   }).join('');
-  return '<div id="operatingServicesDiscoveryPanel" class="trace-item"><div class="trace-title">Operating Services</div><div class="trace-meta">' + (servicesData.total || services.length || 0) + ' service(s) configured</div>' + (rows || '<div class="trace-meta">No operating services configured.</div>') + '<div id="operatingServiceDetail" class="trace-meta"></div></div>';
+  const total = servicesData.total || services.length || 0;
+  const hidden = total > services.length ? '<div class="trace-meta">Showing ' + services.length + ' of ' + total + ' service(s).</div>' : '';
+  const lifecycle = servicesData.lifecycle?.model_agnostic ? '<div class="trace-meta">Lifecycle capture: model-agnostic · local service state · evidence-backed</div>' : '';
+  return '<div id="operatingServicesDiscoveryPanel" class="trace-item"><div class="trace-title">Operating Services</div><div class="trace-meta">' + total + ' service(s) configured</div>' + lifecycle + '<div class="document-actions"><button class="btn-sm" onclick="exportOperatingServices()">Export JSON</button><button class="btn-sm" onclick="document.getElementById(\'operatingServiceImportFile\').click()">Import JSON</button><input type="file" id="operatingServiceImportFile" accept=".json,application/json" class="initial-hidden" onchange="importOperatingServices(this.files)"></div>' + hidden + (rows || '<div class="trace-meta">No operating services configured.</div>') + '<div id="operatingServiceDetail" class="trace-meta"></div></div>';
+}
+
+async function exportOperatingServices() {
+  try {
+    const response = await fetch('/api/services/export');
+    const data = await readApiJson(response, 'Operating services export API');
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const anchor = document.createElement('a');
+    anchor.href = URL.createObjectURL(blob);
+    anchor.download = 'operating-services-' + new Date().toISOString().slice(0, 10) + '.json';
+    anchor.click();
+    URL.revokeObjectURL(anchor.href);
+  } catch (error) {
+    alert('Export failed: ' + (error.message || error));
+  }
+}
+
+async function importOperatingServices(files) {
+  const input = document.getElementById('operatingServiceImportFile');
+  if (!files || files.length === 0) return;
+  try {
+    const text = await files[0].text();
+    const payload = JSON.parse(text);
+    const response = await fetch('/api/services/import?overwrite=false', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const data = await readApiJson(response, 'Operating services import API');
+    alert('Imported ' + (data.imported?.length || 0) + ' service(s); skipped ' + (data.skipped?.length || 0) + '.');
+    await loadDiscovery();
+  } catch (error) {
+    alert('Import failed: ' + (error.message || error));
+  } finally {
+    if (input) input.value = '';
+  }
 }
 
 async function loadOperatingServiceDetail(serviceId) {

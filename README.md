@@ -86,6 +86,17 @@ Override the model, host, prompt size, timeout, or context window with
 `HARNESS_LONG_PROMPT_MODEL`, `OLLAMA_HOST`, `HARNESS_LONG_PROMPT_LINES`,
 `HARNESS_LONG_PROMPT_TIMEOUT_MS`, and `HARNESS_LONG_PROMPT_NUM_CTX`.
 
+## Operating services
+
+Agentic Service Mode handles ongoing service requests before model selection.
+Requests such as reminders, bullet journals, and daily site checks create local
+operating services under `.harness/services/` instead of asking the model to
+build an app or write task files.
+
+See [Operating Services](docs/OPERATING-SERVICES.md) for the storage contract,
+deterministic commands, scheduler behavior, Discovery detail flow, and
+model-agnostic routing rules.
+
 ## Autonomy mode
 
 Run the harness against itself, draining `IMPLEMENTATION_PLAN.md` task by

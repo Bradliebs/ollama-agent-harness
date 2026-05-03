@@ -50,7 +50,7 @@ import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCata
 import { createAutomationJob, deleteAutomationJob, executeDueJobs, listAutomationJobs, listDueAutomationJobs, readAutomationRunLog, updateAutomationJob } from '../automation/jobs';
 import { prepareAutomationRun } from '../automation/runner';
 import { AutomationScheduler } from '../automation/scheduler';
-import { getAgenticService, handleOperateModeRequest, listAgenticServices } from '../services/agenticServiceMode';
+import { exportAgenticServices, getAgenticService, handleOperateModeRequest, importAgenticServices, listAgenticServices } from '../services/agenticServiceMode';
 import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
 import { heuristicVerifier } from '../mycelium/verifier';
 import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
@@ -1213,6 +1213,43 @@ function summarizeServiceState(state: unknown): Record<string, number | boolean 
   };
 }
 
+function parseNonNegativeInteger(value: unknown, fallback: number, max = 100): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return Math.min(Math.floor(parsed), max);
+}
+
+function operatingServiceLifecycleAudit() {
+  return {
+    capture_points: ['chat_operate_intercept', 'run_evidence', 'automation_runs', 'service_state', 'discovery_detail'],
+    persistence: ['.harness/services', '.harness/automations/jobs.json', '.harness/evidence'],
+    model_agnostic: true,
+  };
+}
+
+async function recordOperatingServiceEvidence(action: 'export' | 'import', serviceIds: string[], summary: string): Promise<void> {
+  const card: StoredRunEvidence = {
+    id: `operating-service-${action}:${new Date().toISOString()}:${crypto.randomUUID()}`,
+    runId: `operating-service-${action}`,
+    runName: `Operating service ${action}`,
+    kind: 'chat',
+    mode: 'automate',
+    createdAt: new Date().toISOString(),
+    request: `Operating services ${action}`,
+    model: currentModel,
+    backend: currentModel.includes('/') ? currentModel.slice(0, currentModel.indexOf('/')) : 'ollama',
+    permissionMode,
+    capabilityGrantCount: listActiveCapabilityGrants(capabilityGrants).length,
+    toolSuccessRate: 1,
+    tools: [{ name: `operating_services_${action}`, success: true, outputSummary: summary }],
+    files: [{ path: '.harness/services', action: action === 'export' ? 'read' : 'write' }],
+    commands: [],
+    artifacts: serviceIds.map((serviceId) => ({ title: serviceId, kind: 'operating-service' })),
+    recovery: { stopReason: 'completed' },
+  };
+  await appendRunEvidence(PROJECT_DIR, card);
+}
+
 function evidenceFilesFromTool(callName: string, input: Record<string, unknown>): EvidenceFileSummary[] {
   const fileAction: EvidenceFileSummary['action'] = callName === 'file_read' ? 'read'
     : callName === 'file_write' ? 'write'
@@ -1433,7 +1470,7 @@ app.get('/api/discovery', async (_req, res) => {
         },
       },
       automations: { total: automationJobs.length, due: dueAutomations, jobs: automationJobs, policy: { activeGrantCount: automationPolicy.grants.length, killSwitchActive: automationPolicy.killSwitchActive }, schedulerRunning: Boolean(automationScheduler) },
-      services: { total: agenticServices.length, services: agenticServices.map((item) => ({ service_id: item.service.service_id, service_name: item.service.service_name, mode: item.service.mode, purpose: item.service.purpose, updated_at: item.service.updated_at, automation_job_id: item.service.automation_job_id })) },
+      services: { total: agenticServices.length, limit: 8, offset: 0, lifecycle: operatingServiceLifecycleAudit(), services: agenticServices.slice(0, 8).map((item) => ({ service_id: item.service.service_id, service_name: item.service.service_name, mode: item.service.mode, purpose: item.service.purpose, updated_at: item.service.updated_at, automation_job_id: item.service.automation_job_id })) },
       sessionSearch,
       curator: {
         enabled: curatorSettings.enabled,
@@ -1450,13 +1487,42 @@ app.get('/api/discovery', async (_req, res) => {
   }
 });
 
-app.get('/api/services', async (_req, res) => {
+app.get('/api/services', async (req, res) => {
   try {
+    const limit = parseNonNegativeInteger(req.query.limit, 50, 200);
+    const offset = parseNonNegativeInteger(req.query.offset, 0, Number.MAX_SAFE_INTEGER);
     const services = await listAgenticServices(PROJECT_DIR);
-    res.json({ services: services.map((item) => ({ service: item.service, stateSummary: summarizeServiceState(item.state) })) });
+    const page = services.slice(offset, offset + limit);
+    res.json({ total: services.length, limit, offset, lifecycle: operatingServiceLifecycleAudit(), services: page.map((item) => ({ service: item.service, stateSummary: summarizeServiceState(item.state) })) });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/services/export', async (req, res) => {
+  try {
+    const ids = typeof req.query.ids === 'string' ? req.query.ids.split(',').map((id) => id.trim()).filter(Boolean) : undefined;
+    const payload = await exportAgenticServices(PROJECT_DIR, ids);
+    await recordOperatingServiceEvidence('export', payload.services.map((item) => item.service.service_id), `Exported ${payload.services.length} operating service(s).`).catch((error) => logger.warn('Services', 'Failed to record service export evidence', { error: error instanceof Error ? error.message : String(error) }));
+    res.setHeader('Content-Disposition', `attachment; filename="operating-services-${new Date().toISOString().slice(0, 10)}.json"`);
+    res.json(payload);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/services/import', async (req, res) => {
+  try {
+    const overwrite = req.query.overwrite === 'true' || req.body?.overwrite === true;
+    const payload = req.body?.payload ?? req.body;
+    const result = await importAgenticServices(PROJECT_DIR, payload, { overwrite });
+    await recordOperatingServiceEvidence('import', [...result.imported, ...result.skipped], `Imported ${result.imported.length} and skipped ${result.skipped.length} operating service(s).`).catch((error) => logger.warn('Services', 'Failed to record service import evidence', { error: error instanceof Error ? error.message : String(error) }));
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ error: msg });
   }
 });
 
