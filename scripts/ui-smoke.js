@@ -81,8 +81,6 @@ async function main() {
       await loadOperatingServiceDetail('not_configured');
       const missingDetailUnavailable = document.getElementById('operatingServiceDetail')?.textContent.includes('Service details unavailable');
       const serviceButtons = Array.from(document.querySelectorAll('#operatingServicesDiscoveryPanel button')).filter((button) => button.textContent?.includes('Details'));
-      const serviceButton = serviceButtons[0];
-      if (serviceButton) serviceButton.click();
       return {
         status: response.status,
         secondStatus: secondResponse.status,
@@ -97,7 +95,9 @@ async function main() {
         hasServicePanelText: document.getElementById('operatingServicesDiscoveryPanel')?.textContent.includes('Site Monitor Agent'),
       };
     });
+    await page.locator('#operatingServicesDiscoveryPanel button:has-text("Details")').first().click();
     await page.waitForFunction(() => document.getElementById('operatingServiceDetail')?.textContent.includes('storage'));
+    const operatingServiceDetailRendered = await page.evaluate(() => document.getElementById('operatingServiceDetail')?.textContent.includes('storage'));
     const exportDownload = await Promise.all([
       page.waitForEvent('download'),
       page.click('#operatingServicesDiscoveryPanel button:has-text("Export JSON")'),
@@ -122,13 +122,18 @@ async function main() {
     await fileChooser.setFiles(importPath);
     const importDialogMessage = await importDialogPromise;
     await page.waitForFunction(() => document.getElementById('operatingServicesDiscoveryPanel')?.textContent.includes('service(s) configured'));
-    await page.evaluate(() => Array.from(document.querySelectorAll('#operatingServicesDiscoveryPanel button')).find((button) => button.textContent?.includes('Details'))?.click());
+    await page.locator('#operatingServicesDiscoveryPanel button:has-text("Details")').first().click();
     await page.waitForFunction(() => document.getElementById('operatingServiceDetail')?.textContent.includes('storage'));
+    const importedOperatingServiceDetailRendered = await page.evaluate(() => document.getElementById('operatingServiceDetail')?.textContent.includes('storage'));
     fs.rmSync(importPath, { force: true });
     const operatingServiceExportImportRoundTrip = {
       exportedServiceCount: Array.isArray(exportedServicesPayload.services) ? exportedServicesPayload.services.length : 0,
       importDialogMessage,
     };
+    await page.evaluate(() => showLeftTab('runs', document.querySelector('[onclick*="showLeftTab(\'runs\'"]')));
+    await page.waitForFunction(() => document.getElementById('runsView')?.textContent.includes('Operating service export') && document.getElementById('runsView')?.textContent.includes('Operating service import'));
+    const operatingServiceEvidenceVisible = await page.evaluate(() => document.getElementById('runsView')?.textContent.includes('Operating service export') && document.getElementById('runsView')?.textContent.includes('Operating service import'));
+    await page.evaluate(() => showLeftTab('discovery', Array.from(document.querySelectorAll('.tab')).find((element) => element.getAttribute('onclick')?.includes("showLeftTab('discovery'"))));
     const discoveryTabVisible = await page.evaluate(() => getComputedStyle(document.getElementById('discoveryView')).display !== 'none');
     await page.evaluate(() => showLeftTab('learning', document.querySelector('[onclick*="learning"]')));
     await page.waitForFunction(() => Boolean(document.getElementById('learningCandidateQueue')));
@@ -145,7 +150,7 @@ async function main() {
     // create duplicate IDs before the dedup check runs.
     await page.evaluate(() => showLeftTab('tools', document.querySelector('[onclick*="showLeftTab(\'tools\'"]')));
     await page.waitForTimeout(500);
-    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip }) => {
+    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered }) => {
       const ids = Array.from(document.querySelectorAll('[id]')).map((element) => element.id);
       // Dynamically-rendered panels may legitimately re-render with the same ID
       const dynamicPanelIds = new Set(['permissionPanel', 'capabilityAlignmentPanel', 'toolRegistryPanel', 'automationRunsSection', 'curatorRunsSection']);
@@ -172,7 +177,7 @@ async function main() {
         hasExtensionDiscoveryPanel: Boolean(document.getElementById('extensionDiscoveryPanel')),
         hasOperatingServicesDiscoveryPanel: Boolean(document.getElementById('operatingServicesDiscoveryPanel')),
         hasOperatingServiceDetailFunction: typeof window.loadOperatingServiceDetail === 'function',
-        operatingServiceDetailRendered: document.getElementById('operatingServiceDetail')?.textContent.includes('storage'),
+        operatingServiceDetailRendered: Boolean(operatingServiceDetailRendered) && Boolean(importedOperatingServiceDetailRendered),
         operateModeSmokeStatus: operateModeSmoke.status,
         operateModeSmokeHandled: operateModeSmoke.body.includes('"mode":"OPERATE_MODE"') && operateModeSmoke.body.includes('Site Monitor Agent is set up') && operateModeSmoke.secondBody.includes('"mode":"OPERATE_MODE"') && operateModeSmoke.secondBody.includes('Site Monitor Agent is set up') && operateModeSmoke.selectedModelBody.includes('"mode":"OPERATE_MODE"') && Boolean(operateModeSmoke.hasServicePanelText),
         operateModeSmokeSecondStatus: operateModeSmoke.secondStatus,
@@ -279,7 +284,7 @@ async function main() {
         hasApplyCalibrationFunction: typeof window.applyRoutingCalibration === 'function',
         duplicateIds,
       };
-    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip });
+    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered });
 
     const failures = [];
     if (!result.title.endsWith('Ollama Agent Harness')) failures.push(`Unexpected title: ${result.title}`);
@@ -308,6 +313,7 @@ async function main() {
     if (!result.missingOperatingServiceDetailHandled) failures.push('missing operating service detail did not render an unavailable message');
     if (!result.hasOperatingServiceExportImport) failures.push('operating service export/import controls were not rendered');
     if (!result.operatingServiceExportImportRoundTrip || result.operatingServiceExportImportRoundTrip.exportedServiceCount < 1 || !/Imported \d+ service\(s\); skipped \d+\./.test(result.operatingServiceExportImportRoundTrip.importDialogMessage)) failures.push('operating service export/import browser round trip failed');
+    if (!operatingServiceEvidenceVisible) failures.push('operating service export/import evidence was not visible in Runs UI');
     if (!result.hasAutomationDiscoveryPanel) failures.push('automation discovery panel was not rendered');
     if (!result.hasSessionSearchDiscoveryPanel) failures.push('session search discovery panel was not rendered');
     if (!result.hasCuratorDiscoveryPanel) failures.push('curator discovery panel was not rendered');

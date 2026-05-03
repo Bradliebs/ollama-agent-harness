@@ -5104,7 +5104,7 @@ function renderAutomationRunsSection(automations, runLog, runEvidence) {
   const policy = automations.policy || {};
   const schedulerRunning = automations.schedulerRunning;
   const entries = Array.isArray(runLog) ? runLog : [];
-  const evidence = Array.isArray(runEvidence) ? runEvidence.filter((card) => card.kind === 'automation' || card.kind === 'autonomy') : [];
+  const evidence = Array.isArray(runEvidence) ? runEvidence.filter((card) => card.kind === 'automation' || card.kind === 'autonomy' || isOperatingServiceEvidence(card)) : [];
   const schedulerBadge = schedulerRunning
     ? '<span class="capability-pill" style="border-color:#5bb0ff;color:#5bb0ff">running</span>'
     : '<span class="capability-pill" style="border-color:#888;color:#888">idle</span>';
@@ -5159,6 +5159,12 @@ function renderAutomationRunsSection(automations, runLog, runEvidence) {
     + renderAutomationRunLog(entries)
     + renderRunEvidenceLog(evidence)
     + '</div>';
+}
+
+function isOperatingServiceEvidence(card) {
+  const tools = Array.isArray(card?.tools) ? card.tools : [];
+  return String(card?.runName || '').startsWith('Operating service ')
+    || tools.some((tool) => String(tool?.name || '').startsWith('operating_services_'));
 }
 
 function renderRunEvidenceLog(evidence) {
