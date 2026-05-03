@@ -395,6 +395,9 @@ async function relayChatWithProgress(bot: TelegramBot, chatId: string, message: 
   let assistantText = '';
   let toolCalls = 0;
   const toolNames: string[] = [];
+  const toolSummaries: string[] = [];
+  const errors: string[] = [];
+  let doneReason = '';
   let buffer = '';
 
   while (true) {
@@ -408,12 +411,19 @@ async function relayChatWithProgress(bot: TelegramBot, chatId: string, message: 
       const payload = line.slice(6).trim();
       if (payload === '[DONE]') continue;
       try {
-        const event = JSON.parse(payload) as { type: string; content?: string; call?: { name?: string } };
+        const event = JSON.parse(payload) as { type: string; content?: string; message?: string; reason?: string; call?: { name?: string }; result?: { success?: boolean; output?: string } };
         if (event.type === 'text' && event.content) assistantText += event.content;
         if (event.type === 'tool_call' && event.call?.name) {
           toolCalls++;
           if (!toolNames.includes(event.call.name)) toolNames.push(event.call.name);
         }
+        if (event.type === 'tool_result' && event.call?.name) {
+          if (!toolNames.includes(event.call.name)) toolNames.push(event.call.name);
+          const summary = summarizeTelegramToolResult(event.call.name, Boolean(event.result?.success), event.result?.output);
+          if (summary) toolSummaries.push(summary);
+        }
+        if (event.type === 'error' && event.message) errors.push(event.message);
+        if (event.type === 'done' && event.reason) doneReason = event.reason;
       } catch { /* skip */ }
     }
 
@@ -430,9 +440,7 @@ async function relayChatWithProgress(bot: TelegramBot, chatId: string, message: 
   await bot.deleteMessage(chatId, progressMsgId).catch(() => {});
 
   if (!assistantText.trim()) {
-    assistantText = toolCalls > 0
-      ? `✅ Used ${toolCalls} tool call(s): ${toolNames.join(', ')}\n\n(No text response from the model.)`
-      : '(No response from the model.)';
+    assistantText = buildTelegramEmptyModelResponse({ toolCalls, toolNames, toolSummaries, errors, doneReason });
   }
 
   const chunks = splitMessage(assistantText);
@@ -443,6 +451,30 @@ async function relayChatWithProgress(bot: TelegramBot, chatId: string, message: 
       await bot.sendMessage(chatId, chunk);
     }
   }
+}
+
+export function buildTelegramEmptyModelResponse(input: { toolCalls: number; toolNames: string[]; toolSummaries: string[]; errors: string[]; doneReason: string }): string {
+  if (input.errors.length > 0) {
+    return `⚠️ Harness reported an error:\n\n${input.errors.slice(-2).join('\n')}`;
+  }
+  if (input.toolSummaries.length > 0) {
+    const tools = input.toolNames.length > 0 ? `\n\nTools: ${input.toolNames.join(', ')}` : '';
+    return `✅ Done.\n\n${input.toolSummaries.slice(-6).join('\n')}${tools}`;
+  }
+  if (input.toolCalls > 0) {
+    return `✅ Used ${input.toolCalls} tool call(s): ${input.toolNames.join(', ')}\n\nThe model completed the run but returned an empty final message.`;
+  }
+  if (input.doneReason === 'completed') {
+    return 'Done, but the model returned an empty final message.';
+  }
+  return '(No response from the model.)';
+}
+
+function summarizeTelegramToolResult(name: string, success: boolean, output: unknown): string {
+  const status = success ? '✅' : '❌';
+  const text = String(output ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return `${status} ${name}`;
+  return `${status} ${name}: ${text.slice(0, 280)}`;
 }
 
 // ─── Notifications ──────────────────────────────────────────────────

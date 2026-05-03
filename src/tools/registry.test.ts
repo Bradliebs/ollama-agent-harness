@@ -33,6 +33,10 @@ describe('ToolRegistry', () => {
     const bash = registry.get('bash');
     expect(bash?.riskLevel).toBe('high');
     expect(bash?.permissionCategory).toBe('shell');
+    const telegram = registry.get('telegram_notify');
+    expect(telegram?.toolset).toBe('communications');
+    expect(telegram?.riskLevel).toBe('high');
+    expect(telegram?.enabledByDefault).toBe(false);
     const fileRead = registry.get('file_read');
     expect(fileRead?.riskLevel).toBe('low');
     expect(fileRead?.permissionCategory).toBe('read');

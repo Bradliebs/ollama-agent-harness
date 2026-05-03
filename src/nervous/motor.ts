@@ -17,7 +17,7 @@ export interface MotorPermission {
 // Tool categories for risk assessment
 const READ_ONLY_TOOLS = new Set(['file_read', 'list_files', 'list_uploads', 'grep', 'web_search', 'web_read', 'rag_search', 'rag_list_indexes', 'calendar_read', 'image_analyze', 'pdf_read', 'pdf_metadata', 'pdf_extract_tables', 'audio_transcribe', 'desktop_screenshot', 'browser_bookmarks']);
 const WRITE_TOOLS = new Set(['file_write', 'file_edit', 'file_move', 'file_delete', 'create_skill', 'install_skill', 'memory_write', 'document_export']);
-const NETWORK_TOOLS = new Set(['web_fetch', 'email_send', 'email_draft']);
+const NETWORK_TOOLS = new Set(['web_fetch', 'email_send', 'email_draft', 'telegram_notify']);
 const SHELL_TOOLS = new Set(['bash']);
 const DESTRUCTIVE_KEYWORDS = /\b(rm\s+-rf|del\s+\/[sfq]|remove-item.*-recurse|drop\s+table|truncate|format\s+[a-z]:|fdisk)\b/i;
 
@@ -49,9 +49,9 @@ export function checkMotorPermission(actionType: string, target: string, state: 
   }
 
   // Email sending — always require confirmation in high-risk contexts
-  if (actionType === 'email_send') {
+  if (actionType === 'email_send' || actionType === 'telegram_notify') {
     if (state.riskLevel === 'high' || state.riskLevel === 'critical') {
-      return { decision: 'REQUIRE_CONFIRMATION', reason: 'Email sending in high-risk context.', actionType, target };
+      return { decision: 'REQUIRE_CONFIRMATION', reason: 'Notification sending in high-risk context.', actionType, target };
     }
   }
 

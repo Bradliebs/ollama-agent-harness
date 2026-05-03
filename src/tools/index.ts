@@ -11,6 +11,7 @@ import { PdfReadTool, PdfMetadataTool, PdfRenderPageTool, PdfExtractTablesTool }
 import { RagSearchTool, RagListIndexesTool } from './ragTools';
 import { CuratorPreviewTool } from './curatorTools';
 import { DocumentExportTool } from './documentTools';
+import { TelegramNotifyTool } from './telegramTools';
 import type { Tool } from '../types';
 import { createBuiltinToolRegistry } from './registry';
 
@@ -31,6 +32,7 @@ export { PdfReadTool, PdfMetadataTool, PdfRenderPageTool, PdfExtractTablesTool }
 export { RagSearchTool, RagListIndexesTool, setRagRuntime } from './ragTools';
 export { CuratorPreviewTool, setCuratorToolRuntime } from './curatorTools';
 export { DocumentExportTool } from './documentTools';
+export { TelegramNotifyTool } from './telegramTools';
 export { ToolDispatcher } from './dispatcher';
 export { BUILTIN_TOOL_ENTRIES, ToolRegistry, createBuiltinToolRegistry } from './registry';
 export type { ToolRegistryEntry } from './registry';

@@ -9,10 +9,14 @@ export interface StoredRunEvidence extends EvidenceCard {
   runName?: string;
 }
 
+const MAX_STORED_RUN_EVIDENCE = 1_000;
+const knownRunEvidenceCounts = new Map<string, number>();
+
 export async function appendRunEvidence(projectDir: string, evidence: StoredRunEvidence): Promise<string> {
   const filePath = runEvidencePath(projectDir);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.appendFile(filePath, JSON.stringify(evidence) + '\n', 'utf-8');
+  await pruneRunEvidence(projectDir, MAX_STORED_RUN_EVIDENCE).catch(() => {});
   return filePath;
 }
 
@@ -42,4 +46,25 @@ export async function readRunEvidence(projectDir: string, limit = 100): Promise<
 
 function runEvidencePath(projectDir: string): string {
   return path.join(projectDir, '.harness', 'evidence', 'runs.jsonl');
+}
+
+async function pruneRunEvidence(projectDir: string, maxEntries: number): Promise<void> {
+  const filePath = runEvidencePath(projectDir);
+  const knownCount = knownRunEvidenceCounts.get(filePath);
+  const count = knownCount === undefined ? await countRunEvidenceLines(filePath) : knownCount + 1;
+  knownRunEvidenceCounts.set(filePath, count);
+  if (count <= maxEntries) return;
+  const entries = await readRunEvidence(projectDir, maxEntries);
+  if (entries.length < maxEntries) return;
+  await fs.writeFile(filePath, entries.reverse().map((entry) => JSON.stringify(entry)).join('\n') + '\n', 'utf-8');
+  knownRunEvidenceCounts.set(filePath, maxEntries);
+}
+
+async function countRunEvidenceLines(filePath: string): Promise<number> {
+  const rl = readline.createInterface({ input: createReadStream(filePath), crlfDelay: Infinity });
+  let count = 0;
+  for await (const line of rl) {
+    if (line.trim()) count++;
+  }
+  return count;
 }

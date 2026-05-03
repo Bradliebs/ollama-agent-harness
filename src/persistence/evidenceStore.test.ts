@@ -108,4 +108,15 @@ describe('evidenceStore', () => {
     expect(result[0].id).toBe('bulk-149');
     expect(result[9].id).toBe('bulk-140');
   });
+
+  it('prunes stored evidence to the latest entries on append', async () => {
+    for (let i = 0; i < 1010; i++) {
+      await appendRunEvidence(tmpDir, makeEvidence({ id: `retained-${i}` }));
+    }
+    const filePath = path.join(tmpDir, '.harness', 'evidence', 'runs.jsonl');
+    const lines = (await fs.readFile(filePath, 'utf-8')).trim().split('\n');
+    expect(lines).toHaveLength(1000);
+    expect(JSON.parse(lines[0]).id).toBe('retained-10');
+    expect(JSON.parse(lines[999]).id).toBe('retained-1009');
+  });
 });
