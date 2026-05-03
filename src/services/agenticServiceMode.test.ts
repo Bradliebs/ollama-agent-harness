@@ -11,6 +11,30 @@ describe('agentic service mode', () => {
     expect(classifyAgenticMode('Generate a document template that reminds me daily')).toMatchObject({ mode: 'build' });
   });
 
+  it('classifies explicit ongoing service trigger phrases as operate mode', () => {
+    const triggers = [
+      'send me reminders about my invoices',
+      'remind me daily to review my plan',
+      'check in with me about open tasks',
+      'keep track of room availability',
+      'let me add tasks to this service',
+      'let me update tasks in this service',
+      'let me close tasks when done',
+      'add notes to the running log',
+      'manage this for me over time',
+      'follow up with me tomorrow',
+      'monitor this account daily',
+      'notify me when status changes',
+      'ask me every morning what changed',
+      'review this each day',
+      'keep a log of observations',
+    ];
+
+    for (const trigger of triggers) {
+      expect(classifyAgenticMode(trigger)).toMatchObject({ mode: 'operate' });
+    }
+  });
+
   it('creates a persisted bullet journal service and daily automation schedule', async () => {
     const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-service-mode-'));
 
@@ -29,6 +53,37 @@ describe('agentic service mode', () => {
     await expect(listAutomationJobs(projectDir)).resolves.toEqual([
       expect.objectContaining({ name: 'Bullet Journal daily check-in', schedule: expect.objectContaining({ kind: 'cron', expr: '0 9 * * *' }) }),
     ]);
+  });
+
+  it('persists the complete bullet journal operating service definition', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-service-definition-'));
+    await handleOperateModeRequest(projectDir, 'Create a bullet journal agent and remind me daily at 9am', new Date('2026-05-03T08:00:00.000Z'));
+
+    const service = JSON.parse(await fs.readFile(path.join(projectDir, '.harness', 'services', 'bullet_journal', 'service.json'), 'utf-8')) as Record<string, unknown>;
+
+    expect(service).toMatchObject({
+      service_id: 'bullet_journal',
+      service_name: 'Bullet Journal Agent',
+      mode: 'operate',
+      purpose: expect.stringContaining('persistent bullet journal'),
+      storage_location: '.harness/services/bullet_journal',
+      automation_job_id: expect.any(String),
+    });
+    expect(service).toEqual(expect.objectContaining({
+      persistent_state_schema: expect.any(Object),
+      supported_commands: expect.arrayContaining(['add_task', 'update_task', 'close_task', 'reopen_task', 'add_note', 'edit_note', 'delete_note', 'show_today', 'show_open_tasks', 'show_closed_tasks', 'daily_review', 'weekly_review', 'set_reminder_time', 'pause_reminders', 'resume_reminders']),
+      schedules: expect.arrayContaining([expect.objectContaining({ id: 'daily_check_in', expression: '0 9 * * *' })]),
+      reminder_rules: expect.arrayContaining(['Send/check in once per day at the configured time.', 'Show open tasks due today.', 'Show overdue tasks.', 'Ask what to add, update, close, or note.']),
+      state_transition_rules: expect.arrayContaining(['add_task creates an open task.', 'close_task sets status = closed and closed_at timestamp.', 'weekly_review summarises completed/open tasks and recurring themes.']),
+      review_rules: expect.arrayContaining(['Daily review writes daily_logs.', 'Weekly review summarises completed/open tasks and recurring themes.']),
+      close_archive_rules: expect.arrayContaining(['Closed tasks remain in tasks with status=closed and are mirrored in closed_tasks.']),
+      user_interaction_examples: expect.arrayContaining(['add task pay invoice', 'show today', 'weekly review']),
+      safety_confirmation_rules: expect.arrayContaining(['Ask for confirmation before deleting notes or clearing large sections of state.']),
+      enable_disable_controls: expect.arrayContaining(['pause_reminders', 'resume_reminders']),
+    }));
+    expect((service.notification_templates as Record<string, string>).daily_check_in).toBe('Good morning. Here\'s your bullet journal check-in:\nOpen today:\n1. ...\nOverdue:\n1. ...\nWant to add, update, close anything, or add a note?');
+    expect((service.persistent_state_schema as Record<string, unknown>).tasks).toEqual(['id', 'title', 'description', 'status', 'priority', 'due_date', 'created_at', 'updated_at', 'closed_at', 'tags', 'notes']);
+    expect((service.persistent_state_schema as Record<string, unknown>).notes).toEqual(['id', 'content', 'created_at', 'updated_at', 'tags', 'linked_task_id']);
   });
 
   it('mutates existing bullet journal state through service commands', async () => {
