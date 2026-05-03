@@ -10,13 +10,17 @@ const output = path.resolve(args.output || path.join('release', 'release-notes.m
 const changesDir = path.resolve(args.changesDir || path.join('.copilot-tracking', 'changes'));
 
 function main() {
-  const entries = readChangeLogs(changesDir);
+  const changelogSection = readChangelogVersionSection(version);
+  const entries = changelogSection ? [] : readChangeLogs(changesDir);
   const lines = [
     `# Ollama Agent Harness ${version}`,
     '',
   ];
 
-  if (entries.length > 0) {
+  if (changelogSection) {
+    lines.length = 0;
+    lines.push(changelogSection.replace(/^##?\s+Ollama Agent Harness .+$/m, `# Ollama Agent Harness ${version}`), '');
+  } else if (entries.length > 0) {
     lines.push('## Changes', '');
     for (const entry of entries.slice(0, 8)) {
       lines.push(`### ${entry.title}`, '');
@@ -24,10 +28,6 @@ function main() {
       for (const item of entry.releaseItems.slice(0, 5)) lines.push(`* ${item}`);
       if (entry.releaseItems.length > 0) lines.push('');
     }
-  } else if (fs.existsSync('CHANGELOG.md')) {
-    const changelog = currentVersionSection(stripFrontmatter(fs.readFileSync('CHANGELOG.md', 'utf-8')), version).trim();
-    lines.length = 0;
-    lines.push(changelog.replace(/^##?\s+Ollama Agent Harness .+$/m, `# Ollama Agent Harness ${version}`), '');
   } else {
     const fallback = gitSummary();
     lines.push('## Changes', '', fallback || 'Validated release from the current repository state.', '');
@@ -40,6 +40,11 @@ function main() {
   fs.mkdirSync(path.dirname(output), { recursive: true });
   fs.writeFileSync(output, lines.join('\n'), 'utf-8');
   console.log(JSON.stringify({ ok: true, output, changes: entries.length }, null, 2));
+}
+
+function readChangelogVersionSection(targetVersion) {
+  if (!fs.existsSync('CHANGELOG.md')) return '';
+  return currentVersionSection(stripFrontmatter(fs.readFileSync('CHANGELOG.md', 'utf-8')), targetVersion).trim();
 }
 
 function parseArgs(values) {
@@ -152,17 +157,17 @@ function stripFrontmatter(content) {
 
 function currentVersionSection(content, targetVersion) {
   const normalizedVersion = String(targetVersion).replace(/^v/i, 'v');
-  const heading = `## Ollama Agent Harness ${normalizedVersion}`;
+  const headings = [`## Ollama Agent Harness ${normalizedVersion}`, `## ${normalizedVersion}`];
   const lines = content.split(/\r?\n/);
-  const startIndex = lines.findIndex((line) => line.trim() === heading);
+  const startIndex = lines.findIndex((line) => headings.includes(line.trim()));
   if (startIndex === -1) {
-    return content;
+    return '';
   }
 
   let endIndex = lines.length;
   for (let index = startIndex + 1; index < lines.length; index += 1) {
     const line = lines[index].trim();
-    if (line.startsWith('## Ollama Agent Harness v')) {
+    if (line.startsWith('## Ollama Agent Harness v') || /^## v\d+\.\d+\.\d+/.test(line)) {
       endIndex = index;
       break;
     }

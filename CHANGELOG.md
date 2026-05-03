@@ -11,6 +11,22 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.2
+
+Patch release for configured communication behavior and Telegram reply reliability.
+
+### Telegram and communication tools
+
+* Added the `telegram_notify` tool so models use the saved Harness Telegram bridge instead of inventing local bot-token configuration.
+* Updated chat instructions to steer models toward configured communication tools for Telegram and email.
+* Improved Telegram bridge replies for tool-only turns. Successful tool results now produce a useful completion summary instead of `No response from the model`.
+* Added Telegram bridge tests for empty final model responses and stream error summaries.
+
+### Evidence retention
+
+* Bounded run evidence storage to the latest 1,000 entries while preserving the existing newest-first read behavior.
+* Added retention coverage for evidence pruning.
+
 ## v0.3.0 (2026-05-03)
 
 Major feature release: document generation, Telegram integration, email sending, task management, and Mission Control.
