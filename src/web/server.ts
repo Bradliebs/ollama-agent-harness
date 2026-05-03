@@ -1,10 +1,12 @@
 import express from 'express';
+import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { watch as fsWatch } from 'fs';
 import * as net from 'net';
 import * as crypto from 'crypto';
 import * as os from 'os';
+import { once } from 'events';
 import { Ollama } from 'ollama';
 import { OllamaClient } from '../core/ollamaClient';
 import { createChatClient, OPENAI_COMPATIBLE_PRESETS, readApiKey } from '../core/chatClientFactory';
@@ -46,14 +48,18 @@ import { calibrateModelRoutingPolicy, summarizeRoutingMetrics } from '../agents/
 import { checkSetupHealth } from '../setup/health';
 import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCatalog';
 import { createAutomationJob, deleteAutomationJob, executeDueJobs, listAutomationJobs, listDueAutomationJobs, readAutomationRunLog, updateAutomationJob } from '../automation/jobs';
+import { prepareAutomationRun } from '../automation/runner';
 import { AutomationScheduler } from '../automation/scheduler';
 import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
 import { heuristicVerifier } from '../mycelium/verifier';
 import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
+import { appendRunEvidence, readRunEvidence, type StoredRunEvidence } from '../persistence/evidenceStore';
+import { startTelegramBot, stopTelegramBot, isTelegramBotRunning, sendTelegramNotification, loadPersistedChatIds } from '../integrations/telegram';
 import { listShellCommandAllowlistPresets } from '../automation/runner';
 import { appendCapabilityAuditEvent, readCapabilityAuditEvents } from '../permissions/capabilityAudit';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
 import type { LoopConfig, LoopEvent, PermissionMode, Tool } from '../types';
+import type { EvidenceCard, EvidenceFileSummary, EvidenceMode, EvidenceToolSummary } from '../types/evidence';
 import type { Message } from 'ollama';
 
 const app = express();
@@ -78,6 +84,7 @@ const HISTORY_DIR = path.join(PROJECT_DIR, '.harness', 'chat-history');
 const SKILLS_DIR = path.join(PROJECT_DIR, '.harness', 'skills');
 const REPO_SKILLS_DIR = path.join(PROJECT_DIR, '.github', 'skills');
 const TRACES_DIR = path.join(PROJECT_DIR, '.harness', 'traces');
+const DOCUMENTS_DIR = path.join(PROJECT_DIR, '.harness', 'documents');
 const SETTINGS_PATH = path.join(PROJECT_DIR, '.harness', 'settings.json');
 const API_KEYS_PATH = path.join(PROJECT_DIR, '.harness', 'api-keys.json');
 const FILE_REDIRECTS_PATH = path.join(PROJECT_DIR, '.harness', 'file-write-redirects.json');
@@ -87,6 +94,8 @@ const WORKFLOWS_DIR = path.join(PROJECT_DIR, '.harness', 'workflows');
 const workflowRegistry = new WorkflowRegistry(WORKFLOWS_DIR);
 const ALLOWED_PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'dontAsk'];
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9._-]+$/;
+let autonomyChild: ChildProcessWithoutNullStreams | null = null;
+let autonomyStartedAt: string | undefined;
 
 type QueryLoopRunner = (config: LoopConfig, deps: QueryLoopDeps, initialMessages: Message[]) => AsyncGenerator<LoopEvent>;
 
@@ -126,6 +135,10 @@ interface WebSettings {
    * AND mirrored into HARNESS_AGENT_OUTPUT_DIR so the file_write tool
    * picks it up on the next call. */
   agentOutputDir: string;
+  /** Telegram bot token for the /api/chat bridge. Set via Settings or HARNESS_TELEGRAM_BOT_TOKEN env. */
+  telegramBotToken: string;
+  /** Comma-separated Telegram chat IDs allowed to use the bot. Empty = any. */
+  telegramAllowedChatIds: string;
 }
 
 interface MediaToolSettings {
@@ -222,6 +235,8 @@ let mediaTools: MediaToolSettings = {
 // built-in default (<project>/agent-outputs). Mirrored into the env var
 // HARNESS_AGENT_OUTPUT_DIR on every change so getAgentOutputDir() picks it up.
 let agentOutputDir: string = process.env.HARNESS_AGENT_OUTPUT_DIR ?? '';
+let telegramBotToken: string = process.env.HARNESS_TELEGRAM_BOT_TOKEN ?? '';
+let telegramAllowedChatIds: string = process.env.HARNESS_TELEGRAM_ALLOWED_CHAT_IDS ?? '';
 let outputValidation: OutputValidationSettings = { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: true };
 let customOutputValidationProfiles: CustomOutputValidationProfile[] = [];
 let modelCatalog: ModelCatalogSettings = { url: '', ttlHours: 24 };
@@ -482,6 +497,171 @@ app.get('/api/autonomy/history', async (req, res) => {
       res.status(204).end();
       return;
     }
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+interface PlanPreviewTask {
+  id: string;
+  title: string;
+  status: 'pending' | 'done' | 'failed';
+  anchors: string[];
+  target?: string;
+}
+
+async function readAutonomyPlanPreview(planPath = path.join(PROJECT_DIR, 'IMPLEMENTATION_PLAN.md')): Promise<{ tasks: PlanPreviewTask[]; total: number; pending: number; done: number; failed: number }> {
+  const raw = await fs.readFile(planPath, 'utf-8');
+  const tasks: PlanPreviewTask[] = [];
+  let current: PlanPreviewTask | null = null;
+  for (const rawLine of raw.split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+$/, '');
+    const taskMatch = line.match(/^- \[(.)\] (\S+)\s*[—\-]\s*(.+)$/);
+    if (taskMatch) {
+      const marker = taskMatch[1];
+      current = {
+        id: taskMatch[2],
+        title: taskMatch[3].trim(),
+        status: marker === 'x' ? 'done' : marker === '!' ? 'failed' : 'pending',
+        anchors: [],
+      };
+      tasks.push(current);
+      continue;
+    }
+    if (!current) continue;
+    const anchorMatch = line.match(/^\s+- anchor:\s*(\S+)\s*$/);
+    if (anchorMatch) current.anchors.push(anchorMatch[1]);
+    const targetMatch = line.match(/^\s+- target:\s*(\S+)\s*$/);
+    if (targetMatch) current.target = targetMatch[1];
+  }
+  return {
+    tasks,
+    total: tasks.length,
+    pending: tasks.filter((task) => task.status === 'pending').length,
+    done: tasks.filter((task) => task.status === 'done').length,
+    failed: tasks.filter((task) => task.status === 'failed').length,
+  };
+}
+
+app.get('/api/autonomy/plan-preview', async (_req, res) => {
+  try {
+    res.json({ planPath: 'IMPLEMENTATION_PLAN.md', ...(await readAutonomyPlanPreview()) });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/autonomy/tasks', async (req, res) => {
+  try {
+    const title = String(req.body?.title ?? '').trim();
+    if (!title) { res.status(400).json({ error: 'Task title is required.' }); return; }
+    const description = String(req.body?.description ?? title).trim();
+    const id = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || `task-${Date.now()}`;
+    const planPath = path.join(PROJECT_DIR, 'IMPLEMENTATION_PLAN.md');
+    let existing = '';
+    try { existing = await fs.readFile(planPath, 'utf-8'); } catch { existing = '# Implementation Plan\n'; }
+    const entry = `\n- [ ] ${id} — ${description}\n`;
+    await fs.writeFile(planPath, existing.replace(/\n*$/, '') + entry, 'utf-8');
+    const preview = await readAutonomyPlanPreview();
+    res.json({ ok: true, id, title: description, ...preview });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/autonomy/tasks/:id/complete', async (req, res) => {
+  try {
+    const taskId = String(req.params.id ?? '').trim();
+    if (!taskId) { res.status(400).json({ error: 'Task id is required.' }); return; }
+    const planPath = path.join(PROJECT_DIR, 'IMPLEMENTATION_PLAN.md');
+    const raw = await fs.readFile(planPath, 'utf-8');
+    const updated = raw.replace(new RegExp(`^(- \\[) \\] ${escapeRegex(taskId)}`, 'm'), '$1x] ' + taskId);
+    if (updated === raw) { res.status(404).json({ error: 'Task not found.' }); return; }
+    await fs.writeFile(planPath, updated, 'utf-8');
+    res.json({ ok: true, ...(await readAutonomyPlanPreview()) });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.delete('/api/autonomy/tasks/:id', async (req, res) => {
+  try {
+    const taskId = String(req.params.id ?? '').trim();
+    if (!taskId) { res.status(400).json({ error: 'Task id is required.' }); return; }
+    const planPath = path.join(PROJECT_DIR, 'IMPLEMENTATION_PLAN.md');
+    const raw = await fs.readFile(planPath, 'utf-8');
+    // Remove the task line and any indented sub-lines (anchors, targets).
+    const pattern = new RegExp(`^- \\[.\\] ${escapeRegex(taskId)}[^\\n]*\\n(?:  - [^\\n]*\\n)*`, 'm');
+    const updated = raw.replace(pattern, '');
+    if (updated === raw) { res.status(404).json({ error: 'Task not found.' }); return; }
+    await fs.writeFile(planPath, updated, 'utf-8');
+    res.json({ ok: true, ...(await readAutonomyPlanPreview()) });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+app.post('/api/autonomy/dry-run', async (_req, res) => {
+  try {
+    const preview = await readAutonomyPlanPreview();
+    const next = preview.tasks.find((task) => task.status === 'pending');
+    res.json({ ok: true, planPath: 'IMPLEMENTATION_PLAN.md', nextTask: next ?? null, ...preview });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/autonomy/start', async (req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    if (killSwitchActive) { res.status(403).json({ error: 'Kill switch is active.' }); return; }
+    if (autonomyChild && !autonomyChild.killed) { res.status(409).json({ error: 'An autonomy run is already active.', startedAt: autonomyStartedAt }); return; }
+    const preview = await readAutonomyPlanPreview();
+    if (preview.pending === 0) { res.status(400).json({ error: 'No pending tasks in IMPLEMENTATION_PLAN.md.' }); return; }
+    const preflight = await buildAutonomyPreflight(preview);
+    if (preflight.blocked.length > 0) { res.status(409).json({ error: 'Autonomy preflight failed.', preflight }); return; }
+    const env = { ...process.env };
+    const setEnv = (key: string, value: unknown): void => {
+      if (value === undefined || value === null || value === '') return;
+      env[key] = String(value);
+    };
+    setEnv('HARNESS_MODEL', req.body?.model ?? currentModel);
+    setEnv('HARNESS_BACKEND', req.body?.backend);
+    setEnv('HARNESS_PERMISSION_MODE', req.body?.permissionMode ?? permissionMode);
+    setEnv('FORGE_MAX_ITERATIONS', req.body?.maxIterations ?? 1);
+    setEnv('HARNESS_TIME_BUDGET_MS', req.body?.timeBudgetMs);
+    setEnv('HARNESS_UNPRODUCTIVE_TURN_LIMIT', req.body?.unproductiveTurnLimit ?? 6);
+    await fs.rm(path.join(PROJECT_DIR, '.forge-stop'), { force: true }).catch(() => {});
+    const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    autonomyStartedAt = new Date().toISOString();
+    autonomyChild = spawn(npmCommand, ['run', 'autonomy'], { cwd: PROJECT_DIR, env });
+    const evidence = createRunEvidence({ id: `autonomy:${autonomyStartedAt}`, kind: 'autonomy', request: preview.tasks.find((task) => task.status === 'pending')?.title || 'Run next pending implementation task', runName: 'Ralph autonomy loop', command: 'npm run autonomy', success: true, summary: `Started with ${preview.pending} pending task(s).` });
+    await appendRunEvidence(PROJECT_DIR, evidence);
+    autonomyChild.on('exit', () => { autonomyChild = null; autonomyStartedAt = undefined; });
+    res.json({ ok: true, startedAt: autonomyStartedAt, pid: autonomyChild.pid, pending: preview.pending, evidence });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/autonomy/stop', async (_req, res) => {
+  try {
+    await fs.writeFile(path.join(PROJECT_DIR, '.forge-stop'), 'stop', 'utf-8');
+    if (autonomyChild && !autonomyChild.killed) autonomyChild.kill();
+    const evidence = createRunEvidence({ id: `autonomy-stop:${new Date().toISOString()}`, kind: 'autonomy', request: 'Stop active autonomy run', runName: 'Ralph autonomy loop', command: 'write .forge-stop', success: true, summary: 'Stop signal written.' });
+    await appendRunEvidence(PROJECT_DIR, evidence);
+    res.json({ ok: true, stopped: true, evidence });
+  } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
   }
@@ -972,6 +1152,185 @@ app.get('/api/setup/health', async (req, res) => {
   }));
 });
 
+type ReadinessStatus = 'ready' | 'warn' | 'blocked';
+
+interface ReadinessCheck {
+  id: string;
+  label: string;
+  status: ReadinessStatus;
+  message: string;
+  action?: string;
+}
+
+function readinessStatus(checks: ReadinessCheck[]): ReadinessStatus {
+  if (checks.some((check) => check.status === 'blocked')) return 'blocked';
+  if (checks.some((check) => check.status === 'warn')) return 'warn';
+  return 'ready';
+}
+
+function readinessScore(checks: ReadinessCheck[]): number {
+  if (checks.length === 0) return 0;
+  const points = checks.reduce((sum, check) => sum + (check.status === 'ready' ? 1 : check.status === 'warn' ? 0.5 : 0), 0);
+  return Math.round((points / checks.length) * 100);
+}
+
+function readinessSection(id: string, label: string, checks: ReadinessCheck[]): { id: string; label: string; score: number; status: ReadinessStatus; checks: ReadinessCheck[] } {
+  return { id, label, score: readinessScore(checks), status: readinessStatus(checks), checks };
+}
+
+function detectEvidenceMode(message: string): EvidenceMode {
+  const lower = message.toLowerCase();
+  if (/\b(debug|failing|failed|error|exception|broken|diagnose|fix test)\b/.test(lower)) return 'debug';
+  if (/\b(review|audit|risk|regression|inspect)\b/.test(lower)) return 'review';
+  if (/\b(research|search|find|summarize|source|citation|web|docs)\b/.test(lower)) return 'research';
+  if (/\b(schedule|automate|automation|nightly|recurring|autonomy|autonomous)\b/.test(lower)) return 'automate';
+  if (/\b(skill|memory|remember|teach|workflow|learn)\b/.test(lower)) return 'teach';
+  if (/\b(build|create|implement|edit|write|code|test)\b/.test(lower)) return 'build';
+  return 'general';
+}
+
+function summarizeForEvidence(value: unknown, maxLength = 220): string {
+  const raw = typeof value === 'string' ? value : JSON.stringify(value ?? {});
+  return raw.replace(/\s+/g, ' ').slice(0, maxLength);
+}
+
+function evidenceFilesFromTool(callName: string, input: Record<string, unknown>): EvidenceFileSummary[] {
+  const fileAction: EvidenceFileSummary['action'] = callName === 'file_read' ? 'read'
+    : callName === 'file_write' ? 'write'
+    : callName === 'file_edit' ? 'edit'
+    : callName === 'file_move' ? 'move'
+    : callName === 'file_delete' ? 'delete'
+    : 'unknown';
+  if (!callName.startsWith('file_')) return [];
+  const paths = [input.path, input.source, input.destination]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  return paths.map((filePath) => ({ path: filePath, action: fileAction }));
+}
+
+function checkToolEnabled(toolName: string): ReadinessCheck {
+  return disabledTools.has(toolName)
+    ? { id: `tool.${toolName}`, label: `${toolName} enabled`, status: 'blocked', message: `${toolName} is disabled.`, action: 'Open Tools' }
+    : { id: `tool.${toolName}`, label: `${toolName} enabled`, status: 'ready', message: `${toolName} is available.` };
+}
+
+async function buildAutonomyPreflight(planPreview?: Awaited<ReturnType<typeof readAutonomyPlanPreview>>): Promise<{ blocked: ReadinessCheck[]; warnings: ReadinessCheck[] }> {
+  await ensureSettingsLoaded();
+  const setup = await checkSetupHealth({ host: ollamaHost, visionModel: mediaTools.visionModel, audioTranscribeCommand: mediaTools.audioTranscribeCommand, pdfOcrCommand: mediaTools.pdfOcrCommand, projectDir: PROJECT_DIR });
+  const activeGrants = listActiveCapabilityGrants(capabilityGrants);
+  const grantIds = new Set(activeGrants.map((grant) => grant.capabilityId));
+  const modelBackend = currentModel.includes('/') ? currentModel.slice(0, currentModel.indexOf('/')) : 'ollama';
+  const remoteBackendConfigured = modelBackend !== 'ollama' && Boolean(OPENAI_COMPATIBLE_PRESETS[modelBackend] && readApiKey(OPENAI_COMPATIBLE_PRESETS[modelBackend]));
+  const modelHealthy = currentModel ? (modelBackend === 'ollama' ? setup.ollama.ok : remoteBackendConfigured) : false;
+  const checks: ReadinessCheck[] = [
+    { id: 'model.selected', label: 'Model selected', status: currentModel ? 'ready' : 'blocked', message: currentModel ? `Selected ${currentModel}.` : 'No model selected.' },
+    { id: 'model.health', label: 'Model backend health', status: modelHealthy ? 'ready' : 'blocked', message: modelHealthy ? `${modelBackend} backend is available.` : `${modelBackend} backend is not ready.` },
+    { id: 'plan.pending', label: 'Pending plan tasks', status: planPreview && planPreview.pending > 0 ? 'ready' : 'blocked', message: planPreview ? `${planPreview.pending} pending task(s) in IMPLEMENTATION_PLAN.md.` : 'IMPLEMENTATION_PLAN.md could not be parsed.' },
+    { id: 'kill.switch', label: 'Kill switch clear', status: killSwitchActive ? 'blocked' : 'ready', message: killSwitchActive ? `Kill switch active: ${killSwitchReason}` : 'Kill switch is clear.' },
+    { id: 'validation.scripts', label: 'Validation scripts', status: setup.local.package.ok ? 'ready' : 'blocked', message: setup.local.package.message },
+    checkToolEnabled('bash'),
+    checkToolEnabled('file_edit'),
+    checkToolEnabled('file_write'),
+    { id: 'permission.mode', label: 'Permission mode', status: permissionMode === 'dontAsk' ? 'ready' : 'blocked', message: `Current mode is ${permissionMode}.` },
+    { id: 'shell.grant', label: 'Shell grant', status: grantIds.has('arbitrary-shell') || permissionMode === 'dontAsk' ? 'ready' : 'blocked', message: grantIds.has('arbitrary-shell') || permissionMode === 'dontAsk' ? 'Shell capability is grant-ready.' : 'Shell execution needs an active grant.' },
+    { id: 'background.autonomy.grant', label: 'Background autonomy grant', status: grantIds.has('background-autonomous-jobs') || permissionMode === 'dontAsk' ? 'ready' : 'blocked', message: grantIds.has('background-autonomous-jobs') || permissionMode === 'dontAsk' ? 'Background autonomy capability is grant-ready.' : 'Background jobs need an active grant.' },
+  ];
+  return { blocked: checks.filter((check) => check.status === 'blocked'), warnings: checks.filter((check) => check.status === 'warn') };
+}
+
+app.get('/api/readiness', async (_req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    const setup = await checkSetupHealth({ host: ollamaHost, visionModel: mediaTools.visionModel, audioTranscribeCommand: mediaTools.audioTranscribeCommand, pdfOcrCommand: mediaTools.pdfOcrCommand, projectDir: PROJECT_DIR });
+    const activeGrants = listActiveCapabilityGrants(capabilityGrants);
+    const capabilities = listCapabilityPolicies();
+    const ragIndexes = await ragIndex.listIndexes(PROJECT_DIR).catch(() => []);
+    const planPreview = await readAutonomyPlanPreview().catch(() => null);
+    const automationJobs = await listAutomationJobs(PROJECT_DIR).catch(() => []);
+    const validationScripts = setup.local.package.ok;
+    const modelSelected = Boolean(currentModel);
+    const modelBackend = currentModel.includes('/') ? currentModel.slice(0, currentModel.indexOf('/')) : 'ollama';
+    const remoteBackendConfigured = modelBackend !== 'ollama' && Boolean(OPENAI_COMPATIBLE_PRESETS[modelBackend] && readApiKey(OPENAI_COMPATIBLE_PRESETS[modelBackend]));
+    const modelHealthy = currentModel
+      ? (modelBackend === 'ollama' ? setup.ollama.ok : remoteBackendConfigured)
+      : false;
+    const grantIds = new Set(activeGrants.map((grant) => grant.capabilityId));
+    const hasShellGrant = grantIds.has('arbitrary-shell');
+    const hasBackgroundGrant = grantIds.has('background-autonomous-jobs');
+    const hasSelfModifyGrant = grantIds.has('self-modifying-code');
+    const sections = [
+      readinessSection('chat', 'Chat', [
+        { id: 'model.selected', label: 'Model selected', status: modelSelected ? 'ready' : 'blocked', message: modelSelected ? `Selected ${currentModel}.` : 'No model selected.', action: 'Pick a model' },
+        { id: 'model.health', label: 'Model backend health', status: modelHealthy ? 'ready' : 'blocked', message: modelHealthy ? `${modelBackend} backend is available.` : `${modelBackend} backend is not ready.`, action: 'Open Settings' },
+        { id: 'context.window', label: 'Context window', status: contextMaxTokens >= 4096 ? 'ready' : 'warn', message: `Configured context max is ${contextMaxTokens} tokens.` },
+      ]),
+      readinessSection('coding', 'Coding', [
+        checkToolEnabled('file_read'),
+        checkToolEnabled('file_write'),
+        checkToolEnabled('file_edit'),
+        { id: 'validation.scripts', label: 'Validation scripts', status: validationScripts ? 'ready' : 'warn', message: setup.local.package.message, action: 'Run doctor' },
+        { id: 'self.modify.grant', label: 'Self-modifying grant', status: hasSelfModifyGrant || permissionMode === 'dontAsk' ? 'ready' : 'warn', message: hasSelfModifyGrant || permissionMode === 'dontAsk' ? 'Self-modifying code is grant-ready.' : 'Self-modifying code may prompt before file edits.', action: 'Open Tools' },
+      ]),
+      readinessSection('research', 'Research', [
+        checkToolEnabled('web_search'),
+        checkToolEnabled('web_read'),
+        { id: 'rag.indexes', label: 'RAG indexes', status: ragIndexes.length > 0 ? 'ready' : 'warn', message: ragIndexes.length > 0 ? `${ragIndexes.length} RAG index(es) available.` : 'No local RAG indexes yet.', action: 'Open RAG' },
+      ]),
+      readinessSection('automation', 'Automation', [
+        { id: 'scheduler.enabled', label: 'Scheduler enabled', status: automationSchedulerSettings.enabled ? 'ready' : 'warn', message: automationSchedulerSettings.enabled ? 'Automation scheduler is enabled.' : 'Automation scheduler is disabled.', action: 'Open Settings' },
+        { id: 'automation.jobs', label: 'Automation jobs', status: automationJobs.length > 0 ? 'ready' : 'warn', message: `${automationJobs.length} automation job(s) configured.`, action: 'Open Runs' },
+        { id: 'background.grant', label: 'Background grant', status: hasBackgroundGrant || permissionMode === 'dontAsk' ? 'ready' : 'warn', message: hasBackgroundGrant || permissionMode === 'dontAsk' ? 'Background jobs can run with active grant posture.' : 'Background jobs need a grant for autonomous execution.', action: 'Open Tools' },
+        { id: 'kill.switch', label: 'Kill switch clear', status: killSwitchActive ? 'blocked' : 'ready', message: killSwitchActive ? `Kill switch active: ${killSwitchReason}` : 'Kill switch is clear.' },
+      ]),
+      readinessSection('autonomy', 'Full Autonomy', [
+        { id: 'plan.pending', label: 'Pending plan tasks', status: planPreview && planPreview.pending > 0 ? 'ready' : planPreview ? 'warn' : 'blocked', message: planPreview ? (planPreview.pending > 0 ? `${planPreview.pending} pending task(s) in IMPLEMENTATION_PLAN.md.` : `Plan complete — all ${planPreview.done} task(s) done.`) : 'IMPLEMENTATION_PLAN.md could not be parsed.', action: 'Open Plan' },
+        { id: 'permission.mode', label: 'Permission mode', status: permissionMode === 'dontAsk' ? 'ready' : 'warn', message: `Current mode is ${permissionMode}.`, action: 'Open Settings' },
+        { id: 'shell.grant', label: 'Shell grant', status: hasShellGrant || permissionMode === 'dontAsk' ? 'ready' : 'warn', message: hasShellGrant || permissionMode === 'dontAsk' ? 'Shell capability is grant-ready.' : 'Shell execution may prompt or be denied.', action: 'Open Tools' },
+        { id: 'background.autonomy.grant', label: 'Background autonomy grant', status: hasBackgroundGrant || permissionMode === 'dontAsk' ? 'ready' : 'warn', message: hasBackgroundGrant || permissionMode === 'dontAsk' ? 'Background autonomy capability is grant-ready.' : 'Background jobs need an active grant.', action: 'Open Tools' },
+        { id: 'blocked.capabilities', label: 'Blocked capability policy', status: summarizeCapabilityAlignment(capabilities).blocked >= 3 ? 'ready' : 'warn', message: `${summarizeCapabilityAlignment(capabilities).blocked} blocked high-risk capability surface(s).` },
+        { id: 'autonomy.kill.switch', label: 'Kill switch clear', status: killSwitchActive ? 'blocked' : 'ready', message: killSwitchActive ? `Kill switch active: ${killSwitchReason}` : 'Kill switch is clear.' },
+      ]),
+    ];
+    res.json({ generatedAt: new Date().toISOString(), model: currentModel, permissionMode, killSwitch: { active: killSwitchActive, reason: killSwitchReason }, grants: activeGrants.length, sections });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/telegram/status', (_req, res) => {
+  res.json({
+    configured: Boolean(telegramBotToken),
+    running: isTelegramBotRunning(),
+    hasAllowedChatIds: Boolean(telegramAllowedChatIds),
+  });
+});
+
+app.post('/api/telegram/token', async (req, res) => {
+  try {
+    const token = String(req.body?.token ?? '').trim().slice(0, 200);
+    const chatIds = String(req.body?.allowedChatIds ?? '').trim().slice(0, 500);
+    telegramBotToken = token;
+    telegramAllowedChatIds = chatIds;
+    await saveSettingsToDisk();
+    if (token) {
+      const preferred = parseInt(process.env.PORT ?? '3000', 10);
+      const url = `http://${LOCAL_HOST}:${preferred}`;
+      const bot = startTelegramBot(token, url, chatIds ? chatIds.split(',') : undefined);
+      res.json({ ok: true, running: Boolean(bot) });
+    } else {
+      stopTelegramBot();
+      res.json({ ok: true, running: false });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/telegram/stop', (_req, res) => {
+  stopTelegramBot();
+  res.json({ ok: true, running: false });
+});
+
 app.get('/api/discovery', async (_req, res) => {
   await ensureSettingsLoaded();
   try {
@@ -1136,6 +1495,237 @@ app.get('/api/traces/exports/:id', async (req, res) => {
     res.type('application/json').send(raw);
   } catch {
     res.status(404).json({ error: 'Trace export not found.' });
+  }
+});
+
+type DocumentFormat = 'markdown' | 'html' | 'pdf' | 'docx';
+type DocumentTemplate = 'brief' | 'report' | 'runbook' | 'spec' | 'adr' | 'release-notes' | 'handoff';
+
+interface GeneratedDocumentMetadata {
+  id: string;
+  title: string;
+  template: DocumentTemplate;
+  format: DocumentFormat;
+  filename: string;
+  createdAt: string;
+  sourceLabel: string;
+  size: number;
+}
+
+function normalizeDocumentFormat(value: unknown): DocumentFormat {
+  return value === 'html' || value === 'pdf' || value === 'docx' ? value : 'markdown';
+}
+
+function normalizeDocumentTemplate(value: unknown): DocumentTemplate {
+  return value === 'report' || value === 'runbook' || value === 'spec' || value === 'adr' || value === 'release-notes' || value === 'handoff' ? value : 'brief';
+}
+
+function documentSlug(title: string): string {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'document';
+}
+
+function buildGeneratedDocumentMarkdown(input: { title: string; template: DocumentTemplate; sourceLabel: string; content: string; evidence?: EvidenceCard }): string {
+  const title = input.title.trim() || 'Harness Document';
+  const content = input.content.trim() || 'No source content was provided.';
+  const generatedAt = new Date().toISOString();
+  const evidence = input.evidence;
+  const sections: string[] = [
+    `# ${title}`,
+    '',
+    `Generated: ${generatedAt}`,
+    `Source: ${input.sourceLabel || 'Harness'}`,
+    `Template: ${input.template}`,
+    '',
+  ];
+  if (input.template === 'brief') {
+    sections.push('## Summary', '', content, '', '## Decisions and Next Steps', '', '* Review the generated content for accuracy.', '* Export or revise the document from Harness.');
+  } else if (input.template === 'report') {
+    sections.push('## Executive Summary', '', content, '', '## Evidence', '', evidence ? evidenceMarkdown(evidence) : '* No evidence card attached.', '', '## Recommendations', '', '* Confirm open risks and assign owners.', '* Re-run validation before publishing externally.');
+  } else if (input.template === 'runbook') {
+    sections.push('## Purpose', '', content, '', '## Procedure', '', '1. Confirm prerequisites.', '2. Execute the documented steps.', '3. Validate the outcome.', '4. Record follow-up evidence.', '', '## Rollback', '', '* Use the latest Harness session, trace, or evidence card to recover context.');
+  } else if (input.template === 'spec') {
+    sections.push('## Context', '', content, '', '## Requirements', '', '* Define expected behavior.', '* Define validation and acceptance criteria.', '', '## Evidence', '', evidence ? evidenceMarkdown(evidence) : '* No evidence card attached.');
+  } else if (input.template === 'adr') {
+    sections.push('## Status', '', 'Proposed', '', '## Context', '', content, '', '## Decision', '', '* Record the decision made from this evidence.', '', '## Consequences', '', '* Positive: capture expected benefits.', '* Negative: capture tradeoffs or risks.', '', '## Evidence', '', evidence ? evidenceMarkdown(evidence) : '* No evidence card attached.');
+  } else if (input.template === 'release-notes') {
+    sections.push('## Summary', '', content, '', '## Changes', '', '* Added: capture user-visible additions.', '* Changed: capture behavior changes.', '* Fixed: capture defects resolved.', '', '## Validation', '', evidence?.validation ? `* ${evidence.validation.status} (${Math.round(evidence.validation.score * 100)}%)` : '* Add validation results before release.');
+  } else {
+    sections.push('## Situation', '', content, '', '## Work Completed', '', '* Summarize completed work.', '', '## Validation', '', evidence ? evidenceMarkdown(evidence) : '* No evidence card attached.', '', '## Follow-Up', '', '* List remaining work and owners.');
+  }
+  return sections.join('\n').replace(/\n{3,}/g, '\n\n') + '\n';
+}
+
+function evidenceMarkdown(evidence: EvidenceCard): string {
+  const lines = [
+    `* Request: ${evidence.request || 'n/a'}`,
+    `* Mode: ${evidence.mode}`,
+    `* Model: ${evidence.model || 'n/a'}`,
+    `* Permission mode: ${evidence.permissionMode || 'n/a'}`,
+    `* Tool calls: ${evidence.tools.length}`,
+    `* Files referenced: ${evidence.files.length}`,
+    `* Commands: ${evidence.commands.length}`,
+  ];
+  if (evidence.validation) lines.push(`* Validation: ${evidence.validation.status} (${Math.round(evidence.validation.score * 100)}%)`);
+  if (evidence.mycelium?.route?.length) lines.push(`* Mycelium route: ${evidence.mycelium.route.join(' > ')}`);
+  return lines.join('\n');
+}
+
+function markdownToDocumentHtml(markdown: string, title: string): string {
+  const body = markdown.split(/\r?\n/).map((line) => {
+    if (line.startsWith('# ')) return `<h1>${htmlEscape(line.slice(2))}</h1>`;
+    if (line.startsWith('## ')) return `<h2>${htmlEscape(line.slice(3))}</h2>`;
+    if (line.startsWith('### ')) return `<h3>${htmlEscape(line.slice(4))}</h3>`;
+    if (line.startsWith('* ')) return `<li>${htmlEscape(line.slice(2))}</li>`;
+    if (/^\d+\.\s+/.test(line)) return `<li>${htmlEscape(line.replace(/^\d+\.\s+/, ''))}</li>`;
+    return line.trim() ? `<p>${htmlEscape(line)}</p>` : '';
+  }).join('\n').replace(/(?:<li>[\s\S]*?<\/li>\n?)+/g, (match) => `<ul>\n${match}</ul>`);
+  return '<!doctype html>\n<html><head><meta charset="utf-8"><title>' + htmlEscape(title) + '</title><style>body{font-family:Segoe UI,Arial,sans-serif;max-width:860px;margin:40px auto;padding:0 20px;line-height:1.6;color:#1f2937}h1,h2,h3{color:#111827}code{background:#f3f4f6;padding:2px 4px;border-radius:4px}ul{padding-left:24px}</style></head><body>\n' + body + '\n</body></html>\n';
+}
+
+function htmlEscape(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+async function localDocumentConverters(): Promise<{ pandoc: boolean }> {
+  return { pandoc: await commandSucceeds(process.env.HARNESS_PANDOC_PATH || 'pandoc', ['--version']) };
+}
+
+async function commandSucceeds(command: string, args: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: 'ignore' });
+    child.once('error', () => resolve(false));
+    child.once('exit', (code) => resolve(code === 0));
+  });
+}
+
+async function convertMarkdownDocument(markdown: string, outputPath: string, format: Extract<DocumentFormat, 'pdf' | 'docx'>): Promise<void> {
+  const converters = await localDocumentConverters();
+  if (!converters.pandoc) throw new Error('PDF and DOCX export require pandoc on PATH or HARNESS_PANDOC_PATH.');
+  const sourcePath = outputPath.replace(/\.(pdf|docx)$/i, '.md');
+  await fs.writeFile(sourcePath, markdown, 'utf-8');
+  const command = process.env.HARNESS_PANDOC_PATH || 'pandoc';
+  const child = spawn(command, [sourcePath, '-o', outputPath], { cwd: PROJECT_DIR });
+  const [code] = await once(child, 'exit') as [number | null];
+  if (code !== 0) throw new Error(`pandoc failed to generate ${format.toUpperCase()} output.`);
+}
+
+function createEvidenceLearningCandidate(document: GeneratedDocumentMetadata, evidence: EvidenceCard, content: string) {
+  const qualityScore = Number(Math.min(1, 0.65 + Math.min(evidence.tools.length, 4) * 0.05 + (evidence.validation ? 0.1 : 0)).toFixed(3));
+  return {
+    id: `document:${document.id}`,
+    sessionId: evidence.recovery?.sessionId || document.id,
+    createdAt: document.createdAt,
+    prompt: evidence.request || `${document.template} document from ${document.sourceLabel}`,
+    outcome: [`Generated ${document.format.toUpperCase()} document: ${document.title}`, content.slice(0, 1200)].join('\n\n').slice(0, 2000),
+    toolNames: evidence.tools.map((tool) => tool.name),
+    sourceEventIds: evidence.id ? [evidence.id] : [],
+    qualityScore,
+    accepted: true,
+    rejectionReasons: [],
+  };
+}
+
+function createRunEvidence(input: { id: string; kind: 'automation' | 'autonomy'; request: string; runName?: string; command?: string; outputPath?: string; success?: boolean; summary?: string }): StoredRunEvidence {
+  return {
+    id: input.id,
+    runId: input.id,
+    runName: input.runName,
+    kind: input.kind,
+    mode: input.kind === 'automation' ? 'automate' : 'build',
+    createdAt: new Date().toISOString(),
+    request: input.request,
+    model: currentModel,
+    backend: currentModel.includes('/') ? currentModel.slice(0, currentModel.indexOf('/')) : 'ollama',
+    permissionMode,
+    capabilityGrantCount: listActiveCapabilityGrants(capabilityGrants).length,
+    toolSuccessRate: input.success === false ? 0 : 1,
+    tools: [],
+    files: input.outputPath ? [{ path: path.relative(PROJECT_DIR, input.outputPath).split(path.sep).join('/'), action: 'write' }] : [],
+    commands: input.command ? [{ command: input.command, success: input.success, outputSummary: input.summary }] : [],
+    artifacts: input.outputPath ? [{ title: path.basename(input.outputPath), kind: 'run-output' }] : [],
+    recovery: { stopReason: input.success === false ? 'failed' : 'completed' },
+  };
+}
+
+app.get('/api/evidence/runs', async (_req, res) => {
+  try {
+    res.json({ evidence: await readRunEvidence(PROJECT_DIR) });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/documents/formats', async (_req, res) => {
+  try {
+    const converters = await localDocumentConverters();
+    res.json({ formats: { markdown: { available: true }, html: { available: true }, pdf: { available: converters.pandoc, converter: 'pandoc' }, docx: { available: converters.pandoc, converter: 'pandoc' } } });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/documents', async (_req, res) => {
+  try {
+    await fs.mkdir(DOCUMENTS_DIR, { recursive: true });
+    const files = await fs.readdir(DOCUMENTS_DIR, { withFileTypes: true });
+    const documents: GeneratedDocumentMetadata[] = [];
+    for (const file of files.filter((entry) => entry.isFile() && entry.name.endsWith('.json'))) {
+      try {
+        const metadata = JSON.parse(await fs.readFile(path.join(DOCUMENTS_DIR, file.name), 'utf-8')) as GeneratedDocumentMetadata;
+        documents.push(metadata);
+      } catch { /* ignore corrupt metadata */ }
+    }
+    documents.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    res.json({ documents });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/documents/generate', async (req, res) => {
+  try {
+    const title = String(req.body?.title || 'Harness Document').trim().slice(0, 160) || 'Harness Document';
+    const template = normalizeDocumentTemplate(req.body?.template);
+    const format = normalizeDocumentFormat(req.body?.format);
+    const sourceLabel = String(req.body?.sourceLabel || 'Harness chat').trim().slice(0, 120) || 'Harness chat';
+    const content = String(req.body?.content || '').slice(0, 200_000);
+    const evidence = req.body?.evidence && typeof req.body.evidence === 'object' ? req.body.evidence as EvidenceCard : undefined;
+    const markdown = buildGeneratedDocumentMarkdown({ title, template, sourceLabel, content, evidence });
+    const body = format === 'html' ? markdownToDocumentHtml(markdown, title) : markdown;
+    await fs.mkdir(DOCUMENTS_DIR, { recursive: true });
+    const id = `${new Date().toISOString().replace(/[:.]/g, '-')}-${documentSlug(title)}-${crypto.randomBytes(3).toString('hex')}`;
+    const extension = format === 'html' ? 'html' : format === 'pdf' ? 'pdf' : format === 'docx' ? 'docx' : 'md';
+    const filename = `${id}.${extension}`;
+    const filePath = path.join(DOCUMENTS_DIR, filename);
+    if (format === 'pdf' || format === 'docx') await convertMarkdownDocument(markdown, filePath, format);
+    else await fs.writeFile(filePath, body, 'utf-8');
+    const stat = await fs.stat(filePath);
+    const metadata: GeneratedDocumentMetadata = { id, title, template, format, filename, createdAt: new Date().toISOString(), sourceLabel, size: stat.size };
+    await fs.writeFile(path.join(DOCUMENTS_DIR, `${id}.json`), JSON.stringify(metadata, null, 2), 'utf-8');
+    if (evidence) await appendLearningCandidate(PROJECT_DIR, createEvidenceLearningCandidate(metadata, evidence, markdown));
+    res.json({ ok: true, document: metadata, content: format === 'pdf' || format === 'docx' ? markdown : body });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/documents/:id/download', async (req, res) => {
+  const id = safeLocalId(req.params.id);
+  if (!id) { res.status(400).json({ error: 'Invalid document id.' }); return; }
+  try {
+    const metadata = JSON.parse(await fs.readFile(path.join(DOCUMENTS_DIR, `${id}.json`), 'utf-8')) as GeneratedDocumentMetadata;
+    const filePath = path.join(DOCUMENTS_DIR, metadata.filename);
+    const raw = await fs.readFile(filePath);
+    const contentType = metadata.format === 'html' ? 'text/html; charset=utf-8' : metadata.format === 'pdf' ? 'application/pdf' : metadata.format === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'text/markdown; charset=utf-8';
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${metadata.filename}"`);
+    res.send(raw);
+  } catch {
+    res.status(404).json({ error: 'Document not found.' });
   }
 });
 
@@ -1307,22 +1897,26 @@ app.get('/api/permissions/state', (_req, res) => {
 // Engage or release the global kill switch. Once engaged, the permission
 // engine denies every subsequent tool call until released.
 app.post('/api/permissions/kill-switch', (req, res) => {
-  const desired = Boolean(req.body?.active);
-  if (desired) {
-    killSwitchActive = true;
-    killSwitchReason = typeof req.body?.reason === 'string' && req.body.reason.trim()
-      ? String(req.body.reason).trim().slice(0, 500)
-      : 'Kill switch engaged from dashboard.';
-    logger.warn('Permissions', 'Kill switch engaged', { reason: killSwitchReason });
-    runtimeTracer.recordEvent('permission.kill_switch_engaged', { reason: killSwitchReason });
-  } else {
-    killSwitchActive = false;
-    killSwitchReason = '';
-    logger.info('Permissions', 'Kill switch released');
-    runtimeTracer.recordEvent('permission.kill_switch_released', {});
+  try {
+    const desired = Boolean(req.body?.active);
+    if (desired) {
+      killSwitchActive = true;
+      killSwitchReason = typeof req.body?.reason === 'string' && req.body.reason.trim()
+        ? String(req.body.reason).trim().slice(0, 500)
+        : 'Kill switch engaged from dashboard.';
+      logger.warn('Permissions', 'Kill switch engaged', { reason: killSwitchReason });
+      runtimeTracer.recordEvent('permission.kill_switch_engaged', { reason: killSwitchReason });
+    } else {
+      killSwitchActive = false;
+      killSwitchReason = '';
+      logger.info('Permissions', 'Kill switch released');
+      runtimeTracer.recordEvent('permission.kill_switch_released', {});
+    }
+    saveSettingsToDisk().catch(() => {});
+    res.json({ killSwitch: { active: killSwitchActive, reason: killSwitchReason } });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
-  saveSettingsToDisk().catch(() => {});
-  res.json({ killSwitch: { active: killSwitchActive, reason: killSwitchReason } });
 });
 
 // Read-only registry view for the Tools dashboard. Returns one entry per
@@ -1453,7 +2047,38 @@ app.post('/api/automations/execute-due', async (_req, res) => {
     }
     const policy = getAutomationPolicyContext();
     const results = await executeDueJobs(PROJECT_DIR, policy);
-    res.json({ executed: results.length, results: results.map((r) => ({ jobId: r.jobId, name: r.name, scriptOutput: r.run.scriptOutput, outputPath: r.run.outputPath })) });
+    const evidence = [];
+    for (const result of results) {
+      const card = createRunEvidence({ id: `automation:${result.jobId}:${new Date().toISOString()}`, kind: 'automation', request: result.run.prompt, runName: result.name, command: result.run.scriptOutput ? 'automation script context' : undefined, outputPath: result.run.outputPath, success: true, summary: result.run.scriptOutput.slice(0, 220) });
+      await appendRunEvidence(PROJECT_DIR, card);
+      evidence.push(card);
+    }
+    // Notify via Telegram if bot is running.
+    if (results.length > 0) {
+      const summary = results.map((r) => `• ${r.name}`).join('\n');
+      sendTelegramNotification('Automation jobs completed', `${results.length} job(s) ran:\n${summary}`).catch(() => {});
+    }
+    res.json({ executed: results.length, results: results.map((r) => ({ jobId: r.jobId, name: r.name, scriptOutput: r.run.scriptOutput, outputPath: r.run.outputPath })), evidence });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/automations/:id/execute', async (req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    if (killSwitchActive) { res.status(403).json({ error: 'Kill switch is active.' }); return; }
+    const jobId = safeLocalId(req.params.id);
+    if (!jobId) { res.status(400).json({ error: 'Invalid job id.' }); return; }
+    const jobs = await listAutomationJobs(PROJECT_DIR);
+    const job = jobs.find((j) => j.id === jobId);
+    if (!job) { res.status(404).json({ error: 'Job not found.' }); return; }
+    const policy = getAutomationPolicyContext();
+    const run = await prepareAutomationRun(PROJECT_DIR, job, new Date(), policy);
+    const card = createRunEvidence({ id: `automation:${jobId}:${new Date().toISOString()}`, kind: 'automation', request: run.prompt, runName: job.name, command: run.scriptOutput ? 'automation script context' : undefined, outputPath: run.outputPath, success: true, summary: (run.scriptOutput || '').slice(0, 220) });
+    await appendRunEvidence(PROJECT_DIR, card);
+    res.json({ ok: true, jobId, name: job.name, scriptOutput: run.scriptOutput, outputPath: run.outputPath, evidence: card });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -1512,7 +2137,8 @@ app.get('/api/automations/runs', async (_req, res) => {
   try {
     await ensureSettingsLoaded();
     const entries = await readAutomationRunLog(PROJECT_DIR);
-    res.json({ runs: entries });
+    const evidence = await readRunEvidence(PROJECT_DIR);
+    res.json({ runs: entries, evidence: evidence.filter((card) => card.kind === 'automation') });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -1623,17 +2249,21 @@ app.post('/api/mycelium/feedback', async (req, res) => {
 // Enable or disable a single tool at runtime. Disabled tools are filtered out
 // of the agent's tool list before each chat turn.
 app.post('/api/tools/:name/toggle', (req, res) => {
-  const toolName = String(req.params.name || '').trim();
-  if (!toolName) { res.status(400).json({ error: 'tool name required' }); return; }
-  const registry = createBuiltinToolRegistry();
-  if (!registry.get(toolName)) { res.status(404).json({ error: 'unknown tool' }); return; }
-  const currentlyEnabled = !disabledTools.has(toolName);
-  const desiredEnabled = req.body?.enabled === undefined ? !currentlyEnabled : Boolean(req.body.enabled);
-  if (desiredEnabled) disabledTools.delete(toolName);
-  else disabledTools.add(toolName);
-  logger.info('Tools', 'Tool toggled', { tool: toolName, enabled: desiredEnabled });
-  saveSettingsToDisk().catch(() => {});
-  res.json({ name: toolName, enabled: desiredEnabled, disabled: Array.from(disabledTools).sort() });
+  try {
+    const toolName = String(req.params.name || '').trim();
+    if (!toolName) { res.status(400).json({ error: 'tool name required' }); return; }
+    const registry = createBuiltinToolRegistry();
+    if (!registry.get(toolName)) { res.status(404).json({ error: 'unknown tool' }); return; }
+    const currentlyEnabled = !disabledTools.has(toolName);
+    const desiredEnabled = req.body?.enabled === undefined ? !currentlyEnabled : Boolean(req.body.enabled);
+    if (desiredEnabled) disabledTools.delete(toolName);
+    else disabledTools.add(toolName);
+    logger.info('Tools', 'Tool toggled', { tool: toolName, enabled: desiredEnabled });
+    saveSettingsToDisk().catch(() => {});
+    res.json({ name: toolName, enabled: desiredEnabled, disabled: Array.from(disabledTools).sort() });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 // --- Workflows ---
@@ -1687,15 +2317,23 @@ app.get('/api/workflows/runs', (_req, res) => {
 });
 
 app.get('/api/workflows/runs/:id', (req, res) => {
-  const run = workflowRegistry.getRun(String(req.params.id || ''));
-  if (!run) { res.status(404).json({ error: 'run not found' }); return; }
-  res.json({ run });
+  try {
+    const run = workflowRegistry.getRun(String(req.params.id || ''));
+    if (!run) { res.status(404).json({ error: 'run not found' }); return; }
+    res.json({ run });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.post('/api/workflows/runs/:id/pause', (req, res) => {
-  const ok = workflowRegistry.pause(String(req.params.id || ''), typeof req.body?.reason === 'string' ? req.body.reason : undefined);
-  if (!ok) { res.status(409).json({ error: 'run is not running' }); return; }
-  res.json({ ok: true });
+  try {
+    const ok = workflowRegistry.pause(String(req.params.id || ''), typeof req.body?.reason === 'string' ? req.body.reason : undefined);
+    if (!ok) { res.status(409).json({ error: 'run is not running' }); return; }
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.post('/api/workflows/runs/:id/resume', async (req, res) => {
@@ -1712,19 +2350,27 @@ app.post('/api/workflows/runs/:id/resume', async (req, res) => {
 });
 
 app.post('/api/workflows/runs/:id/cancel', (req, res) => {
-  const ok = workflowRegistry.cancel(String(req.params.id || ''), typeof req.body?.reason === 'string' ? req.body.reason : undefined);
-  if (!ok) { res.status(409).json({ error: 'run cannot be cancelled' }); return; }
-  res.json({ ok: true });
+  try {
+    const ok = workflowRegistry.cancel(String(req.params.id || ''), typeof req.body?.reason === 'string' ? req.body.reason : undefined);
+    if (!ok) { res.status(409).json({ error: 'run cannot be cancelled' }); return; }
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.post('/api/permissions/:id/resolve', (req, res) => {
-  const promptId = safeLocalId(req.params.id);
-  if (!promptId) { res.status(400).json({ error: 'Invalid permission prompt id.' }); return; }
-  const allowed = Boolean(req.body.allowed);
-  const resolved = permissionPrompts.resolve(promptId, allowed, req.body.reason?.toString());
-  if (!resolved) { res.status(404).json({ error: 'Permission prompt not found.' }); return; }
-  runtimeTracer.recordEvent('permission.prompt_resolved', { promptId, allowed });
-  res.json({ ok: true });
+  try {
+    const promptId = safeLocalId(req.params.id);
+    if (!promptId) { res.status(400).json({ error: 'Invalid permission prompt id.' }); return; }
+    const allowed = Boolean(req.body?.allowed);
+    const resolved = permissionPrompts.resolve(promptId, allowed, req.body?.reason?.toString());
+    if (!resolved) { res.status(404).json({ error: 'Permission prompt not found.' }); return; }
+    runtimeTracer.recordEvent('permission.prompt_resolved', { promptId, allowed });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 // Chat endpoint — runs the agent loop and streams events as SSE
@@ -1817,7 +2463,8 @@ app.post('/api/chat', async (req, res) => {
     '3. When you notice a reusable pattern, create a skill. When you learn something important, use the remember tool.\n' +
     '4. Format responses in Markdown.\n' +
     '5. Be direct — do the work, don\'t ask the user to do it themselves.' +
-    writableNote;
+    writableNote +
+    '\n7. You have a document_export tool that creates CSV, Excel (.xlsx), Word (.docx), and PDF files. Use it when the user asks for spreadsheets, documents, or reports. For Excel, numbers and percentages are auto-formatted. Tables are supported in Word and PDF.';
 
   // Inject name and personality before the base prompt
   const identityPrefix = [
@@ -1958,6 +2605,11 @@ app.post('/api/chat', async (req, res) => {
   let toolCallCount = 0;
   let toolSuccessCount = 0;
   const toolCallSequence: string[] = [];
+  const evidenceTools: EvidenceToolSummary[] = [];
+  const evidenceFiles: EvidenceFileSummary[] = [];
+  const evidenceCommands: EvidenceCard['commands'] = [];
+  let lastValidation: EvidenceCard['validation'];
+  let doneReason: string | undefined;
   // Per-tool success/total counters so the verifier can spot silent failures
   // in failure-prone tools (web_fetch, pdf_*) that the aggregate ratio dilutes.
   const toolStats = new Map<string, { success: number; total: number }>();
@@ -1985,6 +2637,16 @@ app.post('/api/chat', async (req, res) => {
       if (event.type === 'tool_result') {
         toolCallCount++;
         if (event.result?.success) toolSuccessCount++;
+        evidenceTools.push({
+          name: event.call.name,
+          success: Boolean(event.result?.success),
+          inputSummary: summarizeForEvidence(event.call.input),
+          outputSummary: summarizeForEvidence(event.result?.output),
+        });
+        evidenceFiles.push(...evidenceFilesFromTool(event.call.name, event.call.input));
+        if (event.call.name === 'bash' && typeof event.call.input.command === 'string') {
+          evidenceCommands.push({ command: event.call.input.command, success: Boolean(event.result?.success), outputSummary: summarizeForEvidence(event.result?.output) });
+        }
         if (event.call?.name) {
           toolCallSequence.push(event.call.name);
           const stats = toolStats.get(event.call.name) ?? { success: 0, total: 0 };
@@ -1994,6 +2656,7 @@ app.post('/api/chat', async (req, res) => {
         }
       }
       if (event.type === 'output_validation') {
+        lastValidation = event.validation;
         lastValidationStatus = event.validation.status as 'pass' | 'warn' | 'fail';
         lastValidationScore = event.validation.score;
         await recordOutputValidationEvalRun(PROJECT_DIR, event.validation, message.slice(0, 120), {
@@ -2004,6 +2667,7 @@ app.post('/api/chat', async (req, res) => {
       if (event.type === 'text' && typeof event.content === 'string') {
         assistantTextBuffer += event.content;
       }
+      if (event.type === 'done') doneReason = event.reason;
       const data = JSON.stringify(event);
       res.write(`data: ${data}\n\n`);
       if (event.type === 'tool_result') {
@@ -2177,6 +2841,33 @@ app.post('/api/chat', async (req, res) => {
     }
   }
 
+  const evidenceCard: EvidenceCard = {
+    id: crypto.randomUUID(),
+    kind: 'chat',
+    mode: detectEvidenceMode(messageText),
+    createdAt: new Date().toISOString(),
+    request: messageText.slice(0, 500),
+    model: activeModel,
+    backend: activeModel.includes('/') ? activeModel.slice(0, activeModel.indexOf('/')) : 'ollama',
+    permissionMode,
+    capabilityGrantCount: listActiveCapabilityGrants(capabilityGrants).length,
+    toolSuccessRate: toolCallCount > 0 ? toolSuccessCount / toolCallCount : undefined,
+    tools: evidenceTools,
+    files: evidenceFiles,
+    commands: evidenceCommands,
+    validation: lastValidation,
+    mycelium: myceliumRouter ? {
+      taskType: myceliumClassification?.type,
+      highRisk: myceliumClassification?.highRisk,
+      route: myceliumRouter.getLastRoute(),
+      protectedEdges: myceliumRouter.getLastExplanation()?.protectedRequired.length,
+      selectionReasons: myceliumRouter.getLastExplanation()?.whySelected.reduce<Record<string, string>>((acc, reason, index) => ({ ...acc, [`reason${index + 1}`]: reason }), {}),
+    } : undefined,
+    artifacts: [],
+    recovery: { sessionId: session.getSessionId(), stopReason: doneReason },
+  };
+  res.write(`data: ${JSON.stringify({ type: 'evidence', evidence: evidenceCard })}\n\n`);
+
   res.write('data: [DONE]\n\n');
   res.end();
 });
@@ -2197,6 +2888,7 @@ app.get('/api/sessions', async (_req, res) => {
 app.get('/api/runs', async (_req, res) => {
   try {
     const sessions = await SessionStorage.listSessions(PROJECT_DIR);
+    const evidence = await readRunEvidence(PROJECT_DIR, 200);
     const now = Date.now();
     const runs = sessions.map((session) => {
       const startMs = Date.parse(session.createdAt);
@@ -2219,7 +2911,7 @@ app.get('/api/runs', async (_req, res) => {
     });
     const counts: Record<string, number> = {};
     for (const run of runs) counts[run.status] = (counts[run.status] ?? 0) + 1;
-    res.json({ runs, total: runs.length, counts });
+    res.json({ runs, total: runs.length, counts, evidence });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -3352,6 +4044,8 @@ function getCurrentSettings(): WebSettings {
     capabilityGrants,
     allowedExternalPaths: getAllowedExternalPaths(),
     agentOutputDir,
+    telegramBotToken,
+    telegramAllowedChatIds,
   };
 }
 
@@ -3428,6 +4122,11 @@ const ALLOWED_API_KEY_NAMES = new Set([
   'MISTRAL_API_KEY',
   'OPENROUTER_API_KEY',
   'ANTHROPIC_API_KEY',
+  'HARNESS_SMTP_HOST',
+  'HARNESS_SMTP_PORT',
+  'HARNESS_SMTP_USER',
+  'HARNESS_SMTP_PASS',
+  'HARNESS_SMTP_FROM',
 ]);
 
 function applyStoredSettings(settings: Partial<WebSettings>): void {
@@ -3490,6 +4189,14 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   // Always re-sync after the allowed-path list and agentOutputDir have
   // both been loaded so the auto-include works regardless of order.
   syncAgentOutputDirIntoAllowedPaths();
+
+  // Start/stop Telegram bot when token changes.
+  if (settings.telegramBotToken !== undefined) {
+    telegramBotToken = String(settings.telegramBotToken).trim().slice(0, 200);
+  }
+  if (settings.telegramAllowedChatIds !== undefined) {
+    telegramAllowedChatIds = String(settings.telegramAllowedChatIds).trim().slice(0, 500);
+  }
 }
 
 function sanitizeModelRoutingPolicy(value: unknown): ModelRoutingPolicy {
@@ -3742,7 +4449,16 @@ async function saveSettingsToDisk(): Promise<void> {
   const { outputValidationProfiles, customOutputValidationProfiles: profiles, ...settings } = getCurrentSettings();
   void outputValidationProfiles;
   void profiles;
-  await fs.writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf-8');
+  // Merge with any fields that exist in the file but are not tracked in-memory
+  // (e.g. fields added by newer code not yet loaded). This prevents a running
+  // server from clobbering file edits made to fields it does not manage.
+  try {
+    const existing = JSON.parse(await fs.readFile(SETTINGS_PATH, 'utf-8')) as Record<string, unknown>;
+    const merged = { ...existing, ...settings };
+    await fs.writeFile(SETTINGS_PATH, JSON.stringify(merged, null, 2), 'utf-8');
+  } catch {
+    await fs.writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf-8');
+  }
 }
 
 async function getRuntimeStorageSummary(): Promise<{ traces: { count: number; bytes: number }; semanticIndex: { exists: boolean; bytes: number } }> {
@@ -3864,8 +4580,21 @@ async function fileStats(filePath: string): Promise<{ exists: boolean; bytes: nu
   }
 }
 
+async function checkSourceDistFreshness(): Promise<void> {
+  const sourceKey = path.join(PROJECT_DIR, 'src', 'web', 'server.ts');
+  const distKey = path.join(PROJECT_DIR, 'dist', 'web', 'server.js');
+  try {
+    const [srcStat, distStat] = await Promise.all([fs.stat(sourceKey), fs.stat(distKey)]);
+    if (srcStat.mtimeMs > distStat.mtimeMs + 1000) {
+      console.log(`\n  ⚠️  Source files are newer than compiled output.`);
+      console.log(`      Run "npm run build" to pick up recent changes.`);
+    }
+  } catch { /* dist or source missing — skip check */ }
+}
+
 export async function startServer(): Promise<void> {
   await ensureSettingsLoaded();
+  await checkSourceDistFreshness();
   const preferred = parseInt(process.env.PORT ?? '3000', 10);
   const port = await findAvailablePort(preferred);
 
@@ -3878,6 +4607,16 @@ export async function startServer(): Promise<void> {
     console.log(`  ───────────────────────`);
     console.log(`  Open in your browser:  ${url}`);
     console.log(`  Ollama host:           ${ollamaHost}`);
+
+    // Start Telegram bot if token is configured.
+    const tgToken = telegramBotToken || process.env.HARNESS_TELEGRAM_BOT_TOKEN;
+    if (tgToken) {
+      loadPersistedChatIds(PROJECT_DIR).then(() => {
+        const bot = startTelegramBot(tgToken, url, telegramAllowedChatIds ? telegramAllowedChatIds.split(',') : undefined);
+        if (bot) console.log(`  Telegram bot:          connected`);
+      }).catch(() => {});
+    }
+
     console.log(`\n  Press Ctrl+C to stop.\n`);
 
     if (process.env.NO_OPEN !== '1') {

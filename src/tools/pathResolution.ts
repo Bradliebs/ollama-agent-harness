@@ -61,13 +61,35 @@ export function getAgentOutputDir(): string {
  * (src/foo.ts, scripts/bar.js), while corralling new scratch files.
  */
 export function maybeRedirectAgentOutput(rawPath: string): string | null {
-  const dir = path.dirname(rawPath);
-  if (dir !== '.' && dir !== '') return null;
-  const basename = path.basename(rawPath);
+  const trimmed = String(rawPath ?? '').trim();
+  if (!trimmed || path.isAbsolute(trimmed)) return null;
+  const basename = path.basename(trimmed);
   if (!basename) return null;
-  const directTarget = path.resolve(process.cwd(), basename);
+
+  // Never redirect edits to existing project files.
+  const directTarget = path.resolve(process.cwd(), trimmed);
   if (fs.existsSync(directTarget)) return null;
-  return path.join(getAgentOutputDir(), basename);
+
+  const explicitOverride = Boolean(process.env.HARNESS_AGENT_OUTPUT_DIR?.trim());
+  const outputRoot = getAgentOutputDir();
+  const dir = path.dirname(trimmed);
+
+  // When the user explicitly sets Agent Files, treat it as the preferred
+  // sink for NEW relative writes (including nested paths like reports/x.md),
+  // not only bare filenames.
+  if (explicitOverride) {
+    const redirected = path.resolve(outputRoot, trimmed);
+    return isInsideOrEqualPath(redirected, outputRoot) ? redirected : null;
+  }
+
+  // Default behavior (no explicit override): only corral bare filenames.
+  if (dir !== '.' && dir !== '') return null;
+  return path.join(outputRoot, basename);
+}
+
+function isInsideOrEqualPath(child: string, parent: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
 // ─── User-defined file_write redirect rules ─────────────────────────────

@@ -55,3 +55,98 @@
   - anchor: src/cli/index.ts
   - anchor: src/cli/index.test.ts
   - target: src/cli/index.test.ts
+- [x] design-readiness-scorecard-api — Add a `/api/readiness` endpoint that composes existing setup health, selected model health, tool enablement, capability grants, kill-switch state, validation scripts, RAG status, automation scheduler state, and Mycelium availability into mode-specific readiness scores for chat, coding, research, automation, and full autonomy.
+  - anchor: src/web/server.ts
+  - anchor: src/setup/health.ts
+  - anchor: src/tools/registry.ts
+  - anchor: src/permissions/capabilities.ts
+  - target: src/web/server.ts
+  - target: src/web/server.test.ts
+- [x] design-mission-control-surface — Replace the generic welcome-first experience with a Mission Control surface that shows Build, Debug, Research, Review, Automate, and Teach Harness modes, each backed by readiness state, starter prompts, and links into the existing tabs without removing power-user access.
+  - anchor: docs/TWENTY-OUT-OF-TEN-ROADMAP.md
+  - anchor: ui/index.html
+  - anchor: ui/app.js
+  - target: ui/index.html
+  - target: ui/app.js
+  - target: scripts/ui-smoke.js
+- [x] design-evidence-card-schema — Define a shared evidence-card shape for chat turns, automation jobs, and autonomy iterations covering user request, detected mode, model/backend, permission mode, grants, tools, files, commands, validation, Mycelium route, artifacts, session IDs, and recovery state.
+  - anchor: src/types/loop.ts
+  - anchor: src/core/queryLoop.ts
+  - anchor: src/automation/jobs.ts
+  - anchor: src/mycelium/contextPackage.ts
+  - target: src/types/evidence.ts
+  - target: src/types/index.ts
+- [x] render-chat-evidence-cards — Populate and render evidence cards under assistant replies using existing SSE events for usage, tool calls, tool results, output validation, context compaction, uploads fallback, and Mycelium route metadata where available.
+  - anchor: src/web/server.ts
+  - anchor: src/core/queryLoop.ts
+  - anchor: ui/app.js
+  - target: src/web/server.ts
+  - target: ui/app.js
+  - target: src/web/server.test.ts
+- [x] extend-evidence-to-runs — Persist evidence cards for automation and autonomy runs so the Runs tab can show files changed, validation result, command output summary, rollback state, and exportable Markdown/JSON evidence.
+  - anchor: src/automation/jobs.ts
+  - anchor: src/automation/runner.ts
+  - anchor: cookbook/task-loop.ts
+  - anchor: ui/app.js
+  - target: src/automation/jobs.ts
+  - target: src/automation/runner.ts
+  - target: cookbook/task-loop.ts
+  - target: ui/app.js
+- [x] design-autonomy-run-builder-api — Add browser-facing endpoints to dry-run, start, stop, and inspect bounded autonomy runs using `IMPLEMENTATION_PLAN.md`, selected model/backend, max iterations, time budget, unproductive-turn limit, and preflight readiness checks.
+  - anchor: src/web/server.ts
+  - anchor: cookbook/task-loop.ts
+  - anchor: scripts/headless-smoke.js
+  - target: src/web/server.ts
+  - target: src/web/server.test.ts
+- [x] design-autonomy-run-builder-ui — Add a browser Autonomy Run Builder that previews pending tasks, shows anchors and targets, displays readiness failures before start, streams `.forge-*` state, and exposes dry-run/start/stop controls with the kill switch always visible.
+  - anchor: ui/index.html
+  - anchor: ui/app.js
+  - anchor: docs/TWENTY-OUT-OF-TEN-ROADMAP.md
+  - target: ui/index.html
+  - target: ui/app.js
+  - target: scripts/ui-smoke.js
+- [x] connect-learning-loop-to-evidence — Use completed evidence cards to propose reviewable promotions into memory, skills, workflow templates, model-routing policy suggestions, or Mycelium reinforcement without silently changing durable user policy.
+  - anchor: src/learning/sessionLearning.ts
+  - anchor: src/agents/modelRouting.ts
+  - anchor: src/mycelium/router.ts
+  - anchor: ui/app.js
+  - target: src/learning/sessionLearning.ts
+  - target: src/web/server.ts
+  - target: ui/app.js
+- [x] design-document-generation-api — Add browser-facing document generation endpoints that create Markdown and HTML from chat transcripts, pasted source, and evidence cards, then list and download generated documents from `.harness/documents`.
+  - anchor: src/web/server.ts
+  - anchor: src/types/evidence.ts
+  - target: src/web/server.ts
+  - target: src/web/server.test.ts
+- [x] design-document-studio-ui — Add a Mission Control Document Studio that generates briefs, reports, runbooks, and specs from current chat context or pasted source, then lists recent downloads.
+  - anchor: ui/index.html
+  - anchor: ui/app.js
+  - anchor: scripts/ui-smoke.js
+  - target: ui/index.html
+  - target: ui/app.js
+  - target: scripts/ui-smoke.js
+- [x] extend-document-generation-formats — Add optional PDF and DOCX export through local converters after Markdown and HTML provenance is stable.
+  - anchor: docs/TWENTY-OUT-OF-TEN-ROADMAP.md
+  - anchor: package.json
+  - target: src/web/server.ts
+  - target: ui/app.js
+- [x] verify-session-search-index — Add tests for rebuildSessionSearchIndex, searchSessions, getSessionSearchIndexStatus covering rebuild, query matching, scoring, freshness detection, and empty-state behavior.
+  - anchor: src/persistence/sessionSearchIndex.ts
+  - target: src/persistence/sessionSearchIndex.test.ts
+- [x] verify-workflow-registry — Add tests for WorkflowRegistry covering list, load, startRun, getRun, pause, resume, cancel, execute, dry-run, continueOnError, and variable substitution.
+  - anchor: src/workflows/workflowRegistry.ts
+  - target: src/workflows/workflowRegistry.test.ts
+- [x] harden-evidence-store-large-files — Cap readRunEvidence reads with a line-count scan so large JSONL files do not load entirely into memory; add test proving the cap works.
+  - anchor: src/persistence/evidenceStore.ts
+  - anchor: src/persistence/evidenceStore.test.ts
+  - target: src/persistence/evidenceStore.ts
+  - target: src/persistence/evidenceStore.test.ts
+- [x] verify-plan-complete-smoke — Add ui-smoke assertion confirming Mission Control renders plan-complete state without a red blocked card when all tasks are done.
+  - anchor: scripts/ui-smoke.js
+  - target: scripts/ui-smoke.js
+- [x] verify-readiness-api-contract — Add server tests covering readiness API response shape, plan-complete warm status, and section score calculations.
+  - anchor: src/web/server.ts
+  - anchor: src/web/server.test.ts
+  - target: src/web/server.test.ts
+- [ ] create-recipe-costing-excel-for-bracknell-food-business — Create recipe costing Excel for Bracknell food business
+- [ ] create-recipe-costing-excel-for-bracknell-food-business — Create recipe costing Excel for Bracknell food business

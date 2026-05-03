@@ -1,4 +1,5 @@
 import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 import { FileReadTool, FileWriteTool, FileMoveTool, FileDeleteTool, ListUploadsTool } from './fileTools';
 import { drainUploadsFallbacks, clearFileWriteRedirectCache, previewFileWriteRedirect } from './pathResolution';
@@ -211,16 +212,90 @@ describe('file tools bounds and path safety', () => {
       }
     });
 
-    it('does NOT redirect when the path has a directory component', async () => {
-      const subPath = path.join('.harness', 'test-agent-outputs-sub', `keep-${Date.now()}.txt`);
+    it('redirects new relative subpaths when Agent Files override is set', async () => {
+      const subPath = path.join('reports', `keep-${Date.now()}.txt`);
       const result = await FileWriteTool.execute({ path: subPath, content: 'subdir' });
       try {
         expect(result.success).toBe(true);
-        expect(result.output).not.toContain('redirected');
-        expect(result.output).toContain(path.resolve(process.cwd(), subPath));
+        expect(result.output).toContain('redirected');
+        const expected = path.resolve(overrideDir, subPath);
+        expect(result.output).toContain(expected);
+        const written = await fs.readFile(expected, 'utf-8');
+        expect(written).toBe('subdir');
       } finally {
-        await fs.rm(path.dirname(path.resolve(process.cwd(), subPath)), { recursive: true, force: true });
+        await fs.rm(path.join(overrideDir, 'reports'), { recursive: true, force: true });
       }
+    });
+  });
+
+  describe('external path E2E matrix', () => {
+    // Simulates the Oracle-path scenario: Agent Files points to an external
+    // directory (outside the project root). Exercises bare filenames, nested
+    // relative paths, existing-file edits, absolute paths, and escape attempts.
+    const externalDir = path.join(os.tmpdir(), `harness-ext-path-test-${Date.now()}`);
+
+    beforeEach(async () => {
+      await fs.rm(externalDir, { recursive: true, force: true });
+      await fs.mkdir(externalDir, { recursive: true });
+      process.env.HARNESS_AGENT_OUTPUT_DIR = externalDir;
+    });
+
+    afterEach(async () => {
+      delete process.env.HARNESS_AGENT_OUTPUT_DIR;
+      await fs.rm(externalDir, { recursive: true, force: true });
+    });
+
+    it('redirects bare filenames to the external directory', async () => {
+      const name = `ext-bare-${Date.now()}.txt`;
+      const result = await FileWriteTool.execute({ path: name, content: 'bare external' });
+      expect(result.success).toBe(true);
+      expect(result.output).toContain('redirected');
+      const written = await fs.readFile(path.join(externalDir, name), 'utf-8');
+      expect(written).toBe('bare external');
+    });
+
+    it('redirects nested relative paths to the external directory', async () => {
+      const sub = path.join('analysis', 'deep', `ext-nested-${Date.now()}.md`);
+      const result = await FileWriteTool.execute({ path: sub, content: 'nested external' });
+      expect(result.success).toBe(true);
+      expect(result.output).toContain('redirected');
+      const written = await fs.readFile(path.join(externalDir, sub), 'utf-8');
+      expect(written).toBe('nested external');
+    });
+
+    it('does NOT redirect edits to existing project files', async () => {
+      const sentinel = `_ext-sentinel-${Date.now()}.txt`;
+      const sentinelPath = path.resolve(process.cwd(), sentinel);
+      await fs.writeFile(sentinelPath, 'original', 'utf-8');
+      try {
+        const result = await FileWriteTool.execute({ path: sentinel, content: 'updated' });
+        expect(result.success).toBe(true);
+        expect(result.output).not.toContain('redirected');
+        expect(result.output).toContain(sentinelPath);
+        const after = await fs.readFile(sentinelPath, 'utf-8');
+        expect(after).toBe('updated');
+      } finally {
+        await fs.rm(sentinelPath, { force: true });
+      }
+    });
+
+    it('rejects path-escape attempts through the external directory', async () => {
+      const escape = path.join('..', '..', '..', `escape-${Date.now()}.txt`);
+      const result = await FileWriteTool.execute({ path: escape, content: 'should not land' });
+      // The redirect should return null (escape detected), so the write
+      // either lands at the project-level resolved path or is rejected.
+      // The key assertion: the file must NOT exist outside the external dir.
+      const escaped = path.resolve(externalDir, escape);
+      await expect(fs.access(escaped)).rejects.toThrow();
+    });
+
+    it('does NOT redirect absolute paths', async () => {
+      const absPath = path.join(externalDir, `abs-${Date.now()}.txt`);
+      // Absolute paths bypass the redirect layer entirely (maybeRedirectAgentOutput
+      // returns null). The write may fail due to confinement unless the path is
+      // in allowedExternalPaths; what matters is that it was NOT redirected.
+      const result = await FileWriteTool.execute({ path: absPath, content: 'absolute write' });
+      expect(result.output).not.toContain('redirected from bare filename');
     });
   });
 

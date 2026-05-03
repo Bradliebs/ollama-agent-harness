@@ -1,6 +1,6 @@
 {
   "name": "ollama-agent-harness",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "A local-first agentic system wrapping Ollama's API, borrowing architectural patterns from the Claude Code paper",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -42,14 +42,22 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "docx": "^9.6.1",
+    "exceljs": "^4.4.0",
     "express": "^5.2.1",
+    "node-telegram-bot-api": "^0.67.0",
+    "nodemailer": "^8.0.7",
     "ollama": "^0.5.0",
-    "pdfjs-dist": "^3.11.174"
+    "pdfjs-dist": "^3.11.174",
+    "pdfkit": "^0.18.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/jest": "^29.0.0",
     "@types/node": "^20.0.0",
+    "@types/node-telegram-bot-api": "^0.64.14",
+    "@types/nodemailer": "^8.0.0",
+    "@types/pdfkit": "^0.17.6",
     "jest": "^29.0.0",
     "playwright": "^1.57.0",
     "ts-jest": "^29.0.0",

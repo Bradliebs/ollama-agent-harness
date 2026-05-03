@@ -23,6 +23,7 @@ let pendingFiles = [];
 let permissionPollTimer = null;
 let activeChatController = null;
 let activeTraceExport = null;
+let latestEvidenceObject = null;
 let currentModelRouting = {};
 let currentMediaTools = {};
 let currentOutputValidation = { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: false };
@@ -51,12 +52,18 @@ window.addEventListener('DOMContentLoaded', () => {
   loadTraceExports();
   loadRuntimeStorage();
   loadRecovery();
+  loadReadiness();
+  loadAutonomyPlanPreview();
+  loadDocuments();
   startPermissionPolling();
   startAutonomyPolling();
+  if (Notification.permission === 'default') Notification.requestPermission();
+  window.addEventListener('focus', () => { document.title = document.title.replace(/^🔔 /, ''); });
   setupSettingsCollapse();
   loadApiKeys();
   loadFileRedirects();
   loadAgentOutputDir();
+  loadTelegramStatus();
   // Restore prior chat session if the user reloaded mid-conversation.
   if (chatMessages.length > 0) {
     const chatArea = document.getElementById('chatArea');
@@ -103,6 +110,262 @@ async function loadModels() {
   } catch {
     dot.className = 'status-dot';
     sel.innerHTML = '<option>Server not running</option>';
+  }
+}
+
+async function readApiJson(response, endpointLabel) {
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+  if (!contentType.includes('application/json')) {
+    const preview = (await response.text()).replace(/\s+/g, ' ').slice(0, 120);
+    const htmlHint = preview.startsWith('<') || preview.toLowerCase().includes('<!doctype');
+    if (htmlHint) {
+      throw new Error(endpointLabel + ' returned HTML instead of JSON. Restart Harness server and refresh this page.');
+    }
+    throw new Error(endpointLabel + ' returned non-JSON content (' + (contentType || 'unknown content-type') + ').');
+  }
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error(endpointLabel + ' returned invalid JSON.');
+  }
+  if (!response.ok) {
+    const err = data && typeof data.error === 'string' && data.error
+      ? data.error
+      : response.status + ' ' + response.statusText;
+    throw new Error(endpointLabel + ' failed: ' + err);
+  }
+  if (data && typeof data.error === 'string' && data.error) {
+    throw new Error(data.error);
+  }
+  return data;
+}
+
+async function loadReadiness() {
+  const panel = document.getElementById('missionControlPanel');
+  const compact = document.getElementById('readinessSummary');
+  if (!panel && !compact) return;
+  try {
+    const response = await fetch('/api/readiness');
+    const data = await readApiJson(response, 'Readiness API');
+    renderReadiness(data);
+  } catch (error) {
+    const html = '<div class="readiness-empty">Readiness unavailable: ' + esc(error.message || error) + '</div>';
+    if (panel) panel.innerHTML = html;
+    if (compact) compact.innerHTML = html;
+  }
+}
+
+function renderReadiness(data) {
+  const sections = data.sections || [];
+  const ready = sections.filter((section) => section.status === 'ready').length;
+  const blocked = sections.filter((section) => section.status === 'blocked').length;
+  const avg = sections.length ? Math.round(sections.reduce((sum, section) => sum + (section.score || 0), 0) / sections.length) : 0;
+  const summary = '<div class="readiness-kpi"><strong>' + avg + '%</strong><span>overall</span></div>'
+    + '<div class="readiness-kpi"><strong>' + ready + '/' + sections.length + '</strong><span>ready modes</span></div>'
+    + '<div class="readiness-kpi ' + (blocked ? 'blocked' : '') + '"><strong>' + blocked + '</strong><span>blocked</span></div>';
+  const compact = document.getElementById('readinessSummary');
+  if (compact) compact.innerHTML = summary;
+  const panel = document.getElementById('missionControlPanel');
+  if (!panel) return;
+  panel.innerHTML = '<div class="mission-header"><div><h3>Mission Control</h3><p>' + esc(data.model || 'No model selected') + ' · ' + esc(data.permissionMode || 'default') + '</p></div><button class="btn-sm" onclick="loadReadiness()">Refresh</button></div>'
+    + '<div class="readiness-summary">' + summary + '</div>'
+    + '<div class="mission-grid">' + sections.map(renderReadinessSection).join('') + '</div>'
+    + '<div class="autonomy-builder" id="autonomyBuilderPanel"><div class="readiness-empty">Loading autonomy plan...</div></div>'
+    + '<div class="document-studio" id="documentStudioPanel">' + renderDocumentStudioShell() + '</div>';
+  loadAutonomyPlanPreview();
+  loadDocuments();
+}
+
+function renderReadinessSection(section) {
+  const firstBlocked = (section.checks || []).find((check) => check.status === 'blocked') || (section.checks || []).find((check) => check.status === 'warn');
+  return '<div class="mission-card ' + escAttr(section.status) + '">'
+    + '<div class="mission-card-top"><strong>' + esc(section.label) + '</strong><span>' + esc(section.score) + '%</span></div>'
+    + '<div class="mission-meter"><span style="width:' + Math.max(0, Math.min(100, section.score || 0)) + '%"></span></div>'
+    + '<div class="mission-note">' + esc(firstBlocked ? firstBlocked.message : 'Ready for this mode.') + '</div>'
+    + '<button class="btn-sm" onclick="sendMissionPrompt(\'' + escAttr(section.id) + '\')">Start</button>'
+    + '</div>';
+}
+
+function sendMissionPrompt(mode) {
+  const prompts = {
+    chat: 'Start a clean chat and ask one clarifying question before acting.',
+    coding: 'Inspect the current repo and suggest the safest next code-hardening task.',
+    research: 'Research the current project docs and summarize the most important next decision.',
+    automation: 'Review configured automations and report which ones are due or risky.',
+    autonomy: 'Inspect IMPLEMENTATION_PLAN.md and propose the next autonomous run plan without starting it.',
+  };
+  const input = document.getElementById('chatInput');
+  if (!input) return;
+  input.value = prompts[mode] || 'Help me choose the best Harness mode for this task.';
+  autoSize(input);
+  input.focus();
+}
+
+async function loadAutonomyPlanPreview() {
+  const panel = document.getElementById('autonomyBuilderPanel');
+  if (!panel) return;
+  try {
+    const response = await fetch('/api/autonomy/plan-preview');
+    const data = await readApiJson(response, 'Autonomy plan preview API');
+    panel.innerHTML = renderAutonomyBuilder(data);
+  } catch (error) {
+    panel.innerHTML = '<div class="readiness-empty">Autonomy plan unavailable: ' + esc(error.message || error) + '</div>';
+  }
+}
+
+function renderAutonomyBuilder(data) {
+  const nextTasks = (data.tasks || []).filter((task) => task.status === 'pending').slice(0, 5);
+  const doneTasks = (data.tasks || []).filter((task) => task.status === 'done').slice(-3);
+  return '<div class="autonomy-head"><div><strong>Autonomy Run Builder</strong><span>' + esc(data.pending || 0) + ' pending · ' + esc(data.done || 0) + ' done · ' + esc(data.failed || 0) + ' failed</span></div><button class="btn-sm danger" onclick="stopAutonomyRun()">Stop</button></div>'
+    + '<div class="autonomy-actions"><button class="btn-sm" onclick="dryRunAutonomy()">Dry run next</button><button class="btn-sm" onclick="startAutonomyRun()">Start 1 task</button><button class="btn-sm" onclick="openLeftTabByName(\'runs\')">Open runs</button></div>'
+    + '<div class="task-add-form"><input id="newTaskInput" type="text" placeholder="Describe a task for the agent..." onkeydown="if(event.key===\'Enter\')addPlanTask()"><button class="btn-sm" onclick="addPlanTask()">+ Add task</button></div>'
+    + '<div class="autonomy-task-list">' + (nextTasks.length ? nextTasks.map(renderTaskRow).join('') : '<div class="readiness-empty">No pending tasks. Add one above.</div>') + '</div>'
+    + (doneTasks.length ? '<details style="margin-top:4px"><summary class="trace-meta" style="cursor:pointer;font-size:11px">Recent completed (' + esc(data.done) + ')</summary><div class="autonomy-task-list">' + doneTasks.map((t) => '<div class="autonomy-task done"><strong>' + esc(t.id) + '</strong><span>' + esc(t.title) + '</span></div>').join('') + '</div></details>' : '')
+    + '<div class="first-run-status" id="autonomyBuilderStatus">Previewing ' + esc(data.planPath || 'IMPLEMENTATION_PLAN.md') + '</div>';
+}
+
+function renderTaskRow(task) {
+  return '<div class="autonomy-task"><strong>' + esc(task.id) + '</strong><span>' + esc(task.title) + '</span>'
+    + '<div class="task-actions"><button class="btn-xs" onclick="completePlanTask(\'' + escAttr(task.id) + '\')" title="Mark done">✓</button>'
+    + '<button class="btn-xs danger" onclick="deletePlanTask(\'' + escAttr(task.id) + '\')" title="Remove">✕</button></div></div>';
+}
+
+async function addPlanTask() {
+  const input = document.getElementById('newTaskInput');
+  const title = input?.value?.trim();
+  if (!title) return;
+  const status = document.getElementById('autonomyBuilderStatus');
+  if (status) status.textContent = 'Adding task...';
+  try {
+    const response = await fetch('/api/autonomy/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, description: title }) });
+    await readApiJson(response, 'Add task API');
+    input.value = '';
+    if (status) status.textContent = 'Task added.';
+    loadAutonomyPlanPreview();
+    loadReadiness();
+  } catch (error) {
+    if (status) status.textContent = error.message || String(error);
+  }
+}
+
+async function completePlanTask(id) {
+  try {
+    await fetch('/api/autonomy/tasks/' + encodeURIComponent(id) + '/complete', { method: 'POST' });
+    loadAutonomyPlanPreview();
+    loadReadiness();
+  } catch {}
+}
+
+async function deletePlanTask(id) {
+  if (!confirm('Remove task "' + id + '" from the plan?')) return;
+  try {
+    await fetch('/api/autonomy/tasks/' + encodeURIComponent(id), { method: 'DELETE' });
+    loadAutonomyPlanPreview();
+    loadReadiness();
+  } catch {}
+}
+
+async function dryRunAutonomy() {
+  const status = document.getElementById('autonomyBuilderStatus');
+  if (status) status.textContent = 'Checking next pending task...';
+  try {
+    const response = await fetch('/api/autonomy/dry-run', { method: 'POST' });
+    const data = await readApiJson(response, 'Autonomy dry-run API');
+    if (status) status.textContent = data.nextTask ? 'Next: ' + data.nextTask.id + ' — ' + data.nextTask.title : 'No pending tasks.';
+  } catch (error) {
+    if (status) status.textContent = error.message || String(error);
+  }
+}
+
+async function startAutonomyRun() {
+  const status = document.getElementById('autonomyBuilderStatus');
+  if (status) status.textContent = 'Starting one autonomous task...';
+  try {
+    const model = document.getElementById('modelSelect')?.value || '';
+    const response = await fetch('/api/autonomy/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, maxIterations: 1 }) });
+    const data = await readApiJson(response, 'Autonomy start API');
+    if (data.error) {
+      const blocked = data.preflight?.blocked || [];
+      const detail = blocked.length ? ': ' + blocked.map((check) => check.label).join(', ') : '';
+      throw new Error(data.error + detail);
+    }
+    if (status) status.textContent = 'Started PID ' + data.pid + ' at ' + data.startedAt;
+    startAutonomyPolling();
+  } catch (error) {
+    if (status) status.textContent = error.message || String(error);
+  }
+}
+
+async function stopAutonomyRun() {
+  const status = document.getElementById('autonomyBuilderStatus');
+  if (status) status.textContent = 'Writing .forge-stop...';
+  try {
+    const response = await fetch('/api/autonomy/stop', { method: 'POST' });
+    await readApiJson(response, 'Autonomy stop API');
+    if (status) status.textContent = 'Stop requested.';
+  } catch (error) {
+    if (status) status.textContent = error.message || String(error);
+  }
+}
+
+function renderDocumentStudioShell() {
+  return '<div class="document-head"><div><strong>Document Studio</strong><span>Generate documents from the current chat, evidence, or pasted source.</span></div><button class="btn-sm" onclick="loadDocuments()">Refresh</button></div>'
+    + '<div class="document-form">'
+    + '<input id="documentTitle" type="text" placeholder="Document title" value="Harness Work Summary">'
+    + '<select id="documentTemplate"><option value="brief">Brief</option><option value="report">Report</option><option value="runbook">Runbook</option><option value="spec">Spec</option><option value="adr">ADR</option><option value="release-notes">Release notes</option><option value="handoff">Handoff</option></select>'
+    + '<select id="documentFormat"><option value="markdown">Markdown</option><option value="html">HTML</option><option value="pdf">PDF</option><option value="docx">DOCX</option></select>'
+    + '</div>'
+    + '<textarea id="documentSource" placeholder="Optional source text. Leave empty to use this chat transcript."></textarea>'
+    + '<div class="document-actions"><button class="btn-sm" onclick="generateDocument()">Generate document</button><button class="btn-sm" onclick="fillDocumentFromEvidence()">Use latest evidence</button><button class="btn-sm" onclick="exportChat()">Quick chat export</button></div>'
+    + '<div class="first-run-status" id="documentStudioStatus">Documents are saved under .harness/documents.</div>'
+    + '<div class="document-list" id="documentList"><div class="readiness-empty">Loading documents...</div></div>';
+}
+
+function latestEvidenceCard() {
+  const cards = Array.from(document.querySelectorAll('.evidence-card'));
+  if (cards.length === 0) return null;
+  return cards[cards.length - 1].textContent || '';
+}
+
+function fillDocumentFromEvidence() {
+  const source = document.getElementById('documentSource');
+  if (!source) return;
+  source.value = latestEvidenceCard() || 'No evidence card is available yet. Generate a chat turn first, then retry.';
+}
+
+function chatTranscriptMarkdown() {
+  if (!chatMessages.length) return '';
+  return chatMessages.map((message) => '## ' + (message.role === 'user' ? 'User' : 'Assistant') + '\n\n' + message.content).join('\n\n');
+}
+
+async function generateDocument() {
+  const status = document.getElementById('documentStudioStatus');
+  if (status) status.textContent = 'Generating document...';
+  try {
+    const title = document.getElementById('documentTitle')?.value || 'Harness Work Summary';
+    const template = document.getElementById('documentTemplate')?.value || 'brief';
+    const format = document.getElementById('documentFormat')?.value || 'markdown';
+    const source = document.getElementById('documentSource')?.value.trim() || chatTranscriptMarkdown() || 'No chat transcript is available yet.';
+    const response = await fetch('/api/documents/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, template, format, sourceLabel: 'Harness UI', content: source, evidence: latestEvidenceObject }) });
+    const data = await readApiJson(response, 'Document generation API');
+    if (status) status.innerHTML = 'Generated <a href="/api/documents/' + encodeURIComponent(data.document.id) + '/download">' + esc(data.document.filename) + '</a>';
+    await loadDocuments();
+  } catch (error) {
+    if (status) status.textContent = error.message || String(error);
+  }
+}
+
+async function loadDocuments() {
+  const list = document.getElementById('documentList');
+  if (!list) return;
+  try {
+    const response = await fetch('/api/documents');
+    const data = await readApiJson(response, 'Documents API');
+    const documents = data.documents || [];
+    list.innerHTML = documents.length ? documents.slice(0, 8).map((doc) => '<div class="document-item"><div><strong>' + esc(doc.title) + '</strong><span>' + esc(doc.template) + ' · ' + esc(doc.format) + ' · ' + esc(new Date(doc.createdAt).toLocaleString()) + '</span></div><a class="btn-sm" href="/api/documents/' + encodeURIComponent(doc.id) + '/download">Download</a></div>').join('') : '<div class="readiness-empty">No generated documents yet.</div>';
+  } catch (error) {
+    list.innerHTML = '<div class="readiness-empty">Document list unavailable: ' + esc(error.message || error) + '</div>';
   }
 }
 
@@ -1296,6 +1559,27 @@ function mediaIcon(file) {
   return '📄';
 }
 function removeAttached(i) { pendingFiles.splice(i, 1); showAttached(); }
+
+function handleChatPaste(event) {
+  const items = event.clipboardData?.items;
+  if (!items) return;
+  const imageFiles = [];
+  for (const item of items) {
+    if (item.kind === 'file' && item.type.startsWith('image/')) {
+      const file = item.getAsFile();
+      if (file) {
+        const ext = file.type === 'image/png' ? 'png' : file.type === 'image/jpeg' ? 'jpg' : file.type === 'image/gif' ? 'gif' : file.type === 'image/webp' ? 'webp' : 'png';
+        const named = new File([file], 'pasted-image-' + Date.now() + '.' + ext, { type: file.type });
+        imageFiles.push(named);
+      }
+    }
+  }
+  if (imageFiles.length > 0) {
+    event.preventDefault();
+    handleFileAttach(imageFiles);
+  }
+}
+
 function handleKey(e) {
   // Slash palette intercepts navigation keys when visible.
   if (slashPaletteState.visible) {
@@ -1345,6 +1629,61 @@ async function sendMessage(opts) {
   const isRegenerate = opts && typeof opts.regenerateFromIndex === 'number';
   let text;
   let attachmentsForTurn = [];
+
+  // /task command: intercept and add to the autonomy plan instead of chatting.
+  if (!isRegenerate && inp.value.trim().toLowerCase().startsWith('/task ')) {
+    const taskText = inp.value.trim().slice(6).trim();
+    if (taskText) {
+      inp.value = '';
+      inp.style.height = 'auto';
+      addMsg('user', '/task ' + taskText);
+      try {
+        const response = await fetch('/api/autonomy/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: taskText, description: taskText }) });
+        const data = await readApiJson(response, 'Add task API');
+        addMsg('assistant', '✅ Task added to plan: **' + taskText + '**\n\nTask ID: `' + data.id + '` · ' + data.pending + ' pending task(s)\n\nGo to Mission Control → Autonomy Builder to start it, or type another `/task`.');
+        loadAutonomyPlanPreview();
+        loadReadiness();
+      } catch (error) {
+        addMsg('assistant', '❌ Failed to add task: ' + (error.message || error));
+      }
+      return;
+    }
+  }
+
+  // /schedule command: create an automation job that runs on a schedule.
+  // Supports: /schedule every 6h Check hotel prices
+  //           /schedule every 30m Monitor stock
+  //           /schedule Check prices (defaults to every 24h)
+  if (!isRegenerate && inp.value.trim().toLowerCase().startsWith('/schedule ')) {
+    const scheduleText = inp.value.trim().slice(10).trim();
+    if (scheduleText) {
+      inp.value = '';
+      inp.style.height = 'auto';
+      addMsg('user', '/schedule ' + scheduleText);
+      try {
+        const intervalMatch = scheduleText.match(/^every\s+(\d+)\s*(h|hr|hrs|hours?|m|min|mins|minutes?)\s+/i);
+        let minutes = 1440; // default: 24h
+        let prompt = scheduleText;
+        let intervalLabel = 'every 24 hours';
+        if (intervalMatch) {
+          const value = parseInt(intervalMatch[1], 10);
+          const unit = intervalMatch[2].charAt(0).toLowerCase();
+          minutes = unit === 'h' ? value * 60 : value;
+          minutes = Math.max(1, minutes);
+          intervalLabel = unit === 'h' ? 'every ' + value + ' hour(s)' : 'every ' + value + ' minute(s)';
+          prompt = scheduleText.slice(intervalMatch[0].length).trim();
+        }
+        const name = prompt.slice(0, 50).replace(/[^a-zA-Z0-9 _-]/g, '').trim() || 'Scheduled job';
+        const response = await fetch('/api/automations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, prompt, schedule: minutes + ' minutes' }) });
+        const data = await readApiJson(response, 'Create automation API');
+        addMsg('assistant', '✅ Automation job created: **' + name + '**\n\nSchedule: ' + intervalLabel + ' (' + minutes + ' minutes)\n\nThe job will run automatically while the server is running. Open the **Runs** tab to manage it.');
+      } catch (error) {
+        addMsg('assistant', '❌ Failed to create automation: ' + (error.message || error));
+      }
+      return;
+    }
+  }
+
   if (isRegenerate) {
     const userMsg = chatMessages[opts.regenerateFromIndex - 1];
     if (!userMsg || userMsg.role !== 'user') return;
@@ -1436,6 +1775,7 @@ async function sendMessage(opts) {
     let assistantText = '';
     let msgEl = null;
     let toolBox = null;
+    let evidenceCard = null;
     let buf = '';
     let sawModelEvent = false;
     while (true) {
@@ -1555,6 +1895,9 @@ async function sendMessage(opts) {
             toolBox = ensureToolBox(toolBox);
             appendUploadsFallbackAdvice(toolBox, ev);
             break;
+          case 'evidence':
+            evidenceCard = ev.evidence;
+            break;
           case 'error':
             thinkEl.remove();
             addMsg('assistant', '⚠️ ' + ev.message);
@@ -1578,6 +1921,7 @@ async function sendMessage(opts) {
       attachMessageMeta(msgEl, currentTurnUsage);
       currentTurnUsage = null;
     }
+    if (msgEl && evidenceCard) attachEvidenceCard(msgEl, evidenceCard);
     // Citations: render numbered source list under the assistant reply
     // and rewrite any URL mentions in the visible text to [n] superscripts.
     if (msgEl && turnCitations.length > 0) {
@@ -1873,6 +2217,8 @@ function renderAutonomyState(s) {
   hud.title = [s.lastTaskTitle, elapsed, files].filter(Boolean).join(' · ');
 }
 
+let lastAutonomyStatus = '';
+
 async function pollAutonomy() {
   try {
     const r = await fetch('/api/autonomy/state');
@@ -1880,8 +2226,27 @@ async function pollAutonomy() {
     if (!r.ok) { renderAutonomyState(null); return; }
     const s = await r.json();
     renderAutonomyState(s);
+    // Notify when autonomy transitions from running to done/failed.
+    const status = s?.status || '';
+    if (lastAutonomyStatus === 'running' && status !== 'running' && status) {
+      notifyUser('Autonomy run ' + status, s?.currentTask || 'Task finished.');
+      loadAutonomyPlanPreview();
+      loadReadiness();
+    }
+    lastAutonomyStatus = status;
   } catch {
     renderAutonomyState(null);
+  }
+}
+
+function notifyUser(title, body) {
+  // Badge the page title.
+  if (!document.title.startsWith('🔔 ')) document.title = '🔔 ' + document.title;
+  // Browser notification (if permission granted).
+  if (Notification.permission === 'granted') {
+    new Notification(title, { body, icon: '🤖' });
+  } else if (Notification.permission !== 'denied') {
+    Notification.requestPermission();
   }
 }
 
@@ -1989,6 +2354,40 @@ function addMsg(role, text) {
   area.appendChild(el);
   scrollBottom();
   return el;
+}
+
+function attachEvidenceCard(msgEl, evidence) {
+  const body = msgEl.querySelector('.msg-body');
+  if (!body || !evidence) return;
+  latestEvidenceObject = evidence;
+  const tools = evidence.tools || [];
+  const files = evidence.files || [];
+  const commands = evidence.commands || [];
+  const successRate = typeof evidence.toolSuccessRate === 'number' ? Math.round(evidence.toolSuccessRate * 100) + '%' : 'n/a';
+  const validation = evidence.validation ? evidence.validation.status + ' · ' + Math.round((evidence.validation.score || 0) * 100) + '%' : 'not run';
+  const route = evidence.mycelium && evidence.mycelium.route && evidence.mycelium.route.length ? evidence.mycelium.route.slice(0, 4).join(' → ') : 'not routed';
+  const card = document.createElement('details');
+  card.className = 'evidence-card';
+  card.innerHTML = '<summary><span>Evidence</span><strong>' + esc(evidence.mode || 'general') + '</strong></summary>'
+    + '<div class="evidence-grid">'
+    + '<div><strong>Model</strong><span>' + esc(evidence.model || 'unknown') + '</span></div>'
+    + '<div><strong>Permission</strong><span>' + esc(evidence.permissionMode || 'default') + '</span></div>'
+    + '<div><strong>Tools</strong><span>' + esc(tools.length) + ' calls · ' + esc(successRate) + '</span></div>'
+    + '<div><strong>Validation</strong><span>' + esc(validation) + '</span></div>'
+    + '<div><strong>Mycelium</strong><span>' + esc(route) + '</span></div>'
+    + '<div><strong>Recovery</strong><span>' + esc(evidence.recovery?.sessionId || 'session recorded') + '</span></div>'
+    + '</div>'
+    + '<div class="evidence-lists">'
+    + '<div><strong>Files</strong>' + renderEvidencePills(files.map((file) => file.action + ': ' + file.path)) + '</div>'
+    + '<div><strong>Commands</strong>' + renderEvidencePills(commands.map((cmd) => (cmd.success === false ? 'failed: ' : '') + cmd.command)) + '</div>'
+    + '</div>';
+  body.appendChild(card);
+}
+
+function renderEvidencePills(items) {
+  const unique = Array.from(new Set((items || []).filter(Boolean))).slice(0, 8);
+  if (unique.length === 0) return '<span class="evidence-muted">none</span>';
+  return '<div class="evidence-pills">' + unique.map((item) => '<span>' + esc(String(item).slice(0, 90)) + '</span>').join('') + '</div>';
 }
 
 function renderMd(el, text) {
@@ -2554,6 +2953,14 @@ const SLASH_COMMANDS = [
   { cmd: '/stop',        desc: 'Stop the current agent run',
     apply: () => { hideSlashPalette(); if (activeChatController) activeChatController.abort(); },
     fallback: '' },
+  { cmd: '/task',        desc: 'Add a task to the autonomy plan (type /task followed by the task description)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
+  { cmd: '/schedule',    desc: 'Create a recurring automation job (type /schedule followed by the prompt)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
 ];
 
 const slashPaletteState = { visible: false, index: 0, filtered: [] };
@@ -2660,7 +3067,7 @@ async function loadHistory() {
 async function loadChat(id) { try { const r = await fetch('/api/history/' + id); const d = await r.json(); currentChatId = id; chatMessages = d.messages || []; document.getElementById('chatArea').innerHTML = ''; for (const m of chatMessages) addMsg(m.role, m.content); saveChatSession(); loadHistory(); } catch {} }
 async function autoSaveChat() { if (chatMessages.length < 2) return; const title = chatMessages[0].content.slice(0, 60); try { const r = await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: currentChatId, title, messages: chatMessages }) }); const d = await r.json(); if (!currentChatId) currentChatId = d.id; saveChatSession(); loadHistory(); } catch {} }
 async function deleteChat(id) { await fetch('/api/history/' + id, { method: 'DELETE' }); if (id === currentChatId) newChat(); loadHistory(); }
-function newChat() { currentChatId = null; chatMessages = []; resetSessionUsage(); saveChatSession(); document.getElementById('chatArea').innerHTML = welcomeMarkup(); renderModelCapabilityHint(); loadSettings(); loadHistory(); }
+function newChat() { currentChatId = null; chatMessages = []; resetSessionUsage(); saveChatSession(); document.getElementById('chatArea').innerHTML = welcomeMarkup(); renderModelCapabilityHint(); loadReadiness(); loadSettings(); loadHistory(); }
 function getPersonalityGreeting(name, personalityText) {
   const p = personalityText.toLowerCase();
   if (p.includes('pirate')) return { headline: 'Ahoy! Captain ' + name + ' at yer service!', subtitle: 'Set course for yer next task, matey. I can navigate files, chart code, search the seven seas of the web, and remember every port we visit.' };
@@ -2686,6 +3093,7 @@ function welcomeMarkup() {
     + '<h2>' + esc(greeting.headline) + '</h2>'
     + '<p>' + esc(greeting.subtitle) + '</p>'
     + '</div>'
+    + '<div class="mission-control" id="missionControlPanel"><div class="readiness-empty">Loading readiness...</div></div>'
     + '<div class="quick-suggestions">'
     + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">📂</div><div class="qc-body"><div class="qc-title">List files in this project</div><div class="qc-desc">Tour what\'s here. I\'ll group by folder.</div></div></div>'
     + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">🔍</div><div class="qc-body"><div class="qc-title">Search for TODO in my code</div><div class="qc-desc">Find loose ends across the whole tree.</div></div></div>'
@@ -3259,6 +3667,59 @@ async function saveAgentOutputDir() {
     setTimeout(() => loadAgentOutputDir(), 2000);
   } catch (e) {
     if (status) status.textContent = '❌ ' + e.message;
+  }
+}
+
+// ─── Telegram settings ─────────────────────────────────────────────
+
+async function loadTelegramStatus() {
+  const status = document.getElementById('telegramStatus');
+  const tokenInput = document.getElementById('telegramTokenInput');
+  const chatIdsInput = document.getElementById('telegramChatIdsInput');
+  if (!status) return;
+  try {
+    const [statusRes, settingsRes] = await Promise.all([
+      fetch('/api/telegram/status'),
+      fetch('/api/settings'),
+    ]);
+    const st = await readApiJson(statusRes, 'Telegram status API');
+    const settings = await readApiJson(settingsRes, 'Settings API');
+    if (tokenInput) tokenInput.value = settings.telegramBotToken || '';
+    if (chatIdsInput) chatIdsInput.value = settings.telegramAllowedChatIds || '';
+    status.textContent = st.running ? '✅ Bot is running' : st.configured ? '⚠️ Token set but bot not running' : 'Not configured';
+  } catch (e) {
+    status.textContent = '⚠ Could not load status: ' + (e.message || e);
+  }
+}
+
+async function saveTelegramToken() {
+  const tokenInput = document.getElementById('telegramTokenInput');
+  const chatIdsInput = document.getElementById('telegramChatIdsInput');
+  const status = document.getElementById('telegramStatus');
+  if (!tokenInput || !status) return;
+  status.textContent = 'Connecting...';
+  try {
+    const r = await fetch('/api/telegram/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: tokenInput.value.trim(), allowedChatIds: chatIdsInput?.value.trim() || '' }),
+    });
+    const data = await readApiJson(r, 'Telegram token API');
+    status.textContent = data.running ? '✅ Bot connected and running!' : '✅ Token saved (bot stopped — set token to start)';
+  } catch (e) {
+    status.textContent = '❌ ' + (e.message || e);
+  }
+}
+
+async function stopTelegram() {
+  const status = document.getElementById('telegramStatus');
+  if (!status) return;
+  try {
+    const r = await fetch('/api/telegram/stop', { method: 'POST' });
+    await readApiJson(r, 'Telegram stop API');
+    status.textContent = 'Bot stopped.';
+  } catch (e) {
+    status.textContent = '⚠ ' + (e.message || e);
   }
 }
 
@@ -4529,13 +4990,14 @@ async function loadRuns() {
     if (data.error) { view.innerHTML = '<div class="trace-meta">Failed: ' + esc(data.error) + '</div>'; return; }
     const runs = data.runs || [];
     const counts = data.counts || {};
+    const runEvidence = Array.isArray(data.evidence) ? data.evidence : [];
     const summary = '<div class="panel-header" style="border-bottom:none"><h3>Runs</h3><div class="inline-actions"><button class="btn-sm" onclick="loadRuns()">Refresh</button></div></div>'
       + '<div class="trace-meta" style="padding:0 4px 6px">' + (data.total || 0) + ' chat run(s) · '
       + Object.entries(counts).map(([k, v]) => esc(k) + ': ' + v).join(' · ')
       + '</div>';
     const curatorSection = curatorR.status === 'fulfilled' ? renderCuratorRunsSection(curatorR.value) : '';
     const autoRunLog = autoRunsR.status === 'fulfilled' ? (autoRunsR.value.runs || []) : [];
-    const automationSection = discoveryR.status === 'fulfilled' ? renderAutomationRunsSection(discoveryR.value.automations, autoRunLog) : '';
+    const automationSection = discoveryR.status === 'fulfilled' ? renderAutomationRunsSection(discoveryR.value.automations, autoRunLog, runEvidence) : '';
     if (runs.length === 0) {
       view.innerHTML = summary + automationSection + curatorSection + '<div class="trace-meta" style="padding:8px">(no chat runs yet — start a chat to record one)</div>';
       return;
@@ -4547,13 +5009,14 @@ async function loadRuns() {
   }
 }
 
-function renderAutomationRunsSection(automations, runLog) {
+function renderAutomationRunsSection(automations, runLog, runEvidence) {
   if (!automations) return '';
   const jobs = Array.isArray(automations.jobs) ? automations.jobs : [];
   const due = Array.isArray(automations.due) ? automations.due : [];
   const policy = automations.policy || {};
   const schedulerRunning = automations.schedulerRunning;
   const entries = Array.isArray(runLog) ? runLog : [];
+  const evidence = Array.isArray(runEvidence) ? runEvidence.filter((card) => card.kind === 'automation' || card.kind === 'autonomy') : [];
   const schedulerBadge = schedulerRunning
     ? '<span class="capability-pill" style="border-color:#5bb0ff;color:#5bb0ff">running</span>'
     : '<span class="capability-pill" style="border-color:#888;color:#888">idle</span>';
@@ -4575,6 +5038,7 @@ function renderAutomationRunsSection(automations, runLog) {
         + '<span class="capability-pill" style="border-color:' + statusColor + ';color:' + statusColor + '">' + statusLabel + '</span>'
         + '<div class="trace-meta">' + esc(job.schedule?.display || '') + ' · next: ' + esc(nextRun) + ' · last: ' + esc(lastRun) + script + '</div>'
         + '<div class="inline-actions" style="margin-top:4px">'
+        + '<button class="btn-sm" onclick="runAutomationJobNow(\'' + escAttr(job.id) + '\')">Run now</button> '
         + '<button class="btn-sm" onclick="toggleAutomationJob(\'' + escAttr(job.id) + '\', ' + (!enabled) + ')">' + (enabled ? 'Disable' : 'Enable') + '</button> '
         + '<button class="btn-sm" onclick="editAutomationJob(\'' + escAttr(job.id) + '\', ' + escAttr(JSON.stringify(job.name)) + ', ' + escAttr(JSON.stringify(job.prompt)) + ', ' + escAttr(JSON.stringify(job.schedule?.display || '')) + ', ' + escAttr(JSON.stringify(job.scriptCommand || '')) + ')">Edit</button> '
         + '<button class="btn-sm danger" onclick="deleteAutomationJob(\'' + escAttr(job.id) + '\')">Delete</button>'
@@ -4590,6 +5054,13 @@ function renderAutomationRunsSection(automations, runLog) {
     + '<div class="trace-meta">Grants: ' + (policy.activeGrantCount || 0) + ' active · Kill switch: ' + (policy.killSwitchActive ? 'engaged' : 'off') + '</div>'
     + '<div style="margin-top:6px">' + jobRows + '</div>'
     + '<div class="inline-actions" style="margin-top:6px">' + newJobBtn + ' ' + executeBtn + '</div>'
+    + '<details style="margin-top:6px"><summary class="trace-meta" style="cursor:pointer;font-size:11px">📋 Job templates</summary>'
+    + '<div class="inline-actions" style="margin-top:4px;flex-wrap:wrap">'
+    + '<button class="btn-sm" onclick="createJobFromTemplate(\'Daily digest\',\'Summarize today\\\'s automation results, completed tasks, system health, and any errors. Write the summary to daily-digest.md.\',\'1440 minutes\')">Daily digest</button>'
+    + '<button class="btn-sm" onclick="createJobFromTemplate(\'Hotel price check\',\'Search booking.com for hotels in [city] for [dates] under [budget]. Save available rooms with prices and links to hotel-alert.md.\',\'1440 minutes\')">Hotel monitor</button>'
+    + '<button class="btn-sm" onclick="createJobFromTemplate(\'Weekly report\',\'Create a weekly report covering completed tasks, automation runs, learned patterns, and system health. Export as PDF to weekly-report.pdf.\',\'10080 minutes\')">Weekly report</button>'
+    + '<button class="btn-sm" onclick="createJobFromTemplate(\'Email reminder\',\'Send an email to [your@email.com] with subject \\\'Daily Reminder\\\' summarizing pending tasks and today\\\'s priorities.\',\'1440 minutes\')">Email reminder</button>'
+    + '</div></details>'
     + '<div id="newAutomationJobForm" style="display:none;margin-top:8px;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px">'
     + '<input id="newJobName" type="text" placeholder="Job name" style="width:100%;padding:4px 6px;margin-bottom:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">'
     + '<input id="newJobPrompt" type="text" placeholder="Prompt text" style="width:100%;padding:4px 6px;margin-bottom:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">'
@@ -4598,7 +5069,19 @@ function renderAutomationRunsSection(automations, runLog) {
     + '<div class="inline-actions"><button class="btn-sm" onclick="createAutomationJob()">Create</button> <button class="btn-sm" onclick="hideNewAutomationJobForm()">Cancel</button></div>'
     + '</div>'
     + renderAutomationRunLog(entries)
+    + renderRunEvidenceLog(evidence)
     + '</div>';
+}
+
+function renderRunEvidenceLog(evidence) {
+  if (!evidence || evidence.length === 0) return '';
+  const rows = evidence.slice(0, 12).map((card) => {
+    const ts = card.createdAt ? new Date(card.createdAt).toLocaleString() : '?';
+    const files = (card.files || []).length;
+    const commands = (card.commands || []).length;
+    return '<div class="trace-meta" style="font-size:11px"><strong>' + esc(card.runName || card.kind || 'run') + '</strong> <span style="color:var(--text-dim)">' + esc(ts) + '</span> · ' + esc(files) + ' file(s) · ' + esc(commands) + ' command(s)</div>';
+  }).join('');
+  return '<details style="margin-top:8px"><summary class="trace-meta" style="cursor:pointer">Evidence cards (last ' + Math.min(evidence.length, 12) + ' of ' + evidence.length + ')</summary>' + rows + '</details>';
 }
 
 function renderAutomationRunLog(entries) {
@@ -4641,9 +5124,29 @@ async function executeAutomationDueJobs() {
   } catch (error) { alert('Execute failed: ' + (error.message || error)); }
 }
 
+async function runAutomationJobNow(jobId) {
+  try {
+    const response = await fetch('/api/automations/' + encodeURIComponent(jobId) + '/execute', { method: 'POST' });
+    const data = await response.json();
+    if (data.error) { alert('Run failed: ' + data.error); return; }
+    alert('Job "' + (data.name || jobId) + '" executed. Output: ' + (data.outputPath || 'none'));
+    loadRuns();
+  } catch (error) { alert('Run failed: ' + (error.message || error)); }
+}
+
 function showNewAutomationJobForm() {
   const form = document.getElementById('newAutomationJobForm');
   if (form) form.style.display = 'block';
+}
+
+function createJobFromTemplate(name, prompt, schedule) {
+  showNewAutomationJobForm();
+  const nameInput = document.getElementById('newJobName');
+  const promptInput = document.getElementById('newJobPrompt');
+  const scheduleInput = document.getElementById('newJobSchedule');
+  if (nameInput) nameInput.value = name;
+  if (promptInput) promptInput.value = prompt;
+  if (scheduleInput) scheduleInput.value = schedule;
 }
 
 function hideNewAutomationJobForm() {

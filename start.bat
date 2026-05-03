@@ -63,9 +63,8 @@ exit /b 1
 :DEPS_OK
 
 :: Step 4: Build
-if exist dist\web\server.js goto BUILD_OK
 echo.
-echo   Building from source (first time only)...
+echo   Building from source...
 call npm run build
 if errorlevel 1 goto BUILD_FAIL
 echo   [OK] Build complete

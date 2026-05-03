@@ -170,3 +170,35 @@ Press `Ctrl+C` in the terminal window, or close the terminal.
 - Read the [README](README.md) for the full feature reference
 - Explore the **Skills** tab — create custom AI capabilities
 - Build a **RAG** index over your project files for semantic search
+
+## New in v0.3.0
+
+### Create documents
+
+Ask Oracle to create CSV, Excel, Word, or PDF files. Just say:
+- "Create an Excel spreadsheet with recipe costs"
+- "Make a PDF business plan"
+
+### Send emails
+
+Configure SMTP in Settings → API Keys, then say:
+- "Send an email to me@gmail.com with the project summary"
+- Use `/schedule every 24h Send me a daily task digest` for recurring emails
+
+### Telegram bot
+
+Talk to Oracle from your phone:
+1. Open Telegram → @BotFather → `/newbot` → copy the token
+2. Settings → Telegram Bot → paste token → Connect
+3. Send your bot a message, photo, or voice note
+
+### Quick task management
+
+- Type `/task Create a report` in chat to add tasks
+- Type `/schedule every 6h Check hotel prices` for recurring jobs
+- Use the task form in Mission Control → Autonomy Builder
+
+### Background server
+
+Use `start-background.bat` to keep the server running after closing the terminal.
+Use `stop-server.bat` to stop it later.

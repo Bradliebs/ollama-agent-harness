@@ -329,6 +329,63 @@
     .welcome-hero .welcome-eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--accent);margin-bottom:8px;font-weight:600}
     .welcome-hero h2{font-size:32px;color:var(--text);margin-bottom:6px;font-weight:700;letter-spacing:-.5px}
     .welcome-hero p{font-size:14px;max-width:640px;margin:0;line-height:1.55;color:var(--text-dim)}
+    .mission-control{border:1px solid var(--border);background:var(--surface2);border-radius:8px;padding:12px;margin-bottom:16px}
+    .mission-header,.autonomy-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+    .mission-header h3{font-size:15px;color:var(--text);margin:0 0 2px}
+    .mission-header p,.autonomy-head span{font-size:11px;color:var(--text-dim);margin:0}
+    .readiness-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:10px}
+    .readiness-kpi{background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:9px;min-width:0}
+    .readiness-kpi strong{display:block;color:var(--text);font-size:18px;line-height:1.1}
+    .readiness-kpi span{font-size:11px;color:var(--text-dim)}
+    .readiness-kpi.blocked{border-color:var(--error)}
+    .mission-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
+    .mission-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:9px;display:flex;flex-direction:column;gap:7px;min-height:132px}
+    .mission-card.ready{border-color:rgba(76,175,80,.55)}
+    .mission-card.warn{border-color:rgba(255,193,7,.55)}
+    .mission-card.blocked{border-color:rgba(239,83,80,.65)}
+    .mission-card-top{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:var(--text)}
+    .mission-card-top span{color:var(--text-dim);font-size:11px}
+    .mission-meter{height:5px;background:var(--surface3);border-radius:999px;overflow:hidden}
+    .mission-meter span{display:block;height:100%;background:var(--accent)}
+    .mission-note{font-size:11px;color:var(--text-dim);line-height:1.35;min-height:30px;flex:1}
+    .readiness-empty{font-size:12px;color:var(--text-dim);padding:8px}
+    .autonomy-builder{margin-top:10px;border-top:1px solid var(--border);padding-top:10px}
+    .autonomy-actions{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+    .autonomy-task-list{display:flex;flex-direction:column;gap:5px;max-height:180px;overflow:auto}
+    .autonomy-task{display:grid;grid-template-columns:minmax(100px,160px) 1fr auto;gap:8px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:6px;font-size:11px;color:var(--text-dim)}
+    .autonomy-task.done{opacity:.6}
+    .autonomy-task strong{color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .task-actions{display:flex;gap:3px}
+    .btn-xs{background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--text-dim);cursor:pointer;font-size:10px;padding:1px 5px;line-height:1.4}
+    .btn-xs:hover{border-color:var(--accent);color:var(--text)}
+    .btn-xs.danger:hover{border-color:var(--error);color:var(--error)}
+    .task-add-form{display:flex;gap:6px;margin-bottom:8px}
+    .task-add-form input{flex:1;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:12px;font-family:inherit;outline:none}
+    .task-add-form input:focus{border-color:var(--accent)}
+    .document-studio{margin-top:10px;border-top:1px solid var(--border);padding-top:10px}
+    .document-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+    .document-head span{display:block;font-size:11px;color:var(--text-dim);margin-top:2px}
+    .document-form{display:grid;grid-template-columns:1fr 120px 110px;gap:6px;margin-bottom:6px}
+    .document-form input,.document-form select,.document-studio textarea{width:100%;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 8px;font-size:12px;font-family:inherit;outline:none}
+    .document-studio textarea{min-height:72px;resize:vertical;margin-bottom:6px}
+    .document-actions{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+    .document-list{display:flex;flex-direction:column;gap:5px;max-height:170px;overflow:auto}
+    .document-item{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px;font-size:11px;color:var(--text-dim)}
+    .document-item strong{display:block;color:var(--text);margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .document-item span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .document-item a{text-decoration:none;color:var(--text)}
+    .evidence-card{margin-top:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:0;font-size:11px;color:var(--text-dim)}
+    .evidence-card summary{display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px 10px;color:var(--text)}
+    .evidence-card summary strong{margin-left:auto;color:var(--accent);font-size:10px;text-transform:uppercase}
+    .evidence-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px;padding:0 10px 10px}
+    .evidence-grid div,.evidence-lists>div{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px;min-width:0}
+    .evidence-grid strong,.evidence-lists strong{display:block;color:var(--text);margin-bottom:2px;font-size:10px;text-transform:uppercase}
+    .evidence-grid span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .evidence-lists{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:0 10px 10px}
+    .evidence-pills{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+    .evidence-pills span{border:1px solid var(--border);border-radius:999px;padding:2px 6px;background:var(--surface2);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .evidence-muted{color:var(--text-dim)}
+    @media(max-width:700px){.readiness-summary,.evidence-lists,.document-form{grid-template-columns:1fr}.autonomy-task,.document-item{grid-template-columns:1fr}.welcome{padding:24px 14px}.welcome-hero h2{font-size:24px}}
     .quick-suggestions{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:24px}
     .quick-card{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;cursor:pointer;transition:all .15s;display:flex;gap:12px;align-items:flex-start;text-align:left}
     .quick-card:hover{border-color:var(--accent);background:var(--surface3);transform:translateY(-1px)}
@@ -465,6 +522,10 @@
           <p>Pick a model above, then ask me anything. I can read files, write code, run commands, search the web, create skills, and remember things across sessions.</p>
         </div>
 
+        <div class="mission-control" id="missionControlPanel">
+          <div class="readiness-empty">Loading readiness...</div>
+        </div>
+
         <div class="quick-suggestions" id="quickSuggestions">
           <div class="quick-card" onclick="sendTip(this.querySelector('.qc-title'))">
             <div class="qc-icon">📂</div>
@@ -549,7 +610,8 @@
           onkeydown="handleKey(event)" oninput="autoSize(this)"
           ondragover="event.preventDefault();this.style.borderColor='var(--accent)'"
           ondragleave="this.style.borderColor=''"
-          ondrop="event.preventDefault();this.style.borderColor='';handleFileAttach(event.dataTransfer.files)"></textarea>
+          ondrop="event.preventDefault();this.style.borderColor='';handleFileAttach(event.dataTransfer.files)"
+          onpaste="handleChatPaste(event)"></textarea>
         <button class="send-btn" id="sendBtn" onclick="sendMessage()" disabled>➤</button>
       </div>
       <label class="attachment-hint" style="display:flex;align-items:center;gap:6px;margin-top:4px;cursor:pointer" title="Skip output validation just for the next message; the global setting is unchanged.">
@@ -635,6 +697,21 @@
           </div>
         </div>
       </details>
+    </div>
+    <div class="settings-section">
+      <h4>📱 Telegram Bot</h4>
+      <div class="setting-row" style="font-size:11px;color:var(--text-dim);margin-bottom:10px">
+        Talk to Oracle from your phone via Telegram. Create a bot with <a href="https://t.me/BotFather" target="_blank">@BotFather</a> and paste the token below.
+      </div>
+      <div class="setting-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+        <input type="password" id="telegramTokenInput" placeholder="Bot token from @BotFather" style="flex:1;min-width:0">
+        <button class="btn-sm primary" onclick="saveTelegramToken()">Connect</button>
+        <button class="btn-sm" onclick="stopTelegram()">Stop</button>
+      </div>
+      <div class="setting-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+        <input type="text" id="telegramChatIdsInput" placeholder="Allowed chat IDs (comma-separated, empty = any)" style="flex:1;min-width:0">
+      </div>
+      <div id="telegramStatus" style="font-size:11px;color:var(--text-dim);min-height:14px">Loading...</div>
     </div>
     <div class="settings-section">
       <h4>Generation</h4>

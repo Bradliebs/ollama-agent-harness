@@ -156,4 +156,66 @@ describe('WorkflowRegistry', () => {
     expect(result.status).toBe('cancelled');
     expect(result.cancelReason).toBe('manual stop');
   });
+
+  it('continues past failed steps when continueOnError is set', async () => {
+    await writeWorkflow(workflowsDir, 'continue.yaml', [
+      'name: continue-on-error',
+      'steps:',
+      '  - id: fail-ok',
+      '    tool: broken',
+      '    input: {}',
+      '    continue_on_error: true',
+      '  - id: after',
+      '    tool: ok',
+      '    input: {}',
+    ].join('\n'));
+    const registry = new WorkflowRegistry(workflowsDir);
+    const def = (await registry.list())[0];
+    const run = registry.startRun(def);
+    const tools = [makeTool('broken', true, '', true), makeTool('ok', true, 'done')];
+    const permissions = new PermissionEngine([], 'dontAsk');
+    const result = await registry.execute(run.id, { tools, permissions });
+    expect(result.status).toBe('completed');
+    expect(result.steps[0].status).toBe('failed');
+    expect(result.steps[1].status).toBe('completed');
+  });
+
+  it('loads JSON workflow definitions', async () => {
+    await writeWorkflow(workflowsDir, 'json-test.json', JSON.stringify({
+      name: 'json-workflow',
+      steps: [{ id: 'echo-step', tool: 'echo', input: { msg: 'hi' } }],
+    }));
+    const registry = new WorkflowRegistry(workflowsDir);
+    const defs = await registry.list();
+    expect(defs.some((d) => d.name === 'json-workflow')).toBe(true);
+  });
+
+  it('listRuns returns all runs sorted by startedAt descending', async () => {
+    await writeWorkflow(workflowsDir, 'lr.yaml', 'name: lr\nsteps:\n  - id: s\n    tool: t\n    input: {}');
+    const registry = new WorkflowRegistry(workflowsDir);
+    const def = (await registry.list())[0];
+    registry.startRun(def);
+    registry.startRun(def);
+    const runs = registry.listRuns();
+    expect(runs).toHaveLength(2);
+    expect(runs[0].startedAt >= runs[1].startedAt).toBe(true);
+  });
+
+  it('fails when step references unknown tool', async () => {
+    await writeWorkflow(workflowsDir, 'unknown-tool.yaml', 'name: unknown\nsteps:\n  - id: bad\n    tool: nonexistent\n    input: {}');
+    const registry = new WorkflowRegistry(workflowsDir);
+    const def = (await registry.list())[0];
+    const run = registry.startRun(def);
+    const tools: Tool[] = [];
+    const permissions = new PermissionEngine([], 'dontAsk');
+    const result = await registry.execute(run.id, { tools, permissions });
+    expect(result.status).toBe('failed');
+    expect(result.steps[0].error).toContain('Unknown tool');
+  });
+
+  it('returns empty list from empty workflows directory', async () => {
+    const registry = new WorkflowRegistry(workflowsDir);
+    const defs = await registry.list();
+    expect(defs).toEqual([]);
+  });
 });

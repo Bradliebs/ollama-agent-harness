@@ -210,6 +210,346 @@ describe('web server API validation', () => {
     });
   });
 
+  it('returns readiness sections for Mission Control', async () => {
+    const response = await request('/api/readiness');
+
+    expect(response.status).toBe(200);
+    const data = await response.json() as { permissionMode: string; sections: Array<{ id: string; label: string; score: number; status: string; checks: unknown[] }> };
+    expect(data.permissionMode).toEqual(expect.any(String));
+    expect(data.sections.map((section: { id: string }) => section.id)).toEqual(expect.arrayContaining(['chat', 'coding', 'research', 'automation', 'autonomy']));
+    for (const section of data.sections) {
+      expect(section.id).toEqual(expect.any(String));
+      expect(section.label).toEqual(expect.any(String));
+      expect(section.score).toEqual(expect.any(Number));
+      expect(section.status).toEqual(expect.any(String));
+      expect(Array.isArray(section.checks)).toBe(true);
+    }
+  });
+
+  it('readiness plan-complete shows warn not blocked', async () => {
+    const planPath = path.join(process.cwd(), 'IMPLEMENTATION_PLAN.md');
+    const original = await fs.readFile(planPath, 'utf-8');
+    const allDone = original.replace(/^- \[ \]/gm, '- [x]');
+    await fs.writeFile(planPath, allDone, 'utf-8');
+    try {
+      const response = await request('/api/readiness');
+      expect(response.status).toBe(200);
+      const data = await response.json() as { sections: Array<{ id: string; checks: Array<{ id: string; status: string; message: string }> }> };
+      const autonomy = data.sections.find((s) => s.id === 'autonomy');
+      expect(autonomy).toBeDefined();
+      const planCheck = autonomy!.checks.find((c) => c.id === 'plan.pending');
+      expect(planCheck).toBeDefined();
+      expect(planCheck!.status).toBe('warn');
+      expect(planCheck!.message).toContain('Plan complete');
+    } finally {
+      await fs.writeFile(planPath, original, 'utf-8');
+    }
+  });
+
+  it('readiness scores are between 0 and 100', async () => {
+    const response = await request('/api/readiness');
+    expect(response.status).toBe(200);
+    const data = await response.json() as { sections: Array<{ score: number }> };
+    for (const section of data.sections) {
+      expect(section.score).toBeGreaterThanOrEqual(0);
+      expect(section.score).toBeLessThanOrEqual(100);
+    }
+  });
+
+  it('readiness includes kill switch and grant metadata', async () => {
+    const response = await request('/api/readiness');
+    expect(response.status).toBe(200);
+    const data = await response.json() as { killSwitch: { active: boolean }; grants: number; generatedAt: string; model: string };
+    expect(typeof data.killSwitch.active).toBe('boolean');
+    expect(typeof data.grants).toBe('number');
+    expect(data.generatedAt).toBeTruthy();
+  });
+
+  it('previews pending autonomy plan tasks without starting a process', async () => {
+    const response = await request('/api/autonomy/plan-preview');
+
+    expect(response.status).toBe(200);
+    const data = await response.json() as { planPath: string; total: number; pending: number; done: number; failed: number; tasks: unknown[] };
+    expect(data).toMatchObject({ planPath: 'IMPLEMENTATION_PLAN.md', total: expect.any(Number), pending: expect.any(Number), done: expect.any(Number), failed: expect.any(Number) });
+    expect(Array.isArray(data.tasks)).toBe(true);
+  });
+
+  it('blocks browser-started autonomy when preflight fails', async () => {
+    const planPath = path.join(process.cwd(), 'IMPLEMENTATION_PLAN.md');
+    const original = await fs.readFile(planPath, 'utf-8');
+    await fs.appendFile(planPath, '\n- [ ] preflight-test-task — Temporary task for testing preflight.\n  - anchor: src/web/server.ts\n');
+    await request('/api/tools/bash/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+
+    try {
+      const response = await request('/api/autonomy/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ maxIterations: 1 }) });
+
+      expect(response.status).toBe(409);
+      const data = await response.json() as { error: string; preflight: { blocked: Array<{ id: string }> } };
+      expect(data.error).toBe('Autonomy preflight failed.');
+      expect(data.preflight.blocked.map((check) => check.id)).toContain('tool.bash');
+    } finally {
+      await request('/api/tools/bash/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      });
+      await fs.writeFile(planPath, original, 'utf-8');
+    }
+  });
+
+  it('blocks autonomy start when kill switch is active', async () => {
+    await request('/api/permissions/kill-switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: true, reason: 'preflight test' }),
+    });
+    try {
+      const response = await request('/api/autonomy/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ maxIterations: 1 }) });
+      expect(response.status).toBe(403);
+      const data = await response.json() as { error: string };
+      expect(data.error).toBe('Kill switch is active.');
+    } finally {
+      await request('/api/permissions/kill-switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: false }),
+      });
+    }
+  });
+
+  it('blocks autonomy start when file_edit is disabled and plan has pending tasks', async () => {
+    // Temporarily add a pending task so the no-pending-tasks check doesn't short-circuit.
+    const planPath = path.join(process.cwd(), 'IMPLEMENTATION_PLAN.md');
+    const original = await fs.readFile(planPath, 'utf-8');
+    await fs.appendFile(planPath, '\n- [ ] preflight-test-task — Temporary task for testing preflight.\n  - anchor: src/web/server.ts\n');
+    await request('/api/tools/file_edit/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    try {
+      const response = await request('/api/autonomy/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ maxIterations: 1 }) });
+      expect(response.status).toBe(409);
+      const data = await response.json() as { error: string; preflight: { blocked: Array<{ id: string }> } };
+      expect(data.preflight.blocked.map((check) => check.id)).toContain('tool.file_edit');
+    } finally {
+      await request('/api/tools/file_edit/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      });
+      await fs.writeFile(planPath, original, 'utf-8');
+    }
+  });
+
+  it('blocks autonomy start when file_write is disabled and plan has pending tasks', async () => {
+    const planPath = path.join(process.cwd(), 'IMPLEMENTATION_PLAN.md');
+    const original = await fs.readFile(planPath, 'utf-8');
+    await fs.appendFile(planPath, '\n- [ ] preflight-test-task — Temporary task for testing preflight.\n  - anchor: src/web/server.ts\n');
+    await request('/api/tools/file_write/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    });
+    try {
+      const response = await request('/api/autonomy/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ maxIterations: 1 }) });
+      expect(response.status).toBe(409);
+      const data = await response.json() as { error: string; preflight: { blocked: Array<{ id: string }> } };
+      expect(data.preflight.blocked.map((check) => check.id)).toContain('tool.file_write');
+    } finally {
+      await request('/api/tools/file_write/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      });
+      await fs.writeFile(planPath, original, 'utf-8');
+    }
+  });
+
+  it('blocks autonomy start when no pending tasks exist', async () => {
+    const planPath = path.join(process.cwd(), 'IMPLEMENTATION_PLAN.md');
+    const original = await fs.readFile(planPath, 'utf-8');
+    // Temporarily mark all tasks as done so the no-pending-tasks check fires.
+    const allDone = original.replace(/^- \[ \]/gm, '- [x]');
+    await fs.writeFile(planPath, allDone, 'utf-8');
+    try {
+      const response = await request('/api/autonomy/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ maxIterations: 1 }) });
+      expect(response.status).toBe(400);
+      const data = await response.json() as { error: string };
+      expect(data.error).toContain('No pending tasks');
+    } finally {
+      await fs.writeFile(planPath, original, 'utf-8');
+    }
+  });
+
+  it('creates, completes, and deletes plan tasks via API', async () => {
+    const planPath = path.join(process.cwd(), 'IMPLEMENTATION_PLAN.md');
+    const original = await fs.readFile(planPath, 'utf-8');
+    try {
+      // Create
+      const created = await request('/api/autonomy/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Test API task creation' }) });
+      expect(created.status).toBe(200);
+      const createdData = await created.json() as { ok: boolean; id: string; pending: number };
+      expect(createdData.ok).toBe(true);
+      expect(createdData.id).toBe('test-api-task-creation');
+      const afterCreate = createdData.pending;
+      expect(afterCreate).toBeGreaterThan(0);
+
+      // Complete
+      const completed = await request('/api/autonomy/tasks/test-api-task-creation/complete', { method: 'POST' });
+      expect(completed.status).toBe(200);
+      const completedData = await completed.json() as { ok: boolean; pending: number; done: number };
+      expect(completedData.ok).toBe(true);
+      expect(completedData.pending).toBe(afterCreate - 1);
+
+      // Delete (the completed task)
+      const deleted = await request('/api/autonomy/tasks/test-api-task-creation', { method: 'DELETE' });
+      expect(deleted.status).toBe(200);
+    } finally {
+      await fs.writeFile(planPath, original, 'utf-8');
+    }
+  });
+
+  it('rejects task creation with empty title', async () => {
+    const response = await request('/api/autonomy/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: '' }) });
+    expect(response.status).toBe(400);
+  });
+
+  it('generates and downloads Markdown documents', async () => {
+    const response = await request('/api/documents/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Server Test Brief', template: 'brief', format: 'markdown', content: 'Summarize the tested server behavior.' }),
+    });
+
+    expect(response.status).toBe(200);
+    const data = await response.json() as { document: { id: string; filename: string; format: string }; content: string };
+    expect(data.document.filename).toMatch(/\.md$/);
+    expect(data.document.format).toBe('markdown');
+    expect(data.content).toContain('# Server Test Brief');
+
+    const download = await request(`/api/documents/${data.document.id}/download`);
+    expect(download.status).toBe(200);
+    expect(download.headers.get('content-type')).toContain('text/markdown');
+    await expect(download.text()).resolves.toContain('Summarize the tested server behavior.');
+  });
+
+  it('lists generated documents and supports HTML output', async () => {
+    const generated = await request('/api/documents/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Server Test Report', template: 'report', format: 'html', content: 'Report body.' }),
+    });
+    expect(generated.status).toBe(200);
+
+    const list = await request('/api/documents');
+    expect(list.status).toBe(200);
+    const data = await list.json() as { documents: Array<{ title: string; format: string }> };
+    expect(data.documents).toEqual(expect.arrayContaining([expect.objectContaining({ title: 'Server Test Report', format: 'html' })]));
+  });
+
+  it('exposes optional document export formats and richer templates', async () => {
+    const formats = await request('/api/documents/formats');
+    expect(formats.status).toBe(200);
+    await expect(formats.json()).resolves.toMatchObject({ formats: { markdown: { available: true }, html: { available: true }, pdf: expect.any(Object), docx: expect.any(Object) } });
+
+    const generated = await request('/api/documents/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Server Test ADR', template: 'adr', format: 'markdown', content: 'We need a durable decision record.' }),
+    });
+    expect(generated.status).toBe(200);
+    const data = await generated.json() as { content: string; document: { template: string } };
+    expect(data.document.template).toBe('adr');
+    expect(data.content).toContain('## Decision');
+  });
+
+  it('turns evidence-backed documents into learning candidates', async () => {
+    const evidence = {
+      id: 'evidence-test-card',
+      kind: 'chat',
+      mode: 'build',
+      createdAt: new Date().toISOString(),
+      request: 'Generate a learning-backed document.',
+      tools: [{ name: 'file_read', success: true }],
+      files: [],
+      commands: [],
+      artifacts: [],
+      recovery: { sessionId: 'evidence-test-session' },
+    };
+    const generated = await request('/api/documents/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Evidence Learning Handoff', template: 'handoff', format: 'markdown', content: 'Evidence should become reviewable.', evidence }),
+    });
+    expect(generated.status).toBe(200);
+
+    const learning = await request('/api/learning');
+    expect(learning.status).toBe(200);
+    const data = await learning.json() as { candidates: Array<{ prompt: string; reviewStatus: string }> };
+    expect(data.candidates).toEqual(expect.arrayContaining([expect.objectContaining({ prompt: 'Generate a learning-backed document.', reviewStatus: 'pending' })]));
+  });
+
+  it('persists evidence for automation runs', async () => {
+    await createAutomationJob(process.cwd(), { name: 'evidence run job', prompt: 'capture evidence for this run', schedule: '1 minutes' }, new Date('2026-04-30T00:00:00.000Z'));
+
+    const executed = await request('/api/automations/execute-due', { method: 'POST' });
+    expect(executed.status).toBe(200);
+    const body = await executed.json() as { evidence: Array<{ kind: string; runName: string }> };
+    expect(body.evidence).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'automation', runName: 'evidence run job' })]));
+
+    const stored = await request('/api/evidence/runs');
+    expect(stored.status).toBe(200);
+    await expect(stored.json()).resolves.toMatchObject({ evidence: expect.arrayContaining([expect.objectContaining({ kind: 'automation', runName: 'evidence run job' })]) });
+  });
+
+  it('returns empty evidence array when evidence store is missing', async () => {
+    // Rename the evidence file to simulate a missing store, then verify the
+    // API returns an empty array instead of 500.
+    const evidencePath = path.join(process.cwd(), '.harness', 'evidence', 'runs.jsonl');
+    const backupPath = evidencePath + '.bak';
+    let renamed = false;
+    try {
+      await fs.rename(evidencePath, backupPath);
+      renamed = true;
+    } catch { /* file may not exist */ }
+    try {
+      const response = await request('/api/evidence/runs');
+      expect(response.status).toBe(200);
+      const data = await response.json() as { evidence: unknown[] };
+      expect(Array.isArray(data.evidence)).toBe(true);
+    } finally {
+      if (renamed) await fs.rename(backupPath, evidencePath).catch(() => {});
+    }
+  });
+
+  it('reports pdf/docx as unavailable when pandoc is absent', async () => {
+    const response = await request('/api/documents/formats');
+    expect(response.status).toBe(200);
+    const data = await response.json() as { formats: { markdown: { available: boolean }; html: { available: boolean }; pdf: { available: boolean }; docx: { available: boolean } } };
+    expect(data.formats.markdown.available).toBe(true);
+    expect(data.formats.html.available).toBe(true);
+    // pdf and docx depend on pandoc — in CI/test env they are typically unavailable
+    expect(typeof data.formats.pdf.available).toBe('boolean');
+    expect(typeof data.formats.docx.available).toBe('boolean');
+  });
+
+  it('returns document list even when documents directory is empty', async () => {
+    const response = await request('/api/documents');
+    expect(response.status).toBe(200);
+    const data = await response.json() as { documents: unknown[] };
+    expect(Array.isArray(data.documents)).toBe(true);
+  });
+
+  it('returns 404 for nonexistent document download', async () => {
+    const response = await request('/api/documents/nonexistent-doc-id-12345/download');
+    expect(response.status).toBe(404);
+  });
+
   it('creates and revokes time-limited capability grants for gated capabilities', async () => {
     const created = await request('/api/capabilities/grants', {
       method: 'POST',

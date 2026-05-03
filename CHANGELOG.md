@@ -2,14 +2,55 @@
 title: Ollama Agent Harness Changelog
 description: Release notes generated from local RPI changes logs for Ollama Agent Harness
 author: Bradliebs
-ms.date: 2026-05-02
+ms.date: 2026-05-03
 ms.topic: reference
 keywords:
 	- ollama
 	- release notes
 	- changelog
-estimated_reading_time: 9
+estimated_reading_time: 12
 ---
+
+## v0.3.0 (2026-05-03)
+
+Major feature release: document generation, Telegram integration, email sending, task management, and Mission Control.
+
+### Document generation
+* **`document_export` tool.** Generate CSV, Excel (.xlsx), Word (.docx), and PDF files directly from chat. Models auto-detect numbers, percentages, and currency in Excel. Tables supported in Word and PDF. Uses pure-JS libraries (exceljs, docx, pdfkit) — no native dependencies.
+* **Document Studio in Mission Control.** Generate briefs, reports, runbooks, specs, ADRs, release notes, and handoffs from chat context or pasted source. Download as Markdown, HTML, PDF, or DOCX.
+* **Clipboard paste.** Ctrl+V images in the chat input auto-upload for vision analysis.
+
+### Telegram bot
+* **Full Telegram integration.** Talk to Oracle from your phone via a Telegram bot. Text, photos, files, and voice messages all supported.
+* **Inline progress.** See "⏳ Working... (3 tool calls: web_search, file_write)" while Oracle processes your request.
+* **Telegram commands.** `/task`, `/schedule`, `/status` work from the phone.
+* **Automation notifications.** Completed jobs push alerts to your Telegram chat.
+* **Persistent chat IDs.** Notification recipients survive server restarts.
+
+### Email
+* **`email_send` tool.** Send real emails via SMTP with attachments. Configure SMTP in Settings → API Keys. Supports Gmail, Outlook, and any SMTP provider.
+* **Email attachments.** Attach PDF reports, Excel spreadsheets, or any file to outgoing emails.
+* **Sent mail archive.** Copies saved to `.harness/email/sent/`.
+
+### Mission Control & task management
+* **Task creation form in Autonomy Builder.** Type a task description and press Enter — no more editing `IMPLEMENTATION_PLAN.md` by hand.
+* **Per-task ✓ complete and ✕ delete buttons.** Mark tasks done or remove them from the browser.
+* **`/task` and `/schedule` chat commands.** Add tasks and recurring jobs from the chat input.
+* **Job templates.** One-click setup for daily digest, hotel monitor, weekly report, and email reminder.
+* **Run-now button.** Trigger any automation job immediately without waiting for the schedule.
+
+### Readiness & evidence
+* **Readiness API contract tests.** Plan-complete state shows warn (not blocked). Score bounds, metadata, and kill switch tested.
+* **Evidence store hardened.** Streaming readline reader for large JSONL files. Corrupt-line tolerance.
+* **Plan-complete shows "Plan complete — all N task(s) done" instead of red blocked card.**
+
+### Infrastructure
+* **`start-background.bat` and `stop-server.bat`.** Run the server as a background process that survives terminal close.
+* **Stale-dist guardrail.** Server warns on startup when source files are newer than compiled output.
+* **`start.bat` always rebuilds.** No more stale compiled code.
+* **Settings merge on save.** Running server no longer overwrites file edits to unmanaged fields.
+* **Injectable clock in `RateLimiter`.** Eliminates parallel test flake from `Date.now` global mutation.
+* **682 tests, 66 suites, 0 failures.** Full test coverage for document tool, evidence store, snapshots, learning engine, rate limiter, session search, workflow registry, readiness API, and preflight contract.
 
 ## v0.2.4 (2026-05-02)
 

@@ -7,6 +7,7 @@ import { MemoryReadTool, MemoryWriteTool } from './memoryTools';
 import { AudioTranscribeTool, ImageAnalyzeTool } from './multimodalTools';
 import { PdfExtractTablesTool, PdfMetadataTool, PdfReadTool, PdfRenderPageTool } from './pdfTool';
 import { CuratorPreviewTool } from './curatorTools';
+import { DocumentExportTool } from './documentTools';
 import { RagListIndexesTool, RagSearchTool } from './ragTools';
 import { CreateSkillTool, ListSkillsTool, SkillTool } from './skillTools';
 import { WebFetchTool } from './webFetchTool';
@@ -14,7 +15,7 @@ import { WebReadTool, WebSearchTool } from './webSearchTool';
 import { DesktopScreenshotTool } from './desktopTools';
 import { BrowserBookmarksTool } from './browserTools';
 import { InstallSkillTool } from './skillInstallTool';
-import { EmailDraftTool } from './emailTools';
+import { EmailDraftTool, EmailSendTool } from './emailTools';
 import { CalendarReadTool } from './calendarTools';
 
 export interface ToolRegistryEntry {
@@ -104,5 +105,7 @@ export const BUILTIN_TOOL_ENTRIES: ToolRegistryEntry[] = [
   { tool: BrowserBookmarksTool, toolset: 'browser', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'browser', canDryRun: false },
   { tool: InstallSkillTool, toolset: 'skills', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'skills', canDryRun: false },
   { tool: EmailDraftTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'write', canDryRun: false },
+  { tool: EmailSendTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'network', canDryRun: false },
   { tool: CalendarReadTool, toolset: 'communications', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
+  { tool: DocumentExportTool, toolset: 'documents', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'write', canDryRun: false },
 ];

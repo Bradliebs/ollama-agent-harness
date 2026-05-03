@@ -1,15 +1,17 @@
 ---
 title: Ollama Agent Harness
-description: Local-first Ollama agent harness with tools, tracing, learning, multimodal helpers, and a browser UI
+description: Local-first Ollama agent harness with tools, documents, Telegram, email, tracing, learning, and a browser UI
 author: Bradliebs
-ms.date: 2026-05-02
+ms.date: 2026-05-03
 ms.topic: overview
 keywords:
   - ollama
   - agent
   - local-first
   - multimodal
-estimated_reading_time: 5
+  - telegram
+  - email
+estimated_reading_time: 7
 ---
 
 [![CI](https://github.com/Bradliebs/ollama-agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/Bradliebs/ollama-agent-harness/actions/workflows/ci.yml)
@@ -19,7 +21,9 @@ estimated_reading_time: 5
 
 Ollama Agent Harness is a local-first agent runtime that wraps Ollama models with a browser UI, tool dispatch, permissions, session management, and learning infrastructure. Everything runs on your machine. No cloud accounts, no API keys beyond Ollama itself.
 
-You chat with a model, it can call tools (read/write files, run bash, search the web, analyze images, transcribe audio), and the harness manages permissions, context, and history.
+You chat with a model, it can call tools (read/write files, run bash, search the web, analyze images, transcribe audio, generate documents, send emails), and the harness manages permissions, context, and history.
+
+New in v0.3.0: document generation (CSV, Excel, Word, PDF), Telegram bot integration, email sending via SMTP, Mission Control dashboard, task management from chat, and browser notifications.
 
 ## Quick start
 
@@ -165,7 +169,44 @@ The right side has a **Settings** panel for Ollama host, generation parameters, 
 
 ### Tools
 
-Built-in tools include `file_read`, `file_write`, `file_edit`, `bash`, `list_files`, `web_fetch`, `web_search`, `web_read`, `image_analyze`, `audio_transcribe`, `create_skill`, `install_skill`, `desktop_screenshot`, `browser_bookmarks`, `email_draft`, `calendar_read`, and more. Each tool has a risk level (low/medium/high) and can be individually disabled from the Tools tab.
+Built-in tools include `file_read`, `file_write`, `file_edit`, `bash`, `list_files`, `web_fetch`, `web_search`, `web_read`, `image_analyze`, `audio_transcribe`, `document_export`, `email_send`, `email_draft`, `create_skill`, `install_skill`, `desktop_screenshot`, `browser_bookmarks`, `calendar_read`, and more. Each tool has a risk level (low/medium/high) and can be individually disabled from the Tools tab.
+
+### Document generation
+
+The `document_export` tool creates CSV, Excel (.xlsx), Word (.docx), and PDF files directly from chat. Numbers, percentages, and currency values are auto-formatted in Excel. Tables are supported in Word and PDF. All documents are redirected to the configured Agent Files directory.
+
+### Email
+
+The `email_send` tool sends real emails via SMTP with optional file attachments. Configure SMTP credentials in Settings → API Keys (`HARNESS_SMTP_HOST`, `HARNESS_SMTP_USER`, `HARNESS_SMTP_PASS`). For Gmail, use an [App Password](https://myaccount.google.com/apppasswords). Sent emails are archived under `.harness/email/sent/`.
+
+### Telegram bot
+
+Talk to Oracle from your phone via Telegram. Create a bot with [@BotFather](https://t.me/BotFather), paste the token in Settings → Telegram Bot, and start chatting. Supports:
+
+* Text messages — Oracle responds via the chat API
+* Photos — analyzed with the vision model
+* Files — PDF, CSV, Excel, images auto-detected and processed
+* Voice notes — transcribed and responded to
+* `/task` — add tasks to the autonomy plan
+* `/schedule every 6h Check prices` — create recurring automation jobs
+* `/status` — check readiness scores
+* Inline progress — see tool calls happening in real time
+* Notifications — automation job results pushed to your chat
+
+### Mission Control
+
+The welcome screen shows a Mission Control dashboard with:
+
+* Readiness scores for Chat, Coding, Research, Automation, and Full Autonomy
+* Autonomy Run Builder with task creation form and one-click start
+* Document Studio for generating briefs, reports, and specs
+* Job templates for daily digest, hotel monitor, weekly report, and email reminder
+
+### Chat commands
+
+* `/task Create a report` — add a task to the autonomy plan
+* `/schedule every 24h Send daily summary` — create a recurring automation job
+* Type `/` to see all available slash commands
 
 ### Permissions
 
@@ -260,11 +301,17 @@ All runtime state goes under `.harness/` in your project directory:
 | `.harness/mycelium/` | Adaptive routing graph |
 | `.harness/desktop/` | Desktop screenshots |
 | `.harness/email/drafts/` | Email draft files |
+| `.harness/email/sent/` | Sent email archive |
+| `.harness/documents/` | Generated documents (Markdown, HTML, PDF, DOCX) |
+| `.harness/evidence/` | Run evidence cards (automation, autonomy) |
+| `.harness/telegram-chat-ids.json` | Telegram notification recipients |
 
 ## More information
 
 * **[START-HERE.md](START-HERE.md)** — complete beginner guide (install Node.js, install Ollama, first chat)
+* **[CHANGELOG.md](CHANGELOG.md)** — release notes for every version
 * [Model presets guide](docs/MODEL-PRESETS.md) — beginner-friendly model recommendations
 * [Validation profiles](docs/VALIDATION-PROFILES.md) — output validation reference
 * [Mycelium router](docs/MYCELIUM-ROUTER.md) — adaptive context routing reference
+* [20/10 Roadmap](docs/TWENTY-OUT-OF-TEN-ROADMAP.md) — product roadmap
 * [GitHub Releases](https://github.com/Bradliebs/ollama-agent-harness/releases/latest) — download the latest release

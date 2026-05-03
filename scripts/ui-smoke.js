@@ -23,7 +23,8 @@ async function main() {
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
-    await page.goto(targetUrl, { waitUntil: 'networkidle' });
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => Boolean(document.getElementById('chatInput')) && Boolean(window.loadReadiness));
     await page.evaluate(() => { const details = document.getElementById('welcomeFirstRun'); if (details) details.open = true; });
     await page.click('#firstRunSetup button:has-text("Check setup")');
     await page.waitForFunction(() => !document.getElementById('firstRunHealth').classList.contains('initial-hidden'));
@@ -37,18 +38,18 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll('#outputValidationTemplates button').length > 0);
     await page.evaluate(() => document.querySelector('#outputValidationTemplates button')?.click());
     await page.waitForFunction(() => document.getElementById('outputValidationProfilesStatus')?.textContent.includes('Installed'));
-    await page.fill('#outputValidationPreviewText', 'Implemented src/web/server.ts and ran npm test plus npm run typecheck.');
-    await page.selectOption('#outputValidationProfile', 'coding-answer');
+    await page.evaluate(() => { document.getElementById('outputValidationPreviewText').value = 'Implemented src/web/server.ts and ran npm test plus npm run typecheck.'; document.getElementById('outputValidationProfile').value = 'coding-answer'; });
     await page.evaluate(() => document.getElementById('previewOutputValidationBtn')?.click());
     await page.waitForFunction(() => document.getElementById('outputValidationPreviewResult')?.textContent.includes('coding-answer'));
-    await page.fill('#outputValidationPreviewText', 'It will be cloudy.');
-    await page.selectOption('#outputValidationProfile', 'factual-answer');
+    await page.evaluate(() => { document.getElementById('outputValidationPreviewText').value = 'It will be cloudy.'; document.getElementById('outputValidationProfile').value = 'factual-answer'; });
     await page.evaluate(() => document.getElementById('previewOutputValidationBtn')?.click());
     await page.waitForFunction(() => document.getElementById('outputValidationPreviewResult')?.textContent.includes('Try:'));
-    await page.fill('#customProfileId', 'smoke-profile');
-    await page.fill('#customProfileLabel', 'Smoke Profile');
-    await page.fill('#customProfileDescription', 'Created by UI smoke.');
-    await page.fill('#customProfileInstructions', 'Mention smoke validation.');
+    await page.evaluate(() => {
+      document.getElementById('customProfileId').value = 'smoke-profile';
+      document.getElementById('customProfileLabel').value = 'Smoke Profile';
+      document.getElementById('customProfileDescription').value = 'Created by UI smoke.';
+      document.getElementById('customProfileInstructions').value = 'Mention smoke validation.';
+    });
     await page.evaluate(() => document.getElementById('saveProfileFromFormBtn')?.click());
     await page.waitForFunction(() => document.getElementById('outputValidationProfilesStatus')?.textContent.includes('custom profiles saved'));
     await page.evaluate(() => Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes('Refresh trace exports'))?.click());
@@ -128,6 +129,17 @@ async function main() {
         hasTraceEvalExamples: Boolean(document.getElementById('traceEvalExamples')),
         hasWeatherReplayEvalButton: Boolean(document.getElementById('createWeatherReplayEvalBtn')),
         hasBeginnerGuide: Boolean(document.getElementById('beginnerGuide')),
+        hasMissionControl: Boolean(document.getElementById('missionControlPanel')),
+        missionControlRendered: document.getElementById('missionControlPanel')?.textContent.includes('Mission Control'),
+        planCompleteNotBlocked: !(document.getElementById('missionControlPanel')?.querySelector('.mission-card.blocked')?.textContent?.includes('pending task')),
+        hasAutonomyBuilder: Boolean(document.getElementById('autonomyBuilderPanel')),
+        hasDocumentStudio: Boolean(document.getElementById('documentStudioPanel')) && Boolean(document.getElementById('documentTitle')) && Boolean(document.getElementById('documentList')),
+        hasDocumentTemplateOptions: ['adr', 'release-notes', 'handoff'].every((value) => Boolean(document.querySelector(`#documentTemplate option[value="${value}"]`))),
+        hasDocumentFormatOptions: ['markdown', 'html', 'pdf', 'docx'].every((value) => Boolean(document.querySelector(`#documentFormat option[value="${value}"]`))),
+        hasReadinessFunctions: typeof window.loadReadiness === 'function' && typeof window.renderReadiness === 'function' && typeof window.loadAutonomyPlanPreview === 'function',
+        hasDocumentFunctions: typeof window.generateDocument === 'function' && typeof window.loadDocuments === 'function' && typeof window.fillDocumentFromEvidence === 'function',
+        hasEvidenceRenderer: typeof window.attachEvidenceCard === 'function',
+        hasRunEvidenceRenderer: typeof window.renderRunEvidenceLog === 'function',
         hasWalkthroughChecklist: Boolean(document.getElementById('walkthroughChecklist')),
         hasWalkthroughFunction: typeof window.openWalkthroughTarget === 'function',
         hasFirstRunSetup: Boolean(document.getElementById('firstRunSetup')),
@@ -238,6 +250,17 @@ async function main() {
     if (!result.hasTraceEvalExamples) failures.push('trace eval example panel was not found');
     if (!result.hasWeatherReplayEvalButton) failures.push('weather replay eval button was not found');
     if (!result.hasBeginnerGuide) failures.push('beginner guide was not found');
+    if (!result.hasMissionControl) failures.push('mission control panel was not found');
+    if (!result.missionControlRendered) failures.push('mission control readiness did not render');
+    if (!result.planCompleteNotBlocked) failures.push('plan-complete state incorrectly shows blocked card for pending tasks');
+    if (!result.hasAutonomyBuilder) failures.push('autonomy builder panel was not found');
+    if (!result.hasDocumentStudio) failures.push('document studio panel was not found');
+    if (!result.hasDocumentTemplateOptions) failures.push('expanded document template options were not found');
+    if (!result.hasDocumentFormatOptions) failures.push('expanded document format options were not found');
+    if (!result.hasReadinessFunctions) failures.push('readiness/autonomy functions were not found');
+    if (!result.hasDocumentFunctions) failures.push('document generation functions were not found');
+    if (!result.hasEvidenceRenderer) failures.push('evidence renderer function was not found');
+    if (!result.hasRunEvidenceRenderer) failures.push('run evidence renderer function was not found');
     if (!result.hasWalkthroughChecklist) failures.push('walkthrough checklist was not found');
     if (!result.hasWalkthroughFunction) failures.push('walkthrough action function was not found');
     if (!result.hasFirstRunSetup) failures.push('first-run setup panel was not found');
@@ -323,9 +346,9 @@ async function ensureTargetServer() {
   }
 
   const url = new URL(targetUrl);
-  const serverArgs = fs.existsSync('dist/web/server.js')
-    ? ['dist/web/server.js']
-    : ['-r', 'ts-node/register', 'src/web/server.ts'];
+  const serverArgs = fs.existsSync('src/web/server.ts')
+    ? ['-r', 'ts-node/register', 'src/web/server.ts']
+    : ['dist/web/server.js'];
   const server = spawn(process.execPath, serverArgs, {
     cwd: process.cwd(),
     env: { ...process.env, PORT: url.port || '4300', NO_OPEN: '1' },

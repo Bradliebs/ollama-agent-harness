@@ -10,6 +10,7 @@ import { ImageAnalyzeTool, AudioTranscribeTool } from './multimodalTools';
 import { PdfReadTool, PdfMetadataTool, PdfRenderPageTool, PdfExtractTablesTool } from './pdfTool';
 import { RagSearchTool, RagListIndexesTool } from './ragTools';
 import { CuratorPreviewTool } from './curatorTools';
+import { DocumentExportTool } from './documentTools';
 import type { Tool } from '../types';
 import { createBuiltinToolRegistry } from './registry';
 
@@ -29,6 +30,7 @@ export { ImageAnalyzeTool, AudioTranscribeTool } from './multimodalTools';
 export { PdfReadTool, PdfMetadataTool, PdfRenderPageTool, PdfExtractTablesTool } from './pdfTool';
 export { RagSearchTool, RagListIndexesTool, setRagRuntime } from './ragTools';
 export { CuratorPreviewTool, setCuratorToolRuntime } from './curatorTools';
+export { DocumentExportTool } from './documentTools';
 export { ToolDispatcher } from './dispatcher';
 export { BUILTIN_TOOL_ENTRIES, ToolRegistry, createBuiltinToolRegistry } from './registry';
 export type { ToolRegistryEntry } from './registry';

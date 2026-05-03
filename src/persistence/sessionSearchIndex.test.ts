@@ -33,4 +33,51 @@ describe('sessionSearchIndex', () => {
 
     await expect(getSessionSearchIndexStatus(projectDir)).resolves.toMatchObject({ exists: true, fresh: false, entryCount: 1 });
   });
+
+  it('returns empty results for empty query string', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-session-search-empty-'));
+    const storage = new SessionStorage(projectDir, 'test-model', 'empty-query-session');
+    await storage.initialize();
+    await storage.append('user_message', { kind: 'message', message: { role: 'user', content: 'Some content here' } });
+    await rebuildSessionSearchIndex(projectDir);
+    const results = await searchSessions(projectDir, '');
+    expect(results).toEqual([]);
+  });
+
+  it('returns empty results for non-matching query', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-session-search-nomatch-'));
+    const storage = new SessionStorage(projectDir, 'test-model', 'nomatch-session');
+    await storage.initialize();
+    await storage.append('user_message', { kind: 'message', message: { role: 'user', content: 'Hello world' } });
+    await rebuildSessionSearchIndex(projectDir);
+    const results = await searchSessions(projectDir, 'xyzzyspoon');
+    expect(results).toEqual([]);
+  });
+
+  it('respects the limit parameter', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-session-search-limit-'));
+    const storage = new SessionStorage(projectDir, 'test-model', 'limit-session');
+    await storage.initialize();
+    await storage.append('user_message', { kind: 'message', message: { role: 'user', content: 'test query alpha' } });
+    await storage.append('user_message', { kind: 'message', message: { role: 'user', content: 'test query beta' } });
+    await storage.append('user_message', { kind: 'message', message: { role: 'user', content: 'test query gamma' } });
+    await rebuildSessionSearchIndex(projectDir);
+    const results = await searchSessions(projectDir, 'test query', 1);
+    expect(results).toHaveLength(1);
+  });
+
+  it('returns empty index for empty project', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-session-search-nodata-'));
+    const result = await rebuildSessionSearchIndexWithMetadata(projectDir);
+    expect(result.entries).toEqual([]);
+    expect(result.metadata.sessionCount).toBe(0);
+    expect(result.metadata.entryCount).toBe(0);
+  });
+
+  it('reports not-exists when no index has been built', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-session-search-noindex-'));
+    const status = await getSessionSearchIndexStatus(projectDir);
+    expect(status.exists).toBe(false);
+    expect(status.fresh).toBe(false);
+  });
 });
