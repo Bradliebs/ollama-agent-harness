@@ -4,7 +4,7 @@
  *
  * On a failed iteration the autonomy loop runs:
  *   git reset --hard <preIterationHead>
- *   git clean -fd -e '.forge-*'
+ *   git clean -fd -e .forge-*
  *
  * The `-e '.forge-*'` exclude is load-bearing — without it, every snapshot
  * restore would wipe `.forge-history.jsonl` (the lifetime task-outcome
@@ -13,7 +13,7 @@
  * pins that invariant by reproducing the exact git command sequence
  * against a throwaway repo and asserting the forge files survive.
  */
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -47,8 +47,8 @@ describe('cookbook/task-loop snapshot restore preserves .forge-* files', () => {
     writeFileSync(strayPath, 'model wrote this');
 
     const head = execSync('git rev-parse HEAD', { stdio: 'pipe' }).toString().trim();
-    execSync(`git reset --hard ${head}`, { stdio: 'pipe' });
-    execSync('git clean -fd -e .forge-*', { stdio: 'pipe' });
+    execFileSync('git', ['reset', '--hard', head], { stdio: 'pipe' });
+    execFileSync('git', ['clean', '-fd', '-e', '.forge-*'], { stdio: 'pipe' });
 
     expect(existsSync(historyPath)).toBe(true);
     expect(readFileSync(historyPath, 'utf-8')).toContain('verify-x');

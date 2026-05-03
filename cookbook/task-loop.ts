@@ -57,7 +57,7 @@
 
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 
 // --- Log mirror ---
 //
@@ -324,7 +324,7 @@ function gitCommit(message: string, files: string[]): void {
       console.warn(`[Ralph] ⚠️ Note: ${fileCount} files staged — more than usual for a single task.`);
     }
 
-    execSync(`git commit -m "${message}"`, { stdio: "pipe" });
+    execFileSync('git', ['commit', '-m', message], { stdio: 'pipe' });
   } catch {
     console.warn("[Ralph] Git commit skipped (no changes or git not configured).");
   }
@@ -602,11 +602,8 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
         try {
           // Drop any uncommitted edits and untracked files the model may
           // have created. Keep .forge-* (state, debug logs, history).
-          // NOTE: pattern is unquoted so cmd.exe on Windows doesn't pass
-          // the literal quotes to git (which would void the exclude and
-          // wipe .forge-history.jsonl).
-          execSync(`git reset --hard ${preIterationHead}`, { stdio: "pipe" });
-          execSync("git clean -fd -e .forge-*", { stdio: "pipe" });
+          execFileSync("git", ["reset", "--hard", preIterationHead], { stdio: "pipe" });
+          execFileSync("git", ["clean", "-fd", "-e", ".forge-*"], { stdio: "pipe" });
           // Re-apply the failed marker to the plan because git reset wiped
           // the uncommitted plan edit. Without this, the next iteration
           // would pick the same task again and loop forever.
