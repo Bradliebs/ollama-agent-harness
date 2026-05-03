@@ -11,6 +11,35 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.11
+
+Browser automation, calendar write, shopping skill, model guide, and capability grants.
+
+### Browser automation
+
+* Added 6 Playwright-based browser tools: `browser_navigate`, `browser_click`, `browser_fill`, `browser_read`, `browser_screenshot`, `browser_close`.
+* All disabled by default and gated behind `browser-page-access` capability grant.
+* Navigate/click/fill rated high risk; read/screenshot medium; close low.
+
+### Calendar
+
+* Added `calendar_write` tool for creating and appending events to .ics files.
+
+### Shopping assistant skill
+
+* Added `shopping-assistant` repo skill with supervised shopping workflow.
+* Mandatory human approval at checkout — never enters payment details or clicks buy autonomously.
+
+### Model guide
+
+* Added recommended models for tool use to README (local Ollama and Mistral API).
+* Includes pull commands, VRAM guidance, and role-based stack recommendations.
+
+### Tests
+
+* Added 20 browser tool tests and 11 calendar tool tests.
+* 938 total tests passing (up from 918).
+
 ## Ollama Agent Harness v0.3.9
 
 Beginner-friendly UI overhaul, multi-backend model routing, agentic OS services, Windows installer, and npm global install.

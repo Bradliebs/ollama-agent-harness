@@ -6,6 +6,7 @@ describe('capability policies', () => {
       'arbitrary-shell',
       'auto-install-third-party-skills',
       'background-autonomous-jobs',
+      'browser-page-access',
       'browser-profile-access',
       'calendar-editing',
       'desktop-control',
@@ -55,7 +56,7 @@ describe('capability policies', () => {
     policies[0].existingCoverage.push('mutated');
 
     expect(listCapabilityPolicies()[0].existingCoverage).not.toContain('mutated');
-    expect(summarizeCapabilityAlignment()).toEqual(expect.objectContaining({ gated: 9, blocked: 3, 'design-only': 0 }));
+    expect(summarizeCapabilityAlignment()).toEqual(expect.objectContaining({ gated: 10, blocked: 3, 'design-only': 0 }));
   });
 
   it('maps existing builtin tool names to capability coverage', () => {

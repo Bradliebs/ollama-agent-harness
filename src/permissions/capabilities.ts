@@ -84,6 +84,17 @@ export const CAPABILITY_POLICIES: CapabilityPolicy[] = [
     requiredControls: ['explicit-grant', 'time-limit', 'audit-log', 'redaction', 'kill-switch'],
   },
   {
+    id: 'browser-page-access',
+    label: 'Browser page interaction',
+    category: 'browser',
+    posture: 'gated',
+    summary: 'Headless browser interaction via Playwright. Can navigate, click, fill forms, read content, and take screenshots on live websites. High risk — can interact with real services.',
+    readiness: 'browser_navigate, browser_click, browser_fill, browser_read, browser_screenshot, browser_close tools (all disabled by default).',
+    existingCoverage: ['browser_navigate', 'browser_click', 'browser_fill', 'browser_read', 'browser_screenshot', 'browser_close', 'kill switch', 'permission prompts'],
+    missingConnectors: ['URL allowlist', 'domain scope picker'],
+    requiredControls: ['explicit-grant', 'time-limit', 'audit-log', 'kill-switch', 'human-confirmation'],
+  },
+  {
     id: 'password-manager-access',
     label: 'Password manager access',
     category: 'credentials',
