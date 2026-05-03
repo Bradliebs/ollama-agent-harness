@@ -20,10 +20,10 @@ InstallDirRegKey HKCU "Software\OllamaAgentHarness" "InstallDir"
 RequestExecutionLevel user
 
 ; --- Version info ---
-VIProductVersion "0.3.10.0"
+VIProductVersion "0.3.11.0"
 VIAddVersionKey "ProductName" "Ollama Agent Harness"
 VIAddVersionKey "FileDescription" "Local-first agentic AI system"
-VIAddVersionKey "FileVersion" "0.3.10"
+VIAddVersionKey "FileVersion" "0.3.11"
 VIAddVersionKey "LegalCopyright" "MIT License"
 
 ; --- UI ---
@@ -119,7 +119,7 @@ Section "Install"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OllamaAgentHarness" \
     "Publisher" "Ollama Agent Harness"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OllamaAgentHarness" \
-    "DisplayVersion" "0.3.10"
+    "DisplayVersion" "0.3.11"
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OllamaAgentHarness" \
     "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OllamaAgentHarness" \

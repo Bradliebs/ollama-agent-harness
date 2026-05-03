@@ -1,6 +1,6 @@
 {
   "name": "ollama-agent-harness",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "description": "A local-first agentic system wrapping Ollama's API, borrowing architectural patterns from the Claude Code paper",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
