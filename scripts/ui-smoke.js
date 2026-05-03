@@ -68,6 +68,19 @@ async function main() {
     const palaceTabVisible = await page.evaluate(() => getComputedStyle(document.getElementById('memoryPalaceView')).display !== 'none');
     await page.evaluate(() => showLeftTab('discovery', Array.from(document.querySelectorAll('.tab')).find((element) => element.getAttribute('onclick')?.includes("showLeftTab('discovery'"))));
     await page.waitForFunction(() => Boolean(document.getElementById('discoveryPanel')));
+    const operateModeSmoke = await page.evaluate(async () => {
+      const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'check https://example.com/ui-smoke-agentic-service daily to see if it is available' }) });
+      const body = await response.text();
+      await loadDiscovery();
+      const serviceButton = Array.from(document.querySelectorAll('#operatingServicesDiscoveryPanel button')).find((button) => button.textContent?.includes('Details'));
+      if (serviceButton) serviceButton.click();
+      return {
+        status: response.status,
+        body,
+        hasServicePanelText: document.getElementById('operatingServicesDiscoveryPanel')?.textContent.includes('Site Monitor Agent'),
+      };
+    });
+    await page.waitForFunction(() => document.getElementById('operatingServiceDetail')?.textContent.includes('storage'));
     const discoveryTabVisible = await page.evaluate(() => getComputedStyle(document.getElementById('discoveryView')).display !== 'none');
     await page.evaluate(() => showLeftTab('learning', document.querySelector('[onclick*="learning"]')));
     await page.waitForFunction(() => Boolean(document.getElementById('learningCandidateQueue')));
@@ -84,7 +97,7 @@ async function main() {
     // create duplicate IDs before the dedup check runs.
     await page.evaluate(() => showLeftTab('tools', document.querySelector('[onclick*="showLeftTab(\'tools\'"]')));
     await page.waitForTimeout(500);
-    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible }) => {
+    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke }) => {
       const ids = Array.from(document.querySelectorAll('[id]')).map((element) => element.id);
       // Dynamically-rendered panels may legitimately re-render with the same ID
       const dynamicPanelIds = new Set(['permissionPanel', 'capabilityAlignmentPanel', 'toolRegistryPanel', 'automationRunsSection', 'curatorRunsSection']);
@@ -110,6 +123,10 @@ async function main() {
         hasModelCatalogPanel: Boolean(document.getElementById('modelCatalogPanel')),
         hasExtensionDiscoveryPanel: Boolean(document.getElementById('extensionDiscoveryPanel')),
         hasOperatingServicesDiscoveryPanel: Boolean(document.getElementById('operatingServicesDiscoveryPanel')),
+        hasOperatingServiceDetailFunction: typeof window.loadOperatingServiceDetail === 'function',
+        operatingServiceDetailRendered: document.getElementById('operatingServiceDetail')?.textContent.includes('storage'),
+        operateModeSmokeStatus: operateModeSmoke.status,
+        operateModeSmokeHandled: operateModeSmoke.body.includes('"mode":"OPERATE_MODE"') && operateModeSmoke.body.includes('Site Monitor Agent is set up') && Boolean(operateModeSmoke.hasServicePanelText),
         hasAutomationDiscoveryPanel: Boolean(document.getElementById('automationDiscoveryPanel')),
         hasSessionSearchDiscoveryPanel: Boolean(document.getElementById('sessionSearchDiscoveryPanel')),
         hasCuratorDiscoveryPanel: Boolean(document.getElementById('curatorDiscoveryPanel')),
@@ -208,7 +225,7 @@ async function main() {
         hasApplyCalibrationFunction: typeof window.applyRoutingCalibration === 'function',
         duplicateIds,
       };
-    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible, myceliumWasVisible: myceliumTabVisible });
+    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke });
 
     const failures = [];
     if (!result.title.endsWith('Ollama Agent Harness')) failures.push(`Unexpected title: ${result.title}`);
@@ -230,6 +247,9 @@ async function main() {
     if (!result.hasModelCatalogPanel) failures.push('model catalog discovery panel was not rendered');
     if (!result.hasExtensionDiscoveryPanel) failures.push('extension discovery panel was not rendered');
     if (!result.hasOperatingServicesDiscoveryPanel) failures.push('operating services discovery panel was not rendered');
+    if (!result.hasOperatingServiceDetailFunction) failures.push('operating service detail function was not loaded');
+    if (!result.operatingServiceDetailRendered) failures.push('operating service detail did not render');
+    if (result.operateModeSmokeStatus !== 200 || !result.operateModeSmokeHandled) failures.push('operate mode chat smoke did not create a visible operating service');
     if (!result.hasAutomationDiscoveryPanel) failures.push('automation discovery panel was not rendered');
     if (!result.hasSessionSearchDiscoveryPanel) failures.push('session search discovery panel was not rendered');
     if (!result.hasCuratorDiscoveryPanel) failures.push('curator discovery panel was not rendered');

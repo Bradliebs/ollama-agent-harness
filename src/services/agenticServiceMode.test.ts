@@ -8,6 +8,7 @@ describe('agentic service mode', () => {
   it('classifies ongoing service requests as operate mode unless software is explicit', () => {
     expect(classifyAgenticMode('Remind me daily to review my tasks')).toMatchObject({ mode: 'operate' });
     expect(classifyAgenticMode('Build an app that reminds me daily')).toMatchObject({ mode: 'build' });
+    expect(classifyAgenticMode('Generate a document template that reminds me daily')).toMatchObject({ mode: 'build' });
   });
 
   it('creates a persisted bullet journal service and daily automation schedule', async () => {
@@ -107,5 +108,25 @@ describe('agentic service mode', () => {
     expect(resume.response).toContain('resumed');
     expect(resume.state).toMatchObject({ enabled: true, reminders_paused: false });
     await expect(listAutomationJobs(projectDir)).resolves.toEqual([expect.objectContaining({ enabled: true })]);
+  });
+
+  it('routes ambiguous reminder commands to bullet journal and scoped commands to site monitor', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-service-routing-'));
+    await handleOperateModeRequest(projectDir, 'Create a bullet journal agent and remind me daily at 9am', new Date('2026-05-03T08:00:00.000Z'));
+    await handleOperateModeRequest(projectDir, 'check https://example.com/rooms daily to see if a room is free', new Date('2026-05-03T08:01:00.000Z'));
+
+    const unscoped = await handleOperateModeRequest(projectDir, 'pause reminders', new Date('2026-05-03T08:02:00.000Z'));
+    expect(unscoped.service).toMatchObject({ service_id: 'bullet_journal' });
+    expect(unscoped.state).toMatchObject({ service_id: 'bullet_journal', enabled: false, reminders_paused: true });
+
+    const scoped = await handleOperateModeRequest(projectDir, 'site monitor pause reminders', new Date('2026-05-03T08:03:00.000Z'));
+    expect(scoped.service).toMatchObject({ service_name: 'Site Monitor Agent' });
+    expect(scoped.state).toMatchObject({ enabled: false, reminders_paused: true });
+
+    const jobs = await listAutomationJobs(projectDir);
+    expect(jobs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'Bullet Journal daily check-in', enabled: false }),
+      expect.objectContaining({ name: expect.stringContaining('Site Monitor Agent'), enabled: false }),
+    ]));
   });
 });

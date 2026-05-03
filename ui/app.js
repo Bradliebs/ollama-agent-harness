@@ -3434,9 +3434,24 @@ function renderOperatingServicesPanel(servicesData) {
   const rows = services.slice(0, 8).map((service) => {
     const updated = service.updated_at ? new Date(service.updated_at).toLocaleString() : 'never';
     const job = service.automation_job_id ? ' · job ' + esc(service.automation_job_id) : '';
-    return '<div class="trace-row"><strong>' + esc(service.service_name || service.service_id) + '</strong><div class="trace-meta">' + esc(service.mode || 'operate') + ' · updated ' + esc(updated) + job + '</div><div class="trace-meta">' + esc(service.purpose || '') + '</div></div>';
+    return '<div class="trace-row"><strong>' + esc(service.service_name || service.service_id) + '</strong><div class="trace-meta">' + esc(service.mode || 'operate') + ' · updated ' + esc(updated) + job + '</div><div class="trace-meta">' + esc(service.purpose || '') + '</div><button class="btn-sm" onclick="loadOperatingServiceDetail(\'' + escAttr(service.service_id || '') + '\')">Details</button></div>';
   }).join('');
-  return '<div id="operatingServicesDiscoveryPanel" class="trace-item"><div class="trace-title">Operating Services</div><div class="trace-meta">' + (servicesData.total || services.length || 0) + ' service(s) configured</div>' + (rows || '<div class="trace-meta">No operating services configured.</div>') + '</div>';
+  return '<div id="operatingServicesDiscoveryPanel" class="trace-item"><div class="trace-title">Operating Services</div><div class="trace-meta">' + (servicesData.total || services.length || 0) + ' service(s) configured</div>' + (rows || '<div class="trace-meta">No operating services configured.</div>') + '<div id="operatingServiceDetail" class="trace-meta"></div></div>';
+}
+
+async function loadOperatingServiceDetail(serviceId) {
+  const target = document.getElementById('operatingServiceDetail');
+  if (!target || !serviceId) return;
+  target.textContent = 'Loading service details...';
+  try {
+    const response = await fetch('/api/services/' + encodeURIComponent(serviceId));
+    const data = await readApiJson(response, 'Service detail API');
+    const state = data.state || {};
+    const count = (key) => Array.isArray(state[key]) ? state[key].length : 0;
+    target.innerHTML = '<div class="trace-row"><strong>' + esc(data.service?.service_name || serviceId) + '</strong><div class="trace-meta">tasks ' + count('tasks') + ' · notes ' + count('notes') + ' · observations ' + count('observations') + ' · reviews ' + count('reviews') + '</div><div class="trace-meta">storage ' + esc(data.service?.storage_location || '') + '</div></div>';
+  } catch (error) {
+    target.textContent = 'Service details unavailable: ' + (error.message || error);
+  }
 }
 
 function renderCuratorDiscoveryPanel(curator) {

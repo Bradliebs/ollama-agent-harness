@@ -696,7 +696,7 @@ function looksLikeGenericOperateCommand(lower: string): boolean {
 }
 
 function explicitlyRequestsSoftwareBuild(lower: string): boolean {
-  return /\b(build|code|develop|implement|scaffold|create|make|generate|write)\b.{0,60}\b(app|application|ui|dashboard|website|site|software|codebase|project|component|page)\b/.test(lower);
+  return /\b(build|code|develop|implement|scaffold|create|make|generate|write)\b.{0,60}\b(app|application|ui|dashboard|website|site|software|codebase|project|component|page|document|template|artifact)\b/.test(lower);
 }
 
 function parseReminderTime(message: string): string | null {
