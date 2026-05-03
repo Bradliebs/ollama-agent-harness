@@ -98,6 +98,7 @@ const ALLOWED_PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'd
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9._-]+$/;
 let autonomyChild: ChildProcessWithoutNullStreams | null = null;
 let autonomyStartedAt: string | undefined;
+const globalNervousSystem = new NervousSystemController();
 
 type QueryLoopRunner = (config: LoopConfig, deps: QueryLoopDeps, initialMessages: Message[]) => AsyncGenerator<LoopEvent>;
 
@@ -1337,6 +1338,28 @@ app.get('/api/webhooks', (_req, res) => {
   res.json({ webhooks: listWebhooks() });
 });
 
+app.get('/api/nervous', (_req, res) => {
+  const state = globalNervousSystem.getRunState();
+  const signals = globalNervousSystem.getSignals();
+  const summary = globalNervousSystem.getSummary();
+  const recovery = globalNervousSystem.getRecoveryPlan();
+  res.json({
+    active: state !== null,
+    summary,
+    signals: signals.slice(-20).map((s) => ({ type: s.type, severity: s.severity, message: s.message, source: s.source, createdAt: s.createdAt })),
+    recovery: recovery ? { reason: recovery.reason, safeNextAction: recovery.safeNextAction } : null,
+  });
+});
+
+app.get('/api/nervous/history', async (_req, res) => {
+  try {
+    const history = await NervousSystemController.readPersistedSignals(PROJECT_DIR, 100);
+    res.json({ signals: history });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 app.post('/api/webhooks', (req, res) => {
   try {
     const url = String(req.body?.url ?? '').trim();
@@ -2552,8 +2575,8 @@ app.post('/api/chat', async (req, res) => {
   }
 
   // Nervous System: inspect query, evaluate reflexes, calculate attention
-  const nervousSystem = new NervousSystemController();
-  const nervousResult = nervousSystem.inspectQuery(messageText, myceliumClassification?.type ?? 'general');
+  globalNervousSystem.reset();
+  const nervousResult = globalNervousSystem.inspectQuery(messageText, myceliumClassification?.type ?? 'general');
   let nervousContext = '';
   if (nervousResult.runState.safetyNotes.length > 0) {
     nervousContext = '\n\n--- Nervous System ---\n' + nervousResult.runState.safetyNotes.map((n) => `⚠️ ${n}`).join('\n');
@@ -2676,8 +2699,8 @@ app.post('/api/chat', async (req, res) => {
         toolCallCount++;
         if (event.result?.success) toolSuccessCount++;
         // Nervous System: inspect tool result
-        nervousSystem.onToolResult(event.call.name, Boolean(event.result?.success), String(event.result?.output ?? ''));
-        nervousSystem.onToolCallSequence(toolCallSequence);
+        globalNervousSystem.onToolResult(event.call.name, Boolean(event.result?.success), String(event.result?.output ?? ''));
+        globalNervousSystem.onToolCallSequence(toolCallSequence);
         evidenceTools.push({
           name: event.call.name,
           success: Boolean(event.result?.success),
@@ -2849,7 +2872,7 @@ app.post('/api/chat', async (req, res) => {
       } catch { /* verifier is optional */ }
     }
     // Nervous System: inspect verifier result and extract pain
-    const nervousVerifier = nervousSystem.onVerifierResult(
+    const nervousVerifier = globalNervousSystem.onVerifierResult(
       verifierBlocked ? 'fail' : 'pass',
       verifierScore,
       verifierBlocked && verifierBlockReason ? [verifierBlockReason] : undefined,
@@ -2889,6 +2912,9 @@ app.post('/api/chat', async (req, res) => {
       logger.warn('Mycelium', 'Failed to save graph', { error: error instanceof Error ? error.message : String(error) });
     }
   }
+
+  // Persist nervous system signals for historical analysis.
+  globalNervousSystem.persistSignals(PROJECT_DIR).catch(() => {});
 
   const evidenceCard: EvidenceCard = {
     id: crypto.randomUUID(),

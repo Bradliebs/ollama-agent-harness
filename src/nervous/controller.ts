@@ -17,6 +17,8 @@ import { checkMotorPermission, type MotorPermission } from './motor';
 import { extractPainSignals, aggregatePainMultiplier, isSafetyRewardSignal, type PainSignal } from './pain';
 import { buildRecoveryPlan, formatRecoveryPlan, type RecoveryPlan } from './recovery';
 import { logger } from '../core/logger';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 
 export interface NervousSystemResult {
   runState: NervousRunState;
@@ -196,6 +198,42 @@ export class NervousSystemController {
       signalCount: this.allSignals.length,
       painSignals: this.allSignals.filter((s) => s.severity === 'high' || s.severity === 'critical').length,
     };
+  }
+
+  /** Persist signals to disk for historical analysis. */
+  async persistSignals(projectDir: string): Promise<void> {
+    if (this.allSignals.length === 0) return;
+    try {
+      const dir = path.join(projectDir, '.harness', 'nervous');
+      await fs.mkdir(dir, { recursive: true });
+      const filePath = path.join(dir, 'signals.jsonl');
+      const lines = this.allSignals.map((s) => JSON.stringify({
+        id: s.id,
+        type: s.type,
+        severity: s.severity,
+        source: s.source,
+        message: s.message,
+        runId: this.runState?.runId,
+        taskType: this.runState?.taskType,
+        createdAt: s.createdAt,
+      })).join('\n') + '\n';
+      await fs.appendFile(filePath, lines, 'utf-8');
+    } catch { /* best effort */ }
+  }
+
+  /** Read recent persisted signals. */
+  static async readPersistedSignals(projectDir: string, limit = 50): Promise<Array<Record<string, unknown>>> {
+    try {
+      const raw = await fs.readFile(path.join(projectDir, '.harness', 'nervous', 'signals.jsonl'), 'utf-8');
+      return raw.trim().split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+        .filter((e): e is Record<string, unknown> => e !== null)
+        .slice(-limit)
+        .reverse();
+    } catch {
+      return [];
+    }
   }
 
   /** Reset for next run. */

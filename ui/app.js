@@ -171,8 +171,10 @@ function renderReadiness(data) {
   panel.innerHTML = '<div class="mission-header"><div><h3>Mission Control</h3><p>' + esc(data.model || 'No model selected') + ' · ' + esc(data.permissionMode || 'default') + '</p></div><button class="btn-sm" onclick="loadReadiness()">Refresh</button></div>'
     + '<div class="readiness-summary">' + summary + '</div>'
     + '<div class="mission-grid">' + sections.map(renderReadinessSection).join('') + '</div>'
+    + '<div class="nervous-panel" id="nervousPanel"><div class="readiness-empty">Loading nervous system...</div></div>'
     + '<div class="autonomy-builder" id="autonomyBuilderPanel"><div class="readiness-empty">Loading autonomy plan...</div></div>'
     + '<div class="document-studio" id="documentStudioPanel">' + renderDocumentStudioShell() + '</div>';
+  loadNervousStatus();
   loadAutonomyPlanPreview();
   loadDocuments();
 }
@@ -200,6 +202,32 @@ function sendMissionPrompt(mode) {
   input.value = prompts[mode] || 'Help me choose the best Harness mode for this task.';
   autoSize(input);
   input.focus();
+}
+
+async function loadNervousStatus() {
+  const panel = document.getElementById('nervousPanel');
+  if (!panel) return;
+  try {
+    const response = await fetch('/api/nervous');
+    const data = await readApiJson(response, 'Nervous system API');
+    const summary = data.summary || {};
+    const signals = data.signals || [];
+    const recentHigh = signals.filter((s) => s.severity === 'high' || s.severity === 'critical');
+    const reflexes = summary.activeReflexes || [];
+    const risk = summary.riskLevel || 'low';
+    const riskColor = risk === 'critical' ? 'var(--error)' : risk === 'high' ? '#ffb050' : risk === 'medium' ? '#ffd700' : 'var(--text-dim)';
+    panel.innerHTML = '<div class="autonomy-head"><div><strong>🧠 Nervous System</strong>'
+      + '<span style="color:' + riskColor + '">' + esc(risk) + ' risk · ' + esc(signals.length) + ' signals · ' + esc(reflexes.length) + ' reflexes</span></div>'
+      + '<button class="btn-sm" onclick="loadNervousStatus()">Refresh</button></div>'
+      + (reflexes.length > 0 ? '<div class="autonomy-task-list">' + reflexes.map((r) => '<div class="autonomy-task"><strong>⚡ ' + esc(r) + '</strong></div>').join('') + '</div>' : '')
+      + (recentHigh.length > 0 ? '<details style="margin-top:4px"><summary class="trace-meta" style="cursor:pointer;font-size:11px">⚠️ Recent high-severity signals (' + recentHigh.length + ')</summary>'
+        + recentHigh.slice(-5).map((s) => '<div class="trace-meta" style="font-size:11px;color:' + (s.severity === 'critical' ? 'var(--error)' : '#ffb050') + '">' + esc(s.type) + ': ' + esc(s.message) + '</div>').join('')
+        + '</details>' : '')
+      + (summary.safetyNotes && summary.safetyNotes.length > 0 ? '<div class="trace-meta" style="font-size:11px;margin-top:4px">' + summary.safetyNotes.map((n) => '🛡 ' + esc(n)).join('<br>') + '</div>' : '')
+      + (data.recovery ? '<div class="trace-meta" style="font-size:11px;color:var(--error);margin-top:4px">⚠️ Recovery: ' + esc(data.recovery.reason) + ' → ' + esc(data.recovery.safeNextAction) + '</div>' : '');
+  } catch (error) {
+    panel.innerHTML = '<div class="readiness-empty">Nervous system: ' + esc(error.message || error) + '</div>';
+  }
 }
 
 async function loadAutonomyPlanPreview() {
