@@ -265,6 +265,107 @@ describe('web server API validation', () => {
     expect(data.generatedAt).toBeTruthy();
   });
 
+  it('readiness includes operating services section', async () => {
+    const response = await request('/api/readiness');
+    expect(response.status).toBe(200);
+    const data = await response.json() as { sections: Array<{ id: string; checks: Array<{ id: string; message: string }> }> };
+    expect(data.sections.map((section) => section.id)).toContain('services');
+    const services = data.sections.find((section) => section.id === 'services');
+    expect(services?.checks).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'services.storage', message: expect.stringContaining('.harness/services') })]));
+  });
+
+  it('streams OPERATE_MODE service confirmation without requiring model execution', async () => {
+    const createClient = jest.fn(() => ({}) as never);
+    const runQueryLoop = jest.fn(async function* (): AsyncGenerator<LoopEvent> {
+      yield { type: 'text', content: 'should not run' };
+    });
+    const restore = setWebRuntimeOverrides({
+      createClient,
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({}) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop,
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'check https://example.com/rooms daily to see if a room is free' }),
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toContain('text/event-stream');
+      const body = await response.text();
+      expect(body).toContain('"type":"agentic_mode"');
+      expect(body).toContain('"mode":"OPERATE_MODE"');
+      expect(body).toContain('Site Monitor Agent is set up');
+      expect(body).toContain('data: [DONE]');
+      expect(createClient).not.toHaveBeenCalled();
+      expect(runQueryLoop).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('lists and reads persisted operating services via API', async () => {
+    const chat = await request('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'Create a bullet journal agent and remind me daily at 9am' }),
+    });
+    expect(chat.status).toBe(200);
+    await chat.text();
+
+    const list = await request('/api/services');
+    expect(list.status).toBe(200);
+    const listBody = await list.json() as { services: Array<{ service: { service_id: string; mode: string }; stateSummary: { tasks: number; notes: number } }> };
+    expect(listBody.services).toEqual(expect.arrayContaining([expect.objectContaining({ service: expect.objectContaining({ service_id: 'bullet_journal', mode: 'operate' }), stateSummary: expect.objectContaining({ tasks: expect.any(Number), notes: expect.any(Number) }) })]));
+
+    const detail = await request('/api/services/bullet_journal');
+    expect(detail.status).toBe(200);
+    await expect(detail.json()).resolves.toMatchObject({ service: { service_id: 'bullet_journal', mode: 'operate' }, state: { service_id: 'bullet_journal', mode: 'operate' } });
+  });
+
+  it('rejects invalid service ids and returns not found for missing services', async () => {
+    const invalid = await request('/api/services/bad%24id');
+    expect(invalid.status).toBe(400);
+    await expect(invalid.json()).resolves.toMatchObject({ error: 'Invalid service id.' });
+
+    const missing = await request('/api/services/not_configured');
+    expect(missing.status).toBe(404);
+    await expect(missing.json()).resolves.toMatchObject({ error: 'Service not found.' });
+  });
+
+  it('skips malformed persisted operating services in service list', async () => {
+    const malformedDir = path.join(process.cwd(), '.harness', 'services', 'malformed_test_service');
+    await fs.mkdir(malformedDir, { recursive: true });
+    await fs.writeFile(path.join(malformedDir, 'service.json'), '{not-json', 'utf-8');
+    await fs.writeFile(path.join(malformedDir, 'state.json'), '{not-json', 'utf-8');
+
+    try {
+      const list = await request('/api/services');
+      expect(list.status).toBe(200);
+      const body = await list.json() as { services: Array<{ service: { service_id: string } }> };
+      expect(body.services.map((item) => item.service.service_id)).not.toContain('malformed_test_service');
+    } finally {
+      await fs.rm(malformedDir, { recursive: true, force: true });
+    }
+  });
+
+  it('includes operating services in discovery payload', async () => {
+    const response = await request('/api/discovery');
+    expect(response.status).toBe(200);
+    const body = await response.json() as { services: { total: number; services: unknown[] } };
+    expect(body.services.total).toEqual(expect.any(Number));
+    expect(Array.isArray(body.services.services)).toBe(true);
+  });
+
   it('previews pending autonomy plan tasks without starting a process', async () => {
     const response = await request('/api/autonomy/plan-preview');
 

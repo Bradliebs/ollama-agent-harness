@@ -50,6 +50,7 @@ import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCata
 import { createAutomationJob, deleteAutomationJob, executeDueJobs, listAutomationJobs, listDueAutomationJobs, readAutomationRunLog, updateAutomationJob } from '../automation/jobs';
 import { prepareAutomationRun } from '../automation/runner';
 import { AutomationScheduler } from '../automation/scheduler';
+import { getAgenticService, handleOperateModeRequest, listAgenticServices } from '../services/agenticServiceMode';
 import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
 import { heuristicVerifier } from '../mycelium/verifier';
 import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
@@ -1197,6 +1198,21 @@ function summarizeForEvidence(value: unknown, maxLength = 220): string {
   return raw.replace(/\s+/g, ' ').slice(0, maxLength);
 }
 
+function summarizeServiceState(state: unknown): Record<string, number | boolean | string> {
+  const source = typeof state === 'object' && state !== null ? state as Record<string, unknown> : {};
+  const count = (key: string): number => Array.isArray(source[key]) ? (source[key] as unknown[]).length : 0;
+  return {
+    tasks: count('tasks'),
+    notes: count('notes'),
+    observations: count('observations'),
+    reminders: count('reminders'),
+    reviews: count('reviews'),
+    enabled: source.enabled !== false,
+    reminders_paused: source.reminders_paused === true,
+    updated_at: typeof source.updated_at === 'string' ? source.updated_at : '',
+  };
+}
+
 function evidenceFilesFromTool(callName: string, input: Record<string, unknown>): EvidenceFileSummary[] {
   const fileAction: EvidenceFileSummary['action'] = callName === 'file_read' ? 'read'
     : callName === 'file_write' ? 'write'
@@ -1249,6 +1265,7 @@ app.get('/api/readiness', async (_req, res) => {
     const ragIndexes = await ragIndex.listIndexes(PROJECT_DIR).catch(() => []);
     const planPreview = await readAutonomyPlanPreview().catch(() => null);
     const automationJobs = await listAutomationJobs(PROJECT_DIR).catch(() => []);
+    const agenticServices = await listAgenticServices(PROJECT_DIR).catch(() => []);
     const validationScripts = setup.local.package.ok;
     const modelSelected = Boolean(currentModel);
     const modelBackend = currentModel.includes('/') ? currentModel.slice(0, currentModel.indexOf('/')) : 'ollama';
@@ -1283,6 +1300,11 @@ app.get('/api/readiness', async (_req, res) => {
         { id: 'automation.jobs', label: 'Automation jobs', status: automationJobs.length > 0 ? 'ready' : 'warn', message: `${automationJobs.length} automation job(s) configured.`, action: 'Open Runs' },
         { id: 'background.grant', label: 'Background grant', status: hasBackgroundGrant || permissionMode === 'dontAsk' ? 'ready' : 'warn', message: hasBackgroundGrant || permissionMode === 'dontAsk' ? 'Background jobs can run with active grant posture.' : 'Background jobs need a grant for autonomous execution.', action: 'Open Tools' },
         { id: 'kill.switch', label: 'Kill switch clear', status: killSwitchActive ? 'blocked' : 'ready', message: killSwitchActive ? `Kill switch active: ${killSwitchReason}` : 'Kill switch is clear.' },
+      ]),
+      readinessSection('services', 'Operating Services', [
+        { id: 'services.configured', label: 'Services configured', status: agenticServices.length > 0 ? 'ready' : 'warn', message: `${agenticServices.length} operating service(s) configured.` },
+        { id: 'services.scheduler', label: 'Service scheduler', status: automationSchedulerSettings.enabled ? 'ready' : 'warn', message: automationSchedulerSettings.enabled ? 'Scheduled operating services can run.' : 'Operating service state can be created, but proactive reminders require a scheduler/automation capability.', action: 'Open Settings' },
+        { id: 'services.storage', label: 'Service storage', status: 'ready', message: 'Operating service state is stored under .harness/services/.' },
       ]),
       readinessSection('autonomy', 'Full Autonomy', [
         { id: 'plan.pending', label: 'Pending plan tasks', status: planPreview && planPreview.pending > 0 ? 'ready' : planPreview ? 'warn' : 'blocked', message: planPreview ? (planPreview.pending > 0 ? `${planPreview.pending} pending task(s) in IMPLEMENTATION_PLAN.md.` : `Plan complete — all ${planPreview.done} task(s) done.`) : 'IMPLEMENTATION_PLAN.md could not be parsed.', action: 'Open Plan' },
@@ -1384,12 +1406,13 @@ app.get('/api/discovery', async (_req, res) => {
   try {
     const automationPolicy = getAutomationPolicyContext();
     const ttlMs = modelCatalog.ttlHours * 60 * 60 * 1000;
-    const [catalog, catalogStatus, extensions, automationJobs, dueAutomations, sessionSearch, runtimeSkills, repoSkills, curatorLog] = await Promise.all([
+    const [catalog, catalogStatus, extensions, automationJobs, dueAutomations, agenticServices, sessionSearch, runtimeSkills, repoSkills, curatorLog] = await Promise.all([
       getModelCatalog(PROJECT_DIR, { url: modelCatalog.url || undefined, ttlMs, fetchJson: fetchJsonFromUrl }),
       getModelCatalogCacheStatus(PROJECT_DIR, new Date(), ttlMs),
       discoverExtensionManifests(PROJECT_DIR),
       listAutomationJobs(PROJECT_DIR),
       listDueAutomationJobs(PROJECT_DIR),
+      listAgenticServices(PROJECT_DIR),
       getSessionSearchIndexStatus(PROJECT_DIR),
       scanSkillsDir(SKILLS_DIR),
       scanSkillsDir(REPO_SKILLS_DIR),
@@ -1410,6 +1433,7 @@ app.get('/api/discovery', async (_req, res) => {
         },
       },
       automations: { total: automationJobs.length, due: dueAutomations, jobs: automationJobs, policy: { activeGrantCount: automationPolicy.grants.length, killSwitchActive: automationPolicy.killSwitchActive }, schedulerRunning: Boolean(automationScheduler) },
+      services: { total: agenticServices.length, services: agenticServices.map((item) => ({ service_id: item.service.service_id, service_name: item.service.service_name, mode: item.service.mode, purpose: item.service.purpose, updated_at: item.service.updated_at, automation_job_id: item.service.automation_job_id })) },
       sessionSearch,
       curator: {
         enabled: curatorSettings.enabled,
@@ -1420,6 +1444,29 @@ app.get('/api/discovery', async (_req, res) => {
         recentEvents: curatorLog,
       },
     });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/services', async (_req, res) => {
+  try {
+    const services = await listAgenticServices(PROJECT_DIR);
+    res.json({ services: services.map((item) => ({ service: item.service, stateSummary: summarizeServiceState(item.state) })) });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/services/:id', async (req, res) => {
+  try {
+    const serviceId = safeLocalId(req.params.id);
+    if (!serviceId) { res.status(400).json({ error: 'Invalid service id.' }); return; }
+    const service = await getAgenticService(PROJECT_DIR, serviceId);
+    if (!service) { res.status(404).json({ error: 'Service not found.' }); return; }
+    res.json(service);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -2440,6 +2487,45 @@ app.post('/api/chat', async (req, res) => {
         if (matched) recordSkillUse(PROJECT_DIR, matched.name).catch(() => {});
       })
       .catch(() => {});
+  }
+
+  const operateResult = messageText ? await handleOperateModeRequest(PROJECT_DIR, messageText) : null;
+  if (operateResult?.handled) {
+    const evidenceCard: EvidenceCard = {
+      id: crypto.randomUUID(),
+      kind: 'chat',
+      mode: 'automate',
+      createdAt: new Date().toISOString(),
+      request: messageText.slice(0, 500),
+      model: model || currentModel || 'deterministic-operate-mode',
+      backend: 'local',
+      permissionMode,
+      capabilityGrantCount: listActiveCapabilityGrants(capabilityGrants).length,
+      toolSuccessRate: 1,
+      tools: [],
+      files: operateResult.service
+        ? [
+            { path: `${operateResult.service.storage_location}/service.json`, action: 'write' },
+            { path: `${operateResult.service.storage_location}/state.json`, action: 'write' },
+            { path: '.harness/automations/jobs.json', action: 'write' },
+          ]
+        : [],
+      commands: [],
+      artifacts: [],
+      recovery: { stopReason: 'completed' },
+    };
+    await appendRunEvidence(PROJECT_DIR, evidenceCard).catch(() => {});
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'close');
+    res.flushHeaders();
+    res.write(`data: ${JSON.stringify({ type: 'text', content: operateResult.response })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'agentic_mode', mode: 'OPERATE_MODE', classification: operateResult.classification, service: operateResult.service, state: operateResult.state, schedule: operateResult.schedule })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'evidence', evidence: evidenceCard })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'done', reason: 'completed', turns: 0 })}\n\n`);
+    res.write('data: [DONE]\n\n');
+    res.end();
+    return;
   }
 
   const activeModel = model || currentModel;

@@ -109,6 +109,7 @@ async function main() {
         hasDiscoveryPanel: Boolean(document.getElementById('discoveryPanel')),
         hasModelCatalogPanel: Boolean(document.getElementById('modelCatalogPanel')),
         hasExtensionDiscoveryPanel: Boolean(document.getElementById('extensionDiscoveryPanel')),
+        hasOperatingServicesDiscoveryPanel: Boolean(document.getElementById('operatingServicesDiscoveryPanel')),
         hasAutomationDiscoveryPanel: Boolean(document.getElementById('automationDiscoveryPanel')),
         hasSessionSearchDiscoveryPanel: Boolean(document.getElementById('sessionSearchDiscoveryPanel')),
         hasCuratorDiscoveryPanel: Boolean(document.getElementById('curatorDiscoveryPanel')),
@@ -228,6 +229,7 @@ async function main() {
     if (!result.hasDiscoveryPanel) failures.push('discovery panel was not rendered');
     if (!result.hasModelCatalogPanel) failures.push('model catalog discovery panel was not rendered');
     if (!result.hasExtensionDiscoveryPanel) failures.push('extension discovery panel was not rendered');
+    if (!result.hasOperatingServicesDiscoveryPanel) failures.push('operating services discovery panel was not rendered');
     if (!result.hasAutomationDiscoveryPanel) failures.push('automation discovery panel was not rendered');
     if (!result.hasSessionSearchDiscoveryPanel) failures.push('session search discovery panel was not rendered');
     if (!result.hasCuratorDiscoveryPanel) failures.push('curator discovery panel was not rendered');

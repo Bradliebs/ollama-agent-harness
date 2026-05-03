@@ -3426,7 +3426,17 @@ async function loadMemoryPalace() { try { const response = await fetch('/api/mem
 async function loadDiscovery() { const view = document.getElementById('discoveryView'); if (!view) return; view.innerHTML = '<div class="trace-meta">Loading discovery...</div>'; try { const response = await fetch('/api/discovery'); const data = await response.json(); if (data.error) throw new Error(data.error); view.innerHTML = renderDiscoveryPanel(data); } catch (error) { view.innerHTML = '<div class="trace-meta">Discovery unavailable: ' + esc(error.message || error) + '</div>'; } }
 
 function renderDiscoveryPanel(data) {
-  return '<div id="discoveryPanel" class="trace-list">' + renderModelCatalogPanel(data.modelCatalog || {}) + renderExtensionDiscoveryPanel(data.extensions || {}) + renderAutomationDiscoveryPanel(data.automations || {}) + renderSessionSearchDiscoveryPanel(data.sessionSearch || {}) + renderCuratorDiscoveryPanel(data.curator || {}) + '</div>';
+  return '<div id="discoveryPanel" class="trace-list">' + renderModelCatalogPanel(data.modelCatalog || {}) + renderExtensionDiscoveryPanel(data.extensions || {}) + renderOperatingServicesPanel(data.services || {}) + renderAutomationDiscoveryPanel(data.automations || {}) + renderSessionSearchDiscoveryPanel(data.sessionSearch || {}) + renderCuratorDiscoveryPanel(data.curator || {}) + '</div>';
+}
+
+function renderOperatingServicesPanel(servicesData) {
+  const services = servicesData.services || [];
+  const rows = services.slice(0, 8).map((service) => {
+    const updated = service.updated_at ? new Date(service.updated_at).toLocaleString() : 'never';
+    const job = service.automation_job_id ? ' · job ' + esc(service.automation_job_id) : '';
+    return '<div class="trace-row"><strong>' + esc(service.service_name || service.service_id) + '</strong><div class="trace-meta">' + esc(service.mode || 'operate') + ' · updated ' + esc(updated) + job + '</div><div class="trace-meta">' + esc(service.purpose || '') + '</div></div>';
+  }).join('');
+  return '<div id="operatingServicesDiscoveryPanel" class="trace-item"><div class="trace-title">Operating Services</div><div class="trace-meta">' + (servicesData.total || services.length || 0) + ' service(s) configured</div>' + (rows || '<div class="trace-meta">No operating services configured.</div>') + '</div>';
 }
 
 function renderCuratorDiscoveryPanel(curator) {
