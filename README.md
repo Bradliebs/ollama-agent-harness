@@ -213,6 +213,57 @@ Backends are configured via `HARNESS_BACKEND` (or `--backend` flag) plus
 the appropriate `*_API_KEY` env var. `harness doctor` lists every
 configured backend and reports whether its key is set.
 
+### Recommended models for tool use
+
+Not every model can call tools. These are the ones that work with the harness.
+
+#### Local Ollama — best picks
+
+| Model | Size | Best role | Pull command |
+|---|---|---|---|
+| `qwen3:8b` | ~5 GB | Main local agent | `ollama pull qwen3:8b` |
+| `qwen3:14b` | ~9 GB | Better planner | `ollama pull qwen3:14b` |
+| `qwen2.5-coder:7b` | ~4 GB | Coding agent | `ollama pull qwen2.5-coder:7b` |
+| `qwen2.5-coder:14b` | ~9 GB | Stronger coder | `ollama pull qwen2.5-coder:14b` |
+| `llama3.1:8b` | ~5 GB | Stable fallback | `ollama pull llama3.1:8b` |
+| `phi4-mini` | ~2 GB | Fast router | `ollama pull phi4-mini` |
+| `devstral` | ~15 GB | Coding agent | `ollama pull devstral` |
+| `mistral-small3.2` | ~15 GB | Function calling | `ollama pull mistral-small3.2` |
+| `granite4.1:8b` | ~5 GB | Structured tasks | `ollama pull granite4.1:8b` |
+| `gemma4:26b` | ~16 GB | Heavy reasoning | `ollama pull gemma4:26b` |
+
+Quick start set (fits most GPUs):
+
+```powershell
+ollama pull qwen3:8b
+ollama pull qwen2.5-coder:7b
+ollama pull phi4-mini
+ollama pull llama3.1:8b
+```
+
+#### Mistral API (free tier)
+
+| Model ID | Best role |
+|---|---|
+| `mistral-small-latest` | General agent — best starting point |
+| `devstral-small-latest` | Coding agent — test first |
+| `codestral-latest` | Code generation specialist |
+| `ministral-8b-latest` | Cheap router |
+| `magistral-small-latest` | Reasoning/review |
+| `mistral-medium-latest` | Better planner (rate-limited) |
+| `mistral-large-latest` | Highest quality (use sparingly) |
+
+Configure with `MISTRAL_API_KEY` and `--backend mistral`.
+
+#### Recommended stack
+
+```text
+Planner:   qwen3:8b (local) or mistral-small-latest (API)
+Coder:     qwen2.5-coder:7b (local) or devstral-small-latest (API)
+Router:    phi4-mini (local) or ministral-8b-latest (API)
+Reviewer:  llama3.1:8b (local) or magistral-small-latest (API)
+```
+
 ## UI tabs
 
 The browser UI has 13 tabs in the left sidebar:
@@ -239,7 +290,9 @@ The right side has a **Settings** panel for Ollama host, generation parameters, 
 
 ### Tools
 
-Built-in tools include `file_read`, `file_write`, `file_edit`, `bash`, `list_files`, `web_fetch`, `web_search`, `web_read`, `image_analyze`, `audio_transcribe`, `document_export`, `email_send`, `email_draft`, `create_skill`, `install_skill`, `desktop_screenshot`, `browser_bookmarks`, `calendar_read`, and more. Each tool has a risk level (low/medium/high) and can be individually disabled from the Tools tab.
+Built-in tools include `file_read`, `file_write`, `file_edit`, `bash`, `list_files`, `grep`, `web_fetch`, `web_search`, `web_read`, `image_analyze`, `audio_transcribe`, `document_export`, `email_send`, `email_draft`, `create_skill`, `install_skill`, `desktop_screenshot`, `browser_bookmarks`, `browser_navigate`, `browser_click`, `browser_fill`, `browser_read`, `browser_screenshot`, `browser_close`, `calendar_read`, `calendar_write`, `telegram_notify`, and more. Each tool has a risk level (low/medium/high) and can be individually disabled from the Tools tab.
+
+Browser tools (`browser_navigate`, `browser_click`, `browser_fill`) are disabled by default and require a capability grant — they interact with live websites via Playwright.
 
 ### Document generation
 
