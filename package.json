@@ -7,6 +7,17 @@
   "bin": {
     "harness": "dist/cli/index.js"
   },
+  "files": [
+    "dist/",
+    "ui/",
+    "start.bat",
+    "start.sh",
+    "START-HERE.md",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/cli/index.js",
