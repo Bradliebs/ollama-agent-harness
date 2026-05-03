@@ -151,3 +151,122 @@ function unescapeIcs(value: string): string {
     .replace(/\\\\/g, '\\')
     .replace(/\\;/g, ';');
 }
+
+// ─── Calendar write tool ────────────────────────────────────────────
+//
+// Creates or appends events to a .ics (iCalendar) file.
+//
+// Capability: calendar-editing (gated)
+// Risk: medium — writes local .ics files
+
+function escapeIcs(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/;/g, '\\;')
+    .replace(/,/g, '\\,')
+    .replace(/\n/g, '\\n');
+}
+
+function formatIcsDate(date: Date): string {
+  return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+}
+
+function generateUid(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}@harness`;
+}
+
+export const CalendarWriteTool: Tool = {
+  name: 'calendar_write',
+  description: 'Create or add events to a local .ics (iCalendar) file. Requires calendar-editing capability grant.',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Path to .ics file (will create if it does not exist)' },
+      summary: { type: 'string', description: 'Event title' },
+      start: { type: 'string', description: 'Start date/time (ISO 8601, e.g. "2026-05-10T09:00:00")' },
+      end: { type: 'string', description: 'End date/time (ISO 8601, optional — defaults to 1 hour after start)' },
+      location: { type: 'string', description: 'Event location (optional)' },
+      description: { type: 'string', description: 'Event description (optional)' },
+    },
+    required: ['path', 'summary', 'start'],
+  },
+  isReadOnly: false,
+  async execute(input: Record<string, unknown>): Promise<ToolResult> {
+    const rawPath = String(input.path ?? '').trim();
+    const summary = String(input.summary ?? '').trim();
+    const startStr = String(input.start ?? '').trim();
+
+    if (!rawPath) return { success: false, output: 'Path to .ics file is required.', error: 'missing path' };
+    if (!summary) return { success: false, output: 'Event summary is required.', error: 'missing summary' };
+    if (!startStr) return { success: false, output: 'Start date/time is required.', error: 'missing start' };
+
+    const filePath = path.isAbsolute(rawPath) ? rawPath : path.resolve(process.cwd(), rawPath);
+    if (!filePath.toLowerCase().endsWith('.ics')) {
+      return { success: false, output: 'File must have a .ics extension.', error: 'not ics' };
+    }
+
+    const startDate = new Date(startStr);
+    if (isNaN(startDate.getTime())) {
+      return { success: false, output: `Invalid start date: "${startStr}". Use ISO 8601 format.`, error: 'invalid date' };
+    }
+
+    const endStr = typeof input.end === 'string' ? input.end.trim() : '';
+    const endDate = endStr ? new Date(endStr) : new Date(startDate.getTime() + 60 * 60_000);
+    if (isNaN(endDate.getTime())) {
+      return { success: false, output: `Invalid end date: "${endStr}".`, error: 'invalid date' };
+    }
+
+    const location = typeof input.location === 'string' ? input.location.trim() : '';
+    const description = typeof input.description === 'string' ? input.description.trim() : '';
+
+    const vevent = [
+      'BEGIN:VEVENT',
+      `UID:${generateUid()}`,
+      `DTSTAMP:${formatIcsDate(new Date())}`,
+      `DTSTART:${formatIcsDate(startDate)}`,
+      `DTEND:${formatIcsDate(endDate)}`,
+      `SUMMARY:${escapeIcs(summary)}`,
+      ...(location ? [`LOCATION:${escapeIcs(location)}`] : []),
+      ...(description ? [`DESCRIPTION:${escapeIcs(description)}`] : []),
+      'END:VEVENT',
+    ].join('\r\n');
+
+    try {
+      let existing = '';
+      try {
+        existing = await fs.readFile(filePath, 'utf-8');
+      } catch {
+        // File doesn't exist — create a new calendar
+      }
+
+      let content: string;
+      if (existing.includes('BEGIN:VCALENDAR')) {
+        // Insert event before END:VCALENDAR
+        content = existing.replace(/END:VCALENDAR\s*$/i, `${vevent}\r\nEND:VCALENDAR\r\n`);
+      } else {
+        // Create new .ics file
+        content = [
+          'BEGIN:VCALENDAR',
+          'VERSION:2.0',
+          'PRODID:-//Ollama Agent Harness//EN',
+          'CALSCALE:GREGORIAN',
+          vevent,
+          'END:VCALENDAR',
+          '',
+        ].join('\r\n');
+      }
+
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, content, 'utf-8');
+
+      const startFormatted = startDate.toLocaleDateString() + ' ' + startDate.toLocaleTimeString();
+      return {
+        success: true,
+        output: `📅 Event created!\n\n📌 ${summary}\n🕐 ${startFormatted}\n${location ? `📍 ${location}\n` : ''}📄 ${filePath}`,
+      };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return { success: false, output: `Failed to write calendar event: ${msg}`, error: msg };
+    }
+  },
+};

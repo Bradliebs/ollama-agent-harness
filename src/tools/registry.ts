@@ -13,11 +13,11 @@ import { CreateSkillTool, ListSkillsTool, SkillTool } from './skillTools';
 import { WebFetchTool } from './webFetchTool';
 import { WebReadTool, WebSearchTool } from './webSearchTool';
 import { DesktopScreenshotTool } from './desktopTools';
-import { BrowserBookmarksTool } from './browserTools';
+import { BrowserBookmarksTool, BrowserNavigateTool, BrowserClickTool, BrowserFillTool, BrowserReadTool, BrowserScreenshotTool, BrowserCloseTool } from './browserTools';
 import { InstallSkillTool } from './skillInstallTool';
 import { EmailDraftTool, EmailSendTool } from './emailTools';
 import { TelegramNotifyTool } from './telegramTools';
-import { CalendarReadTool } from './calendarTools';
+import { CalendarReadTool, CalendarWriteTool } from './calendarTools';
 
 export interface ToolRegistryEntry {
   tool: Tool;
@@ -104,10 +104,17 @@ export const BUILTIN_TOOL_ENTRIES: ToolRegistryEntry[] = [
   { tool: CuratorPreviewTool, toolset: 'curator', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
   { tool: DesktopScreenshotTool, toolset: 'desktop', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'desktop', canDryRun: false },
   { tool: BrowserBookmarksTool, toolset: 'browser', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'browser', canDryRun: false },
+  { tool: BrowserNavigateTool, toolset: 'browser', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'browser', canDryRun: false },
+  { tool: BrowserClickTool, toolset: 'browser', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'browser', canDryRun: false },
+  { tool: BrowserFillTool, toolset: 'browser', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'browser', canDryRun: false },
+  { tool: BrowserReadTool, toolset: 'browser', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'browser', canDryRun: false },
+  { tool: BrowserScreenshotTool, toolset: 'browser', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'browser', canDryRun: false },
+  { tool: BrowserCloseTool, toolset: 'browser', source: 'builtin', enabledByDefault: false, riskLevel: 'low', permissionCategory: 'browser', canDryRun: false },
   { tool: InstallSkillTool, toolset: 'skills', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'skills', canDryRun: false },
   { tool: EmailDraftTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'write', canDryRun: false },
   { tool: EmailSendTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'network', canDryRun: false },
   { tool: TelegramNotifyTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'network', canDryRun: false },
   { tool: CalendarReadTool, toolset: 'communications', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
+  { tool: CalendarWriteTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'write', canDryRun: false },
   { tool: DocumentExportTool, toolset: 'documents', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'write', canDryRun: false },
 ];
