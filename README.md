@@ -14,8 +14,8 @@ keywords:
 estimated_reading_time: 7
 ---
 
-[![CI](https://github.com/Bradliebs/ollama-agent-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/Bradliebs/ollama-agent-harness/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Bradliebs/ollama-agent-harness)](https://github.com/Bradliebs/ollama-agent-harness/releases/latest)
+[![npm](https://img.shields.io/npm/v/ollama-agent-harness)](https://www.npmjs.com/package/ollama-agent-harness)
 
 ## What is this?
 
@@ -23,7 +23,49 @@ Ollama Agent Harness is a local-first agent runtime that wraps Ollama models wit
 
 You chat with a model, it can call tools (read/write files, run bash, search the web, analyze images, transcribe audio, generate documents, send emails), and the harness manages permissions, context, and history.
 
-New in v0.3.0: document generation (CSV, Excel, Word, PDF), Telegram bot integration, email sending via SMTP, Mission Control dashboard, task management from chat, and browser notifications.
+**v0.3.9** adds a beginner-friendly welcome screen, multi-backend model routing, a Windows installer, and npm global install.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A["🖥️ Install\nNode.js + Ollama"] -->|pull a model| B["🤖 Start Harness\nstart.bat or npm run ui"]
+    B -->|opens browser| C["🌐 Chat UI\nhttp://127.0.0.1:4000"]
+    C -->|type a message| D["💬 AI Responds\nusing local model"]
+    D -->|needs a file?| E["🔧 Tools\nread, write, search, run"]
+    E -->|result| D
+    D -->|learns| F["🧠 Memory\nskills, patterns, history"]
+    F -.->|next session| C
+
+    style A fill:#1a1a2e,stroke:#50c878,color:#fff
+    style B fill:#1a1a2e,stroke:#8ab4f8,color:#fff
+    style C fill:#1a1a2e,stroke:#bb86fc,color:#fff
+    style D fill:#1a1a2e,stroke:#ffb050,color:#fff
+    style E fill:#1a1a2e,stroke:#ff5050,color:#fff
+    style F fill:#1a1a2e,stroke:#50c878,color:#fff
+```
+
+### Your first 5 minutes
+
+```mermaid
+graph TD
+    S1["① Install Node.js<br/><i>nodejs.org → LTS → Next through everything</i>"] --> S2
+    S2["② Install Ollama<br/><i>ollama.com → Download → ollama pull llama3.2</i>"] --> S3
+    S3["③ Start the Harness<br/><i>Double-click start.bat or npm run ui</i>"] --> S4
+    S4["④ Pick a model<br/><i>Choose llama3.2 from the dropdown</i>"] --> S5
+    S5["⑤ Start chatting!<br/><i>Try: 'List the files in this project'</i>"]
+
+    S1 ~~~ N1["💡 Already have Node?<br/>Skip to step 2"]
+    S3 ~~~ N2["💡 No terminal?<br/>Just double-click start.bat"]
+
+    style S1 fill:#16213e,stroke:#50c878,color:#e0e0e0,stroke-width:2px
+    style S2 fill:#16213e,stroke:#50c878,color:#e0e0e0,stroke-width:2px
+    style S3 fill:#16213e,stroke:#8ab4f8,color:#e0e0e0,stroke-width:2px
+    style S4 fill:#16213e,stroke:#bb86fc,color:#e0e0e0,stroke-width:2px
+    style S5 fill:#16213e,stroke:#ffb050,color:#e0e0e0,stroke-width:2px
+    style N1 fill:#0d1117,stroke:#555,color:#888,stroke-dasharray:5 5
+    style N2 fill:#0d1117,stroke:#555,color:#888,stroke-dasharray:5 5
+```
 
 ## Quick start
 
@@ -76,7 +118,7 @@ npm test -- --runInBand
 With the UI server running, smoke-test the browser:
 
 ```powershell
-npm run smoke:ui -- http://127.0.0.1:3000/
+npm run smoke:ui -- http://127.0.0.1:4000/
 ```
 
 Smoke-test the Mycelium API route-inspection surface with a temporary seeded
