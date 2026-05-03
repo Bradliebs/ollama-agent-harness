@@ -1,8 +1,21 @@
 import type { PermissionRule, PermissionMode, PermissionResult, ToolCall } from '../types';
+import * as path from 'path';
 import { BUILTIN_TOOL_ENTRIES } from '../tools/registry';
+import { getAllowedExternalPaths } from '../tools/pathResolution';
 
 const EDIT_TOOLS = new Set(['file_write', 'file_edit']);
+const FILE_MUTATION_TOOLS = new Set(['file_write', 'file_edit', 'file_move', 'file_delete']);
 const READ_TOOLS = new Set(BUILTIN_TOOL_ENTRIES.filter((entry) => entry.tool.isReadOnly).map((entry) => entry.tool.name));
+const PROTECTED_EXTERNAL_FILENAMES = new Set([
+  '.env',
+  'dockerfile',
+  'journal.py',
+  'package.json',
+  'pyproject.toml',
+  'setup.py',
+  'telegram_sender.py',
+]);
+const PROTECTED_EXTERNAL_EXTENSIONS = new Set(['.bat', '.cmd', '.cjs', '.js', '.mjs', '.ps1', '.py', '.sh', '.ts']);
 
 /**
  * META_TOOLS are harness-internal learning/memory tools that mutate only
@@ -63,6 +76,10 @@ export class PermissionEngine {
       if (rule.type === 'deny' && this.matchesRule(rule, call)) {
         return { decision: 'deny', reason: `Denied by rule: ${rule.tool}`, rule };
       }
+    }
+
+    if (this.requiresProtectedExternalFileConfirmation(call)) {
+      return { decision: 'ask', reason: 'Protected external program file requires confirmation.' };
     }
 
     // Phase 2: Allow rules
@@ -140,4 +157,30 @@ export class PermissionEngine {
   getRules(): ReadonlyArray<PermissionRule> {
     return this.rules;
   }
+
+  private requiresProtectedExternalFileConfirmation(call: ToolCall): boolean {
+    if (!FILE_MUTATION_TOOLS.has(call.name)) return false;
+    return mutationPaths(call).some((targetPath) => isProtectedExternalProgramPath(targetPath));
+  }
+}
+
+function mutationPaths(call: ToolCall): string[] {
+  const input = call.input ?? {};
+  return [input.path, input.from, input.to, input.source, input.destination]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+}
+
+function isProtectedExternalProgramPath(rawPath: string): boolean {
+  const target = path.resolve(rawPath);
+  if (isInsideOrEqualPath(target, process.cwd())) return false;
+  const externalRoot = getAllowedExternalPaths().find((allowedPath) => isInsideOrEqualPath(target, allowedPath));
+  if (!externalRoot) return false;
+  const basename = path.basename(target).toLowerCase();
+  const extension = path.extname(target).toLowerCase();
+  return PROTECTED_EXTERNAL_FILENAMES.has(basename) || PROTECTED_EXTERNAL_EXTENSIONS.has(extension);
+}
+
+function isInsideOrEqualPath(child: string, parent: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }

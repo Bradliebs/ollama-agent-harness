@@ -11,6 +11,7 @@ dist/
 !scripts/*.js
 !ui/app.js
 !ui/chatHistory.js
+!ui/toolActivity.js
 .env
 .env.local
 .harness/

@@ -170,6 +170,9 @@ export function classifyAgenticMode(message: string): AgenticModeClassification 
   if (/\b(check|scan|visit|look at|watch)\b[\s\S]{0,200}\b(daily|every day|each day|every morning)\b/.test(lower) && !explicitlyRequestsSoftwareBuild(lower)) {
     return { mode: 'operate', reason: 'Request asks for a recurring check.', matchedTriggers: ['recurring check'] };
   }
+  if (looksLikeAgenticSearchRequest(lower) && !explicitlyRequestsSoftwareBuild(lower)) {
+    return { mode: 'operate', reason: 'Request asks for ongoing search or availability monitoring.', matchedTriggers: ['agentic search'] };
+  }
   if (looksLikeBulletJournalCommand(lower)) {
     return { mode: 'operate', reason: 'Request matches a bullet journal service command.', matchedTriggers: ['bullet journal command'] };
   }
@@ -363,7 +366,7 @@ export async function createOrUpdateGenericOperateService(projectDir: string, re
     reminder_rules: ['Check once per day at the configured time.', 'Record an observation.', 'Notify the user with concise status and next action when the condition changes or needs attention.'],
     notification_templates: {
       daily_check: siteUrl
-        ? `Daily site check for ${siteUrl}: summarize whether a room appears free, cite the observed signal, and ask if I should keep monitoring or change criteria.`
+        ? `Daily site check for ${siteUrl}: summarize whether the requested condition appears true, cite the observed signal, and ask if I should keep monitoring or change criteria.`
         : 'Daily service check: summarize current status, observations, and any needed follow-up.',
     },
     state_transition_rules: ['record_observation appends timestamped findings.', 'add_note creates a timestamped note.', 'pause_reminders disables scheduled checks.', 'resume_reminders enables scheduled checks.', 'close_item marks service-owned follow-up items closed.'],
@@ -808,12 +811,18 @@ function looksLikeBulletJournalCommand(lower: string): boolean {
 }
 
 function looksLikeExternalBulletJournalTaskRequest(lower: string): boolean {
-  return /^add(?: a)? task\b/.test(lower.trim())
+  return /^(add(?: a)? task|close(?: task)?|complete(?: task)?|update(?: task)?|reopen(?: task)?)\b/.test(lower.trim())
     && /\b(to|in|into)\s+(my|the)?\s*bullet journal\b/.test(lower);
 }
 
 function looksLikeGenericOperateCommand(lower: string): boolean {
   return /^(show status|status|site monitor\b|operating service\b|add note (to|for) .+|record observation|observed)\b/.test(lower.trim());
+}
+
+function looksLikeAgenticSearchRequest(lower: string): boolean {
+  const text = lower.trim();
+  return /\b(look for|find|search for|watch for|monitor for|check for)\b[\s\S]{0,120}\b(book|books|room|rooms|appointment|appointments|slot|slots|availability|stock|tickets?)\b/.test(text)
+    && /\b(for me|daily|every day|each day|every morning|when|until|available|opens?|appears?|comes? up|in stock|free)\b/.test(text);
 }
 
 function explicitlyRequestsSoftwareBuild(lower: string): boolean {

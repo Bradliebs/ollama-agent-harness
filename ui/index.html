@@ -191,6 +191,12 @@
     .msg-content th,.msg-content td{border:1px solid var(--border);padding:6px 10px;text-align:left;font-size:13px}
     .msg-content th{background:var(--surface2)}
     .tool-activity{max-width:800px;width:100%;margin:0 auto;padding-left:38px}
+    .tool-activity summary{cursor:pointer;color:var(--text-dim);font-size:12px;list-style:none;-webkit-user-select:none;user-select:none;padding:4px 0}
+    .tool-activity summary::-webkit-details-marker{display:none}
+    .tool-activity summary::before{content:'▸';display:inline-block;margin-right:6px;color:var(--accent);transition:transform .15s ease}
+    .tool-activity[open] summary::before{transform:rotate(90deg)}
+    .tool-activity.has-error summary{color:var(--danger)}
+    .tool-activity-items{display:flex;flex-direction:column;gap:3px}
     .tool-item{background:var(--tool-bg);border:1px solid var(--tool-border);border-radius:var(--rs);padding:6px 10px;margin-bottom:3px;font-size:12px;font-family:'Cascadia Code','Fira Code',monospace;display:flex;align-items:flex-start;gap:6px}
     .tool-item.error{background:#2a1e1e;border-color:#4a2e2e}
     .tool-name{color:var(--accent);font-weight:600}
@@ -1091,6 +1097,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="./chatHistory.js?v=3"></script>
+<script src="./toolActivity.js?v=1"></script>
 <script src="./app.js?v=3"></script>
 </body>
 </html>

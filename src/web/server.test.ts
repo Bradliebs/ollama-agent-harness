@@ -1893,6 +1893,8 @@ describe('web server API validation', () => {
       getEvolvedPrompt: async (basePrompt) => basePrompt,
       assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
       runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
+        expect(config.systemPrompt).toContain('Treat configured external folders as user-owned data and tools');
+        expect(config.systemPrompt).toContain('prefer the journal CLI or task data over file_write/file_edit on journal.py, telegram_sender.py');
         if (config.outputValidation?.enabled) {
           yield { type: 'output_validation', validation: { profile: 'oracle-prime', status: 'fail', score: 0.1, findings: [], missingSections: [] } };
         }

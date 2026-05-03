@@ -2667,7 +2667,8 @@ app.post('/api/chat', async (req, res) => {
     '5. Be direct — do the work, don\'t ask the user to do it themselves.' +
     writableNote +
     '\n7. You have a document_export tool that creates CSV, Excel (.xlsx), Word (.docx), and PDF files. Use it when the user asks for spreadsheets, documents, or reports. For Excel, numbers and percentages are auto-formatted. Tables are supported in Word and PDF.' +
-    '\n8. Use configured communication tools instead of inventing app-local notification config: use telegram_notify for Telegram notifications through the saved Harness Telegram bridge, and email_draft/email_send for email. Do not create .env files with bot tokens or call the raw Telegram HTTP API unless the user explicitly asks for a separate app integration.';
+    '\n8. Use configured communication tools instead of inventing app-local notification config: use telegram_notify for Telegram notifications through the saved Harness Telegram bridge, and email_draft/email_send for email. Do not create .env files with bot tokens or call the raw Telegram HTTP API unless the user explicitly asks for a separate app integration.' +
+    '\n9. Treat configured external folders as user-owned data and tools. For existing apps under allowed external folders, use their CLI commands and data files for routine requests. Do not rewrite scripts, setup files, notification formatters, or skill implementations there unless the user explicitly asks you to modify that tool\'s code. For bullet journal task requests, prefer the journal CLI or task data over file_write/file_edit on journal.py, telegram_sender.py, or related program files.';
 
   // Inject name and personality before the base prompt
   const identityPrefix = [

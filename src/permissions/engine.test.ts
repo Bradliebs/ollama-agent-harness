@@ -1,8 +1,15 @@
 import { PermissionEngine } from './engine';
 import { BUILTIN_TOOL_ENTRIES } from '../tools/registry';
 import type { PermissionRule } from '../types';
+import * as os from 'os';
+import * as path from 'path';
+import { setAllowedExternalPaths } from '../tools/pathResolution';
 
 describe('PermissionEngine', () => {
+  afterEach(() => {
+    setAllowedExternalPaths([]);
+  });
+
   describe('deny-first rule ordering', () => {
     it('denies when deny rule matches, even with a more specific allow rule', () => {
       const rules: PermissionRule[] = [
@@ -88,6 +95,26 @@ describe('PermissionEngine', () => {
     it('dontAsk mode allows everything not explicitly denied', () => {
       const engine = new PermissionEngine([], 'dontAsk');
       const result = engine.evaluate({ name: 'bash', input: { command: 'rm -rf /' } });
+      expect(result.decision).toBe('allow');
+    });
+
+    it('dontAsk mode asks before editing protected program files in allowed external folders', () => {
+      const externalRoot = path.join(os.tmpdir(), 'harness-oracle-external');
+      setAllowedExternalPaths([externalRoot]);
+      const engine = new PermissionEngine([], 'dontAsk');
+
+      const result = engine.evaluate({ name: 'file_edit', input: { path: path.join(externalRoot, 'bullet-journal', 'journal.py') } });
+
+      expect(result).toMatchObject({ decision: 'ask', reason: 'Protected external program file requires confirmation.' });
+    });
+
+    it('dontAsk mode still allows data file edits in allowed external folders', () => {
+      const externalRoot = path.join(os.tmpdir(), 'harness-oracle-external');
+      setAllowedExternalPaths([externalRoot]);
+      const engine = new PermissionEngine([], 'dontAsk');
+
+      const result = engine.evaluate({ name: 'file_write', input: { path: path.join(externalRoot, 'bullet-journal', 'data', 'tasks.json') } });
+
       expect(result.decision).toBe('allow');
     });
 

@@ -11,6 +11,26 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.7
+
+Patch release for browser tool transcript hardening, external-file safety, and broader agentic operating-service routing.
+
+### Browser chat and external files
+
+* Collapsed browser tool activity behind a concise disclosure while keeping failed tool events visible.
+* Added regression coverage for tool activity summaries and prompt guidance that steers routine Bullet Journal work away from external script rewrites.
+* Required confirmation before editing protected program files in allowed external folders, even in `dontAsk` mode, while preserving data-file writes.
+
+### Operating services
+
+* Broadened agentic routing so ongoing searches such as looking for books or finding available rooms become operating services.
+* Kept routine external Bullet Journal task commands out of the internal operating-service path.
+* Made generic site-monitor notification wording match the requested condition instead of assuming every check is for room availability.
+
+### Windows startup
+
+* Made `start.bat` and `start-background.bat` clear stale port-4000 Harness listeners before launching.
+
 ## Ollama Agent Harness v0.3.6
 
 Patch release for Telegram response cleanup and duplicate-poller diagnostics.

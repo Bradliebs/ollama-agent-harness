@@ -1720,7 +1720,7 @@ async function sendMessage(opts) {
     // and from the DOM so the regenerated reply takes its place.
     chatMessages = chatMessages.slice(0, opts.regenerateFromIndex);
     const area = document.getElementById('chatArea');
-    const allMsgs = Array.from(area.querySelectorAll('.msg, .tool-box, .followup-chips'));
+    const allMsgs = Array.from(area.querySelectorAll('.msg, .tool-activity, .followup-chips'));
     // Find the user message DOM index that corresponds to opts.regenerateFromIndex - 1
     // and remove every node that follows it.
     let userMsgCount = 0;
@@ -2119,10 +2119,7 @@ async function sendProfileFeedback(button, profile, vote, selectionSource, selec
 
 function ensureToolBox(toolBox) {
   if (toolBox) return toolBox;
-  const box = document.createElement('div');
-  box.className = 'tool-activity';
-  document.getElementById('chatArea').appendChild(box);
-  return box;
+  return HarnessToolActivity.createToolActivityBox(document, document.getElementById('chatArea'));
 }
 
 function appendToolItem(toolBox, icon, name, detail, isError) {
@@ -2130,6 +2127,7 @@ function appendToolItem(toolBox, icon, name, detail, isError) {
   item.className = 'tool-item' + (isError ? ' error' : '');
   item.innerHTML = '<span>' + icon + '</span>' + (name ? '<span class="tool-name">' + esc(name) + '</span>' : '') + '<span class="tool-detail">' + esc(detail) + '</span>';
   toolBox.appendChild(item);
+  HarnessToolActivity.updateToolActivitySummary(toolBox, isError);
   scrollBottom();
 }
 
@@ -2169,6 +2167,7 @@ function appendDiffToolItem(toolBox, name, filePath, oldStr, newStr) {
     + renderBlock(newT.trimmed, '+ ', 'diff-add', newT.overflow)
     + '</div>';
   toolBox.appendChild(item);
+  HarnessToolActivity.updateToolActivitySummary(toolBox, false);
   scrollBottom();
 }
 

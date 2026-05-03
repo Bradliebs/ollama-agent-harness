@@ -79,6 +79,12 @@ exit /b 1
 
 :: Step 5: Launch
 echo.
+echo   Checking for an existing Harness server on port 4000...
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":4000.*LISTEN"') do (
+	echo   Stopping stale server PID %%p
+	taskkill /PID %%p /F >nul 2>nul
+)
+echo.
 echo   Starting Ollama Agent Harness...
 echo   Your browser will open automatically.
 echo   If not, go to: http://127.0.0.1:4000

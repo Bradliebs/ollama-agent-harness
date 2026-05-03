@@ -23,6 +23,12 @@ describe('agentic service mode', () => {
     await expect(fs.readdir(projectDir)).resolves.toEqual([]);
   });
 
+  it('does not intercept routine external bullet journal task commands', async () => {
+    expect(classifyAgenticMode('Add a task to my bullet journal to smoke test guarded Telegram poller 2026-05-03')).toMatchObject({ mode: 'build' });
+    expect(classifyAgenticMode('Close task smoke test guarded Telegram poller in my bullet journal')).toMatchObject({ mode: 'build' });
+    expect(classifyAgenticMode('Update task smoke test guarded Telegram poller in my bullet journal')).toMatchObject({ mode: 'build' });
+  });
+
   it('classifies model-agnostic operating aliases and preserves explicit build overrides', () => {
     const operatingAliases = [
       'please keep me honest on overdue invoices',
@@ -30,6 +36,8 @@ describe('agentic service mode', () => {
       'send me reminders if the broker sync fails',
       'telegram reminder for weekly review',
       'check https://example.com/rooms every morning and tell me if one opens',
+      'look for books for me until a signed copy appears',
+      'find rooms for me when weekend availability opens',
       'watch https://example.com/status daily for outages',
       'status for site monitor',
     ];
@@ -70,6 +78,18 @@ describe('agentic service mode', () => {
     for (const trigger of triggers) {
       expect(classifyAgenticMode(trigger)).toMatchObject({ mode: 'operate' });
     }
+  });
+
+  it('creates generic operating services for books and rooms searches', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-agentic-search-'));
+
+    const books = await handleOperateModeRequest(projectDir, 'look for books for me until a signed copy appears', new Date('2026-05-03T08:00:00.000Z'));
+    const rooms = await handleOperateModeRequest(projectDir, 'find rooms for me when weekend availability opens', new Date('2026-05-03T08:00:00.000Z'));
+
+    expect(books).toMatchObject({ handled: true, classification: { mode: 'operate', matchedTriggers: ['agentic search'] }, service: { service_name: 'Operating Service Agent' } });
+    expect(rooms).toMatchObject({ handled: true, classification: { mode: 'operate', matchedTriggers: ['agentic search'] }, service: { service_name: 'Operating Service Agent' } });
+    expect(books.service?.notification_templates.daily_check).toContain('Daily service check');
+    expect(rooms.service?.notification_templates.daily_check).toContain('Daily service check');
   });
 
   it('creates a persisted bullet journal service and daily automation schedule', async () => {
