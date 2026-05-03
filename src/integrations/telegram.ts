@@ -82,7 +82,36 @@ export function startTelegramBot(token: string, serverUrl: string, allowedChatId
 
       // Handle /start command.
       if (text === '/start') {
-        await bot.sendMessage(chatId, '🤖 *Oracle is ready.* Send me any message and I\'ll process it through the harness.\n\nYour chat ID: `' + chatId + '`\n\n*Commands:*\n/task _description_ — add an autonomy task\n/schedule every 6h _prompt_ — create a recurring job\n/status — check server readiness\n\n*Media:*\n📷 Send a photo — Oracle will analyze it\n📎 Send a file — Oracle will read and process it\n🎤 Send a voice note — Oracle will transcribe and respond\n\n*Email:* Just say "send me an email reminder about X at 9am" and Oracle will use email\\_send if SMTP is configured.', { parse_mode: 'Markdown' });
+        await bot.sendMessage(chatId,
+          '🤖 *Oracle is ready.* Send me any message.\n\n'
+          + 'Your chat ID: `' + chatId + '`\n\n'
+          + 'Type /help for the full command list.', { parse_mode: 'Markdown' });
+        return;
+      }
+
+      // Handle /help command.
+      if (text === '/help') {
+        await bot.sendMessage(chatId,
+          '*Oracle Commands*\n\n'
+          + '💬 *Chat* — Send any text message\n'
+          + '📷 *Photo* — Send an image for vision analysis\n'
+          + '📎 *File* — Send PDF, CSV, Excel for processing\n'
+          + '🎤 *Voice* — Send a voice note to transcribe\n\n'
+          + '*Slash commands:*\n'
+          + '/task _description_ — Add a task to the autonomy plan\n'
+          + '/schedule every 6h _prompt_ — Create a recurring job\n'
+          + '/status — Check readiness scores\n'
+          + '/help — Show this message\n\n'
+          + '*Examples:*\n'
+          + '• "Create an Excel spreadsheet of recipe costs"\n'
+          + '• /task Write a business plan PDF\n'
+          + '• /schedule every 24h Send me a daily task summary email\n'
+          + '• "Send an email to me@gmail.com with subject Hello"\n\n'
+          + '*Setup:*\n'
+          + '• SMTP: Settings → API Keys → HARNESS\\_SMTP\\_\\*\n'
+          + '• Vision: Settings → Media → Vision model\n'
+          + '• Files go to: C:\\\\AI\\\\Oracle\\\\\n\n'
+          + 'Your chat ID: `' + chatId + '`', { parse_mode: 'Markdown' });
         return;
       }
 

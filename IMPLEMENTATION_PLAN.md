@@ -148,5 +148,3 @@
   - anchor: src/web/server.ts
   - anchor: src/web/server.test.ts
   - target: src/web/server.test.ts
-- [ ] create-recipe-costing-excel-for-bracknell-food-business — Create recipe costing Excel for Bracknell food business
-- [ ] create-recipe-costing-excel-for-bracknell-food-business — Create recipe costing Excel for Bracknell food business

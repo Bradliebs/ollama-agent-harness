@@ -55,6 +55,7 @@ import { heuristicVerifier } from '../mycelium/verifier';
 import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
 import { appendRunEvidence, readRunEvidence, type StoredRunEvidence } from '../persistence/evidenceStore';
 import { startTelegramBot, stopTelegramBot, isTelegramBotRunning, sendTelegramNotification, loadPersistedChatIds } from '../integrations/telegram';
+import { addWebhook, removeWebhook, listWebhooks, loadWebhooksFromEnv, sendWebhookNotification } from '../integrations/webhooks';
 import { listShellCommandAllowlistPresets } from '../automation/runner';
 import { appendCapabilityAuditEvent, readCapabilityAuditEvents } from '../permissions/capabilityAudit';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
@@ -1331,6 +1332,29 @@ app.post('/api/telegram/stop', (_req, res) => {
   res.json({ ok: true, running: false });
 });
 
+app.get('/api/webhooks', (_req, res) => {
+  res.json({ webhooks: listWebhooks() });
+});
+
+app.post('/api/webhooks', (req, res) => {
+  try {
+    const url = String(req.body?.url ?? '').trim();
+    if (!url) { res.status(400).json({ error: 'url is required' }); return; }
+    const secret = typeof req.body?.secret === 'string' ? req.body.secret.trim() : undefined;
+    const events = Array.isArray(req.body?.events) ? req.body.events.map(String) : [];
+    const webhook = addWebhook({ url, secret, events, enabled: true });
+    res.json({ ok: true, webhook: { ...webhook, secret: secret ? '***' : undefined } });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.delete('/api/webhooks/:id', (req, res) => {
+  const removed = removeWebhook(String(req.params.id));
+  if (!removed) { res.status(404).json({ error: 'Webhook not found' }); return; }
+  res.json({ ok: true });
+});
+
 app.get('/api/discovery', async (_req, res) => {
   await ensureSettingsLoaded();
   try {
@@ -2057,6 +2081,7 @@ app.post('/api/automations/execute-due', async (_req, res) => {
     if (results.length > 0) {
       const summary = results.map((r) => `• ${r.name}`).join('\n');
       sendTelegramNotification('Automation jobs completed', `${results.length} job(s) ran:\n${summary}`).catch(() => {});
+      sendWebhookNotification('automation.completed', { executed: results.length, jobs: results.map((r) => ({ id: r.jobId, name: r.name })) }).catch(() => {});
     }
     res.json({ executed: results.length, results: results.map((r) => ({ jobId: r.jobId, name: r.name, scriptOutput: r.run.scriptOutput, outputPath: r.run.outputPath })), evidence });
   } catch (error) {
@@ -4618,6 +4643,9 @@ export async function startServer(): Promise<void> {
     }
 
     console.log(`\n  Press Ctrl+C to stop.\n`);
+
+    // Load webhooks from env.
+    loadWebhooksFromEnv();
 
     if (process.env.NO_OPEN !== '1') {
       openBrowser(url);
