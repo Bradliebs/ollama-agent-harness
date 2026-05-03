@@ -297,6 +297,23 @@ function buildSystemPrompt(modelRouting: ModelRoutingPolicy): string {
   return 'You are a helpful coding assistant. Use the available tools to help the user with their task. Read files, write code, and execute commands as needed.' + routingText;
 }
 
+function summarizeConsoleToolResult(name: string, success: boolean, output: string): string | null {
+  if (['skill', 'list_files', 'file_read', 'recall'].includes(name)) return null;
+  const text = output.replace(/\s+/g, ' ').trim();
+  if (!text) return success ? null : `${name} failed`;
+  const taskMatch = text.match(/\+ Task added:\s*([^\r\n]+)/i);
+  if (taskMatch) return `Added task: ${taskMatch[1].trim()}`;
+  if (/telegram message sent successfully/i.test(text)) return null;
+  return `${name}: ${text.slice(0, 160)}`;
+}
+
+function buildConsoleToolOnlyResponse(input: { toolCalls: number; toolSummaries: string[]; errors: string[] }): string {
+  if (input.errors.length > 0) return `Harness reported an error:\n${input.errors.slice(-2).join('\n')}`;
+  if (input.toolSummaries.length > 0) return `Done.\n${input.toolSummaries.slice(-4).join('\n')}`;
+  if (input.toolCalls > 0) return 'Done. The model used tools, but did not return a readable final message.';
+  return 'No response from the model.';
+}
+
 async function runHeadless(
   config: LoopConfig,
   deps: QueryLoopDeps,
@@ -304,16 +321,24 @@ async function runHeadless(
   prompt: string,
 ): Promise<void> {
   const messages = [{ role: 'user' as const, content: prompt }];
+  let assistantText = '';
+  let toolCalls = 0;
+  const toolSummaries: string[] = [];
+  const errors: string[] = [];
 
   for await (const event of queryLoop(config, deps, messages)) {
     switch (event.type) {
       case 'text':
+        assistantText += event.content;
         console.log(event.content);
         break;
       case 'tool_call':
         console.error(`🔧 ${event.call.name}(${JSON.stringify(event.call.input).slice(0, 100)})`);
         break;
       case 'tool_result':
+        toolCalls++;
+        const summary = summarizeConsoleToolResult(event.call.name, event.result.success, event.result.output);
+        if (summary) toolSummaries.push(summary);
         const icon = event.result.success ? '✅' : '❌';
         console.error(`  ${icon} ${event.result.output.slice(0, 200)}`);
         break;
@@ -327,9 +352,11 @@ async function runHeadless(
         }
         break;
       case 'error':
+        errors.push(event.message);
         console.error(`⚠️ ${event.message}`);
         break;
       case 'done':
+        if (!assistantText.trim()) console.log(buildConsoleToolOnlyResponse({ toolCalls, toolSummaries, errors }));
         console.error(`\n--- ${event.reason} (${event.turns} turns) ---`);
         break;
     }
@@ -364,19 +391,28 @@ async function runInteractive(
     }
 
     const messages = [{ role: 'user' as const, content: trimmed }];
+    let assistantText = '';
+    let toolCalls = 0;
+    const toolSummaries: string[] = [];
+    const errors: string[] = [];
     for await (const event of queryLoop(config, deps, messages)) {
       switch (event.type) {
         case 'text':
+          assistantText += event.content;
           console.log(`\n${event.content}\n`);
           break;
         case 'tool_call':
           console.log(`  🔧 ${event.call.name}(${JSON.stringify(event.call.input).slice(0, 100)})`);
           break;
         case 'tool_result':
+          toolCalls++;
+          const summary = summarizeConsoleToolResult(event.call.name, event.result.success, event.result.output);
+          if (summary) toolSummaries.push(summary);
           const icon = event.result.success ? '✅' : '❌';
           console.log(`  ${icon} ${event.result.output.slice(0, 200)}`);
           break;
         case 'error':
+          errors.push(event.message);
           console.log(`  ⚠️ ${event.message}`);
           break;
         case 'context':
@@ -389,6 +425,7 @@ async function runInteractive(
           }
           break;
         case 'done':
+          if (!assistantText.trim()) console.log(`\n${buildConsoleToolOnlyResponse({ toolCalls, toolSummaries, errors })}\n`);
           break;
       }
     }

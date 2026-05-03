@@ -1804,6 +1804,8 @@ async function sendMessage(opts) {
     let msgEl = null;
     let toolBox = null;
     let evidenceCard = null;
+    let toolOnlyResultCount = 0;
+    let toolOnlyFailureCount = 0;
     let buf = '';
     let sawModelEvent = false;
     while (true) {
@@ -1856,6 +1858,8 @@ async function sendMessage(opts) {
             }
             break;
           case 'tool_result':
+            toolOnlyResultCount += 1;
+            if (!ev.result.success) toolOnlyFailureCount += 1;
             if (toolBox) appendToolItem(toolBox, ev.result.success ? '✅' : '❌', '', ev.result.output.slice(0, 120), !ev.result.success);
             // Capture web_read sources for citation rendering.
             if (ev.result.success && ev.call && ev.call.name === 'web_read' && ev.call.input && typeof ev.call.input.url === 'string') {
@@ -1944,6 +1948,12 @@ async function sendMessage(opts) {
       }
     }
     if (thinkEl.parentNode) thinkEl.remove();
+    if (!assistantText && toolOnlyResultCount > 0) {
+      assistantText = toolOnlyFailureCount > 0
+        ? 'Done, but one or more tool calls failed. Check the tool details above.'
+        : 'Done. The model used tools, but did not return a readable final message.';
+      msgEl = addMsg('assistant', assistantText);
+    }
     if (assistantText) chatMessages.push({ role: 'assistant', content: assistantText });
     if (msgEl && currentTurnUsage) {
       attachMessageMeta(msgEl, currentTurnUsage);

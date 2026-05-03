@@ -210,12 +210,14 @@ export function startTelegramBot(token: string, serverUrl: string, allowedChatId
         return;
       }
 
+      const relayText = normalizeTelegramChatText(text);
+
       // Forward to chat API as SSE and collect the response.
-      logger.info('Telegram', 'Message received', { chatId, length: text.length });
+      logger.info('Telegram', 'Message received', { chatId, length: relayText.length });
       await bot.sendChatAction(chatId, 'typing');
 
       try {
-        await relayChatAndRespond(bot, chatId, text, serverUrl);
+        await relayChatAndRespond(bot, chatId, relayText, serverUrl);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn('Telegram', 'Chat relay failed', { chatId, error: msg });
@@ -458,11 +460,10 @@ export function buildTelegramEmptyModelResponse(input: { toolCalls: number; tool
     return `⚠️ Harness reported an error:\n\n${input.errors.slice(-2).join('\n')}`;
   }
   if (input.toolSummaries.length > 0) {
-    const tools = input.toolNames.length > 0 ? `\n\nTools: ${input.toolNames.join(', ')}` : '';
-    return `✅ Done.\n\n${input.toolSummaries.slice(-6).join('\n')}${tools}`;
+    return `✅ Done.\n\n${input.toolSummaries.slice(-4).join('\n')}`;
   }
   if (input.toolCalls > 0) {
-    return `✅ Used ${input.toolCalls} tool call(s): ${input.toolNames.join(', ')}\n\nThe model completed the run but returned an empty final message.`;
+    return '✅ Done. The model used tools, but did not return a readable final message.';
   }
   if (input.doneReason === 'completed') {
     return 'Done, but the model returned an empty final message.';
@@ -470,11 +471,34 @@ export function buildTelegramEmptyModelResponse(input: { toolCalls: number; tool
   return '(No response from the model.)';
 }
 
-function summarizeTelegramToolResult(name: string, success: boolean, output: unknown): string {
+export function normalizeTelegramChatText(text: string): string {
+  const trimmed = text.trim();
+  const addMatch = trimmed.match(/^\/add\s+(.+)/i);
+  if (addMatch) {
+    return `Add a task to my bullet journal to ${addMatch[1].trim()}. Reply with one short confirmation. Do not send a separate Telegram notification.`;
+  }
+  const completeMatch = trimmed.match(/^\/(?:complete|done|close)\s+(.+)/i);
+  if (completeMatch) {
+    return `Close task ${completeMatch[1].trim()} in my bullet journal. Reply with one short confirmation. Do not send a separate Telegram notification.`;
+  }
+  if (/^\/(?:log|today|open)\b/i.test(trimmed)) {
+    return 'Show my bullet journal status as a concise, readable summary. Do not include raw tool output. Do not send a separate Telegram notification.';
+  }
+  return text;
+}
+
+export function summarizeTelegramToolResult(name: string, success: boolean, output: unknown): string {
+  if (['skill', 'list_files', 'file_read', 'recall'].includes(name)) return '';
   const status = success ? '✅' : '❌';
   const text = String(output ?? '').replace(/\s+/g, ' ').trim();
-  if (!text) return `${status} ${name}`;
-  return `${status} ${name}: ${text.slice(0, 280)}`;
+  if (!text) return success ? '' : `${status} ${name}`;
+  if (name === 'bash') {
+    const taskMatch = text.match(/\+ Task added:\s*([^\r\n]+)/i);
+    if (taskMatch) return `✅ Added task: ${taskMatch[1].trim()}`;
+    if (/telegram message sent successfully/i.test(text)) return '';
+  }
+  if (name === 'telegram_notify' && success) return '✅ Telegram notification sent.';
+  return `${status} ${name}: ${text.slice(0, 180)}`;
 }
 
 // ─── Notifications ──────────────────────────────────────────────────
