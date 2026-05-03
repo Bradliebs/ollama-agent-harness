@@ -36,4 +36,27 @@ describe('skill tools', () => {
     expect(listed.output).toContain('fresh-skill');
     await expect(fs.readFile(path.join(skillsDir, 'fresh-skill', 'SKILL.md'), 'utf-8')).resolves.toContain('Fresh skill for visibility tests');
   });
+
+  it('lists skills when malformed frontmatter has scalar triggers', async () => {
+    const skillDir = path.join(skillsDir, 'scalar-triggers');
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), [
+      '---',
+      'name: scalar-triggers',
+      'description: Scalar trigger regression',
+      'domain: testing',
+      'triggers: scalar trigger',
+      '---',
+      '',
+      '## Context',
+      '',
+      'Use this in tests.',
+    ].join('\n'), 'utf-8');
+
+    const listed = await ListSkillsTool.execute({});
+
+    expect(listed.success).toBe(true);
+    expect(listed.output).toContain('scalar-triggers');
+    expect(listed.output).toContain('scalar trigger');
+  });
 });

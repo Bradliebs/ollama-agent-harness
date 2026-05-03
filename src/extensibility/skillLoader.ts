@@ -103,7 +103,7 @@ export function parseSkillFile(content: string, filePath: string): SkillDefiniti
     name: (frontmatter.name as string) ?? path.basename(path.dirname(filePath)),
     description: (frontmatter.description as string) ?? '',
     domain: (frontmatter.domain as string) ?? 'general',
-    triggers: (frontmatter.triggers as string[]) ?? [],
+    triggers: normalizeStringList(frontmatter.triggers),
     content: removeFrontmatter(content),
     filePath,
     whenToUse: typeof frontmatter.when_to_use === 'string' ? frontmatter.when_to_use as string : undefined,
@@ -114,6 +114,12 @@ export function parseSkillFile(content: string, filePath: string): SkillDefiniti
     validationChecks: Array.isArray(frontmatter.validation_checks) ? frontmatter.validation_checks as string[] : undefined,
     rollbackNotes: typeof frontmatter.rollback_notes === 'string' ? frontmatter.rollback_notes as string : undefined,
   };
+}
+
+function normalizeStringList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string');
+  if (typeof value === 'string' && value.trim()) return [value.trim()];
+  return [];
 }
 
 function extractFrontmatter(content: string): Record<string, unknown> | null {

@@ -103,14 +103,20 @@ export interface OperateServiceResult {
 
 const OPERATE_TRIGGERS = [
   'send me reminders',
+  'send me a reminder',
+  'send me telegram reminder',
+  'telegram reminder',
+  'remind me',
   'remind me daily',
   'check in with me',
   'keep track of',
   'let me add tasks',
   'let me update tasks',
+  'update for me',
   'let me close tasks',
   'add notes',
   'manage this for me',
+  'keep me honest',
   'follow up',
   'monitor this',
   'notify me',
@@ -680,11 +686,11 @@ async function saveBulletJournalState(projectDir: string, state: BulletJournalSt
 
 function isBulletJournalRequest(message: string): boolean {
   const lower = message.toLowerCase();
-  return lower.includes('bullet journal') || looksLikeBulletJournalCommand(lower);
+  return lower.includes('bullet journal') || lower.includes('bullet proof journal') || looksLikeBulletJournalCommand(lower);
 }
 
 function looksLikeBulletJournalServiceRequest(lower: string): boolean {
-  return lower.includes('bullet journal') && (lower.includes('service') || lower.includes('agent') || lower.includes('remind') || lower.includes('keep track') || lower.includes('manage'));
+  return (lower.includes('bullet journal') || lower.includes('bullet proof journal')) && (lower.includes('service') || lower.includes('agent') || lower.includes('remind') || lower.includes('keep track') || lower.includes('manage') || lower.includes('update for me') || lower.includes('keep me honest'));
 }
 
 function looksLikeBulletJournalCommand(lower: string): boolean {

@@ -7,6 +7,8 @@ import { executeDueJobs, listAutomationJobs } from '../automation/jobs';
 describe('agentic service mode', () => {
   it('classifies ongoing service requests as operate mode unless software is explicit', () => {
     expect(classifyAgenticMode('Remind me daily to review my tasks')).toMatchObject({ mode: 'operate' });
+    expect(classifyAgenticMode('create a bullet proof journal, remind me, update for me, keep me honest')).toMatchObject({ mode: 'operate' });
+    expect(classifyAgenticMode('send me a telegram reminder')).toMatchObject({ mode: 'operate' });
     expect(classifyAgenticMode('Build an app that reminds me daily')).toMatchObject({ mode: 'build' });
     expect(classifyAgenticMode('Generate a document template that reminds me daily')).toMatchObject({ mode: 'build' });
   });
@@ -84,6 +86,29 @@ describe('agentic service mode', () => {
     expect((service.notification_templates as Record<string, string>).daily_check_in).toBe('Good morning. Here\'s your bullet journal check-in:\nOpen today:\n1. ...\nOverdue:\n1. ...\nWant to add, update, close anything, or add a note?');
     expect((service.persistent_state_schema as Record<string, unknown>).tasks).toEqual(['id', 'title', 'description', 'status', 'priority', 'due_date', 'created_at', 'updated_at', 'closed_at', 'tags', 'notes']);
     expect((service.persistent_state_schema as Record<string, unknown>).notes).toEqual(['id', 'content', 'created_at', 'updated_at', 'tags', 'linked_task_id']);
+  });
+
+  it('handles transcript-style bullet proof journal requests as operating services', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-bullet-proof-journal-'));
+
+    const result = await handleOperateModeRequest(projectDir, 'create a bullet proof journal, remind me, update for me, keep me honest', new Date('2026-05-03T08:00:00.000Z'));
+
+    expect(result.handled).toBe(true);
+    expect(result.service).toMatchObject({ service_id: 'bullet_journal', mode: 'operate' });
+    expect(result.response).toContain('Your Bullet Journal agent is set up.');
+    await expect(fs.readdir(projectDir)).resolves.not.toContain('journal');
+    await expect(fs.readFile(path.join(projectDir, '.harness', 'services', 'bullet_journal', 'service.json'), 'utf-8')).resolves.toContain('Bullet Journal Agent');
+  });
+
+  it('handles telegram reminder requests as operating services without creating scripts', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-telegram-reminder-'));
+
+    const result = await handleOperateModeRequest(projectDir, 'send me a telegram reminder', new Date('2026-05-03T08:00:00.000Z'));
+
+    expect(result.handled).toBe(true);
+    expect(result.service).toMatchObject({ service_name: 'Operating Service Agent', mode: 'operate' });
+    expect(result.service?.purpose).toContain('send me a telegram reminder');
+    await expect(fs.readdir(projectDir)).resolves.toEqual(['.harness']);
   });
 
   it('mutates existing bullet journal state through service commands', async () => {
