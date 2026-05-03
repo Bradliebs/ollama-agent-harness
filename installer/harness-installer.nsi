@@ -66,7 +66,7 @@ FunctionEnd
 
 ; --- Install section ---
 Section "Install"
-  SetOutPath "$INSTDIR"
+  SetOutPath "$INSTDIR\dist"
 
   ; Core application files
   File /r "..\dist\*.*"

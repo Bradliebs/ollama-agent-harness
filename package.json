@@ -44,7 +44,8 @@
     "autonomy:dry": "ts-node cookbook/task-loop.ts --dry-run",
     "autonomy:debug": "node -e \"process.env.HARNESS_DEBUG_LOG='.forge-debug.jsonl';require('child_process').spawnSync(process.execPath,[require.resolve('ts-node/dist/bin'),'cookbook/task-loop.ts'],{stdio:'inherit',env:process.env})\"",
     "autonomy:stop": "node -e \"require('fs').writeFileSync('.forge-stop','stop')\"",
-    "autonomy:reset": "node -e \"['.forge-stop','.forge-state.json'].forEach(f=>{try{require('fs').unlinkSync(f)}catch{}})\""
+    "autonomy:reset": "node -e \"['.forge-stop','.forge-state.json'].forEach(f=>{try{require('fs').unlinkSync(f)}catch{}})\"",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "ollama",

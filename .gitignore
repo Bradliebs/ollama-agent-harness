@@ -18,6 +18,9 @@ dist/
 .copilot-tracking/
 Network.md
 
+# Non-project data directories
+Bracknell_Food_Business/
+
 # Bare-filename agent writes (file_write redirects scratch output here so
 # it does not pile up at the repo root). Force-add intentional outputs.
 agent-outputs/

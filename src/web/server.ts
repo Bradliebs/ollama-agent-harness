@@ -54,6 +54,7 @@ import { AutomationScheduler } from '../automation/scheduler';
 import { exportAgenticServices, getAgenticService, handleOperateModeRequest, importAgenticServices, listAgenticServices } from '../services/agenticServiceMode';
 import { classifyMode } from '../services/modeClassifier';
 import { createDefaultCapabilityRegistry, type CapabilityRegistry } from '../services/capabilityRegistry';
+import { WorkerQueue } from '../services/workerQueue';
 import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
 import { heuristicVerifier } from '../mycelium/verifier';
 import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
@@ -1625,6 +1626,20 @@ app.get('/api/capabilities/registry', async (_req, res) => {
     available: capabilityRegistry.available().map((c) => c.id),
     missing: capabilityRegistry.missing().map((c) => ({ id: c.id, reason: c.reason })),
   });
+});
+
+// ─── Worker Queue status ────────────────────────────────────────────
+const workerQueue = new WorkerQueue();
+
+app.get('/api/worker/status', (_req, res) => {
+  res.json({ pending: workerQueue.pendingCount(), queue: workerQueue.pending(), history: workerQueue.history() });
+});
+
+// ─── Mode classification ────────────────────────────────────────────
+app.get('/api/modes/classify', (req, res) => {
+  const message = typeof req.query.message === 'string' ? req.query.message : '';
+  if (!message) { res.status(400).json({ error: 'message query parameter is required' }); return; }
+  res.json(classifyMode(message));
 });
 
 app.get('/api/services', async (req, res) => {
