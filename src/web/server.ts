@@ -26,7 +26,7 @@ import { setRagRuntime } from '../tools/ragTools';
 import { setCuratorToolRuntime } from '../tools/curatorTools';
 import { PermissionEngine } from '../permissions/engine';
 import { PermissionPromptBroker } from '../permissions/promptBroker';
-import { createCapabilityGrant, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, summarizeCapabilityAlignment, autoGrantGatedCapabilities, type CapabilityGrant } from '../permissions/capabilities';
+import { createCapabilityGrant, evaluateCapabilityGrant, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, summarizeCapabilityAlignment, autoGrantGatedCapabilities, type CapabilityGrant } from '../permissions/capabilities';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { forkSession, resumeSession } from '../persistence/resume';
 import { buildMemoryPalace, getSemanticMemoryContext, getSemanticMemoryEntry, rebuildSemanticMemory, searchSemanticMemory } from '../persistence/semanticMemory';
@@ -3070,6 +3070,14 @@ app.post('/api/chat', async (req, res) => {
     client,
     tools,
     permissionCheck: async (call) => {
+      // Browser page tools require an active browser-page-access grant
+      const BROWSER_PAGE_TOOLS = new Set(['browser_navigate', 'browser_click', 'browser_fill', 'browser_read', 'browser_screenshot', 'browser_close']);
+      if (BROWSER_PAGE_TOOLS.has(call.name)) {
+        const evaluation = evaluateCapabilityGrant('browser-page-access', capabilityGrants, { killSwitchActive });
+        if (evaluation.decision !== 'allow') {
+          return { allowed: false, reason: `Browser page tools require an active browser-page-access grant. ${evaluation.reason}` };
+        }
+      }
       const result = permissions.evaluate(call);
       if (result.decision === 'allow') {
         return { allowed: true, reason: result.reason };
