@@ -18,6 +18,8 @@ async function main() {
     assertFile(workDir, 'dist/cli/index.js');
     assertFile(workDir, 'dist/web/server.js');
     assertFile(workDir, 'scripts/release-notes.js');
+    assertFile(workDir, 'scripts/telegram-smoke.js');
+    assertFile(workDir, 'scripts/audit-triage.js');
     assertFile(workDir, 'ui/index.html');
     assertFile(workDir, 'start.bat');
     assertFile(workDir, 'release-provenance.json');
@@ -87,8 +89,16 @@ function assertFileContains(root, relativePath, expected) {
 }
 
 function run(command, args, cwd) {
-  const result = spawnSync(command, args, { cwd, stdio: 'inherit', shell: process.platform === 'win32' });
+  const invocation = process.platform === 'win32' && command === 'npm'
+    ? { command: 'cmd.exe', args: ['/d', '/s', '/c', ['npm', ...args].map(quoteCmdArg).join(' ')] }
+    : { command, args };
+  const result = spawnSync(invocation.command, invocation.args, { cwd, stdio: 'inherit' });
   if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} failed with exit code ${result.status}`);
+}
+
+function quoteCmdArg(value) {
+  const text = String(value);
+  return /[\s&()^|<>]/.test(text) ? `"${text.replace(/"/g, '\\"')}"` : text;
 }
 
 async function assertCompiledServerStarts(cwd) {

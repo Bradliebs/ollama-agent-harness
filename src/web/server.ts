@@ -2655,8 +2655,12 @@ app.post('/api/chat', async (req, res) => {
   // write inside my project directory" even after the user has explicitly
   // configured a writable folder elsewhere.
   const writableExternals = getAllowedExternalPaths();
+  const outputDir = agentOutputDir.trim();
+  const outputNote = outputDir
+    ? ` New files, scratch artifacts, generated reports, and exploratory outputs should go under this Agent Files output folder unless the user names a different destination: ${outputDir}. Other allowed external folders may be user-owned tools or data stores; do not use them as scratch output sinks unless the user explicitly asks.`
+    : '';
   const writableNote = writableExternals.length > 0
-    ? `\n6. file_read, file_write, file_edit, file_move, file_delete, and list_files work in the project directory AND in these user-allowed external folders: ${writableExternals.join(', ')}. You can write directly to any path inside those folders. Use file_move when the user asks you to move files; do NOT emulate moves with read+write (that leaves the original behind).`
+    ? `\n6. file_read, file_write, file_edit, file_move, file_delete, and list_files work in the project directory AND in these user-allowed external folders: ${writableExternals.join(', ')}.${outputNote} You can write directly to any path inside those folders when the user asks for that location. Use file_move when the user asks you to move files; do NOT emulate moves with read+write (that leaves the original behind).`
     : `\n6. file_read, file_write, file_edit, file_move, file_delete, and list_files work inside the project directory. To access files outside the project, ask the user to set an Agent Files folder in Settings (it gets auto-added to the allowed-write list); only fall back to bash/dir/cat/type when the user has not configured a folder.`;
   const basePrompt = systemPromptOverride ||
     'You are a self-learning AI assistant with full web access and local tool use. IMPORTANT RULES:\n' +

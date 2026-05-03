@@ -1894,6 +1894,8 @@ describe('web server API validation', () => {
       assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
       runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
         expect(config.systemPrompt).toContain('Treat configured external folders as user-owned data and tools');
+        expect(config.systemPrompt).toContain('New files, scratch artifacts, generated reports, and exploratory outputs should go under this Agent Files output folder');
+        expect(config.systemPrompt).toContain('do not use them as scratch output sinks unless the user explicitly asks');
         expect(config.systemPrompt).toContain('prefer the journal CLI or task data over file_write/file_edit on journal.py, telegram_sender.py');
         if (config.outputValidation?.enabled) {
           yield { type: 'output_validation', validation: { profile: 'oracle-prime', status: 'fail', score: 0.1, findings: [], missingSections: [] } };
@@ -1906,6 +1908,11 @@ describe('web server API validation', () => {
     });
 
     try {
+      await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allowedExternalPaths: ['C:/AI/Oracle'], agentOutputDir: 'C:/AI/AgentFiles', contextMaxTokens: 1024 }),
+      });
       const response = await request('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

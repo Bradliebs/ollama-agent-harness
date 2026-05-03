@@ -11,6 +11,26 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.8
+
+Patch release for output validation defaults, secret-safe Telegram release smoke coverage, audit triage visibility, and safer Agent Files guidance.
+
+### Output validation
+
+* Defaulted omitted `skipOnLowSignal` settings to true so casual or low-signal prompts do not trigger strict Oracle Prime section failures.
+* Updated the browser fallback defaults to match the safer server behavior.
+* Added regression coverage for low-signal validation skipping when older settings omit the field.
+
+### Release and diagnostics
+
+* Added `scripts/telegram-smoke.js` and `npm run smoke:telegram` to verify Telegram status shape without exposing or bundling bot tokens.
+* Added `scripts/audit-triage.js` and `npm run audit:triage` to group current npm audit findings into actionable compatibility clusters.
+* Updated release smoke to assert the new diagnostic scripts are included in release archives.
+
+### Agent files
+
+* Clarified runtime prompt guidance so user-allowed external folders remain available for tools and data, while scratch files and generated outputs prefer the configured Agent Files output folder.
+
 ## Ollama Agent Harness v0.3.7
 
 Patch release for browser tool transcript hardening, external-file safety, and broader agentic operating-service routing.
