@@ -11,6 +11,16 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.3
+
+Patch release for Telegram bullet-journal task routing.
+
+### Telegram task handling
+
+* Prevented Operating Services from intercepting explicit requests to add tasks to an existing bullet journal.
+* Added regression coverage so `Add a task to my bullet journal...` falls through to normal model/tool handling instead of creating or mutating `.harness/services/bullet_journal`.
+* Verified the live Telegram bridge receives messages on the clean current server without duplicate polling conflicts.
+
 ## Ollama Agent Harness v0.3.2
 
 Patch release for configured communication behavior and Telegram reply reliability.

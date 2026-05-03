@@ -9,8 +9,18 @@ describe('agentic service mode', () => {
     expect(classifyAgenticMode('Remind me daily to review my tasks')).toMatchObject({ mode: 'operate' });
     expect(classifyAgenticMode('create a bullet proof journal, remind me, update for me, keep me honest')).toMatchObject({ mode: 'operate' });
     expect(classifyAgenticMode('send me a telegram reminder')).toMatchObject({ mode: 'operate' });
+    expect(classifyAgenticMode('Add a task to my bullet journal to cut up decking today 3 may 2026')).toMatchObject({ mode: 'build' });
     expect(classifyAgenticMode('Build an app that reminds me daily')).toMatchObject({ mode: 'build' });
     expect(classifyAgenticMode('Generate a document template that reminds me daily')).toMatchObject({ mode: 'build' });
+  });
+
+  it('does not intercept existing bullet journal task updates as operating-service commands', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-existing-journal-'));
+
+    const result = await handleOperateModeRequest(projectDir, 'Add a task to my bullet journal to cut up decking today 3 may 2026', new Date('2026-05-03T08:00:00.000Z'));
+
+    expect(result.handled).toBe(false);
+    await expect(fs.readdir(projectDir)).resolves.toEqual([]);
   });
 
   it('classifies model-agnostic operating aliases and preserves explicit build overrides', () => {

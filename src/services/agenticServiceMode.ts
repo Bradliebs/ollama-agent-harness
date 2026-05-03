@@ -157,6 +157,9 @@ const BULLET_JOURNAL_COMMANDS = [
 
 export function classifyAgenticMode(message: string): AgenticModeClassification {
   const lower = message.toLowerCase();
+  if (looksLikeExternalBulletJournalTaskRequest(lower)) {
+    return { mode: 'build', reason: 'Request targets an existing bullet journal rather than an operating service command.', matchedTriggers: [] };
+  }
   const matchedTriggers = OPERATE_TRIGGERS.filter((trigger) => lower.includes(trigger));
   if (matchedTriggers.length > 0 && !explicitlyRequestsSoftwareBuild(lower)) {
     return { mode: 'operate', reason: 'Request asks for ongoing service behavior.', matchedTriggers };
@@ -802,6 +805,11 @@ function looksLikeBulletJournalServiceRequest(lower: string): boolean {
 
 function looksLikeBulletJournalCommand(lower: string): boolean {
   return /^(add( a)? task|update( task)?|close( task)?|reopen( task)?|note|add note|edit note|delete note|show today|today|daily check-in|show open tasks|open tasks|show closed tasks|closed tasks|daily review|weekly review|set reminder time|pause reminders|resume reminders)\b/.test(lower.trim());
+}
+
+function looksLikeExternalBulletJournalTaskRequest(lower: string): boolean {
+  return /^add(?: a)? task\b/.test(lower.trim())
+    && /\b(to|in|into)\s+(my|the)?\s*bullet journal\b/.test(lower);
 }
 
 function looksLikeGenericOperateCommand(lower: string): boolean {
