@@ -101,6 +101,7 @@ export function startTelegramBot(token: string, serverUrl: string, allowedChatId
           + '/task _description_ — Add a task to the autonomy plan\n'
           + '/schedule every 6h _prompt_ — Create a recurring job\n'
           + '/status — Check readiness scores\n'
+          + '/nervous — Show nervous system status\n'
           + '/help — Show this message\n\n'
           + '*Examples:*\n'
           + '• "Create an Excel spreadsheet of recipe costs"\n'
@@ -123,6 +124,33 @@ export function startTelegramBot(token: string, serverUrl: string, allowedChatId
           const sections = (data.sections ?? []).map((s) => `${s.status === 'ready' ? '✅' : s.status === 'warn' ? '⚠️' : '❌'} ${s.id}: ${s.score}%`).join('\n');
           await bot.sendMessage(chatId, `🤖 *Oracle Status*\nModel: ${data.model ?? 'none'}\nMode: ${data.permissionMode ?? 'default'}\n\n${sections}`, { parse_mode: 'Markdown' });
         } catch (err) {
+          await bot.sendMessage(chatId, '❌ Could not reach the harness server.');
+        }
+        return;
+      }
+
+      // Handle /nervous command — show nervous system info.
+      if (text === '/nervous') {
+        try {
+          const res = await fetch(`${serverUrl}/api/readiness`);
+          const data = await res.json() as { nervousSystem?: { available?: boolean; modules?: string[] } };
+          const ns = data.nervousSystem;
+          if (ns?.available) {
+            await bot.sendMessage(chatId,
+              `🧠 *Nervous System*\n\n`
+              + `Status: ✅ Active\n`
+              + `Modules: ${(ns.modules ?? []).join(', ')}\n\n`
+              + `*Capabilities:*\n`
+              + `• 30 signal types (user correction, tool failure, privacy risk...)\n`
+              + `• 10 reflexes (irreversible action, loop detection, context overload...)\n`
+              + `• Motor permissions (ALLOW/BLOCK/DRY\\_RUN/CONFIRM)\n`
+              + `• Pain-based reward adjustment\n`
+              + `• Recovery mode for stuck agents\n`
+              + `• Attention biases for route selection`, { parse_mode: 'Markdown' });
+          } else {
+            await bot.sendMessage(chatId, '🧠 Nervous System is not active.');
+          }
+        } catch {
           await bot.sendMessage(chatId, '❌ Could not reach the harness server.');
         }
         return;

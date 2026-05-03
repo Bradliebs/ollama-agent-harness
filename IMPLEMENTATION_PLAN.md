@@ -148,3 +148,4 @@
   - anchor: src/web/server.ts
   - anchor: src/web/server.test.ts
   - target: src/web/server.test.ts
+- [x] create-a-bullet-journal-i-get-reminders-and-can-update-add-a — Create a bullet journal , I get reminders and can update , add and close tasks

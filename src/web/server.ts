@@ -56,6 +56,7 @@ import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } fr
 import { appendRunEvidence, readRunEvidence, type StoredRunEvidence } from '../persistence/evidenceStore';
 import { startTelegramBot, stopTelegramBot, isTelegramBotRunning, sendTelegramNotification, loadPersistedChatIds } from '../integrations/telegram';
 import { addWebhook, removeWebhook, listWebhooks, loadWebhooksFromEnv, sendWebhookNotification } from '../integrations/webhooks';
+import { NervousSystemController } from '../nervous';
 import { listShellCommandAllowlistPresets } from '../automation/runner';
 import { appendCapabilityAuditEvent, readCapabilityAuditEvents } from '../permissions/capabilityAudit';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
@@ -1291,7 +1292,7 @@ app.get('/api/readiness', async (_req, res) => {
         { id: 'autonomy.kill.switch', label: 'Kill switch clear', status: killSwitchActive ? 'blocked' : 'ready', message: killSwitchActive ? `Kill switch active: ${killSwitchReason}` : 'Kill switch is clear.' },
       ]),
     ];
-    res.json({ generatedAt: new Date().toISOString(), model: currentModel, permissionMode, killSwitch: { active: killSwitchActive, reason: killSwitchReason }, grants: activeGrants.length, sections });
+    res.json({ generatedAt: new Date().toISOString(), model: currentModel, permissionMode, killSwitch: { active: killSwitchActive, reason: killSwitchReason }, grants: activeGrants.length, sections, nervousSystem: { available: true, modules: ['signals', 'sensory', 'reflexes', 'attention', 'motor', 'pain', 'recovery'] } });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -2550,7 +2551,19 @@ app.post('/api/chat', async (req, res) => {
     logger.warn('Mycelium', 'Context routing failed', { error: error instanceof Error ? error.message : String(error) });
   }
 
-  const systemPrompt = [baseSystemPrompt, attachmentsBlock, myceliumContext].filter(Boolean).join('\n\n');
+  // Nervous System: inspect query, evaluate reflexes, calculate attention
+  const nervousSystem = new NervousSystemController();
+  const nervousResult = nervousSystem.inspectQuery(messageText, myceliumClassification?.type ?? 'general');
+  let nervousContext = '';
+  if (nervousResult.runState.safetyNotes.length > 0) {
+    nervousContext = '\n\n--- Nervous System ---\n' + nervousResult.runState.safetyNotes.map((n) => `⚠️ ${n}`).join('\n');
+  }
+  if (nervousResult.recoveryPlan) {
+    const { formatRecoveryPlan } = await import('../nervous/recovery');
+    nervousContext += '\n' + formatRecoveryPlan(nervousResult.recoveryPlan);
+  }
+
+  const systemPrompt = [baseSystemPrompt, attachmentsBlock, myceliumContext, nervousContext].filter(Boolean).join('\n\n');
 
   const config: LoopConfig = {
     model: activeModel,
@@ -2662,6 +2675,9 @@ app.post('/api/chat', async (req, res) => {
       if (event.type === 'tool_result') {
         toolCallCount++;
         if (event.result?.success) toolSuccessCount++;
+        // Nervous System: inspect tool result
+        nervousSystem.onToolResult(event.call.name, Boolean(event.result?.success), String(event.result?.output ?? ''));
+        nervousSystem.onToolCallSequence(toolCallSequence);
         evidenceTools.push({
           name: event.call.name,
           success: Boolean(event.result?.success),
@@ -2788,6 +2804,7 @@ app.post('/api/chat', async (req, res) => {
 
   // Mycelium reinforcement: strengthen or weaken routes based on outcome.
   // Run a heuristic verifier first so the reward reflects safety + tool reliability.
+  let nsPainMultiplier = 1.0;
   if (myceliumRouter) {
     const hasOutput = assistantTextBuffer.trim().length > 0;
     const toolSuccessRate = toolCallCount > 0 ? toolSuccessCount / toolCallCount : 0.5;
@@ -2831,14 +2848,21 @@ app.post('/api/chat', async (req, res) => {
         }
       } catch { /* verifier is optional */ }
     }
+    // Nervous System: inspect verifier result and extract pain
+    const nervousVerifier = nervousSystem.onVerifierResult(
+      verifierBlocked ? 'fail' : 'pass',
+      verifierScore,
+      verifierBlocked && verifierBlockReason ? [verifierBlockReason] : undefined,
+    );
+    const nsPainResult = nervousVerifier.painMultiplier;
+    nsPainMultiplier = nsPainResult;
+
     myceliumRouter.reinforce({
-      taskSuccess: hasOutput ? 0.7 : 0.2,
-      correctness: hasOutput ? 0.6 + toolSuccessRate * 0.3 : 0.1,
-      usefulness: hasOutput ? 0.5 + toolSuccessRate * 0.3 : 0.1,
+      taskSuccess: (hasOutput ? 0.7 : 0.2) * nsPainMultiplier,
+      correctness: (hasOutput ? 0.6 + toolSuccessRate * 0.3 : 0.1) * nsPainMultiplier,
+      usefulness: (hasOutput ? 0.5 + toolSuccessRate * 0.3 : 0.1) * nsPainMultiplier,
       costEfficiency: toolCallCount <= 5 ? 0.8 : toolCallCount <= 15 ? 0.5 : 0.2,
-      // The heuristic verifier signal is fed back as user_satisfaction so it
-      // contributes ~10% of the final reward without re-weighting the formula.
-      userSatisfaction: verifierScore,
+      userSatisfaction: verifierScore * nsPainMultiplier,
     }, {
       blocked: verifierBlocked,
       blockReason: verifierBlockReason,
@@ -2889,7 +2913,15 @@ app.post('/api/chat', async (req, res) => {
       selectionReasons: myceliumRouter.getLastExplanation()?.whySelected.reduce<Record<string, string>>((acc, reason, index) => ({ ...acc, [`reason${index + 1}`]: reason }), {}),
     } : undefined,
     artifacts: [],
-    recovery: { sessionId: session.getSessionId(), stopReason: doneReason },
+    recovery: {
+      sessionId: session.getSessionId(),
+      stopReason: doneReason,
+      ...(nervousResult.reflexesTriggered.length > 0 ? {
+        nervousReflexes: nervousResult.reflexesTriggered.join(', '),
+        nervousRisk: nervousResult.runState.riskLevel,
+        nervousPainMultiplier: typeof nsPainMultiplier === 'number' ? nsPainMultiplier : 1.0,
+      } : {}),
+    },
   };
   res.write(`data: ${JSON.stringify({ type: 'evidence', evidence: evidenceCard })}\n\n`);
 
