@@ -35,7 +35,8 @@ export type SignalType =
   | 'DRY_RUN_REQUIRED'
   | 'CONFIRMATION_REQUIRED'
   | 'COMPRESSION_REQUIRED'
-  | 'RECOVERY_REQUIRED';
+  | 'RECOVERY_REQUIRED'
+  | 'ONGOING_SERVICE_REQUEST';
 
 export interface NervousSignal {
   id: string;

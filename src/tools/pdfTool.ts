@@ -44,6 +44,78 @@ export interface PdfDocumentMetadata {
   encrypted: boolean;
 }
 
+interface PdfjsModule {
+  getDocument(options: Record<string, unknown>): { promise: Promise<PdfDocumentProxy> };
+}
+
+interface PdfDocumentProxy {
+  numPages: number;
+  getPage(pageNum: number): Promise<PdfPageProxy>;
+  getMetadata(): Promise<{ info?: unknown; metadata?: unknown }>;
+  destroy(): Promise<void> | void;
+}
+
+interface PdfPageProxy {
+  getTextContent(): Promise<{ items: unknown[] }>;
+  cleanup(): void;
+}
+
+const importPdfjs = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<PdfjsModule>;
+
+class PdfNodeDOMMatrix {
+  a = 1;
+  b = 0;
+  c = 0;
+  d = 1;
+  e = 0;
+  f = 0;
+
+  constructor(init?: unknown) {
+    if (Array.isArray(init)) {
+      [this.a, this.b, this.c, this.d, this.e, this.f] = init.map(Number) as [number, number, number, number, number, number];
+    }
+  }
+
+  translate(x = 0, y = 0): PdfNodeDOMMatrix {
+    const next = new PdfNodeDOMMatrix([this.a, this.b, this.c, this.d, this.e, this.f]);
+    next.e += x;
+    next.f += y;
+    return next;
+  }
+
+  scale(scaleX = 1, scaleY = scaleX): PdfNodeDOMMatrix {
+    const next = new PdfNodeDOMMatrix([this.a, this.b, this.c, this.d, this.e, this.f]);
+    next.a *= scaleX;
+    next.d *= scaleY;
+    return next;
+  }
+}
+
+class PdfNodeImageData {
+  readonly data: Uint8ClampedArray;
+  readonly width: number;
+  readonly height: number;
+
+  constructor(width: number, height: number) {
+    this.width = width;
+    this.height = height;
+    this.data = new Uint8ClampedArray(width * height * 4);
+  }
+}
+
+class PdfNodePath2D {
+  addPath(): void { /* no-op for non-rendering PDF text extraction */ }
+  arc(): void { /* no-op for non-rendering PDF text extraction */ }
+  bezierCurveTo(): void { /* no-op for non-rendering PDF text extraction */ }
+  closePath(): void { /* no-op for non-rendering PDF text extraction */ }
+  lineTo(): void { /* no-op for non-rendering PDF text extraction */ }
+  moveTo(): void { /* no-op for non-rendering PDF text extraction */ }
+  quadraticCurveTo(): void { /* no-op for non-rendering PDF text extraction */ }
+  rect(): void { /* no-op for non-rendering PDF text extraction */ }
+}
+
+let pdfjsModulePromise: Promise<PdfjsModule> | null = null;
+
 export const PdfReadTool: Tool = {
   name: 'pdf_read',
   description: 'Extract text from a local PDF file. Supports optional page range, character cap, and OCR fallback (set ocr=true; requires HARNESS_PDF_OCR_COMMAND).',
@@ -131,7 +203,12 @@ export async function extractPdfText(
   sourcePath?: string
 ): Promise<PdfExtractResult> {
   const maxChars = clampNumber(options.maxChars, 1, MAX_ALLOWED_CHARS, DEFAULT_MAX_CHARS);
-  const pdfjs = loadPdfjs();
+  let pdfjs: PdfjsModule;
+  try {
+    pdfjs = await loadPdfjs();
+  } catch {
+    return extractPdfTextFallback(data, options, sourcePath, maxChars);
+  }
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
     disableFontFace: true,
@@ -139,7 +216,8 @@ export async function extractPdfText(
     isEvalSupported: false,
     verbosity: 0,
   });
-  const doc = await loadingTask.promise;
+  const doc = await loadingTask.promise.catch(async () => null);
+  if (!doc) return extractPdfTextFallback(data, options, sourcePath, maxChars);
   try {
     const totalPages = doc.numPages;
     const start = clampPage(options.startPage, 1, totalPages, 1);
@@ -206,7 +284,12 @@ export async function extractPdfText(
 }
 
 export async function readPdfMetadata(data: Buffer): Promise<PdfDocumentMetadata> {
-  const pdfjs = loadPdfjs();
+  let pdfjs: PdfjsModule;
+  try {
+    pdfjs = await loadPdfjs();
+  } catch {
+    return readPdfMetadataFallback(data);
+  }
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
     disableFontFace: true,
@@ -214,7 +297,8 @@ export async function readPdfMetadata(data: Buffer): Promise<PdfDocumentMetadata
     isEvalSupported: false,
     verbosity: 0,
   });
-  const doc = await loadingTask.promise;
+  const doc = await loadingTask.promise.catch(async () => null);
+  if (!doc) return readPdfMetadataFallback(data);
   try {
     const meta = await doc.getMetadata().catch(() => ({ info: {}, metadata: null }));
     const info = (meta?.info ?? {}) as Record<string, unknown>;
@@ -234,6 +318,94 @@ export async function readPdfMetadata(data: Buffer): Promise<PdfDocumentMetadata
   } finally {
     await doc.destroy();
   }
+}
+
+async function extractPdfTextFallback(
+  data: Buffer,
+  options: PdfExtractOptions,
+  sourcePath: string | undefined,
+  maxChars: number,
+): Promise<PdfExtractResult> {
+  const meta = readPdfMetadataFallback(data);
+  const start = clampPage(options.startPage, 1, meta.pageCount, 1);
+  const end = clampPage(options.endPage, start, meta.pageCount, meta.pageCount);
+  const extracted = extractLiteralPdfStrings(data).join(' ').replace(/[ \t]+/g, ' ').trim();
+  let text = extracted ? `--- Page ${start} ---\n${extracted}` : '';
+  let truncated = false;
+  if (text.length > maxChars) {
+    text = text.slice(0, maxChars) + `\n...(truncated at ${maxChars} characters; pages ${start}-${end} of ${meta.pageCount})`;
+    truncated = true;
+  } else if (end < meta.pageCount) {
+    text += `\n...(showing pages ${start}-${end} of ${meta.pageCount})`;
+  }
+
+  let ocrUsed = false;
+  let ocrError: string | undefined;
+  const needsOcr = text.replace(/--- Page \d+ ---/g, '').trim().length < MIN_TEXT_FOR_FALLBACK;
+  if (options.ocr && needsOcr) {
+    try {
+      const ocrText = await runPdfOcr(data, sourcePath);
+      if (ocrText.trim().length > 0) {
+        text = ocrText.length > maxChars ? ocrText.slice(0, maxChars) + `\n...(ocr output truncated at ${maxChars} characters)` : ocrText;
+        ocrUsed = true;
+      }
+    } catch (err) {
+      ocrError = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  if (!text) text = '(no extractable text found)';
+  return { text, pageCount: meta.pageCount, startPage: start, endPage: end, truncated, ocrUsed, ocrError };
+}
+
+function readPdfMetadataFallback(data: Buffer): PdfDocumentMetadata {
+  const pdf = data.toString('latin1');
+  const countMatches = Array.from(pdf.matchAll(/\/Count\s+(\d+)/g)).map((match) => Number(match[1]));
+  const pageMarkers = Array.from(pdf.matchAll(/\/Type\s*\/Page\b/g)).length;
+  return {
+    pageCount: Math.max(1, ...countMatches, pageMarkers),
+    title: extractPdfInfoString(pdf, 'Title'),
+    author: extractPdfInfoString(pdf, 'Author'),
+    subject: extractPdfInfoString(pdf, 'Subject'),
+    keywords: extractPdfInfoString(pdf, 'Keywords'),
+    creator: extractPdfInfoString(pdf, 'Creator'),
+    producer: extractPdfInfoString(pdf, 'Producer'),
+    creationDate: extractPdfInfoString(pdf, 'CreationDate'),
+    modificationDate: extractPdfInfoString(pdf, 'ModDate'),
+    encrypted: /\/Encrypt\b/.test(pdf),
+  };
+}
+
+function extractPdfInfoString(pdf: string, key: string): string | undefined {
+  const match = new RegExp(`/${key}\\s*\\(([^)]*)\\)`).exec(pdf);
+  return match ? decodePdfLiteralString(match[1] ?? '') : undefined;
+}
+
+function extractLiteralPdfStrings(data: Buffer): string[] {
+  const pdf = data.toString('latin1');
+  const strings: string[] = [];
+  const streamPattern = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  let streamMatch: RegExpExecArray | null;
+  while ((streamMatch = streamPattern.exec(pdf)) !== null) {
+    const stream = streamMatch[1] ?? '';
+    const literalPattern = /\(((?:\\.|[^\\)])*)\)\s*Tj/g;
+    let literalMatch: RegExpExecArray | null;
+    while ((literalMatch = literalPattern.exec(stream)) !== null) {
+      strings.push(decodePdfLiteralString(literalMatch[1] ?? ''));
+    }
+  }
+  return strings.filter((value) => value.trim().length > 0);
+}
+
+function decodePdfLiteralString(value: string): string {
+  return value
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\b/g, '\b')
+    .replace(/\\f/g, '\f')
+    .replace(/\\([()\\])/g, '$1')
+    .trim();
 }
 
 async function runPdfOcr(data: Buffer, sourcePath?: string): Promise<string> {
@@ -265,26 +437,42 @@ async function runPdfOcr(data: Buffer, sourcePath?: string): Promise<string> {
   }
 }
 
-function loadPdfjs(): typeof import('pdfjs-dist/legacy/build/pdf.js') {
-  // pdfjs-dist legacy build (CJS) runs in Node without DOM. Loaded lazily so
-  // module load stays cheap when the tools are unused.
-  if (!process.env.JEST_WORKER_ID) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    return require('pdfjs-dist/legacy/build/pdf.js');
+async function loadPdfjs(): Promise<PdfjsModule> {
+  pdfjsModulePromise ??= importPdfjsModule();
+  try {
+    return await pdfjsModulePromise;
+  } catch (error) {
+    pdfjsModulePromise = null;
+    throw error;
   }
+}
 
-  const originalLog = console.log;
-  console.log = (...args: unknown[]) => {
+async function importPdfjsModule(): Promise<PdfjsModule> {
+  setupPdfjsNodeGlobals();
+
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
     const message = args.map((arg) => String(arg)).join(' ');
-    if (message.includes('Cannot polyfill `DOMMatrix`') || message.includes('Cannot polyfill `Path2D`')) return;
-    originalLog(...args);
+    if (message.includes('Cannot load "@napi-rs/canvas" package')) return;
+    if (message.includes('Cannot polyfill `DOMMatrix`')) return;
+    if (message.includes('Cannot polyfill `ImageData`')) return;
+    if (message.includes('Cannot polyfill `Path2D`')) return;
+    originalWarn(...args);
   };
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    return require('pdfjs-dist/legacy/build/pdf.js');
+    // Version 5 publishes ESM only, so use native dynamic import even though
+    // this project compiles to CommonJS.
+    return await importPdfjs('pdfjs-dist/legacy/build/pdf.mjs');
   } finally {
-    console.log = originalLog;
+    console.warn = originalWarn;
   }
+}
+
+function setupPdfjsNodeGlobals(): void {
+  const globals = globalThis as typeof globalThis & Record<string, unknown>;
+  globals.DOMMatrix ??= PdfNodeDOMMatrix;
+  globals.ImageData ??= PdfNodeImageData;
+  globals.Path2D ??= PdfNodePath2D;
 }
 
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
@@ -342,7 +530,7 @@ export async function* iteratePdfPages(
   data: Buffer,
   options: { startPage?: number; endPage?: number } = {}
 ): AsyncGenerator<PdfPageChunk> {
-  const pdfjs = loadPdfjs();
+  const pdfjs = await loadPdfjs();
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
     disableFontFace: true,
@@ -482,7 +670,7 @@ export async function extractPdfPageTableCsv(
   pageNum: number,
   options: { colTol: number; rowTol: number }
 ): Promise<string> {
-  const pdfjs = loadPdfjs();
+  const pdfjs = await loadPdfjs();
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
     disableFontFace: true,

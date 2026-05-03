@@ -46,8 +46,10 @@ export async function* queryLoop(
 
   let turn = 0;
   let unproductiveTurns = 0;
+  const toolFailureCounts = new Map<string, number>();
   const PRODUCTIVE_TOOLS = new Set(['file_write', 'file_edit']);
   const unproductiveLimit = config.unproductiveTurnLimit ?? 0;
+  const repeatedToolFailureLimit = config.repeatedToolFailureLimit ?? 3;
   // Tracks whether ANY productive tool succeeded across the whole run.
   // Used to auto-promote the validation profile from oracle-prime to
   // coding-answer at the end — oracle-prime expects reasoning sections
@@ -120,6 +122,19 @@ export async function* queryLoop(
         };
       }
       compactionSpan?.end('ok', { strategy: compacted.strategy, tokensFreed: compacted.tokensFreed });
+    }
+
+    // Pre-check: warn if estimated context exceeds the configured limit.
+    // This catches oversized payloads before they hit a 413 from the provider.
+    const preCallTokenEstimate = estimateTokenCount(messages);
+    const contextLimit = config.context?.maxTokens ?? DEFAULT_COMPACTION_CONFIG.maxTokens;
+    if (preCallTokenEstimate > contextLimit) {
+      yield {
+        type: 'context_warning',
+        estimatedTokens: preCallTokenEstimate,
+        maxTokens: contextLimit,
+        message: `Context size (~${preCallTokenEstimate} tokens) exceeds limit (${contextLimit}). The provider may reject this request. Consider reducing message size.`,
+      };
     }
 
     let assistantMessage: Message;
@@ -199,6 +214,7 @@ export async function* queryLoop(
 
     // Parse tool calls from the assistant message
     const toolCalls: ToolCall[] = assistantMessage.tool_calls.map((tc) => ({
+      id: (tc as { id?: string }).id,
       name: tc.function.name,
       input: (tc.function.arguments ?? {}) as Record<string, unknown>,
     }));
@@ -214,7 +230,22 @@ export async function* queryLoop(
       if (session) {
         await appendSession(session, 'tool_result', { kind: 'tool_result', call, result }, tracer);
       }
-      messages.push({ role: 'tool', content: result.output });
+      messages.push({ role: 'tool', content: result.output, ...(call.id ? { tool_call_id: call.id } : {}) } as Message);
+      if (result.success) {
+        toolFailureCounts.delete(call.name);
+      } else if (repeatedToolFailureLimit > 0) {
+        const failureCount = (toolFailureCounts.get(call.name) ?? 0) + 1;
+        toolFailureCounts.set(call.name, failureCount);
+        if (failureCount >= repeatedToolFailureLimit) {
+          const message = `Stopping: ${call.name} failed ${failureCount} times in this run. Last error: ${String(result.output ?? result.error ?? 'unknown error').slice(0, 500)}`;
+          if (session) {
+            await appendStatus(session, 'error', message, tracer);
+          }
+          yield { type: 'error', message, recoverable: false };
+          yield { type: 'done', reason: 'repeated_tool_failure', turns: turn };
+          return;
+        }
+      }
       if (result.success && PRODUCTIVE_TOOLS.has(call.name)) {
         producedFileChange = true;
         anyProductiveToolSucceeded = true;

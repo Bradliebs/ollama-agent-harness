@@ -3,6 +3,7 @@
 import * as readline from 'readline';
 import { OllamaClient } from '../core/ollamaClient';
 import { createChatClient } from '../core/chatClientFactory';
+import type { IChatClient } from '../core/chatClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { getBuiltinTools } from '../tools';
 import { PermissionEngine } from '../permissions/engine';
@@ -32,6 +33,7 @@ interface CliOptions {
   outputValidation?: OutputValidationProfile;
   unproductiveTurnLimit?: number;
   backend?: string;
+  compactRemoteSmoke?: boolean;
   /** When set, doctor re-runs every `watchIntervalMs` instead of exiting. */
   watchIntervalMs?: number;
 }
@@ -103,6 +105,9 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
         break;
       case '--backend':
         options.backend = args[++i];
+        break;
+      case '--compact-remote-smoke':
+        options.compactRemoteSmoke = true;
         break;
       case '--watch': {
         // Optional numeric arg: --watch 10 or just --watch (defaults to 5s).
@@ -198,6 +203,7 @@ export async function main(): Promise<void> {
     backend: options.backend,
     model: options.model,
     host: options.host,
+    autoFallback: true,
   });
 
   // Health check
@@ -207,14 +213,24 @@ export async function main(): Promise<void> {
     process.exit(1);
   }
 
+  let headlessPrompt: string | undefined = options.prompt;
+  if (!headlessPrompt && options.promptFile) {
+    const fs = await import('fs/promises');
+    headlessPrompt = await fs.readFile(options.promptFile, 'utf-8');
+  }
+  if (options.compactRemoteSmoke && headlessPrompt) {
+    await runCompactRemoteSmoke(client, headlessPrompt);
+    return;
+  }
+
   // Set up components
-  const tools = getBuiltinTools();
+  const tools = options.compactRemoteSmoke ? [] : getBuiltinTools();
   const permissionEngine = new PermissionEngine([], options.permissionMode);
   const session = new SessionStorage(projectDir, options.model);
   await session.initialize();
 
   const systemPrompt = await assembleSystemContext({
-    systemPrompt: buildSystemPrompt(options.modelRouting),
+    systemPrompt: options.compactRemoteSmoke ? 'Reply briefly in plain text.' : buildSystemPrompt(options.modelRouting),
     projectDir,
   });
 
@@ -232,18 +248,13 @@ export async function main(): Promise<void> {
     permissionCheck: (call) => permissionEngine.evaluateAsync(call),
     session,
     summarizerClient: options.summarizerModel
-      ? createChatClient({ backend: options.backend, model: options.summarizerModel, host: options.host })
+      ? createChatClient({ backend: options.backend, model: options.summarizerModel, host: options.host, autoFallback: true })
       : undefined,
   };
 
   // Headless mode — accept either an inline prompt or a path to read from.
   // --prompt-file lets callers pass large prompts (e.g. inline file contents)
   // that would otherwise overflow shell command-line size limits.
-  let headlessPrompt: string | undefined = options.prompt;
-  if (!headlessPrompt && options.promptFile) {
-    const fs = await import('fs/promises');
-    headlessPrompt = await fs.readFile(options.promptFile, 'utf-8');
-  }
   if (headlessPrompt) {
     await runHeadless(config, deps, session, headlessPrompt);
     return;
@@ -279,6 +290,13 @@ export function formatSetupHealth(result: SetupHealthResult): string {
     if (result.backends.some((b) => b.ok)) {
       lines.push('  Tip: run `npm run smoke:remote-backends` to round-trip every configured backend through the CLI.');
     }
+  }
+  if (result.fallback) {
+    const f = result.fallback;
+    const status = f.enabled
+      ? `enabled, ${f.configuredCount} backend(s) with keys, cooldown ${Math.round(f.cooldownMs / 1000)}s, order: ${f.order}`
+      : 'disabled (HARNESS_REMOTE_AUTO_FALLBACK=0)';
+    lines.push(formatHealthLine('Fallback', f.enabled && f.configuredCount > 1, `Provider fallback ${status}.`));
   }
   return lines.join('\n');
 }
@@ -361,6 +379,14 @@ async function runHeadless(
         break;
     }
   }
+}
+
+async function runCompactRemoteSmoke(client: IChatClient, prompt: string): Promise<void> {
+  const result = await client.chat([{ role: 'user', content: prompt }]);
+  const content = typeof result.message.content === 'string'
+    ? result.message.content
+    : JSON.stringify(result.message.content);
+  console.log(content.trim());
 }
 
 async function runInteractive(

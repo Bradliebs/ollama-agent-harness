@@ -69,7 +69,26 @@ describe('setup health', () => {
   });
 
   describe('backend auth checks', () => {
-    const SAVED_VARS = ['CEREBRAS_API_KEY', 'GROQ_API_KEY', 'GITHUB_TOKEN', 'GITHUB_MODELS_TOKEN', 'MISTRAL_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY'];
+    const SAVED_VARS = [
+      'CEREBRAS_API_KEY',
+      'CLOUDFLARE_ACCOUNT_ID',
+      'CLOUDFLARE_API_TOKEN',
+      'DEEPINFRA_API_KEY',
+      'FIREWORKS_API_KEY',
+      'GEMINI_API_KEY',
+      'GOOGLE_API_KEY',
+      'GROQ_API_KEY',
+      'GITHUB_TOKEN',
+      'GITHUB_MODELS_TOKEN',
+      'HF_TOKEN',
+      'HUGGINGFACE_API_KEY',
+      'MISTRAL_API_KEY',
+      'OPENROUTER_API_KEY',
+      'OPENAI_API_KEY',
+      'REPLICATE_API_TOKEN',
+      'SAMBANOVA_API_KEY',
+      'TOGETHER_API_KEY',
+    ];
     const originalValues: Record<string, string | undefined> = {};
 
     beforeEach(() => {
@@ -100,7 +119,22 @@ describe('setup health', () => {
     it('reports a backend entry per known preset', async () => {
       const result = await probe();
       const ids = result.backends.map((b) => b.id).sort();
-      expect(ids).toEqual(expect.arrayContaining(['cerebras', 'groq', 'github', 'mistral', 'openrouter', 'openai']));
+      expect(ids).toEqual(expect.arrayContaining([
+        'cerebras',
+        'cloudflare',
+        'deepinfra',
+        'fireworks',
+        'gemini',
+        'groq',
+        'github',
+        'huggingface',
+        'mistral',
+        'openrouter',
+        'openai',
+        'replicate',
+        'sambanova',
+        'together',
+      ]));
     });
 
     it('marks a backend OK when its env var is set', async () => {
@@ -146,6 +180,24 @@ describe('setup health', () => {
       expect(cerebras.keyCount).toBe(1);
       expect(cerebras.message).not.toContain('pool of');
       expect(cerebras.message).not.toContain('just-one-key');
+    });
+
+    it('reports fallback routing configuration', async () => {
+      process.env.CEREBRAS_API_KEY = 'k';
+      process.env.GROQ_API_KEY = 'k';
+      const result = await probe();
+      expect(result.fallback).toBeDefined();
+      expect(result.fallback.enabled).toBe(true);
+      expect(result.fallback.cooldownMs).toBeGreaterThan(0);
+      expect(result.fallback.configuredCount).toBeGreaterThanOrEqual(2);
+      expect(result.fallback.order).toBe('default');
+    });
+
+    it('reports custom fallback order from env', async () => {
+      process.env.HARNESS_REMOTE_FALLBACK_ORDER = 'groq,mistral';
+      const result = await probe();
+      expect(result.fallback.order).toBe('groq,mistral');
+      delete process.env.HARNESS_REMOTE_FALLBACK_ORDER;
     });
   });
 });

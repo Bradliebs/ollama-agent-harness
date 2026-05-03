@@ -175,6 +175,17 @@ const recoveryReflex: ReflexFn = (signals, state) => {
   return { triggered: true, reflexName: 'recovery', action: 'recovery mode + zero exploration + verifier' };
 };
 
+// 11. Ongoing Service Request Reflex
+// Detects requests for ongoing behaviour (reminders, task management,
+// monitoring, check-ins) and suppresses BUILD mode in favour of OPERATE mode.
+const ongoingServiceReflex: ReflexFn = (signals, state) => {
+  const sig = signals.find((s) => s.type === 'ONGOING_SERVICE_REQUEST');
+  if (!sig) return { triggered: false, reflexName: 'ongoing_service_request', action: '' };
+  state.safetyNotes.push('Ongoing service request detected. Classified as OPERATE mode; BUILD mode suppressed unless explicitly requested.');
+  state.requiredNodes.push('service.operate_mode');
+  return { triggered: true, reflexName: 'ongoing_service_request', action: 'classify as OPERATE, suppress BUILD' };
+};
+
 // ─── All reflexes in evaluation order ───────────────────────────────
 
 const ALL_REFLEXES: ReflexFn[] = [
@@ -188,6 +199,7 @@ const ALL_REFLEXES: ReflexFn[] = [
   lowConfidenceReflex,
   costSpikeReflex,
   recoveryReflex,
+  ongoingServiceReflex,
 ];
 
 // ─── Evaluate all reflexes ──────────────────────────────────────────

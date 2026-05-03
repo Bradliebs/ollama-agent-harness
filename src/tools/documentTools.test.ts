@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import ExcelJS from 'exceljs';
 import { DocumentExportTool } from './documentTools';
 
 describe('DocumentExportTool', () => {
@@ -51,6 +52,12 @@ describe('DocumentExportTool', () => {
     expect(result.output).toContain('XLSX');
     const stat = await fs.stat(filePath);
     expect(stat.size).toBeGreaterThan(100);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(filePath);
+    const worksheet = workbook.getWorksheet('Test Report');
+    expect(worksheet?.getCell('A1').value).toBe('Product');
+    expect(worksheet?.getCell('B2').value).toBe(4.5);
+    expect(worksheet?.getCell('B3').value).toBe(18);
   });
 
   it('writes an Excel file with multiple sheets', async () => {
@@ -67,6 +74,11 @@ describe('DocumentExportTool', () => {
       },
     });
     expect(result.success).toBe(true);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(filePath);
+    expect(workbook.worksheets.map((sheet) => sheet.name)).toEqual(['Revenue', 'Costs']);
+    expect(workbook.getWorksheet('Revenue')?.getCell('B2').value).toBe(1000);
+    expect(workbook.getWorksheet('Costs')?.getCell('B2').value).toBe(50);
   });
 
   it('writes a Word .docx file', async () => {

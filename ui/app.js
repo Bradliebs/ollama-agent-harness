@@ -156,7 +156,10 @@ async function loadReadiness() {
   }
 }
 
+let _readinessAutoRefreshTimer = null;
+
 function renderReadiness(data) {
+  if (_readinessAutoRefreshTimer) { clearTimeout(_readinessAutoRefreshTimer); _readinessAutoRefreshTimer = null; }
   const sections = data.sections || [];
   const ready = sections.filter((section) => section.status === 'ready').length;
   const blocked = sections.filter((section) => section.status === 'blocked').length;
@@ -168,40 +171,242 @@ function renderReadiness(data) {
   if (compact) compact.innerHTML = summary;
   const panel = document.getElementById('missionControlPanel');
   if (!panel) return;
-  panel.innerHTML = '<div class="mission-header"><div><h3>Mission Control</h3><p>' + esc(data.model || 'No model selected') + ' · ' + esc(data.permissionMode || 'default') + '</p></div><button class="btn-sm" onclick="loadReadiness()">Refresh</button></div>'
+  // Check if permission mode message contains timed info for the header
+  const modeLabel = data.permissionMode || 'default';
+  const allChecks = sections.flatMap((s) => s.checks || []);
+  const permCheck = allChecks.find((c) => c.id === 'permission.mode');
+  const timedNote = permCheck && permCheck.message && permCheck.message.includes('timed') ? ' <span style="color:#ffb050;font-size:11px">(' + esc(permCheck.message.replace(/^.*\(/, '').replace(/\).*$/, '')) + ')</span>' : '';
+  // Identify fixable blockers for the fix-all button
+  const fixableChecks = allChecks.filter((c) => c.status === 'blocked' || c.status === 'warn').filter((c) => {
+    if (c.id && c.id.startsWith('tool.')) return true;
+    if (c.id === 'permission.mode') return true;
+    if (c.id && c.id.includes('.grant')) return true;
+    return false;
+  });
+  window._readinessFixableChecks = fixableChecks;
+  const fixBtn = fixableChecks.length > 0 ? ' <button class="btn-sm" style="background:rgba(80,200,120,.15);border-color:#50c878;color:#50c878" onclick="fixReadinessBlockers()">Fix ' + fixableChecks.length + '</button>'
+    + ' <button class="btn-sm" style="background:rgba(255,176,80,.15);border-color:#ffb050;color:#ffb050" onclick="fixReadinessBlockersTimed()">Fix ' + fixableChecks.length + ' (timed)</button>' : '';
+  const undoBtn = window._fixAllUndoSnapshot ? ' <button class="btn-sm" style="background:rgba(138,180,248,.12);border-color:#8ab4f8;color:#8ab4f8" onclick="undoFixAll()">Undo fix-all</button>' : '';
+  panel.innerHTML = '<div class="mission-header"><div><h3>Mission Control</h3><p>' + esc(data.model || 'No model selected') + ' · ' + esc(modeLabel) + timedNote + '</p></div><div class="inline-actions"><button class="btn-sm" onclick="loadReadiness()">Refresh</button>' + fixBtn + undoBtn + '</div></div>'
     + '<div class="readiness-summary">' + summary + '</div>'
     + '<div class="mission-grid">' + sections.map(renderReadinessSection).join('') + '</div>'
+    + '<div style="text-align:right;margin-top:4px;padding:0 4px"><button class="btn-sm" style="font-size:9px;opacity:.5" onclick="exportMissionPrompts()">Export prompts</button> <button class="btn-sm" style="font-size:9px;opacity:.5" onclick="importMissionPrompts()">Import</button></div>'
     + '<div class="nervous-panel" id="nervousPanel"><div class="readiness-empty">Loading nervous system...</div></div>'
     + '<div class="autonomy-builder" id="autonomyBuilderPanel"><div class="readiness-empty">Loading autonomy plan...</div></div>'
     + '<div class="document-studio" id="documentStudioPanel">' + renderDocumentStudioShell() + '</div>';
   loadNervousStatus();
   loadAutonomyPlanPreview();
   loadDocuments();
+  // Auto-refresh readiness every 60s when timed autonomy is active
+  if (permCheck && permCheck.message && permCheck.message.includes('timed')) {
+    _readinessAutoRefreshTimer = setTimeout(() => {
+      if (document.getElementById('missionControlPanel')) loadReadiness();
+    }, 60_000);
+  }
 }
 
 function renderReadinessSection(section) {
-  const firstBlocked = (section.checks || []).find((check) => check.status === 'blocked') || (section.checks || []).find((check) => check.status === 'warn');
+  const checks = section.checks || [];
+  const firstBlocked = checks.find((check) => check.status === 'blocked') || checks.find((check) => check.status === 'warn');
+  const noteAction = firstBlocked && firstBlocked.action === 'Open Settings' ? ' onclick="toggleRight()" style="cursor:pointer;text-decoration:underline dotted"' : firstBlocked && firstBlocked.action === 'Open Tools' ? ' onclick="openLeftTabByName(\'tools\')" style="cursor:pointer;text-decoration:underline dotted"' : '';
+  const readyCount = checks.filter((c) => c.status === 'ready').length;
+  const checkCountColor = readyCount === checks.length ? '#50c878' : readyCount === 0 ? '#ff5050' : '#ffb050';
+  const checkRows = checks.length > 1 ? '<details style="margin-top:4px"><summary class="trace-meta" style="cursor:pointer;font-size:10px"><span style="color:' + checkCountColor + '">' + readyCount + '/' + checks.length + ' ready</span></summary>'
+    + checks.map((c) => {
+      const icon = c.status === 'ready' ? '✅' : c.status === 'warn' ? '⚠️' : '❌';
+      const actionAttr = c.action === 'Open Settings' ? ' onclick="toggleRight()" style="cursor:pointer;text-decoration:underline dotted"' : c.action === 'Open Tools' ? ' onclick="openLeftTabByName(\'tools\')" style="cursor:pointer;text-decoration:underline dotted"' : '';
+      let actionBtn = '';
+      if (c.status !== 'ready') {
+        if (c.id && c.id.startsWith('tool.') && c.status === 'blocked') {
+          const toolName = c.id.replace('tool.', '');
+          actionBtn = ' <button class="btn-sm" style="font-size:9px;padding:1px 6px" onclick="event.stopPropagation();toggleTool(\'' + escAttr(toolName) + '\',true).then(function(){loadReadiness()})">Enable</button>'
+            + ' <button class="btn-sm" style="font-size:9px;padding:1px 6px;color:#ffb050;border-color:#ffb050" onclick="event.stopPropagation();readinessTimedFix(\'tool\',\'' + escAttr(toolName) + '\')">⏱</button>';
+        } else if (c.id === 'permission.mode') {
+          actionBtn = ' <button class="btn-sm" style="font-size:9px;padding:1px 6px" onclick="event.stopPropagation();setMode(\'dontAsk\',document.querySelectorAll(\'.permission-mode-option\')[0]);setTimeout(loadReadiness,500)">Set dontAsk</button>'
+            + ' <button class="btn-sm" style="font-size:9px;padding:1px 6px;color:#ffb050;border-color:#ffb050" onclick="event.stopPropagation();readinessTimedFix(\'mode\')">⏱</button>';
+        } else if (c.id && c.id.includes('.grant') && c.status !== 'ready') {
+          const capId = c.id === 'shell.grant' ? 'arbitrary-shell' : c.id === 'background.autonomy.grant' || c.id === 'background.grant' ? 'background-autonomous-jobs' : c.id === 'self.modify.grant' ? 'self-modifying-code' : '';
+          if (capId) actionBtn = ' <button class="btn-sm" style="font-size:9px;padding:1px 6px" onclick="event.stopPropagation();grantCapability(\'' + escAttr(capId) + '\').then(function(){loadReadiness()})">Grant</button>';
+        }
+      }
+      return '<div class="trace-meta" style="font-size:10px;display:flex;align-items:center;gap:4px"' + actionAttr + '><span>' + icon + ' ' + esc(c.label) + ': ' + esc(c.message) + '</span>' + actionBtn + '</div>';
+    }).join('') + '</details>' : '';
   return '<div class="mission-card ' + escAttr(section.status) + '">'
     + '<div class="mission-card-top"><strong>' + esc(section.label) + '</strong><span>' + esc(section.score) + '%</span></div>'
     + '<div class="mission-meter"><span style="width:' + Math.max(0, Math.min(100, section.score || 0)) + '%"></span></div>'
-    + '<div class="mission-note">' + esc(firstBlocked ? firstBlocked.message : 'Ready for this mode.') + '</div>'
-    + '<button class="btn-sm" onclick="sendMissionPrompt(\'' + escAttr(section.id) + '\')">Start</button>'
+    + '<div class="mission-note"' + noteAction + '>' + esc(firstBlocked ? firstBlocked.message : 'Ready for this mode.') + '</div>'
+    + checkRows
+    + '<div class="inline-actions" style="margin-top:4px"><button class="btn-sm" onclick="sendMissionPrompt(\'' + escAttr(section.id) + '\')">Start</button> <button class="btn-sm" style="font-size:9px;opacity:.6" onclick="editMissionPrompt(\'' + escAttr(section.id) + '\')">✏️</button></div>'
     + '</div>';
 }
 
+const DEFAULT_MISSION_PROMPTS = {
+  chat: 'Start a clean chat and ask one clarifying question before acting.',
+  coding: 'Inspect the current repo and suggest the safest next code-hardening task.',
+  research: 'Research the current project docs and summarize the most important next decision.',
+  automation: 'Review configured automations and report which ones are due or risky.',
+  autonomy: 'Inspect IMPLEMENTATION_PLAN.md and propose the next autonomous run plan without starting it.',
+};
+let customMissionPrompts = {};
+
 function sendMissionPrompt(mode) {
-  const prompts = {
-    chat: 'Start a clean chat and ask one clarifying question before acting.',
-    coding: 'Inspect the current repo and suggest the safest next code-hardening task.',
-    research: 'Research the current project docs and summarize the most important next decision.',
-    automation: 'Review configured automations and report which ones are due or risky.',
-    autonomy: 'Inspect IMPLEMENTATION_PLAN.md and propose the next autonomous run plan without starting it.',
-  };
+  const prompts = { ...DEFAULT_MISSION_PROMPTS, ...customMissionPrompts };
   const input = document.getElementById('chatInput');
   if (!input) return;
   input.value = prompts[mode] || 'Help me choose the best Harness mode for this task.';
   autoSize(input);
   input.focus();
+}
+
+function editMissionPrompt(mode) {
+  const prompts = { ...DEFAULT_MISSION_PROMPTS, ...customMissionPrompts };
+  const current = prompts[mode] || '';
+  const updated = prompt('Edit ' + mode + ' prompt:', current);
+  if (updated === null) return;
+  if (updated.trim() === '' || updated === DEFAULT_MISSION_PROMPTS[mode]) {
+    delete customMissionPrompts[mode];
+  } else {
+    customMissionPrompts[mode] = updated;
+  }
+  try { localStorage.setItem('harness_mission_prompts', JSON.stringify(customMissionPrompts)); } catch {}
+  showToast('Mission prompt updated for ' + mode, 2000, 'success');
+}
+
+// Load custom prompts from localStorage on init
+try { customMissionPrompts = JSON.parse(localStorage.getItem('harness_mission_prompts') || '{}'); } catch { customMissionPrompts = {}; }
+
+function exportMissionPrompts() {
+  const prompts = { ...DEFAULT_MISSION_PROMPTS, ...customMissionPrompts };
+  navigator.clipboard.writeText(JSON.stringify(prompts, null, 2))
+    .then(() => showToast('Mission prompts copied to clipboard', 2000, 'success'))
+    .catch(() => showToast('Export failed', 2000, 'error'));
+}
+
+function importMissionPrompts() {
+  const raw = prompt('Paste mission prompts JSON:');
+  if (raw === null) return;
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) throw new Error('Must be an object');
+    customMissionPrompts = {};
+    for (const [mode, text] of Object.entries(parsed)) {
+      if (typeof text === 'string' && text.trim() && text !== DEFAULT_MISSION_PROMPTS[mode]) {
+        customMissionPrompts[mode] = text;
+      }
+    }
+    localStorage.setItem('harness_mission_prompts', JSON.stringify(customMissionPrompts));
+    showToast('Imported ' + Object.keys(customMissionPrompts).length + ' custom prompt(s)', 2000, 'success');
+    loadReadiness();
+  } catch (e) { showToast('Import failed: ' + (e.message || e), 3000, 'error'); }
+}
+
+window._readinessFixableChecks = [];
+async function fixReadinessBlockers(timedMinutes) {
+  const checks = window._readinessFixableChecks || [];
+  if (checks.length === 0) return;
+  const label = timedMinutes ? 'Auto-fix ' + checks.length + ' blocker(s) for ' + timedMinutes + ' minutes?' : 'Auto-fix ' + checks.length + ' blocker(s)?';
+  if (!confirm(label + '\n\nThis will enable disabled tools, set dontAsk mode, and grant missing capabilities.')) return;
+  // Snapshot pre-fix state for undo
+  window._fixAllUndoSnapshot = await snapshotPreFixState();
+  try { sessionStorage.setItem('harness_fixall_undo', JSON.stringify(window._fixAllUndoSnapshot)); } catch {}
+  for (const c of checks) {
+    if (c.id && c.id.startsWith('tool.')) {
+      const toolName = c.id.replace('tool.', '');
+      const body = timedMinutes ? { enabled: true, expiresInMinutes: timedMinutes } : { enabled: true };
+      await fetch('/api/tools/' + encodeURIComponent(toolName) + '/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => {});
+    } else if (c.id === 'permission.mode') {
+      if (timedMinutes) {
+        await fetch('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresInMinutes: timedMinutes }) }).catch(() => {});
+      } else {
+        await updateSetting('permissionMode', 'dontAsk');
+      }
+      document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
+      const dontAskOpt = document.querySelectorAll('.permission-mode-option')[0];
+      if (dontAskOpt) dontAskOpt.classList.add('active');
+    } else if (c.id && c.id.includes('.grant')) {
+      const capMap = { 'shell.grant': 'arbitrary-shell', 'background.autonomy.grant': 'background-autonomous-jobs', 'background.grant': 'background-autonomous-jobs', 'self.modify.grant': 'self-modifying-code' };
+      const capId = capMap[c.id];
+      if (capId) {
+        const caps = await fetch('/api/capabilities').then((r) => r.json()).catch(() => null);
+        const item = caps && (caps.capabilities || []).find((cap) => cap.id === capId);
+        if (item && item.posture === 'gated') {
+          await fetch('/api/capabilities/grants', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ capabilityId: capId, controls: item.requiredControls || [], reason: timedMinutes ? 'Auto-granted (timed) from readiness fix-all' : 'Auto-granted from readiness fix-all', expiresInMinutes: timedMinutes || 480 }) }).catch(() => {});
+        }
+      }
+    }
+  }
+  showToast('Fixed ' + checks.length + ' blocker(s)' + (timedMinutes ? ' for ' + timedMinutes + 'm' : '') + '. Refreshing...', 3000, 'success');
+  await loadReadiness();
+  if (typeof loadToolsDashboard === 'function') loadToolsDashboard();
+  refreshAutonomyBanner();
+}
+
+async function fixReadinessBlockersTimed() {
+  const minutesRaw = prompt('Fix blockers for how many minutes? (1-1440)', '120');
+  if (minutesRaw === null) return;
+  const minutes = Number(minutesRaw);
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { alert('Enter a number between 1 and 1440.'); return; }
+  await fixReadinessBlockers(minutes);
+}
+
+async function readinessTimedFix(type, name) {
+  const minutesRaw = prompt('Enable for how many minutes? (1-1440)', '60');
+  if (minutesRaw === null) return;
+  const minutes = Number(minutesRaw);
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { alert('Enter a number between 1 and 1440.'); return; }
+  if (type === 'tool') {
+    await toggleTool(name, true, minutes);
+  } else if (type === 'mode') {
+    await fetch('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresInMinutes: minutes }) }).catch(() => {});
+    document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
+    const dontAskOpt = document.querySelectorAll('.permission-mode-option')[0];
+    if (dontAskOpt) dontAskOpt.classList.add('active');
+    refreshAutonomyBanner();
+  }
+  await loadReadiness();
+}
+
+// Restore undo snapshot from sessionStorage
+try { window._fixAllUndoSnapshot = JSON.parse(sessionStorage.getItem('harness_fixall_undo') || 'null'); } catch { window._fixAllUndoSnapshot = null; }
+async function snapshotPreFixState() {
+  try {
+    const [toolsR, settingsR, grantsR] = await Promise.all([
+      fetch('/api/tools').then((r) => r.json()),
+      fetch('/api/settings').then((r) => r.json()),
+      fetch('/api/capabilities').then((r) => r.json()),
+    ]);
+    return {
+      disabledTools: toolsR.disabled || [],
+      permissionMode: settingsR.permissionMode || 'default',
+      grantIds: ((grantsR.capabilities || []).flatMap((c) => c.id ? [] : [])),
+      activeGrantIds: ((grantsR.grants || []).map((g) => g.id)),
+      ts: Date.now(),
+    };
+  } catch { return null; }
+}
+
+async function undoFixAll() {
+  const snap = window._fixAllUndoSnapshot;
+  if (!snap) { showToast('No fix-all to undo', 2000); return; }
+  if (!confirm('Undo last fix-all?\n\nThis will re-disable tools and revert permission mode to ' + snap.permissionMode + '.')) return;
+  // Re-disable tools
+  for (const name of snap.disabledTools) {
+    await fetch('/api/tools/' + encodeURIComponent(name) + '/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) }).catch(() => {});
+  }
+  // Revert permission mode
+  await updateSetting('permissionMode', snap.permissionMode);
+  document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
+  const mi = snap.permissionMode === 'dontAsk' ? 0 : snap.permissionMode === 'acceptEdits' ? 1 : 2;
+  const mo = document.querySelectorAll('.permission-mode-option')[mi];
+  if (mo) mo.classList.add('active');
+  // Clear timed autonomy if it was set by fix-all
+  await fetch('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }).catch(() => {});
+  window._fixAllUndoSnapshot = null;
+  try { sessionStorage.removeItem('harness_fixall_undo'); } catch {}
+  showToast('Reverted fix-all. Mode: ' + snap.permissionMode + ', ' + snap.disabledTools.length + ' tool(s) re-disabled.', 4000, 'info');
+  await loadReadiness();
+  if (typeof loadToolsDashboard === 'function') loadToolsDashboard();
+  refreshAutonomyBanner();
 }
 
 async function loadNervousStatus() {
@@ -571,7 +776,163 @@ async function loadSettings() {
     const modeIndex = s.permissionMode === 'dontAsk' ? 0 : s.permissionMode === 'acceptEdits' ? 1 : 2;
     const mode = document.querySelectorAll('.permission-mode-option')[modeIndex];
     if (mode) mode.classList.add('active');
+    refreshAutonomyBanner();
   } catch {}
+}
+
+const _toastStack = [];
+const _toastStyles = {
+  success: { icon: '✅', border: '#50c878' },
+  warning: { icon: '⚠️', border: '#ffb050' },
+  error: { icon: '❌', border: '#ff5050' },
+  info: { icon: 'ℹ️', border: '#8ab4f8' },
+};
+function showToast(message, durationMs, type) {
+  const style = _toastStyles[type] || null;
+  const borderColor = style ? style.border : 'var(--border,#444)';
+  const toast = document.createElement('div');
+  toast.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);z-index:10000;background:var(--surface2,#2a2a2a);color:var(--text,#e0e0e0);border:1px solid ' + borderColor + ';border-radius:8px;padding:10px 18px;font-size:13px;font-family:inherit;box-shadow:0 4px 12px rgba(0,0,0,.3);opacity:0;transition:opacity .3s,bottom .3s;cursor:pointer';
+  toast.textContent = (style ? style.icon + ' ' : '') + message;
+  toast.title = 'Click to dismiss';
+  document.body.appendChild(toast);
+  _toastStack.push(toast);
+  _repositionToasts();
+  requestAnimationFrame(() => { toast.style.opacity = '1'; });
+  function dismiss() {
+    if (toast._dismissed) return;
+    toast._dismissed = true;
+    toast.style.opacity = '0';
+    setTimeout(() => {
+      toast.remove();
+      const idx = _toastStack.indexOf(toast);
+      if (idx >= 0) _toastStack.splice(idx, 1);
+      _repositionToasts();
+    }, 300);
+  }
+  toast.addEventListener('click', dismiss);
+  setTimeout(dismiss, durationMs || 3000);
+}
+function _repositionToasts() {
+  let bottom = 20;
+  for (let i = _toastStack.length - 1; i >= 0; i--) {
+    _toastStack[i].style.bottom = bottom + 'px';
+    bottom += _toastStack[i].offsetHeight + 8;
+  }
+}
+
+function copyAuditJson(btn) {
+  const pre = btn.parentElement?.querySelector('.audit-json-pre');
+  if (pre) navigator.clipboard.writeText(pre.textContent).then(() => showToast('Copied to clipboard', 1500, 'success')).catch(() => showToast('Copy failed', 1500, 'error'));
+}
+
+const AUDIT_TYPE_COLORS = { 'grant.created': '#50c878', 'grant.revoked': '#ffb050', 'grant.expired': '#ff5050', 'automation_script.allowed': '#50c878', 'automation_script.denied': '#ff5050', 'autonomy.timed.engaged': '#ffb050', 'autonomy.timed.cleared': '#8ab4f8', 'autonomy.timed.expired': '#ff5050' };
+const AUDIT_FILTER_MAP = { grant: ['grant.created', 'grant.revoked', 'grant.expired'], autonomy: ['autonomy.timed.engaged', 'autonomy.timed.cleared', 'autonomy.timed.expired'], automation: ['automation_script.allowed', 'automation_script.denied'] };
+
+function renderAuditRowHtml(ev) {
+  const color = AUDIT_TYPE_COLORS[ev.type] || 'var(--text-dim)';
+  const ts = ev.createdAt ? new Date(ev.createdAt).toLocaleString() : '';
+  const detail = ev.capabilityId ? ev.capabilityId : ev.command ? ev.command : '';
+  const jsonDetail = JSON.stringify(ev, null, 2);
+  return '<details style="margin:0"><summary class="trace-meta" style="font-size:11px;cursor:pointer;list-style:none"><span style="color:' + color + '">' + esc(ev.type) + '</span> ' + esc(detail) + (ev.reason ? ' — ' + esc(ev.reason) : '') + (ev.presetId ? ' [' + esc(ev.presetId) + ']' : '') + '<span style="color:var(--text-dim);margin-left:8px">' + esc(ts) + '</span></summary>'
+    + '<div style="position:relative"><pre class="audit-json-pre" style="font-size:9px;background:var(--surface2);padding:4px 8px;border-radius:4px;margin:2px 0 4px;white-space:pre-wrap;color:var(--text-dim)">' + esc(jsonDetail) + '</pre>'
+    + '<button class="btn-sm" style="position:absolute;top:4px;right:4px;font-size:9px;padding:1px 6px;opacity:.7" onclick="copyAuditJson(this)">Copy</button></div></details>';
+}
+
+let _autonomyBannerTimer = null;
+let _autonomyWasActive = false;
+function refreshAutonomyBanner() {
+  if (_autonomyBannerTimer) { clearTimeout(_autonomyBannerTimer); _autonomyBannerTimer = null; }
+  fetch('/api/permissions/state').then((r) => r.json()).then((state) => {
+    const banner = document.getElementById('timedAutonomyBanner');
+    // Also manage the global fixed banner visible from any tab
+    renderGlobalAutonomyBanner(state);
+    const isActive = state.autonomyExpiresAt && (new Date(state.autonomyExpiresAt).getTime() - Date.now()) > 0;
+    // Detect expiry transition: was active, now isn't
+    if (_autonomyWasActive && !isActive) {
+      const prevLabel = state.mode === 'acceptEdits' ? 'Ask for commands' : state.mode === 'default' ? 'Ask for everything' : state.mode;
+      showToast('⏱ Timed autonomy expired — reverted to ' + prevLabel, 5000);
+    }
+    _autonomyWasActive = !!isActive;
+    if (!banner) return;
+    if (state.autonomyExpiresAt) {
+      const ms = new Date(state.autonomyExpiresAt).getTime() - Date.now();
+      if (ms > 0) {
+        const totalMin = Math.ceil(ms / 60000);
+        const h = Math.floor(totalMin / 60);
+        const m = totalMin % 60;
+        const timeStr = h > 0 ? h + 'h ' + (m > 0 ? m + 'm' : '') : m + 'm';
+        const prevLabel = state.autonomyPreviousMode === 'acceptEdits' ? 'Ask for commands' : state.autonomyPreviousMode === 'default' ? 'Ask for everything' : state.autonomyPreviousMode;
+        const pct = _autonomyOriginalDurationMs > 0 ? Math.max(0, Math.min(100, (ms / _autonomyOriginalDurationMs) * 100)) : 100;
+        banner.innerHTML = '<strong>⏱ Timed autonomy active:</strong> ' + esc(timeStr.trim()) + ' remaining → reverts to <strong>' + esc(prevLabel) + '</strong> <button class="btn-sm" style="margin-left:8px;font-size:11px" onclick="cancelTimedAutonomy()">Cancel</button>'
+          + '<div style="height:2px;margin-top:4px;background:rgba(255,176,80,.2);border-radius:1px"><div style="height:100%;width:' + pct.toFixed(1) + '%;background:#ffb050;transition:width 1s linear;border-radius:1px"></div></div>';
+        banner.style.display = 'block';
+        // Also sync the mode radio buttons in case it expired server-side
+        document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
+        const mi = state.mode === 'dontAsk' ? 0 : state.mode === 'acceptEdits' ? 1 : 2;
+        const mo = document.querySelectorAll('.permission-mode-option')[mi];
+        if (mo) mo.classList.add('active');
+        // Schedule next refresh in 60s
+        _autonomyBannerTimer = setTimeout(refreshAutonomyBanner, 60_000);
+        return;
+      }
+    }
+    banner.style.display = 'none';
+    banner.innerHTML = '';
+    // Sync mode buttons in case autonomy expired
+    if (state.mode) {
+      document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
+      const mi = state.mode === 'dontAsk' ? 0 : state.mode === 'acceptEdits' ? 1 : 2;
+      const mo = document.querySelectorAll('.permission-mode-option')[mi];
+      if (mo) mo.classList.add('active');
+    }
+  }).catch(() => {});
+}
+
+let _autonomyOriginalDurationMs = 0;
+
+function renderGlobalAutonomyBanner(state) {
+  let banner = document.getElementById('globalAutonomyBanner');
+  if (!state.autonomyExpiresAt) {
+    if (banner) banner.remove();
+    _autonomyOriginalDurationMs = 0;
+    return;
+  }
+  const expiresAtMs = new Date(state.autonomyExpiresAt).getTime();
+  const ms = expiresAtMs - Date.now();
+  if (ms <= 0) {
+    if (banner) banner.remove();
+    _autonomyOriginalDurationMs = 0;
+    return;
+  }
+  // Track original duration on first render so we can compute %
+  if (_autonomyOriginalDurationMs === 0) _autonomyOriginalDurationMs = ms;
+  const pct = Math.max(0, Math.min(100, (ms / _autonomyOriginalDurationMs) * 100));
+  const totalMin = Math.ceil(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  const timeStr = h > 0 ? h + 'h ' + (m > 0 ? m + 'm' : '') : m + 'm';
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'globalAutonomyBanner';
+    banner.style.cssText = 'position:fixed;left:0;right:0;z-index:9998;background:rgba(255,176,80,.12);border-bottom:1px solid #ffb050;color:#ffb050;padding:0;font-size:11px;font-family:inherit;flex-direction:column';
+    banner.style.display = 'flex';
+    document.body.appendChild(banner);
+  }
+  // Always recalculate top position based on kill switch banner presence
+  const ksBanner = document.getElementById('killSwitchBanner');
+  banner.style.top = ksBanner ? (ksBanner.offsetHeight + 'px') : '0';
+  banner.innerHTML = '<div style="display:flex;align-items:center;gap:8px;padding:4px 12px"><strong>⏱ Timed autonomy:</strong> ' + esc(timeStr.trim()) + ' remaining'
+    + '<span style="margin-left:auto;opacity:.7">All tools + dontAsk mode active</span>'
+    + '<button class="btn-sm" style="margin-left:8px;font-size:10px" onclick="cancelTimedAutonomy()">Cancel</button></div>'
+    + '<div style="height:2px;background:rgba(255,176,80,.2)"><div style="height:100%;width:' + pct.toFixed(1) + '%;background:#ffb050;transition:width 1s linear"></div></div>';
+}
+
+async function cancelTimedAutonomy() {
+  if (!confirm('Cancel timed autonomy and revert permission mode now?')) return;
+  const clearTools = confirm('Also clear all timed tool enables?\n\nYes = revert tools to disabled too\nNo = only revert permission mode, tools keep their timers');
+  await fetch('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clearTimedTools: clearTools }) });
+  refreshAutonomyBanner();
+  if (typeof loadToolsDashboard === 'function') loadToolsDashboard();
 }
 
 async function loadOutputValidationTemplates() {
@@ -1500,18 +1861,52 @@ async function enableFullAutonomy() {
   try {
     const toolsData = await fetch('/api/tools').then((r) => r.json());
     const disabled = toolsData.disabled || [];
-    for (const name of disabled) {
-      await fetch('/api/tools/' + encodeURIComponent(name) + '/toggle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: true }),
+    if (disabled.length > 0) {
+      await fetch('/api/tools/bulk-toggle', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ names: disabled, enabled: true }),
       });
     }
   } catch { /* best effort */ }
 
   // Refresh the tools dashboard if visible
   if (typeof loadToolsDashboard === 'function') loadToolsDashboard();
-  alert('Full autonomy enabled. All tools unlocked. All gated capabilities will auto-grant on next chat. Kill switch (Ctrl+Shift+K) is your emergency stop.');
+  showToast('Full autonomy enabled. All tools unlocked. Kill switch (Ctrl+Shift+K) is your emergency stop.', 4000, 'success');
+}
+
+async function enableTimedAutonomy() {
+  const minutesRaw = prompt('Enable full autonomy for how many minutes? (1-1440)', '120');
+  if (minutesRaw === null) return;
+  const minutes = Number(minutesRaw);
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { alert('Enter a number between 1 and 1440.'); return; }
+
+  // Set timed autonomy via dedicated endpoint (stores previous mode for revert)
+  await fetch('/api/permissions/timed-autonomy', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expiresInMinutes: minutes }),
+  });
+
+  // Update the UI to show dontAsk mode
+  document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
+  const dontAskOption = document.querySelectorAll('.permission-mode-option')[0];
+  if (dontAskOption) dontAskOption.classList.add('active');
+
+  // Enable all disabled tools with a time limit
+  try {
+    const toolsData = await fetch('/api/tools').then((r) => r.json());
+    const disabled = toolsData.disabled || [];
+    if (disabled.length > 0) {
+      await fetch('/api/tools/bulk-toggle', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ names: disabled, enabled: true, expiresInMinutes: minutes }),
+      });
+    }
+  } catch { /* best effort */ }
+
+  // Refresh the tools dashboard if visible
+  if (typeof loadToolsDashboard === 'function') loadToolsDashboard();
+  const hours = minutes >= 60 ? Math.floor(minutes / 60) + 'h ' + (minutes % 60 ? (minutes % 60) + 'm' : '') : minutes + 'm';
+  showToast('Timed autonomy enabled for ' + hours.trim() + '. Tools + permission mode auto-revert on expiry.', 4000, 'warning');
 }
 
 async function handleFileAttach(fileList) {
@@ -1869,6 +2264,18 @@ async function sendMessage(opts) {
               }
             }
             refreshSkillSurfacesAfterToolResult(ev.call, ev.result, toolBox);
+            break;
+          case 'provider_fallback':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '⚠️', 'provider fallback', ev.fromBackend + ' → ' + ev.toBackend + (ev.cooldownSec ? ' · cooldown ' + ev.cooldownSec + 's' : '') + ' · ' + (ev.reason || 'limit reached'), false);
+            break;
+          case 'mode_classification':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '🏷️', 'mode: ' + (ev.mode || 'unknown').toUpperCase(), ev.reason + (ev.suppressedModes && ev.suppressedModes.length ? ' · suppressed: ' + ev.suppressedModes.join(', ') : ''), false);
+            break;
+          case 'context_warning':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '⚠️', 'context warning', ev.message || ('~' + ev.estimatedTokens + ' tokens vs ' + ev.maxTokens + ' limit'), true);
             break;
           case 'usage':
             // Fold per-LLM-call usage into the running session totals (topbar
@@ -3653,8 +4060,17 @@ const REMOTE_API_KEY_FIELDS = [
   { name: 'MISTRAL_API_KEY', label: 'Mistral AI', signup: 'https://console.mistral.ai/api-keys' },
   { name: 'GROQ_API_KEY', label: 'Groq', signup: 'https://console.groq.com/keys' },
   { name: 'CEREBRAS_API_KEY', label: 'Cerebras', signup: 'https://cloud.cerebras.ai/' },
+  { name: 'CLOUDFLARE_API_TOKEN', label: 'Cloudflare Workers AI token', signup: 'https://dash.cloudflare.com/profile/api-tokens' },
+  { name: 'CLOUDFLARE_ACCOUNT_ID', label: 'Cloudflare Account ID', signup: 'https://dash.cloudflare.com/' },
+  { name: 'GEMINI_API_KEY', label: 'Google Gemini', signup: 'https://aistudio.google.com/app/apikey' },
   { name: 'GITHUB_MODELS_TOKEN', label: 'GitHub Models', signup: 'https://github.com/marketplace/models' },
   { name: 'OPENROUTER_API_KEY', label: 'OpenRouter', signup: 'https://openrouter.ai/keys' },
+  { name: 'REPLICATE_API_TOKEN', label: 'Replicate', signup: 'https://replicate.com/account/api-tokens' },
+  { name: 'HF_TOKEN', label: 'Hugging Face', signup: 'https://huggingface.co/settings/tokens' },
+  { name: 'TOGETHER_API_KEY', label: 'Together AI', signup: 'https://api.together.ai/settings/api-keys' },
+  { name: 'SAMBANOVA_API_KEY', label: 'SambaNova Cloud', signup: 'https://cloud.sambanova.ai/apis' },
+  { name: 'FIREWORKS_API_KEY', label: 'Fireworks AI', signup: 'https://fireworks.ai/account/api-keys' },
+  { name: 'DEEPINFRA_API_KEY', label: 'DeepInfra', signup: 'https://deepinfra.com/dash/api_keys' },
   { name: 'OPENAI_API_KEY', label: 'OpenAI', signup: 'https://platform.openai.com/api-keys' },
 ];
 
@@ -3783,7 +4199,7 @@ async function loadTelegramStatus() {
     const settings = await readApiJson(settingsRes, 'Settings API');
     if (tokenInput) tokenInput.value = settings.telegramBotToken || '';
     if (chatIdsInput) chatIdsInput.value = settings.telegramAllowedChatIds || '';
-    status.textContent = st.running ? '✅ Bot is running' : st.configured ? '⚠️ Token set but bot not running' : 'Not configured';
+    status.innerHTML = st.running ? '✅ Bot is running' + (st.pollingLock && st.pollingLock.pid ? ' (PID ' + st.pollingLock.pid + ')' : '') : st.configured ? '⚠️ Token set but bot not running — click <strong>Connect</strong> to start' : '💡 Not configured — get a token from <a href="https://t.me/BotFather" target="_blank">@BotFather</a>, paste it above, and click Connect';
   } catch (e) {
     status.textContent = '⚠ Could not load status: ' + (e.message || e);
   }
@@ -4739,7 +5155,12 @@ async function ragRebuildNow(name) {
 // with its primary one-click action so the user can jump from "what do I
 // have" to "do the thing" without leaving this view.
 
+let _timedToolRefreshTimer = null;
+
 async function loadToolsDashboard() {
+  // Clear any pending auto-refresh from a previous render
+  if (_timedToolRefreshTimer) { clearTimeout(_timedToolRefreshTimer); _timedToolRefreshTimer = null; }
+
   const view = document.getElementById('toolsDashboardView');
   if (!view) return;
   view.innerHTML = '<div class="trace-list"><div class="trace-title">Local Tools</div><div class="trace-meta">Loading…</div></div>';
@@ -4758,6 +5179,9 @@ async function loadToolsDashboard() {
     const auditR = await fetch('/api/capabilities/audit').then((r) => r.json()).catch(() => ({ events: [] }));
     const auditEvents = Array.isArray(auditR.events) ? auditR.events : [];
     view.innerHTML = header + renderPermissionPanel(perm) + renderCapabilityAlignmentPanel(capabilities, auditEvents) + renderToolRegistryPanel(registry) + '<div class="trace-list" id="toolsDashboardCards"><div class="trace-item"><div class="trace-title">Dashboard details</div><div class="trace-meta">Loading local status…</div></div></div>';
+
+    // Schedule auto-refresh when timed tool enables are active
+    scheduleTimedToolRefresh(registry);
 
     const [snapsR, indexesR, sessionsR, modelsR, storageR, mcpR] = await Promise.allSettled([
       fetch('/api/snapshots').then((r) => r.json()),
@@ -4838,6 +5262,31 @@ async function loadToolsDashboard() {
   }
 }
 
+function scheduleTimedToolRefresh(registry) {
+  if (_timedToolRefreshTimer) { clearTimeout(_timedToolRefreshTimer); _timedToolRefreshTimer = null; }
+  const tools = (registry && registry.tools) || [];
+  const now = Date.now();
+  let hasTimed = false;
+  let earliest = Infinity;
+  for (const t of tools) {
+    if (t.enabledUntil) {
+      hasTimed = true;
+      const exp = new Date(t.enabledUntil).getTime();
+      if (exp > now && exp < earliest) earliest = exp;
+    }
+  }
+  if (hasTimed) {
+    // Refresh at the earlier of: 60s (countdown update) or expiry + 1s
+    const expiryDelay = earliest < Infinity ? earliest - now + 1000 : Infinity;
+    const delay = Math.max(1000, Math.min(60_000, expiryDelay));
+    _timedToolRefreshTimer = setTimeout(() => {
+      // Only refresh if the tools tab is still visible
+      const td = document.getElementById('toolsDashboardView');
+      if (td && td.style.display !== 'none') loadToolsDashboard();
+    }, delay);
+  }
+}
+
 function renderPermissionPanel(perm) {
   if (!perm) return '';
   const ks = perm.killSwitch || { active: false, reason: '' };
@@ -4864,7 +5313,10 @@ function renderCapabilityAlignmentPanel(capabilities, auditEvents) {
   const grants = Array.isArray(capabilities.grants) ? capabilities.grants : [];
   const grantCount = grants.length;
   const presets = Array.isArray(capabilities.shellCommandPresets) ? capabilities.shellCommandPresets : [];
-  const events = Array.isArray(auditEvents) ? auditEvents.slice(0, 20) : [];
+  const events = Array.isArray(auditEvents) ? auditEvents : [];
+  const auditPageSize = 20;
+  const visibleEvents = events.slice(0, auditPageSize);
+  window._lastAuditEvents = events;
   const summaryText = ['gated', 'design-only', 'blocked', 'available']
     .map((key) => key + ': ' + (summary[key] || 0))
     .join(' · ');
@@ -4893,19 +5345,63 @@ function renderCapabilityAlignmentPanel(capabilities, auditEvents) {
   }).join('');
   const grantRows = grants.length ? grants.map((grant) => '<div class="trace-row"><strong>' + esc(grant.capabilityId) + '</strong> <span class="capability-pill">expires ' + esc(new Date(grant.expiresAt).toLocaleString()) + '</span><div class="trace-meta">' + esc(grant.reason || '') + '</div><div class="inline-actions" style="margin-top:6px"><button class="btn-sm danger" onclick="revokeCapabilityGrant(\'' + escAttr(grant.id) + '\')">Revoke</button></div></div>').join('') : '<div class="trace-meta">No active grants.</div>';
   const presetRows = presets.length ? '<details style="margin-top:8px"><summary class="trace-meta" style="cursor:pointer">Shell command allowlist presets (' + presets.length + ')</summary>' + presets.map((preset) => '<div class="trace-meta" style="font-size:11px"><strong>' + esc(preset.label || preset.id) + '</strong>: ' + esc((preset.examples || []).join(', ')) + '</div>').join('') + '</details>' : '';
-  const auditTypeColors = { 'grant.created': '#50c878', 'grant.revoked': '#ffb050', 'grant.expired': '#ff5050', 'automation_script.allowed': '#50c878', 'automation_script.denied': '#ff5050' };
-  const auditSection = events.length ? '<details style="margin-top:8px"><summary class="trace-meta" style="cursor:pointer">Audit log (last ' + events.length + ' events)</summary>'
-    + events.map((ev) => {
-      const color = auditTypeColors[ev.type] || 'var(--text-dim)';
-      const ts = ev.createdAt ? new Date(ev.createdAt).toLocaleString() : '';
-      const detail = ev.capabilityId ? ev.capabilityId : ev.command ? ev.command : '';
-      return '<div class="trace-meta" style="font-size:11px"><span style="color:' + color + '">' + esc(ev.type) + '</span> ' + esc(detail) + (ev.reason ? ' — ' + esc(ev.reason) : '') + (ev.presetId ? ' [' + esc(ev.presetId) + ']' : '') + '<span style="color:var(--text-dim);margin-left:8px">' + esc(ts) + '</span></div>';
-    }).join('') + '</details>' : '';
+  const hasMore = events.length > auditPageSize;
+  const grantEventCount = events.filter((ev) => AUDIT_FILTER_MAP.grant.includes(ev.type)).length;
+  const autonomyEventCount = events.filter((ev) => AUDIT_FILTER_MAP.autonomy.includes(ev.type)).length;
+  const automationEventCount = events.filter((ev) => AUDIT_FILTER_MAP.automation.includes(ev.type)).length;
+  const filterOptions = '<div style="display:flex;gap:4px;margin-bottom:4px"><select id="auditFilterSelect" onchange="filterAuditEvents()" style="font-size:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px"><option value="">All (' + events.length + ')</option><option value="grant">Grants (' + grantEventCount + ')</option><option value="autonomy">Autonomy (' + autonomyEventCount + ')</option><option value="automation">Automation (' + automationEventCount + ')</option></select>'
+    + '<input id="auditSearchInput" type="text" placeholder="Search events…" oninput="filterAuditEvents()" style="font-size:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px;flex:1;min-width:80px"></div>'
+    + '<div style="display:flex;gap:4px;margin-bottom:4px"><span class="trace-meta" style="font-size:9px;white-space:nowrap">Date range:</span><input id="auditDateFrom" type="date" onchange="filterAuditEvents()" style="font-size:9px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:1px 4px"><input id="auditDateTo" type="date" onchange="filterAuditEvents()" style="font-size:9px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:1px 4px"></div>';
+  const auditSection = events.length ? '<details style="margin-top:8px"><summary class="trace-meta" style="cursor:pointer">Audit log (' + events.length + ' events)</summary>'
+    + filterOptions
+    + '<div id="auditLogRows">' + visibleEvents.map(renderAuditRowHtml).join('') + '</div>'
+    + (hasMore ? '<button class="btn-sm" id="auditShowMoreBtn" style="margin-top:4px;font-size:10px" onclick="showAllAuditEvents()">Show all ' + events.length + ' events</button>' : '')
+    + '</details>' : '';
   return '<div class="trace-list" id="capabilityAlignmentPanel" style="margin-top:8px">'
     + '<div class="trace-title" style="padding:0 4px">Capability alignment · ' + esc(summaryText) + ' · active grants: ' + grantCount + '</div>'
     + '<div class="trace-item"><div class="trace-title">Active grants</div>' + grantRows + presetRows + auditSection + '</div>'
     + '<div class="trace-item">' + rows + '</div>'
     + '</div>';
+}
+
+window._lastAuditEvents = [];
+function showAllAuditEvents() {
+  const container = document.getElementById('auditLogRows');
+  const btn = document.getElementById('auditShowMoreBtn');
+  if (!container || !window._lastAuditEvents) return;
+  container.innerHTML = window._lastAuditEvents.map(renderAuditRowHtml).join('');
+  if (btn) btn.remove();
+}
+
+function filterAuditEvents() {
+  const select = document.getElementById('auditFilterSelect');
+  const searchInput = document.getElementById('auditSearchInput');
+  const dateFrom = document.getElementById('auditDateFrom');
+  const dateTo = document.getElementById('auditDateTo');
+  const container = document.getElementById('auditLogRows');
+  const btn = document.getElementById('auditShowMoreBtn');
+  if (!container || !window._lastAuditEvents) return;
+  const filter = select ? select.value : '';
+  const searchTerm = (searchInput ? searchInput.value : '').toLowerCase().trim();
+  const fromTs = dateFrom && dateFrom.value ? new Date(dateFrom.value).getTime() : 0;
+  const toTs = dateTo && dateTo.value ? new Date(dateTo.value + 'T23:59:59').getTime() : Infinity;
+  const allowed = AUDIT_FILTER_MAP[filter] || null;
+  let filtered = allowed ? window._lastAuditEvents.filter((ev) => allowed.includes(ev.type)) : window._lastAuditEvents;
+  if (searchTerm) {
+    filtered = filtered.filter((ev) => {
+      const text = [ev.type, ev.capabilityId, ev.command, ev.reason, ev.presetId, ev.grantId, ev.jobId].filter(Boolean).join(' ').toLowerCase();
+      return text.includes(searchTerm);
+    });
+  }
+  if (fromTs > 0 || toTs < Infinity) {
+    filtered = filtered.filter((ev) => {
+      if (!ev.createdAt) return false;
+      const ts = new Date(ev.createdAt).getTime();
+      return ts >= fromTs && ts <= toTs;
+    });
+  }
+  container.innerHTML = filtered.map(renderAuditRowHtml).join('') || '<div class="trace-meta">No events match this filter.</div>';
+  if (btn) btn.remove();
 }
 
 async function grantCapability(capabilityId) {
@@ -4934,6 +5430,16 @@ async function revokeCapabilityGrant(grantId) {
   await loadToolsDashboard();
 }
 
+function formatCountdown(isoExpiry) {
+  const ms = new Date(isoExpiry).getTime() - Date.now();
+  if (ms <= 0) return 'expired';
+  const totalMin = Math.ceil(ms / 60000);
+  if (totalMin < 60) return totalMin + 'm remaining';
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return h + 'h ' + (m > 0 ? m + 'm ' : '') + 'remaining';
+}
+
 function renderToolRegistryPanel(registry) {
   const tools = (registry && registry.tools) || [];
   if (tools.length === 0) return '';
@@ -4950,25 +5456,75 @@ function renderToolRegistryPanel(registry) {
       const ro = t.isReadOnly ? '<span class="capability-pill">read-only</span>' : '';
       const dryRun = t.canDryRun ? '<span class="capability-pill">dry-run</span>' : '';
       const enabled = t.enabled !== false;
-      const toggle = '<button class="btn-sm" onclick="toggleTool(\'' + escAttr(t.name) + '\', ' + (!enabled) + ')">' + (enabled ? 'Disable' : 'Enable') + '</button>';
+      const timedBadge = t.enabledUntil ? ' <span class="capability-pill" style="border-color:#ffb050;color:#ffb050">' + esc(formatCountdown(t.enabledUntil)) + '</span>' : '';
+      let buttons;
+      if (enabled && !t.enabledUntil) {
+        // Permanently enabled — offer Disable
+        buttons = '<button class="btn-sm" onclick="toggleTool(\'' + escAttr(t.name) + '\', false)">Disable</button>';
+      } else if (enabled && t.enabledUntil) {
+        // Time-limited enabled — offer Disable (which cancels the timer)
+        buttons = '<button class="btn-sm" onclick="toggleTool(\'' + escAttr(t.name) + '\', false)">Disable</button>';
+      } else {
+        // Disabled — offer Enable or Enable (timed)
+        buttons = '<button class="btn-sm" onclick="toggleTool(\'' + escAttr(t.name) + '\', true)">Enable</button>'
+          + ' <button class="btn-sm" onclick="toggleToolTimed(\'' + escAttr(t.name) + '\')">Enable (timed)</button>';
+      }
       const dimmed = enabled ? '' : ' style="opacity:.55"';
       const stateBadge = enabled ? '' : ' <span class="capability-pill" style="border-color:#ff5050;color:#ff5050">disabled</span>';
-      return '<div class="trace-row"' + dimmed + '><strong>' + esc(t.name) + '</strong> ' + riskBadge + ' ' + catBadge + ' ' + ro + ' ' + dryRun + stateBadge + ' ' + toggle + '<div class="trace-meta">' + esc(t.description) + '</div></div>';
+      return '<div class="trace-row"' + dimmed + '><strong>' + esc(t.name) + '</strong> ' + riskBadge + ' ' + catBadge + ' ' + ro + ' ' + dryRun + stateBadge + timedBadge + ' ' + buttons + '<div class="trace-meta">' + esc(t.description) + '</div></div>';
     }).join('');
-    return '<div class="trace-item"><div class="trace-title">' + esc(toolset) + ' (' + items.length + ')</div>' + rows + '</div>';
+    const toolsetNames = items.map((t) => escAttr(t.name));
+    const disabledNames = items.filter((t) => t.enabled === false).map((t) => escAttr(t.name));
+    const enabledNames = items.filter((t) => t.enabled !== false).map((t) => escAttr(t.name));
+    const showBulk = disabledNames.length > 0 || enabledNames.length > 0 && enabledNames.length < items.length;
+    const bulkBtns = (disabledNames.length > 0 || enabledNames.length > 0) ? '<div class="inline-actions" style="margin-top:4px;margin-bottom:4px">'
+      + (disabledNames.length > 0 ? '<button class="btn-sm" onclick="bulkToggleToolset(' + JSON.stringify(disabledNames) + ', true)">Enable all</button> ' : '')
+      + (disabledNames.length > 0 ? '<button class="btn-sm" onclick="bulkToggleToolsetTimed(' + JSON.stringify(disabledNames) + ')">Enable all (timed)</button> ' : '')
+      + (enabledNames.length > 0 ? '<button class="btn-sm" onclick="bulkToggleToolset(' + JSON.stringify(enabledNames) + ', false)">Disable all</button>' : '')
+      + '</div>' : '';
+    return '<div class="trace-item"><div class="trace-title">' + esc(toolset) + ' (' + items.length + ')</div>' + bulkBtns + rows + '</div>';
   }).join('');
   const disabledCount = (registry.disabled || []).length;
+  const timedCount = tools.filter((t) => t.enabledUntil).length;
   const disabledNote = disabledCount > 0 ? ' · <span style="color:#ff5050">' + disabledCount + ' disabled</span>' : '';
-  return '<div class="trace-list" id="toolRegistryPanel" style="margin-top:8px"><div class="trace-title" style="padding:0 4px">🛠 Tool registry · ' + tools.length + ' total' + disabledNote + '</div>' + sections + '</div>';
+  const timedNote = timedCount > 0 ? ' · <span style="color:#ffb050">' + timedCount + ' timed</span>' : '';
+  return '<div class="trace-list" id="toolRegistryPanel" style="margin-top:8px"><div class="trace-title" style="padding:0 4px">🛠 Tool registry · ' + tools.length + ' total' + disabledNote + timedNote + '</div>' + sections + '</div>';
 }
 
-async function toggleTool(name, enable) {
+async function toggleTool(name, enable, expiresInMinutes) {
   try {
-    const response = await fetch('/api/tools/' + encodeURIComponent(name) + '/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: enable }) });
+    const body = { enabled: enable };
+    if (expiresInMinutes) body.expiresInMinutes = expiresInMinutes;
+    const response = await fetch('/api/tools/' + encodeURIComponent(name) + '/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const data = await response.json();
-    if (data.error) { alert('Toggle failed: ' + data.error); return; }
+    if (data.error) { showToast('Toggle failed: ' + data.error, 4000, 'error'); return; }
     await loadToolsDashboard();
-  } catch (error) { alert('Toggle failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Toggle failed: ' + (error.message || error), 4000, 'error'); }
+}
+
+async function toggleToolTimed(name) {
+  const minutesRaw = prompt('Enable ' + name + ' for how many minutes? (1-1440)', '60');
+  if (minutesRaw === null) return;
+  const minutes = Number(minutesRaw);
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { alert('Enter a number between 1 and 1440.'); return; }
+  await toggleTool(name, true, minutes);
+}
+
+async function bulkToggleToolset(names, enable, expiresInMinutes) {
+  const body = { names: names, enabled: enable };
+  if (expiresInMinutes) body.expiresInMinutes = expiresInMinutes;
+  await fetch('/api/tools/bulk-toggle', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }).catch(() => {});
+  await loadToolsDashboard();
+}
+
+async function bulkToggleToolsetTimed(names) {
+  const minutesRaw = prompt('Enable all tools in this group for how many minutes? (1-1440)', '60');
+  if (minutesRaw === null) return;
+  const minutes = Number(minutesRaw);
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { alert('Enter a number between 1 and 1440.'); return; }
+  await bulkToggleToolset(names, true, minutes);
 }
 
 async function engageKillSwitch() {
@@ -5013,6 +5569,7 @@ function renderKillSwitchBanner(killSwitch) {
   let banner = document.getElementById('killSwitchBanner');
   if (!killSwitch.active) {
     if (banner) banner.remove();
+    repositionGlobalAutonomyBanner();
     return;
   }
   if (!banner) {
@@ -5025,6 +5582,14 @@ function renderKillSwitchBanner(killSwitch) {
     + '<span>' + esc(killSwitch.reason || 'All tool calls are denied.') + '</span>'
     + '<span style="margin-left:auto;opacity:.8">Ctrl+Shift+K to toggle</span>'
     + '<button class="btn-sm" style="margin-left:8px" onclick="releaseKillSwitchFromBanner()">Release</button>';
+  repositionGlobalAutonomyBanner();
+}
+
+function repositionGlobalAutonomyBanner() {
+  const ab = document.getElementById('globalAutonomyBanner');
+  if (!ab) return;
+  const ksBanner = document.getElementById('killSwitchBanner');
+  ab.style.top = ksBanner ? (ksBanner.offsetHeight + 'px') : '0';
 }
 
 async function releaseKillSwitchFromBanner() {
@@ -5066,9 +5631,10 @@ document.addEventListener('keydown', (event) => {
 // On page load, sync the banner so a kill switch persisted from a previous
 // run is visible as soon as the UI mounts.
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => { refreshKillSwitchBanner(); });
+  document.addEventListener('DOMContentLoaded', () => { refreshKillSwitchBanner(); refreshAutonomyBanner(); });
 } else {
   refreshKillSwitchBanner();
+  refreshAutonomyBanner();
 }
 
 // ─── Runs tab ──────────────────────────────────────────────────────

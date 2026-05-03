@@ -157,6 +157,24 @@ describe('queryLoop runtime behavior', () => {
     expect(events.indexOf(promotion as never)).toBeLessThan(events.indexOf(validation as never));
   });
 
+  it('preserves provider tool call ids on tool result messages', async () => {
+    const echo = makeTool('echo', true, async () => ({ success: true, output: 'echoed' }));
+    const client = makeClient([
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'call_mistral_abc', function: { name: 'echo', arguments: {} } } as never],
+      } as Message,
+      { role: 'assistant', content: 'done' },
+    ]);
+
+    await collectEvents(client, [echo]);
+
+    const secondCallMessages = client.chat.mock.calls[1][0] as Message[];
+    const toolMessage = secondCallMessages.find((message) => message.role === 'tool') as Message & { tool_call_id?: string };
+    expect(toolMessage.tool_call_id).toBe('call_mistral_abc');
+  });
+
   it('does NOT auto-promote when no productive tools fired', async () => {
     // A pure Q&A turn with oracle-prime should still validate against
     // oracle-prime — auto-promotion is for runs that did real edits.
@@ -223,6 +241,46 @@ describe('queryLoop runtime behavior', () => {
 
     expect(events[1]).toMatchObject({ type: 'tool_result', result: { success: false } });
     expect((events[1] as { result: ToolResult }).result.output).toContain('Permission denied');
+  });
+
+  it('stops after repeated failures from the same tool', async () => {
+    const documentExport = makeTool('document_export', false, async () => ({ success: false, output: 'Failed to write docx: bad content', error: 'bad content' }));
+    const client = makeClient([
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'document_export', arguments: {} } }] } as Message,
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'document_export', arguments: {} } }] } as Message,
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'document_export', arguments: {} } }] } as Message,
+      { role: 'assistant', content: 'should not be reached' },
+    ]);
+
+    const events = await collectEvents(client, [documentExport], {
+      config: { maxTurns: 10, repeatedToolFailureLimit: 3 },
+    });
+
+    const error = events.find((e) => e.type === 'error');
+    expect(error).toEqual(expect.objectContaining({
+      type: 'error',
+      recoverable: false,
+      message: expect.stringContaining('document_export failed 3 times'),
+    }));
+    const done = events.find((e) => e.type === 'done');
+    expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'repeated_tool_failure' }));
+    expect(client.chat).toHaveBeenCalledTimes(3);
+  });
+
+  it('can disable the repeated tool failure breaker', async () => {
+    const flaky = makeTool('flaky', false, async () => ({ success: false, output: 'still failing' }));
+    const client = makeClient([
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'flaky', arguments: {} } }] } as Message,
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'flaky', arguments: {} } }] } as Message,
+      { role: 'assistant', content: 'reported failure' },
+    ]);
+
+    const events = await collectEvents(client, [flaky], {
+      config: { maxTurns: 5, repeatedToolFailureLimit: 0 },
+    });
+
+    expect(events.find((e) => e.type === 'error')).toBeUndefined();
+    expect(events.find((e) => e.type === 'done')).toEqual(expect.objectContaining({ reason: 'completed' }));
   });
 
   it('applies hook input and output mutations during dispatch', async () => {

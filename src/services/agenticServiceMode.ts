@@ -111,6 +111,12 @@ export interface OperateServiceResult {
   service?: AgenticServiceDefinition;
   state?: BulletJournalState | GenericOperateState;
   schedule?: AutomationJob | null;
+  capabilityLimitations?: string | null;
+}
+
+export interface OperateHandlerOptions {
+  /** Returns a human-readable limitation message for missing capabilities, or null. */
+  checkCapabilities?: (required: string[]) => string | null;
 }
 
 const OPERATE_TRIGGERS = [
@@ -182,9 +188,10 @@ export function classifyAgenticMode(message: string): AgenticModeClassification 
   return { mode: 'build', reason: 'No ongoing service trigger detected.', matchedTriggers: [] };
 }
 
-export async function handleOperateModeRequest(projectDir: string, message: string, now = new Date()): Promise<OperateServiceResult> {
+export async function handleOperateModeRequest(projectDir: string, message: string, now = new Date(), options?: OperateHandlerOptions): Promise<OperateServiceResult> {
   const classification = classifyAgenticMode(message);
   if (classification.mode !== 'operate') return { handled: false, response: '', classification };
+  const checkCaps = options?.checkCapabilities;
   const genericCommand = parseGenericOperateCommand(message);
   if (genericCommand && !isBulletJournalRequest(message)) {
     const commandResult = await applyGenericOperateCommand(projectDir, genericCommand, now);
@@ -192,18 +199,21 @@ export async function handleOperateModeRequest(projectDir: string, message: stri
   }
   if (!isBulletJournalRequest(message)) {
     const result = await createOrUpdateGenericOperateService(projectDir, message, now);
+    const limitations = checkCaps ? checkCaps(['scheduler', 'notifications']) : null;
     return {
       handled: true,
       response: [
         `${result.service.service_name} is set up.`,
         result.schedule ? `I will check it every day at 09:00.` : 'Operating service state can be created, but proactive reminders require a scheduler/automation capability.',
+        limitations ? limitations : '',
         'You can ask for status, add notes, pause reminders, or resume reminders.',
         `Current state: ${result.state.observations.length} observation(s), ${result.state.notes.length} note(s).`,
-      ].join(' '),
+      ].filter(Boolean).join(' '),
       classification,
       service: result.service,
       state: result.state,
       schedule: result.schedule,
+      capabilityLimitations: limitations,
     };
   }
 
@@ -214,6 +224,7 @@ export async function handleOperateModeRequest(projectDir: string, message: stri
   }
 
   const result = await createOrUpdateBulletJournalService(projectDir, { reminderTime: parseReminderTime(message) ?? '09:00' }, now);
+  const limitations = checkCaps ? checkCaps(['scheduler', 'notifications']) : null;
   const scheduleText = result.schedule
     ? `I will check in every day at ${result.state.reminder_time}.`
     : 'Operating service state can be created, but proactive reminders require a scheduler/automation capability.';
@@ -222,13 +233,15 @@ export async function handleOperateModeRequest(projectDir: string, message: stri
     response: [
       'Your Bullet Journal agent is set up.',
       scheduleText,
+      limitations ? limitations : '',
       'You can say: add task..., close task..., update task..., add note..., show today, show open tasks, show closed tasks, daily review, weekly review, pause reminders, or resume reminders.',
       `Current state: ${openTasks(result.state).length} open task(s), ${result.state.closed_tasks.length} closed task(s), ${result.state.notes.length} note(s).`,
-    ].join(' '),
+    ].filter(Boolean).join(' '),
     classification,
     service: result.service,
     state: result.state,
     schedule: result.schedule,
+    capabilityLimitations: limitations,
   };
 }
 

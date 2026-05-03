@@ -12,7 +12,6 @@
 //
 // The bridge starts automatically when the server boots if a token is configured.
 
-import TelegramBot from 'node-telegram-bot-api';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
@@ -20,6 +19,124 @@ import { logger } from '../core/logger';
 
 const MAX_TELEGRAM_MESSAGE_LENGTH = 4096;
 const TELEGRAM_LOCK_FILENAME = '.harness/telegram-poller.lock.json';
+
+type TelegramChatId = string | number;
+
+interface TelegramPhotoSize { file_id: string }
+interface TelegramDocument { file_id: string; file_name?: string; mime_type?: string }
+interface TelegramAudio { file_id: string; mime_type?: string }
+
+interface TelegramMessage {
+  message_id: number;
+  chat: { id: TelegramChatId };
+  text?: string;
+  caption?: string;
+  photo?: TelegramPhotoSize[];
+  document?: TelegramDocument;
+  voice?: TelegramAudio;
+  audio?: TelegramAudio;
+}
+
+interface TelegramSendOptions { parse_mode?: 'Markdown' | 'HTML' }
+interface TelegramEditOptions { chat_id: TelegramChatId; message_id: number }
+
+type TelegramMessageHandler = (message: TelegramMessage) => void | Promise<void>;
+type TelegramErrorHandler = (error: Error) => void;
+
+export class TelegramBot {
+  private readonly apiBase: string;
+  private readonly fileBase: string;
+  private messageHandler: TelegramMessageHandler | null = null;
+  private pollingErrorHandler: TelegramErrorHandler | null = null;
+  private stopped = false;
+  private offset = 0;
+  private abortController: AbortController | null = null;
+
+  constructor(private readonly token: string, options: { polling?: boolean } = {}) {
+    this.apiBase = `https://api.telegram.org/bot${token}`;
+    this.fileBase = `https://api.telegram.org/file/bot${token}`;
+    if (options.polling) queueMicrotask(() => this.poll().catch((error) => this.emitPollingError(error)));
+  }
+
+  on(event: 'message', handler: TelegramMessageHandler): void;
+  on(event: 'polling_error', handler: TelegramErrorHandler): void;
+  on(event: 'message' | 'polling_error', handler: TelegramMessageHandler | TelegramErrorHandler): void {
+    if (event === 'message') this.messageHandler = handler as TelegramMessageHandler;
+    if (event === 'polling_error') this.pollingErrorHandler = handler as TelegramErrorHandler;
+  }
+
+  async sendMessage(chatId: TelegramChatId, text: string, options: TelegramSendOptions = {}): Promise<TelegramMessage> {
+    const result = await this.call<{ result: TelegramMessage }>('sendMessage', {
+      chat_id: chatId,
+      text,
+      ...options,
+    });
+    return result.result;
+  }
+
+  async sendChatAction(chatId: TelegramChatId, action: 'typing'): Promise<void> {
+    await this.call('sendChatAction', { chat_id: chatId, action });
+  }
+
+  async getFileLink(fileId: string): Promise<string> {
+    const result = await this.call<{ result: { file_path: string } }>('getFile', { file_id: fileId });
+    return `${this.fileBase}/${result.result.file_path}`;
+  }
+
+  async editMessageText(text: string, options: TelegramEditOptions): Promise<void> {
+    await this.call('editMessageText', { text, ...options });
+  }
+
+  async deleteMessage(chatId: TelegramChatId, messageId: number): Promise<void> {
+    await this.call('deleteMessage', { chat_id: chatId, message_id: messageId });
+  }
+
+  stopPolling(): void {
+    this.stopped = true;
+    this.abortController?.abort();
+  }
+
+  private async poll(): Promise<void> {
+    while (!this.stopped) {
+      this.abortController = new AbortController();
+      try {
+        const data = await this.call<{ result: Array<{ update_id: number; message?: TelegramMessage }> }>('getUpdates', {
+          timeout: 25,
+          offset: this.offset,
+          allowed_updates: ['message'],
+        }, this.abortController.signal);
+
+        for (const update of data.result) {
+          this.offset = Math.max(this.offset, update.update_id + 1);
+          if (update.message && this.messageHandler) await this.messageHandler(update.message);
+        }
+      } catch (error) {
+        if (this.stopped && error instanceof Error && error.name === 'AbortError') return;
+        this.emitPollingError(error);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+  }
+
+  private async call<T = unknown>(method: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+    const response = await fetch(`${this.apiBase}/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    });
+    const data = await response.json().catch(() => ({})) as { ok?: boolean; description?: string };
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.description || `Telegram ${method} failed with HTTP ${response.status}`);
+    }
+    return data as T;
+  }
+
+  private emitPollingError(error: unknown): void {
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    this.pollingErrorHandler?.(normalized);
+  }
+}
 
 let activeBotInstance: TelegramBot | null = null;
 let activeBotToken = '';
@@ -251,7 +368,7 @@ export function startTelegramBot(token: string, serverUrl: string, allowedChatId
 
 // ─── Photo handling ─────────────────────────────────────────────────
 
-async function handlePhotoMessage(bot: TelegramBot, msg: TelegramBot.Message, chatId: string, serverUrl: string): Promise<void> {
+async function handlePhotoMessage(bot: TelegramBot, msg: TelegramMessage, chatId: string, serverUrl: string): Promise<void> {
   try {
     await bot.sendChatAction(chatId, 'typing');
     // Get the highest resolution photo.
@@ -292,7 +409,7 @@ async function handlePhotoMessage(bot: TelegramBot, msg: TelegramBot.Message, ch
 
 // ─── Document handling ──────────────────────────────────────────────
 
-async function handleDocumentMessage(bot: TelegramBot, msg: TelegramBot.Message, chatId: string, serverUrl: string): Promise<void> {
+async function handleDocumentMessage(bot: TelegramBot, msg: TelegramMessage, chatId: string, serverUrl: string): Promise<void> {
   try {
     await bot.sendChatAction(chatId, 'typing');
     const doc = msg.document!;
@@ -338,7 +455,7 @@ async function handleDocumentMessage(bot: TelegramBot, msg: TelegramBot.Message,
 
 // ─── Voice/audio handling ───────────────────────────────────────────
 
-async function handleVoiceMessage(bot: TelegramBot, msg: TelegramBot.Message, chatId: string, serverUrl: string): Promise<void> {
+async function handleVoiceMessage(bot: TelegramBot, msg: TelegramMessage, chatId: string, serverUrl: string): Promise<void> {
   try {
     await bot.sendChatAction(chatId, 'typing');
     const voice = msg.voice ?? msg.audio;

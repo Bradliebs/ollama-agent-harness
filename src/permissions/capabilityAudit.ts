@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-export type CapabilityAuditEventType = 'grant.created' | 'grant.revoked' | 'grant.expired' | 'automation_script.allowed' | 'automation_script.denied';
+export type CapabilityAuditEventType = 'grant.created' | 'grant.revoked' | 'grant.expired' | 'automation_script.allowed' | 'automation_script.denied' | 'autonomy.timed.engaged' | 'autonomy.timed.cleared' | 'autonomy.timed.expired';
 
 export interface CapabilityAuditEvent {
   type: CapabilityAuditEventType;

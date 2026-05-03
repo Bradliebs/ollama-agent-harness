@@ -60,6 +60,7 @@ describe('cli setup doctor', () => {
         mycelium: { ok: true, message: 'Mycelium graph is empty.' },
       },
       backends: [],
+      fallback: { enabled: true, cooldownMs: 30000, order: 'default', configuredCount: 0 },
     });
 
     expect(output).toContain('Setup doctor');
@@ -67,6 +68,7 @@ describe('cli setup doctor', () => {
     expect(output).toContain('WARN Vision: No vision model configured.');
     expect(output).toContain('OK Audio: Audio transcription command is configured.');
     expect(output).toContain('OK Automations: Automation storage is writable.');
+    expect(output).toContain('WARN Fallback: Provider fallback enabled, 0 backend(s) with keys');
   });
 
   it('renders the Backends section when at least one preset is reported', () => {
@@ -86,6 +88,7 @@ describe('cli setup doctor', () => {
         { id: 'cerebras', label: 'Cerebras', ok: true, message: 'API key configured (via CEREBRAS_API_KEY).' },
         { id: 'github', label: 'GitHub Models', ok: false, message: 'No API key. Set GITHUB_MODELS_TOKEN or GITHUB_TOKEN.' },
       ],
+      fallback: { enabled: true, cooldownMs: 30000, order: 'default', configuredCount: 1 },
     });
 
     expect(output).toContain('Backends (OpenAI-compatible):');
@@ -121,6 +124,7 @@ describe('cli setup doctor', () => {
           keyCount: 3,
         },
       ],
+      fallback: { enabled: true, cooldownMs: 30000, order: 'default', configuredCount: 1 },
     });
 
     expect(output).toContain('CEREBRAS_API_KEY');

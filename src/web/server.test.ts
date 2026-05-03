@@ -822,7 +822,7 @@ describe('web server API validation', () => {
     const body = await audit.json() as { events: Array<{ type: string; createdAt: string }> };
     expect(Array.isArray(body.events)).toBe(true);
     for (const event of body.events) {
-      expect(['grant.created', 'grant.revoked', 'grant.expired', 'automation_script.allowed', 'automation_script.denied']).toContain(event.type);
+      expect(['grant.created', 'grant.revoked', 'grant.expired', 'automation_script.allowed', 'automation_script.denied', 'autonomy.timed.engaged', 'autonomy.timed.cleared', 'autonomy.timed.expired']).toContain(event.type);
       expect(Date.parse(event.createdAt)).not.toBeNaN();
     }
   });
@@ -1223,6 +1223,181 @@ describe('web server API validation', () => {
 
     // Cleanup so subsequent tests start in a known state.
     await request('/api/permissions/kill-switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: false }) });
+    await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true }) });
+  });
+
+  it('enables a tool with a time limit and returns enabledUntil', async () => {
+    // First disable the tool
+    await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+    // Enable with 60-minute timer
+    const timed = await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true, expiresInMinutes: 60 }) });
+    expect(timed.status).toBe(200);
+    const timedBody = await timed.json() as { name: string; enabled: boolean; enabledUntil?: string };
+    expect(timedBody.name).toBe('bash');
+    expect(timedBody.enabled).toBe(true);
+    expect(timedBody.enabledUntil).toBeDefined();
+    // enabledUntil should be roughly 60 minutes from now
+    const expiryMs = new Date(timedBody.enabledUntil!).getTime();
+    expect(expiryMs).toBeGreaterThan(Date.now() + 59 * 60_000);
+    expect(expiryMs).toBeLessThan(Date.now() + 61 * 60_000);
+
+    // GET /api/tools should also show it
+    const toolsRes = await request('/api/tools');
+    const toolsBody = await toolsRes.json() as { tools: Array<{ name: string; enabled: boolean; enabledUntil?: string }> };
+    const bashTool = toolsBody.tools.find((t) => t.name === 'bash');
+    expect(bashTool?.enabled).toBe(true);
+    expect(bashTool?.enabledUntil).toBeDefined();
+
+    // Settings should include timedToolEnables
+    const settingsRes = await request('/api/settings');
+    const settingsBody = await settingsRes.json() as { timedToolEnables: Record<string, string> };
+    expect(settingsBody.timedToolEnables).toHaveProperty('bash');
+
+    // Cleanup: permanently enable
+    await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true }) });
+  });
+
+  it('timed tool enables persist via settings and survive a simulated restart', async () => {
+    // Disable the tool first
+    await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+    // Enable with 120-minute timer
+    const timed = await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true, expiresInMinutes: 120 }) });
+    expect(timed.status).toBe(200);
+    const timedBody = await timed.json() as { enabledUntil?: string };
+    expect(timedBody.enabledUntil).toBeDefined();
+
+    // Read settings — should include timedToolEnables with bash
+    const settingsRes = await request('/api/settings');
+    const settings = await settingsRes.json() as { disabledTools: string[]; timedToolEnables: Record<string, string> };
+    expect(settings.disabledTools).toContain('bash');
+    expect(settings.timedToolEnables).toHaveProperty('bash');
+    const savedExpiry = new Date(settings.timedToolEnables.bash).getTime();
+    expect(savedExpiry).toBeGreaterThan(Date.now());
+
+    // Simulate restart: POST the same settings back
+    await request('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ disabledTools: settings.disabledTools, timedToolEnables: settings.timedToolEnables }),
+    });
+
+    // After restore, the tool should still be effectively enabled
+    const toolsRes = await request('/api/tools');
+    const toolsBody = await toolsRes.json() as { tools: Array<{ name: string; enabled: boolean; enabledUntil?: string }> };
+    const bashTool = toolsBody.tools.find((t) => t.name === 'bash');
+    expect(bashTool?.enabled).toBe(true);
+    expect(bashTool?.enabledUntil).toBeDefined();
+
+    // Cleanup: permanently enable
+    await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true }) });
+  });
+
+  it('sets timed autonomy and returns expiry and previous mode', async () => {
+    // Set permission mode to acceptEdits first
+    await request('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ permissionMode: 'acceptEdits' }) });
+
+    // Engage timed autonomy for 60 minutes
+    const res = await request('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresInMinutes: 60 }) });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { permissionMode: string; autonomyExpiresAt: string | null; autonomyPreviousMode: string | null };
+    expect(body.permissionMode).toBe('dontAsk');
+    expect(body.autonomyExpiresAt).toBeDefined();
+    expect(body.autonomyPreviousMode).toBe('acceptEdits');
+
+    // Permissions state should show the expiry
+    const stateRes = await request('/api/permissions/state');
+    const state = await stateRes.json() as { mode: string; autonomyExpiresAt: string | null; autonomyPreviousMode: string | null };
+    expect(state.mode).toBe('dontAsk');
+    expect(state.autonomyExpiresAt).toBeDefined();
+
+    // Clear timed autonomy
+    const clearRes = await request('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    expect(clearRes.status).toBe(200);
+    const clearBody = await clearRes.json() as { permissionMode: string; autonomyExpiresAt: string | null };
+    expect(clearBody.permissionMode).toBe('acceptEdits');
+    expect(clearBody.autonomyExpiresAt).toBeNull();
+
+    // Cleanup
+    await request('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ permissionMode: 'default' }) });
+  });
+
+  it('clearing timed autonomy with clearTimedTools also clears timed tool enables', async () => {
+    // Disable bash, then enable it with a timer
+    await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+    await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true, expiresInMinutes: 60 }) });
+    // Set timed autonomy
+    await request('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresInMinutes: 60 }) });
+
+    // Clear with clearTimedTools
+    const clearRes = await request('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clearTimedTools: true }) });
+    expect(clearRes.status).toBe(200);
+
+    // Timed tool enables should be cleared — bash should show as disabled (no timed override)
+    const toolsRes = await request('/api/tools');
+    const toolsBody = await toolsRes.json() as { tools: Array<{ name: string; enabled: boolean; enabledUntil?: string }> };
+    const bashTool = toolsBody.tools.find((t) => t.name === 'bash');
+    expect(bashTool?.enabledUntil).toBeUndefined();
+    expect(bashTool?.enabled).toBe(false);
+
+    // Cleanup
+    await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true }) });
+    await request('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ permissionMode: 'default' }) });
+  });
+
+  it('kill switch clears timed tool enables and timed autonomy', async () => {
+    // Disable bash, then enable it with a timer
+    await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+    await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true, expiresInMinutes: 60 }) });
+
+    // Set timed autonomy
+    await request('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresInMinutes: 60 }) });
+
+    // Engage kill switch
+    const ksRes = await request('/api/permissions/kill-switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: true, reason: 'test cleanup' }) });
+    expect(ksRes.status).toBe(200);
+
+    // Timed tool enables should be cleared
+    const toolsRes = await request('/api/tools');
+    const toolsBody = await toolsRes.json() as { tools: Array<{ name: string; enabled: boolean; enabledUntil?: string }> };
+    const bashTool = toolsBody.tools.find((t) => t.name === 'bash');
+    expect(bashTool?.enabledUntil).toBeUndefined();
+
+    // Timed autonomy should be cleared
+    const stateRes = await request('/api/permissions/state');
+    const state = await stateRes.json() as { autonomyExpiresAt: string | null };
+    expect(state.autonomyExpiresAt).toBeNull();
+
+    // Cleanup
+    await request('/api/permissions/kill-switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: false }) });
+    await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true }) });
+    await request('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ permissionMode: 'default' }) });
+  });
+
+  it('bulk-toggles multiple tools in a single call', async () => {
+    // Disable two tools first
+    await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+    await request('/api/tools/file_edit/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+
+    // Bulk enable both
+    const bulkRes = await request('/api/tools/bulk-toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ names: ['bash', 'file_edit'], enabled: true }) });
+    expect(bulkRes.status).toBe(200);
+    const bulkBody = await bulkRes.json() as { toggled: Array<{ name: string; enabled: boolean }>; disabled: string[] };
+    expect(bulkBody.toggled).toHaveLength(2);
+    expect(bulkBody.toggled[0].enabled).toBe(true);
+    expect(bulkBody.toggled[1].enabled).toBe(true);
+    expect(bulkBody.disabled).not.toContain('bash');
+    expect(bulkBody.disabled).not.toContain('file_edit');
+  });
+
+  it('bulk-toggles with timed enable returns enabledUntil', async () => {
+    // Disable a tool, then bulk-enable with timer
+    await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
+    const bulkRes = await request('/api/tools/bulk-toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ names: ['bash'], enabled: true, expiresInMinutes: 30 }) });
+    expect(bulkRes.status).toBe(200);
+    const body = await bulkRes.json() as { toggled: Array<{ name: string; enabled: boolean; enabledUntil?: string }> };
+    expect(body.toggled[0].enabledUntil).toBeDefined();
+
+    // Cleanup
     await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true }) });
   });
 
@@ -2650,6 +2825,19 @@ describe('web server API validation', () => {
       CEREBRAS_API_KEY: 'csk-leak-test-CEREBRAS-deadbeefcafebabef00dfacef00dface',
       GROQ_API_KEY: 'gsk_leak_test_GROQ_abcdef0123456789abcdef0123456789',
     } as const;
+    const ADDITIONAL_KEY_NAMES = [
+      'DEEPINFRA_API_KEY',
+      'CLOUDFLARE_ACCOUNT_ID',
+      'CLOUDFLARE_API_TOKEN',
+      'FIREWORKS_API_KEY',
+      'GEMINI_API_KEY',
+      'GOOGLE_API_KEY',
+      'HF_TOKEN',
+      'HUGGINGFACE_API_KEY',
+      'SAMBANOVA_API_KEY',
+      'REPLICATE_API_TOKEN',
+      'TOGETHER_API_KEY',
+    ];
     const ENV_SECRET = 'ghp_leak-test-GITHUB_aaaabbbbccccddddeeeeffff0000111122';
     let originalGithubEnv: string | undefined;
     const savedEnv: Record<string, string | undefined> = {};
@@ -2664,6 +2852,10 @@ describe('web server API validation', () => {
       // 'file' source assertions below are deterministic. Real user keys
       // would otherwise win over the file values in /api/api-keys.
       for (const name of Object.keys(SECRETS)) {
+        savedEnv[name] = process.env[name];
+        delete process.env[name];
+      }
+      for (const name of ADDITIONAL_KEY_NAMES) {
         savedEnv[name] = process.env[name];
         delete process.env[name];
       }
@@ -2686,6 +2878,7 @@ describe('web server API validation', () => {
       // Clear values that the POST test loaded into process.env so they
       // do not bleed into other tests, then restore the originals.
       for (const name of Object.keys(SECRETS)) delete process.env[name];
+      for (const name of ADDITIONAL_KEY_NAMES) delete process.env[name];
       delete process.env.OPENROUTER_API_KEY;
       for (const [name, value] of Object.entries(savedEnv)) {
         if (value !== undefined) process.env[name] = value;

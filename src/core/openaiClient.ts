@@ -65,6 +65,8 @@ interface OpenAIChatResponse {
 
 interface OpenAIErrorResponse {
   error?: { message?: string; type?: string; code?: string };
+  detail?: unknown;
+  message?: string;
 }
 
 export class OpenAIClient implements IChatClient {
@@ -129,7 +131,7 @@ export class OpenAIClient implements IChatClient {
   async *chatStream(messages: Message[], tools?: Tool[]): AsyncGenerator<StreamChunk> {
     const body: Record<string, unknown> = {
       model: this.model,
-      messages: messages.map(toOpenAIMessage),
+      messages: toOpenAIMessages(messages),
       stream: true,
     };
     if (tools && tools.length > 0) body.tools = tools.map(toOpenAITool);
@@ -157,8 +159,7 @@ export class OpenAIClient implements IChatClient {
 
     if (!response.ok) {
       clearTimeout(timeoutHandle);
-      let detail = '';
-      try { detail = await response.text(); } catch { /* ignore */ }
+      const detail = await readProviderErrorDetail(response);
       throw new Error(`${this.providerLabel} stream HTTP ${response.status}: ${detail || response.statusText}`);
     }
 
@@ -281,7 +282,7 @@ export class OpenAIClient implements IChatClient {
   ): Promise<ChatResult> {
     const body: Record<string, unknown> = {
       model: this.model,
-      messages: messages.map(toOpenAIMessage),
+        messages: toOpenAIMessages(messages),
       stream: false,
     };
     if (extras.maxTokens) body.max_tokens = extras.maxTokens;
@@ -324,8 +325,7 @@ export class OpenAIClient implements IChatClient {
         const retryAfter = parseRetryAfter(response.headers.get('retry-after'));
         const backoff = retryAfter ?? Math.min(this.retryBaseDelayMs * Math.pow(2, attempt), 30_000);
         const remaining = this.maxRetries - attempt - 1;
-        let detail = '';
-        try { const e = (await response.json()) as OpenAIErrorResponse; detail = e.error?.message ?? ''; } catch { /* ignore */ }
+        const detail = await readProviderErrorDetail(response);
         lastError = new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
         if (remaining <= 0) throw lastError;
         console.warn(`[OpenAIClient] ${this.providerLabel} HTTP ${response.status} (${detail.slice(0, 80) || response.statusText}); waiting ${Math.round(backoff)}ms then retrying (${remaining} attempts left, key ${this.keyIndex + 1}/${this.apiKeys.length}).`);
@@ -337,13 +337,7 @@ export class OpenAIClient implements IChatClient {
       }
 
       if (!response.ok) {
-        let detail = '';
-        try {
-          const errBody = (await response.json()) as OpenAIErrorResponse;
-          detail = errBody.error?.message ?? '';
-        } catch {
-          try { detail = await response.text(); } catch { /* ignore */ }
-        }
+        const detail = await readProviderErrorDetail(response);
         throw new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
       }
 
@@ -400,9 +394,51 @@ function parseRetryAfter(header: string | null): number | undefined {
   return delta > 0 ? delta : 0;
 }
 
+async function readProviderErrorDetail(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as OpenAIErrorResponse;
+    return stringifyProviderError(body.error?.message ?? body.detail ?? body.message);
+  } catch {
+    try { return await response.text(); } catch { return ''; }
+  }
+}
+
+function stringifyProviderError(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => stringifyProviderError(item)).filter(Boolean).join('; ');
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const message = stringifyProviderError(record.msg ?? record.message ?? record.error);
+    const location = Array.isArray(record.loc) ? record.loc.join('.') : stringifyProviderError(record.loc);
+    if (message && location) return `${location}: ${message}`;
+    if (message) return message;
+    return JSON.stringify(record);
+  }
+  return value === undefined || value === null ? '' : String(value);
+}
+
 // --- Translation helpers ---
 
-function toOpenAIMessage(msg: Message): Record<string, unknown> {
+function toOpenAIMessages(messages: Message[]): Record<string, unknown>[] {
+  const pendingToolCallIds: string[] = [];
+  return messages.map((msg) => {
+    const converted = toOpenAIMessage(msg, pendingToolCallIds.length);
+    if (msg.role === 'assistant' && Array.isArray(converted.tool_calls)) {
+      pendingToolCallIds.length = 0;
+      for (const call of converted.tool_calls as Array<{ id?: string }>) {
+        if (call.id) pendingToolCallIds.push(call.id);
+      }
+    } else if (msg.role === 'tool') {
+      const existing = (msg as { tool_call_id?: string }).tool_call_id;
+      converted.tool_call_id = existing ?? pendingToolCallIds.shift() ?? 'call_unknown';
+    }
+    return converted;
+  });
+}
+
+function toOpenAIMessage(msg: Message, sequence = 0): Record<string, unknown> {
   // OpenAI uses `tool_calls` on assistant messages and a `tool_call_id` on
   // role:tool messages. Ollama's role:tool messages do not carry an id, so
   // we synthesize one when needed.
@@ -410,7 +446,7 @@ function toOpenAIMessage(msg: Message): Record<string, unknown> {
   if (msg.content !== undefined && msg.content !== null) out.content = msg.content;
   if (msg.tool_calls?.length) {
     out.tool_calls = msg.tool_calls.map((tc, i) => ({
-      id: (tc as { id?: string }).id ?? `call_${i}`,
+      id: (tc as { id?: string }).id ?? `call_${sequence}_${i}`,
       type: 'function',
       function: {
         name: tc.function?.name ?? '',
@@ -419,9 +455,6 @@ function toOpenAIMessage(msg: Message): Record<string, unknown> {
           : JSON.stringify(tc.function?.arguments ?? {}),
       },
     }));
-  }
-  if (msg.role === 'tool' && !(out as { tool_call_id?: string }).tool_call_id) {
-    (out as Record<string, unknown>).tool_call_id = (msg as { tool_call_id?: string }).tool_call_id ?? 'call_unknown';
   }
   return out;
 }

@@ -18,7 +18,16 @@ export type MyceliumNodeType =
   | 'prompt_template'
   | 'workflow'
   | 'constraint'
-  | 'preference';
+  | 'preference'
+  | 'model'
+  | 'provider'
+  | 'service'
+  | 'service_state'
+  | 'scheduler'
+  | 'command_handler'
+  | 'notification_template'
+  | 'capability'
+  | 'background_worker';
 
 export interface MyceliumNode {
   id: string;

@@ -20,7 +20,8 @@ export const CLI_COMMAND_REGISTRY: CliCommandDef[] = [
     usage: 'harness [options] | harness -p "your prompt"',
     options: [
       { flags: ['-m', '--model'], valueName: '<name>', description: 'Ollama model (default: qwen2.5-coder:7b)' },
-      { flags: ['--backend'], valueName: '<name>', description: 'Chat backend: ollama (default), cerebras, groq, github, mistral, openrouter, openai' },
+      { flags: ['--backend'], valueName: '<name>', description: 'Chat backend: ollama (default), cerebras, cloudflare, groq, github, mistral, openrouter, openai, replicate' },
+      { flags: ['--compact-remote-smoke'], description: 'Use a tiny no-tools prompt for free-tier remote backend smoke tests' },
       { flags: ['--host'], valueName: '<url>', description: 'Ollama host (default: http://localhost:11434)' },
       { flags: ['--mode'], valueName: '<mode>', description: 'Permission mode: default, acceptEdits, dontAsk' },
       { flags: ['--max-turns'], valueName: '<n>', description: 'Max agent loop turns (default: 50)' },

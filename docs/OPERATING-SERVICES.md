@@ -112,6 +112,136 @@ This mirrors the useful part of `claude-mem`'s memory design: show compact conte
 
 `/api/services` supports `limit` and `offset` query parameters for larger service lists. Responses include `total`, `limit`, `offset`, and lifecycle metadata.
 
+## Mode Classifier
+
+The harness classifies every user message into one of six modes before routing to a model or service handler.
+
+| Mode | Purpose |
+|------|---------|
+| `chat` | Answer a question or have a conversation |
+| `build` | Create an artifact, app, script, file, dashboard, document, UI, or code project |
+| `operate` | Create or update an ongoing agentic service with persistent state, reminders, commands, reviews, and scheduled behaviour |
+| `automate` | Create a recurring workflow that runs with tools, files, and a scheduler |
+| `research` | Investigate, compare, gather sources, or analyse information |
+| `maintain` | Monitor or maintain something over time |
+
+The classifier applies pattern-matching rules with priorities. Operate-mode patterns (priority 90) win over build-mode patterns (priority 40) unless the user explicitly requests software (e.g. "build an app that..."). When suppression occurs, the response includes the suppressed mode for transparency.
+
+Source: `src/services/modeClassifier.ts`
+
+## Capability Registry
+
+Before promising ongoing reminders, notifications, or proactive updates, the harness checks whether the required capabilities exist at runtime.
+
+Built-in capabilities and their default status:
+
+| Capability | Default Status |
+|------------|----------------|
+| `scheduler` | available |
+| `local_files` | available |
+| `shell` | available |
+| `code_runner` | available |
+| `test_runner` | available |
+| `ollama` | available |
+| `notifications` | unavailable |
+| `email` | unavailable |
+| `calendar` | unavailable |
+| `browser` | unavailable |
+| `vector_memory` | unavailable |
+| `cloud_models` | unavailable |
+| `telegram` | unavailable |
+
+When a service feature requires unavailable capabilities, the harness reports the limitation honestly rather than promising behaviour it cannot deliver.
+
+Source: `src/services/capabilityRegistry.ts`
+
+## Model Registry and Router
+
+The model registry stores detailed metadata for each available model: strengths, weaknesses, cost level, privacy level, speed level, context limits, JSON/tool support, and enabled state.
+
+Model roles:
+
+| Role | Purpose |
+|------|---------|
+| `local.general` | Classification, summarisation, task extraction, note cleanup, daily reminders, log scanning, memory compression |
+| `local.coder` | Codebase scanning, code edits, debugging drafts, test explanation |
+| `local.summariser` | Summarisation, compression, daily/weekly review generation |
+| `local.embedder` | Vector memory and retrieval |
+| `cloud.reasoner` | Architecture, complex reasoning, ambiguous planning, difficult debugging |
+| `cloud.reviewer` | High-quality final review, safety assessment |
+
+The model router maps each task type to a preferred role and selects the cheapest enabled model that fits. If no model matches the preferred role, it falls back to any enabled model. Privacy-sensitive tasks can force local-only routing.
+
+Source: `src/models/modelRegistry.ts`, `src/models/modelRouter.ts`
+
+## Worker Queue
+
+Local models handle cheap background tasks through an in-memory worker queue. Job types include:
+
+* `classify_task` — classify new tasks by type
+* `extract_tasks` — extract structured tasks from notes
+* `summarise_notes` — summarise daily notes
+* `summarise_weekly` — summarise weekly review
+* `compress_memory` — compress memory
+* `scan_logs` — scan logs for patterns
+* `detect_failures` — detect repeated failures
+* `generate_reminder` — generate reminder drafts
+* `refresh_summary` — refresh project summaries
+* `validate_json` — validate JSON outputs
+
+Each job tracks its service ID, model ID, input, output, status, error, and timestamps.
+
+Source: `src/services/workerQueue.ts`
+
+## JSON Command Extraction
+
+Service commands can be extracted from natural language using rule-based patterns or parsed from structured JSON produced by a local model.
+
+Example: "Add task call dentist tomorrow and note I felt tired today" extracts:
+
+```json
+{
+  "commands": [
+    { "type": "add_task", "title": "call dentist", "due_date": "2026-05-04" },
+    { "type": "add_note", "content": "I felt tired today" }
+  ]
+}
+```
+
+All commands are validated against the service's supported command types and required fields before any state mutation. State transition events are logged for auditability.
+
+Source: `src/services/commandExtractor.ts`
+
+## Nervous System Integration
+
+The nervous system includes an `ONGOING_SERVICE_REQUEST` signal type and a corresponding reflex. When the reflex fires:
+
+* The run state notes that operate mode is active and build mode is suppressed
+* The `service.operate_mode` node is added to the required nodes list
+* Subsequent routing respects the operate-mode classification
+
+Source: `src/nervous/reflexes.ts`, `src/nervous/signals.ts`
+
+## Mycelial Graph Extensions
+
+The mycelial graph includes node types for the agentic OS layer:
+
+* `model` — LLM model entries with role metadata
+* `provider` — LLM backend providers (Ollama, OpenAI, Anthropic)
+* `service` — operating service definitions
+* `service_state` — mutable service state
+* `scheduler` — scheduler entries
+* `command_handler` — service command handlers
+* `notification_template` — notification message templates
+* `capability` — runtime capability entries
+* `background_worker` — local model worker entries
+
+Graph edges capture relationships: `service → command_handler`, `command_handler → model`, `service → scheduler`, `scheduler → notification_template`, `model → provider`, `service → capability`, `worker → model`, and `agent → model`.
+
+The mycelial router learns which models work well for each task type, which command handlers succeed, and when cloud models are worth the cost.
+
+Source: `src/mycelium/graph.ts`, `src/mycelium/seeds.ts`
+
 ## Portable Export and Import
 
 Operating services can be exported as a portable JSON payload through `/api/services/export`.

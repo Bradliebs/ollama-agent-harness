@@ -1,4 +1,6 @@
 import { OpenAIClient } from './openaiClient';
+import { FallbackChatClient } from './fallbackChatClient';
+import { drainRemoteProviderFallbackEvents, FALLBACK_COOLDOWN_MS } from './fallbackChatClient';
 import type { Message, Tool } from 'ollama';
 
 const fetchSpy = jest.fn();
@@ -22,6 +24,7 @@ function makeResponse(body: unknown, init: { status?: number; ok?: boolean } = {
     ok: init.ok ?? status < 400,
     status,
     statusText: 'OK',
+    headers: { get: () => null },
     json: async () => body,
     text: async () => JSON.stringify(body),
   } as unknown as Response;
@@ -149,6 +152,22 @@ describe('OpenAIClient', () => {
       .rejects.toThrow(/CerebrasTest HTTP 401: invalid_api_key/);
   });
 
+  it('surfaces Mistral-style detail responses on bad requests', async () => {
+    fetchSpy.mockResolvedValueOnce(makeResponse(
+      { detail: [{ loc: ['body', 'messages', 0, 'content'], msg: 'Input should be a valid string' }] },
+      { status: 400, ok: false },
+    ));
+    const client = new OpenAIClient({
+      baseUrl: 'https://api.mistral.ai/v1',
+      apiKey: 'k',
+      model: 'mistral-medium-latest',
+      providerLabel: 'Mistral AI',
+    });
+
+    await expect(client.chat([{ role: 'user', content: 'hi' }]))
+      .rejects.toThrow(/Mistral AI HTTP 400: body.messages.0.content: Input should be a valid string/);
+  });
+
   it('coerces invalid JSON in tool-call arguments to an empty object instead of throwing', async () => {
     fetchSpy.mockResolvedValueOnce(makeResponse({
       choices: [{
@@ -201,9 +220,28 @@ describe('OpenAIClient', () => {
     ];
     await client.chat(messages);
     const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    const assistantMsg = body.messages.find((m: { role: string }) => m.role === 'assistant');
     const toolMsg = body.messages.find((m: { role: string }) => m.role === 'tool');
     expect(toolMsg).toBeDefined();
     expect(toolMsg.tool_call_id).toBeDefined();
+    expect(toolMsg.tool_call_id).toBe(assistantMsg.tool_calls[0].id);
+    expect(toolMsg.tool_call_id).not.toBe('call_unknown');
+  });
+
+  it('preserves provider tool_call_id values on role:tool messages', async () => {
+    fetchSpy.mockResolvedValueOnce(makeResponse({
+      choices: [{ message: { role: 'assistant', content: 'k' } }],
+    }));
+    const client = new OpenAIClient({ baseUrl: 'https://x', apiKey: 'k', model: 'm' });
+    const messages: Message[] = [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: '', tool_calls: [{ id: 'call_mistral_123', function: { name: 't', arguments: {} } } as never] },
+      { role: 'tool', content: 'result', tool_call_id: 'call_mistral_123' } as never,
+    ];
+    await client.chat(messages);
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    const toolMsg = body.messages.find((m: { role: string }) => m.role === 'tool');
+    expect(toolMsg.tool_call_id).toBe('call_mistral_123');
   });
 });
 
@@ -434,5 +472,246 @@ describe('OpenAIClient streaming', () => {
     });
     const it = client.chatStream([{ role: 'user', content: 'hi' }]);
     await expect(it.next()).rejects.toThrow(/TestProv stream HTTP 401/);
+  });
+});
+
+describe('FallbackChatClient', () => {
+  it('cycles to the next configured backend on rate limits', async () => {
+    const limited = new OpenAIClient({ baseUrl: 'https://limited.example/v1', apiKey: 'k1', model: 'm1', providerLabel: 'Limited', maxRetries: 1 });
+    const backup = new OpenAIClient({ baseUrl: 'https://backup.example/v1', apiKey: 'k2', model: 'm2', providerLabel: 'Backup' });
+    fetchSpy
+      .mockResolvedValueOnce(makeResponse({ error: { message: 'rate limit exceeded' } }, { status: 429, ok: false }))
+      .mockResolvedValueOnce(makeResponse({ choices: [{ message: { role: 'assistant', content: 'backup ok' } }] }));
+
+    const client = new FallbackChatClient([
+      { backend: 'limited', client: limited, supportsTools: true },
+      { backend: 'backup', client: backup, supportsTools: true },
+    ]);
+
+    const result = await client.chat([{ role: 'user', content: 'hi' }]);
+
+    expect(result.message.content).toBe('backup ok');
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const urls = fetchSpy.mock.calls.map((call) => call[0]);
+    expect(urls).toEqual(['https://limited.example/v1/chat/completions', 'https://backup.example/v1/chat/completions']);
+  });
+
+  it('does not cycle on authentication failures', async () => {
+    const limited = new OpenAIClient({ baseUrl: 'https://limited.example/v1', apiKey: 'k1', model: 'm1', providerLabel: 'Limited' });
+    const backup = new OpenAIClient({ baseUrl: 'https://backup.example/v1', apiKey: 'k2', model: 'm2', providerLabel: 'Backup' });
+    fetchSpy.mockResolvedValueOnce(makeResponse({ error: { message: 'bad key' } }, { status: 401, ok: false }));
+
+    const client = new FallbackChatClient([
+      { backend: 'limited', client: limited, supportsTools: true },
+      { backend: 'backup', client: backup, supportsTools: true },
+    ]);
+
+    await expect(client.chat([{ role: 'user', content: 'hi' }])).rejects.toThrow(/HTTP 401/);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips chat-only fallback providers when tools are present', async () => {
+    const limited = new OpenAIClient({ baseUrl: 'https://limited.example/v1', apiKey: 'k1', model: 'm1', providerLabel: 'Limited', maxRetries: 1 });
+    const chatOnly = new OpenAIClient({ baseUrl: 'https://chatonly.example/v1', apiKey: 'k2', model: 'm2', providerLabel: 'ChatOnly' });
+    const toolCapable = new OpenAIClient({ baseUrl: 'https://tools.example/v1', apiKey: 'k3', model: 'm3', providerLabel: 'ToolCapable' });
+    fetchSpy
+      .mockResolvedValueOnce(makeResponse({ error: { message: 'rate limit exceeded' } }, { status: 429, ok: false }))
+      .mockResolvedValueOnce(makeResponse({ choices: [{ message: { role: 'assistant', content: 'tool fallback ok' } }] }));
+    const tools: Tool[] = [{ type: 'function', function: { name: 'file_read', description: 'Read', parameters: { type: 'object' } } }] as unknown as Tool[];
+
+    const client = new FallbackChatClient([
+      { backend: 'limited', client: limited, supportsTools: true },
+      { backend: 'chatonly', client: chatOnly, supportsTools: false },
+      { backend: 'tools', client: toolCapable, supportsTools: true },
+    ]);
+
+    const result = await client.chat([{ role: 'user', content: 'hi' }], tools);
+
+    expect(result.message.content).toBe('tool fallback ok');
+    const urls = fetchSpy.mock.calls.map((call) => call[0]);
+    expect(urls).toEqual(['https://limited.example/v1/chat/completions', 'https://tools.example/v1/chat/completions']);
+  });
+
+  it('does not fall back on HTTP 413 (request too large)', async () => {
+    const primary = new OpenAIClient({ baseUrl: 'https://primary.example/v1', apiKey: 'k1', model: 'm1', providerLabel: 'Primary', maxRetries: 1 });
+    const backup = new OpenAIClient({ baseUrl: 'https://backup.example/v1', apiKey: 'k2', model: 'm2', providerLabel: 'Backup' });
+    fetchSpy.mockResolvedValueOnce(makeResponse({ error: { message: 'Request too large for model llama-3.1-8b-instant' } }, { status: 413, ok: false }));
+
+    const client = new FallbackChatClient([
+      { backend: 'primary', client: primary, supportsTools: true },
+      { backend: 'backup', client: backup, supportsTools: true },
+    ]);
+
+    await expect(client.chat([{ role: 'user', content: 'hi' }])).rejects.toThrow(/413/);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits drainable fallback events when cycling providers', async () => {
+    drainRemoteProviderFallbackEvents(); // clear any prior
+    const limited = new OpenAIClient({ baseUrl: 'https://limited.example/v1', apiKey: 'k1', model: 'm1', providerLabel: 'Limited', maxRetries: 1 });
+    const backup = new OpenAIClient({ baseUrl: 'https://backup.example/v1', apiKey: 'k2', model: 'm2', providerLabel: 'Backup' });
+    fetchSpy
+      .mockResolvedValueOnce(makeResponse({ error: { message: 'rate limit exceeded' } }, { status: 429, ok: false }))
+      .mockResolvedValueOnce(makeResponse({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }));
+
+    const client = new FallbackChatClient([
+      { backend: 'limited', client: limited, supportsTools: true },
+      { backend: 'backup', client: backup, supportsTools: true },
+    ]);
+    await client.chat([{ role: 'user', content: 'hi' }]);
+
+    const events = drainRemoteProviderFallbackEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'provider_fallback',
+      fromBackend: 'limited',
+      toBackend: 'backup',
+    });
+    expect(events[0].reason).toContain('rate limit');
+    expect(events[0].cooldownSec).toBeGreaterThan(0);
+    // Drain is idempotent
+    expect(drainRemoteProviderFallbackEvents()).toHaveLength(0);
+  });
+
+  it('skips a cooled-down backend on the next call', async () => {
+    drainRemoteProviderFallbackEvents();
+    const primary = new OpenAIClient({ baseUrl: 'https://primary.example/v1', apiKey: 'k1', model: 'm1', providerLabel: 'Primary', maxRetries: 1 });
+    const secondary = new OpenAIClient({ baseUrl: 'https://secondary.example/v1', apiKey: 'k2', model: 'm2', providerLabel: 'Secondary', maxRetries: 1 });
+    const tertiary = new OpenAIClient({ baseUrl: 'https://tertiary.example/v1', apiKey: 'k3', model: 'm3', providerLabel: 'Tertiary' });
+
+    // First call: primary 429 → secondary 429 → tertiary succeeds
+    // Both primary and secondary enter cooldown.
+    fetchSpy
+      .mockResolvedValueOnce(makeResponse({ error: { message: 'rate limit exceeded' } }, { status: 429, ok: false }))
+      .mockResolvedValueOnce(makeResponse({ error: { message: 'rate limit exceeded' } }, { status: 429, ok: false }))
+      .mockResolvedValueOnce(makeResponse({ choices: [{ message: { role: 'assistant', content: 'r1' } }] }));
+
+    const client = new FallbackChatClient([
+      { backend: 'primary', client: primary, supportsTools: true },
+      { backend: 'secondary', client: secondary, supportsTools: true },
+      { backend: 'tertiary', client: tertiary, supportsTools: true },
+    ]);
+    const r1 = await client.chat([{ role: 'user', content: 'hi' }]);
+    expect(r1.message.content).toBe('r1');
+
+    // Second call: primary is always tried (index 0), 429s again.
+    // Secondary is in cooldown so we skip to tertiary.
+    fetchSpy
+      .mockResolvedValueOnce(makeResponse({ error: { message: 'rate limit exceeded' } }, { status: 429, ok: false }))
+      .mockResolvedValueOnce(makeResponse({ choices: [{ message: { role: 'assistant', content: 'r2 from tertiary' } }] }));
+
+    const r2 = await client.chat([{ role: 'user', content: 'hi again' }]);
+    expect(r2.message.content).toBe('r2 from tertiary');
+    const urls = fetchSpy.mock.calls.slice(-2).map((c) => c[0]);
+    expect(urls[0]).toContain('primary.example');
+    expect(urls[1]).toContain('tertiary.example');
+  });
+
+  it('retries a backend after cooldown expires', async () => {
+    drainRemoteProviderFallbackEvents();
+    const primary = new OpenAIClient({ baseUrl: 'https://primary.example/v1', apiKey: 'k1', model: 'm1', providerLabel: 'Primary', maxRetries: 1 });
+    const secondary = new OpenAIClient({ baseUrl: 'https://secondary.example/v1', apiKey: 'k2', model: 'm2', providerLabel: 'Secondary' });
+
+    // First call: primary 429 → secondary succeeds
+    fetchSpy
+      .mockResolvedValueOnce(makeResponse({ error: { message: 'rate limit exceeded' } }, { status: 429, ok: false }))
+      .mockResolvedValueOnce(makeResponse({ choices: [{ message: { role: 'assistant', content: 'r1' } }] }));
+
+    const client = new FallbackChatClient([
+      { backend: 'primary', client: primary, supportsTools: true },
+      { backend: 'secondary', client: secondary, supportsTools: true },
+    ]);
+    await client.chat([{ role: 'user', content: 'hi' }]);
+
+    // Simulate cooldown expiry by backdating the internal cooldown map
+    const cooldowns = (client as unknown as { cooldowns: Map<string, number> }).cooldowns;
+    cooldowns.set('primary', Date.now() - FALLBACK_COOLDOWN_MS - 1);
+
+    // Second call: primary should be retried now (cooldown expired, and it's index 0)
+    fetchSpy
+      .mockResolvedValueOnce(makeResponse({ choices: [{ message: { role: 'assistant', content: 'primary recovered' } }] }));
+
+    const r2 = await client.chat([{ role: 'user', content: 'hi' }]);
+    expect(r2.message.content).toBe('primary recovered');
+    expect(fetchSpy.mock.calls.at(-1)![0]).toContain('primary.example');
+  });
+
+  it('prefers the least-loaded fallback when multiple are available', async () => {
+    drainRemoteProviderFallbackEvents();
+    const primary = new OpenAIClient({ baseUrl: 'https://primary.example/v1', apiKey: 'k1', model: 'm1', providerLabel: 'Primary', maxRetries: 1 });
+    const backupA = new OpenAIClient({ baseUrl: 'https://backupA.example/v1', apiKey: 'k2', model: 'm2', providerLabel: 'BackupA' });
+    const backupB = new OpenAIClient({ baseUrl: 'https://backupB.example/v1', apiKey: 'k3', model: 'm3', providerLabel: 'BackupB' });
+
+    const client = new FallbackChatClient([
+      { backend: 'primary', client: primary, supportsTools: true },
+      { backend: 'backupA', client: backupA, supportsTools: true },
+      { backend: 'backupB', client: backupB, supportsTools: true },
+    ]);
+
+    // Pump 3 requests through primary → backupA (simulate primary failing
+    // each time). backupA accumulates 3 recent requests.
+    for (let i = 0; i < 3; i += 1) {
+      fetchSpy
+        .mockResolvedValueOnce(makeResponse({ error: { message: 'rate limit exceeded' } }, { status: 429, ok: false }))
+        .mockResolvedValueOnce(makeResponse({ choices: [{ message: { role: 'assistant', content: 'ok' } }] }));
+      await client.chat([{ role: 'user', content: 'hi' }]);
+    }
+    // Clear cooldown on primary so the next call goes through tryClients normally
+    const cooldowns = (client as unknown as { cooldowns: Map<string, number> }).cooldowns;
+    cooldowns.clear();
+
+    // Next call: primary 429 again. With least-loaded sorting, backupB
+    // (0 recent successful requests as fallback target) should be preferred
+    // over backupA (3 recent requests).
+    fetchSpy
+      .mockResolvedValueOnce(makeResponse({ error: { message: 'rate limit exceeded' } }, { status: 429, ok: false }))
+      .mockResolvedValueOnce(makeResponse({ choices: [{ message: { role: 'assistant', content: 'from B' } }] }));
+    const result = await client.chat([{ role: 'user', content: 'hi' }]);
+    expect(result.message.content).toBe('from B');
+    // The last two fetch calls should be primary then backupB
+    const lastUrls = fetchSpy.mock.calls.slice(-2).map((c) => c[0]);
+    expect(lastUrls[0]).toContain('primary.example');
+    expect(lastUrls[1]).toContain('backupB.example');
+  });
+
+  it('preserves tool_call responses from the fallback backend', async () => {
+    drainRemoteProviderFallbackEvents();
+    const primary = new OpenAIClient({ baseUrl: 'https://primary.example/v1', apiKey: 'k1', model: 'm1', providerLabel: 'Primary', maxRetries: 1 });
+    const backup = new OpenAIClient({ baseUrl: 'https://backup.example/v1', apiKey: 'k2', model: 'm2', providerLabel: 'Backup' });
+
+    // Primary 429s, backup returns a tool_call with a provider-assigned ID
+    fetchSpy
+      .mockResolvedValueOnce(makeResponse({ error: { message: 'rate limit exceeded' } }, { status: 429, ok: false }))
+      .mockResolvedValueOnce(makeResponse({
+        choices: [{
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{
+              id: 'call_backup_abc123',
+              type: 'function',
+              function: { name: 'file_read', arguments: '{"path":"README.md"}' },
+            }],
+          },
+        }],
+      }));
+
+    const client = new FallbackChatClient([
+      { backend: 'primary', client: primary, supportsTools: true },
+      { backend: 'backup', client: backup, supportsTools: true },
+    ]);
+
+    const result = await client.chat(
+      [{ role: 'user', content: 'read README' }],
+      [{ type: 'function', function: { name: 'file_read', description: 'Read', parameters: { type: 'object' } } }] as unknown as Tool[],
+    );
+
+    // The tool_call from the backup backend should pass through intact
+    expect(result.message.tool_calls).toBeDefined();
+    expect(result.message.tool_calls).toHaveLength(1);
+    const tc = result.message.tool_calls![0];
+    expect(tc.function.name).toBe('file_read');
+    // Provider ID should be preserved through the fallback wrapper
+    expect((tc as unknown as Record<string, unknown>).id).toBe('call_backup_abc123');
   });
 });

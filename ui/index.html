@@ -102,7 +102,7 @@
     .rag-chip button:hover{color:var(--error)}
     .rag-tree{max-height:240px;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:6px;font-size:12px}
     .rag-tree-row{display:flex;align-items:center;gap:6px;padding:2px 0;line-height:1.6}
-    .rag-tree-toggle{width:14px;display:inline-block;text-align:center;cursor:pointer;color:var(--text-dim);font-size:10px;user-select:none}
+    .rag-tree-toggle{width:14px;display:inline-block;text-align:center;cursor:pointer;color:var(--text-dim);font-size:10px;-webkit-user-select:none;user-select:none}
     .rag-tree-toggle:hover{color:var(--accent)}
     .rag-tree-name{cursor:default;color:var(--text)}
     .rag-tree-name.is-dir{cursor:pointer;color:var(--accent)}
@@ -224,7 +224,7 @@
     .send-btn:hover{background:var(--accent-hover)}
     .send-btn:disabled{opacity:.4;cursor:not-allowed}
     .settings-section{padding:0;border-bottom:1px solid var(--border)}
-    .settings-section h4{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--text);margin:0;padding:12px 16px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px;background:var(--surface);transition:background .15s}
+    .settings-section h4{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--text);margin:0;padding:12px 16px;cursor:pointer;-webkit-user-select:none;user-select:none;display:flex;align-items:center;gap:8px;background:var(--surface);transition:background .15s}
     .settings-section h4:hover{background:var(--surface2)}
     .settings-section h4::before{content:'▶';font-size:9px;transition:transform .2s;color:var(--text-dim)}
     .settings-section.open h4::before{transform:rotate(90deg)}
@@ -405,7 +405,7 @@
     .welcome-tool-chip{padding:3px 9px;border:1px solid var(--border);border-radius:999px;color:var(--text-dim);cursor:pointer;background:var(--surface);transition:all .15s}
     .welcome-tool-chip:hover{border-color:var(--accent);color:var(--accent)}
     .welcome-disclosure{margin-top:8px}
-    .welcome-disclosure summary{cursor:pointer;font-size:12px;color:var(--text-dim);padding:8px 0;list-style:none;display:flex;align-items:center;gap:6px;user-select:none}
+    .welcome-disclosure summary{cursor:pointer;font-size:12px;color:var(--text-dim);padding:8px 0;list-style:none;display:flex;align-items:center;gap:6px;-webkit-user-select:none;user-select:none}
     .welcome-disclosure summary:hover{color:var(--accent)}
     .welcome-disclosure summary::before{content:'▸';display:inline-block;transition:transform .15s;font-size:10px}
     .welcome-disclosure[open] summary::before{transform:rotate(90deg)}
@@ -683,7 +683,7 @@
       <div id="agentOutputDirStatus" style="font-size:11px;color:var(--text-dim);min-height:14px"></div>
 
       <details style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px">
-        <summary style="cursor:pointer;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);user-select:none">⚙ Advanced: pattern-based rules</summary>
+        <summary style="cursor:pointer;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);-webkit-user-select:none;user-select:none">⚙ Advanced: pattern-based rules</summary>
         <div style="margin-top:10px">
           <div class="setting-row" style="font-size:11px;color:var(--text-dim);margin-bottom:10px">
             Optional. Override the folder above for files matching a pattern. <code>*</code> matches any chars except <code>/</code>, <code>**</code> matches across separators. First matching rule wins.
@@ -1058,7 +1058,9 @@
     </div>
     <div class="settings-section">
       <h4>Safety Mode</h4>
-      <button class="btn-sm full-width-button" style="margin-bottom:8px;background:rgba(80,200,120,.15);border-color:#50c878;color:#50c878" onclick="enableFullAutonomy()">⚡ Full Autonomy — unlock everything</button>
+      <button class="btn-sm full-width-button" style="margin-bottom:4px;background:rgba(80,200,120,.15);border-color:#50c878;color:#50c878" onclick="enableFullAutonomy()">⚡ Full Autonomy — unlock everything</button>
+      <button class="btn-sm full-width-button" style="margin-bottom:8px;background:rgba(255,176,80,.15);border-color:#ffb050;color:#ffb050" onclick="enableTimedAutonomy()">⏱ Timed Autonomy — unlock with time limit</button>
+      <div id="timedAutonomyBanner" style="display:none;margin-bottom:8px;padding:8px 10px;background:rgba(255,176,80,.1);border:1px solid #ffb050;border-radius:6px;font-size:12px;color:#ffb050"></div>
       <div class="mode-opt permission-mode-option active" onclick="setMode('dontAsk',this)">
         <div class="mode-t">🟢 Auto-approve all</div>
         <div class="mode-d">Tools run without asking. All gated capabilities auto-grant.</div>

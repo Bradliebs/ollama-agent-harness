@@ -14,6 +14,12 @@ export interface LoopConfig {
    * Set to 0 or undefined to disable.
    */
   unproductiveTurnLimit?: number;
+  /**
+   * Terminate the loop early when one tool fails repeatedly in the same run.
+   * This prevents slow, opaque retries where the model keeps calling a broken
+   * tool instead of telling the user what went wrong. Set to 0 to disable.
+   */
+  repeatedToolFailureLimit?: number;
   context?: {
     enabled?: boolean;
     maxTokens?: number;
@@ -36,7 +42,9 @@ export type LoopEvent =
   | OutputValidationProfilePromotedEvent
   | ToolCallEvent
   | ToolResultEvent
+  | ProviderFallbackEvent
   | ContextEvent
+  | ContextWarningEvent
   | ErrorEvent
   | DoneEvent
   | UsageEvent;
@@ -75,6 +83,14 @@ export interface ToolResultEvent {
   result: ToolResult;
 }
 
+export interface ProviderFallbackEvent {
+  type: 'provider_fallback';
+  fromBackend: string;
+  toBackend: string;
+  reason: string;
+  cooldownSec?: number;
+}
+
 export interface ContextEvent {
   type: 'context';
   strategy: string;
@@ -87,6 +103,13 @@ export interface ContextEvent {
   qualityPassed?: boolean;
 }
 
+export interface ContextWarningEvent {
+  type: 'context_warning';
+  estimatedTokens: number;
+  maxTokens: number;
+  message: string;
+}
+
 export interface ErrorEvent {
   type: 'error';
   message: string;
@@ -95,7 +118,7 @@ export interface ErrorEvent {
 
 export interface DoneEvent {
   type: 'done';
-  reason: 'completed' | 'completed_with_validation_failures' | 'max_turns' | 'aborted' | 'error' | 'unproductive';
+  reason: 'completed' | 'completed_with_validation_failures' | 'max_turns' | 'aborted' | 'error' | 'unproductive' | 'repeated_tool_failure';
   turns: number;
 }
 

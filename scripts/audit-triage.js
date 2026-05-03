@@ -3,8 +3,8 @@
 const { spawnSync } = require('child_process');
 
 const auditCommand = process.platform === 'win32'
-  ? { command: 'cmd.exe', args: ['/d', '/s', '/c', 'npm audit --json'] }
-  : { command: 'npm', args: ['audit', '--json'] };
+  ? { command: 'cmd.exe', args: ['/d', '/s', '/c', 'npm audit --omit=optional --json'] }
+  : { command: 'npm', args: ['audit', '--omit=optional', '--json'] };
 const result = spawnSync(auditCommand.command, auditCommand.args, { encoding: 'utf-8' });
 const raw = result.stdout || result.stderr;
 if (!raw) {
@@ -39,7 +39,7 @@ const clusters = [
     id: 'exceljs-uuid',
     owner: 'exceljs',
     packages: ['exceljs', 'uuid'],
-    action: 'Track ExcelJS uuid advisory separately; npm proposes a semver-major downgrade, so validate workbook export before changing versions.',
+    action: 'Track ExcelJS uuid advisory separately; npm proposes downgrading ExcelJS to 3.x, which is not an acceptable automatic fix. Keep ExcelJS 4.x, validate workbook export, and upgrade when an upstream non-regressing fix is available.',
   },
   {
     id: 'install-native-helper',

@@ -5,7 +5,8 @@ import * as path from 'path';
 import { AudioTranscribeTool } from '../tools/multimodalTools';
 import { PdfReadTool } from '../tools/pdfTool';
 import { createBuiltinToolRegistry } from '../tools/registry';
-import { OPENAI_COMPATIBLE_PRESETS, readApiKey } from '../core/chatClientFactory';
+import { OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiKey } from '../core/chatClientFactory';
+import { FALLBACK_COOLDOWN_MS } from '../core/fallbackChatClient';
 
 export interface SetupHealthInput {
   host: string;
@@ -63,6 +64,19 @@ export interface SetupHealthResult {
    * subscription gate only triggers on actual chat calls.
    */
   backends: BackendHealthCheck[];
+  /** Fallback routing configuration for remote providers. */
+  fallback: FallbackRoutingConfig;
+}
+
+export interface FallbackRoutingConfig {
+  /** Whether auto-fallback is enabled (HARNESS_REMOTE_AUTO_FALLBACK !== '0'). */
+  enabled: boolean;
+  /** Cooldown window in ms after a backend hits a limit error. */
+  cooldownMs: number;
+  /** Configured fallback order, or 'default' if using the built-in order. */
+  order: string;
+  /** Number of backends with a configured API key. */
+  configuredCount: number;
 }
 
 export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHealthResult> {
@@ -70,6 +84,7 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
   const pdfOcr = await checkPdfOcrHealth(input.pdfOcrCommand);
   const local = await checkLocalHealth(input.projectDir ?? process.cwd());
   const backends = checkBackendAuth();
+  const fallback = checkFallbackConfig(backends);
   try {
     const response = await new Ollama({ host: input.host }).list();
     const modelNames = response.models.map((model) => model.name);
@@ -92,6 +107,7 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
       pdfOcr,
       local,
       backends,
+      fallback,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -102,19 +118,20 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
       pdfOcr,
       local,
       backends,
+      fallback,
     };
   }
 }
 
 /**
- * Inspect process.env to determine which OpenAI-compatible backends have a
+ * Inspect process.env to determine which remote backends have a
  * key configured. No network calls are made here — actual chat health is
  * exercised by the agent loop on first use, and we want `harness doctor`
  * to be fast and offline-safe.
  */
 function checkBackendAuth(): BackendHealthCheck[] {
   const checks: BackendHealthCheck[] = [];
-  for (const [id, preset] of Object.entries(OPENAI_COMPATIBLE_PRESETS)) {
+  for (const [id, preset] of [...Object.entries(OPENAI_COMPATIBLE_PRESETS), ['replicate', REPLICATE_PRESET] as const]) {
     const key = readApiKey(preset);
     if (key) {
       const sourceEnv = preset.apiKeyEnvVars.find((name) => process.env[name] && process.env[name]!.trim().length > 0);
@@ -144,6 +161,17 @@ function checkBackendAuth(): BackendHealthCheck[] {
     }
   }
   return checks;
+}
+
+function checkFallbackConfig(backends: BackendHealthCheck[]): FallbackRoutingConfig {
+  const enabled = process.env.HARNESS_REMOTE_AUTO_FALLBACK !== '0';
+  const configuredOrder = (process.env.HARNESS_REMOTE_FALLBACK_ORDER || '').trim();
+  return {
+    enabled,
+    cooldownMs: FALLBACK_COOLDOWN_MS,
+    order: configuredOrder || 'default',
+    configuredCount: backends.filter((b) => b.ok).length,
+  };
 }
 
 async function checkLocalHealth(projectDir: string): Promise<SetupHealthResult['local']> {

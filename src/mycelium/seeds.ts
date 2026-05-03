@@ -152,9 +152,95 @@ export const USER_PREFERENCE_NODES: NodeSeed[] = [
   { id: 'preference.avoidances', type: 'preference', label: 'Things to avoid', trust: 0.8, cost: 0, protected: true },
 ];
 
+// ─── Model, provider, and service nodes ─────────────────────────────
+
+export const MODEL_PROVIDER_NODES: NodeSeed[] = [
+  { id: 'model.local_general', type: 'model', label: 'Local general model', summary: 'Small local model for classification, summarisation, task extraction.', trust: 0.6, cost: 0 },
+  { id: 'model.local_coder', type: 'model', label: 'Local coder model', summary: 'Local model for codebase scanning, code edits, debugging drafts.', trust: 0.6, cost: 0 },
+  { id: 'model.local_summariser', type: 'model', label: 'Local summariser model', summary: 'Local model for summarisation and compression.', trust: 0.6, cost: 0 },
+  { id: 'model.local_embedder', type: 'model', label: 'Local embedding model', summary: 'Local model for vector memory and retrieval.', trust: 0.6, cost: 0 },
+  { id: 'model.cloud_reasoner', type: 'model', label: 'Cloud reasoner model', summary: 'Cloud model for architecture, complex reasoning, ambiguous planning.', trust: 0.8, cost: 0.8 },
+  { id: 'model.cloud_reviewer', type: 'model', label: 'Cloud reviewer model', summary: 'Cloud model for high-quality final review.', trust: 0.8, cost: 0.8 },
+  { id: 'provider.ollama', type: 'provider', label: 'Ollama', summary: 'Local LLM backend.', trust: 0.7, cost: 0 },
+  { id: 'provider.openai', type: 'provider', label: 'OpenAI', summary: 'Cloud LLM backend.', trust: 0.8, cost: 0.7 },
+  { id: 'provider.anthropic', type: 'provider', label: 'Anthropic', summary: 'Cloud LLM backend.', trust: 0.8, cost: 0.7 },
+];
+
+export const SERVICE_NODES: NodeSeed[] = [
+  { id: 'service.operate_mode', type: 'service', label: 'Operate mode service', summary: 'Persistent operational service with state, commands, schedules.', trust: 0.7, cost: 0.1, protected: true },
+  { id: 'service.bullet_journal', type: 'service', label: 'Bullet journal service', summary: 'Persistent bullet journal with tasks, notes, reminders, reviews.', trust: 0.7, cost: 0.1 },
+  { id: 'service_state.tasks', type: 'service_state', label: 'Task state', summary: 'Task list state for operating services.', trust: 0.7, cost: 0 },
+  { id: 'service_state.notes', type: 'service_state', label: 'Note state', summary: 'Note list state for operating services.', trust: 0.7, cost: 0 },
+  { id: 'scheduler.daily', type: 'scheduler', label: 'Daily scheduler', summary: 'Runs daily check-in and reminder jobs.', trust: 0.7, cost: 0.1 },
+  { id: 'scheduler.cron', type: 'scheduler', label: 'Cron scheduler', summary: 'Runs cron-scheduled automation jobs.', trust: 0.7, cost: 0.1 },
+];
+
+export const COMMAND_HANDLER_NODES: NodeSeed[] = [
+  { id: 'command.add_task', type: 'command_handler', label: 'Add task', summary: 'Creates a new task in service state.', trust: 0.7, cost: 0 },
+  { id: 'command.update_task', type: 'command_handler', label: 'Update task', summary: 'Modifies an existing task.', trust: 0.7, cost: 0 },
+  { id: 'command.close_task', type: 'command_handler', label: 'Close task', summary: 'Marks a task as closed.', trust: 0.7, cost: 0 },
+  { id: 'command.add_note', type: 'command_handler', label: 'Add note', summary: 'Creates a timestamped note.', trust: 0.7, cost: 0 },
+  { id: 'command.daily_review', type: 'command_handler', label: 'Daily review', summary: 'Generates daily review summary.', trust: 0.7, cost: 0.1 },
+  { id: 'command.weekly_review', type: 'command_handler', label: 'Weekly review', summary: 'Generates weekly review summary.', trust: 0.7, cost: 0.1 },
+];
+
+export const CAPABILITY_NODES: NodeSeed[] = [
+  { id: 'capability.scheduler', type: 'capability', label: 'Scheduler capability', summary: 'Job scheduling for recurring tasks.', trust: 0.8, cost: 0.1 },
+  { id: 'capability.local_files', type: 'capability', label: 'Local files capability', summary: 'Local file system access.', trust: 0.8, cost: 0 },
+  { id: 'capability.notifications', type: 'capability', label: 'Notifications capability', summary: 'Push notification delivery.', trust: 0.6, cost: 0.1 },
+  { id: 'capability.ollama', type: 'capability', label: 'Ollama capability', summary: 'Local LLM inference via Ollama.', trust: 0.8, cost: 0 },
+  { id: 'capability.cloud_models', type: 'capability', label: 'Cloud models capability', summary: 'Cloud LLM inference.', trust: 0.7, cost: 0.5 },
+];
+
+export const BACKGROUND_WORKER_NODES: NodeSeed[] = [
+  { id: 'worker.classify', type: 'background_worker', label: 'Classification worker', summary: 'Local model classifies new tasks.', trust: 0.6, cost: 0 },
+  { id: 'worker.extract', type: 'background_worker', label: 'Extraction worker', summary: 'Local model extracts structured data from notes.', trust: 0.6, cost: 0 },
+  { id: 'worker.summarise', type: 'background_worker', label: 'Summarisation worker', summary: 'Local model summarises daily/weekly notes.', trust: 0.6, cost: 0 },
+  { id: 'worker.compress', type: 'background_worker', label: 'Compression worker', summary: 'Local model compresses memory.', trust: 0.6, cost: 0 },
+];
+
+export const NOTIFICATION_TEMPLATE_NODES: NodeSeed[] = [
+  { id: 'notification.daily_check_in', type: 'notification_template', label: 'Daily check-in', summary: 'Template for daily service check-in message.', trust: 0.7, cost: 0 },
+  { id: 'notification.reminder', type: 'notification_template', label: 'Reminder', summary: 'Template for reminder notifications.', trust: 0.7, cost: 0 },
+];
+
 // ─── Generic protected edges ───────────────────────────────────────
 
 export const GENERIC_EDGES: EdgeSeed[] = [
+  // Service → command handler edges
+  { source: 'service.bullet_journal', target: 'command.add_task', weight: 0.8, relation: 'handles' },
+  { source: 'service.bullet_journal', target: 'command.update_task', weight: 0.8, relation: 'handles' },
+  { source: 'service.bullet_journal', target: 'command.close_task', weight: 0.8, relation: 'handles' },
+  { source: 'service.bullet_journal', target: 'command.add_note', weight: 0.8, relation: 'handles' },
+  { source: 'service.bullet_journal', target: 'command.daily_review', weight: 0.7, relation: 'handles' },
+  { source: 'service.bullet_journal', target: 'command.weekly_review', weight: 0.7, relation: 'handles' },
+  // Command handler → model edges
+  { source: 'command.add_task', target: 'model.local_general', weight: 0.7, relation: 'uses_model' },
+  { source: 'command.daily_review', target: 'model.local_summariser', weight: 0.7, relation: 'uses_model' },
+  { source: 'command.weekly_review', target: 'model.local_summariser', weight: 0.7, relation: 'uses_model' },
+  // Service → scheduler edges
+  { source: 'service.bullet_journal', target: 'scheduler.daily', weight: 0.8, relation: 'scheduled_by' },
+  { source: 'scheduler.daily', target: 'notification.daily_check_in', weight: 0.8, relation: 'sends' },
+  // Model → provider edges
+  { source: 'model.local_general', target: 'provider.ollama', weight: 0.9, relation: 'provided_by' },
+  { source: 'model.local_coder', target: 'provider.ollama', weight: 0.9, relation: 'provided_by' },
+  { source: 'model.local_summariser', target: 'provider.ollama', weight: 0.9, relation: 'provided_by' },
+  { source: 'model.local_embedder', target: 'provider.ollama', weight: 0.9, relation: 'provided_by' },
+  { source: 'model.cloud_reasoner', target: 'provider.openai', weight: 0.8, relation: 'provided_by' },
+  { source: 'model.cloud_reviewer', target: 'provider.anthropic', weight: 0.8, relation: 'provided_by' },
+  // Service → capability edges
+  { source: 'service.operate_mode', target: 'capability.scheduler', weight: 0.8, relation: 'requires' },
+  { source: 'service.operate_mode', target: 'capability.local_files', weight: 0.9, relation: 'requires' },
+  // Worker → model edges
+  { source: 'worker.classify', target: 'model.local_general', weight: 0.8, relation: 'uses_model' },
+  { source: 'worker.extract', target: 'model.local_general', weight: 0.8, relation: 'uses_model' },
+  { source: 'worker.summarise', target: 'model.local_summariser', weight: 0.8, relation: 'uses_model' },
+  { source: 'worker.compress', target: 'model.local_summariser', weight: 0.8, relation: 'uses_model' },
+  // Agent → model edges
+  { source: 'agent.coder', target: 'model.local_coder', weight: 0.7, relation: 'uses_model' },
+  { source: 'agent.summariser', target: 'model.local_summariser', weight: 0.7, relation: 'uses_model' },
+  { source: 'agent.planner', target: 'model.cloud_reasoner', weight: 0.6, relation: 'escalates_to' },
+  // Existing edges
   { source: 'agent.planner', target: 'agent.coder', weight: 0.7, relation: 'routes_to' },
   { source: 'agent.coder', target: 'agent.verifier', weight: 0.9, relation: 'must_verify_with', protected: true },
   { source: 'agent.debugger', target: 'verifier.code_test_check', weight: 0.8, relation: 'validated_by', protected: true },
@@ -193,6 +279,12 @@ export function seedGenericGraph(graph: MyceliumGraph): SeedSummary {
     ...GENERIC_WORKFLOW_NODES,
     ...GENERIC_VERIFIER_NODES,
     ...USER_PREFERENCE_NODES,
+    ...MODEL_PROVIDER_NODES,
+    ...SERVICE_NODES,
+    ...COMMAND_HANDLER_NODES,
+    ...CAPABILITY_NODES,
+    ...BACKGROUND_WORKER_NODES,
+    ...NOTIFICATION_TEMPLATE_NODES,
   ];
 
   for (const seed of allNodeSeeds) {

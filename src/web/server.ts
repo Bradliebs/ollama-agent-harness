@@ -9,7 +9,8 @@ import * as os from 'os';
 import { once } from 'events';
 import { Ollama } from 'ollama';
 import { OllamaClient } from '../core/ollamaClient';
-import { createChatClient, OPENAI_COMPATIBLE_PRESETS, readApiKey } from '../core/chatClientFactory';
+import { createChatClient, OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiKey } from '../core/chatClientFactory';
+import { drainRemoteProviderFallbackEvents } from '../core/fallbackChatClient';
 import type { IChatClient } from '../core/chatClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { getBuiltinTools } from '../tools';
@@ -51,6 +52,8 @@ import { createAutomationJob, deleteAutomationJob, executeDueJobs, listAutomatio
 import { prepareAutomationRun } from '../automation/runner';
 import { AutomationScheduler } from '../automation/scheduler';
 import { exportAgenticServices, getAgenticService, handleOperateModeRequest, importAgenticServices, listAgenticServices } from '../services/agenticServiceMode';
+import { classifyMode } from '../services/modeClassifier';
+import { createDefaultCapabilityRegistry, type CapabilityRegistry } from '../services/capabilityRegistry';
 import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
 import { heuristicVerifier } from '../mycelium/verifier';
 import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
@@ -129,6 +132,12 @@ interface WebSettings {
   automationScheduler: AutomationSchedulerSettings;
   /** Tool names disabled via the Tools tab. Restored on startup. */
   disabledTools: string[];
+  /** Time-limited tool enables: tool name → ISO expiry timestamp. */
+  timedToolEnables: Record<string, string>;
+  /** ISO timestamp when timed autonomy expires and permissionMode reverts. */
+  autonomyExpiresAt: string;
+  /** Permission mode to revert to when timed autonomy expires. */
+  autonomyPreviousMode: PermissionMode;
   /** Last known kill switch state. Restored on startup so a stop persists across restarts. */
   killSwitch: { active: boolean; reason: string };
   /** Time-limited capability grants for gated high-power surfaces. */
@@ -250,6 +259,11 @@ let settingsLoaded = false;
 let killSwitchActive = false;
 let killSwitchReason = '';
 const disabledTools = new Set<string>();
+/** Time-limited tool enables: tool name → expiry timestamp (ms). */
+const timedToolEnables = new Map<string, number>();
+/** Timed autonomy: when set, permissionMode reverts to autonomyPreviousMode after this timestamp. */
+let autonomyExpiresAt = 0;
+let autonomyPreviousMode: PermissionMode = 'default';
 let capabilityGrants: CapabilityGrant[] = [];
 
 function getAutomationPolicyContext(now = new Date()): { grants: CapabilityGrant[]; killSwitchActive: boolean; now: Date } {
@@ -262,13 +276,50 @@ let lastUserActivityMs = Date.now();
 let curatorScheduler: CuratorScheduler | null = null;
 let automationScheduler: AutomationScheduler | null = null;
 
+/** Check whether a tool is effectively enabled right now, considering timed enables. */
+function isToolEnabled(name: string): boolean {
+  if (!disabledTools.has(name)) return true;
+  const expiry = timedToolEnables.get(name);
+  if (expiry !== undefined) {
+    if (Date.now() < expiry) return true;
+    // Expired — clean up
+    timedToolEnables.delete(name);
+    saveSettingsToDisk().catch(() => {});
+  }
+  return false;
+}
+
+/** Check and revert timed autonomy if expired. */
+function checkAutonomyExpiry(): void {
+  if (autonomyExpiresAt > 0 && Date.now() >= autonomyExpiresAt) {
+    const prev = autonomyPreviousMode;
+    logger.info('Permissions', 'Timed autonomy expired, reverting to ' + prev);
+    appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.expired', reason: `Expired, reverted to ${prev}` }).catch(() => {});
+    permissionMode = prev;
+    autonomyExpiresAt = 0;
+    autonomyPreviousMode = 'default';
+    saveSettingsToDisk().catch(() => {});
+  }
+}
+
+function formatMinutesRemaining(expiresAtMs: number): string {
+  const ms = expiresAtMs - Date.now();
+  if (ms <= 0) return '0m';
+  const totalMin = Math.ceil(ms / 60_000);
+  if (totalMin < 60) return `${totalMin}m`;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
 function applyToolDisables(tools: Tool[]): Tool[] {
-  if (disabledTools.size === 0) return tools;
-  return tools.filter((tool) => !disabledTools.has(tool.name));
+  if (disabledTools.size === 0 && timedToolEnables.size === 0) return tools;
+  return tools.filter((tool) => isToolEnabled(tool.name));
 }
 const rateLimiter = new RateLimiter(10, 2);
 const hookPipeline = new HookPipeline();
 const permissionPrompts = new PermissionPromptBroker();
+const capabilityRegistry: CapabilityRegistry = createDefaultCapabilityRegistry();
 const defaultWebRuntime: WebRuntimeDeps = {
   createClient: (model, host, numCtx) => {
     // Model id may be backend-prefixed: "mistral/mistral-medium-latest"
@@ -716,6 +767,16 @@ app.get('/api/models', async (_req, res) => {
         });
       }
     }
+    if (readApiKey(REPLICATE_PRESET)) {
+      for (const m of (REMOTE_MODEL_CATALOG.replicate || [])) {
+        models.push({
+          name: 'replicate/' + m.id,
+          parameterSize: m.label,
+          capabilities: inferModelCapabilities(m.id, {}),
+          backend: 'replicate',
+        });
+      }
+    }
     res.json({ models });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -732,14 +793,42 @@ app.get('/api/models', async (_req, res) => {
 const REMOTE_MODEL_CATALOG: Record<string, Array<{ id: string; label: string }>> = {
   mistral: [
     { id: 'mistral-large-latest', label: 'Mistral Large' },
-    { id: 'mistral-medium-latest', label: 'Mistral Medium 3' },
+    { id: 'mistral-medium-latest', label: 'Mistral Medium' },
+    { id: 'mistral-medium-3.5', label: 'Mistral Medium 3.5' },
     { id: 'mistral-small-latest', label: 'Mistral Small' },
+    { id: 'devstral-small-latest', label: 'Devstral Small' },
+    { id: 'devstral-medium-latest', label: 'Devstral Medium' },
     { id: 'codestral-latest', label: 'Codestral' },
+    { id: 'pixtral-large-latest', label: 'Pixtral Large' },
     { id: 'open-mistral-nemo', label: 'Mistral Nemo' },
+    { id: 'ministral-3b-latest', label: 'Ministral 3B' },
+    { id: 'ministral-8b-latest', label: 'Ministral 8B' },
+    { id: 'ministral-14b-latest', label: 'Ministral 14B' },
   ],
   cerebras: [
     { id: 'llama3.1-8b', label: 'Llama 3.1 8B' },
     { id: 'llama3.1-70b', label: 'Llama 3.1 70B' },
+  ],
+  cloudflare: [
+    { id: '@cf/meta/llama-3.1-8b-instruct', label: 'Llama 3.1 8B' },
+    { id: '@cf/meta/llama-3.1-70b-instruct', label: 'Llama 3.1 70B' },
+    { id: '@cf/openai/gpt-oss-120b', label: 'GPT OSS 120B' },
+  ],
+  deepinfra: [
+    { id: 'meta-llama/Meta-Llama-3.1-8B-Instruct', label: 'Llama 3.1 8B' },
+    { id: 'Qwen/Qwen2.5-Coder-32B-Instruct', label: 'Qwen 2.5 Coder 32B' },
+    { id: 'mistralai/Mixtral-8x7B-Instruct-v0.1', label: 'Mixtral 8x7B' },
+  ],
+  fireworks: [
+    { id: 'accounts/fireworks/models/llama-v3p1-8b-instruct', label: 'Llama 3.1 8B' },
+    { id: 'accounts/fireworks/models/llama-v3p3-70b-instruct', label: 'Llama 3.3 70B' },
+    { id: 'accounts/fireworks/models/qwen2p5-coder-32b-instruct', label: 'Qwen 2.5 Coder 32B' },
+  ],
+  gemini: [
+    { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+    { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+    { id: 'gemini-2.0-flash-lite', label: 'Gemini 2.0 Flash Lite' },
   ],
   groq: [
     { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B' },
@@ -758,6 +847,25 @@ const REMOTE_MODEL_CATALOG: Record<string, Array<{ id: string; label: string }>>
   openai: [
     { id: 'gpt-4o', label: 'GPT-4o' },
     { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+  ],
+  huggingface: [
+    { id: 'openai/gpt-oss-120b', label: 'GPT OSS 120B' },
+    { id: 'meta-llama/Llama-3.1-8B-Instruct', label: 'Llama 3.1 8B' },
+    { id: 'Qwen/Qwen2.5-Coder-32B-Instruct', label: 'Qwen 2.5 Coder 32B' },
+  ],
+  sambanova: [
+    { id: 'Meta-Llama-3.1-8B-Instruct', label: 'Llama 3.1 8B' },
+    { id: 'Meta-Llama-3.1-70B-Instruct', label: 'Llama 3.1 70B' },
+    { id: 'DeepSeek-R1', label: 'DeepSeek R1' },
+  ],
+  together: [
+    { id: 'meta-llama/Llama-3.3-70B-Instruct-Turbo', label: 'Llama 3.3 70B Turbo' },
+    { id: 'Qwen/Qwen2.5-Coder-32B-Instruct', label: 'Qwen 2.5 Coder 32B' },
+    { id: 'mistralai/Mixtral-8x7B-Instruct-v0.1', label: 'Mixtral 8x7B' },
+  ],
+  replicate: [
+    { id: 'meta/meta-llama-3-8b-instruct', label: 'Llama 3 8B' },
+    { id: 'meta/meta-llama-3-70b-instruct', label: 'Llama 3 70B' },
   ],
 };
 
@@ -925,6 +1033,7 @@ app.post('/api/file-redirects/preview', async (req, res) => {
 app.get('/api/settings', async (_req, res) => {
   try {
     await ensureSettingsLoaded();
+    checkAutonomyExpiry();
     res.json(getCurrentSettings());
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -1264,7 +1373,7 @@ function evidenceFilesFromTool(callName: string, input: Record<string, unknown>)
 }
 
 function checkToolEnabled(toolName: string): ReadinessCheck {
-  return disabledTools.has(toolName)
+  return !isToolEnabled(toolName)
     ? { id: `tool.${toolName}`, label: `${toolName} enabled`, status: 'blocked', message: `${toolName} is disabled.`, action: 'Open Tools' }
     : { id: `tool.${toolName}`, label: `${toolName} enabled`, status: 'ready', message: `${toolName} is available.` };
 }
@@ -1286,7 +1395,7 @@ async function buildAutonomyPreflight(planPreview?: Awaited<ReturnType<typeof re
     checkToolEnabled('bash'),
     checkToolEnabled('file_edit'),
     checkToolEnabled('file_write'),
-    { id: 'permission.mode', label: 'Permission mode', status: permissionMode === 'dontAsk' ? 'ready' : 'blocked', message: `Current mode is ${permissionMode}.` },
+    { id: 'permission.mode', label: 'Permission mode', status: permissionMode === 'dontAsk' ? 'ready' : 'blocked', message: permissionMode === 'dontAsk' && autonomyExpiresAt > Date.now() ? `dontAsk (timed, ${formatMinutesRemaining(autonomyExpiresAt)} remaining)` : `Current mode is ${permissionMode}.` },
     { id: 'shell.grant', label: 'Shell grant', status: grantIds.has('arbitrary-shell') || permissionMode === 'dontAsk' ? 'ready' : 'blocked', message: grantIds.has('arbitrary-shell') || permissionMode === 'dontAsk' ? 'Shell capability is grant-ready.' : 'Shell execution needs an active grant.' },
     { id: 'background.autonomy.grant', label: 'Background autonomy grant', status: grantIds.has('background-autonomous-jobs') || permissionMode === 'dontAsk' ? 'ready' : 'blocked', message: grantIds.has('background-autonomous-jobs') || permissionMode === 'dontAsk' ? 'Background autonomy capability is grant-ready.' : 'Background jobs need an active grant.' },
   ];
@@ -1345,7 +1454,7 @@ app.get('/api/readiness', async (_req, res) => {
       ]),
       readinessSection('autonomy', 'Full Autonomy', [
         { id: 'plan.pending', label: 'Pending plan tasks', status: planPreview && planPreview.pending > 0 ? 'ready' : planPreview ? 'warn' : 'blocked', message: planPreview ? (planPreview.pending > 0 ? `${planPreview.pending} pending task(s) in IMPLEMENTATION_PLAN.md.` : `Plan complete — all ${planPreview.done} task(s) done.`) : 'IMPLEMENTATION_PLAN.md could not be parsed.', action: 'Open Plan' },
-        { id: 'permission.mode', label: 'Permission mode', status: permissionMode === 'dontAsk' ? 'ready' : 'warn', message: `Current mode is ${permissionMode}.`, action: 'Open Settings' },
+        { id: 'permission.mode', label: 'Permission mode', status: permissionMode === 'dontAsk' ? 'ready' : 'warn', message: permissionMode === 'dontAsk' && autonomyExpiresAt > Date.now() ? `dontAsk (timed, ${formatMinutesRemaining(autonomyExpiresAt)} remaining)` : `Current mode is ${permissionMode}.`, action: 'Open Settings' },
         { id: 'shell.grant', label: 'Shell grant', status: hasShellGrant || permissionMode === 'dontAsk' ? 'ready' : 'warn', message: hasShellGrant || permissionMode === 'dontAsk' ? 'Shell capability is grant-ready.' : 'Shell execution may prompt or be denied.', action: 'Open Tools' },
         { id: 'background.autonomy.grant', label: 'Background autonomy grant', status: hasBackgroundGrant || permissionMode === 'dontAsk' ? 'ready' : 'warn', message: hasBackgroundGrant || permissionMode === 'dontAsk' ? 'Background autonomy capability is grant-ready.' : 'Background jobs need an active grant.', action: 'Open Tools' },
         { id: 'blocked.capabilities', label: 'Blocked capability policy', status: summarizeCapabilityAlignment(capabilities).blocked >= 3 ? 'ready' : 'warn', message: `${summarizeCapabilityAlignment(capabilities).blocked} blocked high-risk capability surface(s).` },
@@ -1441,6 +1550,8 @@ app.delete('/api/webhooks/:id', (req, res) => {
 
 app.get('/api/discovery', async (_req, res) => {
   await ensureSettingsLoaded();
+  // Refresh capability registry with current server state
+  refreshCapabilityRegistry();
   try {
     const automationPolicy = getAutomationPolicyContext();
     const ttlMs = modelCatalog.ttlHours * 60 * 60 * 1000;
@@ -1486,6 +1597,34 @@ app.get('/api/discovery', async (_req, res) => {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
   }
+});
+
+// ─── Capability Registry ────────────────────────────────────────────
+
+function refreshCapabilityRegistry(): void {
+  // Dynamically update capability status based on current server state
+  capabilityRegistry.register('ollama', 'Ollama LLM backend',
+    ollamaHost ? 'available' : 'unavailable',
+    ollamaHost ? `Connected to ${ollamaHost}` : 'No Ollama host configured.');
+  capabilityRegistry.register('telegram', 'Telegram messaging',
+    telegramBotToken ? 'available' : 'unavailable',
+    telegramBotToken ? 'Telegram bot token configured.' : 'No Telegram bot token configured.');
+  capabilityRegistry.register('cloud_models', 'Cloud LLM backends',
+    Object.values(OPENAI_COMPATIBLE_PRESETS).some((preset) => readApiKey(preset)) ? 'available' : 'unavailable',
+    'Checked API key env vars for cloud backends.');
+  capabilityRegistry.register('email', 'Email sending',
+    process.env.HARNESS_SMTP_HOST ? 'available' : 'unavailable',
+    process.env.HARNESS_SMTP_HOST ? 'SMTP configured.' : 'No SMTP configured.');
+}
+
+app.get('/api/capabilities/registry', async (_req, res) => {
+  await ensureSettingsLoaded();
+  refreshCapabilityRegistry();
+  res.json({
+    capabilities: capabilityRegistry.list(),
+    available: capabilityRegistry.available().map((c) => c.id),
+    missing: capabilityRegistry.missing().map((c) => ({ id: c.id, reason: c.reason })),
+  });
 });
 
 app.get('/api/services', async (req, res) => {
@@ -2048,12 +2187,53 @@ app.get('/api/permissions/pending', (_req, res) => {
 
 // Read-only view of the permission posture for the Permissions UI.
 app.get('/api/permissions/state', (_req, res) => {
+  checkAutonomyExpiry();
   res.json({
     mode: permissionMode,
     allowedModes: ALLOWED_PERMISSION_MODES,
     killSwitch: { active: killSwitchActive, reason: killSwitchReason },
     pendingCount: permissionPrompts.list().length,
+    autonomyExpiresAt: autonomyExpiresAt > Date.now() ? new Date(autonomyExpiresAt).toISOString() : null,
+    autonomyPreviousMode: autonomyExpiresAt > 0 ? autonomyPreviousMode : null,
   });
+});
+
+// Set or clear timed autonomy. When set, permissionMode is changed to dontAsk
+// and will auto-revert to the previous mode when the timer expires.
+app.post('/api/permissions/timed-autonomy', (req, res) => {
+  try {
+    const expiresInMinutes = typeof req.body?.expiresInMinutes === 'number' && req.body.expiresInMinutes > 0
+      ? Math.min(req.body.expiresInMinutes, 1440) : undefined;
+    if (expiresInMinutes) {
+      autonomyPreviousMode = permissionMode !== 'dontAsk' ? permissionMode : autonomyPreviousMode || 'default';
+      permissionMode = 'dontAsk';
+      autonomyExpiresAt = Date.now() + expiresInMinutes * 60_000;
+      logger.info('Permissions', 'Timed autonomy engaged', { expiresInMinutes, previousMode: autonomyPreviousMode });
+      appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.engaged', reason: `Engaged for ${expiresInMinutes}m, reverts to ${autonomyPreviousMode}` }).catch(() => {});
+    } else {
+      // Clear timed autonomy (revert now)
+      const clearTools = Boolean(req.body?.clearTimedTools);
+      if (autonomyExpiresAt > 0) {
+        permissionMode = autonomyPreviousMode;
+        logger.info('Permissions', 'Timed autonomy cleared, reverted to ' + permissionMode);
+        appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.cleared', reason: `Manually cleared, reverted to ${permissionMode}` }).catch(() => {});
+      }
+      if (clearTools && timedToolEnables.size > 0) {
+        timedToolEnables.clear();
+        logger.info('Permissions', 'Cleared timed tool enables along with timed autonomy');
+      }
+      autonomyExpiresAt = 0;
+      autonomyPreviousMode = 'default';
+    }
+    saveSettingsToDisk().catch(() => {});
+    res.json({
+      permissionMode,
+      autonomyExpiresAt: autonomyExpiresAt > Date.now() ? new Date(autonomyExpiresAt).toISOString() : null,
+      autonomyPreviousMode: autonomyExpiresAt > 0 ? autonomyPreviousMode : null,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 // Engage or release the global kill switch. Once engaged, the permission
@@ -2066,6 +2246,17 @@ app.post('/api/permissions/kill-switch', (req, res) => {
       killSwitchReason = typeof req.body?.reason === 'string' && req.body.reason.trim()
         ? String(req.body.reason).trim().slice(0, 500)
         : 'Kill switch engaged from dashboard.';
+      // Clear all timed enables and timed autonomy so nothing unlocks during lockdown
+      if (timedToolEnables.size > 0) {
+        timedToolEnables.clear();
+        logger.info('Permissions', 'Cleared timed tool enables due to kill switch');
+      }
+      if (autonomyExpiresAt > 0) {
+        permissionMode = autonomyPreviousMode;
+        autonomyExpiresAt = 0;
+        autonomyPreviousMode = 'default';
+        logger.info('Permissions', 'Cleared timed autonomy due to kill switch, reverted to ' + permissionMode);
+      }
       logger.warn('Permissions', 'Kill switch engaged', { reason: killSwitchReason });
       runtimeTracer.recordEvent('permission.kill_switch_engaged', { reason: killSwitchReason });
     } else {
@@ -2086,18 +2277,25 @@ app.post('/api/permissions/kill-switch', (req, res) => {
 app.get('/api/tools', (_req, res) => {
   try {
     const registry = createBuiltinToolRegistry();
-    const tools = registry.listEntries().map((entry) => ({
-      name: entry.tool.name,
-      description: entry.tool.description,
-      toolset: entry.toolset,
-      source: entry.source,
-      enabledByDefault: entry.enabledByDefault,
-      enabled: !disabledTools.has(entry.tool.name),
-      isReadOnly: entry.tool.isReadOnly,
-      riskLevel: entry.riskLevel,
-      permissionCategory: entry.permissionCategory,
-      canDryRun: entry.canDryRun,
-    }));
+    const tools = registry.listEntries().map((entry) => {
+      const name = entry.tool.name;
+      const enabled = isToolEnabled(name);
+      const timedExpiry = timedToolEnables.get(name);
+      const enabledUntil = timedExpiry !== undefined && Date.now() < timedExpiry ? new Date(timedExpiry).toISOString() : undefined;
+      return {
+        name,
+        description: entry.tool.description,
+        toolset: entry.toolset,
+        source: entry.source,
+        enabledByDefault: entry.enabledByDefault,
+        enabled,
+        enabledUntil,
+        isReadOnly: entry.tool.isReadOnly,
+        riskLevel: entry.riskLevel,
+        permissionCategory: entry.permissionCategory,
+        canDryRun: entry.canDryRun,
+      };
+    });
     const toolsets: Record<string, number> = {};
     for (const tool of tools) toolsets[tool.toolset] = (toolsets[tool.toolset] ?? 0) + 1;
     const capabilities = listCapabilityPolicies();
@@ -2411,19 +2609,75 @@ app.post('/api/mycelium/feedback', async (req, res) => {
 
 // Enable or disable a single tool at runtime. Disabled tools are filtered out
 // of the agent's tool list before each chat turn.
-app.post('/api/tools/:name/toggle', (req, res) => {
+// Pass { enabled: true, expiresInMinutes: N } to enable for a limited time.
+app.post('/api/tools/:name/toggle', async (req, res) => {
   try {
+    await ensureSettingsLoaded();
     const toolName = String(req.params.name || '').trim();
     if (!toolName) { res.status(400).json({ error: 'tool name required' }); return; }
     const registry = createBuiltinToolRegistry();
     if (!registry.get(toolName)) { res.status(404).json({ error: 'unknown tool' }); return; }
-    const currentlyEnabled = !disabledTools.has(toolName);
+    const currentlyEnabled = isToolEnabled(toolName);
     const desiredEnabled = req.body?.enabled === undefined ? !currentlyEnabled : Boolean(req.body.enabled);
-    if (desiredEnabled) disabledTools.delete(toolName);
-    else disabledTools.add(toolName);
-    logger.info('Tools', 'Tool toggled', { tool: toolName, enabled: desiredEnabled });
+    const expiresInMinutes = typeof req.body?.expiresInMinutes === 'number' && req.body.expiresInMinutes > 0
+      ? Math.min(req.body.expiresInMinutes, 1440) : undefined;
+
+    if (desiredEnabled) {
+      if (expiresInMinutes) {
+        // Time-limited enable: keep in disabledTools but add timed override
+        disabledTools.add(toolName);
+        timedToolEnables.set(toolName, Date.now() + expiresInMinutes * 60_000);
+      } else {
+        // Permanent enable
+        disabledTools.delete(toolName);
+        timedToolEnables.delete(toolName);
+      }
+    } else {
+      disabledTools.add(toolName);
+      timedToolEnables.delete(toolName);
+    }
+    const timedExpiry = timedToolEnables.get(toolName);
+    const enabledUntil = timedExpiry !== undefined && Date.now() < timedExpiry ? new Date(timedExpiry).toISOString() : undefined;
+    logger.info('Tools', 'Tool toggled', { tool: toolName, enabled: desiredEnabled, expiresInMinutes });
     saveSettingsToDisk().catch(() => {});
-    res.json({ name: toolName, enabled: desiredEnabled, disabled: Array.from(disabledTools).sort() });
+    res.json({ name: toolName, enabled: desiredEnabled, enabledUntil, disabled: Array.from(disabledTools).sort() });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Batch enable/disable multiple tools in a single call.
+app.post('/api/tools/bulk-toggle', async (req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    const names = Array.isArray(req.body?.names) ? req.body.names : [];
+    const desiredEnabled = Boolean(req.body?.enabled);
+    const expiresInMinutes = typeof req.body?.expiresInMinutes === 'number' && req.body.expiresInMinutes > 0
+      ? Math.min(req.body.expiresInMinutes, 1440) : undefined;
+    const registry = createBuiltinToolRegistry();
+    const results: Array<{ name: string; enabled: boolean; enabledUntil?: string }> = [];
+    for (const raw of names) {
+      const toolName = String(raw).trim();
+      if (!toolName || !registry.get(toolName)) continue;
+      if (desiredEnabled) {
+        if (expiresInMinutes) {
+          disabledTools.add(toolName);
+          timedToolEnables.set(toolName, Date.now() + expiresInMinutes * 60_000);
+        } else {
+          disabledTools.delete(toolName);
+          timedToolEnables.delete(toolName);
+        }
+      } else {
+        disabledTools.add(toolName);
+        timedToolEnables.delete(toolName);
+      }
+      const timedExpiry = timedToolEnables.get(toolName);
+      const enabledUntil = timedExpiry !== undefined && Date.now() < timedExpiry ? new Date(timedExpiry).toISOString() : undefined;
+      results.push({ name: toolName, enabled: desiredEnabled, enabledUntil });
+    }
+    logger.info('Tools', 'Bulk toggle', { count: results.length, enabled: desiredEnabled, expiresInMinutes });
+    saveSettingsToDisk().catch(() => {});
+    res.json({ toggled: results, disabled: Array.from(disabledTools).sort() });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
@@ -2539,6 +2793,7 @@ app.post('/api/permissions/:id/resolve', (req, res) => {
 // Chat endpoint — runs the agent loop and streams events as SSE
 app.post('/api/chat', async (req, res) => {
   await ensureSettingsLoaded();
+  checkAutonomyExpiry();
   lastUserActivityMs = Date.now();
   const { message, model } = req.body;
   if (!message) { res.status(400).json({ error: 'message is required' }); return; }
@@ -2556,7 +2811,21 @@ app.post('/api/chat', async (req, res) => {
       .catch(() => {});
   }
 
-  const operateResult = messageText ? await handleOperateModeRequest(PROJECT_DIR, messageText) : null;
+  refreshCapabilityRegistry();
+  const operateResult = messageText ? await handleOperateModeRequest(PROJECT_DIR, messageText, undefined, {
+    checkCapabilities: (required) => capabilityRegistry.formatLimitations(required as any[]),
+  }) : null;
+
+  // Emit mode classification for every request so the UI can display the
+  // detected intent and any suppressed modes.
+  if (messageText) {
+    const modeClassification = classifyMode(messageText);
+    // We don't SSE here yet (headers not sent for non-operate path),
+    // but we attach it to the operate result for the operate branch and
+    // stash it for the model branch to emit after SSE headers are set.
+    (req as any).__modeClassification = modeClassification;
+  }
+
   if (operateResult?.handled) {
     const evidenceCard: EvidenceCard = {
       id: crypto.randomUUID(),
@@ -2586,6 +2855,10 @@ app.post('/api/chat', async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'close');
     res.flushHeaders();
+    const modeClassification = (req as any).__modeClassification;
+    if (modeClassification) {
+      res.write(`data: ${JSON.stringify({ type: 'mode_classification', ...modeClassification })}\n\n`);
+    }
     res.write(`data: ${JSON.stringify({ type: 'text', content: operateResult.response })}\n\n`);
     res.write(`data: ${JSON.stringify({ type: 'agentic_mode', mode: 'OPERATE_MODE', classification: operateResult.classification, service: operateResult.service, state: operateResult.state, schedule: operateResult.schedule })}\n\n`);
     res.write(`data: ${JSON.stringify({ type: 'evidence', evidence: evidenceCard })}\n\n`);
@@ -2613,6 +2886,13 @@ app.post('/api/chat', async (req, res) => {
   // fine over a single connection that closes when the stream ends.
   res.setHeader('Connection', 'close');
   res.flushHeaders();
+
+  // Emit mode classification before model loop starts
+  const modeClassification = (req as any).__modeClassification;
+  if (modeClassification) {
+    res.write(`data: ${JSON.stringify({ type: 'mode_classification', ...modeClassification })}\n\n`);
+  }
+
   const abortController = new AbortController();
   // Use res.on('close') instead of req.on('close') on POST SSE routes:
   // req 'close' can fire as soon as the request body is fully consumed,
@@ -2670,7 +2950,7 @@ app.post('/api/chat', async (req, res) => {
     '4. Format responses in Markdown.\n' +
     '5. Be direct — do the work, don\'t ask the user to do it themselves.' +
     writableNote +
-    '\n7. You have a document_export tool that creates CSV, Excel (.xlsx), Word (.docx), and PDF files. Use it when the user asks for spreadsheets, documents, or reports. For Excel, numbers and percentages are auto-formatted. Tables are supported in Word and PDF.' +
+    '\n7. You have a document_export tool that creates CSV, Excel (.xlsx), Word (.docx), and PDF files. If the user asks what formats are available or says Markdown is hard to read, answer with options first. Use document_export only when the user asks you to create or export a specific file. For Excel, numbers and percentages are auto-formatted. Tables are supported in Word and PDF.' +
     '\n8. Use configured communication tools instead of inventing app-local notification config: use telegram_notify for Telegram notifications through the saved Harness Telegram bridge, and email_draft/email_send for email. Do not create .env files with bot tokens or call the raw Telegram HTTP API unless the user explicitly asks for a separate app integration.' +
     '\n9. Treat configured external folders as user-owned data and tools. For existing apps under allowed external folders, use their CLI commands and data files for routine requests. Do not rewrite scripts, setup files, notification formatters, or skill implementations there unless the user explicitly asks you to modify that tool\'s code. For bullet journal task requests, prefer the journal CLI or task data over file_write/file_edit on journal.py, telegram_sender.py, or related program files.';
 
@@ -2891,6 +3171,9 @@ app.post('/api/chat', async (req, res) => {
         assistantTextBuffer += event.content;
       }
       if (event.type === 'done') doneReason = event.reason;
+      for (const fallbackEvent of drainRemoteProviderFallbackEvents()) {
+        res.write(`data: ${JSON.stringify(fallbackEvent)}\n\n`);
+      }
       const data = JSON.stringify(event);
       res.write(`data: ${data}\n\n`);
       if (event.type === 'tool_result') {
@@ -2918,6 +3201,9 @@ app.post('/api/chat', async (req, res) => {
           })}\n\n`);
         }
       }
+    }
+    for (const fallbackEvent of drainRemoteProviderFallbackEvents()) {
+      res.write(`data: ${JSON.stringify(fallbackEvent)}\n\n`);
     }
     if (suppressedFallbacks > 0) {
       runtimeTracer.recordEvent('uploads.fallback_summary', {
@@ -4282,6 +4568,9 @@ function getCurrentSettings(): WebSettings {
     curator: curatorSettings,
     automationScheduler: automationSchedulerSettings,
     disabledTools: Array.from(disabledTools).sort(),
+    timedToolEnables: Object.fromEntries(Array.from(timedToolEnables.entries()).filter(([, exp]) => Date.now() < exp).map(([name, exp]) => [name, new Date(exp).toISOString()])),
+    autonomyExpiresAt: autonomyExpiresAt > Date.now() ? new Date(autonomyExpiresAt).toISOString() : '',
+    autonomyPreviousMode,
     killSwitch: { active: killSwitchActive, reason: killSwitchReason },
     capabilityGrants,
     allowedExternalPaths: getAllowedExternalPaths(),
@@ -4358,11 +4647,22 @@ const FILE_SOURCED_KEYS = new Set<string>();
 const ALLOWED_API_KEY_NAMES = new Set([
   'OPENAI_API_KEY',
   'CEREBRAS_API_KEY',
+  'CLOUDFLARE_ACCOUNT_ID',
+  'CLOUDFLARE_API_TOKEN',
+  'DEEPINFRA_API_KEY',
+  'FIREWORKS_API_KEY',
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
   'GROQ_API_KEY',
   'GITHUB_TOKEN',
   'GITHUB_MODELS_TOKEN',
+  'HF_TOKEN',
+  'HUGGINGFACE_API_KEY',
   'MISTRAL_API_KEY',
   'OPENROUTER_API_KEY',
+  'REPLICATE_API_TOKEN',
+  'SAMBANOVA_API_KEY',
+  'TOGETHER_API_KEY',
   'ANTHROPIC_API_KEY',
   'HARNESS_SMTP_HOST',
   'HARNESS_SMTP_PORT',
@@ -4411,6 +4711,25 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
     for (const name of settings.disabledTools) {
       const value = String(name).trim();
       if (value && registry.get(value)) disabledTools.add(value);
+    }
+  }
+  if (settings.timedToolEnables !== undefined && typeof settings.timedToolEnables === 'object' && settings.timedToolEnables !== null) {
+    timedToolEnables.clear();
+    const now = Date.now();
+    for (const [name, iso] of Object.entries(settings.timedToolEnables as Record<string, unknown>)) {
+      const ts = new Date(String(iso)).getTime();
+      if (Number.isFinite(ts) && ts > now && disabledTools.has(name)) timedToolEnables.set(name, ts);
+    }
+  }
+  if (typeof settings.autonomyExpiresAt === 'string' && settings.autonomyExpiresAt) {
+    const ts = new Date(settings.autonomyExpiresAt).getTime();
+    const prevMode = typeof settings.autonomyPreviousMode === 'string' && ALLOWED_PERMISSION_MODES.includes(settings.autonomyPreviousMode as PermissionMode)
+      ? settings.autonomyPreviousMode as PermissionMode : 'default';
+    if (Number.isFinite(ts) && ts > Date.now()) {
+      autonomyExpiresAt = ts;
+      autonomyPreviousMode = prevMode;
+    } else {
+      autonomyExpiresAt = 0;
     }
   }
   if (settings.killSwitch !== undefined && typeof settings.killSwitch === 'object' && settings.killSwitch !== null) {
@@ -4686,7 +5005,13 @@ async function persistSessionLearning(session: SessionStorage, projectDir: strin
   await appendLearningCandidate(projectDir, candidate);
 }
 
+let _saveSettingsLock: Promise<void> = Promise.resolve();
 async function saveSettingsToDisk(): Promise<void> {
+  // Serialize saves to prevent concurrent write races
+  _saveSettingsLock = _saveSettingsLock.then(_doSaveSettings, _doSaveSettings);
+  return _saveSettingsLock;
+}
+async function _doSaveSettings(): Promise<void> {
   await fs.mkdir(path.dirname(SETTINGS_PATH), { recursive: true });
   const { outputValidationProfiles, customOutputValidationProfiles: profiles, ...settings } = getCurrentSettings();
   void outputValidationProfiles;
@@ -4694,13 +5019,19 @@ async function saveSettingsToDisk(): Promise<void> {
   // Merge with any fields that exist in the file but are not tracked in-memory
   // (e.g. fields added by newer code not yet loaded). This prevents a running
   // server from clobbering file edits made to fields it does not manage.
+  let merged: Record<string, unknown> = settings;
   try {
-    const existing = JSON.parse(await fs.readFile(SETTINGS_PATH, 'utf-8')) as Record<string, unknown>;
-    const merged = { ...existing, ...settings };
-    await fs.writeFile(SETTINGS_PATH, JSON.stringify(merged, null, 2), 'utf-8');
-  } catch {
-    await fs.writeFile(SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf-8');
-  }
+    const raw = await fs.readFile(SETTINGS_PATH, 'utf-8');
+    const existing = JSON.parse(raw) as Record<string, unknown>;
+    merged = { ...existing, ...settings };
+  } catch { /* file missing or invalid — use settings as-is */ }
+  const json = JSON.stringify(merged, null, 2);
+  // Validate before writing — never write invalid JSON
+  try { JSON.parse(json); } catch { logger.warn('Settings', 'Skipped save: serialized JSON is invalid'); return; }
+  // Atomic write: write to temp file then rename
+  const tmpPath = SETTINGS_PATH + '.tmp';
+  await fs.writeFile(tmpPath, json, 'utf-8');
+  await fs.rename(tmpPath, SETTINGS_PATH);
 }
 
 async function getRuntimeStorageSummary(): Promise<{ traces: { count: number; bytes: number }; semanticIndex: { exists: boolean; bytes: number } }> {

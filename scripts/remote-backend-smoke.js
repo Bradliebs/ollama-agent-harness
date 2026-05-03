@@ -5,7 +5,7 @@
  * end-to-end through the CLI to prove v0.2.2 backend wiring still works.
  *
  * Backend is selected by --backend; model by --model. The CLI is invoked
- * with -p "say hello" and the same hardening flags as scripts/headless-smoke.js
+ * with a compact prompt and the same hardening flags as scripts/headless-smoke.js
  * (--mode dontAsk, --max-turns 3, --unproductive-turn-limit 2).
  *
  * Backends with no configured API key (env or .harness/api-keys.json)
@@ -15,11 +15,13 @@
  *
  * Override the per-backend model via env:
  *   HARNESS_SMOKE_MODEL_CEREBRAS=llama3.1-8b
+ *   HARNESS_SMOKE_MODEL_CLOUDFLARE=@cf/meta/llama-3.1-8b-instruct
  *   HARNESS_SMOKE_MODEL_GROQ=llama-3.1-8b-instant
  *   HARNESS_SMOKE_MODEL_GITHUB=gpt-4o-mini
  *   HARNESS_SMOKE_MODEL_MISTRAL=mistral-small-latest
  *   HARNESS_SMOKE_MODEL_OPENROUTER=meta-llama/llama-3.3-70b-instruct:free
  *   HARNESS_SMOKE_MODEL_OPENAI=gpt-4o-mini
+ *   HARNESS_SMOKE_MODEL_REPLICATE=meta/meta-llama-3-8b-instruct
  *
  * Skip a specific backend even when a key is present:
  *   HARNESS_SMOKE_SKIP=openai,openrouter
@@ -41,11 +43,13 @@ const SKIP = new Set(
 
 const BACKENDS = [
   { id: 'cerebras', envKeys: ['CEREBRAS_API_KEY'], defaultModel: 'llama3.1-8b' },
+  { id: 'cloudflare', envKeys: ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID'], defaultModel: '@cf/meta/llama-3.1-8b-instruct', requireAll: true },
   { id: 'groq', envKeys: ['GROQ_API_KEY'], defaultModel: 'llama-3.1-8b-instant' },
   { id: 'github', envKeys: ['GITHUB_MODELS_TOKEN', 'GITHUB_TOKEN'], defaultModel: 'gpt-4o-mini' },
   { id: 'mistral', envKeys: ['MISTRAL_API_KEY'], defaultModel: 'mistral-small-latest' },
   { id: 'openrouter', envKeys: ['OPENROUTER_API_KEY'], defaultModel: 'meta-llama/llama-3.3-70b-instruct:free' },
   { id: 'openai', envKeys: ['OPENAI_API_KEY'], defaultModel: 'gpt-4o-mini' },
+  { id: 'replicate', envKeys: ['REPLICATE_API_TOKEN'], defaultModel: 'meta/meta-llama-3-8b-instruct' },
 ];
 
 /**
@@ -54,23 +58,25 @@ const BACKENDS = [
  * keys entered through Settings — so users who never exported anything to
  * their shell still get covered.
  */
-function isConfigured(envKeys) {
-  for (const name of envKeys) {
+function isConfigured(backend) {
+  const found = new Set();
+  for (const name of backend.envKeys) {
     const value = process.env[name];
-    if (value && value.trim().length > 0) return true;
+    if (value && value.trim().length > 0) found.add(name);
   }
   const apiKeysPath = path.resolve(__dirname, '..', '.harness', 'api-keys.json');
-  if (!existsSync(apiKeysPath)) return false;
-  try {
-    const stored = JSON.parse(readFileSync(apiKeysPath, 'utf-8'));
-    for (const name of envKeys) {
-      const value = stored[name];
-      if (typeof value === 'string' && value.trim().length > 0) return true;
+  if (existsSync(apiKeysPath)) {
+    try {
+      const stored = JSON.parse(readFileSync(apiKeysPath, 'utf-8'));
+      for (const name of backend.envKeys) {
+        const value = stored[name];
+        if (typeof value === 'string' && value.trim().length > 0) found.add(name);
+      }
+    } catch {
+      // Malformed file — treat as not configured rather than crashing.
     }
-  } catch {
-    // Malformed file — treat as not configured rather than crashing.
   }
-  return false;
+  return backend.requireAll ? backend.envKeys.every((name) => found.has(name)) : found.size > 0;
 }
 
 function runOne(backend, model) {
@@ -79,8 +85,9 @@ function runOne(backend, model) {
       'node',
       [
         HARNESS_PATH,
-        '-p', 'say hello',
+        '-p', 'Say hello in exactly three words.',
         '--mode', 'dontAsk',
+        '--compact-remote-smoke',
         '--backend', backend,
         '--model', model,
         '--max-turns', '3',
@@ -119,12 +126,13 @@ async function main() {
   }
 
   const results = [];
-  for (const { id, envKeys, defaultModel } of BACKENDS) {
+  for (const backend of BACKENDS) {
+    const { id, envKeys, defaultModel } = backend;
     if (SKIP.has(id)) {
       results.push({ backend: id, status: 'skipped', reason: 'in HARNESS_SMOKE_SKIP' });
       continue;
     }
-    if (!isConfigured(envKeys)) {
+    if (!isConfigured(backend)) {
       results.push({ backend: id, status: 'skipped', reason: `no key (${envKeys.join('/')})` });
       continue;
     }
