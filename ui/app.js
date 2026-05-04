@@ -634,7 +634,13 @@ function renderModelCapabilityHint() {
     if (adaptive > def) {
       const badge = document.createElement('div');
       badge.style.cssText = 'margin-top:4px;font-size:11px;color:var(--text-dim)';
-      badge.textContent = '🔄 Adaptive: ' + adaptive + ' turns (default ' + def + ') — synthesis fired ' + (record.fired || 0) + '/' + (record.total || 0) + ' sessions';
+      badge.textContent = '🔄 Adaptive: ' + adaptive + ' turns (default ' + def + ') — synthesis fired ' + (record.fired || 0) + '/' + (record.total || 0) + ' sessions ';
+      const resetBtn = document.createElement('a');
+      resetBtn.href = '#';
+      resetBtn.style.cssText = 'color:var(--accent);font-size:11px';
+      resetBtn.textContent = '(reset)';
+      resetBtn.onclick = (e) => { e.preventDefault(); fetch('/api/synthesis-stats?model=' + encodeURIComponent(model.name), { method: 'DELETE' }).then(() => renderModelCapabilityHint()).catch(() => {}); };
+      badge.appendChild(resetBtn);
       hint.appendChild(badge);
     }
   }).catch(() => {});

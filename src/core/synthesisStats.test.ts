@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { adaptiveMaxTurns, loadSynthesisStats, recordSessionCompleted, recordSynthesisFired } from './synthesisStats';
+import { adaptiveMaxTurns, clearSynthesisStats, loadSynthesisStats, recordSessionCompleted, recordSynthesisFired } from './synthesisStats';
 
 describe('synthesisStats', () => {
   let projectDir: string;
@@ -62,5 +62,27 @@ describe('synthesisStats', () => {
   it('does not bump when synthesis fires less than 40%', () => {
     const stats = { 'well-behaved': { fired: 1, total: 10 } };
     expect(adaptiveMaxTurns(stats, 'well-behaved', 25)).toBe(25);
+  });
+
+  it('clears all stats', async () => {
+    await recordSynthesisFired(projectDir, 'model-a');
+    await recordSynthesisFired(projectDir, 'model-b');
+    await clearSynthesisStats(projectDir);
+    expect(await loadSynthesisStats(projectDir)).toEqual({});
+  });
+
+  it('clears stats for a single model', async () => {
+    await recordSynthesisFired(projectDir, 'model-a');
+    await recordSynthesisFired(projectDir, 'model-b');
+    await clearSynthesisStats(projectDir, 'model-a');
+    const stats = await loadSynthesisStats(projectDir);
+    expect(stats['model-a']).toBeUndefined();
+    expect(stats['model-b']).toBeDefined();
+  });
+
+  it('removes file when clearing the last model', async () => {
+    await recordSynthesisFired(projectDir, 'only-model');
+    await clearSynthesisStats(projectDir, 'only-model');
+    expect(await loadSynthesisStats(projectDir)).toEqual({});
   });
 });

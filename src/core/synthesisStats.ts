@@ -43,6 +43,20 @@ export async function recordSessionCompleted(projectDir: string, model: string):
   await fs.writeFile(statsPath(projectDir), JSON.stringify(stats, null, 2), 'utf-8');
 }
 
+export async function clearSynthesisStats(projectDir: string, model?: string): Promise<void> {
+  if (!model) {
+    await fs.rm(statsPath(projectDir), { force: true });
+    return;
+  }
+  const stats = await loadSynthesisStats(projectDir);
+  delete stats[model];
+  if (Object.keys(stats).length === 0) {
+    await fs.rm(statsPath(projectDir), { force: true });
+  } else {
+    await fs.writeFile(statsPath(projectDir), JSON.stringify(stats, null, 2), 'utf-8');
+  }
+}
+
 /**
  * Compute an adaptive maxTurns for a model based on its synthesis history.
  * If a model triggers synthesis more than 40% of the time, it gets extra

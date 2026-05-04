@@ -11,6 +11,34 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.14
+
+Synthesis turn telemetry, adaptive maxTurns, and stats management.
+
+### Telemetry
+
+* Added `synthesis_fired` LoopEvent emitted when the bonus synthesis turn triggers.
+* Per-model synthesis frequency tracked in `.harness/synthesis-stats.json`.
+* Adaptive maxTurns: models firing synthesis >40% of sessions automatically get +10 turns (cap 40).
+
+### API
+
+* `GET /api/synthesis-stats` — per-model stats with adaptive maxTurns.
+* `DELETE /api/synthesis-stats?model=name` — reset stats for one model or all.
+
+### UI
+
+* Model capability hint shows adaptive turns badge with reset link when bumped.
+* Synthesis turn surfaced in tool box during chat.
+
+### Doctor
+
+* `harness doctor` includes synthesis turn stats section with per-model ratios.
+
+### Tests
+
+* 11 new synthesisStats tests, 1 new queryLoop telemetry assertion.
+
 ## Ollama Agent Harness v0.3.13
 
 Bonus synthesis turn prevents silent tool-only exits across all consumers.

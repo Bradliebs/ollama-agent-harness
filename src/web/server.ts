@@ -41,7 +41,7 @@ import { RateLimiter } from '../core/rateLimiter';
 import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
 import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, describeOutputValidationProfileSuggestion, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
-import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns } from '../core/synthesisStats';
+import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, clearSynthesisStats } from '../core/synthesisStats';
 import { startNewSession, onSessionEnd, getEvolvedPrompt } from '../learning/engine';
 import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
 import { appendLearningCandidate, extractLearningCandidate, getLearningCandidateProvenance, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
@@ -1054,6 +1054,17 @@ app.get('/api/synthesis-stats', async (_req, res) => {
       withAdaptive[model] = { ...record, adaptiveMaxTurns: adaptiveMaxTurns(stats, model, 25) };
     }
     res.json({ stats: withAdaptive, defaultMaxTurns: 25 });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.delete('/api/synthesis-stats', async (req, res) => {
+  try {
+    const model = typeof req.query.model === 'string' ? req.query.model : undefined;
+    await clearSynthesisStats(PROJECT_DIR, model);
+    res.json({ cleared: model ?? 'all' });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
