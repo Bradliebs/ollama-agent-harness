@@ -316,6 +316,10 @@ Talk to Oracle from your phone via Telegram. Create a bot with [@BotFather](http
 * Inline progress — see tool calls happening in real time
 * Notifications — automation job results pushed to your chat
 
+### Discord bot
+
+Talk to the harness from any Discord server. Create a bot at the [Discord Developer Portal](https://discord.com/developers/applications), enable Message Content Intent, and set `HARNESS_DISCORD_BOT_TOKEN`. Optionally restrict to specific channels with `HARNESS_DISCORD_ALLOWED_CHANNEL_IDS`.
+
 ### Mission Control
 
 The welcome screen shows a Mission Control dashboard with:

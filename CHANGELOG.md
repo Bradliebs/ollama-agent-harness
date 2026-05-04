@@ -11,6 +11,38 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.12
+
+Discord bot integration, browser URL allowlist, capability enforcement, and recommended model guide.
+
+### Discord integration
+
+* Added Discord bot bridge — same pattern as Telegram, forwards messages to /api/chat.
+* API routes: `/api/discord/status`, `/api/discord/token`, `/api/discord/stop`.
+* Auto-starts on server boot if `HARNESS_DISCORD_BOT_TOKEN` is set.
+* Channel filtering via `HARNESS_DISCORD_ALLOWED_CHANNEL_IDS`.
+
+### Browser safety
+
+* Added URL allowlist via `HARNESS_BROWSER_URL_ALLOWLIST` env var.
+* Supports exact domains and wildcard patterns (e.g. `*.gov.uk`).
+* Browser page tools now enforce `browser-page-access` capability grant at execution time.
+* Denied if no active grant or kill switch engaged.
+
+### Capability enforcement
+
+* `browser-page-access` capability policy added (10 gated capabilities total).
+* Permission check now validates grants before browser tool execution.
+
+### Documentation
+
+* Added recommended models for tool use (local Ollama and Mistral API).
+* Updated tool list with all browser and calendar tools.
+
+### Tests
+
+* 941 total tests passing (3 new URL allowlist tests).
+
 ## Ollama Agent Harness v0.3.11
 
 Browser automation, calendar write, shopping skill, model guide, and capability grants.
