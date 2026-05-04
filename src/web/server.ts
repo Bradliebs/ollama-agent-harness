@@ -61,6 +61,7 @@ import { WorkerQueue } from '../services/workerQueue';
 import { createPromise, listPromises, updatePromise, checkObligations, fulfilPromise, failPromise, detectCommitments, type PromiseStatus } from '../services/promiseLedger';
 import { getServiceLifecycle, initServiceLifecycle, transitionService, probeServiceHealth, SERVICE_TEMPLATES, type ServiceLifecycleStatus } from '../services/serviceLifecycle';
 import { appendEvent, emitEvent, queryEvents, summarizeEventStore, generatePostmortem, createSnapshot, getSnapshot, listSnapshots, type EventCategory } from '../persistence/eventStore';
+import { subscribeEventStream } from '../persistence/eventStore';
 import { verifyCode, verifyService, verifyPromiseFulfillability } from '../core/doneStateVerifier';
 import { buildRepoGraph, analyzeImpact, summarizeRepo, saveRepoGraph, loadRepoGraph } from '../core/codeIntelligence';
 import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
@@ -1968,6 +1969,21 @@ app.get('/api/events/snapshots/:id', async (req, res) => {
   }
 });
 
+app.get('/api/events/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const unsubscribe = subscribeEventStream((event) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  });
+
+  req.on('close', () => {
+    unsubscribe();
+  });
+});
+
 app.post('/api/events', async (req, res) => {
   try {
     const { category, type, data, actor, subject_id, parent_event_id } = req.body ?? {};
@@ -2048,6 +2064,62 @@ app.get('/api/code-intelligence/diagram', async (_req, res) => {
     const { generateArchitectureDiagram } = await import('../core/codeIntelligence');
     const mermaid = generateArchitectureDiagram(graph);
     res.json({ mermaid });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/subsystems/health', async (_req, res) => {
+  try {
+    const [obligations, eventSummary, repoGraph, services] = await Promise.allSettled([
+      checkObligations(PROJECT_DIR),
+      summarizeEventStore(PROJECT_DIR),
+      loadRepoGraph(PROJECT_DIR).then((g) => g ? summarizeRepo(g) : null),
+      listAgenticServices(PROJECT_DIR),
+    ]);
+
+    const promiseHealth = obligations.status === 'fulfilled' ? obligations.value : null;
+    const events = eventSummary.status === 'fulfilled' ? eventSummary.value : null;
+    const codeIntel = repoGraph.status === 'fulfilled' ? repoGraph.value : null;
+    const svcList = services.status === 'fulfilled' ? services.value : [];
+
+    const subsystems = {
+      promises: {
+        status: promiseHealth && promiseHealth.breaches.length === 0 ? 'healthy' : promiseHealth ? 'warning' : 'unknown',
+        total: promiseHealth?.total ?? 0,
+        pending: promiseHealth?.pending ?? 0,
+        fulfilled: promiseHealth?.fulfilled ?? 0,
+        breaches: promiseHealth?.breaches.length ?? 0,
+      },
+      events: {
+        status: events && events.total_events > 0 ? 'healthy' : 'empty',
+        total_events: events?.total_events ?? 0,
+        categories: events?.categories ?? {},
+        snapshots: events?.snapshot_count ?? 0,
+      },
+      code_intelligence: {
+        status: codeIntel ? 'healthy' : 'not_built',
+        files: codeIntel?.total_files ?? 0,
+        edges: codeIntel?.total_edges ?? 0,
+        exports: codeIntel?.total_exports ?? 0,
+        tests: codeIntel?.test_files ?? 0,
+      },
+      services: {
+        status: svcList.length > 0 ? 'healthy' : 'empty',
+        count: svcList.length,
+      },
+      mycelium: {
+        status: 'healthy',
+        message: 'Graph loaded from disk on each chat turn.',
+      },
+      nervous_system: {
+        status: 'healthy',
+        modules: ['signals', 'sensory', 'reflexes', 'attention', 'motor', 'pain', 'recovery'],
+      },
+    };
+
+    const overall = Object.values(subsystems).every((s) => s.status === 'healthy' || s.status === 'empty') ? 'healthy' : 'degraded';
+    res.json({ overall, generatedAt: new Date().toISOString(), subsystems });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }

@@ -70,7 +70,7 @@ export { canTransition, getServiceLifecycle, getServiceTemplate, initServiceLife
 export type { ServiceLifecycleStatus, ServiceLifecycleState, ServiceTransitionResult, ServiceTemplate } from './services/serviceLifecycle';
 
 // ─── Event Store ────────────────────────────────────────────────────
-export { appendEvent, emitEvent, queryEvents, getEvent, createSnapshot, getSnapshot, listSnapshots, getUndoEvents, summarizeEventStore, generatePostmortem, pruneEventStore, pruneEventsByAge } from './persistence/eventStore';
+export { appendEvent, emitEvent, queryEvents, getEvent, createSnapshot, getSnapshot, listSnapshots, getUndoEvents, summarizeEventStore, generatePostmortem, pruneEventStore, pruneEventsByAge, subscribeEventStream } from './persistence/eventStore';
 export type { EventCategory, HarnessEvent, EventSnapshot, EventQuery, EventStoreSummary } from './persistence/eventStore';
 
 // ─── Done-State Verifier ────────────────────────────────────────────

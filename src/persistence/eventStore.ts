@@ -86,6 +86,14 @@ function snapshotsDir(projectDir: string): string {
 const MAX_EVENT_LINES = 10_000;
 let knownEventLineCount = -1;
 
+/** SSE subscribers for live event streaming. */
+const eventStreamListeners = new Set<(event: HarnessEvent) => void>();
+
+export function subscribeEventStream(listener: (event: HarnessEvent) => void): () => void {
+  eventStreamListeners.add(listener);
+  return () => { eventStreamListeners.delete(listener); };
+}
+
 export async function appendEvent(projectDir: string, event: Omit<HarnessEvent, 'event_id' | 'timestamp'>): Promise<HarnessEvent> {
   const full: HarnessEvent = {
     event_id: crypto.randomUUID(),
@@ -95,6 +103,10 @@ export async function appendEvent(projectDir: string, event: Omit<HarnessEvent, 
   const fp = eventsFilePath(projectDir);
   await fs.mkdir(path.dirname(fp), { recursive: true });
   await fs.appendFile(fp, JSON.stringify(full) + '\n', 'utf-8');
+  // Notify live stream listeners.
+  for (const listener of eventStreamListeners) {
+    try { listener(full); } catch { /* best-effort */ }
+  }
   // Auto-prune when line count is estimated to exceed the cap.
   knownEventLineCount = knownEventLineCount < 0 ? MAX_EVENT_LINES : knownEventLineCount + 1;
   if (knownEventLineCount > MAX_EVENT_LINES) {

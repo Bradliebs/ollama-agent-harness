@@ -46,6 +46,7 @@ window.addEventListener('DOMContentLoaded', () => {
   loadHistory();
   loadFiles();
   loadSettings();
+  loadPromiseWidget();
   loadOutputValidationTemplates();
   loadDiscovery();
   loadAbout();
@@ -7035,6 +7036,7 @@ async function fulfilPromise(id) {
   try {
     await fetch('/api/promises/' + encodeURIComponent(id) + '/fulfil', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     loadPromises();
+    loadPromiseWidget();
   } catch (error) {
     console.error('fulfil failed', error);
   }
@@ -7043,8 +7045,29 @@ async function cancelPromise(id) {
   try {
     await fetch('/api/promises/' + encodeURIComponent(id) + '/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     loadPromises();
+    loadPromiseWidget();
   } catch (error) {
     console.error('cancel failed', error);
+  }
+}
+
+async function loadPromiseWidget() {
+  const widget = document.getElementById('promiseWidget');
+  if (!widget) return;
+  try {
+    const res = await fetch('/api/promises/obligations');
+    const data = await res.json();
+    if (data.total === 0 && data.breaches.length === 0) { widget.style.display = 'none'; return; }
+    widget.style.display = 'block';
+    const breachNote = data.breaches.length > 0
+      ? '<div class="pw-breach">⚠️ ' + data.breaches.length + ' breach(es)</div>'
+      : '';
+    widget.innerHTML = '<div class="pw-row"><span>🤝 Promises</span><span class="pw-count">' + data.pending + ' pending</span></div>'
+      + '<div class="pw-row"><span style="opacity:0.6">' + data.fulfilled + ' fulfilled · ' + data.failed + ' failed · ' + data.expired + ' expired</span>'
+      + '<button class="btn-sm" onclick="openLeftTabByName(\'promises\')" style="font-size:0.75em">View</button></div>'
+      + breachNote;
+  } catch {
+    widget.style.display = 'none';
   }
 }
 
@@ -7218,7 +7241,9 @@ async function showArchDiagram() {
     const data = await res.json();
     if (data.error) { panel.innerHTML = '<div class="trace-meta">' + esc(data.error) + '</div>'; return; }
     panel.innerHTML = '<div class="trace-item"><div class="trace-title">Architecture Diagram</div>'
-      + '<pre style="font-size:0.7em;overflow-x:auto;background:var(--bg-code,#1e1e2e);padding:8px;border-radius:4px;max-height:400px">' + esc(data.mermaid) + '</pre>'
+      + '<iframe sandbox="allow-scripts" style="width:100%;height:350px;border:1px solid var(--border,#333);border-radius:4px;background:#fff" srcdoc="' + escAttr('<!doctype html><html><head><meta charset=utf-8><script src=https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js></script><style>body{margin:8px;font-family:sans-serif}</style></head><body><div class=mermaid>' + esc(data.mermaid) + '</div><script>mermaid.initialize({startOnLoad:true,theme:\'dark\'})</script></body></html>') + '"></iframe>'
+      + '<details style="margin-top:4px"><summary style="cursor:pointer;font-size:0.75em;opacity:0.6">Raw Mermaid</summary>'
+      + '<pre style="font-size:0.65em;overflow-x:auto;background:var(--bg-code,#1e1e2e);padding:8px;border-radius:4px;max-height:200px">' + esc(data.mermaid) + '</pre></details>'
       + '<div class="document-actions"><button class="btn-sm" onclick="navigator.clipboard.writeText(' + JSON.stringify(JSON.stringify(data.mermaid)) + ')">📋 Copy Mermaid</button></div></div>';
   } catch (error) {
     panel.innerHTML = '<div class="trace-meta">Diagram failed: ' + esc(error.message || error) + '</div>';
