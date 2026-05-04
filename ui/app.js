@@ -2294,6 +2294,7 @@ async function sendMessage(opts) {
   sendBtn.title = 'Stop (streaming)';
   sendBtn.classList.add('streaming');
   const badge = document.getElementById('streamingBadge'); if (badge) badge.classList.add('active');
+  const thinkEl = addThinking();
   updateThinkingStatus(thinkEl, 'Preparing model...');
   // Live tok/s estimate: count characters streaming in, divide by
   // elapsed seconds, convert to ~tokens (chars/4). Updates the thinking
@@ -3195,7 +3196,9 @@ async function runCompareSend(text, modelA, modelB) {
   const sendBtn = document.getElementById('sendBtn');
   sendBtn.textContent = '■';
   sendBtn.classList.add('streaming');
-  const badge3 = document.getElementById('streamingBadge'); if (badge3) badge3.classList.add('active'); = async (model, col) => {
+  const badge3 = document.getElementById('streamingBadge'); if (badge3) badge3.classList.add('active');
+
+  const runOne = async (model, col) => {
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
