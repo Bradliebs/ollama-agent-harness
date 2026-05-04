@@ -60,6 +60,7 @@ import { heuristicVerifier } from '../mycelium/verifier';
 import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
 import { appendRunEvidence, readRunEvidence, type StoredRunEvidence } from '../persistence/evidenceStore';
 import { startTelegramBot, stopTelegramBot, isTelegramBotRunning, sendTelegramNotification, loadPersistedChatIds, getTelegramPollingLockInfo } from '../integrations/telegram';
+import { startDiscordBot, stopDiscordBot, isDiscordBotRunning } from '../integrations/discord';
 import { addWebhook, removeWebhook, listWebhooks, loadWebhooksFromEnv, sendWebhookNotification } from '../integrations/webhooks';
 import { NervousSystemController } from '../nervous';
 import { listShellCommandAllowlistPresets } from '../automation/runner';
@@ -251,6 +252,8 @@ let mediaTools: MediaToolSettings = {
 let agentOutputDir: string = process.env.HARNESS_AGENT_OUTPUT_DIR ?? '';
 let telegramBotToken: string = process.env.HARNESS_TELEGRAM_BOT_TOKEN ?? '';
 let telegramAllowedChatIds: string = process.env.HARNESS_TELEGRAM_ALLOWED_CHAT_IDS ?? '';
+let discordBotToken: string = process.env.HARNESS_DISCORD_BOT_TOKEN ?? '';
+let discordAllowedChannelIds: string = process.env.HARNESS_DISCORD_ALLOWED_CHANNEL_IDS ?? '';
 let outputValidation: OutputValidationSettings = { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: true };
 let customOutputValidationProfiles: CustomOutputValidationProfile[] = [];
 let modelCatalog: ModelCatalogSettings = { url: '', ttlHours: 24 };
@@ -1501,6 +1504,34 @@ app.post('/api/telegram/token', async (req, res) => {
 
 app.post('/api/telegram/stop', (_req, res) => {
   stopTelegramBot();
+  res.json({ ok: true, running: false });
+});
+
+// ─── Discord bot routes ─────────────────────────────────────────────
+
+app.get('/api/discord/status', (_req, res) => {
+  res.json({
+    running: isDiscordBotRunning(),
+    configured: Boolean(discordBotToken || process.env.HARNESS_DISCORD_BOT_TOKEN),
+  });
+});
+
+app.post('/api/discord/token', async (req, res) => {
+  const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+  const channelIds = typeof req.body?.channelIds === 'string' ? req.body.channelIds.trim() : '';
+  if (!token) { res.status(400).json({ error: 'Discord bot token is required.' }); return; }
+  stopDiscordBot();
+  discordBotToken = token;
+  discordAllowedChannelIds = channelIds;
+  await ensureSettingsLoaded();
+  await saveSettingsToDisk();
+  const url = `http://127.0.0.1:${process.env.PORT || 3000}`;
+  const bot = startDiscordBot(token, url, channelIds ? channelIds.split(',').map((s: string) => s.trim()).filter(Boolean) : undefined);
+  res.json({ ok: Boolean(bot), running: isDiscordBotRunning() });
+});
+
+app.post('/api/discord/stop', (_req, res) => {
+  stopDiscordBot();
   res.json({ ok: true, running: false });
 });
 
@@ -5212,6 +5243,13 @@ export async function startServer(): Promise<void> {
         const bot = startTelegramBot(tgToken, url, telegramAllowedChatIds ? telegramAllowedChatIds.split(',') : undefined);
         if (bot) console.log(`  Telegram bot:          connected`);
       }).catch(() => {});
+    }
+
+    // Start Discord bot if token is configured.
+    const dcToken = discordBotToken || process.env.HARNESS_DISCORD_BOT_TOKEN;
+    if (dcToken) {
+      const bot = startDiscordBot(dcToken, url, discordAllowedChannelIds ? discordAllowedChannelIds.split(',').map((s) => s.trim()).filter(Boolean) : undefined);
+      if (bot) console.log(`  Discord bot:           connecting...`);
     }
 
     console.log(`\n  Press Ctrl+C to stop.\n`);

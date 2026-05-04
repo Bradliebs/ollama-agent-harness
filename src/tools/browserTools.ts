@@ -31,6 +31,36 @@ async function closeBrowser(): Promise<void> {
 const MAX_TEXT_LENGTH = 8000;
 const PAGE_TIMEOUT = 15_000;
 
+/**
+ * URL allowlist for browser navigation. When set, only URLs matching
+ * these domain patterns are allowed. Configured via HARNESS_BROWSER_URL_ALLOWLIST
+ * env var (comma-separated domains, e.g. "example.com,amazon.co.uk,*.gov.uk").
+ * When empty, all URLs are allowed (subject to capability grants).
+ */
+function getUrlAllowlist(): string[] {
+  const raw = process.env.HARNESS_BROWSER_URL_ALLOWLIST ?? '';
+  return raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+}
+
+function isUrlAllowed(url: string): { allowed: boolean; reason: string } {
+  const allowlist = getUrlAllowlist();
+  if (allowlist.length === 0) return { allowed: true, reason: 'No URL allowlist configured.' };
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    for (const pattern of allowlist) {
+      if (pattern.startsWith('*.')) {
+        const suffix = pattern.slice(2);
+        if (hostname === suffix || hostname.endsWith('.' + suffix)) return { allowed: true, reason: `Matches allowlist pattern *.${suffix}` };
+      } else {
+        if (hostname === pattern) return { allowed: true, reason: `Matches allowlist domain ${pattern}` };
+      }
+    }
+    return { allowed: false, reason: `Domain "${hostname}" is not in the browser URL allowlist. Allowed: ${allowlist.join(', ')}` };
+  } catch {
+    return { allowed: false, reason: 'Invalid URL format.' };
+  }
+}
+
 export const BrowserNavigateTool: Tool = {
   name: 'browser_navigate',
   description: 'Open a URL in a headless browser and return the page title and text content. Requires browser-page-access capability grant.',
@@ -47,6 +77,10 @@ export const BrowserNavigateTool: Tool = {
     const url = String(input.url ?? '').trim();
     if (!url || !/^https?:\/\//i.test(url)) {
       return { success: false, output: 'A valid http/https URL is required.', error: 'invalid url' };
+    }
+    const urlCheck = isUrlAllowed(url);
+    if (!urlCheck.allowed) {
+      return { success: false, output: urlCheck.reason, error: 'url blocked' };
     }
     try {
       const page = await getPlaywrightPage();

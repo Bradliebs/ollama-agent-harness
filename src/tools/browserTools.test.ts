@@ -22,6 +22,40 @@ describe('BrowserNavigateTool', () => {
     const result = await BrowserNavigateTool.execute({ url: '  ' });
     expect(result.success).toBe(false);
   });
+
+  describe('URL allowlist', () => {
+    const originalEnv = process.env.HARNESS_BROWSER_URL_ALLOWLIST;
+
+    afterEach(() => {
+      if (originalEnv === undefined) delete process.env.HARNESS_BROWSER_URL_ALLOWLIST;
+      else process.env.HARNESS_BROWSER_URL_ALLOWLIST = originalEnv;
+    });
+
+    it('blocks URLs not in the allowlist', async () => {
+      process.env.HARNESS_BROWSER_URL_ALLOWLIST = 'example.com,safe.org';
+      const result = await BrowserNavigateTool.execute({ url: 'https://evil.com/steal' });
+      expect(result.success).toBe(false);
+      expect(result.output).toContain('not in the browser URL allowlist');
+    });
+
+    it('allows URLs matching the allowlist', async () => {
+      process.env.HARNESS_BROWSER_URL_ALLOWLIST = 'example.com';
+      // This will fail at Playwright launch, but the URL check itself passes
+      const result = await BrowserNavigateTool.execute({ url: 'https://example.com/page' });
+      // Either succeeds (if Playwright is available) or fails at browser launch, not at URL check
+      if (!result.success) {
+        expect(result.output).not.toContain('not in the browser URL allowlist');
+      }
+    });
+
+    it('supports wildcard patterns', async () => {
+      process.env.HARNESS_BROWSER_URL_ALLOWLIST = '*.gov.uk';
+      const result = await BrowserNavigateTool.execute({ url: 'https://www.gov.uk/browse' });
+      if (!result.success) {
+        expect(result.output).not.toContain('not in the browser URL allowlist');
+      }
+    });
+  });
 });
 
 describe('BrowserClickTool', () => {
