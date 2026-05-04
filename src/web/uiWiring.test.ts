@@ -151,6 +151,9 @@ describe('web UI wiring', () => {
       runs: 'runsView',
       workflows: 'workflowsView',
       mycelium: 'myceliumView',
+      promises: 'promisesView',
+      events: 'eventsView',
+      codeintel: 'codeintelView',
     };
     const showLeftTab = appJs.match(/function showLeftTab\(tab, el\) \{(?<body>.*?)\nfunction toggleLeft/s)?.groups?.body ?? '';
 

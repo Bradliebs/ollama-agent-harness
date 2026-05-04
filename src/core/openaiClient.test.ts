@@ -532,18 +532,21 @@ describe('FallbackChatClient', () => {
     expect(urls).toEqual(['https://limited.example/v1/chat/completions', 'https://tools.example/v1/chat/completions']);
   });
 
-  it('does not fall back on HTTP 413 (request too large)', async () => {
+  it('falls back on HTTP 413 (request too large) to a provider with higher limits', async () => {
     const primary = new OpenAIClient({ baseUrl: 'https://primary.example/v1', apiKey: 'k1', model: 'm1', providerLabel: 'Primary', maxRetries: 1 });
     const backup = new OpenAIClient({ baseUrl: 'https://backup.example/v1', apiKey: 'k2', model: 'm2', providerLabel: 'Backup' });
-    fetchSpy.mockResolvedValueOnce(makeResponse({ error: { message: 'Request too large for model llama-3.1-8b-instant' } }, { status: 413, ok: false }));
+    fetchSpy
+      .mockResolvedValueOnce(makeResponse({ error: { message: 'Request too large for model llama-3.1-8b-instant' } }, { status: 413, ok: false }))
+      .mockResolvedValueOnce(makeResponse({ choices: [{ message: { role: 'assistant', content: 'ok from backup' } }] }));
 
     const client = new FallbackChatClient([
       { backend: 'primary', client: primary, supportsTools: true },
       { backend: 'backup', client: backup, supportsTools: true },
     ]);
 
-    await expect(client.chat([{ role: 'user', content: 'hi' }])).rejects.toThrow(/413/);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const result = await client.chat([{ role: 'user', content: 'hi' }]);
+    expect(result.message.content).toBe('ok from backup');
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
   it('emits drainable fallback events when cycling providers', async () => {

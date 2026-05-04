@@ -2120,6 +2120,16 @@ function handleKey(e) {
     if (e.key === 'Tab')       { e.preventDefault(); applySelectedSlashCommand(); return; }
   }
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  // Ctrl+Enter: alternative send
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendMessage(); }
+  // Escape: stop streaming if active
+  if (e.key === 'Escape' && activeChatController) { e.preventDefault(); activeChatController.abort(); }
+  // Ctrl+/: open slash commands
+  if (e.key === '/' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    const input = document.getElementById('chatInput');
+    if (input) { input.value = '/'; input.focus(); autoSize(input); maybeShowSlashPalette('/'); }
+  }
 }
 function autoSize(el) {
   el.style.height = 'auto';
@@ -6142,6 +6152,12 @@ document.addEventListener('keydown', (event) => {
   // then the right Settings panel. Stops at the first one closed so
   // users can press Escape repeatedly to dismiss layered overlays.
   if (event.key === 'Escape' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    // Stop streaming first if active
+    if (activeChatController) {
+      event.preventDefault();
+      activeChatController.abort();
+      return;
+    }
     const artifact = document.getElementById('artifactPanel');
     if (artifact && artifact.classList.contains('open')) {
       event.preventDefault();
@@ -6724,12 +6740,14 @@ function showKeyboardShortcuts() {
   const existing = document.getElementById('shortcutsModal');
   if (existing) { existing.remove(); return; }
   const shortcuts = [
+    ['Enter', 'Send message'],
+    ['Ctrl+Enter', 'Send message (alternative)'],
+    ['Shift+Enter', 'New line in message'],
+    ['Escape', 'Stop streaming / close panels'],
+    ['/', 'Open slash command palette'],
+    ['Ctrl+/', 'Open slash commands from anywhere'],
     ['Ctrl+Shift+K', 'Toggle kill switch (block all tools)'],
     ['?', 'Show this shortcuts guide'],
-    ['Enter', 'Send message'],
-    ['Shift+Enter', 'New line in message'],
-    ['/', 'Open slash command palette'],
-    ['Escape', 'Close slash palette'],
   ];
   const rows = shortcuts.map(([key, desc]) =>
     '<div class="shortcut-row">'
@@ -7118,6 +7136,8 @@ async function loadPromiseWidget() {
     const breachNote = data.breaches.length > 0
       ? '<div class="pw-breach">⚠️ ' + data.breaches.length + ' breach(es)</div>'
       : '';
+    // Play a subtle alert tone on new breaches
+    if (data.breaches.length > 0) playBreachTone();
     widget.innerHTML = '<div class="pw-row"><span>🤝 Promises</span><span class="pw-count">' + data.pending + ' pending</span></div>'
       + '<div class="pw-row"><span style="opacity:0.6">' + data.fulfilled + ' fulfilled · ' + data.failed + ' failed · ' + data.expired + ' expired</span>'
       + '<button class="btn-sm" onclick="openLeftTabByName(\'promises\')" style="font-size:0.75em">View</button></div>'
@@ -7128,6 +7148,26 @@ async function loadPromiseWidget() {
 }
 
 // ─── Events Tab ─────────────────────────────────────────────────────
+
+/** Play a subtle two-tone alert via Web Audio API. No external audio file needed. */
+function playBreachTone() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(0.08, ctx.currentTime);
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.setValueAtTime(660, ctx.currentTime + 0.15);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.4);
+    osc.onended = () => ctx.close();
+  } catch { /* audio not available */ }
+}
+
 // ─── Event Timeline Builder ─────────────────────────────────────────
 let _eventCategoryFilter = new Set(); // empty = show all
 let _eventStreamSource = null; // SSE EventSource for live events
@@ -7199,6 +7239,7 @@ async function loadEvents() {
       + rows
       + '<div id="liveEventFeed"></div>'
       + (rows ? '' : '<div class="trace-meta">No events recorded yet.</div>')
+      + ((events.events || []).length >= 50 ? '<div class="document-actions" style="margin-top:4px"><button class="btn-sm" onclick="loadMoreEvents()">Load More</button></div>' : '')
       + '</div>';
     // Start live event stream
     startEventStream();
@@ -7266,6 +7307,46 @@ function filterEventsBySearch() {
     const searchText = row.getAttribute('data-search') || '';
     row.style.display = !query || searchText.includes(query) ? '' : 'none';
   });
+}
+
+let _eventPageSize = 50;
+async function loadMoreEvents() {
+  _eventPageSize += 50;
+  // Re-fetch with larger limit; loadEvents uses the hardcoded 50 so we override here
+  const view = document.getElementById('eventsView');
+  if (!view) return;
+  try {
+    const res = await fetch('/api/events?limit=' + _eventPageSize);
+    const data = await res.json();
+    const events = data.events || [];
+    const feed = document.getElementById('liveEventFeed');
+    // Find the existing event rows container and append new rows
+    const existingRows = view.querySelectorAll('.event-row');
+    const existingIds = new Set();
+    existingRows.forEach((r) => existingIds.add(r.getAttribute('data-event-id')));
+    let added = 0;
+    for (const ev of events) {
+      if (existingIds.has(ev.event_id)) continue;
+      const icon = ev.category === 'promise' ? '🤝' : ev.category === 'service' ? '🔧' : ev.category === 'tool' ? '🔨' : ev.category === 'system' ? '⚙️' : '📋';
+      const searchText = [ev.category, ev.type, ev.actor, ev.subject_id, JSON.stringify(ev.data)].join(' ').toLowerCase();
+      const row = document.createElement('div');
+      row.className = 'trace-item event-row';
+      row.setAttribute('data-search', searchText.slice(0, 300));
+      row.setAttribute('data-event-id', ev.event_id);
+      row.innerHTML = '<div class="trace-title">' + icon + ' ' + esc(ev.category) + '/' + esc(ev.type) + '</div>'
+        + '<div class="trace-meta">' + esc(ev.timestamp?.slice(0, 19) || '') + ' · ' + esc(ev.actor) + (ev.subject_id ? ' · ' + esc(ev.subject_id.slice(0, 20)) : '') + '</div>'
+        + '<div class="trace-meta" style="font-size:0.75em;opacity:0.7">' + esc(JSON.stringify(ev.data).slice(0, 120)) + '</div>';
+      if (feed) feed.parentNode.insertBefore(row, feed);
+      added++;
+    }
+    // If we got fewer than the page size, hide load more
+    if (events.length < _eventPageSize) {
+      const btn = view.querySelector('button[onclick="loadMoreEvents()"]');
+      if (btn) btn.parentNode.remove();
+    }
+  } catch (error) {
+    console.error('load more events failed', error);
+  }
 }
 
 // ─── Code Intelligence Tab ─────────────────────────────────────────

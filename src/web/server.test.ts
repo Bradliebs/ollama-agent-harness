@@ -835,7 +835,7 @@ describe('web server API validation', () => {
     const body = await audit.json() as { events: Array<{ type: string; createdAt: string }> };
     expect(Array.isArray(body.events)).toBe(true);
     for (const event of body.events) {
-      expect(['grant.created', 'grant.revoked', 'grant.expired', 'automation_script.allowed', 'automation_script.denied', 'autonomy.timed.engaged', 'autonomy.timed.cleared', 'autonomy.timed.expired']).toContain(event.type);
+      expect(['grant.created', 'grant.revoked', 'grant.expired', 'automation_script.allowed', 'automation_script.denied', 'autonomy.timed.engaged', 'autonomy.timed.cleared', 'autonomy.timed.expired', 'mcp_server.started', 'mcp_server.stopped']).toContain(event.type);
       expect(Date.parse(event.createdAt)).not.toBeNaN();
     }
   });
