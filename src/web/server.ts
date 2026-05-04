@@ -3097,7 +3097,17 @@ app.post('/api/chat', async (req, res) => {
     nervousContext += '\n' + formatRecoveryPlan(nervousResult.recoveryPlan);
   }
 
-  const toolSynthesisNudge = 'IMPORTANT: After using tools, you MUST always provide a final text response summarizing your findings. Never end your turn with only tool calls and no text output. If you have gathered enough information, stop calling tools and write your answer.\n\nAUTONOMY: When the user gives you a task, complete it fully without stopping to ask permission. Do NOT present numbered options and ask which to continue with — just do all of them. Do NOT ask "would you like me to continue?" — just continue. Only stop when the work is genuinely complete.';
+  const toolSynthesisNudge = `IMPORTANT: After using tools, you MUST always provide a final text response summarizing your findings. Never end your turn with only tool calls and no text output. If you have gathered enough information, stop calling tools and write your answer.
+
+AUTONOMY RULES (critical):
+- When the user gives you a task, complete it FULLY. Do not stop partway through.
+- Do NOT present numbered options and ask the user to choose. Just do ALL of them.
+- Do NOT ask "would you like me to continue?" or "shall I proceed?" — JUST CONTINUE.
+- If a directory has multiple files, read ALL of them. Do not stop after one.
+- If analysis has multiple steps, do ALL steps. Do not summarize step 1 and ask about step 2.
+- If you discover related work while doing a task, do it immediately.
+- The ONLY reason to stop is when the task is genuinely, fully complete.
+- When in doubt, DO MORE rather than asking.`;
 
   const systemPrompt = [baseSystemPrompt, attachmentsBlock, myceliumContext, nervousContext, toolSynthesisNudge].filter(Boolean).join('\n\n');
 

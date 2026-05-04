@@ -387,10 +387,40 @@ export function detectPartialResult(text: string): string | null {
     'what would you like me to do next',
     'which option would you prefer',
     'ready to proceed',
+    'if you want',
+    'if you\'d like',
+    'would you prefer',
+    'just let me know',
+    'happy to help with',
+    'i\'d recommend',
+    'here are some options',
+    'here are a few options',
+    'you could also',
+    'another option would be',
+    'alternatively',
+    'what do you think',
+    'does that sound good',
+    'any questions',
+    'need anything else',
+    'anything else you',
+    'is there anything else',
   ];
   for (const phrase of continuationPhrases) {
     if (lower.includes(phrase)) {
       return `continuation prompt: "${phrase}"`;
+    }
+  }
+
+  // Question mark at the very end (model is asking something instead of doing)
+  const trimmed = text.trim();
+  if (trimmed.endsWith('?') && trimmed.length > 50) {
+    // Only trigger if the last sentence is a question directed at the user
+    const lastLine = trimmed.split('\n').pop() ?? '';
+    const questionLower = lastLine.toLowerCase();
+    if (questionLower.includes('you') || questionLower.includes('shall') ||
+        questionLower.includes('should') || questionLower.includes('want') ||
+        questionLower.includes('prefer') || questionLower.includes('like me')) {
+      return 'ends with question directed at user';
     }
   }
 
