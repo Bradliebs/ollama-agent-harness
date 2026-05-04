@@ -41,6 +41,7 @@ import { RateLimiter } from '../core/rateLimiter';
 import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
 import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, describeOutputValidationProfileSuggestion, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
+import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns } from '../core/synthesisStats';
 import { startNewSession, onSessionEnd, getEvolvedPrompt } from '../learning/engine';
 import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
 import { appendLearningCandidate, extractLearningCandidate, getLearningCandidateProvenance, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
@@ -3075,10 +3076,13 @@ app.post('/api/chat', async (req, res) => {
 
   const systemPrompt = [baseSystemPrompt, attachmentsBlock, myceliumContext, nervousContext, toolSynthesisNudge].filter(Boolean).join('\n\n');
 
+  const synthesisStats = await loadSynthesisStats(PROJECT_DIR);
+  const effectiveMaxTurns = adaptiveMaxTurns(synthesisStats, activeModel, 25);
+
   const config: LoopConfig = {
     model: activeModel,
     systemPrompt,
-    maxTurns: 25,
+    maxTurns: effectiveMaxTurns,
     abortSignal: abortController.signal,
     context: { maxTokens: activeContextMaxTokens, summarizerModel },
     outputValidation: {
@@ -3226,7 +3230,13 @@ app.post('/api/chat', async (req, res) => {
       if (event.type === 'text' && typeof event.content === 'string') {
         assistantTextBuffer += event.content;
       }
-      if (event.type === 'done') doneReason = event.reason;
+      if (event.type === 'done') {
+        doneReason = event.reason;
+        recordSessionCompleted(PROJECT_DIR, activeModel).catch(() => {});
+      }
+      if (event.type === 'synthesis_fired') {
+        recordSynthesisFired(PROJECT_DIR, activeModel).catch(() => {});
+      }
       for (const fallbackEvent of drainRemoteProviderFallbackEvents()) {
         res.write(`data: ${JSON.stringify(fallbackEvent)}\n\n`);
       }

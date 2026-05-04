@@ -480,6 +480,9 @@ describe('queryLoop runtime behavior', () => {
       // The bonus turn should be called with empty tools array.
       const lastCall = client.chat.mock.calls[client.chat.mock.calls.length - 1];
       expect(lastCall[1]).toEqual([]);
+      // Should emit synthesis_fired telemetry event.
+      const synth = events.find((e) => e.type === 'synthesis_fired');
+      expect(synth).toEqual({ type: 'synthesis_fired', model: 'test-model', maxTurns: 2, toolCallsTotal: 2 });
     });
 
     it('emits max_turns with error when synthesis turn fails', async () => {

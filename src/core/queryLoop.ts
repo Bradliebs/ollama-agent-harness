@@ -56,6 +56,7 @@ export async function* queryLoop(
   // (REFRAME / SCENARIO MAP / etc) and FAILs on legitimate code-edit
   // sessions whose final reply is a tool-result summary.
   let anyProductiveToolSucceeded = false;
+  let totalToolCalls = 0;
 
   if (session) {
     await appendStatus(session, 'running', undefined, tracer);
@@ -218,6 +219,7 @@ export async function* queryLoop(
       name: tc.function.name,
       input: (tc.function.arguments ?? {}) as Record<string, unknown>,
     }));
+    totalToolCalls += toolCalls.length;
 
     const toolResults = await dispatcher.dispatch(toolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer });
     let producedFileChange = false;
@@ -278,6 +280,8 @@ export async function* queryLoop(
 
   // Max turns reached — grant a bonus synthesis turn with tools stripped
   // so the model MUST produce a text response summarising its work.
+  yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
+  tracer?.recordEvent('synthesis.fired', { model: config.model, maxTurns, totalToolCalls });
   messages.push({
     role: 'system',
     content: 'You have used all available tool turns. Provide a complete, useful text response now. Summarise everything you found. Do NOT call any tools.',

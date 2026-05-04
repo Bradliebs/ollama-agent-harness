@@ -2340,6 +2340,10 @@ async function sendMessage(opts) {
           case 'evidence':
             evidenceCard = ev.evidence;
             break;
+          case 'synthesis_fired':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '🔄', 'synthesis turn', 'model exhausted ' + ev.maxTurns + ' tool turns (' + ev.toolCallsTotal + ' calls) — forcing text summary', false);
+            break;
           case 'error':
             thinkEl.remove();
             addMsg('assistant', '⚠️ ' + ev.message);

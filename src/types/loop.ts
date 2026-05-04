@@ -47,7 +47,8 @@ export type LoopEvent =
   | ContextWarningEvent
   | ErrorEvent
   | DoneEvent
-  | UsageEvent;
+  | UsageEvent
+  | SynthesisFiredEvent;
 
 export interface TextEvent {
   type: 'text';
@@ -138,4 +139,15 @@ export interface UsageEvent {
   promptTokens: number;
   completionTokens: number;
   totalDurationMs: number;
+}
+
+/** Emitted when the bonus synthesis turn fires because the model exhausted
+ * its tool-turn budget without producing text. Consumers can track this
+ * per-model to spot models that routinely need synthesis and may benefit
+ * from a higher maxTurns or a different system prompt strategy. */
+export interface SynthesisFiredEvent {
+  type: 'synthesis_fired';
+  model: string;
+  maxTurns: number;
+  toolCallsTotal: number;
 }

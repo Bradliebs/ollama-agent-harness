@@ -374,6 +374,9 @@ async function runHeadless(
         errors.push(event.message);
         console.error(`⚠️ ${event.message}`);
         break;
+      case 'synthesis_fired':
+        console.error(`🔄 synthesis turn: model exhausted ${event.maxTurns} tool turns (${event.toolCallsTotal} calls)`);
+        break;
       case 'done':
         if (!assistantText.trim()) console.log(buildConsoleToolOnlyResponse({ toolCalls, toolSummaries, errors, doneReason: event.reason }));
         console.error(`\n--- ${event.reason} (${event.turns} turns) ---`);
@@ -441,6 +444,9 @@ async function runInteractive(
         case 'error':
           errors.push(event.message);
           console.log(`  ⚠️ ${event.message}`);
+          break;
+        case 'synthesis_fired':
+          console.log(`  🔄 synthesis turn: model exhausted ${event.maxTurns} tool turns (${event.toolCallsTotal} calls)`);
           break;
         case 'context':
           console.log(`  🧠 context ${event.strategy}: freed ~${event.tokensFreed} tokens, pressure ${Math.round(event.pressure * 100)}%${event.autosaved ? ', autosaved' : ''}`);
