@@ -193,9 +193,11 @@ function renderReadiness(data) {
     + '<div class="mission-grid">' + sections.map(renderReadinessSection).join('') + '</div>'
     + '<div class="mission-prompt-actions"><button class="btn-sm btn-xxs-muted" onclick="exportMissionPrompts()">Export prompts</button> <button class="btn-sm btn-xxs-muted" onclick="importMissionPrompts()">Import</button></div>'
     + '<div class="nervous-panel" id="nervousPanel"><div class="readiness-empty">Loading nervous system...</div></div>'
+    + '<div class="subsystem-health" id="subsystemHealthPanel"><div class="readiness-empty">Loading subsystem health...</div></div>'
     + '<div class="autonomy-builder" id="autonomyBuilderPanel"><div class="readiness-empty">Loading autonomy plan...</div></div>'
     + '<div class="document-studio" id="documentStudioPanel">' + renderDocumentStudioShell() + '</div>';
   loadNervousStatus();
+  loadSubsystemHealth();
   loadAutonomyPlanPreview();
   loadDocuments();
   applyDataWidths(panel);
@@ -462,6 +464,29 @@ async function loadAutonomyPlanPreview() {
     panel.innerHTML = renderAutonomyBuilder(data);
   } catch (error) {
     panel.innerHTML = '<div class="readiness-empty">Autonomy plan unavailable: ' + esc(error.message || error) + '</div>';
+  }
+}
+
+async function loadSubsystemHealth() {
+  const panel = document.getElementById('subsystemHealthPanel');
+  if (!panel) return;
+  try {
+    const response = await fetch('/api/subsystems/health');
+    const data = await response.json();
+    const subs = data.subsystems || {};
+    const overallIcon = data.overall === 'healthy' ? '💚' : '🟡';
+    const rows = Object.entries(subs).map(([name, info]) => {
+      const s = info;
+      const icon = s.status === 'healthy' ? '✅' : s.status === 'empty' ? '🔲' : s.status === 'not_built' ? '🔲' : s.status === 'warning' ? '⚠️' : '❓';
+      const detail = s.message || (s.total !== undefined ? s.total + ' total' : s.count !== undefined ? s.count + ' configured' : s.files !== undefined ? s.files + ' files' : s.status);
+      return '<div class="trace-meta trace-meta-xs-row"><span>' + icon + ' ' + esc(name.replace(/_/g, ' ')) + '</span><span style="opacity:0.6">' + esc(String(detail).slice(0, 60)) + '</span></div>';
+    }).join('');
+    panel.innerHTML = '<div class="autonomy-head"><div><strong>' + overallIcon + ' Subsystem Health</strong>'
+      + '<span style="opacity:0.6">' + esc(data.overall || 'unknown') + '</span></div>'
+      + '<button class="btn-sm" onclick="loadSubsystemHealth()">Refresh</button></div>'
+      + rows;
+  } catch (error) {
+    panel.innerHTML = '<div class="readiness-empty">Subsystem health unavailable: ' + esc(error.message || error) + '</div>';
   }
 }
 
@@ -2256,7 +2281,8 @@ async function sendMessage(opts) {
   const sendBtn = document.getElementById('sendBtn');
   sendBtn.disabled = false;
   sendBtn.textContent = '■';
-  sendBtn.title = 'Stop';
+  sendBtn.title = 'Stop (streaming)';
+  sendBtn.classList.add('streaming');
   const thinkEl = addThinking();
   updateThinkingStatus(thinkEl, 'Preparing model...');
   // Live tok/s estimate: count characters streaming in, divide by
@@ -2497,6 +2523,7 @@ async function sendMessage(opts) {
   document.getElementById('sendBtn').disabled = false;
   document.getElementById('sendBtn').textContent = '➤';
   document.getElementById('sendBtn').title = 'Send';
+  document.getElementById('sendBtn').classList.remove('streaming');
   const skipOnceReset = document.getElementById('skipValidationOnce');
   if (skipOnceReset) skipOnceReset.checked = false;
   document.getElementById('chatInput').focus();
@@ -3153,6 +3180,7 @@ async function runCompareSend(text, modelA, modelB) {
   isSending = true;
   const sendBtn = document.getElementById('sendBtn');
   sendBtn.textContent = '■';
+  sendBtn.classList.add('streaming');
 
   const runOne = async (model, col) => {
     try {
@@ -3200,6 +3228,7 @@ async function runCompareSend(text, modelA, modelB) {
 
   isSending = false;
   sendBtn.textContent = '➤';
+  sendBtn.classList.remove('streaming');
   document.getElementById('chatInput').focus();
 }
 
@@ -7074,6 +7103,8 @@ async function loadPromiseWidget() {
 // ─── Events Tab ─────────────────────────────────────────────────────
 // ─── Event Timeline Builder ─────────────────────────────────────────
 let _eventCategoryFilter = new Set(); // empty = show all
+let _eventStreamSource = null; // SSE EventSource for live events
+let _liveEventCount = 0;
 function buildEventTimeline(events) {
   if (!events || events.length === 0) return '';
   // Group by hour bucket for last 24 hours
@@ -7137,11 +7168,40 @@ async function loadEvents() {
       + '<div class="document-actions"><button class="btn-sm" onclick="exportEvents()">Export JSON</button></div>'
       + timelineChart
       + rows
+      + '<div id="liveEventFeed"></div>'
       + (rows ? '' : '<div class="trace-meta">No events recorded yet.</div>')
       + '</div>';
+    // Start live event stream
+    startEventStream();
   } catch (error) {
     view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message || error) + '</div>';
   }
+}
+function startEventStream() {
+  if (_eventStreamSource) { _eventStreamSource.close(); _eventStreamSource = null; }
+  try {
+    _eventStreamSource = new EventSource('/api/events/stream');
+    _eventStreamSource.onmessage = (msg) => {
+      try {
+        const ev = JSON.parse(msg.data);
+        const feed = document.getElementById('liveEventFeed');
+        if (!feed) return;
+        // Apply category filter
+        if (_eventCategoryFilter.size > 0 && !_eventCategoryFilter.has(ev.category)) return;
+        _liveEventCount++;
+        const icon = ev.category === 'promise' ? '🤝' : ev.category === 'service' ? '🔧' : ev.category === 'tool' ? '🔨' : ev.category === 'system' ? '⚙️' : '📋';
+        const row = document.createElement('div');
+        row.className = 'trace-item';
+        row.style.borderLeft = '3px solid var(--accent)';
+        row.innerHTML = '<div class="trace-title">' + icon + ' 🔴 ' + esc(ev.category) + '/' + esc(ev.type) + ' <span style="font-size:0.7em;opacity:0.5">(live)</span></div>'
+          + '<div class="trace-meta">' + esc(ev.timestamp?.slice(11, 19) || '') + ' · ' + esc(ev.actor) + '</div>';
+        feed.prepend(row);
+        // Keep max 20 live events visible
+        while (feed.children.length > 20) feed.removeChild(feed.lastChild);
+      } catch { /* ignore parse errors */ }
+    };
+    _eventStreamSource.onerror = () => { /* reconnects automatically */ };
+  } catch { /* SSE not supported or blocked */ }
 }
 function toggleEventCategory(cat) {
   if (_eventCategoryFilter.has(cat)) {
