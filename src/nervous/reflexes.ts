@@ -186,6 +186,33 @@ const ongoingServiceReflex: ReflexFn = (signals, state) => {
   return { triggered: true, reflexName: 'ongoing_service_request', action: 'classify as OPERATE, suppress BUILD' };
 };
 
+// 12. Small Model First Reflex — prefer local/small models for low-risk tasks
+const smallModelFirstReflex: ReflexFn = (signals, state) => {
+  if (state.riskLevel !== 'low') return { triggered: false, reflexName: 'small_model_first', action: '' };
+  if (state.dryRunRequired || state.confirmationRequired) return { triggered: false, reflexName: 'small_model_first', action: '' };
+  state.safetyNotes.push('Low-risk task: prefer small/local model (Tier 1-2) over cloud.');
+  state.requiredNodes.push('model.local_general');
+  return { triggered: true, reflexName: 'small_model_first', action: 'prefer small/local model' };
+};
+
+// 13. Escalate on Repeated Small Model Failure
+const smallModelFailureReflex: ReflexFn = (signals, state) => {
+  const failures = signals.filter((s) => s.type === 'REPEATED_FAILURE');
+  if (failures.length === 0) return { triggered: false, reflexName: 'small_model_failure_escalation', action: '' };
+  state.safetyNotes.push('Repeated failures detected. Escalate to stronger model (Tier 3-4).');
+  state.requiredNodes.push('model.cloud_reasoner');
+  state.verifierRequired = true;
+  return { triggered: true, reflexName: 'small_model_failure_escalation', action: 'escalate to cloud + verifier' };
+};
+
+// 14. Python/Deterministic Shortcut Reflex
+const deterministicShortcutReflex: ReflexFn = (signals, state) => {
+  const sig = signals.find((s) => s.type === 'DETERMINISTIC_SHORTCUT_AVAILABLE');
+  if (!sig) return { triggered: false, reflexName: 'deterministic_shortcut', action: '' };
+  state.safetyNotes.push('Deterministic shortcut available. No model needed (Tier 0).');
+  return { triggered: true, reflexName: 'deterministic_shortcut', action: 'use Tier 0 deterministic computation' };
+};
+
 // ─── All reflexes in evaluation order ───────────────────────────────
 
 const ALL_REFLEXES: ReflexFn[] = [
@@ -200,6 +227,9 @@ const ALL_REFLEXES: ReflexFn[] = [
   costSpikeReflex,
   recoveryReflex,
   ongoingServiceReflex,
+  smallModelFirstReflex,
+  smallModelFailureReflex,
+  deterministicShortcutReflex,
 ];
 
 // ─── Evaluate all reflexes ──────────────────────────────────────────

@@ -89,6 +89,44 @@ export const BUILTIN_SCHEMAS: Record<string, OutputSchema> = {
       return errors;
     },
   },
+  file_write: {
+    id: 'file_write',
+    requiredFields: ['path', 'content'],
+    stringFields: ['path', 'content'],
+    custom: (data) => {
+      const errors: string[] = [];
+      if (typeof data.path === 'string' && data.path.includes('..')) errors.push('Path contains traversal (..)');
+      if (typeof data.content === 'string' && data.content.length > 5_000_000) errors.push('Content exceeds 5MB limit');
+      return errors;
+    },
+  },
+  bash: {
+    id: 'bash',
+    requiredFields: ['command'],
+    stringFields: ['command'],
+    custom: (data) => {
+      const errors: string[] = [];
+      const cmd = typeof data.command === 'string' ? data.command : '';
+      if (cmd.length > 10_000) errors.push('Command exceeds 10K chars');
+      // Flag common dangerous patterns
+      const dangerous = ['rm -rf /', 'format c:', 'del /f /s /q c:', 'mkfs', ':(){:|:&};:'];
+      for (const pattern of dangerous) {
+        if (cmd.toLowerCase().includes(pattern)) errors.push(`Dangerous command pattern detected: ${pattern}`);
+      }
+      return errors;
+    },
+  },
+  web_search: {
+    id: 'web_search',
+    requiredFields: ['query'],
+    stringFields: ['query'],
+    custom: (data) => {
+      const errors: string[] = [];
+      if (typeof data.query === 'string' && data.query.length > 500) errors.push('Search query exceeds 500 chars');
+      if (typeof data.query === 'string' && data.query.length < 2) errors.push('Search query too short (< 2 chars)');
+      return errors;
+    },
+  },
 };
 
 // ─── Validation ─────────────────────────────────────────────────────
@@ -179,6 +217,9 @@ export function parseAndValidate(text: string, schema: OutputSchema): { parsed: 
 /** Auto-detect which schema to apply based on context. */
 export function detectSchema(context: { toolName?: string; taskType?: string }): OutputSchema | null {
   if (context.toolName === 'file_edit') return BUILTIN_SCHEMAS.code_edit;
+  if (context.toolName === 'file_write') return BUILTIN_SCHEMAS.file_write;
+  if (context.toolName === 'bash') return BUILTIN_SCHEMAS.bash;
+  if (context.toolName === 'web_search') return BUILTIN_SCHEMAS.web_search;
   if (context.taskType === 'plan') return BUILTIN_SCHEMAS.planning_output;
   if (context.taskType === 'summarize' || context.taskType === 'review') return BUILTIN_SCHEMAS.analysis_result;
   return null;

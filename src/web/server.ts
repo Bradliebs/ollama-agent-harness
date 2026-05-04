@@ -2074,17 +2074,24 @@ app.get('/api/code-intelligence/diagram', async (_req, res) => {
 
 app.get('/api/subsystems/health', async (_req, res) => {
   try {
-    const [obligations, eventSummary, repoGraph, services] = await Promise.allSettled([
+    const [obligations, eventSummary, repoGraph, services, shortcutEvents] = await Promise.allSettled([
       checkObligations(PROJECT_DIR),
       summarizeEventStore(PROJECT_DIR),
       loadRepoGraph(PROJECT_DIR).then((g) => g ? summarizeRepo(g) : null),
       listAgenticServices(PROJECT_DIR),
+      queryEvents(PROJECT_DIR, { type: 'deterministic_shortcut', limit: 1000 }),
     ]);
 
     const promiseHealth = obligations.status === 'fulfilled' ? obligations.value : null;
     const events = eventSummary.status === 'fulfilled' ? eventSummary.value : null;
     const codeIntel = repoGraph.status === 'fulfilled' ? repoGraph.value : null;
     const svcList = services.status === 'fulfilled' ? services.value : [];
+    const shortcuts = shortcutEvents.status === 'fulfilled' ? shortcutEvents.value : [];
+    const shortcutsByType: Record<string, number> = {};
+    for (const ev of shortcuts) {
+      const t = (ev.data as { type?: string })?.type ?? 'unknown';
+      shortcutsByType[t] = (shortcutsByType[t] ?? 0) + 1;
+    }
 
     const subsystems = {
       promises: {
@@ -2118,6 +2125,12 @@ app.get('/api/subsystems/health', async (_req, res) => {
       nervous_system: {
         status: 'healthy',
         modules: ['signals', 'sensory', 'reflexes', 'attention', 'motor', 'pain', 'recovery'],
+      },
+      deterministic_shortcuts: {
+        status: shortcuts.length > 0 ? 'active' : 'idle',
+        total_hits: shortcuts.length,
+        by_type: shortcutsByType,
+        message: shortcuts.length > 0 ? `${shortcuts.length} model call(s) avoided by Tier 0 shortcuts.` : 'No shortcuts triggered yet.',
       },
     };
 

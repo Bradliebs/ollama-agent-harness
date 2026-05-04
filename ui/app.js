@@ -2463,6 +2463,16 @@ async function sendMessage(opts) {
           case 'evidence':
             evidenceCard = ev.evidence;
             break;
+          case 'readiness':
+            if (toolBox || msgEl) {
+              const box = toolBox || ensureToolBox(toolBox);
+              const scoreColor = ev.score >= 0.80 ? 'var(--success,#50c878)' : ev.score >= 0.60 ? 'var(--warning,orange)' : 'var(--danger,#e55)';
+              const icon = ev.decision === 'execute' ? '✅' : ev.decision === 'verify' ? '⚠️' : '🔴';
+              appendToolItem(box, icon, 'readiness ' + Math.round(ev.score * 100) + '%',
+                ev.decision + ' · ' + (ev.reasons || []).slice(0, 2).join(' · '),
+                false);
+            }
+            break;
           case 'synthesis_fired':
             toolBox = ensureToolBox(toolBox);
             appendToolItem(toolBox, '🔄', 'synthesis turn', 'model exhausted ' + ev.maxTurns + ' tool turns (' + ev.toolCallsTotal + ' calls) — forcing text summary', false);

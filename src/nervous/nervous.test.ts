@@ -252,11 +252,12 @@ describe('Nervous System', () => {
   // ─── Full controller ───────────────────────────────────────────
 
   describe('NervousSystemController', () => {
-    it('inspects a safe query with no reflexes', () => {
+    it('inspects a safe query with small-model-first reflex', () => {
       const ns = new NervousSystemController();
       const result = ns.inspectQuery('What is the weather today?', 'general');
       expect(result.runState.riskLevel).toBe('low');
-      expect(result.reflexesTriggered).toHaveLength(0);
+      // Low-risk queries now trigger small_model_first reflex
+      expect(result.reflexesTriggered).toContain('small_model_first');
       expect(result.runState.dryRunRequired).toBe(false);
     });
 
