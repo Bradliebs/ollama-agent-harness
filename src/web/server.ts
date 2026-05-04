@@ -3107,7 +3107,13 @@ AUTONOMY RULES (critical):
 - If analysis has multiple steps, do ALL steps. Do not summarize step 1 and ask about step 2.
 - If you discover related work while doing a task, do it immediately.
 - The ONLY reason to stop is when the task is genuinely, fully complete.
-- When in doubt, DO MORE rather than asking.`;
+- When in doubt, DO MORE rather than asking.
+
+TOOL FALLBACK RULES:
+- If web_read or web_fetch returns HTTP 403/429/500, do NOT retry the same site. Try a different URL or use browser_navigate instead (Playwright-based, handles JavaScript and anti-bot pages).
+- If a site blocks you (Cloudflare, rate limit), move on to other sources. Do not waste turns retrying blocked sites.
+- You have browser_navigate, browser_read, browser_click tools available for sites that block simple HTTP requests.
+- Prefer web_search + web_read for initial research, fall back to browser_navigate for blocked sites.`;
 
   const systemPrompt = [baseSystemPrompt, attachmentsBlock, myceliumContext, nervousContext, toolSynthesisNudge].filter(Boolean).join('\n\n');
 

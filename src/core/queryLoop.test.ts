@@ -244,13 +244,13 @@ describe('queryLoop runtime behavior', () => {
     expect((events[1] as { result: ToolResult }).result.output).toContain('Permission denied');
   });
 
-  it('stops after repeated failures from the same tool', async () => {
+  it('warns but continues after repeated failures from the same tool', async () => {
     const documentExport = makeTool('document_export', false, async () => ({ success: false, output: 'Failed to write docx: bad content', error: 'bad content' }));
     const client = makeClient([
       { role: 'assistant', content: '', tool_calls: [{ function: { name: 'document_export', arguments: {} } }] } as Message,
       { role: 'assistant', content: '', tool_calls: [{ function: { name: 'document_export', arguments: {} } }] } as Message,
       { role: 'assistant', content: '', tool_calls: [{ function: { name: 'document_export', arguments: {} } }] } as Message,
-      { role: 'assistant', content: 'should not be reached' },
+      { role: 'assistant', content: 'recovered after warning' },
     ]);
 
     const events = await collectEvents(client, [documentExport], {
@@ -260,12 +260,14 @@ describe('queryLoop runtime behavior', () => {
     const error = events.find((e) => e.type === 'error');
     expect(error).toEqual(expect.objectContaining({
       type: 'error',
-      recoverable: false,
-      message: expect.stringContaining('document_export failed 3 times'),
+      recoverable: true,
+      message: expect.stringContaining('document_export has failed 3 times'),
     }));
+    // Loop should continue, not stop — model can try different tools
     const done = events.find((e) => e.type === 'done');
-    expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'repeated_tool_failure' }));
-    expect(client.chat).toHaveBeenCalledTimes(3);
+    expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'completed' }));
+    const text = events.find((e) => e.type === 'text');
+    expect(text).toMatchObject({ content: 'recovered after warning' });
   });
 
   it('can disable the repeated tool failure breaker', async () => {

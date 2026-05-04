@@ -268,13 +268,18 @@ export async function* queryLoop(
         const failureCount = (toolFailureCounts.get(call.name) ?? 0) + 1;
         toolFailureCounts.set(call.name, failureCount);
         if (failureCount >= repeatedToolFailureLimit) {
-          const message = `Stopping: ${call.name} failed ${failureCount} times in this run. Last error: ${String(result.output ?? result.error ?? 'unknown error').slice(0, 500)}`;
-          if (session) {
-            await appendStatus(session, 'error', message, tracer);
-          }
-          yield { type: 'error', message, recoverable: false };
-          yield { type: 'done', reason: 'repeated_tool_failure', turns: turn };
-          return;
+          // Instead of killing the entire loop, warn the model and let it
+          // continue with alternative tools. The model has browser_navigate
+          // as a fallback for web_read, and web_search as a fallback for
+          // web_fetch. Killing the loop here was the #1 cause of premature
+          // stops on research-heavy queries where one site rate-limits.
+          const warning = `⚠️ ${call.name} has failed ${failureCount} times in this run (last error: ${String(result.output ?? result.error ?? 'unknown error').slice(0, 300)}). Try a different tool or site instead.`;
+          messages.push({ role: 'system', content: warning } as Message);
+          yield { type: 'error', message: warning, recoverable: true };
+          // Reset the counter so the model gets another chance if it
+          // switches sites. If it keeps hitting the same broken tool
+          // on the same site, it'll get warned again after 3 more tries.
+          toolFailureCounts.set(call.name, 0);
         }
       }
       if (result.success && PRODUCTIVE_TOOLS.has(call.name)) {
