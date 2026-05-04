@@ -11,6 +11,27 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.16
+
+Mycelium-integrated autonomy with risk-aware auto-continue.
+
+### Autonomy integration
+
+* Mycelium task classification now flows into LoopConfig as `taskType`.
+* Auto-continue is disabled for high-risk tasks: `financial_execution`, `safety_critical`, `medical`, `legal`.
+* Safe tasks (`financial_analysis`, `research`, `coding`, etc.) get full autonomous continuation.
+* Added `preference.autonomy` as a protected Mycelium seed node (trust 1.0).
+
+### Auto-continue hardening
+
+* Expanded detection from 16 to 31 continuation phrases.
+* Added user-directed question detection at end of response.
+* Strengthened system prompt with explicit multi-file/multi-step autonomy rules.
+
+### Tests
+
+* 35 queryLoop tests (2 new: high-risk blocks, safe task allows).
+
 ## Ollama Agent Harness v0.3.15
 
 Auto-continue eliminates stop-start behavior where models ask permission instead of completing tasks.
