@@ -182,15 +182,13 @@ export class FallbackChatClient implements IChatClient {
 /**
  * Detect errors that warrant trying a different remote provider.
  *
- * HTTP 429 (rate limit) and quota exhaustion are good candidates because
- * another provider may have capacity. HTTP 413 (request too large) is
- * explicitly excluded — a smaller/cheaper fallback model will have an
- * even smaller context limit, so retrying on a different provider makes
- * things worse rather than better.
+ * HTTP 429 (rate limit), quota exhaustion, and HTTP 413 (request too
+ * large) are good candidates because another provider may have higher
+ * limits.  A 413 from a free-tier backend (e.g. Groq 6 K TPM) doesn't
+ * mean the payload is universally too big — paid / higher-tier backends
+ * routinely accept 50 K+ tokens.
  */
 export function isRemoteLimitError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  // Exclude 413 — request-too-large should not trigger provider fallback
-  if (/HTTP\s+413|request too large/i.test(message)) return false;
-  return /HTTP\s+429|rate.?limit|quota|tokens per minute|TPM|context length|maximum context|insufficient_quota/i.test(message);
+  return /HTTP\s+413|request too large|HTTP\s+429|rate.?limit|quota|tokens per minute|TPM|context length|maximum context|insufficient_quota/i.test(message);
 }

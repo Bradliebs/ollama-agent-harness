@@ -130,6 +130,14 @@ export const OPENAI_COMPATIBLE_PRESETS: Record<string, ProviderPreset> = {
     supportsTools: true,
     signupUrl: 'https://api.together.ai/settings/api-keys',
   },
+  anthropic: {
+    label: 'Anthropic',
+    baseUrl: 'https://api.anthropic.com/v1',
+    defaultModel: 'claude-sonnet-4-20250514',
+    apiKeyEnvVars: ['ANTHROPIC_API_KEY'],
+    supportsTools: true,
+    signupUrl: 'https://console.anthropic.com/settings/keys',
+  },
 };
 
 export const REPLICATE_PRESET: ProviderPreset = {

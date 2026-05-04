@@ -606,6 +606,15 @@
       <div class="tab" onclick="showLeftTab('mycelium',this)" title="Mycelium: adaptive context network">
         <div class="tab-icon">🍄</div><div class="tab-label">Mycelium</div>
       </div>
+      <div class="tab" onclick="showLeftTab('promises',this)" title="Promise ledger: agent commitments">
+        <div class="tab-icon">🤝</div><div class="tab-label">Promises</div>
+      </div>
+      <div class="tab" onclick="showLeftTab('events',this)" title="Event store: audit trail">
+        <div class="tab-icon">📋</div><div class="tab-label">Events</div>
+      </div>
+      <div class="tab" onclick="showLeftTab('codeintel',this)" title="Code intelligence: repo graph">
+        <div class="tab-icon">🧬</div><div class="tab-label">Code Intel</div>
+      </div>
     </div>
     <div class="history-list" id="historyList"></div>
     <div class="file-tree initial-hidden" id="fileTree"></div>
@@ -620,6 +629,9 @@
     <div class="memory-view initial-hidden" id="runsView"></div>
     <div class="memory-view initial-hidden" id="workflowsView"></div>
     <div class="memory-view initial-hidden" id="myceliumView"></div>
+    <div class="memory-view initial-hidden" id="promisesView"></div>
+    <div class="memory-view initial-hidden" id="eventsView"></div>
+    <div class="memory-view initial-hidden" id="codeintelView"></div>
   </div>
 
   <div class="main-panel">

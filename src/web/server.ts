@@ -58,8 +58,14 @@ import { exportAgenticServices, getAgenticService, handleOperateModeRequest, imp
 import { classifyMode } from '../services/modeClassifier';
 import { createDefaultCapabilityRegistry, type CapabilityRegistry } from '../services/capabilityRegistry';
 import { WorkerQueue } from '../services/workerQueue';
+import { createPromise, listPromises, updatePromise, checkObligations, fulfilPromise, failPromise, detectCommitments, type PromiseStatus } from '../services/promiseLedger';
+import { getServiceLifecycle, initServiceLifecycle, transitionService, probeServiceHealth, SERVICE_TEMPLATES, type ServiceLifecycleStatus } from '../services/serviceLifecycle';
+import { appendEvent, emitEvent, queryEvents, summarizeEventStore, generatePostmortem, createSnapshot, getSnapshot, listSnapshots, type EventCategory } from '../persistence/eventStore';
+import { verifyCode, verifyService, verifyPromiseFulfillability } from '../core/doneStateVerifier';
+import { buildRepoGraph, analyzeImpact, summarizeRepo, saveRepoGraph, loadRepoGraph } from '../core/codeIntelligence';
 import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
 import { heuristicVerifier } from '../mycelium/verifier';
+import { seedCodeIntelligence } from '../mycelium/seeds';
 import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
 import { appendRunEvidence, readRunEvidence, type StoredRunEvidence } from '../persistence/evidenceStore';
 import { startTelegramBot, stopTelegramBot, isTelegramBotRunning, sendTelegramNotification, loadPersistedChatIds, getTelegramPollingLockInfo } from '../integrations/telegram';
@@ -1458,6 +1464,7 @@ app.get('/api/readiness', async (_req, res) => {
     const planPreview = await readAutonomyPlanPreview().catch(() => null);
     const automationJobs = await listAutomationJobs(PROJECT_DIR).catch(() => []);
     const agenticServices = await listAgenticServices(PROJECT_DIR).catch(() => []);
+    const promiseObligations = await checkObligations(PROJECT_DIR).catch(() => ({ total: 0, pending: 0, fulfilled: 0, failed: 0, expired: 0, breaches: [] }));
     const validationScripts = setup.local.package.ok;
     const modelSelected = Boolean(currentModel);
     const modelBackend = currentModel.includes('/') ? currentModel.slice(0, currentModel.indexOf('/')) : 'ollama';
@@ -1497,6 +1504,10 @@ app.get('/api/readiness', async (_req, res) => {
         { id: 'services.configured', label: 'Services configured', status: agenticServices.length > 0 ? 'ready' : 'warn', message: `${agenticServices.length} operating service(s) configured.` },
         { id: 'services.scheduler', label: 'Service scheduler', status: automationSchedulerSettings.enabled ? 'ready' : 'warn', message: automationSchedulerSettings.enabled ? 'Scheduled operating services can run.' : 'Operating service state can be created, but proactive reminders require a scheduler/automation capability.', action: 'Open Settings' },
         { id: 'services.storage', label: 'Service storage', status: 'ready', message: 'Operating service state is stored under .harness/services/.' },
+      ]),
+      readinessSection('promises', 'Promise Ledger', [
+        { id: 'promises.total', label: 'Promises tracked', status: promiseObligations.total > 0 ? 'ready' : 'warn', message: `${promiseObligations.total} promise(s) total · ${promiseObligations.pending} pending · ${promiseObligations.fulfilled} fulfilled.` },
+        { id: 'promises.breaches', label: 'Obligation breaches', status: promiseObligations.breaches.length === 0 ? 'ready' : 'warn', message: promiseObligations.breaches.length === 0 ? 'No obligation breaches.' : `${promiseObligations.breaches.length} breach(es): ${promiseObligations.breaches.map((b: { breach_type: string }) => b.breach_type).join(', ')}.`, action: 'Open Promises' },
       ]),
       readinessSection('autonomy', 'Full Autonomy', [
         { id: 'plan.pending', label: 'Pending plan tasks', status: planPreview && planPreview.pending > 0 ? 'ready' : planPreview ? 'warn' : 'blocked', message: planPreview ? (planPreview.pending > 0 ? `${planPreview.pending} pending task(s) in IMPLEMENTATION_PLAN.md.` : `Plan complete — all ${planPreview.done} task(s) done.`) : 'IMPLEMENTATION_PLAN.md could not be parsed.', action: 'Open Plan' },
@@ -1766,6 +1777,237 @@ app.get('/api/services/:id', async (req, res) => {
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
+  }
+});
+
+// ─── Service Templates (must come before :id route) ─────────────────
+app.get('/api/services/templates', async (_req, res) => {
+  res.json(SERVICE_TEMPLATES);
+});
+
+// ─── Service Lifecycle ──────────────────────────────────────────────
+
+app.get('/api/services/:id/lifecycle', async (req, res) => {
+  try {
+    const serviceId = safeLocalId(req.params.id);
+    if (!serviceId) { res.status(400).json({ error: 'Invalid service id.' }); return; }
+    const lifecycle = await getServiceLifecycle(PROJECT_DIR, serviceId);
+    if (!lifecycle) { res.status(404).json({ error: 'No lifecycle found. Use POST to initialize.' }); return; }
+    res.json(lifecycle);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/services/:id/lifecycle', async (req, res) => {
+  try {
+    const serviceId = safeLocalId(req.params.id);
+    if (!serviceId) { res.status(400).json({ error: 'Invalid service id.' }); return; }
+    const targetStatus = req.body?.status as ServiceLifecycleStatus | undefined;
+    if (!targetStatus) { res.status(400).json({ error: 'status is required.' }); return; }
+    const existing = await getServiceLifecycle(PROJECT_DIR, serviceId);
+    if (!existing) {
+      const state = await initServiceLifecycle(PROJECT_DIR, serviceId, targetStatus);
+      await emitEvent(PROJECT_DIR, 'service', 'lifecycle_initialized', { service_id: serviceId, status: targetStatus }, 'user', serviceId).catch(() => {});
+      res.json({ success: true, state });
+      return;
+    }
+    const result = await transitionService(PROJECT_DIR, serviceId, targetStatus, req.body?.error_message);
+    if (result.success) {
+      await emitEvent(PROJECT_DIR, 'service', 'lifecycle_transitioned', { service_id: serviceId, from: result.from, to: result.to }, 'user', serviceId).catch(() => {});
+    }
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/services/:id/health', async (req, res) => {
+  try {
+    const serviceId = safeLocalId(req.params.id);
+    if (!serviceId) { res.status(400).json({ error: 'Invalid service id.' }); return; }
+    const health = await probeServiceHealth(PROJECT_DIR, serviceId);
+    res.json(health);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Promise Ledger ─────────────────────────────────────────────────
+
+app.get('/api/promises', async (req, res) => {
+  try {
+    const status = req.query.status as PromiseStatus | undefined;
+    const service_id = typeof req.query.service_id === 'string' ? req.query.service_id : undefined;
+    const promises = await listPromises(PROJECT_DIR, { status, service_id });
+    res.json({ total: promises.length, promises });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/promises', async (req, res) => {
+  try {
+    const { commitment, service_id, schedule_id, capability_required, next_due_at, fallback_message, session_id } = req.body ?? {};
+    if (!commitment || typeof commitment !== 'string') { res.status(400).json({ error: 'commitment is required.' }); return; }
+    const promise = await createPromise(PROJECT_DIR, commitment, { service_id, schedule_id, capability_required, next_due_at, fallback_message, session_id });
+    await emitEvent(PROJECT_DIR, 'promise', 'promise_created', { promise_id: promise.promise_id, commitment }, 'user', promise.promise_id).catch(() => {});
+    res.json(promise);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/promises/:id/fulfil', async (req, res) => {
+  try {
+    const promiseId = req.params.id;
+    const result = await fulfilPromise(PROJECT_DIR, promiseId);
+    if (!result) { res.status(404).json({ error: 'Promise not found.' }); return; }
+    await emitEvent(PROJECT_DIR, 'promise', 'promise_fulfilled', { promise_id: promiseId }, 'system', promiseId).catch(() => {});
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/promises/:id/fail', async (req, res) => {
+  try {
+    const promiseId = req.params.id;
+    const markFailed = req.body?.markFailed === true;
+    const result = await failPromise(PROJECT_DIR, promiseId, markFailed);
+    if (!result) { res.status(404).json({ error: 'Promise not found.' }); return; }
+    await emitEvent(PROJECT_DIR, 'promise', 'promise_failed', { promise_id: promiseId, markFailed }, 'system', promiseId).catch(() => {});
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/promises/obligations', async (_req, res) => {
+  try {
+    const result = await checkObligations(PROJECT_DIR);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Event Store ────────────────────────────────────────────────────
+
+app.get('/api/events', async (req, res) => {
+  try {
+    const query = {
+      category: req.query.category as EventCategory | undefined,
+      type: typeof req.query.type === 'string' ? req.query.type : undefined,
+      subject_id: typeof req.query.subject_id === 'string' ? req.query.subject_id : undefined,
+      after: typeof req.query.after === 'string' ? req.query.after : undefined,
+      before: typeof req.query.before === 'string' ? req.query.before : undefined,
+      limit: typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) || 50 : 50,
+      actor: typeof req.query.actor === 'string' ? req.query.actor : undefined,
+    };
+    const events = await queryEvents(PROJECT_DIR, query);
+    res.json({ total: events.length, events });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/events/summary', async (_req, res) => {
+  try {
+    const summary = await summarizeEventStore(PROJECT_DIR);
+    res.json(summary);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/events/postmortem/:id', async (req, res) => {
+  try {
+    const subjectId = req.params.id;
+    const window = typeof req.query.window === 'string' ? parseInt(req.query.window, 10) || 30 : 30;
+    const postmortem = await generatePostmortem(PROJECT_DIR, subjectId, window);
+    res.json({ postmortem });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/events/snapshots', async (_req, res) => {
+  try {
+    const subjects = await listSnapshots(PROJECT_DIR);
+    res.json({ subjects });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/events/snapshots/:id', async (req, res) => {
+  try {
+    const snapshot = await getSnapshot(PROJECT_DIR, req.params.id);
+    if (!snapshot) { res.status(404).json({ error: 'Snapshot not found.' }); return; }
+    res.json(snapshot);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Done-State Verifier ────────────────────────────────────────────
+
+app.post('/api/verify/code', async (req, res) => {
+  try {
+    const quick = req.body?.quick === true;
+    const result = await verifyCode({ projectDir: PROJECT_DIR, quick });
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/verify/service/:id', async (req, res) => {
+  try {
+    const serviceId = safeLocalId(req.params.id);
+    if (!serviceId) { res.status(400).json({ error: 'Invalid service id.' }); return; }
+    const result = await verifyService(PROJECT_DIR, serviceId);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Code Intelligence ──────────────────────────────────────────────
+
+app.post('/api/code-intelligence/build', async (_req, res) => {
+  try {
+    const graph = await buildRepoGraph(PROJECT_DIR);
+    await saveRepoGraph(PROJECT_DIR, graph);
+    const summary = summarizeRepo(graph);
+    await emitEvent(PROJECT_DIR, 'system', 'repo_graph_built', { files: summary.total_files, edges: summary.total_edges }, 'system').catch(() => {});
+    res.json(summary);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/code-intelligence/summary', async (_req, res) => {
+  try {
+    const graph = await loadRepoGraph(PROJECT_DIR);
+    if (!graph) { res.status(404).json({ error: 'No repo graph built yet. POST /api/code-intelligence/build first.' }); return; }
+    res.json(summarizeRepo(graph));
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/code-intelligence/impact', async (req, res) => {
+  try {
+    const files = req.body?.files as string[] | undefined;
+    if (!Array.isArray(files) || files.length === 0) { res.status(400).json({ error: 'files array is required.' }); return; }
+    const graph = await loadRepoGraph(PROJECT_DIR);
+    if (!graph) { res.status(404).json({ error: 'No repo graph. POST /api/code-intelligence/build first.' }); return; }
+    const impact = analyzeImpact(graph, files);
+    res.json(impact);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });
 
@@ -3107,6 +3349,19 @@ app.post('/api/chat', async (req, res) => {
   globalNervousSystem.reset();
   const nervousResult = globalNervousSystem.inspectQuery(messageText, myceliumClassification?.type ?? 'general');
   let nervousContext = '';
+
+  // Code Intelligence: inject compact repo awareness into the system prompt
+  let codeIntelContext = '';
+  try {
+    const repoGraph = await loadRepoGraph(PROJECT_DIR);
+    if (repoGraph) {
+      const repoSummary = summarizeRepo(repoGraph);
+      if (repoSummary.total_files > 0) {
+        const topFiles = repoSummary.most_imported.slice(0, 8).map((f) => `  ${f.file} (${f.count} importers)`).join('\n');
+        codeIntelContext = `\n\n--- Code Intelligence ---\nRepo: ${repoSummary.total_files} files, ${repoSummary.total_edges} dependency edges, ${repoSummary.test_files} test files.\nKey files (most imported):\n${topFiles}`;
+      }
+    }
+  } catch { /* code intel is optional */ }
   if (nervousResult.runState.safetyNotes.length > 0) {
     nervousContext = '\n\n--- Nervous System ---\n' + nervousResult.runState.safetyNotes.map((n) => `⚠️ ${n}`).join('\n');
   }
@@ -3133,7 +3388,7 @@ TOOL FALLBACK RULES:
 - You have browser_navigate, browser_read, browser_click tools available for sites that block simple HTTP requests.
 - Prefer web_search + web_read for initial research, fall back to browser_navigate for blocked sites.`;
 
-  const systemPrompt = [baseSystemPrompt, attachmentsBlock, myceliumContext, nervousContext, toolSynthesisNudge].filter(Boolean).join('\n\n');
+  const systemPrompt = [baseSystemPrompt, attachmentsBlock, myceliumContext, codeIntelContext, nervousContext, toolSynthesisNudge].filter(Boolean).join('\n\n');
 
   const synthesisStats = await loadSynthesisStats(PROJECT_DIR);
   const effectiveMaxTurns = adaptiveMaxTurns(synthesisStats, activeModel, 25);
@@ -3302,6 +3557,13 @@ TOOL FALLBACK RULES:
           if (event.result?.success) stats.success++;
           toolStats.set(event.call.name, stats);
         }
+        // Event store: emit per-tool events for audit trail + postmortem analysis.
+        emitEvent(PROJECT_DIR, 'tool', event.result?.success ? 'tool_succeeded' : 'tool_failed', {
+          tool: event.call.name,
+          input_summary: summarizeForEvidence(event.call.input)?.slice(0, 200),
+          output_summary: summarizeForEvidence(event.result?.output)?.slice(0, 200),
+          session_id: session.getSessionId(),
+        }, 'agent', session.getSessionId()).catch(() => {});
       }
       if (event.type === 'output_validation') {
         lastValidation = event.validation;
@@ -3550,6 +3812,29 @@ TOOL FALLBACK RULES:
     },
   };
   res.write(`data: ${JSON.stringify({ type: 'evidence', evidence: evidenceCard })}\n\n`);
+
+  // Promise detection: scan assistant output for commitment language and auto-record promises.
+  if (assistantTextBuffer.trim()) {
+    const commitments = detectCommitments(assistantTextBuffer);
+    for (const commitment of commitments) {
+      createPromise(PROJECT_DIR, commitment, { session_id: session.getSessionId() })
+        .then((p) => {
+          emitEvent(PROJECT_DIR, 'promise', 'promise_auto_detected', { promise_id: p.promise_id, commitment }, 'agent', p.promise_id).catch(() => {});
+          logger.info('Promises', `Auto-detected commitment: ${commitment.slice(0, 80)}`);
+        })
+        .catch(() => {});
+    }
+  }
+
+  // Event store: record chat turn completion.
+  emitEvent(PROJECT_DIR, 'system', 'chat_turn_completed', {
+    session_id: session.getSessionId(),
+    model: activeModel,
+    tool_calls: toolCallCount,
+    tool_success: toolSuccessCount,
+    done_reason: doneReason,
+    has_output: assistantTextBuffer.trim().length > 0,
+  }, 'agent', session.getSessionId()).catch(() => {});
 
   res.write('data: [DONE]\n\n');
   res.end();
@@ -5576,6 +5861,36 @@ export async function startServer(): Promise<void> {
 
     // Load webhooks from env.
     loadWebhooksFromEnv();
+
+    // Auto-build code intelligence graph (non-blocking).
+    loadRepoGraph(PROJECT_DIR).then((existing) => {
+      if (!existing) {
+        buildRepoGraph(PROJECT_DIR, { maxFiles: 5_000 }).then((graph) => {
+          saveRepoGraph(PROJECT_DIR, graph).then(async () => {
+            const summary = summarizeRepo(graph);
+            console.log(`  Code intelligence:     ${summary.total_files} files, ${summary.total_edges} edges`);
+            // Seed mycelium with code intelligence.
+            try {
+              const { loadMyceliumGraph, saveMyceliumGraph } = await import('../mycelium/graph');
+              const myGraph = await loadMyceliumGraph(PROJECT_DIR);
+              if (myGraph) {
+                const importEdges = graph.edges
+                  .filter((e) => e.type === 'imports')
+                  .map((e) => ({ from: e.from, to: e.to }));
+                const seeded = seedCodeIntelligence(myGraph, {
+                  mostImported: summary.most_imported.slice(0, 20),
+                  edges: importEdges.slice(0, 50),
+                });
+                if (seeded.nodesAdded > 0 || seeded.edgesAdded > 0) {
+                  await saveMyceliumGraph(PROJECT_DIR, myGraph);
+                  console.log(`  Code → Mycelium:       ${seeded.nodesAdded} nodes, ${seeded.edgesAdded} edges seeded`);
+                }
+              }
+            } catch { /* mycelium seeding is optional */ }
+          });
+        }).catch(() => {});
+      }
+    }).catch(() => {});
 
     if (process.env.NO_OPEN !== '1') {
       openBrowser(url);

@@ -6,6 +6,7 @@
 
 import { classifyMode } from './modeClassifier';
 import { extractCommands } from './commandExtractor';
+import { listPromises, updatePromise } from './promiseLedger';
 import type { WorkerJob, WorkerExecutor, WorkerJobType } from './workerQueue';
 import type { WorkerQueue } from './workerQueue';
 
@@ -98,6 +99,27 @@ const detectFailuresExecutor: WorkerExecutor = async (job) => {
   };
 };
 
+// ─── Expire Promises Executor ───────────────────────────────────────
+
+const expirePromisesExecutor: WorkerExecutor = async (job) => {
+  const input = job.input as { projectDir?: string; maxAgeDays?: number };
+  if (!input.projectDir) throw new Error('expire_promises requires input.projectDir.');
+  const maxAgeDays = input.maxAgeDays ?? 30;
+  const cutoff = new Date(Date.now() - maxAgeDays * 86_400_000);
+  const pending = await listPromises(input.projectDir, { status: 'pending' });
+  let expired = 0;
+  for (const p of pending) {
+    // Expire if no due date and older than maxAgeDays, or if overdue by maxAgeDays.
+    const created = new Date(p.created_at);
+    const overdue = p.next_due_at ? new Date(p.next_due_at) < cutoff : created < cutoff;
+    if (overdue) {
+      await updatePromise(input.projectDir, p.promise_id, { status: 'expired' });
+      expired++;
+    }
+  }
+  return { expired, checked: pending.length, maxAgeDays };
+};
+
 // ─── Executor registry ──────────────────────────────────────────────
 
 export const DEFAULT_EXECUTORS: Record<string, WorkerExecutor> = {
@@ -106,6 +128,7 @@ export const DEFAULT_EXECUTORS: Record<string, WorkerExecutor> = {
   validate_json: validateJsonExecutor,
   summarise_notes: summariseNotesExecutor,
   detect_failures: detectFailuresExecutor,
+  expire_promises: expirePromisesExecutor,
 };
 
 /** Register all default executors on a worker queue. */

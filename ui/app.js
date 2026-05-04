@@ -4086,13 +4086,44 @@ async function loadOperatingServiceDetail(serviceId) {
   if (!target || !serviceId) return;
   target.textContent = 'Loading service details...';
   try {
-    const response = await fetch('/api/services/' + encodeURIComponent(serviceId));
-    const data = await readApiJson(response, 'Service detail API');
+    const [response, lifecycleRes, healthRes] = await Promise.allSettled([
+      fetch('/api/services/' + encodeURIComponent(serviceId)),
+      fetch('/api/services/' + encodeURIComponent(serviceId) + '/lifecycle'),
+      fetch('/api/services/' + encodeURIComponent(serviceId) + '/health'),
+    ]);
+    const data = response.status === 'fulfilled' ? await readApiJson(response.value, 'Service detail API') : {};
+    const lifecycle = lifecycleRes.status === 'fulfilled' && lifecycleRes.value.ok ? await lifecycleRes.value.json() : null;
+    const health = healthRes.status === 'fulfilled' && healthRes.value.ok ? await healthRes.value.json() : null;
     const state = data.state || {};
     const count = (key) => Array.isArray(state[key]) ? state[key].length : 0;
-    target.innerHTML = '<div class="trace-row"><strong>' + esc(data.service?.service_name || serviceId) + '</strong><div class="trace-meta">tasks ' + count('tasks') + ' · notes ' + count('notes') + ' · observations ' + count('observations') + ' · reviews ' + count('reviews') + '</div><div class="trace-meta">storage ' + esc(data.service?.storage_location || '') + '</div></div>';
+    const lcStatus = lifecycle ? lifecycle.status : 'unknown';
+    const lcIcon = lcStatus === 'active' ? '🟢' : lcStatus === 'paused' ? '⏸️' : lcStatus === 'disabled' ? '⛔' : lcStatus === 'error' ? '❌' : lcStatus === 'needs_attention' ? '⚠️' : lcStatus === 'archived' ? '📦' : '📝';
+    const healthIcon = health ? (health.healthy ? '💚' : '💔') : '';
+    const healthNote = health && !health.healthy ? '<div class="trace-meta" style="color:var(--danger)">' + (health.issues || []).map((i) => '⚠️ ' + esc(i)).join('<br>') + '</div>' : '';
+    const lcButtons = '<div class="document-actions">'
+      + (lcStatus !== 'active' ? '<button class="btn-sm" onclick="transitionService(\'' + escAttr(serviceId) + '\',\'active\')">▶️ Activate</button>' : '')
+      + (lcStatus === 'active' ? '<button class="btn-sm" onclick="transitionService(\'' + escAttr(serviceId) + '\',\'paused\')">⏸️ Pause</button>' : '')
+      + (lcStatus !== 'disabled' && lcStatus !== 'archived' ? '<button class="btn-sm" onclick="transitionService(\'' + escAttr(serviceId) + '\',\'disabled\')">⛔ Disable</button>' : '')
+      + (lcStatus !== 'archived' ? '<button class="btn-sm" onclick="transitionService(\'' + escAttr(serviceId) + '\',\'archived\')">📦 Archive</button>' : '')
+      + '</div>';
+    target.innerHTML = '<div class="trace-row"><strong>' + esc(data.service?.service_name || serviceId) + '</strong>'
+      + '<div class="trace-meta">' + lcIcon + ' ' + esc(lcStatus) + ' ' + healthIcon + ' · tasks ' + count('tasks') + ' · notes ' + count('notes') + ' · observations ' + count('observations') + ' · reviews ' + count('reviews') + '</div>'
+      + healthNote + lcButtons
+      + '<div class="trace-meta">storage ' + esc(data.service?.storage_location || '') + '</div></div>';
   } catch (error) {
     target.textContent = 'Service details unavailable: ' + (error.message || error);
+  }
+}
+async function transitionService(serviceId, status) {
+  try {
+    await fetch('/api/services/' + encodeURIComponent(serviceId) + '/lifecycle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    loadOperatingServiceDetail(serviceId);
+  } catch (error) {
+    console.error('transition failed', error);
   }
 }
 
@@ -4166,7 +4197,7 @@ async function rebuildSessionSearchIndex() { const view = document.getElementByI
 
 async function loadPalaceEntry(id) { const detail = document.getElementById('palaceDetail'); if (!detail) return; detail.classList.remove('initial-hidden'); detail.textContent = 'Loading memory entry...'; try { const entryResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id)); const entryData = await entryResponse.json(); if (entryData.error) { detail.textContent = entryData.error; return; } const contextResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id) + '/context?window=3'); const contextData = await contextResponse.json(); const entry = entryData.entry; const transcriptRows = (contextData.events || []).map((event) => '<div class="transcript-row' + (event.isAnchor ? ' anchor' : '') + '"><div><strong>' + esc(event.kind) + '</strong> · ' + esc(event.timestamp) + '</div><div class="prewrap-text">' + esc(event.text || '[empty]') + '</div></div>').join(''); detail.innerHTML = '<div><strong>Session</strong> ' + esc(entry.sessionId) + '</div><div><strong>Event</strong> ' + esc(entry.id) + '</div><div><strong>Kind</strong> ' + esc(entry.kind) + '</div><div><strong>Time</strong> ' + esc(entry.timestamp) + '</div><div class="prewrap-text trace-block-spaced">' + esc(entry.text) + '</div><div class="trace-block-spaced-large"><strong>Transcript Context</strong>' + (transcriptRows || '<div class="transcript-row">No transcript context found.</div>') + '</div>'; } catch (error) { detail.textContent = error.message; } }
 
-function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); el.classList.add('active'); document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; const rn = document.getElementById('runsView'); if (rn) rn.style.display = tab === 'runs' ? 'block' : 'none'; const wf = document.getElementById('workflowsView'); if (wf) wf.style.display = tab === 'workflows' ? 'block' : 'none'; const my = document.getElementById('myceliumView'); if (my) my.style.display = tab === 'mycelium' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); if (tab === 'runs') loadRuns(); if (tab === 'workflows') loadWorkflows(); if (tab === 'mycelium') loadMycelium(); }
+function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); el.classList.add('active'); document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; const rn = document.getElementById('runsView'); if (rn) rn.style.display = tab === 'runs' ? 'block' : 'none'; const wf = document.getElementById('workflowsView'); if (wf) wf.style.display = tab === 'workflows' ? 'block' : 'none'; const my = document.getElementById('myceliumView'); if (my) my.style.display = tab === 'mycelium' ? 'block' : 'none'; const pr = document.getElementById('promisesView'); if (pr) pr.style.display = tab === 'promises' ? 'block' : 'none'; const ev = document.getElementById('eventsView'); if (ev) ev.style.display = tab === 'events' ? 'block' : 'none'; const ci = document.getElementById('codeintelView'); if (ci) ci.style.display = tab === 'codeintel' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); if (tab === 'runs') loadRuns(); if (tab === 'workflows') loadWorkflows(); if (tab === 'mycelium') loadMycelium(); if (tab === 'promises') loadPromises(); if (tab === 'events') loadEvents(); if (tab === 'codeintel') loadCodeIntel(); }
 function toggleLeft() { document.getElementById('leftPanel').classList.toggle('hidden'); }
 function toggleRight() { document.getElementById('rightPanel').classList.toggle('hidden'); }
 
@@ -6957,3 +6988,115 @@ async function loadMycelium() {
 
 function esc(s) { const d = document.createElement('div'); d.textContent = String(s ?? ''); return d.innerHTML; }
 function escAttr(s) { return esc(s).replace(/"/g, '&quot;'); }
+
+// ─── Promises Tab ───────────────────────────────────────────────────
+async function loadPromises() {
+  const view = document.getElementById('promisesView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-meta">Loading promises…</div>';
+  try {
+    const [promisesR, obligationsR] = await Promise.allSettled([
+      fetch('/api/promises').then((r) => r.json()),
+      fetch('/api/promises/obligations').then((r) => r.json()),
+    ]);
+    const promises = promisesR.status === 'fulfilled' ? promisesR.value : { promises: [] };
+    const obligations = obligationsR.status === 'fulfilled' ? obligationsR.value : { breaches: [] };
+    const breaches = obligations.breaches || [];
+    const rows = (promises.promises || []).map((p) => {
+      const statusIcon = p.status === 'fulfilled' ? '✅' : p.status === 'failed' ? '❌' : p.status === 'expired' ? '⏰' : '🔵';
+      return '<div class="trace-item"><div class="trace-title">' + statusIcon + ' ' + esc(p.commitment.slice(0, 100)) + '</div>'
+        + '<div class="trace-meta">' + esc(p.status) + ' · created ' + esc(p.created_at?.slice(0, 10) || '?')
+        + (p.next_due_at ? ' · due ' + esc(p.next_due_at.slice(0, 16)) : '')
+        + (p.service_id ? ' · service: ' + esc(p.service_id) : '')
+        + '</div>'
+        + (p.status === 'pending' ? '<div class="document-actions"><button class="btn-sm" onclick="fulfilPromise(\'' + escAttr(p.promise_id) + '\')">✅ Fulfil</button></div>' : '')
+        + '</div>';
+    }).join('');
+    const breachRows = breaches.map((b) => '<div class="trace-meta trace-meta-sm-top" style="color:var(--danger)">⚠️ ' + esc(b.breach_type) + ': ' + esc(b.detail.slice(0, 120)) + '</div>').join('');
+    view.innerHTML = '<div class="trace-item"><div class="trace-title">🤝 Promise Ledger</div>'
+      + '<div class="trace-meta">' + (promises.total || 0) + ' promise(s) · '
+      + (obligations.pending || 0) + ' pending · '
+      + (obligations.fulfilled || 0) + ' fulfilled · '
+      + breaches.length + ' breach(es)</div>'
+      + breachRows + rows
+      + (rows ? '' : '<div class="trace-meta">No promises recorded yet.</div>')
+      + '</div>';
+  } catch (error) {
+    view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message || error) + '</div>';
+  }
+}
+async function fulfilPromise(id) {
+  try {
+    await fetch('/api/promises/' + encodeURIComponent(id) + '/fulfil', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    loadPromises();
+  } catch (error) {
+    console.error('fulfil failed', error);
+  }
+}
+
+// ─── Events Tab ─────────────────────────────────────────────────────
+async function loadEvents() {
+  const view = document.getElementById('eventsView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-meta">Loading events…</div>';
+  try {
+    const [summaryR, eventsR] = await Promise.allSettled([
+      fetch('/api/events/summary').then((r) => r.json()),
+      fetch('/api/events?limit=50').then((r) => r.json()),
+    ]);
+    const summary = summaryR.status === 'fulfilled' ? summaryR.value : {};
+    const events = eventsR.status === 'fulfilled' ? eventsR.value : { events: [] };
+    const categoryPills = Object.entries(summary.categories || {}).map(([k, v]) => '<span class="tag">' + esc(k) + ': ' + v + '</span>').join(' ');
+    const rows = (events.events || []).map((ev) => {
+      const icon = ev.category === 'promise' ? '🤝' : ev.category === 'service' ? '🔧' : ev.category === 'tool' ? '🔨' : ev.category === 'system' ? '⚙️' : '📋';
+      return '<div class="trace-item"><div class="trace-title">' + icon + ' ' + esc(ev.category) + '/' + esc(ev.type) + '</div>'
+        + '<div class="trace-meta">' + esc(ev.timestamp?.slice(0, 19) || '') + ' · ' + esc(ev.actor) + (ev.subject_id ? ' · ' + esc(ev.subject_id.slice(0, 20)) : '') + '</div>'
+        + '<div class="trace-meta" style="font-size:0.75em;opacity:0.7">' + esc(JSON.stringify(ev.data).slice(0, 120)) + '</div></div>';
+    }).join('');
+    view.innerHTML = '<div class="trace-item"><div class="trace-title">📋 Event Store</div>'
+      + '<div class="trace-meta">' + (summary.total_events || 0) + ' total events · ' + (summary.snapshot_count || 0) + ' snapshots</div>'
+      + '<div class="trace-meta">' + categoryPills + '</div>'
+      + rows
+      + (rows ? '' : '<div class="trace-meta">No events recorded yet.</div>')
+      + '</div>';
+  } catch (error) {
+    view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message || error) + '</div>';
+  }
+}
+
+// ─── Code Intelligence Tab ─────────────────────────────────────────
+async function loadCodeIntel() {
+  const view = document.getElementById('codeintelView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-meta">Loading code intelligence…</div>';
+  try {
+    const res = await fetch('/api/code-intelligence/summary');
+    if (res.status === 404) {
+      view.innerHTML = '<div class="trace-item"><div class="trace-title">🧬 Code Intelligence</div>'
+        + '<div class="trace-meta">No repo graph built yet.</div>'
+        + '<div class="document-actions"><button class="btn-sm" onclick="buildCodeIntelGraph()">Build Graph</button></div></div>';
+      return;
+    }
+    const data = await res.json();
+    const topImported = (data.most_imported || []).slice(0, 8).map((f) => '<div class="trace-meta">📥 ' + esc(f.file) + ' (' + f.count + ' importers)</div>').join('');
+    const topComplex = (data.most_complex || []).slice(0, 8).map((f) => '<div class="trace-meta">🔀 ' + esc(f.file) + ' (' + f.imports + ' imports, ' + f.exports + ' exports)</div>').join('');
+    view.innerHTML = '<div class="trace-item"><div class="trace-title">🧬 Code Intelligence</div>'
+      + '<div class="trace-meta">' + (data.total_files || 0) + ' files · ' + (data.total_edges || 0) + ' edges · ' + (data.total_exports || 0) + ' exports · ' + (data.test_files || 0) + ' tests</div>'
+      + '<div class="document-actions"><button class="btn-sm" onclick="buildCodeIntelGraph()">Rebuild</button></div>'
+      + '<div class="trace-item"><div class="trace-title">Most Imported</div>' + (topImported || '<div class="trace-meta">—</div>') + '</div>'
+      + '<div class="trace-item"><div class="trace-title">Most Complex</div>' + (topComplex || '<div class="trace-meta">—</div>') + '</div>'
+      + '</div>';
+  } catch (error) {
+    view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message || error) + '</div>';
+  }
+}
+async function buildCodeIntelGraph() {
+  const view = document.getElementById('codeintelView');
+  if (view) view.innerHTML = '<div class="trace-meta">Building repo graph…</div>';
+  try {
+    await fetch('/api/code-intelligence/build', { method: 'POST' });
+    loadCodeIntel();
+  } catch (error) {
+    if (view) view.innerHTML = '<div class="trace-meta">Build failed: ' + esc(error.message || error) + '</div>';
+  }
+}

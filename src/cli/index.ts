@@ -10,6 +10,8 @@ import { PermissionEngine } from '../permissions/engine';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { assembleSystemContext } from '../context/assembly';
 import { checkSetupHealth, type SetupHealthResult } from '../setup/health';
+import { summarizeEventStore } from '../persistence/eventStore';
+import { checkObligations } from '../services/promiseLedger';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
 import { OUTPUT_VALIDATION_PROFILES, parseOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
 import { formatCliHelp, resolveCliCommand } from './commands';
@@ -156,6 +158,22 @@ export async function main(): Promise<void> {
         pdfOcrCommand: process.env.HARNESS_PDF_OCR_COMMAND,
       });
       console.log(formatSetupHealth(result));
+      // Event store + promise health (async addons)
+      try {
+        const projectDir = process.cwd();
+        const [eventSummary, obligations] = await Promise.all([
+          summarizeEventStore(projectDir).catch(() => null),
+          checkObligations(projectDir).catch(() => null),
+        ]);
+        if (eventSummary && eventSummary.total_events > 0) {
+          const cats = Object.entries(eventSummary.categories).map(([k, v]) => `${k}:${v}`).join(', ');
+          console.log(formatHealthLine('Events', true, `${eventSummary.total_events} events (${cats}), ${eventSummary.snapshot_count} snapshots.`));
+        }
+        if (obligations) {
+          const breachCount = obligations.breaches.length;
+          console.log(formatHealthLine('Promises', breachCount === 0, `${obligations.total} total, ${obligations.pending} pending, ${obligations.fulfilled} fulfilled, ${breachCount} breach(es).`));
+        }
+      } catch { /* optional */ }
       const failedRequired = !result.ollama.ok
         || (options.visionModel ? !result.vision.ok : false)
         || (options.audioTranscribeCommand ? !result.audio.ok : false);

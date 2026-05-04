@@ -20,6 +20,7 @@ export type WorkerJobType =
   | 'generate_reminder'
   | 'refresh_summary'
   | 'validate_json'
+  | 'expire_promises'
   | 'custom';
 
 export type WorkerJobStatus = 'pending' | 'running' | 'completed' | 'failed';

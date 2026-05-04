@@ -336,3 +336,49 @@ export function seedGenericGraph(graph: MyceliumGraph): SeedSummary {
 
   return { nodesAdded, edgesAdded, protectedNodes, protectedEdges };
 }
+
+// ─── Code Intelligence → Mycelium seeding ───────────────────────────
+
+export interface CodeIntelSeedInput {
+  /** Top-N most-imported files to seed as nodes. */
+  mostImported: Array<{ file: string; count: number }>;
+  /** Dependency edges between files (import relationships). */
+  edges: Array<{ from: string; to: string }>;
+}
+
+/**
+ * Seed mycelium graph with code intelligence data.
+ * Most-imported files become `code_file` nodes; import edges become
+ * graph edges so the router can reason about file dependencies.
+ */
+export function seedCodeIntelligence(graph: MyceliumGraph, input: CodeIntelSeedInput): SeedSummary {
+  let nodesAdded = 0;
+  let edgesAdded = 0;
+
+  for (const file of input.mostImported) {
+    const nodeId = `code.${file.file.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    if (graph.getNode(nodeId)) continue;
+    graph.addNode({
+      id: nodeId,
+      type: 'code_file',
+      label: file.file,
+      trust: 0.5,
+      cost: 0.05,
+      summary: `Code file imported by ${file.count} other files`,
+      metadata: { importers: file.count },
+    });
+    nodesAdded++;
+  }
+
+  // Add dependency edges between code file nodes (only if both exist).
+  for (const edge of input.edges) {
+    const fromId = `code.${edge.from.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const toId = `code.${edge.to.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    if (!graph.getNode(fromId) || !graph.getNode(toId)) continue;
+    if (graph.getEdge(fromId, toId)) continue;
+    graph.addEdge(fromId, toId, 0.3, { relation: 'imports', origin: 'code_intelligence' });
+    edgesAdded++;
+  }
+
+  return { nodesAdded, edgesAdded, protectedNodes: 0, protectedEdges: 0 };
+}

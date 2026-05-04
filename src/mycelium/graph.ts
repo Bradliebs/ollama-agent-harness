@@ -27,7 +27,8 @@ export type MyceliumNodeType =
   | 'command_handler'
   | 'notification_template'
   | 'capability'
-  | 'background_worker';
+  | 'background_worker'
+  | 'code_file';
 
 export interface MyceliumNode {
   id: string;
@@ -57,7 +58,7 @@ export interface MyceliumEdge {
   /** Optional relation type, e.g. 'routes_to', 'must_verify_with', 'sequence_learning'. */
   relation?: string;
   /** Where this edge came from: seeded, query, sequence, manual. */
-  origin?: 'seeded' | 'query' | 'sequence' | 'manual' | 'reinforcement';
+  origin?: 'seeded' | 'query' | 'sequence' | 'manual' | 'reinforcement' | 'code_intelligence';
   /** Times this edge was part of a route that hit a hard verifier block. */
   blockedCount?: number;
   /** ISO timestamp of the most recent hard block on this route. */

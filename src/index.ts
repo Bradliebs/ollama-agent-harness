@@ -26,7 +26,8 @@ export { spreadActivation, selectRoute } from './mycelium/activation';
 export { reinforceRoute, weakenRoute, decayUnusedEdges, computeReward } from './mycelium/reinforcement';
 export { classifyTask, getExplorationRate, getNodeLimit, isHighRiskTaskType } from './mycelium/taskClassifier';
 export type { MyceliumTaskType, MyceliumTaskClassification } from './mycelium/taskClassifier';
-export { seedGenericGraph, SAFETY_NODES, GENERIC_AGENT_NODES, GENERIC_PROMPT_NODES, GENERIC_WORKFLOW_NODES, GENERIC_VERIFIER_NODES, USER_PREFERENCE_NODES, MODEL_PROVIDER_NODES, SERVICE_NODES, COMMAND_HANDLER_NODES, CAPABILITY_NODES, BACKGROUND_WORKER_NODES, NOTIFICATION_TEMPLATE_NODES, GENERIC_EDGES } from './mycelium/seeds';
+export { seedGenericGraph, seedCodeIntelligence, SAFETY_NODES, GENERIC_AGENT_NODES, GENERIC_PROMPT_NODES, GENERIC_WORKFLOW_NODES, GENERIC_VERIFIER_NODES, USER_PREFERENCE_NODES, MODEL_PROVIDER_NODES, SERVICE_NODES, COMMAND_HANDLER_NODES, CAPABILITY_NODES, BACKGROUND_WORKER_NODES, NOTIFICATION_TEMPLATE_NODES, GENERIC_EDGES } from './mycelium/seeds';
+export type { CodeIntelSeedInput } from './mycelium/seeds';
 export { buildContextPackage, buildRouteExplanation, formatRouteExplanation } from './mycelium/contextPackage';
 export type { ContextPackage, ContextPackageItem, RouteExplanation } from './mycelium/contextPackage';
 export { heuristicVerifier } from './mycelium/verifier';
@@ -59,3 +60,27 @@ export type { EvalTraceExample, EvalTraceOptions, EvalTraceRun, EvalTraceRunResu
 export { loadSkillsDir, parseSkillFile, matchSkillTrigger } from './extensibility/skillLoader';
 export { HookPipeline } from './extensibility/hookPipeline';
 export type { LoopConfig, LoopEvent, OutputValidationEvent, Tool, ToolResult, ToolCall, PermissionRule, PermissionMode, SessionEvent, SessionMeta, ContinuityCheckpoint, Hook, HookContext, HookResult } from './types';
+
+// ─── Promise Ledger ─────────────────────────────────────────────────
+export { createPromise, listPromises, updatePromise, checkObligations, fulfilPromise, failPromise, detectCommitments } from './services/promiseLedger';
+export type { AgentPromise, PromiseStatus, PromiseBreachEvent, ObligationCheckResult } from './services/promiseLedger';
+
+// ─── Service Lifecycle ──────────────────────────────────────────────
+export { canTransition, getServiceLifecycle, getServiceTemplate, initServiceLifecycle, probeServiceHealth, transitionService, SERVICE_TEMPLATES } from './services/serviceLifecycle';
+export type { ServiceLifecycleStatus, ServiceLifecycleState, ServiceTransitionResult, ServiceTemplate } from './services/serviceLifecycle';
+
+// ─── Event Store ────────────────────────────────────────────────────
+export { appendEvent, emitEvent, queryEvents, getEvent, createSnapshot, getSnapshot, listSnapshots, getUndoEvents, summarizeEventStore, generatePostmortem, pruneEventStore } from './persistence/eventStore';
+export type { EventCategory, HarnessEvent, EventSnapshot, EventQuery, EventStoreSummary } from './persistence/eventStore';
+
+// ─── Done-State Verifier ────────────────────────────────────────────
+export { verifyCode, verifyService, verifyPromiseFulfillability } from './core/doneStateVerifier';
+export type { VerificationDomain, VerificationStatus, VerificationCheck, VerificationResult, PromiseVerifyInput } from './core/doneStateVerifier';
+
+// ─── Subagent Orchestrator ──────────────────────────────────────────
+export { orchestrate, mergeResults, getAgentRoleDefaults } from './agents/orchestrator';
+export type { AgentRole, AgentBudget, WorkstreamTask, WorkstreamResult, OrchestrationResult } from './agents/orchestrator';
+
+// ─── Code Intelligence ──────────────────────────────────────────────
+export { buildRepoGraph, analyzeImpact, summarizeRepo, saveRepoGraph, loadRepoGraph } from './core/codeIntelligence';
+export type { CodeNode, CodeEdge, RepoGraph, ImpactAnalysis, RepoSummary } from './core/codeIntelligence';

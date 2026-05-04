@@ -2,10 +2,13 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
 import { applyFileWriteRedirect, getUploadsDir, maybeRedirectAgentOutput, resolveProjectPath, resolveProjectReadPath } from './pathResolution';
+import { loadRepoGraph, analyzeImpact } from '../core/codeIntelligence';
 
 const DEFAULT_MAX_READ_BYTES = 100_000;
 const MAX_ALLOWED_READ_BYTES = 1_000_000;
 const MAX_WRITE_BYTES = 5_000_000;
+
+const CODE_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
 
 export const FileReadTool: Tool = {
   name: 'file_read',
@@ -90,7 +93,8 @@ export const FileWriteTool: Tool = {
         : redirectKind === 'agent-outputs'
           ? ` (redirected from bare filename to agent-outputs/)`
           : '';
-      return { success: true, output: `Wrote ${content.length} chars to '${filePath}'${note}` };
+      const impactNote = await getImpactNote(filePath);
+      return { success: true, output: `Wrote ${content.length} chars to '${filePath}'${note}${impactNote}` };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return { success: false, output: `Failed to write '${filePath}': ${msg}`, error: msg };
@@ -152,7 +156,8 @@ export const FileEditTool: Tool = {
       }
       const updated = content.slice(0, idx) + newStr + content.slice(idx + matched.length);
       await fs.writeFile(filePath, updated, 'utf-8');
-      return { success: true, output: `Edited '${filePath}': replaced ${matched.length} chars with ${newStr.length} chars` };
+      const impactNote = await getImpactNote(filePath);
+      return { success: true, output: `Edited '${filePath}': replaced ${matched.length} chars with ${newStr.length} chars${impactNote}` };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return { success: false, output: `Failed to edit '${filePath}': ${msg}`, error: msg };
@@ -383,4 +388,62 @@ function truncateUtf8(content: string, maxBytes: number): string {
   const buffer = Buffer.from(content, 'utf-8');
   if (buffer.length <= maxBytes) return content;
   return buffer.subarray(0, maxBytes).toString('utf-8');
+}
+
+/** Best-effort impact analysis for a changed file. Returns a note string or empty. */
+async function getImpactNote(filePath: string): Promise<string> {
+  try {
+    // Invalidate cached repo graph when a code file is changed.
+    if (CODE_EXTS.has(path.extname(filePath))) {
+      invalidateRepoGraphCache(filePath).catch(() => {});
+    }
+    // Resolve project root from the file path (walk up to find package.json).
+    let dir = path.dirname(filePath);
+    let projectDir: string | null = null;
+    for (let i = 0; i < 10; i++) {
+      try {
+        await fs.access(path.join(dir, 'package.json'));
+        projectDir = dir;
+        break;
+      } catch { /* keep walking */ }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    if (!projectDir) return '';
+    const graph = await loadRepoGraph(projectDir);
+    if (!graph) return '';
+    const relPath = path.relative(projectDir, filePath).split(path.sep).join('/');
+    const impact = analyzeImpact(graph, [relPath]);
+    if (impact.affected_tests.length === 0 && impact.direct.length === 0) return '';
+    const parts: string[] = [];
+    if (impact.affected_tests.length > 0) {
+      parts.push(`Tests to run: ${impact.affected_tests.slice(0, 5).join(', ')}`);
+    }
+    if (impact.direct.length > 0) {
+      parts.push(`${impact.direct.length} direct importer(s)`);
+    }
+    if (impact.risk_score > 0.3) {
+      parts.push(`risk: ${Math.round(impact.risk_score * 100)}%`);
+    }
+    return parts.length > 0 ? ` [Impact: ${parts.join(' · ')}]` : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Delete the cached repo graph so it's rebuilt on next access. */
+async function invalidateRepoGraphCache(filePath: string): Promise<void> {
+  let dir = path.dirname(filePath);
+  for (let i = 0; i < 10; i++) {
+    const graphPath = path.join(dir, '.harness', 'code-intelligence', 'repo-graph.json');
+    try {
+      await fs.access(graphPath);
+      await fs.unlink(graphPath);
+      return;
+    } catch { /* not found, keep walking */ }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
 }

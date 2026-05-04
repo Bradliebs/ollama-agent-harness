@@ -11,6 +11,46 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.21
+
+Agent operating system — six new subsystems, deep integration, and Anthropic support.
+
+### New subsystems
+
+* **Promise Ledger** — tracks agent commitments, auto-detects commitment language in chat output, obligation checking with breach detection.
+* **Service Lifecycle** — state machine (draft → active → paused → disabled → archived → error → needs_attention) with 7 service templates and health probes.
+* **Event Store** — append-only audit trail with temporal queries, snapshots, undo, postmortem generation, and auto-pruning at 10K events.
+* **Done-State Verifier** — validates code (typecheck/lint/tests), services (state/commands/schedule), and promise fulfillability.
+* **Subagent Orchestrator** — parallel workstream execution with 11 agent roles, per-agent budgets, dependency ordering, and result merging.
+* **Code Intelligence** — repo graph builder from import analysis, impact analysis, test mapping, and risk scoring.
+
+### Integration
+
+* Chat handler auto-detects commitment language and records promises.
+* Per-tool events (`tool_succeeded`/`tool_failed`) emitted to event store on every tool call.
+* Chat turn completion events emitted after every turn.
+* `file_write` and `file_edit` append impact analysis (affected tests, importers, risk score) to output.
+* Code graph auto-builds on server startup and invalidates on code file changes.
+* Mycelium router seeds `code_file` nodes from most-imported files with import edges.
+* Scheduler post-execution checks: obligation breaches, service health probes, auto-expire stale promises.
+* Promise obligations shown in readiness/status API.
+
+### UI
+
+* Three new left-panel tabs: 🤝 Promises, 📋 Events, 🧬 Code Intel.
+* Service detail panel shows lifecycle status, health, and Activate/Pause/Disable/Archive buttons.
+* Promises tab shows breach alerts and per-promise fulfil buttons.
+* Code Intelligence tab shows repo summary with rebuild button.
+
+### Providers
+
+* Added Anthropic as an OpenAI-compatible backend (claude-sonnet-4-20250514, tools supported).
+* HTTP 413 (request too large) now triggers auto-fallback to next provider instead of hard-failing.
+
+### Worker
+
+* `expire_promises` worker job type for manual or automated stale promise cleanup.
+
 ## Ollama Agent Harness v0.3.19
 
 Release validation patch for the Discord bridge startup path.
