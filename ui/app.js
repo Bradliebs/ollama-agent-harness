@@ -7162,7 +7162,7 @@ async function loadCodeIntel() {
     const topComplex = (data.most_complex || []).slice(0, 8).map((f) => '<div class="trace-meta" style="cursor:pointer" onclick="showFileImpact(\'' + escAttr(f.file) + '\')">🔀 ' + esc(f.file) + ' (' + f.imports + ' imports, ' + f.exports + ' exports) <span style="opacity:0.5">▶ impact</span></div>').join('');
     view.innerHTML = '<div class="trace-item"><div class="trace-title">🧬 Code Intelligence</div>'
       + '<div class="trace-meta">' + (data.total_files || 0) + ' files · ' + (data.total_edges || 0) + ' edges · ' + (data.total_exports || 0) + ' exports · ' + (data.test_files || 0) + ' tests</div>'
-      + '<div class="document-actions"><button class="btn-sm" onclick="buildCodeIntelGraph()">Rebuild</button></div>'
+      + '<div class="document-actions"><button class="btn-sm" onclick="buildCodeIntelGraph()">Rebuild</button> <button class="btn-sm" onclick="showArchDiagram()">Architecture Diagram</button></div>'
       + '<div style="margin:8px 0"><input type="text" id="codeIntelSearch" placeholder="Search file for impact analysis…" class="panel-search" style="width:100%" onkeydown="if(event.key===\'Enter\')showFileImpact(this.value)"><button class="btn-sm" onclick="showFileImpact(document.getElementById(\'codeIntelSearch\').value)" style="margin-top:4px">Analyze</button></div>'
       + '<div class="trace-item"><div class="trace-title">Most Imported</div>' + (topImported || '<div class="trace-meta">—</div>') + '</div>'
       + '<div class="trace-item"><div class="trace-title">Most Complex</div>' + (topComplex || '<div class="trace-meta">—</div>') + '</div>'
@@ -7207,5 +7207,20 @@ async function showFileImpact(filePath) {
       + '</div>';
   } catch (error) {
     panel.innerHTML = '<div class="trace-meta">Impact analysis failed: ' + esc(error.message || error) + '</div>';
+  }
+}
+async function showArchDiagram() {
+  const panel = document.getElementById('codeIntelImpactPanel');
+  if (!panel) return;
+  panel.innerHTML = '<div class="trace-meta">Generating architecture diagram…</div>';
+  try {
+    const res = await fetch('/api/code-intelligence/diagram');
+    const data = await res.json();
+    if (data.error) { panel.innerHTML = '<div class="trace-meta">' + esc(data.error) + '</div>'; return; }
+    panel.innerHTML = '<div class="trace-item"><div class="trace-title">Architecture Diagram</div>'
+      + '<pre style="font-size:0.7em;overflow-x:auto;background:var(--bg-code,#1e1e2e);padding:8px;border-radius:4px;max-height:400px">' + esc(data.mermaid) + '</pre>'
+      + '<div class="document-actions"><button class="btn-sm" onclick="navigator.clipboard.writeText(' + JSON.stringify(JSON.stringify(data.mermaid)) + ')">📋 Copy Mermaid</button></div></div>';
+  } catch (error) {
+    panel.innerHTML = '<div class="trace-meta">Diagram failed: ' + esc(error.message || error) + '</div>';
   }
 }

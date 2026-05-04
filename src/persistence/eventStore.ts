@@ -312,3 +312,32 @@ export async function pruneEventStore(projectDir: string, maxEntries = MAX_EVENT
   knownEventLineCount = kept.length;
   return pruned;
 }
+
+/** Remove events older than `retentionDays`. */
+export async function pruneEventsByAge(projectDir: string, retentionDays = 30): Promise<number> {
+  const fp = eventsFilePath(projectDir);
+  try { await fs.access(fp); } catch { return 0; }
+
+  const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
+  const kept: string[] = [];
+  let pruned = 0;
+  const rl = readline.createInterface({ input: createReadStream(fp, 'utf-8'), crlfDelay: Infinity });
+  for await (const line of rl) {
+    if (!line.trim()) continue;
+    try {
+      const ev = JSON.parse(line) as HarnessEvent;
+      if (ev.timestamp >= cutoff) {
+        kept.push(line);
+      } else {
+        pruned++;
+      }
+    } catch {
+      kept.push(line); // keep unparseable lines
+    }
+  }
+  if (pruned > 0) {
+    await fs.writeFile(fp, kept.join('\n') + '\n', 'utf-8');
+    knownEventLineCount = kept.length;
+  }
+  return pruned;
+}

@@ -2041,6 +2041,18 @@ app.post('/api/code-intelligence/impact', async (req, res) => {
   }
 });
 
+app.get('/api/code-intelligence/diagram', async (_req, res) => {
+  try {
+    const graph = await loadRepoGraph(PROJECT_DIR);
+    if (!graph) { res.status(404).json({ error: 'No repo graph. Build first.' }); return; }
+    const { generateArchitectureDiagram } = await import('../core/codeIntelligence');
+    const mermaid = generateArchitectureDiagram(graph);
+    res.json({ mermaid });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 app.post('/api/models/catalog/refresh', async (_req, res) => {
   await ensureSettingsLoaded();
   try {
@@ -4966,6 +4978,11 @@ function configureAutomationScheduler(): void {
     isEnabled: () => automationSchedulerSettings.enabled && !killSwitchActive,
     getLastUserActivityMs: () => lastUserActivityMs,
     idleThresholdMinutes: automationSchedulerSettings.idleThresholdMinutes,
+    onBreachDetected: (breaches) => {
+      const msg = `⚠️ ${breaches.length} promise breach(es):\n${breaches.map((b) => `• ${b.breach_type}: ${b.detail.slice(0, 100)}`).join('\n')}`;
+      sendTelegramNotification('Promise breach', msg).catch(() => {});
+      sendWebhookNotification('promise.breach', { breaches }).catch(() => {});
+    },
   });
   automationScheduler.start();
 }

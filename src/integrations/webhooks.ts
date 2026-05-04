@@ -30,7 +30,8 @@ export type WebhookEventType =
   | 'task.added'
   | 'task.completed'
   | 'email.sent'
-  | 'health.daily';
+  | 'health.daily'
+  | 'promise.breach';
 
 interface WebhookPayload {
   event: WebhookEventType;

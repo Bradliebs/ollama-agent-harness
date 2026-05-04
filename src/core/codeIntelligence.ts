@@ -367,3 +367,63 @@ export async function loadRepoGraph(projectDir: string): Promise<RepoGraph | nul
     return null;
   }
 }
+
+// ─── Architecture Diagram ───────────────────────────────────────────
+
+/** Generate a mermaid graph diagram showing top-level module clusters and key dependencies. */
+export function generateArchitectureDiagram(graph: RepoGraph, maxNodes = 30): string {
+  // Group files by top-level directory
+  const dirGroups = new Map<string, string[]>();
+  for (const [filePath] of graph.nodes) {
+    const parts = filePath.split('/');
+    const dir = parts.length > 1 ? parts[0] : '(root)';
+    if (!dirGroups.has(dir)) dirGroups.set(dir, []);
+    dirGroups.get(dir)!.push(filePath);
+  }
+
+  // Build reverse import count for ranking
+  const importCount = new Map<string, number>();
+  for (const edge of graph.edges) {
+    if (edge.type === 'imports') {
+      importCount.set(edge.to, (importCount.get(edge.to) ?? 0) + 1);
+    }
+  }
+
+  // Pick top files by import count
+  const topFiles = [...importCount.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, maxNodes)
+    .map(([file]) => file);
+  const topSet = new Set(topFiles);
+
+  const lines: string[] = ['graph LR'];
+
+  // Create subgraphs per directory
+  const dirIndex = new Map<string, string>();
+  for (const [dir, files] of dirGroups) {
+    const relevant = files.filter((f) => topSet.has(f));
+    if (relevant.length === 0) continue;
+    const safeName = dir.replace(/[^a-zA-Z0-9]/g, '_');
+    lines.push(`  subgraph ${safeName}["${dir}"]`);
+    for (const file of relevant) {
+      const nodeId = file.replace(/[^a-zA-Z0-9]/g, '_');
+      const shortName = file.split('/').pop() ?? file;
+      const count = importCount.get(file) ?? 0;
+      lines.push(`    ${nodeId}["${shortName} (${count})"]`);
+      dirIndex.set(file, nodeId);
+    }
+    lines.push('  end');
+  }
+
+  // Add edges between top files
+  for (const edge of graph.edges) {
+    if (edge.type !== 'imports') continue;
+    const fromId = dirIndex.get(edge.from);
+    const toId = dirIndex.get(edge.to);
+    if (fromId && toId && fromId !== toId) {
+      lines.push(`  ${fromId} --> ${toId}`);
+    }
+  }
+
+  return lines.join('\n');
+}

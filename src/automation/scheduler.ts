@@ -5,6 +5,7 @@ import type { AutomationPolicyContext } from './runner';
 import { checkObligations } from '../services/promiseLedger';
 import { listPromises, updatePromise, fulfilPromise } from '../services/promiseLedger';
 import { emitEvent } from '../persistence/eventStore';
+import { pruneEventsByAge } from '../persistence/eventStore';
 import { probeServiceHealth, transitionService } from '../services/serviceLifecycle';
 import { listAgenticServices } from '../services/agenticServiceMode';
 
@@ -20,6 +21,8 @@ export interface AutomationSchedulerOptions {
   getLastUserActivityMs(): number;
   /** Minutes of inactivity before the scheduler is allowed to run. */
   idleThresholdMinutes: number;
+  /** Optional callback to send breach notifications via configured channels. */
+  onBreachDetected?: (breaches: Array<{ breach_type: string; detail: string }>) => void;
 }
 
 const HEARTBEAT_MS = 60_000;
@@ -120,6 +123,12 @@ export class AutomationScheduler {
             detail: breach.detail,
           }, 'scheduler', breach.promise_id).catch(() => {});
         }
+        // Notify via configured channels (Telegram, Slack, webhooks).
+        if (this.opts.onBreachDetected) {
+          try {
+            this.opts.onBreachDetected(obligations.breaches.map((b) => ({ breach_type: b.breach_type, detail: b.detail })));
+          } catch { /* notification is best-effort */ }
+        }
       }
     } catch (error) {
       logger.warn('Automation', 'Obligation check failed', { error: error instanceof Error ? error.message : String(error) });
@@ -141,6 +150,13 @@ export class AutomationScheduler {
     } catch (error) {
       logger.warn('Automation', 'Service health check failed', { error: error instanceof Error ? error.message : String(error) });
     }
+
+    // Prune old events (default 30-day retention, configurable via HARNESS_EVENT_RETENTION_DAYS).
+    try {
+      const retentionDays = parseInt(process.env.HARNESS_EVENT_RETENTION_DAYS ?? '30', 10) || 30;
+      const pruned = await pruneEventsByAge(this.opts.projectDir, retentionDays);
+      if (pruned > 0) logger.info('Automation', `Pruned ${pruned} event(s) older than ${retentionDays} days`);
+    } catch { /* pruning is best-effort */ }
   }
 
   /** Auto-fulfil pending promises that are linked to the executed job IDs via schedule_id. */
