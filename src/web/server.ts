@@ -42,7 +42,7 @@ import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
 import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, describeOutputValidationProfileSuggestion, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
 import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, clearSynthesisStats } from '../core/synthesisStats';
-import { startNewSession, onSessionEnd, getEvolvedPrompt } from '../learning/engine';
+import { startNewSession, onSessionEnd, getEvolvedPrompt, recordSessionAutoContinue } from '../learning/engine';
 import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
 import { appendLearningCandidate, extractLearningCandidate, getLearningCandidateProvenance, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
 import { listSubagentRoutingMetrics } from '../agents/subagent';
@@ -3213,6 +3213,7 @@ TOOL FALLBACK RULES:
   const evidenceCommands: EvidenceCard['commands'] = [];
   let lastValidation: EvidenceCard['validation'];
   let doneReason: string | undefined;
+  let autoContinueCount = 0;
   // Per-tool success/total counters so the verifier can spot silent failures
   // in failure-prone tools (web_fetch, pdf_*) that the aggregate ratio dilutes.
   const toolStats = new Map<string, { success: number; total: number }>();
@@ -3279,6 +3280,10 @@ TOOL FALLBACK RULES:
       }
       if (event.type === 'synthesis_fired') {
         recordSynthesisFired(PROJECT_DIR, activeModel).catch(() => {});
+      }
+      if (event.type === 'auto_continue') {
+        autoContinueCount++;
+        recordSessionAutoContinue(activeModel);
       }
       for (const fallbackEvent of drainRemoteProviderFallbackEvents()) {
         res.write(`data: ${JSON.stringify(fallbackEvent)}\n\n`);

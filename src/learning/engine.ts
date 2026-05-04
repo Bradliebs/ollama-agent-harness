@@ -38,11 +38,20 @@ interface ToolUsageEntry {
 
 let currentSessionId = Date.now().toString(36);
 let sessionToolLog: ToolUsageEntry[] = [];
+let sessionAutoContinueCount = 0;
+let sessionModel = '';
 
 export function startNewSession(): string {
   currentSessionId = Date.now().toString(36);
   sessionToolLog = [];
+  sessionAutoContinueCount = 0;
+  sessionModel = '';
   return currentSessionId;
+}
+
+export function recordSessionAutoContinue(model: string): void {
+  sessionAutoContinueCount++;
+  sessionModel = model;
 }
 
 export async function trackToolUsage(
@@ -223,6 +232,14 @@ export async function reflectOnSession(): Promise<Reflection> {
   }
   if (successRate === 1 && total > 5) {
     insights.push(`Perfect success rate across ${total} tool calls`);
+  }
+
+  // Auto-continue autonomy feedback
+  if (sessionAutoContinueCount > 0) {
+    insights.push(`Auto-continue fired ${sessionAutoContinueCount} time(s) for model ${sessionModel || 'unknown'} — model needed prompting to complete work autonomously`);
+    if (sessionAutoContinueCount >= 3) {
+      improvements.push(`Model ${sessionModel || 'unknown'} frequently stops to ask permission — consider a stronger autonomy system prompt or a different model for autonomous tasks`);
+    }
   }
 
   const reflection: Reflection = {
