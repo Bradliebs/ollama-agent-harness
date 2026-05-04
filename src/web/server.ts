@@ -1465,6 +1465,7 @@ app.get('/api/readiness', async (_req, res) => {
     const automationJobs = await listAutomationJobs(PROJECT_DIR).catch(() => []);
     const agenticServices = await listAgenticServices(PROJECT_DIR).catch(() => []);
     const promiseObligations = await checkObligations(PROJECT_DIR).catch(() => ({ total: 0, pending: 0, fulfilled: 0, failed: 0, expired: 0, breaches: [] }));
+    const repoGraphSummary = await loadRepoGraph(PROJECT_DIR).then((g) => g ? summarizeRepo(g) : null).catch(() => null);
     const validationScripts = setup.local.package.ok;
     const modelSelected = Boolean(currentModel);
     const modelBackend = currentModel.includes('/') ? currentModel.slice(0, currentModel.indexOf('/')) : 'ollama';
@@ -1508,6 +1509,10 @@ app.get('/api/readiness', async (_req, res) => {
       readinessSection('promises', 'Promise Ledger', [
         { id: 'promises.total', label: 'Promises tracked', status: promiseObligations.total > 0 ? 'ready' : 'warn', message: `${promiseObligations.total} promise(s) total · ${promiseObligations.pending} pending · ${promiseObligations.fulfilled} fulfilled.` },
         { id: 'promises.breaches', label: 'Obligation breaches', status: promiseObligations.breaches.length === 0 ? 'ready' : 'warn', message: promiseObligations.breaches.length === 0 ? 'No obligation breaches.' : `${promiseObligations.breaches.length} breach(es): ${promiseObligations.breaches.map((b: { breach_type: string }) => b.breach_type).join(', ')}.`, action: 'Open Promises' },
+      ]),
+      readinessSection('codeintel', 'Code Intelligence', [
+        { id: 'codeintel.graph', label: 'Repo graph', status: repoGraphSummary ? 'ready' : 'warn', message: repoGraphSummary ? `${repoGraphSummary.total_files} files, ${repoGraphSummary.total_edges} edges, ${repoGraphSummary.test_files} tests indexed.` : 'No repo graph built yet. Build from Code Intel tab or restart server.' },
+        { id: 'codeintel.coverage', label: 'Export coverage', status: repoGraphSummary && repoGraphSummary.total_exports > 100 ? 'ready' : 'warn', message: repoGraphSummary ? `${repoGraphSummary.total_exports} exports tracked across ${repoGraphSummary.total_files} files.` : 'Not available.' },
       ]),
       readinessSection('autonomy', 'Full Autonomy', [
         { id: 'plan.pending', label: 'Pending plan tasks', status: planPreview && planPreview.pending > 0 ? 'ready' : planPreview ? 'warn' : 'blocked', message: planPreview ? (planPreview.pending > 0 ? `${planPreview.pending} pending task(s) in IMPLEMENTATION_PLAN.md.` : `Plan complete — all ${planPreview.done} task(s) done.`) : 'IMPLEMENTATION_PLAN.md could not be parsed.', action: 'Open Plan' },
@@ -1886,6 +1891,18 @@ app.post('/api/promises/:id/fail', async (req, res) => {
 app.get('/api/promises/obligations', async (_req, res) => {
   try {
     const result = await checkObligations(PROJECT_DIR);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/promises/:id/cancel', async (req, res) => {
+  try {
+    const promiseId = req.params.id;
+    const result = await updatePromise(PROJECT_DIR, promiseId, { status: 'cancelled' });
+    if (!result) { res.status(404).json({ error: 'Promise not found.' }); return; }
+    await emitEvent(PROJECT_DIR, 'promise', 'promise_cancelled', { promise_id: promiseId }, 'user', promiseId).catch(() => {});
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });

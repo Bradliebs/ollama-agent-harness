@@ -7003,13 +7003,19 @@ async function loadPromises() {
     const obligations = obligationsR.status === 'fulfilled' ? obligationsR.value : { breaches: [] };
     const breaches = obligations.breaches || [];
     const rows = (promises.promises || []).map((p) => {
-      const statusIcon = p.status === 'fulfilled' ? '✅' : p.status === 'failed' ? '❌' : p.status === 'expired' ? '⏰' : '🔵';
+      const statusIcon = p.status === 'fulfilled' ? '✅' : p.status === 'failed' ? '❌' : p.status === 'expired' ? '⏰' : p.status === 'cancelled' ? '🚫' : '🔵';
+      // Timeline: created → fulfilled/failed/expired/cancelled
+      const created = p.created_at?.slice(0, 16) || '?';
+      const endTs = p.last_fulfilled_at?.slice(0, 16) || p.updated_at?.slice(0, 16) || '';
+      const timeline = p.status !== 'pending' && endTs ? ' → ' + esc(p.status) + ' ' + esc(endTs) : '';
+      const failCount = p.failure_count > 0 ? ' · ' + p.failure_count + ' failure(s)' : '';
       return '<div class="trace-item"><div class="trace-title">' + statusIcon + ' ' + esc(p.commitment.slice(0, 100)) + '</div>'
-        + '<div class="trace-meta">' + esc(p.status) + ' · created ' + esc(p.created_at?.slice(0, 10) || '?')
+        + '<div class="trace-meta">' + esc(p.status) + ' · ' + esc(created) + timeline + failCount
         + (p.next_due_at ? ' · due ' + esc(p.next_due_at.slice(0, 16)) : '')
         + (p.service_id ? ' · service: ' + esc(p.service_id) : '')
+        + (p.schedule_id ? ' · schedule: ' + esc(p.schedule_id.slice(0, 12)) : '')
         + '</div>'
-        + (p.status === 'pending' ? '<div class="document-actions"><button class="btn-sm" onclick="fulfilPromise(\'' + escAttr(p.promise_id) + '\')">✅ Fulfil</button></div>' : '')
+        + (p.status === 'pending' ? '<div class="document-actions"><button class="btn-sm" onclick="fulfilPromise(\'' + escAttr(p.promise_id) + '\')">✅ Fulfil</button> <button class="btn-sm" onclick="cancelPromise(\'' + escAttr(p.promise_id) + '\')">🚫 Cancel</button></div>' : '')
         + '</div>';
     }).join('');
     const breachRows = breaches.map((b) => '<div class="trace-meta trace-meta-sm-top" style="color:var(--danger)">⚠️ ' + esc(b.breach_type) + ': ' + esc(b.detail.slice(0, 120)) + '</div>').join('');
@@ -7031,6 +7037,14 @@ async function fulfilPromise(id) {
     loadPromises();
   } catch (error) {
     console.error('fulfil failed', error);
+  }
+}
+async function cancelPromise(id) {
+  try {
+    await fetch('/api/promises/' + encodeURIComponent(id) + '/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    loadPromises();
+  } catch (error) {
+    console.error('cancel failed', error);
   }
 }
 
@@ -7097,6 +7111,7 @@ async function loadEvents() {
     view.innerHTML = '<div class="trace-item"><div class="trace-title">📋 Event Store</div>'
       + '<div class="trace-meta">' + (summary.total_events || 0) + ' total events · ' + (summary.snapshot_count || 0) + ' snapshots' + filterNote + '</div>'
       + '<div class="trace-meta">' + categoryPills + '</div>'
+      + '<div class="document-actions"><button class="btn-sm" onclick="exportEvents()">Export JSON</button></div>'
       + timelineChart
       + rows
       + (rows ? '' : '<div class="trace-meta">No events recorded yet.</div>')
@@ -7112,6 +7127,21 @@ function toggleEventCategory(cat) {
     _eventCategoryFilter.add(cat);
   }
   loadEvents();
+}
+async function exportEvents() {
+  try {
+    const res = await fetch('/api/events?limit=10000');
+    const data = await res.json();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'harness-events-' + new Date().toISOString().slice(0, 10) + '.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    console.error('export events failed', error);
+  }
 }
 
 // ─── Code Intelligence Tab ─────────────────────────────────────────
@@ -7133,6 +7163,7 @@ async function loadCodeIntel() {
     view.innerHTML = '<div class="trace-item"><div class="trace-title">🧬 Code Intelligence</div>'
       + '<div class="trace-meta">' + (data.total_files || 0) + ' files · ' + (data.total_edges || 0) + ' edges · ' + (data.total_exports || 0) + ' exports · ' + (data.test_files || 0) + ' tests</div>'
       + '<div class="document-actions"><button class="btn-sm" onclick="buildCodeIntelGraph()">Rebuild</button></div>'
+      + '<div style="margin:8px 0"><input type="text" id="codeIntelSearch" placeholder="Search file for impact analysis…" class="panel-search" style="width:100%" onkeydown="if(event.key===\'Enter\')showFileImpact(this.value)"><button class="btn-sm" onclick="showFileImpact(document.getElementById(\'codeIntelSearch\').value)" style="margin-top:4px">Analyze</button></div>'
       + '<div class="trace-item"><div class="trace-title">Most Imported</div>' + (topImported || '<div class="trace-meta">—</div>') + '</div>'
       + '<div class="trace-item"><div class="trace-title">Most Complex</div>' + (topComplex || '<div class="trace-meta">—</div>') + '</div>'
       + '<div id="codeIntelImpactPanel"></div>'
