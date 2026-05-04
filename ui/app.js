@@ -2336,7 +2336,10 @@ async function sendMessage(opts) {
         // that go through tool_calls before producing text leave the
         // user staring at "Preparing model..." for the entire tool phase.
         if (thinkEl.parentNode && ev.type !== 'text' && ev.type !== 'error') {
-          const label = ev.type === 'tool_call' ? 'Calling tools...'
+          const toolName = ev.type === 'tool_call' && ev.call?.name ? ev.call.name : null;
+          const toolIcon = toolName === 'file_write' ? '📝' : toolName === 'file_edit' ? '✏️' : toolName === 'file_read' ? '📖' : toolName === 'bash' ? '💻' : toolName === 'web_search' ? '🔍' : toolName === 'web_read' ? '🌐' : toolName === 'web_fetch' ? '🌐' : toolName === 'list_files' ? '📂' : toolName === 'grep' ? '🔎' : toolName ? '🔧' : '';
+          const label = ev.type === 'tool_call' ? (toolIcon + ' ' + (toolName || 'tool') + '...').trim()
+            : ev.type === 'tool_result' ? '⏳ Processing result...'
             : ev.type === 'usage' ? 'Working...'
             : ev.type === 'context' ? 'Compacting context...'
             : 'Working...';
@@ -7057,6 +7060,11 @@ async function loadPromises() {
       + breaches.length + ' breach(es)</div>'
       + breachRows + rows
       + (rows ? '' : '<div class="trace-meta">No promises recorded yet.</div>')
+      + '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:0.8em;opacity:0.7">➕ Create Promise</summary>'
+      + '<div style="padding:8px 0"><input type="text" id="newPromiseCommitment" placeholder="What are you committing to?" class="panel-search" style="width:100%;margin-bottom:4px">'
+      + '<input type="text" id="newPromiseServiceId" placeholder="Service ID (optional)" class="panel-search" style="width:100%;margin-bottom:4px">'
+      + '<input type="text" id="newPromiseDueAt" placeholder="Due date (optional, ISO)" class="panel-search" style="width:100%;margin-bottom:4px">'
+      + '<button class="btn-sm" onclick="createManualPromise()">Create</button></div></details>'
       + '</div>';
   } catch (error) {
     view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message || error) + '</div>';
@@ -7078,6 +7086,24 @@ async function cancelPromise(id) {
     loadPromiseWidget();
   } catch (error) {
     console.error('cancel failed', error);
+  }
+}
+
+async function createManualPromise() {
+  const commitment = document.getElementById('newPromiseCommitment')?.value?.trim();
+  if (!commitment) return;
+  const serviceId = document.getElementById('newPromiseServiceId')?.value?.trim() || undefined;
+  const dueAt = document.getElementById('newPromiseDueAt')?.value?.trim() || undefined;
+  try {
+    await fetch('/api/promises', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ commitment, service_id: serviceId, next_due_at: dueAt }),
+    });
+    loadPromises();
+    loadPromiseWidget();
+  } catch (error) {
+    console.error('create promise failed', error);
   }
 }
 
@@ -7159,7 +7185,8 @@ async function loadEvents() {
       : (events.events || []).filter((ev) => _eventCategoryFilter.has(ev.category));
     const rows = filteredEvents.map((ev) => {
       const icon = ev.category === 'promise' ? '🤝' : ev.category === 'service' ? '🔧' : ev.category === 'tool' ? '🔨' : ev.category === 'system' ? '⚙️' : '📋';
-      return '<div class="trace-item"><div class="trace-title">' + icon + ' ' + esc(ev.category) + '/' + esc(ev.type) + '</div>'
+      const searchText = [ev.category, ev.type, ev.actor, ev.subject_id, JSON.stringify(ev.data)].join(' ').toLowerCase();
+      return '<div class="trace-item event-row" data-search="' + escAttr(searchText.slice(0, 300)) + '"><div class="trace-title">' + icon + ' ' + esc(ev.category) + '/' + esc(ev.type) + '</div>'
         + '<div class="trace-meta">' + esc(ev.timestamp?.slice(0, 19) || '') + ' · ' + esc(ev.actor) + (ev.subject_id ? ' · ' + esc(ev.subject_id.slice(0, 20)) : '') + '</div>'
         + '<div class="trace-meta" style="font-size:0.75em;opacity:0.7">' + esc(JSON.stringify(ev.data).slice(0, 120)) + '</div></div>';
     }).join('');
@@ -7167,6 +7194,7 @@ async function loadEvents() {
       + '<div class="trace-meta">' + (summary.total_events || 0) + ' total events · ' + (summary.snapshot_count || 0) + ' snapshots' + filterNote + '</div>'
       + '<div class="trace-meta">' + categoryPills + '</div>'
       + '<div class="document-actions"><button class="btn-sm" onclick="exportEvents()">Export JSON</button></div>'
+      + '<div style="margin:4px 0"><input type="text" id="eventSearchInput" placeholder="Search events by type, category, or data..." class="panel-search" style="width:100%" onkeydown="if(event.key===\'Enter\')filterEventsBySearch()"></div>'
       + timelineChart
       + rows
       + '<div id="liveEventFeed"></div>'
@@ -7229,6 +7257,15 @@ async function exportEvents() {
   } catch (error) {
     console.error('export events failed', error);
   }
+}
+
+function filterEventsBySearch() {
+  const query = (document.getElementById('eventSearchInput')?.value || '').toLowerCase().trim();
+  const rows = document.querySelectorAll('.event-row');
+  rows.forEach((row) => {
+    const searchText = row.getAttribute('data-search') || '';
+    row.style.display = !query || searchText.includes(query) ? '' : 'none';
+  });
 }
 
 // ─── Code Intelligence Tab ─────────────────────────────────────────

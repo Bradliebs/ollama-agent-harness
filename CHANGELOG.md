@@ -11,6 +11,72 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.23
+
+UX polish, live monitoring, and subsystem health visibility.
+
+### UX
+
+* Send button pulses red during streaming (was static square).
+* Pulsing 🔴 streaming badge in topbar — visible even when scrolled away.
+* Thinking pill shows which tool is running with icons (📝 file_write, 🔍 web_search, 💻 bash, etc.).
+* Thinking indicator restyled with background highlight for better visibility.
+
+### Promises
+
+* Cancel button + `POST /api/promises/:id/cancel` endpoint.
+* Promise timeline showing created → fulfilled/expired/cancelled with timestamps.
+* Manual promise creation form in Promises tab (commitment, service ID, due date).
+* Promise widget in Settings panel showing pending/breach count at a glance.
+* Breach text flashes for attention.
+* Auto-create promise when service is set up with a schedule (bullet journal + generic).
+* Scheduler auto-fulfils pending promises linked to executed jobs via `schedule_id`.
+* Breach notifications via Telegram + webhooks from scheduler.
+* Tightened commitment detection patterns to avoid false positives.
+* Curly apostrophe (U+2019) support in commitment patterns.
+
+### Events
+
+* Live event feed in Events tab via SSE (`GET /api/events/stream`).
+* `POST /api/events` endpoint for external event emission.
+* Event category filter toggles (click pills to filter, show-all link).
+* Event text search input (filters by type, category, or data content).
+* Event export button downloads all events as JSON.
+* 24-hour timeline bar chart visualization grouped by hour.
+* Auto-scroll to top on new live events (only if user is near top).
+* Event retention policy: `pruneEventsByAge` (HARNESS_EVENT_RETENTION_DAYS env, default 30 days).
+* Auto-prune old events during scheduler post-execution checks.
+* Auto-prune at 10K events on append.
+
+### Code Intelligence
+
+* Architecture diagram generator (mermaid format) with live SVG render in sandboxed iframe.
+* Dark/light theme detection for mermaid diagrams.
+* File search input for ad-hoc impact analysis.
+* Clickable file rows showing importers, transitive deps, affected tests, risk score.
+* Configurable ignore dirs (`HARNESS_CODE_INTEL_IGNORE` env or `ignoreDirs` option).
+* Route explanations include structurally relevant `code_file` nodes.
+* Code Intelligence readiness section in status API (graph + coverage checks).
+* Repo summary injected into system prompt for structural awareness.
+
+### Subsystem Health
+
+* `GET /api/subsystems/health` — aggregated health for all 6 subsystems.
+* Subsystem Health panel in Mission Control with per-subsystem status.
+* Code Intelligence + Promise Ledger sections in readiness API.
+* `harness doctor` shows event store summary + promise obligation health.
+
+### Testing
+
+* E2E integration test: service lifecycle → promise → events → obligations → graph → impact → diagram → pruning.
+* E2E test: service setup → promise creation → auto-fulfil → obligations clear.
+
+### Infrastructure
+
+* `/api/services/templates` route ordering fix.
+* `promise.breach` webhook event type.
+* `code_file` node type + `code_intelligence` edge origin in mycelium graph.
+
 ## Ollama Agent Harness v0.3.21
 
 Agent operating system — six new subsystems, deep integration, and Anthropic support.
