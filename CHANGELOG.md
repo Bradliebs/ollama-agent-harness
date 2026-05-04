@@ -11,6 +11,27 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.18
+
+Slack notifications, local MCP runtime management, and nervous-system motor enforcement.
+
+### Communications
+
+* Added `slack_notify` as a gated outgoing notification tool backed by `HARNESS_SLACK_WEBHOOK_URL`.
+* Documented Slack setup in the README and exposed the webhook through Settings API key storage.
+
+### MCP runtime
+
+* Added persisted MCP server definitions under `.harness/mcp/servers.json`.
+* Added runtime APIs and dashboard controls for listing, configuring, starting, and stopping local MCP servers.
+* Gated MCP server starts behind the existing `arbitrary-shell` capability grant and audit log.
+
+### Nervous system
+
+* Wired motor permission decisions into the live chat permission path before the standard permission engine.
+* Blocks destructive shell commands, enforces dry-run and verification decisions, and prompts when confirmation is required.
+* Treats Slack notifications as high-risk outgoing communications in high-risk contexts.
+
 ## Ollama Agent Harness v0.3.17
 
 Tool failure resilience, browser fallback guidance, and server watchdog.

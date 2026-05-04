@@ -33,6 +33,7 @@ import { buildMemoryPalace, getSemanticMemoryContext, getSemanticMemoryEntry, re
 import * as snapshots from '../persistence/snapshots';
 import * as ragIndex from '../persistence/ragIndex';
 import { MCP_CATALOG } from '../extensibility/mcpCatalog';
+import { listMcpServers, removeMcpServer, startMcpServer, stopMcpServer, upsertMcpServer } from '../extensibility/mcpRuntime';
 import { assembleSystemContext, estimateTokenCount } from '../context/assembly';
 import { HookPipeline } from '../extensibility/hookPipeline';
 import { loadSkillsDir, matchSkillTrigger, scanSkillsDir, type SkillDefinition, type SkillDirectoryScan } from '../extensibility/skillLoader';
@@ -321,6 +322,11 @@ function applyToolDisables(tools: Tool[]): Tool[] {
   if (disabledTools.size === 0 && timedToolEnables.size === 0) return tools;
   return tools.filter((tool) => isToolEnabled(tool.name));
 }
+
+function hasDryRunIntent(input: Record<string, unknown>): boolean {
+  return input.dryRun === true || input.dry_run === true || input.preview === true;
+}
+
 const rateLimiter = new RateLimiter(10, 2);
 const hookPipeline = new HookPipeline();
 const permissionPrompts = new PermissionPromptBroker();
@@ -3158,6 +3164,24 @@ TOOL FALLBACK RULES:
           return { allowed: false, reason: `Browser page tools require an active browser-page-access grant. ${evaluation.reason}` };
         }
       }
+      const motor = globalNervousSystem.checkToolPermission(call.name, call.input);
+      runtimeTracer.recordEvent('nervous.motor_decision', { tool: call.name, decision: motor.decision, reason: motor.reason });
+      if (motor.decision === 'BLOCK' || motor.decision === 'INTERRUPT_AND_RECOVER') {
+        return { allowed: false, reason: `Nervous System ${motor.decision}: ${motor.reason}` };
+      }
+      if (motor.decision === 'ALLOW_DRY_RUN_ONLY' && !hasDryRunIntent(call.input)) {
+        return { allowed: false, reason: `Nervous System requires dry-run for '${call.name}': ${motor.reason}` };
+      }
+      if (motor.decision === 'REQUIRE_VERIFICATION') {
+        return { allowed: false, reason: `Nervous System requires verification before '${call.name}': ${motor.reason}` };
+      }
+      if (motor.decision === 'REQUIRE_CONFIRMATION') {
+        if (permissionMode === 'dontAsk') {
+          return { allowed: false, reason: `Nervous System requires confirmation for '${call.name}' while permission mode is dontAsk: ${motor.reason}` };
+        }
+        runtimeTracer.recordEvent('permission.prompt_created', { tool: call.name, reason: motor.reason, source: 'nervous.motor' });
+        return permissionPrompts.request(call, `Nervous System requires confirmation: ${motor.reason}`);
+      }
       const result = permissions.evaluate(call);
       if (result.decision === 'allow') {
         return { allowed: true, reason: result.reason };
@@ -3800,13 +3824,66 @@ app.delete('/api/rag/indexes/:name', async (req, res) => {
   }
 });
 
-// --- API: MCP catalog (curated, in-process; no network call) ---
-// The Harness doesn't run MCP servers itself today; this endpoint is a
-// discovery aid so the UI can show users what's out there with an
-// install command they can paste into a terminal.
+// --- API: MCP catalog + local runtime manager ---
+// The catalog stays static and offline-friendly. Runtime definitions are
+// persisted locally and started only behind the existing arbitrary-shell
+// capability grant because MCP servers are external processes.
 
 app.get('/api/mcp/catalog', (_req, res) => {
   res.json({ catalog: MCP_CATALOG });
+});
+
+app.get('/api/mcp/runtime', async (_req, res) => {
+  try {
+    res.json({ servers: await listMcpServers(PROJECT_DIR) });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/mcp/runtime/servers', async (req, res) => {
+  try {
+    const server = await upsertMcpServer(PROJECT_DIR, req.body ?? {});
+    res.json({ server, servers: await listMcpServers(PROJECT_DIR) });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.delete('/api/mcp/runtime/servers/:id', async (req, res) => {
+  try {
+    const removed = await removeMcpServer(PROJECT_DIR, req.params.id);
+    if (!removed) { res.status(404).json({ error: 'MCP server not found.' }); return; }
+    res.json({ ok: true, servers: await listMcpServers(PROJECT_DIR) });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/mcp/runtime/servers/:id/start', async (req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    const evaluation = evaluateCapabilityGrant('arbitrary-shell', capabilityGrants, { killSwitchActive });
+    if (evaluation.decision !== 'allow') {
+      res.status(403).json({ error: `MCP server start blocked by arbitrary-shell: ${evaluation.reason}`, evaluation });
+      return;
+    }
+    const server = await startMcpServer(PROJECT_DIR, req.params.id);
+    await appendCapabilityAuditEvent(PROJECT_DIR, { type: 'mcp_server.started', serverId: server.id, command: server.command });
+    res.json({ server, servers: await listMcpServers(PROJECT_DIR) });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/mcp/runtime/servers/:id/stop', async (req, res) => {
+  try {
+    const stopped = await stopMcpServer(req.params.id);
+    await appendCapabilityAuditEvent(PROJECT_DIR, { type: 'mcp_server.stopped', serverId: String(req.params.id ?? '') });
+    res.json({ stopped, servers: await listMcpServers(PROJECT_DIR) });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 // Pull a model from Ollama
@@ -4783,6 +4860,7 @@ const ALLOWED_API_KEY_NAMES = new Set([
   'HARNESS_SMTP_USER',
   'HARNESS_SMTP_PASS',
   'HARNESS_SMTP_FROM',
+  'HARNESS_SLACK_WEBHOOK_URL',
 ]);
 
 function applyStoredSettings(settings: Partial<WebSettings>): void {

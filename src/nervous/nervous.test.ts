@@ -194,6 +194,12 @@ describe('Nervous System', () => {
       expect(checkMotorPermission('email_send', '', state).decision).toBe('ALLOW_DRY_RUN_ONLY');
     });
 
+    it('requires confirmation for Slack notifications in high-risk contexts', () => {
+      const state = createRunState('test', 'general');
+      state.riskLevel = 'high';
+      expect(checkMotorPermission('slack_notify', '', state).decision).toBe('REQUIRE_CONFIRMATION');
+    });
+
     it('interrupts when interruptRequested', () => {
       const state = createRunState('test', 'general');
       state.interruptRequested = true;

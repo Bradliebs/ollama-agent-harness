@@ -37,6 +37,10 @@ describe('ToolRegistry', () => {
     expect(telegram?.toolset).toBe('communications');
     expect(telegram?.riskLevel).toBe('high');
     expect(telegram?.enabledByDefault).toBe(false);
+    const slack = registry.get('slack_notify');
+    expect(slack?.toolset).toBe('communications');
+    expect(slack?.riskLevel).toBe('high');
+    expect(slack?.enabledByDefault).toBe(false);
     const fileRead = registry.get('file_read');
     expect(fileRead?.riskLevel).toBe('low');
     expect(fileRead?.permissionCategory).toBe('read');

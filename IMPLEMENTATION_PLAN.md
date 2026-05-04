@@ -149,3 +149,43 @@
   - anchor: src/web/server.test.ts
   - target: src/web/server.test.ts
 - [x] create-a-bullet-journal-i-get-reminders-and-can-update-add-a — Create a bullet journal , I get reminders and can update , add and close tasks
+- [x] close-gap-slack-notifications — Add a gated Slack outgoing notification tool backed by `HARNESS_SLACK_WEBHOOK_URL`, register it in the builtin communications toolset, allow storing its webhook in Settings API keys, and document usage.
+  - anchor: src/tools/telegramTools.ts
+  - anchor: src/tools/registry.ts
+  - anchor: src/web/server.ts
+  - target: src/tools/slackTools.ts
+  - target: src/tools/slackTools.test.ts
+  - target: src/tools/registry.ts
+  - target: README.md
+- [x] close-gap-mcp-runtime-foundation — Promote the MCP catalog from discovery-only to a local MCP runtime manager with persisted server definitions, start/stop/status APIs, configured-tool visibility, dashboard controls, shell-grant gating, and audit events.
+  - anchor: src/extensibility/mcpCatalog.ts
+  - anchor: src/tools/registry.ts
+  - anchor: src/web/server.ts
+  - target: src/extensibility/mcpRuntime.ts
+  - target: src/extensibility/mcpRuntime.test.ts
+  - target: src/web/server.ts
+  - target: ui/app.js
+- [ ] close-gap-mcp-tool-invocation — Add protocol-level MCP tool discovery and invocation through a single gated ToolRegistry adapter after the runtime manager is stable.
+  - anchor: src/extensibility/mcpRuntime.ts
+  - anchor: src/tools/registry.ts
+  - anchor: src/tools/dispatcher.ts
+  - target: src/extensibility/mcpClient.ts
+  - target: src/extensibility/mcpClient.test.ts
+  - target: src/tools/mcpTools.ts
+  - target: src/tools/registry.ts
+- [ ] close-gap-desktop-input-sandbox — Add bounded desktop input replay only after a previewable action plan, active desktop-control grant, kill-switch checks before every input, and screenshot-before/screenshot-after evidence capture.
+  - anchor: src/tools/desktopTools.ts
+  - anchor: src/permissions/capabilities.ts
+  - anchor: docs/CAPABILITY-SANDBOX.md
+  - target: src/tools/desktopInputTools.ts
+  - target: src/tools/desktopInputTools.test.ts
+  - target: src/tools/registry.ts
+- [ ] close-gap-communication-connectors — Add first-class Slack and WhatsApp status/setup surfaces beside Telegram and Discord, with connector-specific allowlists, readiness checks, and notification-only defaults before any two-way chat bridge.
+  - anchor: src/integrations/telegram.ts
+  - anchor: src/integrations/discord.ts
+  - anchor: src/web/server.ts
+  - anchor: ui/app.js
+  - target: src/integrations/slack.ts
+  - target: src/integrations/whatsapp.ts
+  - target: src/web/server.ts
+  - target: ui/app.js

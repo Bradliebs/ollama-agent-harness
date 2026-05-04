@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-export type CapabilityAuditEventType = 'grant.created' | 'grant.revoked' | 'grant.expired' | 'automation_script.allowed' | 'automation_script.denied' | 'autonomy.timed.engaged' | 'autonomy.timed.cleared' | 'autonomy.timed.expired';
+export type CapabilityAuditEventType = 'grant.created' | 'grant.revoked' | 'grant.expired' | 'automation_script.allowed' | 'automation_script.denied' | 'autonomy.timed.engaged' | 'autonomy.timed.cleared' | 'autonomy.timed.expired' | 'mcp_server.started' | 'mcp_server.stopped';
 
 export interface CapabilityAuditEvent {
   type: CapabilityAuditEventType;
@@ -11,6 +11,7 @@ export interface CapabilityAuditEvent {
   reason?: string;
   command?: string;
   presetId?: string;
+  serverId?: string;
   createdAt?: string;
 }
 

@@ -5244,13 +5244,14 @@ async function loadToolsDashboard() {
     // Schedule auto-refresh when timed tool enables are active
     scheduleTimedToolRefresh(registry);
 
-    const [snapsR, indexesR, sessionsR, modelsR, storageR, mcpR] = await Promise.allSettled([
+    const [snapsR, indexesR, sessionsR, modelsR, storageR, mcpR, mcpRuntimeR] = await Promise.allSettled([
       fetch('/api/snapshots').then((r) => r.json()),
       fetch('/api/rag/indexes').then((r) => r.json()),
       fetch('/api/sessions').then((r) => r.json()),
       fetch('/api/models').then((r) => r.json()),
       fetch('/api/runtime/storage').then((r) => r.json()),
       fetch('/api/mcp/catalog').then((r) => r.json()),
+      fetch('/api/mcp/runtime').then((r) => r.json()),
     ]);
     const snapsCount = snapsR.status === 'fulfilled' ? (snapsR.value.snapshots || []).length : 0;
     const indexesArr = indexesR.status === 'fulfilled' ? (indexesR.value.indexes || []) : [];
@@ -5258,6 +5259,7 @@ async function loadToolsDashboard() {
     const modelsArr = modelsR.status === 'fulfilled' ? (modelsR.value.models || []) : [];
     const storage = storageR.status === 'fulfilled' ? storageR.value : null;
     const mcpArr = mcpR.status === 'fulfilled' ? (mcpR.value.catalog || []) : [];
+    const mcpServers = mcpRuntimeR.status === 'fulfilled' ? (mcpRuntimeR.value.servers || []) : [];
 
     const speechSupported = typeof window.SpeechRecognition !== 'undefined' || typeof window.webkitSpeechRecognition !== 'undefined';
     const totalIndexedChunks = indexesArr.reduce((sum, i) => sum + (i.chunks || 0), 0);
@@ -5307,20 +5309,64 @@ async function loadToolsDashboard() {
       + (c.action ? '<div class="inline-actions" style="margin-top:6px"><button class="btn-sm" onclick="' + c.action.fn + '">' + esc(c.action.label) + '</button></div>' : '')
       + '</div>').join('');
 
+    const mcpRuntimeHtml = '<div class="trace-item">'
+      + '<div class="trace-title">🧩 MCP runtime</div>'
+      + '<div class="trace-meta" style="margin-bottom:6px">Local MCP server definitions. Starting a server requires an active arbitrary-shell capability grant.</div>'
+      + renderMcpRuntimeList(mcpServers)
+      + '</div>';
+
     const mcpHtml = mcpArr.length === 0 ? '' : '<div class="trace-item">'
       + '<div class="trace-title">🧩 MCP catalog</div>'
-      + '<div class="trace-meta" style="margin-bottom:6px">Curated MCP servers — copy the install command, run it, then point your MCP client at the new server.</div>'
+      + '<div class="trace-meta" style="margin-bottom:6px">Curated MCP servers. Configure one as a runtime server, then start it when a shell grant is active.</div>'
       + '<input id="mcpCatalogFilter" type="text" placeholder="filter by name or tag…" style="width:100%;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:6px" oninput="renderMcpCatalogList()">'
       + '<div id="mcpCatalogList"></div>'
       + '</div>';
 
     const cardsHost = document.getElementById('toolsDashboardCards');
-    if (cardsHost) cardsHost.innerHTML = cardHtml + mcpHtml;
+    if (cardsHost) cardsHost.innerHTML = cardHtml + mcpRuntimeHtml + mcpHtml;
     window._mcpCatalog = mcpArr;
     renderMcpCatalogList();
   } catch (error) {
     view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message) + '</div>';
   }
+}
+
+function renderMcpRuntimeList(servers) {
+  if (!Array.isArray(servers) || servers.length === 0) {
+    return '<div class="trace-meta">No MCP runtime servers configured yet. Use the catalog install command as the command/args source for a new definition.</div>';
+  }
+  return servers.map((server) => {
+    const status = server.running ? 'running' : 'stopped';
+    const tools = Array.isArray(server.tools) && server.tools.length ? server.tools.map((tool) => tool.name).join(', ') : 'No tools configured';
+    return '<div class="trace-item" style="background:var(--surface2);margin-top:6px">'
+      + '<div class="trace-title">' + esc(server.id || '(unnamed)') + ' <span class="rag-backend-badge">' + esc(status) + '</span></div>'
+      + '<div class="trace-meta">' + esc((server.command || '') + (Array.isArray(server.args) && server.args.length ? ' ' + server.args.join(' ') : '')) + '</div>'
+      + '<div class="trace-meta">Tools: ' + esc(tools) + '</div>'
+      + (server.lastError ? '<div class="trace-meta" style="color:#ffb050">' + esc(server.lastError) + '</div>' : '')
+      + '<div class="inline-actions" style="margin-top:6px">'
+      + '<button class="btn-sm" onclick="mcpRuntimeStart(\'' + escAttr(server.id) + '\')"' + (server.running ? ' disabled' : '') + '>Start</button>'
+      + '<button class="btn-sm" onclick="mcpRuntimeStop(\'' + escAttr(server.id) + '\')"' + (!server.running ? ' disabled' : '') + '>Stop</button>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+async function mcpRuntimeStart(id) {
+  try {
+    const r = await fetch('/api/mcp/runtime/servers/' + encodeURIComponent(id) + '/start', { method: 'POST' });
+    const d = await r.json();
+    if (d.error) { alert(d.error); return; }
+    await loadToolsDashboard();
+  } catch (e) { alert(e.message); }
+}
+
+async function mcpRuntimeStop(id) {
+  try {
+    const r = await fetch('/api/mcp/runtime/servers/' + encodeURIComponent(id) + '/stop', { method: 'POST' });
+    const d = await r.json();
+    if (d.error) { alert(d.error); return; }
+    await loadToolsDashboard();
+  } catch (e) { alert(e.message); }
 }
 
 function scheduleTimedToolRefresh(registry) {

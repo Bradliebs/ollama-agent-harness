@@ -290,7 +290,7 @@ The right side has a **Settings** panel for Ollama host, generation parameters, 
 
 ### Tools
 
-Built-in tools include `file_read`, `file_write`, `file_edit`, `bash`, `list_files`, `grep`, `web_fetch`, `web_search`, `web_read`, `image_analyze`, `audio_transcribe`, `document_export`, `email_send`, `email_draft`, `create_skill`, `install_skill`, `desktop_screenshot`, `browser_bookmarks`, `browser_navigate`, `browser_click`, `browser_fill`, `browser_read`, `browser_screenshot`, `browser_close`, `calendar_read`, `calendar_write`, `telegram_notify`, and more. Each tool has a risk level (low/medium/high) and can be individually disabled from the Tools tab.
+Built-in tools include `file_read`, `file_write`, `file_edit`, `bash`, `list_files`, `grep`, `web_fetch`, `web_search`, `web_read`, `image_analyze`, `audio_transcribe`, `document_export`, `email_send`, `email_draft`, `create_skill`, `install_skill`, `desktop_screenshot`, `browser_bookmarks`, `browser_navigate`, `browser_click`, `browser_fill`, `browser_read`, `browser_screenshot`, `browser_close`, `calendar_read`, `calendar_write`, `slack_notify`, `telegram_notify`, and more. Each tool has a risk level (low/medium/high) and can be individually disabled from the Tools tab.
 
 Browser tools (`browser_navigate`, `browser_click`, `browser_fill`) are disabled by default and require a capability grant — they interact with live websites via Playwright.
 
@@ -319,6 +319,10 @@ Talk to Oracle from your phone via Telegram. Create a bot with [@BotFather](http
 ### Discord bot
 
 Talk to the harness from any Discord server. Create a bot at the [Discord Developer Portal](https://discord.com/developers/applications), enable Message Content Intent, and set `HARNESS_DISCORD_BOT_TOKEN`. Optionally restrict to specific channels with `HARNESS_DISCORD_ALLOWED_CHANNEL_IDS`.
+
+### Slack notifications
+
+Send one-way Slack notifications through `slack_notify`. Create a Slack incoming webhook, set `HARNESS_SLACK_WEBHOOK_URL` in Settings -> API Keys or the environment, and keep the tool disabled until you grant the communications capability for a specific run.
 
 ### Mission Control
 
@@ -370,6 +374,10 @@ Commands that do not match a preset are denied even with active grants.
 ### Skills
 
 Skills are structured prompts that teach the model domain-specific tasks. They live in `.harness/skills/` (runtime) and `.github/skills/` (repo). The **Skill Curator** optionally archives stale skills and proposes merges.
+
+### MCP runtime
+
+The Tools dashboard includes a curated MCP catalog and a local MCP runtime panel. Runtime server definitions are persisted under `.harness/mcp/servers.json`; starting a server launches an external process and therefore requires an active `arbitrary-shell` capability grant. The first runtime layer supports configure, list, start, stop, status, and visible configured-tool metadata. Protocol-level tool invocation can build on this process manager without bypassing grants or audit logs.
 
 ### Sessions and context
 
@@ -426,6 +434,7 @@ All runtime state goes under `.harness/` in your project directory:
 | `.harness/curator/` | Skill curator log and merge proposals |
 | `.harness/workflows/` | Declarative workflow definitions |
 | `.harness/mycelium/` | Adaptive routing graph |
+| `.harness/mcp/` | Local MCP runtime server definitions |
 | `.harness/desktop/` | Desktop screenshots |
 | `.harness/email/drafts/` | Email draft files |
 | `.harness/email/sent/` | Sent email archive |

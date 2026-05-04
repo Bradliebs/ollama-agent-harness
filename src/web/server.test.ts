@@ -2107,6 +2107,49 @@ describe('web server API validation', () => {
     }
   });
 
+  it('blocks destructive shell calls through the nervous motor gate before standard permissions', async () => {
+    const evaluate = jest.fn(() => ({ decision: 'allow', reason: 'standard permission would allow' }));
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('nervous-motor-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (_config, deps): AsyncGenerator<LoopEvent> {
+        const permission = await deps.permissionCheck?.({ name: 'bash', input: { command: 'rm -rf C:/AI/Harness' } });
+        yield { type: 'text', content: JSON.stringify(permission) };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'delete everything with rm -rf', model: 'test-model' }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain('\\"allowed\\":false');
+      expect(body).toContain('Nervous System BLOCK');
+      expect(evaluate).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
   it('persists output validation settings, streams validation events, and records eval runs', async () => {
     const restore = setWebRuntimeOverrides({
       createClient: jest.fn(() => ({}) as never),
