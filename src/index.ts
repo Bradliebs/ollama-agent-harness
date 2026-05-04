@@ -84,3 +84,15 @@ export type { AgentRole, AgentBudget, WorkstreamTask, WorkstreamResult, Orchestr
 // ─── Code Intelligence ──────────────────────────────────────────────
 export { buildRepoGraph, analyzeImpact, summarizeRepo, saveRepoGraph, loadRepoGraph } from './core/codeIntelligence';
 export type { CodeNode, CodeEdge, RepoGraph, ImpactAnalysis, RepoSummary } from './core/codeIntelligence';
+
+// ─── Small Model Autopilot: Deterministic Shortcuts ─────────────────
+export { tryDeterministicShortcut, listShortcutTypes } from './core/deterministicShortcuts';
+export type { ShortcutResult } from './core/deterministicShortcuts';
+
+// ─── Small Model Autopilot: Structured Output Validator ─────────────
+export { validateStructuredOutput, parseAndValidate, detectSchema, BUILTIN_SCHEMAS } from './core/structuredOutputValidator';
+export type { OutputSchema, SchemaValidationResult } from './core/structuredOutputValidator';
+
+// ─── Small Model Autopilot: Readiness Gate ──────────────────────────
+export { calculateReadiness, isReadyToExecute, shouldEscalate } from './core/readinessGate';
+export type { ReadinessInput, ReadinessResult, ReadinessDecision } from './core/readinessGate';
