@@ -4,6 +4,7 @@ import * as path from 'path';
 import { createAutomationJob, listAutomationJobs, updateAutomationJob, type AutomationJob } from '../automation/jobs';
 import { classifyMode } from './modeClassifier';
 import { createTransitionEvent, validateStateTransition, type ExtractedCommand } from './commandExtractor';
+import { createPromise, listPromises } from './promiseLedger';
 
 export type AgenticMode = 'build' | 'operate';
 
@@ -267,6 +268,17 @@ export async function createOrUpdateBulletJournalService(projectDir: string, inp
   service.schedules = [{ id: 'daily_check_in', type: 'cron', expression: dailyCron(state.reminder_time), enabled: !state.reminders_paused && state.enabled, automation_job_id: schedule?.id ?? null }];
   await saveBulletJournalDefinition(projectDir, service);
   await saveBulletJournalState(projectDir, state);
+  // Auto-create a promise for the scheduled service if one doesn't already exist.
+  if (schedule) {
+    const existing = await listPromises(projectDir, { service_id: service.service_id });
+    if (!existing.some((p) => p.schedule_id === schedule.id && p.status === 'pending')) {
+      createPromise(projectDir, `Daily check-in for ${service.service_name} at ${state.reminder_time}`, {
+        service_id: service.service_id,
+        schedule_id: schedule.id,
+        capability_required: 'scheduler',
+      }).catch(() => {});
+    }
+  }
   return { service, state, schedule };
 }
 
@@ -410,6 +422,17 @@ export async function createOrUpdateGenericOperateService(projectDir: string, re
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, 'service.json'), JSON.stringify(service, null, 2), 'utf-8');
   await fs.writeFile(path.join(dir, 'state.json'), JSON.stringify(state, null, 2), 'utf-8');
+  // Auto-create a promise for the scheduled service if one doesn't already exist.
+  if (schedule) {
+    const existing = await listPromises(projectDir, { service_id: serviceId });
+    if (!existing.some((p) => p.schedule_id === schedule.id && p.status === 'pending')) {
+      createPromise(projectDir, `Daily check for ${service.service_name}: ${purpose.slice(0, 80)}`, {
+        service_id: serviceId,
+        schedule_id: schedule.id,
+        capability_required: 'scheduler',
+      }).catch(() => {});
+    }
+  }
   return { service, state, schedule };
 }
 

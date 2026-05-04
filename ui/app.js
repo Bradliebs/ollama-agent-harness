@@ -7036,6 +7036,7 @@ async function fulfilPromise(id) {
 
 // ─── Events Tab ─────────────────────────────────────────────────────
 // ─── Event Timeline Builder ─────────────────────────────────────────
+let _eventCategoryFilter = new Set(); // empty = show all
 function buildEventTimeline(events) {
   if (!events || events.length === 0) return '';
   // Group by hour bucket for last 24 hours
@@ -7077,17 +7078,24 @@ async function loadEvents() {
     ]);
     const summary = summaryR.status === 'fulfilled' ? summaryR.value : {};
     const events = eventsR.status === 'fulfilled' ? eventsR.value : { events: [] };
-    const categoryPills = Object.entries(summary.categories || {}).map(([k, v]) => '<span class="tag">' + esc(k) + ': ' + v + '</span>').join(' ');
+    const categoryPills = Object.entries(summary.categories || {}).map(([k, v]) => {
+      const active = _eventCategoryFilter.size === 0 || _eventCategoryFilter.has(k);
+      return '<button class="tag' + (active ? '' : ' tag-muted') + '" onclick="toggleEventCategory(\'' + escAttr(k) + '\')" style="cursor:pointer;opacity:' + (active ? '1' : '0.4') + '">' + esc(k) + ': ' + v + '</button>';
+    }).join(' ');
+    const filterNote = _eventCategoryFilter.size > 0 ? '<span class="trace-meta" style="font-size:0.7em"> (filtered · <a href="#" onclick="event.preventDefault();_eventCategoryFilter.clear();loadEvents()">show all</a>)</span>' : '';
     // Timeline chart: group events by hour for last 24h
     const timelineChart = buildEventTimeline(events.events || []);
-    const rows = (events.events || []).map((ev) => {
+    const filteredEvents = _eventCategoryFilter.size === 0
+      ? (events.events || [])
+      : (events.events || []).filter((ev) => _eventCategoryFilter.has(ev.category));
+    const rows = filteredEvents.map((ev) => {
       const icon = ev.category === 'promise' ? '🤝' : ev.category === 'service' ? '🔧' : ev.category === 'tool' ? '🔨' : ev.category === 'system' ? '⚙️' : '📋';
       return '<div class="trace-item"><div class="trace-title">' + icon + ' ' + esc(ev.category) + '/' + esc(ev.type) + '</div>'
         + '<div class="trace-meta">' + esc(ev.timestamp?.slice(0, 19) || '') + ' · ' + esc(ev.actor) + (ev.subject_id ? ' · ' + esc(ev.subject_id.slice(0, 20)) : '') + '</div>'
         + '<div class="trace-meta" style="font-size:0.75em;opacity:0.7">' + esc(JSON.stringify(ev.data).slice(0, 120)) + '</div></div>';
     }).join('');
     view.innerHTML = '<div class="trace-item"><div class="trace-title">📋 Event Store</div>'
-      + '<div class="trace-meta">' + (summary.total_events || 0) + ' total events · ' + (summary.snapshot_count || 0) + ' snapshots</div>'
+      + '<div class="trace-meta">' + (summary.total_events || 0) + ' total events · ' + (summary.snapshot_count || 0) + ' snapshots' + filterNote + '</div>'
       + '<div class="trace-meta">' + categoryPills + '</div>'
       + timelineChart
       + rows
@@ -7096,6 +7104,14 @@ async function loadEvents() {
   } catch (error) {
     view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message || error) + '</div>';
   }
+}
+function toggleEventCategory(cat) {
+  if (_eventCategoryFilter.has(cat)) {
+    _eventCategoryFilter.delete(cat);
+  } else {
+    _eventCategoryFilter.add(cat);
+  }
+  loadEvents();
 }
 
 // ─── Code Intelligence Tab ─────────────────────────────────────────
@@ -7112,13 +7128,14 @@ async function loadCodeIntel() {
       return;
     }
     const data = await res.json();
-    const topImported = (data.most_imported || []).slice(0, 8).map((f) => '<div class="trace-meta">📥 ' + esc(f.file) + ' (' + f.count + ' importers)</div>').join('');
-    const topComplex = (data.most_complex || []).slice(0, 8).map((f) => '<div class="trace-meta">🔀 ' + esc(f.file) + ' (' + f.imports + ' imports, ' + f.exports + ' exports)</div>').join('');
+    const topImported = (data.most_imported || []).slice(0, 8).map((f) => '<div class="trace-meta" style="cursor:pointer" onclick="showFileImpact(\'' + escAttr(f.file) + '\')">📥 ' + esc(f.file) + ' (' + f.count + ' importers) <span style="opacity:0.5">▶ impact</span></div>').join('');
+    const topComplex = (data.most_complex || []).slice(0, 8).map((f) => '<div class="trace-meta" style="cursor:pointer" onclick="showFileImpact(\'' + escAttr(f.file) + '\')">🔀 ' + esc(f.file) + ' (' + f.imports + ' imports, ' + f.exports + ' exports) <span style="opacity:0.5">▶ impact</span></div>').join('');
     view.innerHTML = '<div class="trace-item"><div class="trace-title">🧬 Code Intelligence</div>'
       + '<div class="trace-meta">' + (data.total_files || 0) + ' files · ' + (data.total_edges || 0) + ' edges · ' + (data.total_exports || 0) + ' exports · ' + (data.test_files || 0) + ' tests</div>'
       + '<div class="document-actions"><button class="btn-sm" onclick="buildCodeIntelGraph()">Rebuild</button></div>'
       + '<div class="trace-item"><div class="trace-title">Most Imported</div>' + (topImported || '<div class="trace-meta">—</div>') + '</div>'
       + '<div class="trace-item"><div class="trace-title">Most Complex</div>' + (topComplex || '<div class="trace-meta">—</div>') + '</div>'
+      + '<div id="codeIntelImpactPanel"></div>'
       + '</div>';
   } catch (error) {
     view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message || error) + '</div>';
@@ -7132,5 +7149,32 @@ async function buildCodeIntelGraph() {
     loadCodeIntel();
   } catch (error) {
     if (view) view.innerHTML = '<div class="trace-meta">Build failed: ' + esc(error.message || error) + '</div>';
+  }
+}
+async function showFileImpact(filePath) {
+  const panel = document.getElementById('codeIntelImpactPanel');
+  if (!panel) return;
+  panel.innerHTML = '<div class="trace-meta">Analyzing impact of ' + esc(filePath) + '…</div>';
+  try {
+    const res = await fetch('/api/code-intelligence/impact', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ files: [filePath] }),
+    });
+    const data = await res.json();
+    if (data.error) { panel.innerHTML = '<div class="trace-meta">' + esc(data.error) + '</div>'; return; }
+    const riskColor = data.risk_score > 0.5 ? 'var(--danger,red)' : data.risk_score > 0.2 ? 'var(--warning,orange)' : 'var(--success,green)';
+    const directRows = (data.direct || []).slice(0, 10).map((f) => '<div class="trace-meta">  → ' + esc(f) + '</div>').join('');
+    const transitiveRows = (data.transitive || []).slice(0, 10).map((f) => '<div class="trace-meta" style="opacity:0.7">  ⤳ ' + esc(f) + '</div>').join('');
+    const testRows = (data.affected_tests || []).slice(0, 10).map((f) => '<div class="trace-meta">  🧪 ' + esc(f) + '</div>').join('');
+    panel.innerHTML = '<div class="trace-item"><div class="trace-title">Impact: ' + esc(filePath) + '</div>'
+      + '<div class="trace-meta">Risk: <span style="color:' + riskColor + '">' + Math.round((data.risk_score || 0) * 100) + '%</span>'
+      + ' · ' + (data.direct || []).length + ' direct · ' + (data.transitive || []).length + ' transitive · ' + (data.affected_tests || []).length + ' tests</div>'
+      + (directRows ? '<div class="trace-meta" style="font-weight:600">Direct importers:</div>' + directRows : '')
+      + (transitiveRows ? '<div class="trace-meta" style="font-weight:600">Transitive:</div>' + transitiveRows : '')
+      + (testRows ? '<div class="trace-meta" style="font-weight:600">Affected tests:</div>' + testRows : '')
+      + '</div>';
+  } catch (error) {
+    panel.innerHTML = '<div class="trace-meta">Impact analysis failed: ' + esc(error.message || error) + '</div>';
   }
 }
