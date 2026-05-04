@@ -89,6 +89,8 @@ export interface RouteExplanation {
   protectedRequired: string[];
   fallback: string[];
   contextSummary: { type: string; count: number }[];
+  /** Code files included in the route from code intelligence seeding. */
+  codeFiles: string[];
   graphUpdate?: { reinforced: number; decayed: number; archived: number; protectedFromDecay: number };
 }
 
@@ -140,6 +142,11 @@ export function buildRouteExplanation(opts: {
 
   const contextSummary = summariseByType(route.nodes);
 
+  // Extract code_file nodes from the route for structural awareness.
+  const codeFiles = route.nodes
+    .filter((n) => n.type === 'code_file')
+    .map((n) => n.label ?? n.id.replace('code.', ''));
+
   return {
     taskType: classification.type,
     explorationRate: classification.explorationRate,
@@ -150,6 +157,7 @@ export function buildRouteExplanation(opts: {
     protectedRequired: route.protectedRequiredEdges.map(formatEdgeId),
     fallback: route.fallbackEdges.map(formatEdgeId),
     contextSummary,
+    codeFiles,
     graphUpdate,
   };
 }
@@ -192,6 +200,11 @@ export function formatRouteExplanation(explanation: RouteExplanation): string {
     lines.push('');
     lines.push('Context package summary:');
     for (const c of explanation.contextSummary) lines.push(`  - ${c.count} ${c.type} node(s)`);
+  }
+  if (explanation.codeFiles.length > 0) {
+    lines.push('');
+    lines.push('Structurally relevant code files:');
+    for (const f of explanation.codeFiles) lines.push(`  - ${f}`);
   }
   if (explanation.graphUpdate) {
     lines.push('');

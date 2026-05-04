@@ -3,7 +3,7 @@ import { runtimeTracer } from '../core/tracing';
 import { executeDueJobs, type DueJobResult } from './jobs';
 import type { AutomationPolicyContext } from './runner';
 import { checkObligations } from '../services/promiseLedger';
-import { listPromises, updatePromise } from '../services/promiseLedger';
+import { listPromises, updatePromise, fulfilPromise } from '../services/promiseLedger';
 import { emitEvent } from '../persistence/eventStore';
 import { probeServiceHealth, transitionService } from '../services/serviceLifecycle';
 import { listAgenticServices } from '../services/agenticServiceMode';
@@ -75,6 +75,8 @@ export class AutomationScheduler {
         for (const r of results) {
           emitEvent(this.opts.projectDir, 'schedule', 'job_executed', { job_id: r.jobId, name: r.name }, 'scheduler', r.jobId).catch(() => {});
         }
+        // Auto-fulfil promises linked to executed jobs.
+        this.autoFulfilLinkedPromises(results.map((r) => r.jobId)).catch(() => {});
       }
       // Post-execution: check obligations and service health (non-blocking).
       this.runPostExecutionChecks().catch(() => {});
@@ -138,6 +140,30 @@ export class AutomationScheduler {
       }
     } catch (error) {
       logger.warn('Automation', 'Service health check failed', { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  /** Auto-fulfil pending promises that are linked to the executed job IDs via schedule_id. */
+  private async autoFulfilLinkedPromises(executedJobIds: string[]): Promise<void> {
+    if (executedJobIds.length === 0) return;
+    try {
+      const jobIdSet = new Set(executedJobIds);
+      const pending = await listPromises(this.opts.projectDir, { status: 'pending' });
+      let fulfilled = 0;
+      for (const p of pending) {
+        if (p.schedule_id && jobIdSet.has(p.schedule_id)) {
+          await fulfilPromise(this.opts.projectDir, p.promise_id);
+          emitEvent(this.opts.projectDir, 'promise', 'promise_auto_fulfilled', {
+            promise_id: p.promise_id,
+            schedule_id: p.schedule_id,
+            commitment: p.commitment.slice(0, 80),
+          }, 'scheduler', p.promise_id).catch(() => {});
+          fulfilled++;
+        }
+      }
+      if (fulfilled > 0) logger.info('Automation', `Auto-fulfilled ${fulfilled} promise(s) linked to executed jobs`);
+    } catch (error) {
+      logger.warn('Automation', 'Promise auto-fulfilment failed', { error: error instanceof Error ? error.message : String(error) });
     }
   }
 }

@@ -7035,6 +7035,37 @@ async function fulfilPromise(id) {
 }
 
 // ─── Events Tab ─────────────────────────────────────────────────────
+// ─── Event Timeline Builder ─────────────────────────────────────────
+function buildEventTimeline(events) {
+  if (!events || events.length === 0) return '';
+  // Group by hour bucket for last 24 hours
+  const now = Date.now();
+  const buckets = new Array(24).fill(0);
+  const catBuckets = {};
+  for (const ev of events) {
+    if (!ev.timestamp) continue;
+    const ts = new Date(ev.timestamp).getTime();
+    const hoursAgo = Math.floor((now - ts) / 3_600_000);
+    if (hoursAgo >= 0 && hoursAgo < 24) {
+      buckets[23 - hoursAgo]++;
+      const cat = ev.category || 'other';
+      if (!catBuckets[cat]) catBuckets[cat] = new Array(24).fill(0);
+      catBuckets[cat][23 - hoursAgo]++;
+    }
+  }
+  const maxVal = Math.max(1, ...buckets);
+  const bars = buckets.map((count, i) => {
+    const pct = Math.round((count / maxVal) * 100);
+    const label = i === 23 ? 'now' : (23 - i) + 'h';
+    const title = count + ' event(s) ' + label + ' ago';
+    return '<div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0" title="' + title + '">'
+      + '<div style="width:100%;background:var(--accent,#646cff);border-radius:2px;min-height:2px;height:' + Math.max(2, pct * 0.4) + 'px;opacity:' + (count > 0 ? 1 : 0.15) + '"></div>'
+      + (i % 6 === 0 ? '<span style="font-size:0.6em;opacity:0.5;margin-top:2px">' + label + '</span>' : '')
+      + '</div>';
+  }).join('');
+  return '<div style="display:flex;align-items:flex-end;gap:1px;height:50px;margin:8px 0;padding:4px 0">' + bars + '</div>';
+}
+
 async function loadEvents() {
   const view = document.getElementById('eventsView');
   if (!view) return;
@@ -7047,6 +7078,8 @@ async function loadEvents() {
     const summary = summaryR.status === 'fulfilled' ? summaryR.value : {};
     const events = eventsR.status === 'fulfilled' ? eventsR.value : { events: [] };
     const categoryPills = Object.entries(summary.categories || {}).map(([k, v]) => '<span class="tag">' + esc(k) + ': ' + v + '</span>').join(' ');
+    // Timeline chart: group events by hour for last 24h
+    const timelineChart = buildEventTimeline(events.events || []);
     const rows = (events.events || []).map((ev) => {
       const icon = ev.category === 'promise' ? '🤝' : ev.category === 'service' ? '🔧' : ev.category === 'tool' ? '🔨' : ev.category === 'system' ? '⚙️' : '📋';
       return '<div class="trace-item"><div class="trace-title">' + icon + ' ' + esc(ev.category) + '/' + esc(ev.type) + '</div>'
@@ -7056,6 +7089,7 @@ async function loadEvents() {
     view.innerHTML = '<div class="trace-item"><div class="trace-title">📋 Event Store</div>'
       + '<div class="trace-meta">' + (summary.total_events || 0) + ' total events · ' + (summary.snapshot_count || 0) + ' snapshots</div>'
       + '<div class="trace-meta">' + categoryPills + '</div>'
+      + timelineChart
       + rows
       + (rows ? '' : '<div class="trace-meta">No events recorded yet.</div>')
       + '</div>';
