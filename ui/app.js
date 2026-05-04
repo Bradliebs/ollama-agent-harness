@@ -2283,7 +2283,7 @@ async function sendMessage(opts) {
   sendBtn.textContent = '■';
   sendBtn.title = 'Stop (streaming)';
   sendBtn.classList.add('streaming');
-  const thinkEl = addThinking();
+  const badge = document.getElementById('streamingBadge'); if (badge) badge.classList.add('active');
   updateThinkingStatus(thinkEl, 'Preparing model...');
   // Live tok/s estimate: count characters streaming in, divide by
   // elapsed seconds, convert to ~tokens (chars/4). Updates the thinking
@@ -2524,6 +2524,7 @@ async function sendMessage(opts) {
   document.getElementById('sendBtn').textContent = '➤';
   document.getElementById('sendBtn').title = 'Send';
   document.getElementById('sendBtn').classList.remove('streaming');
+  const badge2 = document.getElementById('streamingBadge'); if (badge2) badge2.classList.remove('active');
   const skipOnceReset = document.getElementById('skipValidationOnce');
   if (skipOnceReset) skipOnceReset.checked = false;
   document.getElementById('chatInput').focus();
@@ -3181,8 +3182,7 @@ async function runCompareSend(text, modelA, modelB) {
   const sendBtn = document.getElementById('sendBtn');
   sendBtn.textContent = '■';
   sendBtn.classList.add('streaming');
-
-  const runOne = async (model, col) => {
+  const badge3 = document.getElementById('streamingBadge'); if (badge3) badge3.classList.add('active'); = async (model, col) => {
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -3229,6 +3229,7 @@ async function runCompareSend(text, modelA, modelB) {
   isSending = false;
   sendBtn.textContent = '➤';
   sendBtn.classList.remove('streaming');
+  const badge4 = document.getElementById('streamingBadge'); if (badge4) badge4.classList.remove('active');
   document.getElementById('chatInput').focus();
 }
 
@@ -7196,6 +7197,9 @@ function startEventStream() {
         row.innerHTML = '<div class="trace-title">' + icon + ' 🔴 ' + esc(ev.category) + '/' + esc(ev.type) + ' <span style="font-size:0.7em;opacity:0.5">(live)</span></div>'
           + '<div class="trace-meta">' + esc(ev.timestamp?.slice(11, 19) || '') + ' · ' + esc(ev.actor) + '</div>';
         feed.prepend(row);
+        // Auto-scroll to top if user is near the top (within 100px)
+        const view = document.getElementById('eventsView');
+        if (view && view.scrollTop < 100) view.scrollTop = 0;
         // Keep max 20 live events visible
         while (feed.children.length > 20) feed.removeChild(feed.lastChild);
       } catch { /* ignore parse errors */ }
@@ -7300,8 +7304,10 @@ async function showArchDiagram() {
     const res = await fetch('/api/code-intelligence/diagram');
     const data = await res.json();
     if (data.error) { panel.innerHTML = '<div class="trace-meta">' + esc(data.error) + '</div>'; return; }
+    const mermaidTheme = localStorage.getItem('harness-theme') === 'light' ? 'default' : 'dark';
+    const mermaidBg = mermaidTheme === 'default' ? '#fff' : '#1e1e2e';
     panel.innerHTML = '<div class="trace-item"><div class="trace-title">Architecture Diagram</div>'
-      + '<iframe sandbox="allow-scripts" style="width:100%;height:350px;border:1px solid var(--border,#333);border-radius:4px;background:#fff" srcdoc="' + escAttr('<!doctype html><html><head><meta charset=utf-8><script src=https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js></script><style>body{margin:8px;font-family:sans-serif}</style></head><body><div class=mermaid>' + esc(data.mermaid) + '</div><script>mermaid.initialize({startOnLoad:true,theme:\'dark\'})</script></body></html>') + '"></iframe>'
+      + '<iframe sandbox="allow-scripts" style="width:100%;height:350px;border:1px solid var(--border,#333);border-radius:4px;background:' + mermaidBg + '" srcdoc="' + escAttr('<!doctype html><html><head><meta charset=utf-8><script src=https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js></script><style>body{margin:8px;font-family:sans-serif}</style></head><body><div class=mermaid>' + esc(data.mermaid) + '</div><script>mermaid.initialize({startOnLoad:true,theme:\'' + mermaidTheme + '\'})</script></body></html>') + '"></iframe>'
       + '<details style="margin-top:4px"><summary style="cursor:pointer;font-size:0.75em;opacity:0.6">Raw Mermaid</summary>'
       + '<pre style="font-size:0.65em;overflow-x:auto;background:var(--bg-code,#1e1e2e);padding:8px;border-radius:4px;max-height:200px">' + esc(data.mermaid) + '</pre></details>'
       + '<div class="document-actions"><button class="btn-sm" onclick="navigator.clipboard.writeText(' + JSON.stringify(JSON.stringify(data.mermaid)) + ')">📋 Copy Mermaid</button></div></div>';

@@ -432,6 +432,8 @@
     .session-hud{display:flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid var(--border);border-radius:7px;background:var(--surface2);font-size:11px;color:var(--text-dim);white-space:nowrap}
     .session-hud .session-hud-val{color:var(--text)}
     .session-hud.empty{opacity:.55}
+    .streaming-badge{display:none;align-items:center;gap:4px;padding:3px 8px;border-radius:7px;background:var(--danger,#e55);color:#fff;font-size:10px;font-weight:600;animation:pulse-stream 1.5s ease-in-out infinite}
+    .streaming-badge.active{display:flex}
     /* Slash-command quick-actions popup above the composer */
     .slash-palette{position:absolute;left:12px;right:12px;bottom:80px;max-width:760px;margin:0 auto;background:var(--surface);border:1px solid var(--accent);border-radius:var(--r);box-shadow:0 8px 30px rgba(0,0,0,.4);overflow:hidden;z-index:60}
     .slash-palette.hidden{display:none}
@@ -661,6 +663,7 @@
         <span class="meta-sep">·</span>
         <span class="session-hud-val" id="sessionHudTime">0s</span>
       </div>
+      <div class="streaming-badge" id="streamingBadge" title="Model is generating a response">🔴 streaming</div>
       <div class="session-hud autonomy-hud-action hidden-by-default" id="autonomyHud" title="Autonomy loop progress (.forge-state.json)" onclick="toggleAutonomyLog()">
         <span>🤖 Autonomy</span>
         <span class="session-hud-val" id="autonomyHudTask">idle</span>

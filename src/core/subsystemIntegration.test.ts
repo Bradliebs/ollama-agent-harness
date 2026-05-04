@@ -114,4 +114,53 @@ describe('subsystem integration', () => {
     expect(obligations.breaches).toHaveLength(1);
     expect(obligations.breaches[0].breach_type).toBe('overdue');
   });
+
+  it('service setup auto-creates promise linked to schedule', async () => {
+    // Create a service directory with automation job id
+    const svcDir = path.join(tmpDir, '.harness', 'services', 'test_monitor');
+    await fs.mkdir(svcDir, { recursive: true });
+    await fs.writeFile(path.join(svcDir, 'service.json'), JSON.stringify({
+      service_id: 'test_monitor',
+      service_name: 'Test Monitor',
+      mode: 'operate',
+      purpose: 'Test',
+      supported_commands: ['show_status'],
+      schedules: [{ id: 'daily', automation_job_id: 'job-abc' }],
+      automation_job_id: 'job-abc',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }));
+    await fs.writeFile(path.join(svcDir, 'state.json'), JSON.stringify({ service_id: 'test_monitor', enabled: true }));
+
+    // Create a promise linked to the job
+    const promise = await createPromise(tmpDir, 'Daily check for test monitor', {
+      service_id: 'test_monitor',
+      schedule_id: 'job-abc',
+      capability_required: 'scheduler',
+    });
+    expect(promise.status).toBe('pending');
+    expect(promise.schedule_id).toBe('job-abc');
+
+    // Simulate auto-fulfil (same logic as scheduler.autoFulfilLinkedPromises)
+    const pending = await listPromises(tmpDir, { status: 'pending' });
+    const jobIdSet = new Set(['job-abc']);
+    let fulfilled = 0;
+    for (const p of pending) {
+      if (p.schedule_id && jobIdSet.has(p.schedule_id)) {
+        await fulfilPromise(tmpDir, p.promise_id);
+        fulfilled++;
+      }
+    }
+    expect(fulfilled).toBe(1);
+
+    // Verify promise is fulfilled
+    const afterFulfil = await listPromises(tmpDir);
+    expect(afterFulfil.find((p) => p.promise_id === promise.promise_id)?.status).toBe('fulfilled');
+
+    // Verify obligations are clear
+    const obligations = await checkObligations(tmpDir);
+    expect(obligations.pending).toBe(0);
+    expect(obligations.fulfilled).toBe(1);
+    expect(obligations.breaches).toHaveLength(0);
+  });
 });
