@@ -57,18 +57,18 @@ export interface ObligationCheckResult {
 // ─── Commitment detection ───────────────────────────────────────────
 
 const COMMITMENT_PATTERNS = [
-  /I(?:'ll| will)\s+remind\s+you/i,
-  /I(?:'ll| will)\s+check\s+(?:this|that|on)/i,
-  /I(?:'ll| will)\s+monitor/i,
-  /I(?:'ll| will)\s+send\s+you/i,
-  /I(?:'ll| will)\s+follow\s+up/i,
-  /I(?:'ll| will)\s+schedule/i,
-  /I(?:'ll| will)\s+set\s+up\s+(?:a\s+)?(?:recurring|daily|weekly)/i,
-  /I(?:'ll| will)\s+(?:keep|continue)\s+(?:track|watch)/i,
-  /I(?:'ll| will)\s+notify\s+you/i,
-  /I(?:'ll| will)\s+report/i,
-  /I(?:'ll| will)\s+update\s+you/i,
-  /I(?:'ll| will)\s+run\s+(?:this|that|it)\s+(?:every|daily|weekly)/i,
+  /I(?:['\u2019]ll| will)\s+remind\s+you/i,
+  /I(?:['\u2019]ll| will)\s+check\s+(?:this|that|on|in)\s+(?:every|daily|weekly|each|tomorrow|regularly|periodically)/i,
+  /I(?:['\u2019]ll| will)\s+monitor\s+(?:this|that|it|the|your)/i,
+  /I(?:['\u2019]ll| will)\s+send\s+you\s+(?:a\s+)?(?:reminder|report|update|notification|summary|alert)/i,
+  /I(?:['\u2019]ll| will)\s+follow\s+up\s+(?:on|with|about|tomorrow|next|later)/i,
+  /I(?:['\u2019]ll| will)\s+schedule\s+(?:a\s+)?(?:\w+\s+)?(?:check|reminder|job|task|scan|review|run)/i,
+  /I(?:['\u2019]ll| will)\s+set\s+up\s+(?:a\s+)?(?:recurring|daily|weekly|scheduled|automated)/i,
+  /I(?:['\u2019]ll| will)\s+(?:keep|continue)\s+(?:tracking|watching|monitoring)/i,
+  /I(?:['\u2019]ll| will)\s+notify\s+you\s+(?:when|if|about|every)/i,
+  /I(?:['\u2019]ll| will)\s+(?:send|deliver)\s+(?:a\s+)?(?:daily|weekly|regular)\s+(?:report|update|summary)/i,
+  /I(?:['\u2019]ll| will)\s+update\s+you\s+(?:when|if|every|daily|weekly|regularly)/i,
+  /I(?:['\u2019]ll| will)\s+run\s+(?:this|that|it|the)\s+(?:every|daily|weekly|each)/i,
 ];
 
 /** Detect commitment language in assistant text. Returns matched phrases. */

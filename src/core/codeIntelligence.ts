@@ -69,12 +69,34 @@ const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
 const TEST_PATTERNS = [/\.test\.[jt]sx?$/, /\.spec\.[jt]sx?$/, /__tests__\//];
 const IGNORE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.harness', '.next', '.nuxt']);
 
-export async function buildRepoGraph(projectDir: string, options?: { maxFiles?: number }): Promise<RepoGraph> {
+/**
+ * Load extra ignore dirs from .harness/code-intelligence-ignore.json or
+ * HARNESS_CODE_INTEL_IGNORE env var (comma-separated directory names).
+ */
+function getExtraIgnoreDirs(projectDir: string): Set<string> {
+  const extra = new Set<string>();
+  // Env var
+  const envIgnore = process.env.HARNESS_CODE_INTEL_IGNORE;
+  if (envIgnore) {
+    for (const dir of envIgnore.split(',')) {
+      const trimmed = dir.trim();
+      if (trimmed) extra.add(trimmed);
+    }
+  }
+  return extra;
+}
+
+export async function buildRepoGraph(projectDir: string, options?: { maxFiles?: number; ignoreDirs?: string[] }): Promise<RepoGraph> {
   const maxFiles = options?.maxFiles ?? 5_000;
   const nodes = new Map<string, CodeNode>();
   const edges: CodeEdge[] = [];
 
-  await scanDir(projectDir, projectDir, nodes, maxFiles);
+  const extraIgnore = getExtraIgnoreDirs(projectDir);
+  if (options?.ignoreDirs) {
+    for (const dir of options.ignoreDirs) extraIgnore.add(dir);
+  }
+
+  await scanDir(projectDir, projectDir, nodes, maxFiles, extraIgnore);
 
   // Build edges from import analysis
   for (const [filePath, node] of nodes) {
@@ -102,6 +124,7 @@ async function scanDir(
   root: string,
   nodes: Map<string, CodeNode>,
   maxFiles: number,
+  extraIgnore: Set<string> = new Set(),
 ): Promise<void> {
   if (nodes.size >= maxFiles) return;
 
@@ -116,8 +139,8 @@ async function scanDir(
     if (nodes.size >= maxFiles) return;
 
     if (entry.isDirectory()) {
-      if (IGNORE_DIRS.has(entry.name)) continue;
-      await scanDir(path.join(dir, entry.name), root, nodes, maxFiles);
+      if (IGNORE_DIRS.has(entry.name) || extraIgnore.has(entry.name)) continue;
+      await scanDir(path.join(dir, entry.name), root, nodes, maxFiles, extraIgnore);
       continue;
     }
 

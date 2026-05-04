@@ -1951,6 +1951,19 @@ app.get('/api/events/snapshots/:id', async (req, res) => {
   }
 });
 
+app.post('/api/events', async (req, res) => {
+  try {
+    const { category, type, data, actor, subject_id, parent_event_id } = req.body ?? {};
+    if (!category || !type) { res.status(400).json({ error: 'category and type are required.' }); return; }
+    const validCategories: EventCategory[] = ['service', 'promise', 'task', 'tool', 'model', 'route', 'approval', 'file', 'schedule', 'notification', 'permission', 'system'];
+    if (!validCategories.includes(category)) { res.status(400).json({ error: `Invalid category. Must be one of: ${validCategories.join(', ')}` }); return; }
+    const event = await emitEvent(PROJECT_DIR, category, type, data ?? {}, actor ?? 'external', subject_id, parent_event_id);
+    res.json(event);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 // ─── Done-State Verifier ────────────────────────────────────────────
 
 app.post('/api/verify/code', async (req, res) => {
@@ -5865,7 +5878,7 @@ export async function startServer(): Promise<void> {
     // Auto-build code intelligence graph (non-blocking).
     loadRepoGraph(PROJECT_DIR).then((existing) => {
       if (!existing) {
-        buildRepoGraph(PROJECT_DIR, { maxFiles: 5_000 }).then((graph) => {
+        buildRepoGraph(PROJECT_DIR, { maxFiles: 5_000, ignoreDirs: ['hermes-agent-main', 'agent-outputs', 'journal', 'Bracknell_Food_Business'] }).then((graph) => {
           saveRepoGraph(PROJECT_DIR, graph).then(async () => {
             const summary = summarizeRepo(graph);
             console.log(`  Code intelligence:     ${summary.total_files} files, ${summary.total_edges} edges`);

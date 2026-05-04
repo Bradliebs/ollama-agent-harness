@@ -101,6 +101,14 @@ describe('detectCommitments', () => {
     expect(found).toHaveLength(0);
   });
 
+  it('does not false-positive on casual language', () => {
+    expect(detectCommitments("I'll check this file for you.")).toHaveLength(0);
+    expect(detectCommitments("I'll send you the code.")).toHaveLength(0);
+    expect(detectCommitments("I'll report back.")).toHaveLength(0);
+    expect(detectCommitments("I'll show you how to do it.")).toHaveLength(0);
+    expect(detectCommitments("I'll explain this.")).toHaveLength(0);
+  });
+
   it('detects scheduling language', () => {
     const found = detectCommitments("I'll schedule a daily check.");
     expect(found.length).toBeGreaterThan(0);
@@ -108,6 +116,11 @@ describe('detectCommitments', () => {
 
   it('detects follow-up language', () => {
     const found = detectCommitments("I'll follow up on this tomorrow.");
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  it('detects notification promises', () => {
+    const found = detectCommitments("I'll notify you when the build finishes.");
     expect(found.length).toBeGreaterThan(0);
   });
 });

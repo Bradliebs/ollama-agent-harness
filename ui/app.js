@@ -209,7 +209,7 @@ function renderReadiness(data) {
 function renderReadinessSection(section) {
   const checks = section.checks || [];
   const firstBlocked = checks.find((check) => check.status === 'blocked') || checks.find((check) => check.status === 'warn');
-  const noteAction = firstBlocked && firstBlocked.action === 'Open Settings' ? ' onclick="toggleRight()"' : firstBlocked && firstBlocked.action === 'Open Tools' ? ' onclick="openLeftTabByName(\'tools\')"' : '';
+  const noteAction = firstBlocked && firstBlocked.action === 'Open Settings' ? ' onclick="toggleRight()"' : firstBlocked && firstBlocked.action === 'Open Tools' ? ' onclick="openLeftTabByName(\'tools\')"' : firstBlocked && firstBlocked.action === 'Open Promises' ? ' onclick="openLeftTabByName(\'promises\')"' : '';
   const noteClass = noteAction ? 'mission-note clickable-dotted' : 'mission-note';
   const readyCount = checks.filter((c) => c.status === 'ready').length;
   const checkCountClass = readyCount === checks.length ? 'readiness-ready' : readyCount === 0 ? 'readiness-none' : 'readiness-some';
