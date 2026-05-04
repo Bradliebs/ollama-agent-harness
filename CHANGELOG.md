@@ -11,6 +11,26 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.13
+
+Bonus synthesis turn prevents silent tool-only exits across all consumers.
+
+### Query loop
+
+* Added bonus synthesis turn when `maxTurns` exhausted on tool calls — the model gets one extra turn with tools stripped, forcing a text summary.
+* Added `max_turns_synthesized` done reason to distinguish successful synthesis from hard max-turns stops.
+* Added system prompt nudge reminding models to always produce text after tool use.
+
+### Consumer updates
+
+* CLI, Telegram, and UI fallback messages now handle `max_turns_synthesized` with distinct messaging.
+* Exported `buildConsoleToolOnlyResponse` from CLI for direct testing.
+* UI SSE consumer tracks `doneReason` from done events for accurate fallback selection.
+
+### Tests
+
+* 950 total tests passing (8 new: 3 queryLoop synthesis, 4 CLI fallback, 1 Telegram fallback).
+
 ## Ollama Agent Harness v0.3.12
 
 Discord bot integration, browser URL allowlist, capability enforcement, and recommended model guide.
