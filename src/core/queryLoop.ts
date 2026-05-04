@@ -276,7 +276,49 @@ export async function* queryLoop(
     }
   }
 
-  // Max turns reached
+  // Max turns reached — grant a bonus synthesis turn with tools stripped
+  // so the model MUST produce a text response summarising its work.
+  messages.push({
+    role: 'system',
+    content: 'You have used all available tool turns. Provide a complete, useful text response now. Summarise everything you found. Do NOT call any tools.',
+  } as Message);
+
+  turn++;
+  const synthSpan = tracer?.startSpan('model.chat', { model: config.model, turn, synthesis: true });
+  try {
+    const synthResult = await client.chat(messages, [], abortSignal);
+    const synthMessage = synthResult.message;
+    synthSpan?.end('ok', { toolCalls: 0 });
+
+    if (synthResult.usage) {
+      yield {
+        type: 'usage',
+        model: config.model,
+        turn,
+        promptTokens: synthResult.usage.promptTokens ?? 0,
+        completionTokens: synthResult.usage.completionTokens ?? 0,
+        totalDurationMs: Math.round((synthResult.usage.totalDurationNs ?? 0) / 1_000_000),
+      };
+    }
+
+    messages.push(synthMessage);
+    if (session) {
+      await appendSession(session, 'assistant_message', { kind: 'message', message: synthMessage }, tracer);
+    }
+
+    yield { type: 'text', content: synthMessage.content };
+    if (session) {
+      await appendStatus(session, 'max_turns', undefined, tracer);
+    }
+    yield { type: 'done', reason: 'max_turns_synthesized', turns: turn };
+    return;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    synthSpan?.fail(error);
+    yield { type: 'error', message: `Synthesis turn failed: ${msg}`, recoverable: false };
+  }
+
+  // Synthesis failed — fall through to hard max_turns stop.
   if (session) {
     await appendStatus(session, 'max_turns', undefined, tracer);
   }

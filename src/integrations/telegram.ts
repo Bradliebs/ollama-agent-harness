@@ -591,6 +591,9 @@ export function buildTelegramEmptyModelResponse(input: { toolCalls: number; tool
   if (input.toolSummaries.length > 0) {
     return `✅ Done.\n\n${input.toolSummaries.slice(-4).join('\n')}`;
   }
+  if (input.doneReason === 'max_turns_synthesized') {
+    return '✅ Done (synthesis turn produced no visible text).';
+  }
   if (input.toolCalls > 0) {
     return '✅ Done. The model used tools, but did not return a readable final message.';
   }

@@ -1,4 +1,4 @@
-import { formatSetupHealth, parseArgs } from './index';
+import { buildConsoleToolOnlyResponse, formatSetupHealth, parseArgs } from './index';
 
 describe('cli setup doctor', () => {
   it('parses output validation profile options', () => {
@@ -132,5 +132,35 @@ describe('cli setup doctor', () => {
     for (const key of sensitiveKeys) {
       expect(output).not.toContain(key);
     }
+  });
+});
+
+describe('buildConsoleToolOnlyResponse', () => {
+  it('returns synthesis fallback for max_turns_synthesized reason', () => {
+    const result = buildConsoleToolOnlyResponse({ toolCalls: 5, toolSummaries: [], errors: [], doneReason: 'max_turns_synthesized' });
+
+    expect(result).toContain('Done');
+    expect(result).toContain('synthesis');
+    expect(result).not.toContain('did not return a readable final message');
+  });
+
+  it('returns generic tool-only message for max_turns without synthesis', () => {
+    const result = buildConsoleToolOnlyResponse({ toolCalls: 5, toolSummaries: [], errors: [], doneReason: 'max_turns' });
+
+    expect(result).toContain('did not return a readable final message');
+  });
+
+  it('prefers error message over tool-only fallback', () => {
+    const result = buildConsoleToolOnlyResponse({ toolCalls: 3, toolSummaries: [], errors: ['boom'], doneReason: 'error' });
+
+    expect(result).toContain('Harness reported an error');
+    expect(result).toContain('boom');
+  });
+
+  it('prefers tool summaries over generic fallback', () => {
+    const result = buildConsoleToolOnlyResponse({ toolCalls: 2, toolSummaries: ['Wrote file.ts'], errors: [] });
+
+    expect(result).toContain('Done.');
+    expect(result).toContain('Wrote file.ts');
   });
 });

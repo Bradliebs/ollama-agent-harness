@@ -3071,7 +3071,9 @@ app.post('/api/chat', async (req, res) => {
     nervousContext += '\n' + formatRecoveryPlan(nervousResult.recoveryPlan);
   }
 
-  const systemPrompt = [baseSystemPrompt, attachmentsBlock, myceliumContext, nervousContext].filter(Boolean).join('\n\n');
+  const toolSynthesisNudge = 'IMPORTANT: After using tools, you MUST always provide a final text response summarizing your findings. Never end your turn with only tool calls and no text output. If you have gathered enough information, stop calling tools and write your answer.';
+
+  const systemPrompt = [baseSystemPrompt, attachmentsBlock, myceliumContext, nervousContext, toolSynthesisNudge].filter(Boolean).join('\n\n');
 
   const config: LoopConfig = {
     model: activeModel,

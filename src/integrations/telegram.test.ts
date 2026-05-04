@@ -102,6 +102,20 @@ describe('Telegram bridge responses', () => {
     expect(result).toContain('Model call failed');
   });
 
+  it('returns concise message for max_turns_synthesized with no visible text', () => {
+    const result = buildTelegramEmptyModelResponse({
+      toolCalls: 5,
+      toolNames: ['web_search', 'web_read'],
+      toolSummaries: [],
+      errors: [],
+      doneReason: 'max_turns_synthesized',
+    });
+
+    expect(result).toContain('Done');
+    expect(result).toContain('synthesis');
+    expect(result).not.toContain('did not return a readable final message');
+  });
+
   it('normalizes journal slash commands into readable chat requests', () => {
     expect(normalizeTelegramChatText('/add cut up decking')).toContain('Add a task to my bullet journal to cut up decking');
     expect(normalizeTelegramChatText('/complete cut up decking')).toContain('Close task cut up decking');

@@ -325,9 +325,10 @@ function summarizeConsoleToolResult(name: string, success: boolean, output: stri
   return `${name}: ${text.slice(0, 160)}`;
 }
 
-function buildConsoleToolOnlyResponse(input: { toolCalls: number; toolSummaries: string[]; errors: string[] }): string {
+export function buildConsoleToolOnlyResponse(input: { toolCalls: number; toolSummaries: string[]; errors: string[]; doneReason?: string }): string {
   if (input.errors.length > 0) return `Harness reported an error:\n${input.errors.slice(-2).join('\n')}`;
   if (input.toolSummaries.length > 0) return `Done.\n${input.toolSummaries.slice(-4).join('\n')}`;
+  if (input.doneReason === 'max_turns_synthesized') return 'Done (synthesis turn produced no visible text).';
   if (input.toolCalls > 0) return 'Done. The model used tools, but did not return a readable final message.';
   return 'No response from the model.';
 }
@@ -374,7 +375,7 @@ async function runHeadless(
         console.error(`⚠️ ${event.message}`);
         break;
       case 'done':
-        if (!assistantText.trim()) console.log(buildConsoleToolOnlyResponse({ toolCalls, toolSummaries, errors }));
+        if (!assistantText.trim()) console.log(buildConsoleToolOnlyResponse({ toolCalls, toolSummaries, errors, doneReason: event.reason }));
         console.error(`\n--- ${event.reason} (${event.turns} turns) ---`);
         break;
     }
@@ -451,7 +452,7 @@ async function runInteractive(
           }
           break;
         case 'done':
-          if (!assistantText.trim()) console.log(`\n${buildConsoleToolOnlyResponse({ toolCalls, toolSummaries, errors })}\n`);
+          if (!assistantText.trim()) console.log(`\n${buildConsoleToolOnlyResponse({ toolCalls, toolSummaries, errors, doneReason: event.reason })}\n`);
           break;
       }
     }

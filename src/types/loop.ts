@@ -118,7 +118,7 @@ export interface ErrorEvent {
 
 export interface DoneEvent {
   type: 'done';
-  reason: 'completed' | 'completed_with_validation_failures' | 'max_turns' | 'aborted' | 'error' | 'unproductive' | 'repeated_tool_failure';
+  reason: 'completed' | 'completed_with_validation_failures' | 'max_turns' | 'max_turns_synthesized' | 'aborted' | 'error' | 'unproductive' | 'repeated_tool_failure';
   turns: number;
 }
 

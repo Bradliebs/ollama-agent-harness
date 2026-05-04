@@ -2203,6 +2203,7 @@ async function sendMessage(opts) {
     let evidenceCard = null;
     let toolOnlyResultCount = 0;
     let toolOnlyFailureCount = 0;
+    let doneReason = '';
     let buf = '';
     let sawModelEvent = false;
     while (true) {
@@ -2344,6 +2345,7 @@ async function sendMessage(opts) {
             addMsg('assistant', '⚠️ ' + ev.message);
             break;
           case 'done':
+            doneReason = ev.reason || '';
             // Surface the completed-but-validation-failed reason so users
             // do not mistake it for an early stop. The 🧪 validation
             // detail already rendered above; this is just a one-line
@@ -2358,9 +2360,14 @@ async function sendMessage(opts) {
     }
     if (thinkEl.parentNode) thinkEl.remove();
     if (!assistantText && toolOnlyResultCount > 0) {
-      assistantText = toolOnlyFailureCount > 0
-        ? 'Done, but one or more tool calls failed. Check the tool details above.'
-        : 'Done. The model used tools, but did not return a readable final message.';
+      if (doneReason === 'max_turns_synthesized') {
+        // Bonus synthesis turn fired but produced empty text — rare edge case.
+        assistantText = 'Done (the model synthesized a response but it was empty).';
+      } else {
+        assistantText = toolOnlyFailureCount > 0
+          ? 'Done, but one or more tool calls failed. Check the tool details above.'
+          : 'Done. The model used tools, but did not return a readable final message.';
+      }
       msgEl = addMsg('assistant', assistantText);
     }
     if (assistantText) chatMessages.push({ role: 'assistant', content: assistantText });

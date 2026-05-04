@@ -450,4 +450,73 @@ describe('queryLoop runtime behavior', () => {
       expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'unproductive' }));
     });
   });
+
+  describe('bonus synthesis turn', () => {
+    function makeToolCallMessage(name: string): Message {
+      return {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ function: { name, arguments: {} } }],
+      } as Message;
+    }
+
+    it('grants a bonus tool-stripped turn when maxTurns exhausted on tool calls', async () => {
+      const echo = makeTool('echo', true, async () => ({ success: true, output: 'ok' }));
+      // 2 turns of tool calls exhaust maxTurns=2, then the bonus turn produces text.
+      const client = makeClient([
+        makeToolCallMessage('echo'),
+        makeToolCallMessage('echo'),
+        { role: 'assistant', content: 'Here is my synthesis.' },
+      ]);
+
+      const events = await collectEvents(client, [echo], {
+        config: { maxTurns: 2 },
+      });
+
+      const done = events.find((e) => e.type === 'done');
+      expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'max_turns_synthesized', turns: 3 }));
+      const text = events.find((e) => e.type === 'text');
+      expect(text).toEqual({ type: 'text', content: 'Here is my synthesis.' });
+      // The bonus turn should be called with empty tools array.
+      const lastCall = client.chat.mock.calls[client.chat.mock.calls.length - 1];
+      expect(lastCall[1]).toEqual([]);
+    });
+
+    it('emits max_turns with error when synthesis turn fails', async () => {
+      const echo = makeTool('echo', true, async () => ({ success: true, output: 'ok' }));
+      const client = {
+        chat: jest.fn()
+          .mockResolvedValueOnce({ message: makeToolCallMessage('echo') })
+          .mockRejectedValueOnce(new Error('provider down')),
+      };
+
+      const events = await collectEvents(client as ReturnType<typeof makeClient>, [echo], {
+        config: { maxTurns: 1 },
+      });
+
+      const error = events.find((e) => e.type === 'error');
+      expect(error).toEqual(expect.objectContaining({ type: 'error', message: expect.stringContaining('Synthesis turn failed') }));
+      const done = events.find((e) => e.type === 'done');
+      expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'max_turns' }));
+    });
+
+    it('injects a system message instructing the model to synthesize', async () => {
+      const echo = makeTool('echo', true, async () => ({ success: true, output: 'ok' }));
+      const client = makeClient([
+        makeToolCallMessage('echo'),
+        { role: 'assistant', content: 'Summary.' },
+      ]);
+
+      await collectEvents(client, [echo], {
+        config: { maxTurns: 1 },
+      });
+
+      // The bonus turn call should include a system message about synthesizing.
+      const lastCallMessages = client.chat.mock.calls[client.chat.mock.calls.length - 1][0] as Message[];
+      const synthInstruction = lastCallMessages.find(
+        (m) => m.role === 'system' && typeof m.content === 'string' && m.content.includes('Do NOT call any tools'),
+      );
+      expect(synthInstruction).toBeDefined();
+    });
+  });
 });
