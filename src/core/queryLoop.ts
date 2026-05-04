@@ -50,12 +50,12 @@ export async function* queryLoop(
   const PRODUCTIVE_TOOLS = new Set(['file_write', 'file_edit']);
   const unproductiveLimit = config.unproductiveTurnLimit ?? 0;
   const repeatedToolFailureLimit = config.repeatedToolFailureLimit ?? 3;
-  // Tracks whether ANY productive tool succeeded across the whole run.
-  // Used to auto-promote the validation profile from oracle-prime to
-  // coding-answer at the end — oracle-prime expects reasoning sections
-  // (REFRAME / SCENARIO MAP / etc) and FAILs on legitimate code-edit
-  // sessions whose final reply is a tool-result summary.
+  // Tracks whether tools succeeded across the whole run. Used to
+  // auto-promote the validation profile away from oracle-prime at the
+  // end when the response is summarizing concrete tool work rather than
+  // fulfilling the full Oracle reasoning contract.
   let anyProductiveToolSucceeded = false;
+  let anyToolSucceeded = false;
   let totalToolCalls = 0;
   let autoContinueCount = 0;
   const autoContinueLimit = config.autoContinueLimit ?? 5;
@@ -210,14 +210,21 @@ export async function* queryLoop(
         // edited files. oracle-prime is the default fallback for ambiguous
         // prompts; using it on a coding session produces FAIL findings
         // for missing reasoning sections that the user never asked for.
-        const shouldPromote = validationProfile === 'oracle-prime' && anyProductiveToolSucceeded;
-        const effectiveProfile = shouldPromote ? 'coding-answer' : validationProfile;
+        const promotedProfile = validationProfile === 'oracle-prime' && anyProductiveToolSucceeded
+          ? 'coding-answer'
+          : validationProfile === 'oracle-prime' && anyToolSucceeded
+            ? 'tool-result-summary'
+            : validationProfile;
+        const shouldPromote = promotedProfile !== validationProfile;
+        const effectiveProfile = promotedProfile;
         if (shouldPromote) {
           yield {
             type: 'output_validation_profile_promoted',
             from: 'oracle-prime',
-            to: 'coding-answer',
-            reason: 'productive tool calls succeeded during this run',
+            to: promotedProfile,
+            reason: promotedProfile === 'coding-answer'
+              ? 'productive tool calls succeeded during this run'
+              : 'tool calls succeeded during this run',
           };
         }
         const validation = validateOutput(assistantMessage.content ?? '', effectiveProfile, customValidationProfiles);
@@ -286,6 +293,7 @@ export async function* queryLoop(
         producedFileChange = true;
         anyProductiveToolSucceeded = true;
       }
+      if (result.success) anyToolSucceeded = true;
     }
 
     // Tool-quality kill: terminate when the agent loops on non-productive

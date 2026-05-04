@@ -175,7 +175,7 @@ function renderReadiness(data) {
   const modeLabel = data.permissionMode || 'default';
   const allChecks = sections.flatMap((s) => s.checks || []);
   const permCheck = allChecks.find((c) => c.id === 'permission.mode');
-  const timedNote = permCheck && permCheck.message && permCheck.message.includes('timed') ? ' <span style="color:#ffb050;font-size:11px">(' + esc(permCheck.message.replace(/^.*\(/, '').replace(/\).*$/, '')) + ')</span>' : '';
+  const timedNote = permCheck && permCheck.message && permCheck.message.includes('timed') ? ' <span class="text-warning-xs">(' + esc(permCheck.message.replace(/^.*\(/, '').replace(/\).*$/, '')) + ')</span>' : '';
   // Identify fixable blockers for the fix-all button
   const fixableChecks = allChecks.filter((c) => c.status === 'blocked' || c.status === 'warn').filter((c) => {
     if (c.id && c.id.startsWith('tool.')) return true;
@@ -184,19 +184,20 @@ function renderReadiness(data) {
     return false;
   });
   window._readinessFixableChecks = fixableChecks;
-  const fixBtn = fixableChecks.length > 0 ? ' <button class="btn-sm" style="background:rgba(80,200,120,.15);border-color:#50c878;color:#50c878" onclick="fixReadinessBlockers()">Fix ' + fixableChecks.length + '</button>'
-    + ' <button class="btn-sm" style="background:rgba(255,176,80,.15);border-color:#ffb050;color:#ffb050" onclick="fixReadinessBlockersTimed()">Fix ' + fixableChecks.length + ' (timed)</button>' : '';
-  const undoBtn = window._fixAllUndoSnapshot ? ' <button class="btn-sm" style="background:rgba(138,180,248,.12);border-color:#8ab4f8;color:#8ab4f8" onclick="undoFixAll()">Undo fix-all</button>' : '';
+  const fixBtn = fixableChecks.length > 0 ? ' <button class="btn-sm btn-success-soft" onclick="fixReadinessBlockers()">Fix ' + fixableChecks.length + '</button>'
+    + ' <button class="btn-sm btn-warning-soft" onclick="fixReadinessBlockersTimed()">Fix ' + fixableChecks.length + ' (timed)</button>' : '';
+  const undoBtn = window._fixAllUndoSnapshot ? ' <button class="btn-sm btn-info-soft" onclick="undoFixAll()">Undo fix-all</button>' : '';
   panel.innerHTML = '<div class="mission-header"><div><h3>Mission Control</h3><p>' + esc(data.model || 'No model selected') + ' · ' + esc(modeLabel) + timedNote + '</p></div><div class="inline-actions"><button class="btn-sm" onclick="loadReadiness()">Refresh</button>' + fixBtn + undoBtn + '</div></div>'
     + '<div class="readiness-summary">' + summary + '</div>'
     + '<div class="mission-grid">' + sections.map(renderReadinessSection).join('') + '</div>'
-    + '<div style="text-align:right;margin-top:4px;padding:0 4px"><button class="btn-sm" style="font-size:9px;opacity:.5" onclick="exportMissionPrompts()">Export prompts</button> <button class="btn-sm" style="font-size:9px;opacity:.5" onclick="importMissionPrompts()">Import</button></div>'
+    + '<div class="mission-prompt-actions"><button class="btn-sm btn-xxs-muted" onclick="exportMissionPrompts()">Export prompts</button> <button class="btn-sm btn-xxs-muted" onclick="importMissionPrompts()">Import</button></div>'
     + '<div class="nervous-panel" id="nervousPanel"><div class="readiness-empty">Loading nervous system...</div></div>'
     + '<div class="autonomy-builder" id="autonomyBuilderPanel"><div class="readiness-empty">Loading autonomy plan...</div></div>'
     + '<div class="document-studio" id="documentStudioPanel">' + renderDocumentStudioShell() + '</div>';
   loadNervousStatus();
   loadAutonomyPlanPreview();
   loadDocuments();
+  applyDataWidths(panel);
   // Auto-refresh readiness every 60s when timed autonomy is active
   if (permCheck && permCheck.message && permCheck.message.includes('timed')) {
     _readinessAutoRefreshTimer = setTimeout(() => {
@@ -208,36 +209,50 @@ function renderReadiness(data) {
 function renderReadinessSection(section) {
   const checks = section.checks || [];
   const firstBlocked = checks.find((check) => check.status === 'blocked') || checks.find((check) => check.status === 'warn');
-  const noteAction = firstBlocked && firstBlocked.action === 'Open Settings' ? ' onclick="toggleRight()" style="cursor:pointer;text-decoration:underline dotted"' : firstBlocked && firstBlocked.action === 'Open Tools' ? ' onclick="openLeftTabByName(\'tools\')" style="cursor:pointer;text-decoration:underline dotted"' : '';
+  const noteAction = firstBlocked && firstBlocked.action === 'Open Settings' ? ' onclick="toggleRight()"' : firstBlocked && firstBlocked.action === 'Open Tools' ? ' onclick="openLeftTabByName(\'tools\')"' : '';
+  const noteClass = noteAction ? 'mission-note clickable-dotted' : 'mission-note';
   const readyCount = checks.filter((c) => c.status === 'ready').length;
-  const checkCountColor = readyCount === checks.length ? '#50c878' : readyCount === 0 ? '#ff5050' : '#ffb050';
-  const checkRows = checks.length > 1 ? '<details style="margin-top:4px"><summary class="trace-meta" style="cursor:pointer;font-size:10px"><span style="color:' + checkCountColor + '">' + readyCount + '/' + checks.length + ' ready</span></summary>'
+  const checkCountClass = readyCount === checks.length ? 'readiness-ready' : readyCount === 0 ? 'readiness-none' : 'readiness-some';
+  const checkRows = checks.length > 1 ? '<details class="details-mt4"><summary class="trace-meta trace-summary-xs"><span class="' + checkCountClass + '">' + readyCount + '/' + checks.length + ' ready</span></summary>'
     + checks.map((c) => {
       const icon = c.status === 'ready' ? '✅' : c.status === 'warn' ? '⚠️' : '❌';
-      const actionAttr = c.action === 'Open Settings' ? ' onclick="toggleRight()" style="cursor:pointer;text-decoration:underline dotted"' : c.action === 'Open Tools' ? ' onclick="openLeftTabByName(\'tools\')" style="cursor:pointer;text-decoration:underline dotted"' : '';
+      const actionAttr = c.action === 'Open Settings' ? ' onclick="toggleRight()"' : c.action === 'Open Tools' ? ' onclick="openLeftTabByName(\'tools\')"' : '';
+      const rowClass = actionAttr ? 'trace-meta trace-meta-xs-row clickable-dotted' : 'trace-meta trace-meta-xs-row';
       let actionBtn = '';
       if (c.status !== 'ready') {
         if (c.id && c.id.startsWith('tool.') && c.status === 'blocked') {
           const toolName = c.id.replace('tool.', '');
-          actionBtn = ' <button class="btn-sm" style="font-size:9px;padding:1px 6px" onclick="event.stopPropagation();toggleTool(\'' + escAttr(toolName) + '\',true).then(function(){loadReadiness()})">Enable</button>'
-            + ' <button class="btn-sm" style="font-size:9px;padding:1px 6px;color:#ffb050;border-color:#ffb050" onclick="event.stopPropagation();readinessTimedFix(\'tool\',\'' + escAttr(toolName) + '\')">⏱</button>';
+          actionBtn = ' <button class="btn-sm btn-xxs" onclick="event.stopPropagation();toggleTool(\'' + escAttr(toolName) + '\',true).then(function(){loadReadiness()})">Enable</button>'
+            + ' <button class="btn-sm btn-xxs-warning" onclick="event.stopPropagation();readinessTimedFix(\'tool\',\'' + escAttr(toolName) + '\')">⏱</button>';
         } else if (c.id === 'permission.mode') {
-          actionBtn = ' <button class="btn-sm" style="font-size:9px;padding:1px 6px" onclick="event.stopPropagation();setMode(\'dontAsk\',document.querySelectorAll(\'.permission-mode-option\')[0]);setTimeout(loadReadiness,500)">Set dontAsk</button>'
-            + ' <button class="btn-sm" style="font-size:9px;padding:1px 6px;color:#ffb050;border-color:#ffb050" onclick="event.stopPropagation();readinessTimedFix(\'mode\')">⏱</button>';
+          actionBtn = ' <button class="btn-sm btn-xxs" onclick="event.stopPropagation();setMode(\'dontAsk\',document.querySelectorAll(\'.permission-mode-option\')[0]);setTimeout(loadReadiness,500)">Set dontAsk</button>'
+            + ' <button class="btn-sm btn-xxs-warning" onclick="event.stopPropagation();readinessTimedFix(\'mode\')">⏱</button>';
         } else if (c.id && c.id.includes('.grant') && c.status !== 'ready') {
           const capId = c.id === 'shell.grant' ? 'arbitrary-shell' : c.id === 'background.autonomy.grant' || c.id === 'background.grant' ? 'background-autonomous-jobs' : c.id === 'self.modify.grant' ? 'self-modifying-code' : '';
-          if (capId) actionBtn = ' <button class="btn-sm" style="font-size:9px;padding:1px 6px" onclick="event.stopPropagation();grantCapability(\'' + escAttr(capId) + '\').then(function(){loadReadiness()})">Grant</button>';
+          if (capId) actionBtn = ' <button class="btn-sm btn-xxs" onclick="event.stopPropagation();grantCapability(\'' + escAttr(capId) + '\').then(function(){loadReadiness()})">Grant</button>';
         }
       }
-      return '<div class="trace-meta" style="font-size:10px;display:flex;align-items:center;gap:4px"' + actionAttr + '><span>' + icon + ' ' + esc(c.label) + ': ' + esc(c.message) + '</span>' + actionBtn + '</div>';
+      return '<div class="' + rowClass + '"' + actionAttr + '><span>' + icon + ' ' + esc(c.label) + ': ' + esc(c.message) + '</span>' + actionBtn + '</div>';
     }).join('') + '</details>' : '';
   return '<div class="mission-card ' + escAttr(section.status) + '">'
     + '<div class="mission-card-top"><strong>' + esc(section.label) + '</strong><span>' + esc(section.score) + '%</span></div>'
-    + '<div class="mission-meter"><span style="width:' + Math.max(0, Math.min(100, section.score || 0)) + '%"></span></div>'
-    + '<div class="mission-note"' + noteAction + '>' + esc(firstBlocked ? firstBlocked.message : 'Ready for this mode.') + '</div>'
+    + '<div class="mission-meter"><span data-width-pct="' + Math.max(0, Math.min(100, section.score || 0)) + '"></span></div>'
+    + '<div class="' + noteClass + '"' + noteAction + '>' + esc(firstBlocked ? firstBlocked.message : 'Ready for this mode.') + '</div>'
     + checkRows
-    + '<div class="inline-actions" style="margin-top:4px"><button class="btn-sm" onclick="sendMissionPrompt(\'' + escAttr(section.id) + '\')">Start</button> <button class="btn-sm" style="font-size:9px;opacity:.6" onclick="editMissionPrompt(\'' + escAttr(section.id) + '\')">✏️</button></div>'
+    + '<div class="inline-actions top-spaced"><button class="btn-sm" onclick="sendMissionPrompt(\'' + escAttr(section.id) + '\')">Start</button> <button class="btn-sm btn-xxs-subtle" onclick="editMissionPrompt(\'' + escAttr(section.id) + '\')">✏️</button></div>'
     + '</div>';
+}
+
+function applyDataWidths(root) {
+  (root || document).querySelectorAll('[data-width-pct]').forEach((element) => {
+    element.style.width = Math.max(0, Math.min(100, Number(element.getAttribute('data-width-pct')) || 0)) + '%';
+  });
+}
+
+function applyDataIndents(root) {
+  (root || document).querySelectorAll('[data-indent-depth]').forEach((element) => {
+    element.style.paddingLeft = Math.max(0, Number(element.getAttribute('data-indent-depth')) || 0) * 14 + 'px';
+  });
 }
 
 const DEFAULT_MISSION_PROMPTS = {
@@ -420,16 +435,18 @@ async function loadNervousStatus() {
     const recentHigh = signals.filter((s) => s.severity === 'high' || s.severity === 'critical');
     const reflexes = summary.activeReflexes || [];
     const risk = summary.riskLevel || 'low';
-    const riskColor = risk === 'critical' ? 'var(--error)' : risk === 'high' ? '#ffb050' : risk === 'medium' ? '#ffd700' : 'var(--text-dim)';
+    const riskClass = risk === 'critical' ? 'risk-critical' : risk === 'high' ? 'risk-high' : risk === 'medium' ? 'risk-medium' : 'risk-low';
+    const bypassNote = data.verificationBypassActive ? '<div class="trace-meta trace-meta-sm-top trace-meta-success">Auto-approve all is active: verifier/recovery gates will not block writes.</div>' : '';
     panel.innerHTML = '<div class="autonomy-head"><div><strong>🧠 Nervous System</strong>'
-      + '<span style="color:' + riskColor + '">' + esc(risk) + ' risk · ' + esc(signals.length) + ' signals · ' + esc(reflexes.length) + ' reflexes</span></div>'
+      + '<span class="' + riskClass + '">' + esc(risk) + ' risk · ' + esc(signals.length) + ' signals · ' + esc(reflexes.length) + ' reflexes</span></div>'
       + '<button class="btn-sm" onclick="loadNervousStatus()">Refresh</button></div>'
+      + bypassNote
       + (reflexes.length > 0 ? '<div class="autonomy-task-list">' + reflexes.map((r) => '<div class="autonomy-task"><strong>⚡ ' + esc(r) + '</strong></div>').join('') + '</div>' : '')
-      + (recentHigh.length > 0 ? '<details style="margin-top:4px"><summary class="trace-meta" style="cursor:pointer;font-size:11px">⚠️ Recent high-severity signals (' + recentHigh.length + ')</summary>'
-        + recentHigh.slice(-5).map((s) => '<div class="trace-meta" style="font-size:11px;color:' + (s.severity === 'critical' ? 'var(--error)' : '#ffb050') + '">' + esc(s.type) + ': ' + esc(s.message) + '</div>').join('')
+      + (recentHigh.length > 0 ? '<details class="details-mt4"><summary class="trace-meta trace-summary-sm">⚠️ Recent high-severity signals (' + recentHigh.length + ')</summary>'
+        + recentHigh.slice(-5).map((s) => '<div class="trace-meta trace-meta-sm ' + (s.severity === 'critical' ? 'trace-meta-error' : 'trace-meta-warning') + '">' + esc(s.type) + ': ' + esc(s.message) + '</div>').join('')
         + '</details>' : '')
-      + (summary.safetyNotes && summary.safetyNotes.length > 0 ? '<div class="trace-meta" style="font-size:11px;margin-top:4px">' + summary.safetyNotes.map((n) => '🛡 ' + esc(n)).join('<br>') + '</div>' : '')
-      + (data.recovery ? '<div class="trace-meta" style="font-size:11px;color:var(--error);margin-top:4px">⚠️ Recovery: ' + esc(data.recovery.reason) + ' → ' + esc(data.recovery.safeNextAction) + '</div>' : '');
+      + (summary.safetyNotes && summary.safetyNotes.length > 0 ? '<div class="trace-meta trace-meta-sm-top">' + summary.safetyNotes.map((n) => '🛡 ' + esc(n)).join('<br>') + '</div>' : '')
+      + (data.recovery ? '<div class="trace-meta trace-meta-sm-top trace-meta-error">⚠️ Recovery: ' + esc(data.recovery.reason) + ' → ' + esc(data.recovery.safeNextAction) + '</div>' : '');
   } catch (error) {
     panel.innerHTML = '<div class="readiness-empty">Nervous system: ' + esc(error.message || error) + '</div>';
   }
@@ -454,7 +471,7 @@ function renderAutonomyBuilder(data) {
     + '<div class="autonomy-actions"><button class="btn-sm" onclick="dryRunAutonomy()">Dry run next</button><button class="btn-sm" onclick="startAutonomyRun()">Start 1 task</button><button class="btn-sm" onclick="openLeftTabByName(\'runs\')">Open runs</button></div>'
     + '<div class="task-add-form"><input id="newTaskInput" type="text" placeholder="Describe a task for the agent..." onkeydown="if(event.key===\'Enter\')addPlanTask()"><button class="btn-sm" onclick="addPlanTask()">+ Add task</button></div>'
     + '<div class="autonomy-task-list">' + (nextTasks.length ? nextTasks.map(renderTaskRow).join('') : '<div class="readiness-empty">No pending tasks. Add one above.</div>') + '</div>'
-    + (doneTasks.length ? '<details style="margin-top:4px"><summary class="trace-meta" style="cursor:pointer;font-size:11px">Recent completed (' + esc(data.done) + ')</summary><div class="autonomy-task-list">' + doneTasks.map((t) => '<div class="autonomy-task done"><strong>' + esc(t.id) + '</strong><span>' + esc(t.title) + '</span></div>').join('') + '</div></details>' : '')
+    + (doneTasks.length ? '<details class="details-mt4"><summary class="trace-meta trace-summary-sm">Recent completed (' + esc(data.done) + ')</summary><div class="autonomy-task-list">' + doneTasks.map((t) => '<div class="autonomy-task done"><strong>' + esc(t.id) + '</strong><span>' + esc(t.title) + '</span></div>').join('') + '</div></details>' : '')
     + '<div class="first-run-status" id="autonomyBuilderStatus">Previewing ' + esc(data.planPath || 'IMPLEMENTATION_PLAN.md') + '</div>';
 }
 
@@ -633,11 +650,11 @@ function renderModelCapabilityHint() {
     const def = data.defaultMaxTurns || 25;
     if (adaptive > def) {
       const badge = document.createElement('div');
-      badge.style.cssText = 'margin-top:4px;font-size:11px;color:var(--text-dim)';
+      badge.className = 'model-adaptive-badge';
       badge.textContent = '🔄 Adaptive: ' + adaptive + ' turns (default ' + def + ') — synthesis fired ' + (record.fired || 0) + '/' + (record.total || 0) + ' sessions ';
       const resetBtn = document.createElement('a');
       resetBtn.href = '#';
-      resetBtn.style.cssText = 'color:var(--accent);font-size:11px';
+      resetBtn.className = 'model-inline-link';
       resetBtn.textContent = '(reset)';
       resetBtn.onclick = (e) => { e.preventDefault(); fetch('/api/synthesis-stats?model=' + encodeURIComponent(model.name), { method: 'DELETE' }).then(() => renderModelCapabilityHint()).catch(() => {}); };
       badge.appendChild(resetBtn);
@@ -657,7 +674,7 @@ function getModelProfileSuggestion(modelName) {
   // Check if any saved profile uses this model
   for (const [name, profile] of Object.entries(agentProfiles)) {
     if (profile.model && modelLower.includes(profile.model.toLowerCase().split(':')[0])) {
-      return '<div style="margin-top:4px"><a href="#" onclick="loadAgentProfile(\'' + escAttr(name) + '\'); event.preventDefault();" style="color:var(--accent);font-size:11px">' + esc((profile.avatar || '🤖') + ' Load "' + name + '" profile for this model') + '</a></div>';
+      return '<div class="model-profile-suggestion"><a href="#" class="model-inline-link" onclick="loadAgentProfile(\'' + escAttr(name) + '\'); event.preventDefault();">' + esc((profile.avatar || '🤖') + ' Load "' + name + '" profile for this model') + '</a></div>';
     }
   }
   // Suggest personality presets based on model type
@@ -672,7 +689,7 @@ function getModelProfileSuggestion(modelName) {
   };
   for (const [prefix, config] of Object.entries(MODEL_PERSONALITY_HINTS)) {
     if (modelLower.includes(prefix) && !currentAgentName) {
-      return '<div style="margin-top:4px;font-size:11px;color:var(--text-dim)">' + esc(config.hint) + ' <a href="#" onclick="applyPersonalityPreset(\'' + config.preset + '\'); event.preventDefault();" style="color:var(--accent)">Apply</a></div>';
+      return '<div class="model-personality-hint">' + esc(config.hint) + ' <a href="#" class="accent-link" onclick="applyPersonalityPreset(\'' + config.preset + '\'); event.preventDefault();">Apply</a></div>';
     }
   }
   return '';
@@ -698,7 +715,7 @@ function renderAttachmentHint() {
     return;
   }
   if (pendingFiles.length > 3) {
-    hint.innerHTML = esc(pendingFiles.length + ' files attached.') + ' <a href="#" onclick="suggestScanAllAttachments(event)" style="color:var(--accent)">Ask the model to scan all attachments</a> using <code>list_uploads</code>.';
+    hint.innerHTML = esc(pendingFiles.length + ' files attached.') + ' <a href="#" class="accent-link" onclick="suggestScanAllAttachments(event)">Ask the model to scan all attachments</a> using <code>list_uploads</code>.';
     return;
   }
   hint.textContent = 'Attach text, data, image, or audio files. Harness shows the media type and passes the local file path into your message.';
@@ -797,6 +814,7 @@ async function loadSettings() {
     const mode = document.querySelectorAll('.permission-mode-option')[modeIndex];
     if (mode) mode.classList.add('active');
     refreshAutonomyBanner();
+    refreshVisionReadinessStatus();
   } catch {}
 }
 
@@ -849,13 +867,13 @@ const AUDIT_TYPE_COLORS = { 'grant.created': '#50c878', 'grant.revoked': '#ffb05
 const AUDIT_FILTER_MAP = { grant: ['grant.created', 'grant.revoked', 'grant.expired'], autonomy: ['autonomy.timed.engaged', 'autonomy.timed.cleared', 'autonomy.timed.expired'], automation: ['automation_script.allowed', 'automation_script.denied'] };
 
 function renderAuditRowHtml(ev) {
-  const color = AUDIT_TYPE_COLORS[ev.type] || 'var(--text-dim)';
+  const tone = AUDIT_TYPE_COLORS[ev.type] ? 'audit-event-known' : 'audit-event-muted';
   const ts = ev.createdAt ? new Date(ev.createdAt).toLocaleString() : '';
   const detail = ev.capabilityId ? ev.capabilityId : ev.command ? ev.command : '';
   const jsonDetail = JSON.stringify(ev, null, 2);
-  return '<details style="margin:0"><summary class="trace-meta" style="font-size:11px;cursor:pointer;list-style:none"><span style="color:' + color + '">' + esc(ev.type) + '</span> ' + esc(detail) + (ev.reason ? ' — ' + esc(ev.reason) : '') + (ev.presetId ? ' [' + esc(ev.presetId) + ']' : '') + '<span style="color:var(--text-dim);margin-left:8px">' + esc(ts) + '</span></summary>'
-    + '<div style="position:relative"><pre class="audit-json-pre" style="font-size:9px;background:var(--surface2);padding:4px 8px;border-radius:4px;margin:2px 0 4px;white-space:pre-wrap;color:var(--text-dim)">' + esc(jsonDetail) + '</pre>'
-    + '<button class="btn-sm" style="position:absolute;top:4px;right:4px;font-size:9px;padding:1px 6px;opacity:.7" onclick="copyAuditJson(this)">Copy</button></div></details>';
+  return '<details class="audit-row"><summary class="trace-meta audit-summary"><span class="' + tone + '">' + esc(ev.type) + '</span> ' + esc(detail) + (ev.reason ? ' — ' + esc(ev.reason) : '') + (ev.presetId ? ' [' + esc(ev.presetId) + ']' : '') + '<span class="text-dim-inline">' + esc(ts) + '</span></summary>'
+    + '<div class="audit-json-wrap"><pre class="audit-json-pre">' + esc(jsonDetail) + '</pre>'
+    + '<button class="btn-sm btn-xxs-subtle audit-copy-btn" onclick="copyAuditJson(this)">Copy</button></div></details>';
 }
 
 let _autonomyBannerTimer = null;
@@ -883,9 +901,10 @@ function refreshAutonomyBanner() {
         const timeStr = h > 0 ? h + 'h ' + (m > 0 ? m + 'm' : '') : m + 'm';
         const prevLabel = state.autonomyPreviousMode === 'acceptEdits' ? 'Ask for commands' : state.autonomyPreviousMode === 'default' ? 'Ask for everything' : state.autonomyPreviousMode;
         const pct = _autonomyOriginalDurationMs > 0 ? Math.max(0, Math.min(100, (ms / _autonomyOriginalDurationMs) * 100)) : 100;
-        banner.innerHTML = '<strong>⏱ Timed autonomy active:</strong> ' + esc(timeStr.trim()) + ' remaining → reverts to <strong>' + esc(prevLabel) + '</strong> <button class="btn-sm" style="margin-left:8px;font-size:11px" onclick="cancelTimedAutonomy()">Cancel</button>'
-          + '<div style="height:2px;margin-top:4px;background:rgba(255,176,80,.2);border-radius:1px"><div style="height:100%;width:' + pct.toFixed(1) + '%;background:#ffb050;transition:width 1s linear;border-radius:1px"></div></div>';
-        banner.style.display = 'block';
+        banner.innerHTML = '<strong>⏱ Timed autonomy active:</strong> ' + esc(timeStr.trim()) + ' remaining → reverts to <strong>' + esc(prevLabel) + '</strong> <button class="btn-sm btn-inline-cancel" onclick="cancelTimedAutonomy()">Cancel</button>'
+          + '<div class="timed-progress-track"><div class="timed-progress-fill" data-width-pct="' + pct.toFixed(1) + '"></div></div>';
+        banner.classList.remove('hidden-by-default');
+        applyDataWidths(banner);
         // Also sync the mode radio buttons in case it expired server-side
         document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
         const mi = state.mode === 'dontAsk' ? 0 : state.mode === 'acceptEdits' ? 1 : 2;
@@ -896,7 +915,7 @@ function refreshAutonomyBanner() {
         return;
       }
     }
-    banner.style.display = 'none';
+    banner.classList.add('hidden-by-default');
     banner.innerHTML = '';
     // Sync mode buttons in case autonomy expired
     if (state.mode) {
@@ -934,17 +953,18 @@ function renderGlobalAutonomyBanner(state) {
   if (!banner) {
     banner = document.createElement('div');
     banner.id = 'globalAutonomyBanner';
-    banner.style.cssText = 'position:fixed;left:0;right:0;z-index:9998;background:rgba(255,176,80,.12);border-bottom:1px solid #ffb050;color:#ffb050;padding:0;font-size:11px;font-family:inherit;flex-direction:column';
+    banner.className = 'global-autonomy-banner';
     banner.style.display = 'flex';
     document.body.appendChild(banner);
   }
   // Always recalculate top position based on kill switch banner presence
   const ksBanner = document.getElementById('killSwitchBanner');
   banner.style.top = ksBanner ? (ksBanner.offsetHeight + 'px') : '0';
-  banner.innerHTML = '<div style="display:flex;align-items:center;gap:8px;padding:4px 12px"><strong>⏱ Timed autonomy:</strong> ' + esc(timeStr.trim()) + ' remaining'
-    + '<span style="margin-left:auto;opacity:.7">All tools + dontAsk mode active</span>'
-    + '<button class="btn-sm" style="margin-left:8px;font-size:10px" onclick="cancelTimedAutonomy()">Cancel</button></div>'
-    + '<div style="height:2px;background:rgba(255,176,80,.2)"><div style="height:100%;width:' + pct.toFixed(1) + '%;background:#ffb050;transition:width 1s linear"></div></div>';
+  banner.innerHTML = '<div class="global-autonomy-row"><strong>⏱ Timed autonomy:</strong> ' + esc(timeStr.trim()) + ' remaining'
+    + '<span class="global-autonomy-note">All tools + dontAsk mode active</span>'
+    + '<button class="btn-sm btn-global-cancel" onclick="cancelTimedAutonomy()">Cancel</button></div>'
+    + '<div class="timed-progress-track global"><div class="timed-progress-fill" data-width-pct="' + pct.toFixed(1) + '"></div></div>';
+  applyDataWidths(banner);
 }
 
 async function cancelTimedAutonomy() {
@@ -1058,7 +1078,7 @@ function renderAboutPanel(data) {
     ['Manifest', manifestLink],
     ['Release', releaseLink],
   ];
-  const validationDoc = '<div class="trace-detail" style="margin-top:8px"><strong>Validation profiles:</strong> Auto-select picks <code>oracle-prime</code> / <code>factual-answer</code> / <code>coding-answer</code> / <code>tool-result-summary</code> from prompt keywords. Vague prompts default to <code>oracle-prime</code> and can be skipped via <em>Skip validation on low-signal prompts</em>. See <code>docs/VALIDATION-PROFILES.md</code> for the full rules.</div>';
+  const validationDoc = '<div class="trace-detail"><strong>Validation profiles:</strong> Auto-select picks <code>oracle-prime</code> / <code>factual-answer</code> / <code>coding-answer</code> / <code>tool-result-summary</code> from prompt keywords. Vague prompts default to <code>oracle-prime</code> and can be skipped via <em>Skip validation on low-signal prompts</em>. See <code>docs/VALIDATION-PROFILES.md</code> for the full rules.</div>';
   panel.innerHTML = '<div class="about-grid">' + rows.map(([label, value]) => '<div><strong>' + esc(label) + '</strong> ' + String(value).replace(/^((?!<a ).)*$/, (text) => esc(text)) + '</div>').join('') + '</div>' + validationDoc;
 }
 
@@ -1525,7 +1545,11 @@ function updateMediaToolSetting(k, v) {
   if (String(v).trim()) next[k] = String(v).trim();
   else delete next[k];
   currentMediaTools = next;
-  updateSetting('mediaTools', next);
+  const saved = updateSetting('mediaTools', next);
+  if (k === 'visionModel') {
+    setVisionReadinessStatus(null, 'checking');
+    saved.then(refreshVisionReadinessStatus).catch(() => refreshVisionReadinessStatus());
+  }
 }
 
 let currentCuratorSettings = {};
@@ -1794,6 +1818,7 @@ async function checkSettingsHealth() {
     const response = await fetch('/api/setup/health?' + params.toString());
     const data = await response.json();
     if (data.error) throw new Error(data.error);
+    setVisionReadinessStatus(data.vision);
     if (detail) detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio) + (data.pdfOcr ? renderSetupHealthRow('PDF OCR', data.pdfOcr) : '');
   } catch (error) {
     if (detail) detail.innerHTML = '<div><strong>Setup</strong> ' + esc(error.message || error) + '</div>';
@@ -1825,6 +1850,7 @@ async function applyFirstRunSetup() {
     if (pdfOcr) pdfOcr.value = currentMediaTools.pdfOcrCommand || '';
     if (status) status.textContent = 'Saved. Models will refresh from the configured Ollama host.';
     markWalkthroughStep('setup');
+    refreshVisionReadinessStatus();
     await loadModels();
   } catch (error) {
     if (status) status.textContent = 'Setup failed: ' + (error.message || error);
@@ -1844,6 +1870,7 @@ async function checkFirstRunHealth() {
     const response = await fetch('/api/setup/health?' + params.toString());
     const data = await response.json();
     if (data.error) throw new Error(data.error);
+    setVisionReadinessStatus(data.vision);
     if (detail) {
       detail.classList.remove('initial-hidden');
       detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio) + (data.pdfOcr ? renderSetupHealthRow('PDF OCR', data.pdfOcr) : '');
@@ -1862,6 +1889,40 @@ async function checkFirstRunHealth() {
 function renderSetupHealthRow(label, result) {
   const ok = result?.ok ? '✓' : '○';
   return '<div><strong>' + esc(label) + '</strong> ' + ok + ' ' + esc(result?.message || 'not checked') + '</div>';
+}
+
+function setVisionReadinessStatus(result, pendingLabel) {
+  const el = document.getElementById('visionModelStatus');
+  if (!el) return;
+  el.classList.remove('ready', 'warn', 'error');
+  if (!result) {
+    el.textContent = pendingLabel || 'unknown';
+    el.title = 'Vision setup has not been checked yet.';
+    return;
+  }
+  el.textContent = result.ok ? 'ready' : 'not ready';
+  el.title = result.message || 'Vision setup checked.';
+  el.classList.add(result.ok ? 'ready' : 'warn');
+}
+
+async function refreshVisionReadinessStatus() {
+  const el = document.getElementById('visionModelStatus');
+  if (!el) return;
+  setVisionReadinessStatus(null, 'checking');
+  try {
+    const host = document.getElementById('ollamaHost')?.value.trim() || 'http://localhost:11434';
+    const visionModel = document.getElementById('visionModel')?.value.trim() || '';
+    const params = new URLSearchParams({ ollamaHost: host, visionModel, audioTranscribeCommand: '', audioSamplePath: '' });
+    const response = await fetch('/api/setup/health?' + params.toString());
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    setVisionReadinessStatus(data.vision);
+  } catch (error) {
+    el.textContent = 'error';
+    el.title = 'Vision setup check failed: ' + (error.message || error);
+    el.classList.remove('ready', 'warn');
+    el.classList.add('error');
+  }
 }
 
 function setMode(m, el) {
@@ -1948,9 +2009,9 @@ function showAttached() {
   el.style.display = 'flex';
   el.innerHTML = pendingFiles.map((f, i) => {
     const streamBtn = mediaKind(f) === 'pdf'
-      ? ' <button onclick="streamPdfExtract(' + i + ')" title="Stream PDF extraction" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:14px">⇩</button>'
+      ? ' <button class="attachment-icon-btn accent" onclick="streamPdfExtract(' + i + ')" title="Stream PDF extraction">⇩</button>'
       : '';
-    return '<span title="' + escAttr(mediaKind(f)) + ' attachment" style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:12px;display:flex;align-items:center;gap:4px">' + mediaIcon(f) + ' ' + esc(mediaKind(f)) + ': ' + esc(f.name) + streamBtn + ' <button onclick="removeAttached(' + i + ')" title="Remove attachment" style="background:none;border:none;color:var(--error);cursor:pointer;font-size:14px">✕</button></span>';
+    return '<span class="attached-file-chip" title="' + escAttr(mediaKind(f)) + ' attachment">' + mediaIcon(f) + ' ' + esc(mediaKind(f)) + ': ' + esc(f.name) + streamBtn + ' <button class="attachment-icon-btn danger" onclick="removeAttached(' + i + ')" title="Remove attachment">✕</button></span>';
   }).join('');
   renderAttachmentHint();
 }
@@ -1959,8 +2020,8 @@ async function streamPdfExtract(index) {
   const file = pendingFiles[index];
   if (!file) return;
   const dialog = document.createElement('div');
-  dialog.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999';
-  dialog.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;width:80%;max-width:800px;max-height:80vh;display:flex;flex-direction:column;gap:8px"><div style="display:flex;justify-content:space-between;align-items:center"><strong>Streaming pages from ' + esc(file.name) + '</strong><button id="closePdfStream" style="background:none;border:none;color:var(--text);font-size:18px;cursor:pointer">✕</button></div><div id="pdfStreamLog" style="flex:1;overflow:auto;font-family:var(--mono);font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px"></div><div id="pdfStreamStatus" style="font-size:12px;color:var(--muted)">Connecting…</div></div>';
+  dialog.className = 'pdf-stream-modal';
+  dialog.innerHTML = '<div class="pdf-stream-dialog"><div class="pdf-stream-header"><strong>Streaming pages from ' + esc(file.name) + '</strong><button id="closePdfStream" class="attachment-icon-btn text" title="Close PDF stream">✕</button></div><div id="pdfStreamLog" class="pdf-stream-log"></div><div id="pdfStreamStatus" class="pdf-stream-status">Connecting…</div></div>';
   document.body.appendChild(dialog);
   const log = dialog.querySelector('#pdfStreamLog');
   const status = dialog.querySelector('#pdfStreamStatus');
@@ -1973,7 +2034,7 @@ async function streamPdfExtract(index) {
       const data = JSON.parse(e.data);
       pages++;
       const block = document.createElement('div');
-      block.innerHTML = '<div style="color:var(--accent);margin-top:6px">--- Page ' + data.pageNum + ' ---</div><div style="white-space:pre-wrap">' + esc(data.text || '(empty)') + '</div>';
+      block.innerHTML = '<div class="pdf-stream-page-title">--- Page ' + data.pageNum + ' ---</div><div class="prewrap-text">' + esc(data.text || '(empty)') + '</div>';
       log.appendChild(block);
       log.scrollTop = log.scrollHeight;
       status.textContent = 'Streamed ' + pages + ' page(s)…';
@@ -2119,7 +2180,7 @@ async function sendMessage(opts) {
           prompt = scheduleText.slice(intervalMatch[0].length).trim();
         }
         const name = prompt.slice(0, 50).replace(/[^a-zA-Z0-9 _-]/g, '').trim() || 'Scheduled job';
-        const response = await fetch('/api/automations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, prompt, schedule: minutes + ' minutes' }) });
+        const response = await fetch('/api/automations/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, prompt, schedule: minutes + ' minutes' }) });
         const data = await readApiJson(response, 'Create automation API');
         addMsg('assistant', '✅ Automation job created: **' + name + '**\n\nSchedule: ' + intervalLabel + ' (' + minutes + ' minutes)\n\nThe job will run automatically while the server is running. Open the **Runs** tab to manage it.');
       } catch (error) {
@@ -2279,6 +2340,7 @@ async function sendMessage(opts) {
             toolOnlyResultCount += 1;
             if (!ev.result.success) toolOnlyFailureCount += 1;
             if (toolBox) appendToolItem(toolBox, ev.result.success ? '✅' : '❌', '', ev.result.output.slice(0, 120), !ev.result.success);
+            if (toolBox && !ev.result.success && isPermissionOrRecoveryFailure(ev.result.output)) appendPermissionRecoveryItem(toolBox, ev.result.output);
             // Capture web_read sources for citation rendering.
             if (ev.result.success && ev.call && ev.call.name === 'web_read' && ev.call.input && typeof ev.call.input.url === 'string') {
               const url = ev.call.input.url;
@@ -2496,7 +2558,7 @@ function appendUploadsFallbackAdvice(toolBox, event) {
     '<strong>uploads-fallback warn · ' + esc(String(event.unique || 0)) + ' unique</strong>' +
     '<div class="validation-group">WARN: bare-filename-attachment - ' + esc(findingMsg) + ' Try: Call list_uploads first or pass the exact .harness/uploads/ path.</div>' +
     '</span>' +
-    '<span class="profile-feedback" style="margin-left:6px">' +
+    '<span class="profile-feedback profile-feedback-spaced">' +
     '<button class="btn-sm" data-vote="dismiss" title="Acknowledge and hide this advice for this turn">Dismiss</button>' +
     '</span>';
   const dismissBtn = item.querySelector('button[data-vote="dismiss"]');
@@ -2532,7 +2594,7 @@ function appendOutputValidationProfileItem(toolBox, event) {
   const source = event.source || 'auto-selected';
   item.innerHTML = '<span>🧭</span><span class="tool-name">validation profile</span>' +
     '<span class="tool-detail">' + label + esc(profile) + '. ' + esc(reason) + '</span>' +
-    '<span class="profile-feedback" style="margin-left:6px">' +
+    '<span class="profile-feedback profile-feedback-spaced">' +
     '<button class="btn-sm" data-vote="up" title="This profile fits the prompt">👍</button>' +
     '<button class="btn-sm" data-vote="down" title="This profile does not fit the prompt">👎</button>' +
     '</span>';
@@ -2572,6 +2634,28 @@ function appendToolItem(toolBox, icon, name, detail, isError) {
   item.innerHTML = '<span>' + icon + '</span>' + (name ? '<span class="tool-name">' + esc(name) + '</span>' : '') + '<span class="tool-detail">' + esc(detail) + '</span>';
   toolBox.appendChild(item);
   HarnessToolActivity.updateToolActivitySummary(toolBox, isError);
+  scrollBottom();
+}
+
+function isPermissionOrRecoveryFailure(output) {
+  return /Permission denied|Nervous System|requires verification|Recovery mode active|requires confirmation/i.test(String(output || ''));
+}
+
+function appendPermissionRecoveryItem(toolBox, output) {
+  const item = document.createElement('div');
+  item.className = 'tool-item tool-item-permission';
+  item.innerHTML = '<span>⚠️</span><span class="tool-name">Action blocked</span><span class="tool-detail">' + esc(String(output || '').slice(0, 180)) + '</span><button class="btn-sm primary" type="button">Auto-approve all</button>';
+  const button = item.querySelector('button');
+  if (button) button.addEventListener('click', async () => {
+    await updateSetting('permissionMode', 'dontAsk');
+    document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
+    const dontAskOption = document.querySelectorAll('.permission-mode-option')[0];
+    if (dontAskOption) dontAskOption.classList.add('active');
+    showToast('Auto-approve all enabled. Retry the request when ready.', 3500, 'success');
+    loadNervousStatus();
+  });
+  toolBox.appendChild(item);
+  HarnessToolActivity.updateToolActivitySummary(toolBox, true);
   scrollBottom();
 }
 
@@ -2680,8 +2764,8 @@ function startAutonomyPolling() {
 function renderAutonomyState(s) {
   const hud = document.getElementById('autonomyHud');
   if (!hud) return;
-  if (!s) { hud.style.display = 'none'; return; }
-  hud.style.display = '';
+  if (!s) { hud.classList.add('hidden-by-default'); return; }
+  hud.classList.remove('hidden-by-default');
   const taskEl = document.getElementById('autonomyHudTask');
   const countsEl = document.getElementById('autonomyHudCounts');
   const status = s.lastTaskStatus || 'idle';
@@ -2735,13 +2819,13 @@ let autonomyLogTimer = null;
 function toggleAutonomyLog() {
   const modal = document.getElementById('autonomyLogModal');
   if (!modal) return;
-  const isOpen = modal.style.display !== 'none';
+  const isOpen = !modal.classList.contains('hidden-by-default');
   if (isOpen) {
-    modal.style.display = 'none';
+    modal.classList.add('hidden-by-default');
     if (autonomyLogTimer) { clearInterval(autonomyLogTimer); autonomyLogTimer = null; }
     return;
   }
-  modal.style.display = 'flex';
+  modal.classList.remove('hidden-by-default');
   refreshAutonomyLog();
   autonomyLogTimer = setInterval(refreshAutonomyLog, 2000);
 }
@@ -2790,7 +2874,7 @@ async function loadRecovery() {
     const s = d.sessions[0];
     const banner = document.createElement('div');
     banner.className = 'recovery-banner';
-    banner.innerHTML = '<span><strong>Unfinished chat available:</strong> ' + esc(s.title || s.sessionId) + ' · ' + esc(s.status || 'running') + '<br>Resume continues it. Fork starts a copy so the original stays unchanged.</span><div style="display:flex;gap:6px"><button class="btn-sm" title="Continue this session" onclick="recoverSession(\'' + escAttr(s.sessionId) + '\')">Resume chat</button><button class="btn-sm" title="Start from a copy of this session" onclick="forkSession(\'' + escAttr(s.sessionId) + '\')">Fork copy</button></div>';
+    banner.innerHTML = '<span><strong>Unfinished chat available:</strong> ' + esc(s.title || s.sessionId) + ' · ' + esc(s.status || 'running') + '<br>Resume continues it. Fork starts a copy so the original stays unchanged.</span><div class="recovery-actions"><button class="btn-sm" title="Continue this session" onclick="recoverSession(\'' + escAttr(s.sessionId) + '\')">Resume chat</button><button class="btn-sm" title="Start from a copy of this session" onclick="forkSession(\'' + escAttr(s.sessionId) + '\')">Fork copy</button></div>';
     area.prepend(banner);
   } catch {}
 }
@@ -3031,12 +3115,12 @@ function toggleCompare() {
     btn.classList.add('active');
     btn.style.background = 'var(--accent-bg)';
     btn.style.borderColor = 'var(--accent)';
-    sel.style.display = '';
+    sel.classList.remove('compare-select-hidden');
   } else {
     btn.classList.remove('active');
     btn.style.background = '';
     btn.style.borderColor = '';
-    sel.style.display = 'none';
+    sel.classList.add('compare-select-hidden');
   }
 }
 
@@ -3620,25 +3704,25 @@ function welcomeMarkup() {
     + '<details class="welcome-disclosure" id="welcomeFirstRun"' + (localStorage.getItem('harness_tour_seen') ? '' : ' open') + '>'
     + '<summary>New here? Quick guided tour (2 minutes)</summary>'
     + '<div class="welcome-disclosure-body">'
-    + '<div class="guided-tour" id="guidedTour" style="margin-bottom:12px">'
-    + '<div class="guide-step" style="display:flex;gap:8px;align-items:flex-start;margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:8px;border-left:3px solid var(--accent)">'
-    + '<span style="font-size:18px;line-height:1">①</span>'
+    + '<div class="guided-tour" id="guidedTour">'
+    + '<div class="guide-step accent">'
+    + '<span class="guide-step-icon">①</span>'
     + '<div><strong>Pick a model</strong><br>Look at the dropdown at the top of the page. Select a model (e.g. <code>llama3.2</code>). If none appear, make sure Ollama is running.</div>'
     + '</div>'
-    + '<div class="guide-step" style="display:flex;gap:8px;align-items:flex-start;margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:8px;border-left:3px solid var(--accent)">'
-    + '<span style="font-size:18px;line-height:1">②</span>'
-    + '<div><strong>Send your first message</strong><br>Type something in the box below and press Enter. Try: <a href="#" onclick="sendTip({textContent:\'What files are in this project?\'}); event.preventDefault()" style="color:var(--accent)">"What files are in this project?"</a></div>'
+    + '<div class="guide-step accent">'
+    + '<span class="guide-step-icon">②</span>'
+    + '<div><strong>Send your first message</strong><br>Type something in the box below and press Enter. Try: <a href="#" class="accent-link" onclick="sendTip({textContent:\'What files are in this project?\'}); event.preventDefault()">"What files are in this project?"</a></div>'
     + '</div>'
-    + '<div class="guide-step" style="display:flex;gap:8px;align-items:flex-start;margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:8px;border-left:3px solid var(--accent)">'
-    + '<span style="font-size:18px;line-height:1">③</span>'
+    + '<div class="guide-step accent">'
+    + '<span class="guide-step-icon">③</span>'
     + '<div><strong>Explore the sidebar</strong><br>Click the tabs on the left to see your <strong>Files</strong>, <strong>Skills</strong>, <strong>Memory</strong>, and <strong>Tools</strong>. Each tab shows a different part of the system.</div>'
     + '</div>'
-    + '<div class="guide-step" style="display:flex;gap:8px;align-items:flex-start;margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:8px;border-left:3px solid var(--accent)">'
-    + '<span style="font-size:18px;line-height:1">④</span>'
+    + '<div class="guide-step accent">'
+    + '<span class="guide-step-icon">④</span>'
     + '<div><strong>Give your agent a personality</strong><br>Open <strong>Settings</strong> (⚙ top-right) → <strong>Agent Identity</strong>. Give it a name and pick a personality. Try "Pirate" for fun!</div>'
     + '</div>'
-    + '<div class="guide-step" style="display:flex;gap:8px;align-items:flex-start;margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:8px;border-left:3px solid #50c878">'
-    + '<span style="font-size:18px;line-height:1">✅</span>'
+    + '<div class="guide-step success">'
+    + '<span class="guide-step-icon">✅</span>'
     + '<div><strong>You\'re ready!</strong><br>That\'s the basics. The agent can search the web, write code, create skills, and remember things. Just ask it in plain English.</div>'
     + '</div>'
     + '</div>'
@@ -3663,15 +3747,22 @@ async function loadFiles(dir) {
   } catch {}
 }
 
-async function loadSkills() { try { const r = await fetch('/api/skills'); const d = await r.json(); const usageR = await fetch('/api/skills/usage').then((r) => r.json()).catch(() => ({ records: [] })); const curatorR = await fetch('/api/curator').then((r) => r.json()).catch(() => null); const usageMap = new Map((usageR.records || []).map((rec) => [rec.name, rec])); const list = document.getElementById('skillList'); list.innerHTML = ''; const runtime = (d.sources || []).find((source) => source.source === 'runtime') || { skills: d.skills || [], diagnostics: [], mutable: true }; const repo = (d.sources || []).find((source) => source.source === 'repo') || { skills: [], diagnostics: [], mutable: false }; let html = renderCuratorPanel(curatorR); html += renderSkillAutomationPanel(runtime, repo); html += '<div id="runtimeSkillSource" class="trace-list"><div class="trace-title">Runtime Skills</div>'; if (!runtime.skills || !runtime.skills.length) html += '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No runtime skills yet.<br><br>Ask the agent to <strong>"create a skill for..."</strong> and it will build one automatically.</div>'; else html += runtime.skills.map((s) => renderRuntimeSkillItem(s, usageMap.get(s.name))).join(''); html += '</div>' + renderSkillDiagnostics(runtime.diagnostics || []); html += '<div id="repoSkillSource" class="trace-list"><div class="trace-title">Repo Skills</div>' + ((repo.skills || []).length ? repo.skills.map(renderRepoSkillItem).join('') : '<div class="trace-meta">No repo skills found in .github/skills.</div>') + '</div>'; list.innerHTML = html; if (curatorR && curatorR.proposals) loadCuratorProposals(); } catch {} }
+async function loadSkills() { try { const r = await fetch('/api/skills'); const d = await r.json(); const usageR = await fetch('/api/skills/usage').then((r) => r.json()).catch(() => ({ records: [] })); const curatorR = await fetch('/api/curator').then((r) => r.json()).catch(() => null); const usageMap = new Map((usageR.records || []).map((rec) => [rec.name, rec])); const list = document.getElementById('skillList'); list.innerHTML = ''; const runtime = (d.sources || []).find((source) => source.source === 'runtime') || { skills: d.skills || [], diagnostics: [], mutable: true }; const repo = (d.sources || []).find((source) => source.source === 'repo') || { skills: [], diagnostics: [], mutable: false }; let html = renderCuratorPanel(curatorR); html += renderSkillAutomationPanel(runtime, repo); html += '<div id="runtimeSkillSource" class="trace-list"><div class="trace-title">Runtime Skills</div>'; if (!runtime.skills || !runtime.skills.length) html += '<div class="empty-panel-copy">No runtime skills yet.<br><br>Ask the agent to <strong>"create a skill for..."</strong> and it will build one automatically.</div>'; else html += runtime.skills.map((s) => renderRuntimeSkillItem(s, usageMap.get(s.name))).join(''); html += '</div>' + renderSkillDiagnostics(runtime.diagnostics || []); html += '<div id="repoSkillSource" class="trace-list"><div class="trace-title">Repo Skills</div>' + ((repo.skills || []).length ? repo.skills.map(renderRepoSkillItem).join('') : '<div class="trace-meta">No repo skills found in .github/skills.</div>') + '</div>'; list.innerHTML = html; if (curatorR && curatorR.proposals) loadCuratorProposals(); } catch {} }
 
 function renderSkillAutomationPanel(runtime, repo) {
   const runtimeSkipped = (runtime.diagnostics || []).length;
   const repoAvailable = (repo.skills || []).length;
-  return '<div id="skillAutomationPanel" class="trace-item" style="margin-bottom:8px">'
+  return '<div id="skillAutomationPanel" class="trace-item trace-item-spaced">'
     + '<div class="trace-title">Skill automation</div>'
     + '<div class="trace-meta">Checks ' + repoAvailable + ' repo skill(s) and ' + runtimeSkipped + ' runtime diagnostic(s). Missing repo skills are installed; missing runtime SKILL.md files get starter scaffolds.</div>'
     + '<button class="btn-sm full-width-button" onclick="runSkillAutomation()">Auto repair and install skills</button>'
+    + '<details class="details-mt6"><summary class="trace-meta clickable-summary">Add a runtime skill</summary>'
+    + '<div class="trace-block-spaced"><input id="newSkillName" class="compact-panel-input full-compact-input" placeholder="skill id, e.g. headless-browser-research"></div>'
+    + '<input id="newSkillDescription" class="compact-panel-input full-compact-input" placeholder="one-line description">'
+    + '<input id="newSkillTriggers" class="compact-panel-input full-compact-input" placeholder="triggers, comma separated">'
+    + '<textarea id="newSkillContent" class="compact-panel-input full-compact-input" rows="5" placeholder="instructions, steps, controls, validation checks"></textarea>'
+    + '<div class="inline-actions top-spaced"><button class="btn-sm primary" onclick="createSkillFromForm()">Create skill</button><button class="btn-sm" onclick="askAgentToCreateSkill()">Ask agent to generate</button></div>'
+    + '</details>'
     + '<div id="skillAutomationResult" class="trace-meta"></div>'
     + '</div>';
 }
@@ -3680,7 +3771,7 @@ function renderRuntimeSkillItem(s, usage) {
   const u = usage || {};
   const id = s.id || s.name;
   const pinned = u.pinned ? ' 📌' : '';
-  const archived = u.archived ? ' <span class="capability-pill" style="border-color:#888;color:#888">archived</span>' : '';
+  const archived = u.archived ? ' <span class="capability-pill muted-pill">archived</span>' : '';
   const useInfo = (u.useCount || u.viewCount) ? ' · used ' + (u.useCount || 0) + ' / viewed ' + (u.viewCount || 0) : '';
   const lastUsed = u.lastUsedAt ? ' · last ' + new Date(u.lastUsedAt).toLocaleDateString() : '';
   const pinBtn = '<button class="sk-install" onclick="event.stopPropagation();togglePinSkill(\'' + escAttr(s.name) + '\', ' + (!u.pinned) + ')" title="' + (u.pinned ? 'Unpin' : 'Pin (curator will not archive)') + '">' + (u.pinned ? 'Unpin' : 'Pin') + '</button>';
@@ -3701,31 +3792,31 @@ function renderCuratorPanel(curator) {
   const settings = curator.settings || {};
   const enabled = settings.enabled;
   const stateBadge = enabled
-    ? '<span class="rag-backend-badge" style="background:rgba(80,200,120,.12);border-color:#50c878;color:#50c878">curator: on</span>'
+    ? '<span class="rag-backend-badge success-badge">curator: on</span>'
     : '<span class="rag-backend-badge">curator: off</span>';
   const lastRun = settings.lastRunAt ? new Date(settings.lastRunAt).toLocaleString() : 'never';
   const lastActivity = curator.lastUserActivityAt ? new Date(curator.lastUserActivityAt).toLocaleString() : '?';
-  const runningBadge = curator.schedulerRunning ? ' <span class="capability-pill" style="border-color:#5bb0ff;color:#5bb0ff">scheduler running</span>' : '';
-  const recentLog = (curator.log || []).slice(-5).reverse().map((entry) => '<div class="trace-meta" style="font-size:10px">' + esc(JSON.stringify(entry)) + '</div>').join('');
+  const runningBadge = curator.schedulerRunning ? ' <span class="capability-pill running-pill">scheduler running</span>' : '';
+  const recentLog = (curator.log || []).slice(-5).reverse().map((entry) => '<div class="trace-meta trace-meta-xxs">' + esc(JSON.stringify(entry)) + '</div>').join('');
   const proposalsBlock = curator.proposals
-    ? '<div id="curatorProposalsContainer" style="margin-top:6px"><div class="trace-meta">LLM merge proposals available — loading…</div></div>'
+    ? '<div id="curatorProposalsContainer" class="trace-block-spaced"><div class="trace-meta">LLM merge proposals available — loading…</div></div>'
     : '';
   const archived = Array.isArray(curator.archived) ? curator.archived : [];
-  const archivedBlock = archived.length === 0 ? '' : '<details style="margin-top:6px"><summary class="trace-meta" style="cursor:pointer">📦 Archived skills (' + archived.length + ')</summary><div style="margin-top:4px">'
-    + archived.map((name) => '<div class="trace-row" style="display:flex;align-items:center;gap:6px;padding:4px 0"><span style="flex:1">' + esc(name) + '</span><button class="btn-sm" onclick="restoreArchivedSkill(\'' + escAttr(name) + '\')">Restore</button></div>').join('')
+  const archivedBlock = archived.length === 0 ? '' : '<details class="details-mt6"><summary class="trace-meta clickable-summary">📦 Archived skills (' + archived.length + ')</summary><div class="details-body-mt4">'
+    + archived.map((name) => '<div class="trace-row inline-row"><span class="flex-fill">' + esc(name) + '</span><button class="btn-sm" onclick="restoreArchivedSkill(\'' + escAttr(name) + '\')">Restore</button></div>').join('')
     + '</div></details>';
-  return '<div id="curatorPanel" class="trace-item" style="margin-bottom:8px">'
+  return '<div id="curatorPanel" class="trace-item trace-item-spaced">'
     + '<div class="trace-title">🧹 Skill Curator ' + stateBadge + runningBadge + '</div>'
     + '<div class="trace-meta">Maintenance every ' + (settings.intervalHours || 168) + 'h after ' + (settings.idleThresholdMinutes || 120) + ' min idle. Last run: ' + esc(lastRun) + '. Last activity: ' + esc(lastActivity) + '.</div>'
     + '<div class="trace-meta">Stale threshold: ' + (settings.staleDays || 60) + ' days · max archive/run: ' + (settings.maxArchivePerRun || 5) + ' · LLM phase: ' + (settings.enableLlmPhase ? 'on' : 'off') + '</div>'
-    + '<div class="inline-actions" style="margin-top:6px">'
+    + '<div class="inline-actions trace-block-spaced">'
     +   '<button class="btn-sm" onclick="curatorPreview()">Preview</button> '
     +   '<button class="btn-sm" onclick="curatorRunNow()">Run now</button> '
     +   '<button class="btn-sm" onclick="curatorToggle(' + (!enabled) + ')">' + (enabled ? 'Disable' : 'Enable') + ' scheduler</button>'
     + '</div>'
-    + '<div id="curatorPreviewOutput" style="margin-top:6px"></div>'
+    + '<div id="curatorPreviewOutput" class="trace-block-spaced"></div>'
     + archivedBlock
-    + (recentLog ? '<details style="margin-top:6px"><summary class="trace-meta" style="cursor:pointer">Recent log</summary>' + recentLog + '</details>' : '')
+    + (recentLog ? '<details class="details-mt6"><summary class="trace-meta clickable-summary">Recent log</summary>' + recentLog + '</details>' : '')
     + proposalsBlock
     + '</div>';
 }
@@ -3773,14 +3864,14 @@ async function curatorToggle(enable) {
 
 function renderCuratorSummary(summary) {
   if (!summary) return '<div class="trace-meta">(no summary)</div>';
-  const candidates = (summary.staleCandidates || []).map((a) => '<div class="trace-meta" style="font-size:11px">' + esc(a.kind) + ' · ' + esc(a.skill) + ' · ' + esc(a.reason) + '</div>').join('');
-  const archived = (summary.archived || []).map((a) => '<div class="trace-meta" style="font-size:11px;color:#ffb050">' + esc(a.kind) + ' · ' + esc(a.skill) + ' · ' + esc(a.reason) + '</div>').join('');
+  const candidates = (summary.staleCandidates || []).map((a) => '<div class="trace-meta trace-meta-sm">' + esc(a.kind) + ' · ' + esc(a.skill) + ' · ' + esc(a.reason) + '</div>').join('');
+  const archived = (summary.archived || []).map((a) => '<div class="trace-meta trace-meta-sm trace-meta-warning">' + esc(a.kind) + ' · ' + esc(a.skill) + ' · ' + esc(a.reason) + '</div>').join('');
   const dryBadge = summary.dryRun ? ' <span class="capability-pill">dry-run</span>' : '';
   const llmNote = summary.llmSkipped ? '<div class="trace-meta">LLM phase skipped: ' + esc(summary.llmSkipped) + '</div>' : '';
-  return '<div class="trace-item" style="background:var(--surface)"><div class="trace-title">Curator summary' + dryBadge + '</div>'
+  return '<div class="trace-item surface-trace-item"><div class="trace-title">Curator summary' + dryBadge + '</div>'
     + '<div class="trace-meta">' + (summary.staleCandidates?.length || 0) + ' candidate(s), ' + (summary.archived?.length || 0) + ' archived</div>'
-    + (archived ? '<div style="margin-top:4px">' + archived + '</div>' : '')
-    + (candidates ? '<details style="margin-top:4px"><summary class="trace-meta" style="cursor:pointer">All candidates</summary>' + candidates + '</details>' : '')
+    + (archived ? '<div class="details-body-mt4">' + archived + '</div>' : '')
+    + (candidates ? '<details class="details-mt4"><summary class="trace-meta clickable-summary">All candidates</summary>' + candidates + '</details>' : '')
     + llmNote
     + '</div>';
 }
@@ -3803,16 +3894,16 @@ async function loadCuratorProposals() {
         + '<div class="trace-meta">Merge: ' + skillList + '</div>'
         + (p.proposedDescription ? '<div class="trace-meta">' + esc(p.proposedDescription) + '</div>' : '')
         + rationale
-        + '<div class="inline-actions" style="margin-top:6px">'
+        + '<div class="inline-actions trace-block-spaced">'
         +   '<button class="btn-sm" onclick="applyCuratorProposal(' + i + ', true)">Preview</button> '
         +   '<button class="btn-sm primary" onclick="applyCuratorProposal(' + i + ', false)">Apply merge</button>'
         + '</div>'
         + '<div class="trace-meta" id="curatorProposalResult' + i + '"></div>'
         + '</div>';
     }).join('');
-    container.innerHTML = '<div class="trace-title" style="padding:0 4px">🧪 LLM Merge Proposals (' + proposals.length + ')</div>'
+    container.innerHTML = '<div class="trace-title trace-title-padded">🧪 LLM Merge Proposals (' + proposals.length + ')</div>'
       + '<div class="trace-list">' + rows + '</div>'
-      + '<div class="inline-actions" style="margin-top:4px"><button class="btn-sm" onclick="dismissCuratorProposals()">Dismiss all</button></div>';
+      + '<div class="inline-actions top-spaced"><button class="btn-sm" onclick="dismissCuratorProposals()">Dismiss all</button></div>';
     window._curatorProposals = proposals;
   } catch (error) {
     container.innerHTML = '<div class="trace-meta">Failed to load proposals: ' + esc(error.message || error) + '</div>';
@@ -3892,13 +3983,52 @@ async function scaffoldSkill(name) {
     await loadSkills();
   } catch (error) { alert('Scaffold failed: ' + (error.message || error)); }
 }
+async function createSkillFromForm() {
+  const out = document.getElementById('skillAutomationResult');
+  const name = document.getElementById('newSkillName')?.value.trim() || '';
+  const description = document.getElementById('newSkillDescription')?.value.trim() || 'Describe what this skill does.';
+  const triggers = document.getElementById('newSkillTriggers')?.value || '';
+  const content = document.getElementById('newSkillContent')?.value.trim() || '';
+  if (!name) { if (out) out.textContent = 'Enter a skill id first.'; return; }
+  try {
+    let response = await fetch('/api/skills/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, description, triggers, content }),
+    });
+    if (response.status === 409) {
+      if (!confirm('Runtime skill "' + name + '" already exists. Overwrite it?')) return;
+      response = await fetch('/api/skills/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, description, triggers, content, overwrite: true }),
+      });
+    }
+    const data = await response.json();
+    if (data.error) { if (out) out.textContent = 'Create failed: ' + data.error; return; }
+    if (out) out.textContent = 'Created ' + name + ' at ' + (data.filePath || '.harness/skills/' + name + '/SKILL.md') + '.';
+    await loadSkills();
+  } catch (error) { if (out) out.textContent = 'Create failed: ' + (error.message || error); }
+}
+function askAgentToCreateSkill() {
+  const name = document.getElementById('newSkillName')?.value.trim() || 'new-runtime-skill';
+  const description = document.getElementById('newSkillDescription')?.value.trim() || 'the reusable capability I need';
+  const triggers = document.getElementById('newSkillTriggers')?.value.trim();
+  const details = document.getElementById('newSkillContent')?.value.trim();
+  const prompt = 'Create a Harness runtime skill named "' + name + '" for: ' + description
+    + (triggers ? '\nTriggers: ' + triggers : '')
+    + (details ? '\nDetails/control requirements:\n' + details : '')
+    + '\nWrite it into .harness/skills/' + name + '/SKILL.md and keep it focused.';
+  const input = document.getElementById('chatInput');
+  if (input) { input.value = prompt; input.focus(); autoSize(input); }
+}
 function copySkillDiagnosticPath(filePath) {
   if (navigator.clipboard?.writeText) navigator.clipboard.writeText(filePath).catch(() => {});
 }
 
-async function loadMemory() { try { const r = await fetch('/api/memory'); const d = await r.json(); const view = document.getElementById('memoryView'); if (!d.decisions && !d.patterns && !d.notes) { view.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No memories yet.<br><br>The agent saves decisions, patterns, and notes here as it learns.</div>'; return; } let html = ''; if (d.decisions) html += '<div class="mem-section"><h5>Decisions</h5><pre>' + esc(d.decisions) + '</pre></div>'; if (d.patterns) html += '<div class="mem-section"><h5>Patterns</h5><pre>' + esc(d.patterns) + '</pre></div>'; if (d.notes) html += '<div class="mem-section"><h5>Notes</h5><pre>' + esc(d.notes) + '</pre></div>'; view.innerHTML = html; } catch {} }
+async function loadMemory() { try { const r = await fetch('/api/memory'); const d = await r.json(); const view = document.getElementById('memoryView'); if (!d.decisions && !d.patterns && !d.notes) { view.innerHTML = '<div class="empty-panel-copy">No memories yet.<br><br>The agent saves decisions, patterns, and notes here as it learns.</div>'; return; } let html = ''; if (d.decisions) html += '<div class="mem-section"><h5>Decisions</h5><pre>' + esc(d.decisions) + '</pre></div>'; if (d.patterns) html += '<div class="mem-section"><h5>Patterns</h5><pre>' + esc(d.patterns) + '</pre></div>'; if (d.notes) html += '<div class="mem-section"><h5>Notes</h5><pre>' + esc(d.notes) + '</pre></div>'; view.innerHTML = html; } catch {} }
 
-async function loadMemoryPalace() { try { const response = await fetch('/api/memory/palace'); const data = await response.json(); const view = document.getElementById('memoryPalaceView'); if (!data.rooms || !data.rooms.length) { view.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No palace rooms yet.</div>'; return; } view.innerHTML = '<div class="palace-grid">' + data.rooms.map((room) => '<div class="palace-room"><div class="palace-title">' + esc(room.title) + '</div><div class="palace-meta">' + room.entryCount + ' memories · ' + room.sessions.length + ' sessions</div>' + room.anchors.map((anchor) => '<button class="palace-anchor" onclick="loadPalaceEntry(\'' + escAttr(anchor.id) + '\')"><strong>' + esc(anchor.kind) + '</strong> · ' + esc(anchor.text) + '</button>').join('') + '</div>').join('') + '</div><div id="palaceDetail" class="palace-detail initial-hidden"></div>'; } catch (error) { document.getElementById('memoryPalaceView').textContent = error.message; } }
+async function loadMemoryPalace() { try { const response = await fetch('/api/memory/palace'); const data = await response.json(); const view = document.getElementById('memoryPalaceView'); if (!data.rooms || !data.rooms.length) { view.innerHTML = '<div class="empty-panel-copy">No palace rooms yet.</div>'; return; } view.innerHTML = '<div class="palace-grid">' + data.rooms.map((room) => '<div class="palace-room"><div class="palace-title">' + esc(room.title) + '</div><div class="palace-meta">' + room.entryCount + ' memories · ' + room.sessions.length + ' sessions</div>' + room.anchors.map((anchor) => '<button class="palace-anchor" onclick="loadPalaceEntry(\'' + escAttr(anchor.id) + '\')"><strong>' + esc(anchor.kind) + '</strong> · ' + esc(anchor.text) + '</button>').join('') + '</div>').join('') + '</div><div id="palaceDetail" class="palace-detail initial-hidden"></div>'; } catch (error) { document.getElementById('memoryPalaceView').textContent = error.message; } }
 
 async function loadDiscovery() { const view = document.getElementById('discoveryView'); if (!view) return; view.innerHTML = '<div class="trace-meta">Loading discovery...</div>'; try { const response = await fetch('/api/discovery'); const data = await response.json(); if (data.error) throw new Error(data.error); view.innerHTML = renderDiscoveryPanel(data); } catch (error) { view.innerHTML = '<div class="trace-meta">Discovery unavailable: ' + esc(error.message || error) + '</div>'; } }
 
@@ -3977,12 +4107,13 @@ function renderCuratorDiscoveryPanel(curator) {
     const action = e.action ? ' · ' + esc(e.action) : '';
     const skill = e.skill ? ' · ' + esc(e.skill) : '';
     const note = e.error ? ' · err: ' + esc(e.error) : e.umbrella ? ' · umbrella: ' + esc(e.umbrella) : '';
-    return '<div class="trace-meta" style="font-size:11px">' + esc(ts) + ' · ' + phase + action + skill + note + '</div>';
+    return '<div class="trace-meta trace-meta-sm">' + esc(ts) + ' · ' + phase + action + skill + note + '</div>';
   }).join('');
+  const stateClass = enabled ? 'success-pill' : 'muted-pill';
   return '<div id="curatorDiscoveryPanel" class="trace-item">'
-    + '<div class="trace-title">Skill Curator <span class="capability-pill" style="border-color:' + stateColor + ';color:' + stateColor + '">' + (enabled ? 'enabled' : 'disabled') + '</span>' + (curator.schedulerRunning ? ' <span class="capability-pill" style="border-color:#5bb0ff;color:#5bb0ff">running</span>' : '') + '</div>'
+    + '<div class="trace-title">Skill Curator <span class="capability-pill ' + stateClass + '">' + (enabled ? 'enabled' : 'disabled') + '</span>' + (curator.schedulerRunning ? ' <span class="capability-pill running-pill">running</span>' : '') + '</div>'
     + '<div class="trace-meta">Interval: ' + (curator.intervalHours || 168) + 'h · Idle threshold: ' + (curator.idleThresholdMinutes || 120) + ' min · Last run: ' + esc(lastRun) + '</div>'
-    + (eventsRows ? '<div style="margin-top:6px">' + eventsRows + '</div>' : '<div class="trace-meta">No curator events yet.</div>')
+    + (eventsRows ? '<div class="trace-block-spaced">' + eventsRows + '</div>' : '<div class="trace-meta">No curator events yet.</div>')
     + '<button class="btn-sm full-width-button" onclick="openLeftTabByName(\'skills\')">Open Skills tab</button>'
     + '</div>';
 }
@@ -4009,9 +4140,9 @@ function renderDiscoverySkillDiagnostics(skills) {
   const sources = skills.sources || [];
   const diagnostics = sources.flatMap((source) => (source.diagnostics || []).map((item) => ({ ...item, source: source.source })));
   if (diagnostics.length === 0) return '<div class="trace-meta">Skill diagnostics: clean.</div>';
-  const rows = diagnostics.slice(0, 5).map((item) => '<div class="trace-meta" style="font-size:11px">' + esc(item.source || 'skills') + ' · ' + esc(item.name) + ' · ' + esc(item.reason) + '</div>').join('');
+  const rows = diagnostics.slice(0, 5).map((item) => '<div class="trace-meta trace-meta-sm">' + esc(item.source || 'skills') + ' · ' + esc(item.name) + ' · ' + esc(item.reason) + '</div>').join('');
   const more = diagnostics.length > 5 ? '<div class="trace-meta">+' + (diagnostics.length - 5) + ' more diagnostic(s) in the Skills tab.</div>' : '';
-  return '<details style="margin:6px 0"><summary class="trace-meta" style="cursor:pointer">Skill diagnostics (' + diagnostics.length + ')</summary>' + rows + more + '</details>';
+  return '<details class="details-my6"><summary class="trace-meta clickable-summary">Skill diagnostics (' + diagnostics.length + ')</summary>' + rows + more + '</details>';
 }
 
 function renderAutomationDiscoveryPanel(automations) {
@@ -4033,7 +4164,7 @@ async function refreshModelCatalog() { const status = document.getElementById('m
 
 async function rebuildSessionSearchIndex() { const view = document.getElementById('sessionSearchDiscoveryPanel'); if (view) view.querySelector('.trace-meta').textContent = 'Rebuilding search index...'; try { const response = await fetch('/api/sessions/search-index/rebuild', { method: 'POST' }); const data = await response.json(); if (data.error) throw new Error(data.error); await loadDiscovery(); } catch (error) { alert('Search index rebuild failed: ' + (error.message || error)); } }
 
-async function loadPalaceEntry(id) { const detail = document.getElementById('palaceDetail'); if (!detail) return; detail.classList.remove('initial-hidden'); detail.textContent = 'Loading memory entry...'; try { const entryResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id)); const entryData = await entryResponse.json(); if (entryData.error) { detail.textContent = entryData.error; return; } const contextResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id) + '/context?window=3'); const contextData = await contextResponse.json(); const entry = entryData.entry; const transcriptRows = (contextData.events || []).map((event) => '<div class="transcript-row' + (event.isAnchor ? ' anchor' : '') + '"><div><strong>' + esc(event.kind) + '</strong> · ' + esc(event.timestamp) + '</div><div style="white-space:pre-wrap;color:var(--text)">' + esc(event.text || '[empty]') + '</div></div>').join(''); detail.innerHTML = '<div><strong>Session</strong> ' + esc(entry.sessionId) + '</div><div><strong>Event</strong> ' + esc(entry.id) + '</div><div><strong>Kind</strong> ' + esc(entry.kind) + '</div><div><strong>Time</strong> ' + esc(entry.timestamp) + '</div><div style="margin-top:6px;white-space:pre-wrap;color:var(--text)">' + esc(entry.text) + '</div><div style="margin-top:10px"><strong>Transcript Context</strong>' + (transcriptRows || '<div class="transcript-row">No transcript context found.</div>') + '</div>'; } catch (error) { detail.textContent = error.message; } }
+async function loadPalaceEntry(id) { const detail = document.getElementById('palaceDetail'); if (!detail) return; detail.classList.remove('initial-hidden'); detail.textContent = 'Loading memory entry...'; try { const entryResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id)); const entryData = await entryResponse.json(); if (entryData.error) { detail.textContent = entryData.error; return; } const contextResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id) + '/context?window=3'); const contextData = await contextResponse.json(); const entry = entryData.entry; const transcriptRows = (contextData.events || []).map((event) => '<div class="transcript-row' + (event.isAnchor ? ' anchor' : '') + '"><div><strong>' + esc(event.kind) + '</strong> · ' + esc(event.timestamp) + '</div><div class="prewrap-text">' + esc(event.text || '[empty]') + '</div></div>').join(''); detail.innerHTML = '<div><strong>Session</strong> ' + esc(entry.sessionId) + '</div><div><strong>Event</strong> ' + esc(entry.id) + '</div><div><strong>Kind</strong> ' + esc(entry.kind) + '</div><div><strong>Time</strong> ' + esc(entry.timestamp) + '</div><div class="prewrap-text trace-block-spaced">' + esc(entry.text) + '</div><div class="trace-block-spaced-large"><strong>Transcript Context</strong>' + (transcriptRows || '<div class="transcript-row">No transcript context found.</div>') + '</div>'; } catch (error) { detail.textContent = error.message; } }
 
 function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); el.classList.add('active'); document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; const rn = document.getElementById('runsView'); if (rn) rn.style.display = tab === 'runs' ? 'block' : 'none'; const wf = document.getElementById('workflowsView'); if (wf) wf.style.display = tab === 'workflows' ? 'block' : 'none'; const my = document.getElementById('myceliumView'); if (my) my.style.display = tab === 'mycelium' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); if (tab === 'runs') loadRuns(); if (tab === 'workflows') loadWorkflows(); if (tab === 'mycelium') loadMycelium(); }
 function toggleLeft() { document.getElementById('leftPanel').classList.toggle('hidden'); }
@@ -4150,9 +4281,9 @@ async function loadApiKeys() {
     const row = document.createElement('div');
     row.className = 'setting-row';
     const sourceBadge = info.source === 'env'
-      ? '<span style="font-size:10px;color:var(--text-dim);background:var(--surface2);padding:1px 6px;border-radius:8px;margin-left:6px">from env</span>'
-      : info.source === 'file' ? '<span style="font-size:10px;color:var(--accent);background:var(--accent-bg);padding:1px 6px;border-radius:8px;margin-left:6px">stored</span>' : '';
-    row.innerHTML = '<label>' + esc(field.label) + ' (' + esc(field.name) + ')' + sourceBadge + ' <a href="' + field.signup + '" target="_blank" rel="noopener" style="font-size:10px;color:var(--accent);margin-left:4px">get key</a></label>'
+      ? '<span class="key-source-badge env">from env</span>'
+      : info.source === 'file' ? '<span class="key-source-badge stored">stored</span>' : '';
+    row.innerHTML = '<label>' + esc(field.label) + ' (' + esc(field.name) + ')' + sourceBadge + ' <a href="' + field.signup + '" target="_blank" rel="noopener" class="key-signup-link">get key</a></label>'
       + '<input type="password" data-key-name="' + esc(field.name) + '" placeholder="' + (info.configured ? '••••••••• (already set, leave blank to keep)' : 'paste key here') + '" autocomplete="off">';
     list.appendChild(row);
   }
@@ -4306,20 +4437,20 @@ async function stopTelegram() {
 function toggleAgentOutputDirBrowser() {
   const browser = document.getElementById('agentOutputDirBrowser');
   if (!browser) return;
-  if (browser.style.display === 'none' || !browser.style.display) {
-    browser.style.display = 'block';
+  if (browser.classList.contains('hidden-by-default')) {
+    browser.classList.remove('hidden-by-default');
     // If the input has a value already, start the picker there; otherwise home.
     const input = document.getElementById('agentOutputDirInput');
     loadAgentOutputDirBrowser(input?.value.trim() || '');
   } else {
-    browser.style.display = 'none';
+    browser.classList.add('hidden-by-default');
   }
 }
 
 async function loadAgentOutputDirBrowser(targetPath) {
   const browser = document.getElementById('agentOutputDirBrowser');
   if (!browser) return;
-  browser.innerHTML = '<div style="font-size:11px;color:var(--text-dim)">Loading…</div>';
+  browser.innerHTML = '<div class="settings-status-line">Loading…</div>';
   try {
     const url = '/api/browse-dirs' + (targetPath ? '?path=' + encodeURIComponent(targetPath) : '');
     const r = await fetch(url);
@@ -4327,7 +4458,7 @@ async function loadAgentOutputDirBrowser(targetPath) {
     const d = await r.json();
     renderAgentOutputDirBrowser(d);
   } catch (e) {
-    browser.innerHTML = '<div style="font-size:11px;color:var(--warning)">❌ ' + esc(e.message) + '</div>';
+    browser.innerHTML = '<div class="settings-warning-line">❌ ' + esc(e.message) + '</div>';
   }
 }
 
@@ -4336,35 +4467,35 @@ function renderAgentOutputDirBrowser(data) {
   if (!browser) return;
   let html = '';
   // Quick-jump preset chips at the top.
-  html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;font-size:10px">';
+  html += '<div class="folder-preset-row">';
   for (const preset of (data.presets || [])) {
-    html += '<button class="btn-sm" onclick="loadAgentOutputDirBrowser(' + JSON.stringify(preset.path) + ')" style="font-size:10px;padding:2px 8px" title="' + esc(preset.path) + '">' + esc(preset.label) + '</button>';
+    html += '<button class="btn-sm btn-folder-preset" onclick="loadAgentOutputDirBrowser(' + JSON.stringify(preset.path) + ')" title="' + esc(preset.path) + '">' + esc(preset.label) + '</button>';
   }
   html += '</div>';
   // Current path + Use-this-folder action.
-  html += '<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;padding:4px 6px;background:var(--surface);border-radius:4px">';
-  html += '<span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(data.cwd) + '"><code>' + esc(data.cwd) + '</code></span>';
-  html += '<button class="btn-sm primary" onclick="useAgentOutputDir(' + JSON.stringify(data.cwd) + ')" style="font-size:10px;padding:3px 8px">✓ Use this folder</button>';
+  html += '<div class="folder-current-row">';
+  html += '<span class="folder-current-path" title="' + esc(data.cwd) + '"><code>' + esc(data.cwd) + '</code></span>';
+  html += '<button class="btn-sm primary btn-folder-use" onclick="useAgentOutputDir(' + JSON.stringify(data.cwd) + ')">✓ Use this folder</button>';
   html += '</div>';
   // Up button if we can go up.
   if (data.parent) {
-    html += '<div style="margin-bottom:4px"><button class="btn-sm" onclick="loadAgentOutputDirBrowser(' + JSON.stringify(data.parent) + ')" style="font-size:11px">⬆ Up</button></div>';
+    html += '<div class="folder-up-row"><button class="btn-sm btn-folder-up" onclick="loadAgentOutputDirBrowser(' + JSON.stringify(data.parent) + ')">⬆ Up</button></div>';
   }
   // Error from the server (e.g. permission denied) shown but presets still available.
   if (data.error) {
-    html += '<div style="font-size:11px;color:var(--warning);margin-bottom:6px">⚠ ' + esc(data.error) + '</div>';
+    html += '<div class="settings-warning-line folder-warning">⚠ ' + esc(data.error) + '</div>';
   }
   // Subdirectory list.
   const dirs = data.dirs || [];
   if (dirs.length === 0) {
-    html += '<div style="font-size:11px;color:var(--text-dim);padding:6px">No subfolders here.</div>';
+    html += '<div class="folder-empty">No subfolders here.</div>';
   } else {
-    html += '<div style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:4px">';
+    html += '<div class="folder-list">';
     for (const dir of dirs.slice(0, 200)) {
-      html += '<div onclick="loadAgentOutputDirBrowser(' + JSON.stringify(dir.path) + ')" style="padding:4px 8px;cursor:pointer;font-size:11px;border-bottom:1px solid var(--border)" onmouseover="this.style.background=\'var(--surface)\'" onmouseout="this.style.background=\'\'">📁 ' + esc(dir.name) + '</div>';
+      html += '<div class="folder-list-row" onclick="loadAgentOutputDirBrowser(' + JSON.stringify(dir.path) + ')">📁 ' + esc(dir.name) + '</div>';
     }
     html += '</div>';
-    if (dirs.length > 200) html += '<div style="font-size:10px;color:var(--text-dim);margin-top:4px">' + (dirs.length - 200) + ' more not shown</div>';
+    if (dirs.length > 200) html += '<div class="folder-overflow-note">' + (dirs.length - 200) + ' more not shown</div>';
   }
   browser.innerHTML = html;
 }
@@ -4374,7 +4505,7 @@ function useAgentOutputDir(folderPath) {
   if (input) input.value = folderPath;
   // Close the browser to keep the panel tidy after selection.
   const browser = document.getElementById('agentOutputDirBrowser');
-  if (browser) browser.style.display = 'none';
+  if (browser) browser.classList.add('hidden-by-default');
 }
 
 async function loadFileRedirects() {
@@ -4389,8 +4520,7 @@ async function loadFileRedirects() {
   // Surface env-var override clearly so the user knows the editor is read-only.
   if (data.envOverride) {
     const banner = document.createElement('div');
-    banner.className = 'setting-row';
-    banner.style.cssText = 'font-size:11px;padding:6px 8px;background:var(--surface2);border:1px solid var(--warning);border-radius:6px;margin-bottom:6px';
+    banner.className = 'setting-row redirect-env-warning';
     banner.textContent = '⚠ HARNESS_FILE_WRITE_REDIRECTS env var is set — UI rules are ignored until you unset it.';
     list.appendChild(banner);
   }
@@ -4408,20 +4538,19 @@ function addFileRedirectRow(matchValue = '', redirectValue = '') {
   const list = document.getElementById('fileRedirectsList');
   if (!list) return;
   const row = document.createElement('div');
-  row.className = 'setting-row';
-  row.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:4px';
+  row.className = 'setting-row redirect-rule-row';
   const matchInput = document.createElement('input');
   matchInput.type = 'text';
   matchInput.placeholder = 'glob, e.g. lottery-*';
   matchInput.value = matchValue;
   matchInput.dataset.field = 'match';
-  matchInput.style.cssText = 'flex:1;min-width:0';
+  matchInput.className = 'redirect-match-input';
   const redirectInput = document.createElement('input');
   redirectInput.type = 'text';
   redirectInput.placeholder = 'destination dir, e.g. C:/AI/Lottery-Toolkit/inbox';
   redirectInput.value = redirectValue;
   redirectInput.dataset.field = 'redirect';
-  redirectInput.style.cssText = 'flex:2;min-width:0';
+  redirectInput.className = 'redirect-target-input';
   const removeBtn = document.createElement('button');
   removeBtn.className = 'btn-sm';
   removeBtn.textContent = '✕';
@@ -4471,7 +4600,7 @@ async function previewFileRedirects() {
   if (!list || !input || !out) return;
   const samplePath = input.value.trim();
   if (!samplePath) {
-    out.innerHTML = '<span style="color:var(--text-dim)">Type a sample path first.</span>';
+    out.innerHTML = '<span class="trace-meta">Type a sample path first.</span>';
     return;
   }
   // Read the rules from the form (NOT the server) so the preview
@@ -4484,7 +4613,7 @@ async function previewFileRedirects() {
     if (!match || !redirect) continue;
     rules.push({ match, redirect });
   }
-  out.innerHTML = '<span style="color:var(--text-dim)">Checking...</span>';
+  out.innerHTML = '<span class="trace-meta">Checking...</span>';
   try {
     const r = await fetch('/api/file-redirects/preview', {
       method: 'POST',
@@ -4505,7 +4634,49 @@ async function previewFileRedirects() {
 
 async function pullModel() { const name = document.getElementById('pullName').value.trim(); if (!name) return; const prog = document.getElementById('pullProgress'); prog.textContent = 'Starting...'; try { const res = await fetch('/api/models/pull', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }); const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = ''; while (true) { const { done, value } = await reader.read(); if (done) break; buf += dec.decode(value, { stream: true }); const lines = buf.split('\n'); buf = lines.pop() || ''; for (const line of lines) { if (!line.startsWith('data: ')) continue; const p = line.slice(6); if (p === '[DONE]') { prog.textContent = 'Done!'; loadModels(); return; } try { const d = JSON.parse(p); if (d.error) { prog.textContent = 'Error: ' + d.error; return; } if (d.status) { const pct = d.completed && d.total ? ' (' + Math.round(d.completed / d.total * 100) + '%)' : ''; prog.textContent = d.status + pct; } } catch {} } } } catch (e) { prog.textContent = 'Failed: ' + e.message; } }
 
-async function loadLearning() { try { const r = await fetch('/api/learning'); const d = await r.json(); const view = document.getElementById('learningView'); let html = '<div style="padding:4px 0"><h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin-bottom:8px">🧠 Self-Learning Status</h5>'; html += '<div style="display:flex;gap:4px;margin-bottom:8px"><input id="semanticQuery" placeholder="Search session memory" style="flex:1;padding:6px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px"><button class="btn-sm" onclick="searchSemanticMemory()">Search</button></div><div id="semanticResults"></div>'; html += '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Total tool calls tracked: <strong style="color:var(--text)">' + ((d.totalToolCalls) || 0) + '</strong></div>'; if (d.toolBreakdown && Object.keys(d.toolBreakdown).length > 0) { html += '<div style="margin-bottom:12px">'; for (const [tool, count] of Object.entries(d.toolBreakdown || {})) html += '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(tool) + '</span><span style="color:var(--accent)">' + count + '</span></div>'; html += '</div>'; } const patterns = d.patterns || []; if (patterns.length > 0) { html += '<h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin:8px 0">Detected Patterns</h5>'; for (const p of patterns.slice(0, 5)) html += '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:4px;font-size:11px"><div style="color:var(--accent);font-weight:600">' + esc(p.toolSequence.join(' → ')) + '</div><div style="color:var(--text-dim)">' + p.occurrences + 'x across sessions' + (p.promoted ? ' ✅ promoted' : '') + '</div></div>'; } const reflections = d.reflections || []; if (reflections.length > 0) { html += '<h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin:8px 0">Recent Reflections</h5>'; for (const item of reflections.slice(-3)) { html += '<div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;padding:6px;background:var(--surface2);border-radius:6px"><div>Success: ' + Math.round(item.successRate * 100) + '% | Tools: ' + item.toolsUsed.join(', ') + '</div>'; if (item.insights.length) html += '<div style="color:var(--warning);margin-top:2px">' + esc(item.insights.join('; ')) + '</div>'; html += '</div>'; } } if (d.evolvedPrompt) html += '<h5 style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin:8px 0">Evolved Instructions</h5><pre style="font-size:10px;background:var(--surface2);padding:6px;border-radius:6px;white-space:pre-wrap;color:var(--text-dim)">' + esc(d.evolvedPrompt) + '</pre>'; html += '</div>'; view.innerHTML = html; renderLearningManager(d); } catch { document.getElementById('learningView').innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:13px;text-align:center">No learning data yet. Start chatting and the agent will begin tracking patterns.</div>'; } }
+async function loadLearning() {
+  try {
+    const r = await fetch('/api/learning');
+    const d = await r.json();
+    const view = document.getElementById('learningView');
+    let html = '<div class="learning-shell"><h5 class="panel-kicker">🧠 Self-Learning Status</h5>';
+    html += '<div class="learning-search-row"><input id="semanticQuery" class="learning-search-input" placeholder="Search session memory"><button class="btn-sm" onclick="searchSemanticMemory()">Search</button></div><div id="semanticResults"></div>';
+    html += '<div class="learning-stat-line">Total tool calls tracked: <strong>' + ((d.totalToolCalls) || 0) + '</strong></div>';
+
+    if (d.toolBreakdown && Object.keys(d.toolBreakdown).length > 0) {
+      html += '<div class="learning-section-block">';
+      for (const [tool, count] of Object.entries(d.toolBreakdown || {})) {
+        html += '<div class="metric-row"><span>' + esc(tool) + '</span><span class="accent-text">' + count + '</span></div>';
+      }
+      html += '</div>';
+    }
+
+    const patterns = d.patterns || [];
+    if (patterns.length > 0) {
+      html += '<h5 class="panel-kicker spaced">Detected Patterns</h5>';
+      for (const p of patterns.slice(0, 5)) {
+        html += '<div class="learning-pattern-card"><div class="accent-strong">' + esc(p.toolSequence.join(' → ')) + '</div><div class="trace-meta">' + p.occurrences + 'x across sessions' + (p.promoted ? ' ✅ promoted' : '') + '</div></div>';
+      }
+    }
+
+    const reflections = d.reflections || [];
+    if (reflections.length > 0) {
+      html += '<h5 class="panel-kicker spaced">Recent Reflections</h5>';
+      for (const item of reflections.slice(-3)) {
+        html += '<div class="learning-reflection-card"><div>Success: ' + Math.round(item.successRate * 100) + '% | Tools: ' + item.toolsUsed.join(', ') + '</div>';
+        if (item.insights.length) html += '<div class="trace-meta-warning top-spaced-small">' + esc(item.insights.join('; ')) + '</div>';
+        html += '</div>';
+      }
+    }
+
+    if (d.evolvedPrompt) html += '<h5 class="panel-kicker spaced">Evolved Instructions</h5><pre class="learning-prompt-pre">' + esc(d.evolvedPrompt) + '</pre>';
+    html += '</div>';
+    view.innerHTML = html;
+    renderLearningManager(d);
+  } catch {
+    document.getElementById('learningView').innerHTML = '<div class="empty-panel-copy">No learning data yet. Start chatting and the agent will begin tracking patterns.</div>';
+  }
+}
 
 function renderLearningManager(data) {
   const view = document.getElementById('learningView');
@@ -4515,11 +4686,11 @@ function renderLearningManager(data) {
 
 function renderOutputValidationTrends(data) {
   const trend = data.outputValidationTrend || { totalResults: 0, byProfile: {}, bySelectionSource: {}, byStatus: {}, latestFailures: [] };
-  const profileRows = Object.entries(trend.byProfile || {}).map(([profile, bucket]) => '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(profile) + '</span><span>' + bucket.passed + '/' + bucket.total + ' · ' + Math.round((bucket.passRate || 0) * 100) + '%</span></div>').join('');
-  const sourceRows = Object.entries(trend.bySelectionSource || {}).map(([source, bucket]) => '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(source) + '</span><span>' + bucket.passed + '/' + bucket.total + ' · ' + Math.round((bucket.passRate || 0) * 100) + '%</span></div>').join('');
+  const profileRows = Object.entries(trend.byProfile || {}).map(([profile, bucket]) => '<div class="metric-row"><span>' + esc(profile) + '</span><span>' + bucket.passed + '/' + bucket.total + ' · ' + Math.round((bucket.passRate || 0) * 100) + '%</span></div>').join('');
+  const sourceRows = Object.entries(trend.bySelectionSource || {}).map(([source, bucket]) => '<div class="metric-row"><span>' + esc(source) + '</span><span>' + bucket.passed + '/' + bucket.total + ' · ' + Math.round((bucket.passRate || 0) * 100) + '%</span></div>').join('');
   const statusRows = Object.entries(trend.byStatus || {}).map(([status, count]) => '<span class="trace-pill">' + esc(status) + ': ' + count + '</span>').join('');
   const failures = (trend.latestFailures || []).map((failure) => '<div class="trace-meta">' + esc(failure.profile) + ' · ' + esc(failure.selectionSource || 'unknown') + ' · ' + esc(failure.task) + ' · ' + esc(failure.message) + (failure.checks?.length ? ' · ' + esc(failure.checks.join(', ')) : '') + '</div>').join('');
-  return '<div id="outputValidationTrend" class="trace-list"><div class="trace-title">Output Validation Trends</div><div class="trace-meta">' + trend.totalResults + ' validation results recorded</div><button id="downloadOutputValidationTrendBtn" class="btn-sm full-width-button" onclick="downloadOutputValidationTrend()">Download validation trends</button><div style="margin-top:6px"><strong>By profile</strong>' + (profileRows || '<div class="trace-meta">No validation runs yet</div>') + '</div><div id="outputValidationSourceTrend" style="margin-top:6px"><strong>By selection source</strong>' + (sourceRows || '<div class="trace-meta">No source data yet</div>') + '</div>' + (statusRows ? '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">' + statusRows + '</div>' : '') + (failures ? '<div style="margin-top:6px"><strong>Recent findings</strong>' + failures + '</div>' : '') + '</div>';
+  return '<div id="outputValidationTrend" class="trace-list"><div class="trace-title">Output Validation Trends</div><div class="trace-meta">' + trend.totalResults + ' validation results recorded</div><button id="downloadOutputValidationTrendBtn" class="btn-sm full-width-button" onclick="downloadOutputValidationTrend()">Download validation trends</button><div class="trace-block-spaced"><strong>By profile</strong>' + (profileRows || '<div class="trace-meta">No validation runs yet</div>') + '</div><div id="outputValidationSourceTrend" class="trace-block-spaced"><strong>By selection source</strong>' + (sourceRows || '<div class="trace-meta">No source data yet</div>') + '</div>' + (statusRows ? '<div class="pill-row-spaced">' + statusRows + '</div>' : '') + (failures ? '<div class="trace-block-spaced"><strong>Recent findings</strong>' + failures + '</div>' : '') + '</div>';
 }
 
 function downloadOutputValidationTrend() {
@@ -4530,28 +4701,28 @@ function downloadOutputValidationTrend() {
 function renderContextLossTrend(data) {
   const trend = data.contextLossTrend || { total: 0, recent: [] };
   if (trend.total === 0) return '';
-  const rows = (trend.recent || []).map((entry) => '<div class="trace-meta">⚠️ ' + esc(entry.task) + ' <span style="color:var(--text-dim)">(' + esc((entry.createdAt || '').slice(0, 19)) + ')</span></div>').join('');
+  const rows = (trend.recent || []).map((entry) => '<div class="trace-meta">⚠️ ' + esc(entry.task) + ' <span class="text-dim">(' + esc((entry.createdAt || '').slice(0, 19)) + ')</span></div>').join('');
   return '<div id="contextLossTrend" class="trace-list"><div class="trace-title">Assistant Context Loss</div>' +
-    '<div class="trace-meta" style="color:var(--warn,#c98900)"><strong>' + trend.total + '</strong> assistant reply(ies) shared no significant token with the prior turn.</div>' +
-    '<div style="margin-top:6px"><strong>Recent</strong>' + rows + '</div>' +
-    '<div class="trace-meta" style="margin-top:6px">Tag: <code>assistant-context-loss</code>. See <code>.harness/evals/trace-runs.jsonl</code> for full traces.</div>' +
+    '<div class="trace-meta trace-meta-warn"><strong>' + trend.total + '</strong> assistant reply(ies) shared no significant token with the prior turn.</div>' +
+    '<div class="trace-block-spaced"><strong>Recent</strong>' + rows + '</div>' +
+    '<div class="trace-meta trace-block-spaced">Tag: <code>assistant-context-loss</code>. See <code>.harness/evals/trace-runs.jsonl</code> for full traces.</div>' +
     '</div>';
 }
 
 function renderProfileFeedbackTrends(data) {
   const trend = data.profileFeedbackTrend || { totalVotes: 0, byProfile: {}, insights: [], recentVotes: [], dailyApproval: [] };
-  const profileRows = Object.entries(trend.byProfile || {}).map(([profile, bucket]) => '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(profile) + '</span><span>👍 ' + bucket.up + ' · 👎 ' + bucket.down + ' · ' + Math.round((bucket.approvalRate || 0) * 100) + '% approve</span></div>').join('');
-  const insightRows = (trend.insights || []).map((insight) => '<div class="trace-meta" style="color:' + (insight.severity === 'warn' ? 'var(--warn,#c98900)' : 'var(--text-dim)') + '"><strong>' + esc(insight.severity.toUpperCase()) + ':</strong> ' + esc(insight.message) + '</div>').join('');
+  const profileRows = Object.entries(trend.byProfile || {}).map(([profile, bucket]) => '<div class="metric-row"><span>' + esc(profile) + '</span><span>👍 ' + bucket.up + ' · 👎 ' + bucket.down + ' · ' + Math.round((bucket.approvalRate || 0) * 100) + '% approve</span></div>').join('');
+  const insightRows = (trend.insights || []).map((insight) => '<div class="trace-meta ' + (insight.severity === 'warn' ? 'trace-meta-warn' : '') + '"><strong>' + esc(insight.severity.toUpperCase()) + ':</strong> ' + esc(insight.message) + '</div>').join('');
   const recentRows = (trend.recentVotes || []).map((vote) => '<div class="trace-meta">' + (vote.vote === 'up' ? '👍' : '👎') + ' ' + esc(vote.profile) + ' · ' + esc(vote.task) + '</div>').join('');
   const sparkline = renderApprovalSparkline(trend.dailyApproval || []);
   return '<div id="profileFeedbackTrend" class="trace-list"><div class="trace-title">Validation Profile Feedback</div>' +
     '<div class="trace-meta">' + trend.totalVotes + ' vote(s) recorded</div>' +
-    (sparkline ? '<div style="margin-top:6px"><strong>Approval rate over time</strong>' + sparkline + '</div>' : '') +
-    '<div style="margin-top:6px"><strong>By profile</strong>' + (profileRows || '<div class="trace-meta">No feedback yet — use 👍 / 👎 on the validation profile event in chat.</div>') + '</div>' +
-    (insightRows ? '<div style="margin-top:6px"><strong>Calibration insights</strong>' + insightRows + '</div>' : '') +
-    (recentRows ? '<div style="margin-top:6px"><strong>Recent votes</strong>' + recentRows + '</div>' : '') +
-    '<div style="margin-top:8px"><button class="btn-sm" onclick="replayProfileFeedback()">Replay down-votes through suggester</button></div>' +
-    '<div id="profileFeedbackReplayResult" class="trace-meta initial-hidden" style="margin-top:6px"></div>' +
+    (sparkline ? '<div class="trace-block-spaced"><strong>Approval rate over time</strong>' + sparkline + '</div>' : '') +
+    '<div class="trace-block-spaced"><strong>By profile</strong>' + (profileRows || '<div class="trace-meta">No feedback yet — use 👍 / 👎 on the validation profile event in chat.</div>') + '</div>' +
+    (insightRows ? '<div class="trace-block-spaced"><strong>Calibration insights</strong>' + insightRows + '</div>' : '') +
+    (recentRows ? '<div class="trace-block-spaced"><strong>Recent votes</strong>' + recentRows + '</div>' : '') +
+    '<div class="trace-block-spaced-large"><button class="btn-sm" onclick="replayProfileFeedback()">Replay down-votes through suggester</button></div>' +
+    '<div id="profileFeedbackReplayResult" class="trace-meta initial-hidden trace-block-spaced"></div>' +
     '</div>';
 }
 
@@ -4567,7 +4738,7 @@ function renderApprovalSparkline(daily) {
   }).join(' ');
   const lastPct = Math.round((daily[daily.length - 1].approvalRate || 0) * 100);
   const title = daily.map((d) => d.date + ': ' + Math.round((d.approvalRate || 0) * 100) + '% (' + d.up + '/' + d.total + ')').join(' · ');
-  return '<svg width="' + w + '" height="' + h + '" style="display:block;margin-top:4px" role="img" aria-label="Approval rate sparkline">' +
+  return '<svg width="' + w + '" height="' + h + '" class="sparkline" role="img" aria-label="Approval rate sparkline">' +
     '<title>' + esc(title) + '</title>' +
     '<polyline points="' + points + '" fill="none" stroke="var(--accent,#4ea1ff)" stroke-width="1.5" />' +
     '</svg><div class="trace-meta">Latest: ' + lastPct + '% across ' + daily.length + ' day(s)</div>';
@@ -4594,11 +4765,11 @@ async function replayProfileFeedback() {
 function renderRoutingMetrics(data) {
   const summary = data.routingSummary || { total: 0, successRate: 0, escalationRate: 0, byTier: {}, topReasons: [] };
   const calibration = data.routingCalibration || { recommendations: [], suggestedPolicy: {} };
-  const tiers = Object.entries(summary.byTier || {}).map(([tier, bucket]) => '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(tier) + '</span><span>' + bucket.count + ' · ' + Math.round(bucket.successRate * 100) + '%</span></div>').join('');
+  const tiers = Object.entries(summary.byTier || {}).map(([tier, bucket]) => '<div class="metric-row"><span>' + esc(tier) + '</span><span>' + bucket.count + ' · ' + Math.round(bucket.successRate * 100) + '%</span></div>').join('');
   const recommendations = (calibration.recommendations || []).map((item) => '<div class="trace-meta">' + esc(item) + '</div>').join('');
-  const suggested = Object.entries(calibration.suggestedPolicy || {}).map(([key, value]) => '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(key) + '</span><span>' + esc(value) + '</span></div>').join('');
+  const suggested = Object.entries(calibration.suggestedPolicy || {}).map(([key, value]) => '<div class="metric-row"><span>' + esc(key) + '</span><span>' + esc(value) + '</span></div>').join('');
   const applyDisabled = suggested ? '' : ' disabled';
-  return '<div id="routingMetricsPanel" class="trace-item"><div class="trace-title">Routing Metrics</div><div class="trace-meta">' + summary.total + ' runs · ' + Math.round((summary.successRate || 0) * 100) + '% success · ' + Math.round((summary.escalationRate || 0) * 100) + '% escalated</div>' + (tiers || '<div class="trace-meta">No tier metrics yet</div>') + '<div style="margin-top:6px"><strong>Calibration</strong>' + (recommendations || '<div class="trace-meta">No calibration suggestions yet</div>') + (suggested ? '<div style="margin-top:4px">' + suggested + '</div>' : '') + '<button id="applyCalibrationBtn" class="btn-sm full-width-button"' + applyDisabled + ' onclick="applyRoutingCalibration()">Apply calibration</button></div></div>';
+  return '<div id="routingMetricsPanel" class="trace-item"><div class="trace-title">Routing Metrics</div><div class="trace-meta">' + summary.total + ' runs · ' + Math.round((summary.successRate || 0) * 100) + '% success · ' + Math.round((summary.escalationRate || 0) * 100) + '% escalated</div>' + (tiers || '<div class="trace-meta">No tier metrics yet</div>') + '<div class="trace-block-spaced"><strong>Calibration</strong>' + (recommendations || '<div class="trace-meta">No calibration suggestions yet</div>') + (suggested ? '<div class="details-body-mt4">' + suggested + '</div>' : '') + '<button id="applyCalibrationBtn" class="btn-sm full-width-button"' + applyDisabled + ' onclick="applyRoutingCalibration()">Apply calibration</button></div></div>';
 }
 
 function renderCandidateQueue(data) {
@@ -4606,7 +4777,7 @@ function renderCandidateQueue(data) {
   const rows = candidates.slice(-8).reverse().map((candidate) => {
     const disabled = candidate.reviewStatus !== 'pending' || !candidate.accepted;
     const status = candidate.reviewStatus || 'pending';
-    return '<div class="trace-item"><div class="trace-title">Candidate · ' + esc(status) + '</div><div class="trace-meta">Quality ' + Math.round((candidate.qualityScore || 0) * 100) + '% · ' + esc(candidate.toolNames?.join(', ') || 'no tools') + '</div><div style="font-size:11px;color:var(--text);white-space:pre-wrap;margin-top:4px">' + esc((candidate.prompt || '').slice(0, 180)) + '</div><div style="display:flex;gap:4px;margin-top:6px"><button class="btn-sm" onclick="inspectLearningCandidate(\'' + escAttr(candidate.id) + '\')">Details</button><button class="btn-sm" ' + (disabled ? 'disabled' : '') + ' onclick="reviewLearningCandidate(\'' + escAttr(candidate.id) + '\',\'promote\')">Promote</button><button class="btn-sm danger" ' + (candidate.reviewStatus !== 'pending' ? 'disabled' : '') + ' onclick="reviewLearningCandidate(\'' + escAttr(candidate.id) + '\',\'reject\')">Reject</button></div></div>';
+    return '<div class="trace-item"><div class="trace-title">Candidate · ' + esc(status) + '</div><div class="trace-meta">Quality ' + Math.round((candidate.qualityScore || 0) * 100) + '% · ' + esc(candidate.toolNames?.join(', ') || 'no tools') + '</div><div class="candidate-prompt-preview">' + esc((candidate.prompt || '').slice(0, 180)) + '</div><div class="inline-actions trace-block-spaced"><button class="btn-sm" onclick="inspectLearningCandidate(\'' + escAttr(candidate.id) + '\')">Details</button><button class="btn-sm" ' + (disabled ? 'disabled' : '') + ' onclick="reviewLearningCandidate(\'' + escAttr(candidate.id) + '\',\'promote\')">Promote</button><button class="btn-sm danger" ' + (candidate.reviewStatus !== 'pending' ? 'disabled' : '') + ' onclick="reviewLearningCandidate(\'' + escAttr(candidate.id) + '\',\'reject\')">Reject</button></div></div>';
   }).join('');
   return '<div id="learningCandidateQueue" class="trace-list"><div class="trace-title">Learning Candidate Review</div>' + (rows || '<div class="trace-meta">No candidates yet</div>') + '<div id="candidateProvenanceDetail" class="trace-item initial-hidden"></div></div>';
 }
@@ -4616,15 +4787,15 @@ function renderEvalDatasetManager(data) {
   const trend = data.evalRunTrend || { totalRuns: 0, averagePassRate: 0 };
   const latest = trend.latest ? '<div class="trace-meta">Latest run: ' + trend.latest.passed + '/' + trend.latest.total + ' passed · ' + Math.round((trend.latest.passRate || 0) * 100) + '%</div>' : '<div class="trace-meta">No eval runs yet</div>';
   const latestFailures = renderLatestRunFailures(trend.latest);
-  const tagRows = Object.entries(trend.byTag || {}).slice(0, 5).map(([tag, bucket]) => '<div style="display:flex;justify-content:space-between;font-size:11px;padding:2px 0"><span>' + esc(tag) + '</span><span>' + bucket.passed + '/' + bucket.total + ' · ' + Math.round((bucket.passRate || 0) * 100) + '%</span></div>').join('');
-  const rows = examples.slice(-8).reverse().map((example) => '<div class="trace-item"><div class="trace-title">Eval · ' + esc(example.status) + (example.mode === 'replay' ? ' · replay' : '') + '</div><div class="trace-meta">' + esc(example.task) + '</div><div class="trace-meta">' + esc((example.tags || []).join(', ')) + '</div>' + renderReplaySourceLinks(example) + '<div style="display:flex;gap:4px;margin-top:6px"><button class="btn-sm" onclick="tagEvalExample(\'' + escAttr(example.id) + '\',\'' + escAttr((example.tags || []).join(', ')) + '\')">Tag</button><button class="btn-sm danger" onclick="deleteEvalExample(\'' + escAttr(example.id) + '\')">Delete</button></div></div>').join('');
+  const tagRows = Object.entries(trend.byTag || {}).slice(0, 5).map(([tag, bucket]) => '<div class="metric-row"><span>' + esc(tag) + '</span><span>' + bucket.passed + '/' + bucket.total + ' · ' + Math.round((bucket.passRate || 0) * 100) + '%</span></div>').join('');
+  const rows = examples.slice(-8).reverse().map((example) => '<div class="trace-item"><div class="trace-title">Eval · ' + esc(example.status) + (example.mode === 'replay' ? ' · replay' : '') + '</div><div class="trace-meta">' + esc(example.task) + '</div><div class="trace-meta">' + esc((example.tags || []).join(', ')) + '</div>' + renderReplaySourceLinks(example) + '<div class="inline-actions trace-block-spaced"><button class="btn-sm" onclick="tagEvalExample(\'' + escAttr(example.id) + '\',\'' + escAttr((example.tags || []).join(', ')) + '\')">Tag</button><button class="btn-sm danger" onclick="deleteEvalExample(\'' + escAttr(example.id) + '\')">Delete</button></div></div>').join('');
   return '<div id="evalDatasetManager" class="trace-list"><div class="trace-title">Eval Dataset</div><button id="runEvalDatasetBtn" class="btn-sm full-width-button" onclick="runEvalDataset(\'stored\')">Run stored evals</button><button id="runLiveReplayDatasetBtn" class="btn-sm full-width-button" onclick="runEvalDataset(\'live\')">Run live replay evals</button><button class="btn-sm full-width-button" onclick="downloadEvalDataset()">Download JSONL</button><div id="evalRunTrend" class="trace-item"><div class="trace-title">Eval Trends</div><div class="trace-meta">' + trend.totalRuns + ' runs · ' + Math.round((trend.averagePassRate || 0) * 100) + '% average pass rate</div>' + latest + tagRows + latestFailures + '</div>' + (rows || '<div class="trace-meta">No eval examples yet</div>') + '</div>';
 }
 
 function renderLatestRunFailures(run) {
   const failed = (run?.results || []).filter((result) => result.status === 'fail').slice(0, 4);
   if (failed.length === 0) return '';
-  return '<div id="latestReplayFailures" style="margin-top:6px"><strong>Latest failures</strong>' + failed.map((result) => '<div class="trace-meta">' + esc(result.task) + ' · ' + esc(result.message) + renderReplayResultLinks(result.links) + '</div>').join('') + '</div>';
+  return '<div id="latestReplayFailures" class="trace-block-spaced"><strong>Latest failures</strong>' + failed.map((result) => '<div class="trace-meta">' + esc(result.task) + ' · ' + esc(result.message) + renderReplayResultLinks(result.links) + '</div>').join('') + '</div>';
 }
 
 function renderReplayResultLinks(links) {
@@ -4661,7 +4832,7 @@ async function inspectLearningCandidate(id) {
   const response = await fetch('/api/learning/candidates/' + encodeURIComponent(id) + '/provenance');
   const data = await response.json();
   if (data.error) { detail.textContent = data.error; return; }
-  const events = (data.events || []).map((event) => '<div class="trace-row"><strong>' + esc(event.kind) + '</strong><div>' + esc(event.type) + ' · ' + esc(event.timestamp) + '</div><div style="white-space:pre-wrap;color:var(--text)">' + esc(event.summary) + '</div></div>').join('');
+  const events = (data.events || []).map((event) => '<div class="trace-row"><strong>' + esc(event.kind) + '</strong><div>' + esc(event.type) + ' · ' + esc(event.timestamp) + '</div><div class="prewrap-text">' + esc(event.summary) + '</div></div>').join('');
   detail.innerHTML = '<div class="trace-title">Candidate Provenance</div><div class="trace-meta">' + esc(data.candidate.sessionId) + ' · ' + (data.events || []).length + ' source events</div>' + (events || '<div class="trace-meta">No source events found</div>') + ((data.missingEventIds || []).length ? '<div class="trace-meta">Missing source ids: ' + esc(data.missingEventIds.join(', ')) + '</div>' : '');
 }
 
@@ -4707,7 +4878,7 @@ function downloadEvalDataset() {
 }
 
 async function rebuildSemanticMemory() { try { const r = await fetch('/api/memory/rebuild', { method: 'POST' }); const d = await r.json(); alert('Semantic memory entries: ' + (d.entries || 0)); } catch (e) { alert(e.message); } }
-async function searchSemanticMemory() { const q = document.getElementById('semanticQuery').value.trim(); const box = document.getElementById('semanticResults'); if (!q) return; try { const r = await fetch('/api/memory/search?q=' + encodeURIComponent(q)); const d = await r.json(); box.innerHTML = (d.results || []).map((x) => '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px;margin-bottom:4px;font-size:11px"><div style="color:var(--accent);font-weight:600">' + esc(x.entry.kind) + ' · ' + Math.round(x.score * 100) + '</div><div style="color:var(--text-dim)">' + esc(x.entry.text.slice(0, 220)) + '</div></div>').join('') || '<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">No matches</div>'; } catch (e) { box.textContent = e.message; } }
+async function searchSemanticMemory() { const q = document.getElementById('semanticQuery').value.trim(); const box = document.getElementById('semanticResults'); if (!q) return; try { const r = await fetch('/api/memory/search?q=' + encodeURIComponent(q)); const d = await r.json(); box.innerHTML = (d.results || []).map((x) => '<div class="learning-pattern-card"><div class="accent-strong">' + esc(x.entry.kind) + ' · ' + Math.round(x.score * 100) + '</div><div class="trace-meta">' + esc(x.entry.text.slice(0, 220)) + '</div></div>').join('') || '<div class="settings-note">No matches</div>'; } catch (e) { box.textContent = e.message; } }
 
 async function exportTraceSnapshot() { try { const response = await fetch('/api/traces/exports', { method: 'POST' }); const data = await response.json(); if (data.error) { alert(data.error); return; } loadTraceExports(); } catch (error) { alert(error.message); } }
 async function exportTraceEvalExample() { try { const response = await fetch('/api/evals/trace-examples', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'browser trace export', tags: ['browser', 'runtime'] }) }); const data = await response.json(); if (data.error) { alert(data.error); return; } await loadTraceEvalExamples(); } catch (error) { alert(error.message); } }
@@ -4717,7 +4888,7 @@ async function loadTraceExports() { const box = document.getElementById('traceEx
 
 async function inspectTraceExport(id) { const inspector = document.getElementById('traceInspector'); if (!inspector) return; inspector.classList.remove('initial-hidden'); inspector.textContent = 'Loading trace export...'; try { const response = await fetch('/api/traces/exports/' + encodeURIComponent(id)); const data = await response.json(); if (data.error) { inspector.textContent = data.error; return; } activeTraceExport = data; renderTraceInspector(); } catch (error) { inspector.textContent = error.message; } }
 
-function renderTraceInspector() { const inspector = document.getElementById('traceInspector'); if (!inspector || !activeTraceExport) return; const filter = (document.getElementById('traceFilter')?.value || '').toLowerCase(); const spans = (activeTraceExport.spans || []).filter((span) => traceRecordText(span).includes(filter)); const events = (activeTraceExport.events || []).filter((event) => traceRecordText(event).includes(filter)); const spanRows = spans.slice(0, 8).map((span) => '<div class="trace-row"><strong>' + esc(span.name) + '</strong><div>' + esc(span.status || 'open') + ' · ' + esc(span.durationMs ?? 0) + ' ms · ' + esc(span.startedAt || '') + '</div>' + (span.error ? '<div>' + esc(span.error) + '</div>' : '') + '</div>').join(''); const eventRows = events.slice(0, 8).map((event) => '<div class="trace-row"><strong>' + esc(event.name) + '</strong><div>' + esc(event.timestamp || '') + '</div></div>').join(''); inspector.innerHTML = '<div><strong>' + esc(activeTraceExport.id || 'trace') + '</strong></div><div>' + spans.length + '/' + (activeTraceExport.spans || []).length + ' spans · ' + events.length + '/' + (activeTraceExport.events || []).length + ' events</div><input id="traceFilter" class="trace-filter" placeholder="Filter spans and events" value="' + escAttr(filter) + '" oninput="renderTraceInspector()"><div style="margin-top:8px"><strong>Spans</strong>' + (spanRows || '<div class="trace-row">No matching spans</div>') + '</div><div style="margin-top:8px"><strong>Events</strong>' + (eventRows || '<div class="trace-row">No matching events</div>') + '</div>'; const input = document.getElementById('traceFilter'); if (input) input.selectionStart = input.selectionEnd = input.value.length; }
+function renderTraceInspector() { const inspector = document.getElementById('traceInspector'); if (!inspector || !activeTraceExport) return; const filter = (document.getElementById('traceFilter')?.value || '').toLowerCase(); const spans = (activeTraceExport.spans || []).filter((span) => traceRecordText(span).includes(filter)); const events = (activeTraceExport.events || []).filter((event) => traceRecordText(event).includes(filter)); const spanRows = spans.slice(0, 8).map((span) => '<div class="trace-row"><strong>' + esc(span.name) + '</strong><div>' + esc(span.status || 'open') + ' · ' + esc(span.durationMs ?? 0) + ' ms · ' + esc(span.startedAt || '') + '</div>' + (span.error ? '<div>' + esc(span.error) + '</div>' : '') + '</div>').join(''); const eventRows = events.slice(0, 8).map((event) => '<div class="trace-row"><strong>' + esc(event.name) + '</strong><div>' + esc(event.timestamp || '') + '</div></div>').join(''); inspector.innerHTML = '<div><strong>' + esc(activeTraceExport.id || 'trace') + '</strong></div><div>' + spans.length + '/' + (activeTraceExport.spans || []).length + ' spans · ' + events.length + '/' + (activeTraceExport.events || []).length + ' events</div><input id="traceFilter" class="trace-filter" placeholder="Filter spans and events" value="' + escAttr(filter) + '" oninput="renderTraceInspector()"><div class="trace-block-spaced-large"><strong>Spans</strong>' + (spanRows || '<div class="trace-row">No matching spans</div>') + '</div><div class="trace-block-spaced-large"><strong>Events</strong>' + (eventRows || '<div class="trace-row">No matching events</div>') + '</div>'; const input = document.getElementById('traceFilter'); if (input) input.selectionStart = input.selectionEnd = input.value.length; }
 
 function traceRecordText(record) { return JSON.stringify(record || {}).toLowerCase(); }
 
@@ -4738,16 +4909,16 @@ async function loadSnapshots() {
     const r = await fetch('/api/snapshots');
     const d = await r.json();
     const snaps = (d && d.snapshots) || [];
-    const header = '<div class="panel-header" style="border-bottom:none"><h3>Snapshots</h3><div class="inline-actions"><button class="btn-sm" onclick="takeSnapshot()">+ Take</button><button class="btn-sm" onclick="loadSnapshots()">Refresh</button></div></div>';
-    const intro = '<div class="trace-meta" style="padding:0 8px 8px">Backs up .harness/skills, MEMORY.md, USER.md, SOUL.md so the agent\'s self-improvement is reversible.</div>';
+    const header = '<div class="panel-header panel-header-flat"><h3>Snapshots</h3><div class="inline-actions"><button class="btn-sm" onclick="takeSnapshot()">+ Take</button><button class="btn-sm" onclick="loadSnapshots()">Refresh</button></div></div>';
+    const intro = '<div class="trace-meta panel-copy-loose">Backs up .harness/skills, MEMORY.md, USER.md, SOUL.md so the agent\'s self-improvement is reversible.</div>';
     if (snaps.length === 0) {
-      view.innerHTML = header + intro + '<div class="trace-meta" style="padding:8px">(no snapshots yet — click <strong>Take</strong> to capture one)</div>';
+      view.innerHTML = header + intro + '<div class="trace-meta panel-empty">(no snapshots yet — click <strong>Take</strong> to capture one)</div>';
       return;
     }
     const rows = snaps.map((s) => '<div class="trace-item"><div class="trace-title">' + esc(s.id) + '</div>'
       + '<div class="trace-meta">' + esc(new Date(s.createdAt).toLocaleString()) + ' · ' + s.fileCount + ' files · ' + Math.round((s.totalBytes || 0) / 1024) + ' KB</div>'
       + '<div class="trace-meta">' + esc(s.reason || '') + '</div>'
-      + '<div class="inline-actions" style="margin-top:6px"><button class="btn-sm" onclick="diffSnapshot(\'' + esc(s.id) + '\')">Diff</button>'
+      + '<div class="inline-actions trace-block-spaced"><button class="btn-sm" onclick="diffSnapshot(\'' + esc(s.id) + '\')">Diff</button>'
       + '<button class="btn-sm" onclick="restoreSnapshot(\'' + esc(s.id) + '\')">Restore</button>'
       + '<button class="btn-sm danger" onclick="deleteSnapshot(\'' + esc(s.id) + '\')">Delete</button></div>'
       + '<div class="trace-detail initial-hidden" id="snapDiff-' + esc(s.id) + '"></div></div>').join('');
@@ -4778,10 +4949,10 @@ async function diffSnapshot(id) {
     const d = await r.json();
     if (d.error) { detail.textContent = d.error; return; }
     const sections = [];
-    if (d.added && d.added.length)    sections.push('<div><strong>Added (' + d.added.length + ')</strong><div style="white-space:pre-wrap">' + esc(d.added.join('\n')) + '</div></div>');
-    if (d.modified && d.modified.length) sections.push('<div><strong>Modified (' + d.modified.length + ')</strong><div style="white-space:pre-wrap">' + esc(d.modified.join('\n')) + '</div></div>');
-    if (d.removed && d.removed.length) sections.push('<div><strong>Removed (' + d.removed.length + ')</strong><div style="white-space:pre-wrap">' + esc(d.removed.join('\n')) + '</div></div>');
-    detail.innerHTML = sections.length ? sections.join('<div style="height:6px"></div>') : '<div>No changes since this snapshot.</div>';
+    if (d.added && d.added.length)    sections.push('<div><strong>Added (' + d.added.length + ')</strong><div class="prewrap-text">' + esc(d.added.join('\n')) + '</div></div>');
+    if (d.modified && d.modified.length) sections.push('<div><strong>Modified (' + d.modified.length + ')</strong><div class="prewrap-text">' + esc(d.modified.join('\n')) + '</div></div>');
+    if (d.removed && d.removed.length) sections.push('<div><strong>Removed (' + d.removed.length + ')</strong><div class="prewrap-text">' + esc(d.removed.join('\n')) + '</div></div>');
+    detail.innerHTML = sections.length ? sections.join('<div class="spacer-6"></div>') : '<div>No changes since this snapshot.</div>';
   } catch (e) { detail.textContent = e.message; }
 }
 
@@ -4828,37 +4999,41 @@ async function loadRagTab() {
     const r = await fetch('/api/rag/indexes');
     const d = await r.json();
     const indexes = (d && d.indexes) || [];
-    const header = '<div class="panel-header" style="border-bottom:none"><h3>Local RAG</h3><div class="inline-actions"><button class="btn-sm" onclick="loadRagTab()">Refresh</button></div></div>';
+    const header = '<div class="panel-header panel-header-flat"><h3>Local RAG</h3><div class="inline-actions"><button class="btn-sm" onclick="loadRagTab()">Refresh</button></div></div>';
     if (ragState.selectedPaths.size === 0) {
       for (const suggestion of ['README.md', 'docs', 'cookbook']) ragState.selectedPaths.add(suggestion);
     }
     const builder = '<div class="trace-item">'
       + '<div class="trace-title">Build index</div>'
-      + '<div class="trace-meta" style="margin-bottom:8px">Pick files and folders to index. Only text files are indexed; <code>node_modules</code>, <code>.git</code>, <code>dist</code>, and <code>.harness</code> are skipped.</div>'
-      + '<div style="display:flex;gap:6px;margin-bottom:6px"><input id="ragBuildName" type="text" placeholder="index name (e.g. docs)" style="flex:1;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px"></div>'
+      + '<div class="trace-meta panel-copy">Pick files and folders to index. Use the project tree for this repo, or browse to another folder on disk. Only text files are indexed; <code>node_modules</code>, <code>.git</code>, <code>dist</code>, and <code>.harness</code> are skipped.</div>'
+      + '<div class="settings-action-row"><input id="ragBuildName" type="text" placeholder="index name (e.g. docs)" class="compact-panel-input"></div>'
       + '<div class="rag-picker">'
-      +   '<div class="rag-picker-label">Files & folders to index</div>'
+      +   '<div class="rag-picker-label">Selected files & folders</div>'
       +   '<div id="ragSelectedList" class="rag-selected"></div>'
+      +   '<div class="inline-actions trace-block-spaced"><button class="btn-sm" onclick="toggleRagDirBrowser()">Browse folders</button><button class="btn-sm" onclick="ragAddProjectRoot()">Add project root</button></div>'
+      +   '<div id="ragDirBrowser" class="settings-browser-panel hidden-by-default"></div>'
+      +   '<details class="details-mt6" open><summary class="trace-meta clickable-summary">Project files</summary>'
       +   '<div id="ragFileTree" class="rag-tree"><div class="trace-meta">Loading project files…</div></div>'
+      +   '</details>'
       + '</div>'
-      + '<details style="margin-top:6px"><summary class="trace-meta" style="cursor:pointer">Advanced: type paths manually</summary>'
-      +   '<div style="display:flex;gap:6px;margin-top:6px"><input id="ragBuildPathsManual" type="text" placeholder="comma-separated, e.g. docs,README.md" style="flex:1;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px"><button class="btn-sm" onclick="ragAddManualPaths()">Add</button></div>'
+      + '<details class="details-mt6"><summary class="trace-meta clickable-summary">Advanced: type paths manually</summary>'
+      +   '<div class="settings-action-row trace-block-spaced"><input id="ragBuildPathsManual" type="text" placeholder="comma-separated, e.g. docs,README.md" class="compact-panel-input"><button class="btn-sm" onclick="ragAddManualPaths()">Add</button></div>'
       + '</details>'
-      + '<div style="display:flex;gap:6px;margin-top:8px"><select id="ragBuildBackend" style="flex:1;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px"><option value="">auto-detect backend</option><option value="ollama">ollama embeddings</option><option value="hash">hash fallback (offline)</option></select></div>'
-      + '<div class="inline-actions" style="margin-top:8px"><button class="btn-sm" onclick="ragPreview()">🔍 Preview matches</button> <button class="btn-sm primary" onclick="ragBuild()">Build index</button></div>'
-      + '<div id="ragBuildStatus" class="rag-status" style="margin-top:8px"></div>'
+      + '<div class="settings-action-row trace-block-spaced-large"><select id="ragBuildBackend" class="compact-panel-select"><option value="">auto-detect backend</option><option value="ollama">ollama embeddings</option><option value="hash">hash fallback (offline)</option></select></div>'
+      + '<div class="inline-actions trace-block-spaced-large"><button class="btn-sm" onclick="ragPreview()">🔍 Preview matches</button> <button class="btn-sm primary" onclick="ragBuild()">Build index</button></div>'
+      + '<div id="ragBuildStatus" class="rag-status trace-block-spaced-large"></div>'
       + '<div id="ragPreviewResults" class="rag-preview"></div>'
       + '</div>';
     const queryBox = '<div class="trace-item">'
       + '<div class="trace-title">Search</div>'
-      + '<div style="display:flex;gap:6px;margin-bottom:4px"><select id="ragQueryName" style="flex:1;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px">' + indexes.map((i) => '<option value="' + escAttr(i.name) + '">' + esc(i.name) + ' (' + i.chunks + ')</option>').join('') + '</select></div>'
-      + '<div style="display:flex;gap:6px;margin-bottom:4px"><input id="ragQueryText" type="text" placeholder="natural-language query" style="flex:1;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px" onkeydown="if(event.key===\'Enter\'){ragSearch()}"></div>'
+      + '<div class="settings-action-row"><select id="ragQueryName" class="compact-panel-select">' + indexes.map((i) => '<option value="' + escAttr(i.name) + '">' + esc(i.name) + ' (' + i.chunks + ')</option>').join('') + '</select></div>'
+      + '<div class="settings-action-row"><input id="ragQueryText" type="text" placeholder="natural-language query" class="compact-panel-input" onkeydown="if(event.key===\'Enter\'){ragSearch()}"></div>'
       + '<button class="btn-sm" onclick="ragSearch()">Search</button>'
-      + '<div class="trace-detail initial-hidden" id="ragQueryResults" style="margin-top:6px"></div>'
+      + '<div class="trace-detail initial-hidden trace-block-spaced" id="ragQueryResults"></div>'
       + '</div>';
     let listing;
     if (indexes.length === 0) {
-      listing = '<div class="trace-meta" style="padding:8px">(no indexes yet)</div>';
+      listing = '<div class="trace-meta panel-empty">(no indexes yet)</div>';
     } else {
       ragState.indexCache = new Map(indexes.map((i) => [i.name, i]));
       const rows = indexes.map((i) => {
@@ -4871,7 +5046,7 @@ async function loadRagTab() {
           + '<div class="trace-meta">' + i.chunks + ' chunks · ' + i.files + ' files · ' + esc(i.backend) + ' (' + esc(i.model) + ', dim=' + i.dim + ')</div>'
           + '<div class="trace-meta">Updated ' + esc(new Date(i.updatedAt).toLocaleString()) + '</div>'
           + prefSummary
-          + '<div class="inline-actions" style="margin-top:6px">'
+          + '<div class="inline-actions trace-block-spaced">'
           +   '<button class="btn-sm" onclick="ragLoadPrefsIntoPicker(\'' + escAttr(i.name) + '\')"' + rebuildAttr + '>Load paths</button> '
           +   '<button class="btn-sm" onclick="ragRebuildNow(\'' + escAttr(i.name) + '\')"' + rebuildAttr + '>Rebuild</button> '
           +   '<button class="btn-sm danger" onclick="ragDrop(\'' + escAttr(i.name) + '\')">Delete</button>'
@@ -4932,6 +5107,74 @@ function ragAddManualPaths() {
   renderRagTree();
 }
 
+function ragAddProjectRoot() {
+  ragState.selectedPaths.add('.');
+  renderRagSelectedList();
+  renderRagTree();
+}
+
+function toggleRagDirBrowser() {
+  const browser = document.getElementById('ragDirBrowser');
+  if (!browser) return;
+  if (browser.classList.contains('hidden-by-default')) {
+    browser.classList.remove('hidden-by-default');
+    loadRagDirBrowser('');
+  } else {
+    browser.classList.add('hidden-by-default');
+  }
+}
+
+async function loadRagDirBrowser(targetPath) {
+  const browser = document.getElementById('ragDirBrowser');
+  if (!browser) return;
+  browser.innerHTML = '<div class="settings-status-line">Loading folders...</div>';
+  try {
+    const url = '/api/browse-dirs' + (targetPath ? '?path=' + encodeURIComponent(targetPath) : '');
+    const response = await fetch(url);
+    if (!response.ok) throw new Error('browse failed (' + response.status + ')');
+    const data = await response.json();
+    renderRagDirBrowser(data);
+  } catch (error) {
+    browser.innerHTML = '<div class="settings-warning-line">Could not browse folders: ' + esc(error.message || error) + '</div>';
+  }
+}
+
+function renderRagDirBrowser(data) {
+  const browser = document.getElementById('ragDirBrowser');
+  if (!browser) return;
+  let html = '<div class="folder-preset-row">';
+  for (const preset of (data.presets || [])) {
+    html += '<button class="btn-sm btn-folder-preset" data-path="' + escAttr(preset.path) + '" onclick="loadRagDirBrowser(this.dataset.path)" title="' + escAttr(preset.path) + '">' + esc(preset.label) + '</button>';
+  }
+  html += '</div>';
+  html += '<div class="folder-current-row">'
+    + '<span class="folder-current-path" title="' + escAttr(data.cwd || '') + '"><code>' + esc(data.cwd || '') + '</code></span>'
+    + '<button class="btn-sm primary btn-folder-use" data-path="' + escAttr(data.cwd || '') + '" onclick="ragUseBrowsedDir(this.dataset.path)">Add this folder</button>'
+    + '</div>';
+  if (data.parent) html += '<div class="folder-up-row"><button class="btn-sm btn-folder-up" data-path="' + escAttr(data.parent) + '" onclick="loadRagDirBrowser(this.dataset.path)">Up</button></div>';
+  if (data.error) html += '<div class="settings-warning-line folder-warning">' + esc(data.error) + '</div>';
+  const dirs = data.dirs || [];
+  if (dirs.length === 0) {
+    html += '<div class="folder-empty">No subfolders here.</div>';
+  } else {
+    html += '<div class="folder-list">';
+    for (const dir of dirs.slice(0, 200)) {
+      html += '<div class="folder-list-row" data-path="' + escAttr(dir.path) + '" onclick="loadRagDirBrowser(this.dataset.path)">📁 ' + esc(dir.name) + '</div>';
+    }
+    html += '</div>';
+    if (dirs.length > 200) html += '<div class="folder-overflow-note">' + (dirs.length - 200) + ' more not shown</div>';
+  }
+  browser.innerHTML = html;
+}
+
+function ragUseBrowsedDir(folderPath) {
+  if (!folderPath) return;
+  ragState.selectedPaths.add(folderPath);
+  renderRagSelectedList();
+  const browser = document.getElementById('ragDirBrowser');
+  if (browser) browser.classList.add('hidden-by-default');
+}
+
 async function loadRagTreeNode(relativeDir) {
   if (ragState.treeCache.has(relativeDir)) {
     renderRagTree();
@@ -4950,12 +5193,13 @@ function renderRagTree() {
   const root = document.getElementById('ragFileTree');
   if (!root) return;
   root.innerHTML = renderRagTreeLevel('', 0);
+  applyDataIndents(root);
 }
 
 function renderRagTreeLevel(relativeDir, depth) {
   const items = ragState.treeCache.get(relativeDir);
-  if (!items) return '<div class="trace-meta" style="padding-left:' + (depth * 14) + 'px">…</div>';
-  if (items.length === 0) return '<div class="trace-meta" style="padding-left:' + (depth * 14) + 'px">(empty)</div>';
+  if (!items) return '<div class="trace-meta" data-indent-depth="' + depth + '">…</div>';
+  if (items.length === 0) return '<div class="trace-meta" data-indent-depth="' + depth + '">(empty)</div>';
   return items.map((item) => renderRagTreeItem(item, relativeDir, depth)).join('');
 }
 
@@ -4966,10 +5210,9 @@ function renderRagTreeItem(item, parentRelative, depth) {
   const isDir = item.type === 'dir';
   const checked = ragState.selectedPaths.has(relative) ? 'checked' : '';
   const expanded = ragState.expanded.has(relative);
-  const indent = 'padding-left:' + (depth * 14) + 'px';
   const toggleSymbol = isDir ? (expanded ? '▾' : '▸') : '·';
   const onToggle = isDir ? 'onclick="ragToggleDir(\'' + escAttr(relative) + '\')"' : '';
-  const row = '<div class="rag-tree-row" style="' + indent + '">'
+  const row = '<div class="rag-tree-row" data-indent-depth="' + depth + '">'
     + '<span class="rag-tree-toggle" ' + onToggle + '>' + toggleSymbol + '</span>'
     + '<input type="checkbox" ' + checked + ' onchange="ragTogglePath(\'' + escAttr(relative) + '\', this.checked)">'
     + '<span class="rag-tree-name ' + (isDir ? 'is-dir' : 'is-file') + '" ' + onToggle + '>' + esc(item.name) + (isDir ? '/' : '') + '</span>'
@@ -5032,8 +5275,8 @@ function renderRagPreview(data) {
       + (sample ? '<div class="trace-meta">' + sample + '</div>' : '')
       + '</div></div>';
   }).join('');
-  const backend = data.backend ? '<div class="trace-meta" style="margin-top:6px">Detected backend: <strong>' + esc(data.backend.name) + '</strong> (' + esc(data.backend.model) + ', dim=' + data.backend.dim + ')</div>' : '';
-  out.innerHTML = '<div class="rag-preview-body"><div class="trace-title" style="margin-bottom:6px">Preview · ' + (data.totalFiles || 0) + ' file(s) total</div>' + (rows || '<div class="trace-meta">No paths selected.</div>') + backend + '</div>';
+  const backend = data.backend ? '<div class="trace-meta trace-block-spaced">Detected backend: <strong>' + esc(data.backend.name) + '</strong> (' + esc(data.backend.model) + ', dim=' + data.backend.dim + ')</div>' : '';
+  out.innerHTML = '<div class="rag-preview-body"><div class="trace-title panel-copy">Preview · ' + (data.totalFiles || 0) + ' file(s) total</div>' + (rows || '<div class="trace-meta">No paths selected.</div>') + backend + '</div>';
 }
 
 async function ragBuild() {
@@ -5144,7 +5387,7 @@ function renderRagSearchResult(row, i, query) {
     +   '<button class="btn-sm" onclick="ragAskAboutChunk(\'' + escAttr(row.source) + '\', ' + row.chunkNo + ', \'' + escAttr(query) + '\')">💬 Ask about this</button> '
     +   '<button class="btn-sm" onclick="ragCopyChunk(this)" data-chunk="' + escAttr(row.content) + '">Copy</button>'
     + '</div>'
-    + '<div style="white-space:pre-wrap;color:var(--text-dim);margin-top:4px">' + esc(row.content.slice(0, 600)) + (row.content.length > 600 ? '…' : '') + '</div>'
+    + '<div class="prewrap-muted details-body-mt4">' + esc(row.content.slice(0, 600)) + (row.content.length > 600 ? '…' : '') + '</div>'
     + '</div>';
 }
 
@@ -5236,7 +5479,7 @@ async function loadToolsDashboard() {
       ? { items: capabilitiesR.value.capabilities || [], summary: capabilitiesR.value.summary || {}, grants: capabilitiesR.value.grants || [], shellCommandPresets: capabilitiesR.value.shellCommandPresets || [] }
       : (registry.capabilities || { items: [], summary: {}, grants: [] });
     const perm = permR.status === 'fulfilled' ? permR.value : null;
-    const header = '<div class="panel-header" style="border-bottom:none"><h3>Local Tools</h3><div class="inline-actions"><button class="btn-sm" onclick="loadToolsDashboard()">Refresh</button></div></div>';
+    const header = '<div class="panel-header panel-header-flat"><h3>Local Tools</h3><div class="inline-actions"><button class="btn-sm" onclick="loadToolsDashboard()">Refresh</button></div></div>';
     const auditR = await fetch('/api/capabilities/audit').then((r) => r.json()).catch(() => ({ events: [] }));
     const auditEvents = Array.isArray(auditR.events) ? auditR.events : [];
     view.innerHTML = header + renderPermissionPanel(perm) + renderCapabilityAlignmentPanel(capabilities, auditEvents) + renderToolRegistryPanel(registry) + '<div class="trace-list" id="toolsDashboardCards"><div class="trace-item"><div class="trace-title">Dashboard details</div><div class="trace-meta">Loading local status…</div></div></div>';
@@ -5304,51 +5547,101 @@ async function loadToolsDashboard() {
 
     const cardHtml = cards.map((c) => '<div class="trace-item">'
       + '<div class="trace-title">' + c.emoji + ' ' + esc(c.title) + '</div>'
-      + '<div class="trace-meta" style="margin-top:2px;color:var(--text)">' + esc(c.value) + '</div>'
+      + '<div class="trace-meta trace-value-line">' + esc(c.value) + '</div>'
       + '<div class="trace-meta">' + esc(c.sub) + '</div>'
-      + (c.action ? '<div class="inline-actions" style="margin-top:6px"><button class="btn-sm" onclick="' + c.action.fn + '">' + esc(c.action.label) + '</button></div>' : '')
+      + (c.action ? '<div class="inline-actions trace-block-spaced"><button class="btn-sm" onclick="' + c.action.fn + '">' + esc(c.action.label) + '</button></div>' : '')
       + '</div>').join('');
 
-    const mcpRuntimeHtml = '<div class="trace-item">'
-      + '<div class="trace-title">🧩 MCP runtime</div>'
-      + '<div class="trace-meta" style="margin-bottom:6px">Local MCP server definitions. Starting a server requires an active arbitrary-shell capability grant.</div>'
-      + renderMcpRuntimeList(mcpServers)
-      + '</div>';
-
-    const mcpHtml = mcpArr.length === 0 ? '' : '<div class="trace-item">'
-      + '<div class="trace-title">🧩 MCP catalog</div>'
-      + '<div class="trace-meta" style="margin-bottom:6px">Curated MCP servers. Configure one as a runtime server, then start it when a shell grant is active.</div>'
-      + '<input id="mcpCatalogFilter" type="text" placeholder="filter by name or tag…" style="width:100%;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:6px" oninput="renderMcpCatalogList()">'
-      + '<div id="mcpCatalogList"></div>'
-      + '</div>';
-
     const cardsHost = document.getElementById('toolsDashboardCards');
-    if (cardsHost) cardsHost.innerHTML = cardHtml + mcpRuntimeHtml + mcpHtml;
+    if (cardsHost) cardsHost.innerHTML = cardHtml + renderMcpHub(mcpServers, mcpArr);
     window._mcpCatalog = mcpArr;
+    window._mcpRuntimeServerIds = new Set(mcpServers.flatMap((server) => [server.id, server.catalogName].filter(Boolean)));
     renderMcpCatalogList();
   } catch (error) {
     view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message) + '</div>';
   }
 }
 
+function renderMcpHub(servers, catalog) {
+  const serverCount = Array.isArray(servers) ? servers.length : 0;
+  const catalogCount = Array.isArray(catalog) ? catalog.length : 0;
+  const openCatalog = serverCount === 0 ? ' open' : '';
+  return '<div class="trace-item mcp-hub">'
+    + '<div class="mcp-hub-head">'
+    + '<div><div class="mcp-hub-title">🧩 MCP servers</div>'
+    + '<div class="mcp-hub-sub">MCP servers are add-on processes that expose extra tools. Built-in Harness tools live in the Tool registry above; MCP servers can come from the catalog, from a command you paste, or from agent-created code.</div></div>'
+    + '<span class="rag-backend-badge">' + serverCount + ' configured</span>'
+    + '</div>'
+    + '<div class="mcp-path-grid">'
+    + '<div class="mcp-path"><strong>Let the agent handle it</strong><span>Draft a request to find an existing server or create one for this project.</span><div class="inline-actions"><button class="btn-sm" onclick="draftMcpAgentRequest(\'find\')">Find one</button><button class="btn-sm" onclick="draftMcpAgentRequest(\'create\')">Create one</button></div></div>'
+    + '<div class="mcp-path"><strong>Use one already made</strong><span>Pick from ' + catalogCount + ' curated entries, then start it when a shell grant is active.</span><button class="btn-sm" onclick="focusMcpCatalogFilter()">Browse catalog</button></div>'
+    + '<div class="mcp-path"><strong>Paste a command</strong><span>Save a known install command such as npx plus its arguments.</span><button class="btn-sm" onclick="toggleMcpManualForm()">Manual setup</button></div>'
+    + '</div>'
+    + '<details class="mcp-section" open><summary>Configured servers</summary>'
+    + renderMcpRuntimeList(servers)
+    + '</details>'
+    + renderMcpQuickAddPanel()
+    + (catalogCount === 0 ? '' : '<details class="mcp-section"' + openCatalog + '><summary>Ready-made catalog</summary>'
+      + '<input id="mcpCatalogFilter" type="text" placeholder="filter by name or tag..." class="compact-panel-input full-compact-input" oninput="renderMcpCatalogList()">'
+      + '<div id="mcpCatalogList"></div>'
+      + '</details>')
+    + '</div>';
+}
+
 function renderMcpRuntimeList(servers) {
   if (!Array.isArray(servers) || servers.length === 0) {
-    return '<div class="trace-meta">No MCP runtime servers configured yet. Use the catalog install command as the command/args source for a new definition.</div>';
+    return '<div class="trace-meta trace-block-spaced">No MCP servers configured yet. Add one from the catalog, paste a command, or ask the agent to create one for a specific job.</div>';
   }
   return servers.map((server) => {
     const status = server.running ? 'running' : 'stopped';
     const tools = Array.isArray(server.tools) && server.tools.length ? server.tools.map((tool) => tool.name).join(', ') : 'No tools configured';
-    return '<div class="trace-item" style="background:var(--surface2);margin-top:6px">'
+    return '<div class="trace-item trace-item-subtle trace-block-spaced">'
       + '<div class="trace-title">' + esc(server.id || '(unnamed)') + ' <span class="rag-backend-badge">' + esc(status) + '</span></div>'
       + '<div class="trace-meta">' + esc((server.command || '') + (Array.isArray(server.args) && server.args.length ? ' ' + server.args.join(' ') : '')) + '</div>'
       + '<div class="trace-meta">Tools: ' + esc(tools) + '</div>'
-      + (server.lastError ? '<div class="trace-meta" style="color:#ffb050">' + esc(server.lastError) + '</div>' : '')
-      + '<div class="inline-actions" style="margin-top:6px">'
+      + (server.lastError ? '<div class="trace-meta trace-meta-warning">' + esc(server.lastError) + '</div>' : '')
+      + '<div class="inline-actions trace-block-spaced">'
       + '<button class="btn-sm" onclick="mcpRuntimeStart(\'' + escAttr(server.id) + '\')"' + (server.running ? ' disabled' : '') + '>Start</button>'
       + '<button class="btn-sm" onclick="mcpRuntimeStop(\'' + escAttr(server.id) + '\')"' + (!server.running ? ' disabled' : '') + '>Stop</button>'
+      + '<button class="btn-sm danger" onclick="mcpRuntimeDelete(\'' + escAttr(server.id) + '\')">Remove</button>'
       + '</div>'
       + '</div>';
   }).join('');
+}
+
+function renderMcpQuickAddPanel() {
+  return '<details class="mcp-section" id="mcpManualForm"><summary>Manual command</summary>'
+    + '<input id="mcpNewId" class="compact-panel-input full-compact-input" placeholder="server id, e.g. playwright">'
+    + '<input id="mcpNewCommand" class="compact-panel-input full-compact-input" placeholder="command, e.g. npx">'
+    + '<input id="mcpNewArgs" class="compact-panel-input full-compact-input" placeholder="args, e.g. -y @modelcontextprotocol/server-puppeteer">'
+    + '<textarea id="mcpNewEnv" class="compact-panel-input full-compact-input" rows="3" placeholder="env, one KEY=value per line"></textarea>'
+    + '<input id="mcpNewTools" class="compact-panel-input full-compact-input" placeholder="tool names, comma separated (optional)">'
+    + '<div class="inline-actions top-spaced"><button class="btn-sm primary" onclick="createMcpRuntimeFromForm()">Save MCP server</button></div>'
+    + '<div id="mcpRuntimeFormStatus" class="trace-meta"></div>'
+    + '</details>';
+}
+
+function draftMcpAgentRequest(kind) {
+  const input = document.getElementById('chatInput');
+  if (!input) return;
+  input.value = kind === 'create'
+    ? 'Create an MCP server for this project that provides the tools needed to: '
+    : 'Find an existing MCP server I can use for: ';
+  input.focus();
+}
+
+function focusMcpCatalogFilter() {
+  const section = document.getElementById('mcpCatalogList')?.closest('details');
+  if (section) section.open = true;
+  const filter = document.getElementById('mcpCatalogFilter');
+  if (filter) filter.focus();
+}
+
+function toggleMcpManualForm() {
+  const form = document.getElementById('mcpManualForm');
+  if (form) form.open = true;
+  const input = document.getElementById('mcpNewId');
+  if (input) input.focus();
 }
 
 async function mcpRuntimeStart(id) {
@@ -5356,6 +5649,8 @@ async function mcpRuntimeStart(id) {
     const r = await fetch('/api/mcp/runtime/servers/' + encodeURIComponent(id) + '/start', { method: 'POST' });
     const d = await r.json();
     if (d.error) { alert(d.error); return; }
+    const pid = d.server && d.server.pid ? ' (pid ' + d.server.pid + ')' : '';
+    showToast('Started MCP server "' + id + '"' + pid + '. It is a local process; tools appear once MCP tool discovery is wired.', 5000, 'success');
     await loadToolsDashboard();
   } catch (e) { alert(e.message); }
 }
@@ -5367,6 +5662,68 @@ async function mcpRuntimeStop(id) {
     if (d.error) { alert(d.error); return; }
     await loadToolsDashboard();
   } catch (e) { alert(e.message); }
+}
+
+async function mcpRuntimeDelete(id) {
+  if (!confirm('Remove MCP runtime server "' + id + '"?')) return;
+  try {
+    const r = await fetch('/api/mcp/runtime/servers/' + encodeURIComponent(id), { method: 'DELETE' });
+    const d = await r.json();
+    if (d.error) { alert(d.error); return; }
+    await loadToolsDashboard();
+  } catch (e) { alert(e.message); }
+}
+
+async function createMcpRuntimeFromForm() {
+  const status = document.getElementById('mcpRuntimeFormStatus');
+  const id = document.getElementById('mcpNewId')?.value.trim() || '';
+  const command = document.getElementById('mcpNewCommand')?.value.trim() || '';
+  const argsText = document.getElementById('mcpNewArgs')?.value.trim() || '';
+  const envText = document.getElementById('mcpNewEnv')?.value || '';
+  const toolsText = document.getElementById('mcpNewTools')?.value || '';
+  if (!id || !command) { if (status) status.textContent = 'Enter both id and command.'; return; }
+  const env = {};
+  envText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).forEach((line) => {
+    const idx = line.indexOf('=');
+    if (idx > 0) env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+  });
+  const payload = {
+    id,
+    command,
+    args: splitArgsInput(argsText),
+    env,
+    tools: toolsText.split(',').map((name) => name.trim()).filter(Boolean).map((name) => ({ name })),
+    enabled: true,
+  };
+  try {
+    const response = await fetch('/api/mcp/runtime/servers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const data = await response.json();
+    if (data.error) { if (status) status.textContent = 'Save failed: ' + data.error; return; }
+    if (status) status.textContent = 'Saved MCP server ' + data.server.id + '.';
+    await loadToolsDashboard();
+  } catch (error) { if (status) status.textContent = 'Save failed: ' + (error.message || error); }
+}
+
+function splitArgsInput(value) {
+  const args = [];
+  let current = '';
+  let quote = null;
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    if (/\s/.test(ch)) {
+      if (current) { args.push(current); current = ''; }
+      continue;
+    }
+    current += ch;
+  }
+  if (current) args.push(current);
+  return args;
 }
 
 function scheduleTimedToolRefresh(registry) {
@@ -5398,18 +5755,18 @@ function renderPermissionPanel(perm) {
   if (!perm) return '';
   const ks = perm.killSwitch || { active: false, reason: '' };
   const badge = ks.active
-    ? '<span class="rag-backend-badge" style="background:rgba(255,80,80,.15);border-color:#ff5050;color:#ff5050">🛑 KILL SWITCH ACTIVE</span>'
-    : '<span class="rag-backend-badge" style="background:rgba(80,200,120,.12);border-color:#50c878;color:#50c878">✅ Tools allowed</span>';
+    ? '<span class="rag-backend-badge danger-badge">🛑 KILL SWITCH ACTIVE</span>'
+    : '<span class="rag-backend-badge success-badge">✅ Tools allowed</span>';
   const reasonRow = ks.active && ks.reason ? '<div class="trace-meta">Reason: ' + esc(ks.reason) + '</div>' : '';
   const button = ks.active
     ? '<button class="btn-sm" onclick="releaseKillSwitch()">Release kill switch</button>'
     : '<button class="btn-sm danger" onclick="engageKillSwitch()">🛑 Engage kill switch</button>';
-  return '<div class="trace-item" id="permissionPanel" style="margin-top:8px">'
+  return '<div class="trace-item trace-block-spaced-large" id="permissionPanel">'
     + '<div class="trace-title">🔐 Permissions</div>'
-    + '<div style="margin:4px 0">' + badge + ' <span class="trace-meta">Mode: <strong>' + esc(perm.mode || 'default') + '</strong></span> <span class="trace-meta">Pending: ' + (perm.pendingCount || 0) + '</span></div>'
+    + '<div class="permission-status-row">' + badge + ' <span class="trace-meta">Mode: <strong>' + esc(perm.mode || 'default') + '</strong></span> <span class="trace-meta">Pending: ' + (perm.pendingCount || 0) + '</span></div>'
     + reasonRow
-    + '<div class="trace-meta" style="margin-top:4px">Engaging the kill switch denies every subsequent tool call (including reads) until released. The agent loop keeps running but cannot touch the system.</div>'
-    + '<div class="inline-actions" style="margin-top:6px">' + button + '</div>'
+    + '<div class="trace-meta top-spaced">Engaging the kill switch denies every subsequent tool call (including reads) until released. The agent loop keeps running but cannot touch the system.</div>'
+    + '<div class="inline-actions trace-block-spaced">' + button + '</div>'
     + '</div>';
 }
 
@@ -5428,10 +5785,10 @@ function renderCapabilityAlignmentPanel(capabilities, auditEvents) {
     .map((key) => key + ': ' + (summary[key] || 0))
     .join(' · ');
   const postureMeta = {
-    available: { color: '#50c878', label: 'available' },
-    gated: { color: '#ffb050', label: 'gated' },
-    'design-only': { color: '#8ab4f8', label: 'design-only' },
-    blocked: { color: '#ff5050', label: 'blocked' },
+    available: { className: 'success-pill', label: 'available' },
+    gated: { className: 'warning-pill', label: 'gated' },
+    'design-only': { className: 'info-pill', label: 'design-only' },
+    blocked: { className: 'danger-pill', label: 'blocked' },
   };
   const rows = items.map((cap) => {
     const meta = postureMeta[cap.posture] || postureMeta.blocked;
@@ -5442,30 +5799,30 @@ function renderCapabilityAlignmentPanel(capabilities, auditEvents) {
       : '';
     return '<div class="trace-row">'
       + '<strong>' + esc(cap.label || cap.id) + '</strong> '
-      + '<span class="capability-pill" style="border-color:' + meta.color + ';color:' + meta.color + '">' + esc(meta.label) + '</span>'
+      + '<span class="capability-pill ' + meta.className + '">' + esc(meta.label) + '</span>'
       + '<span class="capability-pill">' + esc(cap.category || 'policy') + '</span>'
       + '<div class="trace-meta">' + esc(cap.summary || '') + '</div>'
       + '<div class="trace-meta">Coverage: ' + esc(coverage) + '</div>'
       + '<div class="trace-meta">Controls: ' + esc(controls) + '</div>'
-      + (grantButton ? '<div class="inline-actions" style="margin-top:6px">' + grantButton + '</div>' : '')
+        + (grantButton ? '<div class="inline-actions trace-block-spaced">' + grantButton + '</div>' : '')
       + '</div>';
   }).join('');
-  const grantRows = grants.length ? grants.map((grant) => '<div class="trace-row"><strong>' + esc(grant.capabilityId) + '</strong> <span class="capability-pill">expires ' + esc(new Date(grant.expiresAt).toLocaleString()) + '</span><div class="trace-meta">' + esc(grant.reason || '') + '</div><div class="inline-actions" style="margin-top:6px"><button class="btn-sm danger" onclick="revokeCapabilityGrant(\'' + escAttr(grant.id) + '\')">Revoke</button></div></div>').join('') : '<div class="trace-meta">No active grants.</div>';
-  const presetRows = presets.length ? '<details style="margin-top:8px"><summary class="trace-meta" style="cursor:pointer">Shell command allowlist presets (' + presets.length + ')</summary>' + presets.map((preset) => '<div class="trace-meta" style="font-size:11px"><strong>' + esc(preset.label || preset.id) + '</strong>: ' + esc((preset.examples || []).join(', ')) + '</div>').join('') + '</details>' : '';
+      const grantRows = grants.length ? grants.map((grant) => '<div class="trace-row"><strong>' + esc(grant.capabilityId) + '</strong> <span class="capability-pill">expires ' + esc(new Date(grant.expiresAt).toLocaleString()) + '</span><div class="trace-meta">' + esc(grant.reason || '') + '</div><div class="inline-actions trace-block-spaced"><button class="btn-sm danger" onclick="revokeCapabilityGrant(\'' + escAttr(grant.id) + '\')">Revoke</button></div></div>').join('') : '<div class="trace-meta">No active grants.</div>';
+      const presetRows = presets.length ? '<details class="details-mt8"><summary class="trace-meta clickable-summary">Shell command allowlist presets (' + presets.length + ')</summary>' + presets.map((preset) => '<div class="trace-meta trace-meta-sm"><strong>' + esc(preset.label || preset.id) + '</strong>: ' + esc((preset.examples || []).join(', ')) + '</div>').join('') + '</details>' : '';
   const hasMore = events.length > auditPageSize;
   const grantEventCount = events.filter((ev) => AUDIT_FILTER_MAP.grant.includes(ev.type)).length;
   const autonomyEventCount = events.filter((ev) => AUDIT_FILTER_MAP.autonomy.includes(ev.type)).length;
   const automationEventCount = events.filter((ev) => AUDIT_FILTER_MAP.automation.includes(ev.type)).length;
-  const filterOptions = '<div style="display:flex;gap:4px;margin-bottom:4px"><select id="auditFilterSelect" onchange="filterAuditEvents()" style="font-size:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px"><option value="">All (' + events.length + ')</option><option value="grant">Grants (' + grantEventCount + ')</option><option value="autonomy">Autonomy (' + autonomyEventCount + ')</option><option value="automation">Automation (' + automationEventCount + ')</option></select>'
-    + '<input id="auditSearchInput" type="text" placeholder="Search events…" oninput="filterAuditEvents()" style="font-size:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px;flex:1;min-width:80px"></div>'
-    + '<div style="display:flex;gap:4px;margin-bottom:4px"><span class="trace-meta" style="font-size:9px;white-space:nowrap">Date range:</span><input id="auditDateFrom" type="date" onchange="filterAuditEvents()" style="font-size:9px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:1px 4px"><input id="auditDateTo" type="date" onchange="filterAuditEvents()" style="font-size:9px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:1px 4px"></div>';
-  const auditSection = events.length ? '<details style="margin-top:8px"><summary class="trace-meta" style="cursor:pointer">Audit log (' + events.length + ' events)</summary>'
+  const filterOptions = '<div class="audit-filter-row"><select id="auditFilterSelect" class="audit-filter-select" onchange="filterAuditEvents()"><option value="">All (' + events.length + ')</option><option value="grant">Grants (' + grantEventCount + ')</option><option value="autonomy">Autonomy (' + autonomyEventCount + ')</option><option value="automation">Automation (' + automationEventCount + ')</option></select>'
+    + '<input id="auditSearchInput" type="text" placeholder="Search events…" oninput="filterAuditEvents()" class="audit-search-input"></div>'
+    + '<div class="audit-filter-row"><span class="trace-meta audit-date-label">Date range:</span><input id="auditDateFrom" type="date" onchange="filterAuditEvents()" class="audit-date-input"><input id="auditDateTo" type="date" onchange="filterAuditEvents()" class="audit-date-input"></div>';
+  const auditSection = events.length ? '<details class="details-mt8"><summary class="trace-meta clickable-summary">Audit log (' + events.length + ' events)</summary>'
     + filterOptions
     + '<div id="auditLogRows">' + visibleEvents.map(renderAuditRowHtml).join('') + '</div>'
-    + (hasMore ? '<button class="btn-sm" id="auditShowMoreBtn" style="margin-top:4px;font-size:10px" onclick="showAllAuditEvents()">Show all ' + events.length + ' events</button>' : '')
+    + (hasMore ? '<button class="btn-sm btn-show-more" id="auditShowMoreBtn" onclick="showAllAuditEvents()">Show all ' + events.length + ' events</button>' : '')
     + '</details>' : '';
-  return '<div class="trace-list" id="capabilityAlignmentPanel" style="margin-top:8px">'
-    + '<div class="trace-title" style="padding:0 4px">Capability alignment · ' + esc(summaryText) + ' · active grants: ' + grantCount + '</div>'
+  return '<div class="trace-list trace-block-spaced-large" id="capabilityAlignmentPanel">'
+    + '<div class="trace-title trace-title-padded">Capability alignment · ' + esc(summaryText) + ' · active grants: ' + grantCount + '</div>'
     + '<div class="trace-item"><div class="trace-title">Active grants</div>' + grantRows + presetRows + auditSection + '</div>'
     + '<div class="trace-item">' + rows + '</div>'
     + '</div>';
@@ -5557,13 +5914,13 @@ function renderToolRegistryPanel(registry) {
   }
   const sections = Array.from(grouped.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([toolset, items]) => {
     const rows = items.map((t) => {
-      const riskColor = t.riskLevel === 'high' ? '#ff5050' : t.riskLevel === 'medium' ? '#ffb050' : '#50c878';
-      const riskBadge = '<span class="capability-pill" style="border-color:' + riskColor + ';color:' + riskColor + '">' + esc(t.riskLevel || 'low') + '</span>';
+      const riskClass = t.riskLevel === 'high' ? 'danger-pill' : t.riskLevel === 'medium' ? 'warning-pill' : 'success-pill';
+      const riskBadge = '<span class="capability-pill ' + riskClass + '">' + esc(t.riskLevel || 'low') + '</span>';
       const catBadge = '<span class="capability-pill">' + esc(t.permissionCategory || 'read') + '</span>';
       const ro = t.isReadOnly ? '<span class="capability-pill">read-only</span>' : '';
       const dryRun = t.canDryRun ? '<span class="capability-pill">dry-run</span>' : '';
       const enabled = t.enabled !== false;
-      const timedBadge = t.enabledUntil ? ' <span class="capability-pill" style="border-color:#ffb050;color:#ffb050">' + esc(formatCountdown(t.enabledUntil)) + '</span>' : '';
+      const timedBadge = t.enabledUntil ? ' <span class="capability-pill warning-pill">' + esc(formatCountdown(t.enabledUntil)) + '</span>' : '';
       let buttons;
       if (enabled && !t.enabledUntil) {
         // Permanently enabled — offer Disable
@@ -5576,15 +5933,15 @@ function renderToolRegistryPanel(registry) {
         buttons = '<button class="btn-sm" onclick="toggleTool(\'' + escAttr(t.name) + '\', true)">Enable</button>'
           + ' <button class="btn-sm" onclick="toggleToolTimed(\'' + escAttr(t.name) + '\')">Enable (timed)</button>';
       }
-      const dimmed = enabled ? '' : ' style="opacity:.55"';
-      const stateBadge = enabled ? '' : ' <span class="capability-pill" style="border-color:#ff5050;color:#ff5050">disabled</span>';
-      return '<div class="trace-row"' + dimmed + '><strong>' + esc(t.name) + '</strong> ' + riskBadge + ' ' + catBadge + ' ' + ro + ' ' + dryRun + stateBadge + timedBadge + ' ' + buttons + '<div class="trace-meta">' + esc(t.description) + '</div></div>';
+      const rowClass = enabled ? 'trace-row' : 'trace-row row-dimmed';
+      const stateBadge = enabled ? '' : ' <span class="capability-pill danger-pill">disabled</span>';
+      return '<div class="' + rowClass + '"><strong>' + esc(t.name) + '</strong> ' + riskBadge + ' ' + catBadge + ' ' + ro + ' ' + dryRun + stateBadge + timedBadge + ' ' + buttons + '<div class="trace-meta">' + esc(t.description) + '</div></div>';
     }).join('');
     const toolsetNames = items.map((t) => escAttr(t.name));
     const disabledNames = items.filter((t) => t.enabled === false).map((t) => escAttr(t.name));
     const enabledNames = items.filter((t) => t.enabled !== false).map((t) => escAttr(t.name));
     const showBulk = disabledNames.length > 0 || enabledNames.length > 0 && enabledNames.length < items.length;
-    const bulkBtns = (disabledNames.length > 0 || enabledNames.length > 0) ? '<div class="inline-actions" style="margin-top:4px;margin-bottom:4px">'
+    const bulkBtns = (disabledNames.length > 0 || enabledNames.length > 0) ? '<div class="inline-actions compact-action-row">'
       + (disabledNames.length > 0 ? '<button class="btn-sm" onclick="bulkToggleToolset(' + JSON.stringify(disabledNames) + ', true)">Enable all</button> ' : '')
       + (disabledNames.length > 0 ? '<button class="btn-sm" onclick="bulkToggleToolsetTimed(' + JSON.stringify(disabledNames) + ')">Enable all (timed)</button> ' : '')
       + (enabledNames.length > 0 ? '<button class="btn-sm" onclick="bulkToggleToolset(' + JSON.stringify(enabledNames) + ', false)">Disable all</button>' : '')
@@ -5593,9 +5950,9 @@ function renderToolRegistryPanel(registry) {
   }).join('');
   const disabledCount = (registry.disabled || []).length;
   const timedCount = tools.filter((t) => t.enabledUntil).length;
-  const disabledNote = disabledCount > 0 ? ' · <span style="color:#ff5050">' + disabledCount + ' disabled</span>' : '';
-  const timedNote = timedCount > 0 ? ' · <span style="color:#ffb050">' + timedCount + ' timed</span>' : '';
-  return '<div class="trace-list" id="toolRegistryPanel" style="margin-top:8px"><div class="trace-title" style="padding:0 4px">🛠 Tool registry · ' + tools.length + ' total' + disabledNote + timedNote + '</div>' + sections + '</div>';
+  const disabledNote = disabledCount > 0 ? ' · <span class="trace-meta-error">' + disabledCount + ' disabled</span>' : '';
+  const timedNote = timedCount > 0 ? ' · <span class="trace-meta-warning">' + timedCount + ' timed</span>' : '';
+  return '<div class="trace-list trace-block-spaced-large" id="toolRegistryPanel"><div class="trace-title trace-title-padded">🛠 Tool registry · ' + tools.length + ' total' + disabledNote + timedNote + '</div>' + sections + '</div>';
 }
 
 async function toggleTool(name, enable, expiresInMinutes) {
@@ -5682,13 +6039,13 @@ function renderKillSwitchBanner(killSwitch) {
   if (!banner) {
     banner = document.createElement('div');
     banner.id = 'killSwitchBanner';
-    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(255,80,80,.18);border-bottom:1px solid #ff5050;color:#ff5050;padding:6px 12px;font-size:12px;display:flex;align-items:center;gap:10px;font-family:inherit';
+    banner.className = 'kill-switch-banner';
     document.body.appendChild(banner);
   }
   banner.innerHTML = '<strong>🛑 KILL SWITCH ACTIVE</strong>'
     + '<span>' + esc(killSwitch.reason || 'All tool calls are denied.') + '</span>'
-    + '<span style="margin-left:auto;opacity:.8">Ctrl+Shift+K to toggle</span>'
-    + '<button class="btn-sm" style="margin-left:8px" onclick="releaseKillSwitchFromBanner()">Release</button>';
+    + '<span class="kill-switch-shortcut">Ctrl+Shift+K to toggle</span>'
+    + '<button class="btn-sm btn-inline-cancel" onclick="releaseKillSwitchFromBanner()">Release</button>';
   repositionGlobalAutonomyBanner();
 }
 
@@ -5761,15 +6118,15 @@ async function loadRuns() {
     const runs = data.runs || [];
     const counts = data.counts || {};
     const runEvidence = Array.isArray(data.evidence) ? data.evidence : [];
-    const summary = '<div class="panel-header" style="border-bottom:none"><h3>Runs</h3><div class="inline-actions"><button class="btn-sm" onclick="loadRuns()">Refresh</button></div></div>'
-      + '<div class="trace-meta" style="padding:0 4px 6px">' + (data.total || 0) + ' chat run(s) · '
+    const summary = '<div class="panel-header panel-header-flat"><h3>Runs</h3><div class="inline-actions"><button class="btn-sm" onclick="loadRuns()">Refresh</button></div></div>'
+      + '<div class="trace-meta panel-copy">' + (data.total || 0) + ' chat run(s) · '
       + Object.entries(counts).map(([k, v]) => esc(k) + ': ' + v).join(' · ')
       + '</div>';
     const curatorSection = curatorR.status === 'fulfilled' ? renderCuratorRunsSection(curatorR.value) : '';
     const autoRunLog = autoRunsR.status === 'fulfilled' ? (autoRunsR.value.runs || []) : [];
     const automationSection = discoveryR.status === 'fulfilled' ? renderAutomationRunsSection(discoveryR.value.automations, autoRunLog, runEvidence) : '';
     if (runs.length === 0) {
-      view.innerHTML = summary + automationSection + curatorSection + '<div class="trace-meta" style="padding:8px">(no chat runs yet — start a chat to record one)</div>';
+      view.innerHTML = summary + automationSection + curatorSection + '<div class="trace-meta panel-empty">(no chat runs yet — start a chat to record one)</div>';
       return;
     }
     const rows = runs.map(renderRunRow).join('');
@@ -5788,26 +6145,26 @@ function renderAutomationRunsSection(automations, runLog, runEvidence) {
   const entries = Array.isArray(runLog) ? runLog : [];
   const evidence = Array.isArray(runEvidence) ? runEvidence.filter((card) => card.kind === 'automation' || card.kind === 'autonomy' || isOperatingServiceEvidence(card)) : [];
   const schedulerBadge = schedulerRunning
-    ? '<span class="capability-pill" style="border-color:#5bb0ff;color:#5bb0ff">running</span>'
-    : '<span class="capability-pill" style="border-color:#888;color:#888">idle</span>';
+    ? '<span class="capability-pill running-pill">running</span>'
+    : '<span class="capability-pill muted-pill">idle</span>';
   const dueBadge = due.length > 0
-    ? '<span class="capability-pill" style="border-color:#ffb050;color:#ffb050">' + due.length + ' due</span>'
+    ? '<span class="capability-pill warning-pill">' + due.length + ' due</span>'
     : '';
   const jobRows = jobs.length === 0
     ? '<div class="trace-meta">No automation jobs configured.</div>'
     : jobs.map((job) => {
       const enabled = job.enabled !== false;
       const isDue = due.some((d) => d.id === job.id);
-      const statusColor = isDue ? '#ffb050' : enabled ? '#50c878' : '#888';
+      const statusClass = isDue ? 'warning-pill' : enabled ? 'success-pill' : 'muted-pill';
       const statusLabel = isDue ? 'due' : enabled ? 'active' : 'disabled';
       const nextRun = job.nextRunAt ? new Date(job.nextRunAt).toLocaleString() : 'none';
       const lastRun = job.lastRunAt ? new Date(job.lastRunAt).toLocaleString() : 'never';
       const script = job.scriptCommand ? ' · script: ' + esc(job.scriptCommand) : '';
       return '<div class="trace-row">'
         + '<strong>' + esc(job.name) + '</strong> '
-        + '<span class="capability-pill" style="border-color:' + statusColor + ';color:' + statusColor + '">' + statusLabel + '</span>'
+        + '<span class="capability-pill ' + statusClass + '">' + statusLabel + '</span>'
         + '<div class="trace-meta">' + esc(job.schedule?.display || '') + ' · next: ' + esc(nextRun) + ' · last: ' + esc(lastRun) + script + '</div>'
-        + '<div class="inline-actions" style="margin-top:4px">'
+        + '<div class="inline-actions top-spaced">'
         + '<button class="btn-sm" onclick="runAutomationJobNow(\'' + escAttr(job.id) + '\')">Run now</button> '
         + '<button class="btn-sm" onclick="toggleAutomationJob(\'' + escAttr(job.id) + '\', ' + (!enabled) + ')">' + (enabled ? 'Disable' : 'Enable') + '</button> '
         + '<button class="btn-sm" onclick="editAutomationJob(\'' + escAttr(job.id) + '\', ' + escAttr(JSON.stringify(job.name)) + ', ' + escAttr(JSON.stringify(job.prompt)) + ', ' + escAttr(JSON.stringify(job.schedule?.display || '')) + ', ' + escAttr(JSON.stringify(job.scriptCommand || '')) + ')">Edit</button> '
@@ -5819,23 +6176,23 @@ function renderAutomationRunsSection(automations, runLog, runEvidence) {
     ? '<button class="btn-sm" onclick="executeAutomationDueJobs()">Execute ' + due.length + ' due job(s)</button>'
     : '';
   const newJobBtn = '<button class="btn-sm" onclick="showNewAutomationJobForm()">+ New job</button>';
-  return '<div class="trace-item" id="automationRunsSection" style="margin:6px 4px">'
+  return '<div class="trace-item automation-runs-section" id="automationRunsSection">'
     + '<div class="trace-title">⚙ Automation jobs (' + jobs.length + ') ' + schedulerBadge + ' ' + dueBadge + '</div>'
     + '<div class="trace-meta">Grants: ' + (policy.activeGrantCount || 0) + ' active · Kill switch: ' + (policy.killSwitchActive ? 'engaged' : 'off') + '</div>'
-    + '<div style="margin-top:6px">' + jobRows + '</div>'
-    + '<div class="inline-actions" style="margin-top:6px">' + newJobBtn + ' ' + executeBtn + '</div>'
-    + '<details style="margin-top:6px"><summary class="trace-meta" style="cursor:pointer;font-size:11px">📋 Job templates</summary>'
-    + '<div class="inline-actions" style="margin-top:4px;flex-wrap:wrap">'
+    + '<div class="trace-block-spaced">' + jobRows + '</div>'
+    + '<div class="inline-actions trace-block-spaced">' + newJobBtn + ' ' + executeBtn + '</div>'
+    + '<details class="details-mt6"><summary class="trace-meta trace-summary-sm">📋 Job templates</summary>'
+    + '<div class="inline-actions template-action-row">'
     + '<button class="btn-sm" onclick="createJobFromTemplate(\'Daily digest\',\'Summarize today\\\'s automation results, completed tasks, system health, and any errors. Write the summary to daily-digest.md.\',\'1440 minutes\')">Daily digest</button>'
     + '<button class="btn-sm" onclick="createJobFromTemplate(\'Hotel price check\',\'Search booking.com for hotels in [city] for [dates] under [budget]. Save available rooms with prices and links to hotel-alert.md.\',\'1440 minutes\')">Hotel monitor</button>'
     + '<button class="btn-sm" onclick="createJobFromTemplate(\'Weekly report\',\'Create a weekly report covering completed tasks, automation runs, learned patterns, and system health. Export as PDF to weekly-report.pdf.\',\'10080 minutes\')">Weekly report</button>'
     + '<button class="btn-sm" onclick="createJobFromTemplate(\'Email reminder\',\'Send an email to [your@email.com] with subject \\\'Daily Reminder\\\' summarizing pending tasks and today\\\'s priorities.\',\'1440 minutes\')">Email reminder</button>'
     + '</div></details>'
-    + '<div id="newAutomationJobForm" style="display:none;margin-top:8px;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px">'
-    + '<input id="newJobName" type="text" placeholder="Job name" style="width:100%;padding:4px 6px;margin-bottom:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">'
-    + '<input id="newJobPrompt" type="text" placeholder="Prompt text" style="width:100%;padding:4px 6px;margin-bottom:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">'
-    + '<input id="newJobSchedule" type="text" placeholder="Schedule (e.g. every 2h, 30m, 0 9 * * *)" style="width:100%;padding:4px 6px;margin-bottom:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">'
-    + '<input id="newJobScript" type="text" placeholder="Script command (optional)" style="width:100%;padding:4px 6px;margin-bottom:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">'
+    + '<div id="newAutomationJobForm" class="automation-job-form hidden-by-default">'
+    + '<input id="newJobName" type="text" placeholder="Job name" class="automation-job-input">'
+    + '<input id="newJobPrompt" type="text" placeholder="Prompt text" class="automation-job-input">'
+    + '<input id="newJobSchedule" type="text" placeholder="Schedule (e.g. every 2h, 30m, 0 9 * * *)" class="automation-job-input">'
+    + '<input id="newJobScript" type="text" placeholder="Script command (optional)" class="automation-job-input">'
     + '<div class="inline-actions"><button class="btn-sm" onclick="createAutomationJob()">Create</button> <button class="btn-sm" onclick="hideNewAutomationJobForm()">Cancel</button></div>'
     + '</div>'
     + renderAutomationRunLog(entries)
@@ -5855,36 +6212,36 @@ function renderRunEvidenceLog(evidence) {
     const ts = card.createdAt ? new Date(card.createdAt).toLocaleString() : '?';
     const files = (card.files || []).length;
     const commands = (card.commands || []).length;
-    return '<div class="trace-meta" style="font-size:11px"><strong>' + esc(card.runName || card.kind || 'run') + '</strong> <span style="color:var(--text-dim)">' + esc(ts) + '</span> · ' + esc(files) + ' file(s) · ' + esc(commands) + ' command(s)</div>';
+    return '<div class="trace-meta trace-meta-sm"><strong>' + esc(card.runName || card.kind || 'run') + '</strong> <span class="text-dim">' + esc(ts) + '</span> · ' + esc(files) + ' file(s) · ' + esc(commands) + ' command(s)</div>';
   }).join('');
-  return '<details style="margin-top:8px"><summary class="trace-meta" style="cursor:pointer">Evidence cards (last ' + Math.min(evidence.length, 12) + ' of ' + evidence.length + ')</summary>' + rows + '</details>';
+  return '<details class="details-mt8"><summary class="trace-meta clickable-summary">Evidence cards (last ' + Math.min(evidence.length, 12) + ' of ' + evidence.length + ')</summary>' + rows + '</details>';
 }
 
 function renderAutomationRunLog(entries) {
   if (!entries || entries.length === 0) return '';
   const rows = entries.slice(0, 20).map((entry, i) => {
     const ts = entry.ranAt ? new Date(entry.ranAt).toLocaleString() : '?';
-    const color = entry.success === false ? '#ff5050' : '#50c878';
+    const statusClass = entry.success === false ? 'trace-meta-error' : 'trace-meta-success';
     const name = entry.name || entry.jobId || '?';
     const viewBtn = entry.outputPath
-      ? ' <button class="btn-sm" style="font-size:10px;padding:1px 4px" onclick="viewAutomationRunOutput(\'' + escAttr(entry.outputPath) + '\', this)">View</button>'
+      ? ' <button class="btn-sm btn-xxs" onclick="viewAutomationRunOutput(\'' + escAttr(entry.outputPath) + '\', this)">View</button>'
       : '';
-    return '<div class="trace-meta" style="font-size:11px"><span style="color:' + color + '">' + (entry.success === false ? '✗' : '✓') + '</span> ' + esc(name) + ' <span style="color:var(--text-dim)">' + esc(ts) + '</span>' + viewBtn + '<div id="autoRunOutput' + i + '" style="display:none"></div></div>';
+    return '<div class="trace-meta trace-meta-sm"><span class="' + statusClass + '">' + (entry.success === false ? '✗' : '✓') + '</span> ' + esc(name) + ' <span class="text-dim">' + esc(ts) + '</span>' + viewBtn + '<div id="autoRunOutput' + i + '" class="hidden-by-default"></div></div>';
   }).join('');
-  return '<details style="margin-top:8px"><summary class="trace-meta" style="cursor:pointer">Run history (last ' + Math.min(entries.length, 20) + ' of ' + entries.length + ')</summary>' + rows + '</details>';
+  return '<details class="details-mt8"><summary class="trace-meta clickable-summary">Run history (last ' + Math.min(entries.length, 20) + ' of ' + entries.length + ')</summary>' + rows + '</details>';
 }
 
 async function viewAutomationRunOutput(outputPath, btn) {
   const parent = btn.parentElement;
   const outputDiv = parent ? parent.querySelector('[id^="autoRunOutput"]') : null;
-  if (outputDiv && outputDiv.style.display !== 'none') { outputDiv.style.display = 'none'; btn.textContent = 'View'; return; }
+  if (outputDiv && !outputDiv.classList.contains('hidden-by-default')) { outputDiv.classList.add('hidden-by-default'); btn.textContent = 'View'; return; }
   try {
     const response = await fetch('/api/automations/output?path=' + encodeURIComponent(outputPath));
     const data = await response.json();
     if (data.error) { alert('Could not load output: ' + data.error); return; }
     if (outputDiv) {
-      outputDiv.style.display = 'block';
-      outputDiv.innerHTML = '<pre style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:6px;margin:4px 0;font-size:11px;white-space:pre-wrap;max-height:200px;overflow-y:auto">' + esc(data.content) + '</pre>';
+      outputDiv.classList.remove('hidden-by-default');
+      outputDiv.innerHTML = '<pre class="automation-output-pre">' + esc(data.content) + '</pre>';
       btn.textContent = 'Hide';
     }
   } catch (error) { alert('Failed to load output: ' + (error.message || error)); }
@@ -5912,7 +6269,7 @@ async function runAutomationJobNow(jobId) {
 
 function showNewAutomationJobForm() {
   const form = document.getElementById('newAutomationJobForm');
-  if (form) form.style.display = 'block';
+  if (form) form.classList.remove('hidden-by-default');
 }
 
 function createJobFromTemplate(name, prompt, schedule) {
@@ -5927,7 +6284,7 @@ function createJobFromTemplate(name, prompt, schedule) {
 
 function hideNewAutomationJobForm() {
   const form = document.getElementById('newAutomationJobForm');
-  if (form) form.style.display = 'none';
+  if (form) form.classList.add('hidden-by-default');
 }
 
 async function createAutomationJob() {
@@ -6077,15 +6434,15 @@ async function loadWorkflows() {
     ]);
     const defs = defsR.status === 'fulfilled' ? (defsR.value.workflows || []) : [];
     const runs = runsR.status === 'fulfilled' ? (runsR.value.runs || []) : [];
-    const header = '<div class="panel-header" style="border-bottom:none"><h3>Workflows</h3><div class="inline-actions"><button class="btn-sm" onclick="loadWorkflows()">Refresh</button></div></div>';
-    const intro = '<div class="trace-meta" style="padding:0 4px 6px">Declarative tool sequences in <code>.harness/workflows/</code>. Use dry-run first; pause/resume/cancel any in-flight run.</div>';
+    const header = '<div class="panel-header panel-header-flat"><h3>Workflows</h3><div class="inline-actions"><button class="btn-sm" onclick="loadWorkflows()">Refresh</button></div></div>';
+    const intro = '<div class="trace-meta panel-copy">Declarative tool sequences in <code>.harness/workflows/</code>. Use dry-run first; pause/resume/cancel any in-flight run.</div>';
     let defsHtml;
     if (defs.length === 0) {
-      defsHtml = '<div class="trace-meta" style="padding:8px">No workflows yet. Drop a YAML file into <code>.harness/workflows/</code>.</div>';
+      defsHtml = '<div class="trace-meta panel-empty">No workflows yet. Drop a YAML file into <code>.harness/workflows/</code>.</div>';
     } else {
       defsHtml = '<div class="trace-list">' + defs.map(renderWorkflowDef).join('') + '</div>';
     }
-    const runsHtml = runs.length === 0 ? '' : '<div class="trace-title" style="margin-top:12px;padding:0 4px">Recent runs</div><div class="trace-list">' + runs.slice(0, 20).map(renderWorkflowRun).join('') + '</div>';
+    const runsHtml = runs.length === 0 ? '' : '<div class="trace-title workflow-runs-title">Recent runs</div><div class="trace-list">' + runs.slice(0, 20).map(renderWorkflowRun).join('') + '</div>';
     view.innerHTML = header + intro + defsHtml + runsHtml;
   } catch (error) {
     view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message || error) + '</div>';
@@ -6093,13 +6450,13 @@ async function loadWorkflows() {
 }
 
 function renderWorkflowDef(def) {
-  const riskColor = def.riskLevel === 'high' ? '#ff5050' : def.riskLevel === 'medium' ? '#ffb050' : '#50c878';
-  const riskBadge = '<span class="capability-pill" style="border-color:' + riskColor + ';color:' + riskColor + '">' + esc(def.riskLevel || 'low') + '</span>';
+  const riskClass = def.riskLevel === 'high' ? 'danger-pill' : def.riskLevel === 'medium' ? 'warning-pill' : 'success-pill';
+  const riskBadge = '<span class="capability-pill ' + riskClass + '">' + esc(def.riskLevel || 'low') + '</span>';
   return '<div class="trace-item">'
     + '<div class="trace-title">' + esc(def.name) + ' ' + riskBadge + '</div>'
     + '<div class="trace-meta">' + esc(def.description || '(no description)') + '</div>'
     + '<div class="trace-meta">' + def.stepCount + ' step(s)</div>'
-    + '<div class="inline-actions" style="margin-top:6px">'
+    + '<div class="inline-actions trace-block-spaced">'
     +   '<button class="btn-sm" onclick="runWorkflow(\'' + escAttr(def.name) + '\', true)">Dry-run</button> '
     +   '<button class="btn-sm primary" onclick="runWorkflow(\'' + escAttr(def.name) + '\', false)">Run</button>'
     + '</div>'
@@ -6107,20 +6464,20 @@ function renderWorkflowDef(def) {
 }
 
 function renderWorkflowRun(run) {
-  const statusColor = run.status === 'completed' ? '#50c878'
-    : run.status === 'failed' ? '#ff5050'
-    : run.status === 'cancelled' ? '#ffb050'
-    : run.status === 'paused' ? '#5bb0ff'
-    : run.status === 'running' ? '#5bb0ff'
-    : '#888';
-  const statusBadge = '<span class="capability-pill" style="border-color:' + statusColor + ';color:' + statusColor + '">' + esc(run.status) + '</span>';
+  const statusClass = run.status === 'completed' ? 'success-pill'
+    : run.status === 'failed' ? 'danger-pill'
+    : run.status === 'cancelled' ? 'warning-pill'
+    : run.status === 'paused' ? 'running-pill'
+    : run.status === 'running' ? 'running-pill'
+    : 'muted-pill';
+  const statusBadge = '<span class="capability-pill ' + statusClass + '">' + esc(run.status) + '</span>';
   const dryBadge = run.dryRun ? ' <span class="capability-pill">dry-run</span>' : '';
   const completedSteps = (run.steps || []).filter((s) => s.status === 'completed' || s.status === 'failed' || s.status === 'denied' || s.status === 'skipped').length;
   const totalSteps = (run.steps || []).length;
   const stepLines = (run.steps || []).map((s) => {
-    const sColor = s.status === 'completed' ? '#50c878' : s.status === 'failed' || s.status === 'denied' ? '#ff5050' : s.status === 'skipped' ? '#888' : s.status === 'running' ? '#5bb0ff' : '#666';
+    const stepClass = s.status === 'completed' ? 'trace-meta-success' : s.status === 'failed' || s.status === 'denied' ? 'trace-meta-error' : s.status === 'skipped' ? 'text-dim' : s.status === 'running' ? 'info-text' : 'muted-text';
     const detail = s.error ? ' — ' + esc(s.error) : (s.result?.output ? ' — ' + esc(String(s.result.output).slice(0, 80)) : '');
-    return '<div style="font-size:11px;color:' + sColor + '">' + esc(s.step.id) + ' (' + esc(s.step.tool) + ') · ' + esc(s.status) + detail + '</div>';
+    return '<div class="trace-meta trace-meta-sm ' + stepClass + '">' + esc(s.step.id) + ' (' + esc(s.step.tool) + ') · ' + esc(s.status) + detail + '</div>';
   }).join('');
   const controls = run.status === 'running'
     ? '<button class="btn-sm" onclick="pauseWorkflowRun(\'' + escAttr(run.id) + '\')">Pause</button> <button class="btn-sm danger" onclick="cancelWorkflowRun(\'' + escAttr(run.id) + '\')">Cancel</button>'
@@ -6130,8 +6487,8 @@ function renderWorkflowRun(run) {
   return '<div class="trace-item">'
     + '<div class="trace-title">' + esc(run.workflowName) + ' ' + statusBadge + dryBadge + '</div>'
     + '<div class="trace-meta">' + esc(run.id) + ' · started ' + esc(new Date(run.startedAt).toLocaleString()) + ' · ' + completedSteps + '/' + totalSteps + ' steps</div>'
-    + (stepLines ? '<div style="margin-top:4px">' + stepLines + '</div>' : '')
-    + (controls ? '<div class="inline-actions" style="margin-top:6px">' + controls + '</div>' : '')
+    + (stepLines ? '<div class="details-body-mt4">' + stepLines + '</div>' : '')
+    + (controls ? '<div class="inline-actions trace-block-spaced">' + controls + '</div>' : '')
     + '</div>';
 }
 
@@ -6167,6 +6524,7 @@ function renderMcpCatalogList() {
   const listEl = document.getElementById('mcpCatalogList');
   const filterEl = document.getElementById('mcpCatalogFilter');
   if (!listEl || !window._mcpCatalog) return;
+  const configured = window._mcpRuntimeServerIds instanceof Set ? window._mcpRuntimeServerIds : new Set();
   const q = (filterEl && filterEl.value || '').trim().toLowerCase();
   const rows = window._mcpCatalog.filter((entry) => {
     if (!q) return true;
@@ -6178,17 +6536,39 @@ function renderMcpCatalogList() {
     const envLine = (entry.requiresEnv || []).length
       ? '<div class="trace-meta"><strong>requires</strong> ' + esc((entry.requiresEnv || []).join(', ')) + '</div>'
       : '';
-    return '<div class="trace-row">'
+    const isConfigured = configured.has(entry.name);
+    const actionButtons = isConfigured
+      ? '<button class="btn-sm" disabled title="This MCP server is already configured">Added</button>'
+        + '<button class="btn-sm" onclick="configureMcpFromCatalog(\'' + escAttr(entry.name) + '\', true)">Replace</button>'
+      : '<button class="btn-sm primary" onclick="configureMcpFromCatalog(\'' + escAttr(entry.name) + '\')">Add</button>';
+    return '<div class="mcp-catalog-row">'
       + '<div><strong>' + esc(entry.name) + '</strong> <span class="capability-pill">' + esc((entry.tags || []).join(' · ')) + '</span></div>'
       + '<div class="trace-meta">' + esc(entry.description) + '</div>'
-      + '<div style="display:flex;gap:6px;align-items:center;margin-top:4px">'
-      + '<code style="flex:1;background:var(--surface3);border:1px solid var(--border);border-radius:5px;padding:4px 6px;font-size:11px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(entry.install) + '</code>'
+      + '<div class="mcp-command-row">'
+      + '<code>' + esc(entry.install) + '</code>'
+      + actionButtons
       + '<button class="btn-sm" onclick="copyMcpInstall(' + JSON.stringify(entry.install).replace(/"/g, '&quot;') + ', this)">Copy</button>'
       + '<a class="btn-sm" target="_blank" rel="noopener" href="' + escAttr(entry.homepage) + '">Docs</a>'
       + '</div>'
       + envLine
       + '</div>';
   }).join('');
+}
+
+async function configureMcpFromCatalog(name, overwrite) {
+  try {
+    if (overwrite && !confirm('Replace the saved MCP server "' + name + '" with the catalog definition?')) return;
+    let response = await fetch('/api/mcp/runtime/from-catalog', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, overwrite: overwrite === true }) });
+    if (response.status === 409) {
+      if (!confirm('MCP server "' + name + '" already exists. Replace it from the catalog?')) return;
+      response = await fetch('/api/mcp/runtime/from-catalog', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, overwrite: true }) });
+    }
+    const data = await response.json();
+    if (data.error) { alert('Add failed: ' + data.error); return; }
+    const envNote = (data.requiresEnv || []).length ? '\nSet env vars before starting: ' + data.requiresEnv.join(', ') : '';
+    alert((overwrite ? 'Replaced' : 'Added') + ' MCP server "' + name + '".' + envNote);
+    await loadToolsDashboard();
+  } catch (error) { alert('Add failed: ' + (error.message || error)); }
 }
 
 function copyMcpInstall(text, btn) {
@@ -6287,16 +6667,16 @@ function showKeyboardShortcuts() {
     ['Escape', 'Close slash palette'],
   ];
   const rows = shortcuts.map(([key, desc]) =>
-    '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">'
-    + '<kbd style="background:var(--surface2);padding:2px 8px;border-radius:4px;font-size:12px;font-family:monospace;border:1px solid var(--border)">' + esc(key) + '</kbd>'
-    + '<span style="color:var(--text-dim);font-size:12px">' + esc(desc) + '</span>'
+    '<div class="shortcut-row">'
+    + '<kbd class="shortcut-key">' + esc(key) + '</kbd>'
+    + '<span class="shortcut-desc">' + esc(desc) + '</span>'
     + '</div>'
   ).join('');
   const modal = document.createElement('div');
   modal.id = 'shortcutsModal';
-  modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:9999';
-  modal.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:400px;width:90%">'
-    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><h3 style="margin:0">Keyboard Shortcuts</h3><button class="btn-sm" onclick="document.getElementById(\'shortcutsModal\').remove()">Close</button></div>'
+  modal.className = 'shortcuts-modal';
+  modal.innerHTML = '<div class="shortcuts-dialog">'
+    + '<div class="shortcuts-header"><h3>Keyboard Shortcuts</h3><button class="btn-sm" onclick="document.getElementById(\'shortcutsModal\').remove()">Close</button></div>'
     + rows
     + '</div>';
   modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
@@ -6307,7 +6687,7 @@ function showKeyboardShortcuts() {
 
 async function refreshHealthCardAsync() {
   try {
-    const r = await fetch('/api/health').then((r) => r.json());
+    const r = await fetch('/api/setup/health').then((r) => r.json());
     const items = [];
     if (r.ollama) items.push(r.ollama.ok ? 'Ollama: connected' : 'Ollama: ' + (r.ollama.error || 'unreachable'));
     if (r.vision) items.push(r.vision.ok ? 'Vision: ready' : 'Vision: not configured');

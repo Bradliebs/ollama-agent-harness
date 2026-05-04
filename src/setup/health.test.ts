@@ -49,6 +49,34 @@ describe('setup health', () => {
     }
   });
 
+  it('auto-detects an installed vision model when none is configured', async () => {
+    const server = http.createServer((req, res) => {
+      if (req.url === '/api/tags') {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ models: [{ name: 'qwen2.5-coder:7b', size: 1, modified_at: new Date().toISOString(), details: {} }, { name: 'llava:latest', size: 1, modified_at: new Date().toISOString(), details: {} }] }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Failed to bind fake Ollama server');
+
+    try {
+      const result = await checkSetupHealth({
+        host: `http://127.0.0.1:${address.port}`,
+        visionModel: '',
+        audioTranscribeCommand: '',
+        projectDir: process.cwd(),
+      });
+
+      expect(result.vision).toMatchObject({ ok: true, message: "Auto-detected vision model 'llava:latest'." });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
   it('runs an audio sample through the configured command', async () => {
     const audioPath = path.join(fixtureDir, 'voice.wav');
     const scriptPath = path.join(fixtureDir, 'transcribe.js');

@@ -194,6 +194,32 @@ describe('queryLoop runtime behavior', () => {
     expect(events.find((e) => e.type === 'output_validation_profile_promoted')).toBeUndefined();
   });
 
+  it('auto-promotes oracle-prime to tool-result-summary when non-file tools succeeded', async () => {
+    const browserNavigate = makeTool('browser_navigate', true, async () => ({ success: true, output: 'Cloudflare page loaded' }));
+    const client = makeClient([
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ function: { name: 'browser_navigate', arguments: { url: 'https://example.test' } } }],
+      } as Message,
+      { role: 'assistant', content: 'Browser navigation completed, but the page showed Cloudflare blocking content.' },
+    ]);
+
+    const events = await collectEvents(client, [browserNavigate], {
+      config: { outputValidation: { enabled: true, profile: 'oracle-prime' } },
+    });
+
+    expect(events.find((e) => e.type === 'output_validation_profile_promoted')).toMatchObject({
+      type: 'output_validation_profile_promoted',
+      from: 'oracle-prime',
+      to: 'tool-result-summary',
+    });
+    expect(events.find((e) => e.type === 'output_validation')).toMatchObject({
+      type: 'output_validation',
+      validation: { profile: 'tool-result-summary' },
+    });
+  });
+
   it('pairs enabled output validation with profile instructions in the system prompt', async () => {
     const client = makeClient([{ role: 'assistant', content: 'Implemented changes in src/core/queryLoop.ts and ran tests.' }]);
 

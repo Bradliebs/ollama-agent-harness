@@ -1,7 +1,7 @@
 import type { OutputValidationResult } from '../core/outputValidation';
 
 export type EvidenceRunKind = 'chat' | 'automation' | 'autonomy';
-export type EvidenceMode = 'build' | 'debug' | 'research' | 'review' | 'automate' | 'teach' | 'general';
+export type EvidenceMode = 'build' | 'debug' | 'research' | 'review' | 'operate' | 'automate' | 'teach' | 'general';
 
 export interface EvidenceToolSummary {
   name: string;

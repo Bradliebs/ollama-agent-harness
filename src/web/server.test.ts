@@ -21,9 +21,11 @@ describe('web server API validation', () => {
   let baseUrl: string;
   let originalSettings: string | null = null;
   let originalValidationProfiles: string | null = null;
+  let originalMcpServers: string | null = null;
   let logSpy: jest.SpyInstance;
   const settingsPath = path.join(process.cwd(), '.harness', 'settings.json');
   const validationProfilesPath = path.join(process.cwd(), '.harness', 'output-validation-profiles.json');
+  const mcpServersPath = path.join(process.cwd(), '.harness', 'mcp', 'servers.json');
 
   beforeAll(async () => {
     logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
@@ -36,6 +38,11 @@ describe('web server API validation', () => {
       originalValidationProfiles = await fs.readFile(validationProfilesPath, 'utf-8');
     } catch {
       originalValidationProfiles = null;
+    }
+    try {
+      originalMcpServers = await fs.readFile(mcpServersPath, 'utf-8');
+    } catch {
+      originalMcpServers = null;
     }
     await new Promise<void>((resolve) => {
       server = app.listen(0, '127.0.0.1', () => resolve());
@@ -61,6 +68,12 @@ describe('web server API validation', () => {
     } else {
       await fs.mkdir(path.dirname(validationProfilesPath), { recursive: true });
       await fs.writeFile(validationProfilesPath, originalValidationProfiles, 'utf-8');
+    }
+    if (originalMcpServers === null) {
+      await fs.rm(mcpServersPath, { force: true });
+    } else {
+      await fs.mkdir(path.dirname(mcpServersPath), { recursive: true });
+      await fs.writeFile(mcpServersPath, originalMcpServers, 'utf-8');
     }
     logSpy.mockRestore();
   });
@@ -1112,6 +1125,65 @@ describe('web server API validation', () => {
     }
   });
 
+  it('creates a runtime skill from direct user input', async () => {
+    const skillDir = path.join(process.cwd(), '.harness', 'skills', 'direct-create-skill');
+    try {
+      const created = await request('/api/skills/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'direct-create-skill',
+          description: 'Directly created skill.',
+          domain: 'tests',
+          triggers: 'direct create, generated skill',
+          requiredTools: ['browser_navigate'],
+          riskLevel: 'high',
+          content: '# Direct Create\n\nUse this for direct runtime skill creation tests.',
+        }),
+      });
+
+      expect(created.status).toBe(200);
+      const content = await fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf-8');
+      expect(content).toContain('name: "direct-create-skill"');
+      expect(content).toContain('description: "Directly created skill."');
+      expect(content).toContain('  - "direct create"');
+      expect(content).toContain('required_tools:');
+      expect(content).toContain('risk_level: "high"');
+
+      const conflict = await request('/api/skills/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'direct-create-skill' }) });
+      expect(conflict.status).toBe(409);
+    } finally {
+      await fs.rm(skillDir, { recursive: true, force: true });
+    }
+  });
+
+  it('creates an MCP runtime server from the offline catalog', async () => {
+    try {
+      const created = await request('/api/mcp/runtime/from-catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'filesystem', overwrite: true }),
+      });
+
+      expect(created.status).toBe(200);
+      await expect(created.json()).resolves.toMatchObject({
+        server: { id: 'filesystem', catalogName: 'filesystem', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '.'] },
+      });
+
+      const runtime = await request('/api/mcp/runtime');
+      await expect(runtime.json()).resolves.toMatchObject({ servers: expect.arrayContaining([expect.objectContaining({ id: 'filesystem' })]) });
+
+      const conflict = await request('/api/mcp/runtime/from-catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'filesystem' }),
+      });
+      expect(conflict.status).toBe(409);
+    } finally {
+      await request('/api/mcp/runtime/servers/filesystem', { method: 'DELETE' }).catch(() => undefined);
+    }
+  });
+
   it('previews RAG paths with diagnostics before building', async () => {
     const response = await request('/api/rag/preview', {
       method: 'POST',
@@ -2150,6 +2222,69 @@ describe('web server API validation', () => {
     }
   });
 
+  it('lets dontAsk bypass nervous verification gates for write tools', async () => {
+    await request('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ permissionMode: 'dontAsk' }),
+    });
+    const evaluate = jest.fn(() => ({ decision: 'deny', reason: 'standard permission should not run' }));
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('nervous-dontask-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (_config, deps): AsyncGenerator<LoopEvent> {
+        const permission = await deps.permissionCheck?.({ name: 'file_write', input: { path: 'agent-outputs/test.txt', content: 'ok' } });
+        yield { type: 'text', content: JSON.stringify(permission) };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'No, that was wrong, redo it and write the file', model: 'test-model' }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain('\\"allowed\\":true');
+      expect(body).toContain('verification bypassed');
+      expect(evaluate).not.toHaveBeenCalled();
+    } finally {
+      restore();
+      await request('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ permissionMode: 'default' }) });
+    }
+  });
+
+  it('records deterministic operating-service chat evidence as operate mode', async () => {
+    const response = await request('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'Create a bullet journal agent and remind me daily at 9am', model: 'test-model' }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain('"type":"evidence"');
+    expect(body).toContain('"mode":"operate"');
+    expect(body).toContain('"type":"agentic_mode","mode":"OPERATE_MODE"');
+  });
+
   it('persists output validation settings, streams validation events, and records eval runs', async () => {
     const restore = setWebRuntimeOverrides({
       createClient: jest.fn(() => ({}) as never),
@@ -2610,6 +2745,65 @@ describe('web server API validation', () => {
     } finally {
       restore();
       await fs.rm(uploadPath, { force: true });
+    }
+  });
+
+  it('carries uploaded image attachments into chat with image_analyze guidance', async () => {
+    const uploadName = `attachment-vision-${Date.now()}.png`;
+    const uploaded = await request('/api/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'image/png', 'x-filename': uploadName },
+      body: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) as never,
+    });
+    expect(uploaded.status).toBe(200);
+    const attachment = await uploaded.json() as { name: string; path: string; mediaKind: string; size: number; mimeType: string };
+    expect(attachment).toMatchObject({ name: uploadName, mediaKind: 'image', mimeType: 'image/png' });
+
+    const seenSystemPrompts: string[] = [];
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('attachment-vision-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
+        seenSystemPrompts.push(config.systemPrompt);
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: 'read the image',
+          model: 'test-model',
+          attachments: [attachment],
+        }),
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+
+      expect(seenSystemPrompts).toHaveLength(1);
+      expect(seenSystemPrompts[0]).toContain('--- Session Attachments (authoritative) ---');
+      expect(seenSystemPrompts[0]).toContain(`- image: name="${uploadName}"`);
+      expect(seenSystemPrompts[0]).toContain(`path=".harness/uploads/${uploadName}"`);
+      expect(seenSystemPrompts[0]).toContain('image_analyze');
+    } finally {
+      restore();
+      await fs.rm(path.join(process.cwd(), '.harness', 'uploads', uploadName), { force: true });
     }
   });
 

@@ -79,6 +79,13 @@ export interface ModelRoutingCalibration {
   recommendations: string[];
 }
 
+export interface RegistryModelRoutingEntry {
+  id?: string;
+  model_name: string;
+  role: string;
+  enabled: boolean;
+}
+
 const DEFAULT_PROMPT_LENGTH_ESCALATION_THRESHOLD = 6000;
 const DEFAULT_FAILURE_ESCALATION_THRESHOLD = 2;
 const DEFAULT_CONFIDENCE_ESCALATION_THRESHOLD = 0.45;
@@ -223,6 +230,16 @@ export function createHelperAgentConfig(
   };
 }
 
+export function createModelRoutingPolicyFromRegistry(models: RegistryModelRoutingEntry[]): ModelRoutingPolicy {
+  const enabled = models.filter((model) => model.enabled);
+  return {
+    smallModel: firstModelName(enabled, ['local.general', 'local.summariser']),
+    defaultModel: firstModelName(enabled, ['local.coder', 'local.general']),
+    strongModel: firstModelName(enabled, ['cloud.reasoner', 'cloud.reviewer']),
+    fallbackModel: firstModelName(enabled, ['local.general', 'local.coder', 'local.summariser']),
+  };
+}
+
 export function summarizeRoutingMetrics(metrics: RoutingMetricInput[]): RoutingMetricsSummary {
   const summary: RoutingMetricsSummary = {
     total: metrics.length,
@@ -292,4 +309,12 @@ function addBucket(target: Record<string, RoutingMetricBucket>, key: string, suc
 
 function rate(value: number, total: number): number {
   return total > 0 ? Number((value / total).toFixed(3)) : 0;
+}
+
+function firstModelName(models: RegistryModelRoutingEntry[], roles: string[]): string | undefined {
+  for (const role of roles) {
+    const model = models.find((candidate) => candidate.role === role);
+    if (model) return model.model_name;
+  }
+  return undefined;
 }

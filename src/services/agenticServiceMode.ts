@@ -2,6 +2,8 @@ import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { createAutomationJob, listAutomationJobs, updateAutomationJob, type AutomationJob } from '../automation/jobs';
+import { classifyMode } from './modeClassifier';
+import { createTransitionEvent, validateStateTransition, type ExtractedCommand } from './commandExtractor';
 
 export type AgenticMode = 'build' | 'operate';
 
@@ -165,6 +167,13 @@ export function classifyAgenticMode(message: string): AgenticModeClassification 
   const lower = message.toLowerCase();
   if (looksLikeExternalBulletJournalTaskRequest(lower)) {
     return { mode: 'build', reason: 'Request targets an existing bullet journal rather than an operating service command.', matchedTriggers: [] };
+  }
+  const canonical = classifyMode(message);
+  if (canonical.mode === 'build') {
+    return { mode: 'build', reason: `Canonical mode classifier selected BUILD mode: ${canonical.reason}`, matchedTriggers: canonical.matchedPatterns };
+  }
+  if (canonical.mode === 'operate' && !explicitlyRequestsSoftwareBuild(lower)) {
+    return { mode: 'operate', reason: `Canonical mode classifier selected OPERATE mode: ${canonical.reason}`, matchedTriggers: canonical.matchedPatterns };
   }
   const matchedTriggers = OPERATE_TRIGGERS.filter((trigger) => lower.includes(trigger));
   if (matchedTriggers.length > 0 && !explicitlyRequestsSoftwareBuild(lower)) {
@@ -407,6 +416,13 @@ export async function createOrUpdateGenericOperateService(projectDir: string, re
 async function applyBulletJournalCommand(projectDir: string, command: BulletJournalCommand, now: Date): Promise<{ response: string; service: AgenticServiceDefinition; state: BulletJournalState; schedule: AutomationJob | null }> {
   const setup = await createOrUpdateBulletJournalService(projectDir, {}, now);
   const state = setup.state;
+  const extractedCommand = bulletJournalCommandToExtracted(command);
+  const validation = validateStateTransition(extractedCommand, 'bullet_journal');
+  if (!validation.valid) {
+    const error = validation.errors.join(' ');
+    await appendServiceTransitionEvent(projectDir, 'bullet_journal', extractedCommand, false, error);
+    return { response: `I could not apply that command: ${error} Current state: ${openTasks(state).length} open task(s), ${state.closed_tasks.length} closed task(s), ${state.notes.length} note(s).`, service: setup.service, state, schedule: setup.schedule };
+  }
   let response = '';
   if (command.name === 'add_task') {
     const parsedTask = parseTaskDetails(command.title);
@@ -505,6 +521,7 @@ async function applyBulletJournalCommand(projectDir: string, command: BulletJour
   }
   state.updated_at = now.toISOString();
   await saveBulletJournalState(projectDir, state);
+  await appendServiceTransitionEvent(projectDir, 'bullet_journal', extractedCommand, true);
   return { response: `${response} Current state: ${openTasks(state).length} open task(s), ${state.closed_tasks.length} closed task(s), ${state.notes.length} note(s).`, service: setup.service, state, schedule: setup.schedule };
 }
 
@@ -559,6 +576,13 @@ async function applyGenericOperateCommand(projectDir: string, command: GenericOp
   if (serviceRecord.status === 'ambiguous') return { response: `Multiple generic operating services are configured. Target one with its service id, URL, or service name: ${serviceRecord.services.map((item) => item.service.service_id).join(', ')}.`, schedule: null };
   const service = serviceRecord.service;
   const state = normalizeGenericOperateState(serviceRecord.state, service.service_id, now, service.created_at);
+  const extractedCommand = genericOperateCommandToExtracted(command);
+  const validation = validateStateTransition(extractedCommand, service.service_id);
+  if (!validation.valid) {
+    const error = validation.errors.join(' ');
+    await appendServiceTransitionEvent(projectDir, service.service_id, extractedCommand, false, error);
+    return { response: `I could not apply that command: ${error} ${formatGenericOperateCounts(state)}`, service, state, schedule: null };
+  }
   let response = '';
   let schedule: AutomationJob | null = null;
   if (command.name === 'show_status') {
@@ -581,7 +605,35 @@ async function applyGenericOperateCommand(projectDir: string, command: GenericOp
   service.schedules = (service.schedules || []).map((entry) => ({ ...entry, enabled: state.enabled && !state.reminders_paused }));
   state.updated_at = now.toISOString();
   await saveGenericOperateService(projectDir, service, state);
+  await appendServiceTransitionEvent(projectDir, service.service_id, extractedCommand, true);
   return { response: `${response} ${formatGenericOperateCounts(state)}`, service, state, schedule };
+}
+
+function bulletJournalCommandToExtracted(command: BulletJournalCommand): ExtractedCommand {
+  if (command.name === 'add_task') return { type: 'add_task', title: command.title, due_date: command.dueDate ?? undefined, priority: command.priority };
+  if (command.name === 'add_note') return { type: 'add_note', content: command.content, task_id: command.linkedTaskId ?? undefined };
+  if (command.name === 'update_task') return { type: 'update_task', task_id: command.selector, title: command.title, fields: { description: command.description, priority: command.priority, due_date: command.dueDate } };
+  if (command.name === 'edit_note') return { type: 'edit_note', note_id: command.noteId, content: command.content };
+  if (command.name === 'delete_note') return { type: 'delete_note', note_id: command.noteId };
+  if (command.name === 'close_task') return { type: 'close_task', task_id: command.selector };
+  if (command.name === 'reopen_task') return { type: 'reopen_task', task_id: command.selector };
+  if (command.name === 'set_reminder_time') return { type: 'set_reminder_time', reminder_time: command.time };
+  return { type: command.name };
+}
+
+function genericOperateCommandToExtracted(command: GenericOperateCommand): ExtractedCommand {
+  if (command.name === 'add_note') return { type: 'add_note', content: command.content };
+  if (command.name === 'record_observation') return { type: 'add_note', content: command.content, fields: { source_command: 'record_observation' } };
+  if (command.name === 'pause_reminders') return { type: 'pause_reminders' };
+  if (command.name === 'resume_reminders') return { type: 'resume_reminders' };
+  return { type: 'show_today', fields: { source_command: command.name, target: command.target } };
+}
+
+async function appendServiceTransitionEvent(projectDir: string, serviceId: string, command: ExtractedCommand, success: boolean, error?: string): Promise<void> {
+  const event = createTransitionEvent(serviceId, command, success, error);
+  const logPath = path.join(servicesDir(projectDir), serviceId, 'events.jsonl');
+  await fs.mkdir(path.dirname(logPath), { recursive: true });
+  await fs.appendFile(logPath, JSON.stringify(event) + '\n', 'utf-8');
 }
 
 function parseGenericOperateCommand(message: string): GenericOperateCommand | null {
@@ -839,7 +891,7 @@ function looksLikeAgenticSearchRequest(lower: string): boolean {
 }
 
 function explicitlyRequestsSoftwareBuild(lower: string): boolean {
-  return /\b(build|code|develop|implement|scaffold|create|make|generate|write)\b.{0,60}\b(app|application|ui|dashboard|website|site|software|codebase|project|component|page|document|template|artifact)\b/.test(lower);
+  return /\b(build|code|develop|implement|scaffold|create|make|generate|write)\b.{0,60}\b(app|application|ui|dashboard|website|site|software|codebase|project|component|page|document|template|artifact|code|script|function|class|module|api|cli|tool)\b/.test(lower);
 }
 
 function parseReminderTime(message: string): string | null {

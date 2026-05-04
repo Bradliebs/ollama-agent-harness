@@ -1,4 +1,4 @@
-import { calibrateModelRoutingPolicy, createHelperAgentConfig, getHelperAgentPreset, selectModelForTask, summarizeRoutingMetrics } from './modelRouting';
+import { calibrateModelRoutingPolicy, createHelperAgentConfig, createModelRoutingPolicyFromRegistry, getHelperAgentPreset, selectModelForTask, summarizeRoutingMetrics } from './modelRouting';
 
 describe('model routing', () => {
   it('selects the small model for bounded read-only helper work', () => {
@@ -64,5 +64,21 @@ describe('model routing', () => {
 
     expect(calibration.suggestedPolicy).toMatchObject({ confidenceEscalationThreshold: 0.6, failureEscalationThreshold: 1 });
     expect(calibration.recommendations.join(' ')).toContain('Small helper success');
+  });
+
+  it('creates helper routing policy from registry model roles', () => {
+    const policy = createModelRoutingPolicyFromRegistry([
+      { model_name: 'llama3.1:8b', role: 'local.general', enabled: true },
+      { model_name: 'qwen2.5-coder:7b', role: 'local.coder', enabled: true },
+      { model_name: 'gpt-4.1', role: 'cloud.reasoner', enabled: true },
+      { model_name: 'disabled-reviewer', role: 'cloud.reviewer', enabled: false },
+    ]);
+
+    expect(policy).toMatchObject({
+      smallModel: 'llama3.1:8b',
+      defaultModel: 'qwen2.5-coder:7b',
+      strongModel: 'gpt-4.1',
+      fallbackModel: 'llama3.1:8b',
+    });
   });
 });

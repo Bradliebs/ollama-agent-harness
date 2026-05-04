@@ -182,6 +182,21 @@ describe('agentic service mode', () => {
     expect(state.closed_tasks).toEqual([expect.objectContaining({ title: 'Pay rent', status: 'closed' })]);
   });
 
+  it('logs bullet journal service mutations to append-only events', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-service-events-'));
+    await handleOperateModeRequest(projectDir, 'Create a bullet journal service and remind me daily', new Date('2026-05-03T08:00:00.000Z'));
+
+    await handleOperateModeRequest(projectDir, 'add task Pay rent', new Date('2026-05-03T08:01:00.000Z'));
+    await handleOperateModeRequest(projectDir, 'close task Pay rent', new Date('2026-05-03T08:02:00.000Z'));
+
+    const eventsPath = path.join(projectDir, '.harness', 'services', 'bullet_journal', 'events.jsonl');
+    const events = (await fs.readFile(eventsPath, 'utf-8')).trim().split('\n').map((line) => JSON.parse(line));
+    expect(events).toEqual([
+      expect.objectContaining({ service_id: 'bullet_journal', success: true, command: expect.objectContaining({ type: 'add_task', title: 'Pay rent' }) }),
+      expect.objectContaining({ service_id: 'bullet_journal', success: true, command: expect.objectContaining({ type: 'close_task', task_id: 'Pay rent' }) }),
+    ]);
+  });
+
   it('captures task due dates, priorities, and tags without using markdown task files', async () => {
     const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-service-task-fields-'));
 
@@ -257,6 +272,19 @@ describe('agentic service mode', () => {
     expect(resume.response).toContain('resumed');
     expect(resume.state).toMatchObject({ enabled: true, reminders_paused: false });
     await expect(listAutomationJobs(projectDir)).resolves.toEqual([expect.objectContaining({ enabled: true })]);
+  });
+
+  it('logs generic operating service mutations to append-only events', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-generic-service-events-'));
+    const setup = await handleOperateModeRequest(projectDir, 'check https://example.com/rooms daily to see if a room is free', new Date('2026-05-03T08:00:00.000Z'));
+
+    await handleOperateModeRequest(projectDir, 'site monitor add note Prefer rooms with projectors', new Date('2026-05-03T08:01:00.000Z'));
+
+    const eventsPath = path.join(projectDir, '.harness', 'services', setup.service!.service_id, 'events.jsonl');
+    const events = (await fs.readFile(eventsPath, 'utf-8')).trim().split('\n').map((line) => JSON.parse(line));
+    expect(events).toEqual([
+      expect.objectContaining({ service_id: setup.service!.service_id, success: true, command: expect.objectContaining({ type: 'add_note', content: 'Prefer rooms with projectors' }) }),
+    ]);
   });
 
   it('routes ambiguous reminder commands to bullet journal and scoped commands to site monitor', async () => {

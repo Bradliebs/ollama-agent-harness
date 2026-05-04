@@ -50,6 +50,7 @@ import { listSubagentRoutingMetrics } from '../agents/subagent';
 import { calibrateModelRoutingPolicy, summarizeRoutingMetrics } from '../agents/modelRouting';
 import { checkSetupHealth } from '../setup/health';
 import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCatalog';
+import { isVisionCapableModelName } from '../models/visionModels';
 import { createAutomationJob, deleteAutomationJob, executeDueJobs, listAutomationJobs, listDueAutomationJobs, readAutomationRunLog, updateAutomationJob } from '../automation/jobs';
 import { prepareAutomationRun } from '../automation/runner';
 import { AutomationScheduler } from '../automation/scheduler';
@@ -325,6 +326,15 @@ function applyToolDisables(tools: Tool[]): Tool[] {
 
 function hasDryRunIntent(input: Record<string, unknown>): boolean {
   return input.dryRun === true || input.dry_run === true || input.preview === true;
+}
+
+function envFlag(name: string): boolean {
+  return /^(1|true|yes|on)$/i.test(String(process.env[name] ?? '').trim());
+}
+
+function shouldBypassNervousVerification(): boolean {
+  if (envFlag('HARNESS_NERVOUS_ALLOW_UNVERIFIED')) return true;
+  return permissionMode === 'dontAsk';
 }
 
 const rateLimiter = new RateLimiter(10, 2);
@@ -1578,6 +1588,8 @@ app.get('/api/nervous', (_req, res) => {
   const recovery = globalNervousSystem.getRecoveryPlan();
   res.json({
     active: state !== null,
+    permissionMode,
+    verificationBypassActive: shouldBypassNervousVerification(),
     summary,
     signals: signals.slice(-20).map((s) => ({ type: s.type, severity: s.severity, message: s.message, source: s.source, createdAt: s.createdAt })),
     recovery: recovery ? { reason: recovery.reason, safeNextAction: recovery.safeNextAction } : null,
@@ -2908,7 +2920,7 @@ app.post('/api/chat', async (req, res) => {
     const evidenceCard: EvidenceCard = {
       id: crypto.randomUUID(),
       kind: 'chat',
-      mode: 'automate',
+      mode: 'operate',
       createdAt: new Date().toISOString(),
       request: messageText.slice(0, 500),
       model: model || currentModel || 'deterministic-operate-mode',
@@ -3173,7 +3185,12 @@ TOOL FALLBACK RULES:
         return { allowed: false, reason: `Nervous System requires dry-run for '${call.name}': ${motor.reason}` };
       }
       if (motor.decision === 'REQUIRE_VERIFICATION') {
-        return { allowed: false, reason: `Nervous System requires verification before '${call.name}': ${motor.reason}` };
+        if (shouldBypassNervousVerification()) {
+          runtimeTracer.recordEvent('nervous.verification_bypassed', { tool: call.name, reason: motor.reason, permissionMode });
+          return { allowed: true, reason: `Nervous System verification bypassed for '${call.name}' in auto-approve mode: ${motor.reason}` };
+        }
+        runtimeTracer.recordEvent('permission.prompt_created', { tool: call.name, reason: motor.reason, source: 'nervous.verification' });
+        return permissionPrompts.request(call, `Nervous System requires verification: ${motor.reason}`);
       }
       if (motor.decision === 'REQUIRE_CONFIRMATION') {
         if (permissionMode === 'dontAsk') {
@@ -3850,6 +3867,33 @@ app.post('/api/mcp/runtime/servers', async (req, res) => {
   }
 });
 
+app.post('/api/mcp/runtime/from-catalog', async (req, res) => {
+  try {
+    const catalogName = safeLocalId(req.body?.name);
+    if (!catalogName) { res.status(400).json({ error: 'Invalid MCP catalog name.' }); return; }
+    const entry = MCP_CATALOG.find((item) => item.name === catalogName);
+    if (!entry) { res.status(404).json({ error: 'MCP catalog entry not found.' }); return; }
+    const existing = (await listMcpServers(PROJECT_DIR)).find((server) => server.id === catalogName);
+    if (existing && req.body?.overwrite !== true) {
+      res.status(409).json({ error: 'MCP runtime server already exists. Pass overwrite=true to replace it.' });
+      return;
+    }
+    const parsed = parseMcpInstallCommand(entry.install);
+    const server = await upsertMcpServer(PROJECT_DIR, {
+      id: catalogName,
+      catalogName: entry.name,
+      command: parsed.command,
+      args: parsed.args,
+      env: Object.fromEntries((entry.requiresEnv || []).map((key) => [key, ''])),
+      tools: [],
+      enabled: true,
+    });
+    res.json({ server, servers: await listMcpServers(PROJECT_DIR), requiresEnv: entry.requiresEnv });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 app.delete('/api/mcp/runtime/servers/:id', async (req, res) => {
   try {
     const removed = await removeMcpServer(PROJECT_DIR, req.params.id);
@@ -4067,6 +4111,38 @@ app.post('/api/skills/scaffold', async (req, res) => {
     await fs.writeFile(skillFile, scaffold, 'utf-8');
     invalidateSkillsCache();
     res.json({ ok: true, name: skillName, filePath: skillFile });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/skills/create', async (req, res) => {
+  const skillName = safeLocalId(req.body?.name);
+  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
+  const overwrite = req.body?.overwrite === true;
+  const skillDir = path.join(SKILLS_DIR, skillName);
+  const skillFile = path.join(skillDir, 'SKILL.md');
+  try {
+    const existing = await fs.stat(skillFile).catch(() => null);
+    if (existing && !overwrite) {
+      res.status(409).json({ error: 'Runtime skill already exists. Pass overwrite=true to replace it.' });
+      return;
+    }
+    await fs.mkdir(skillDir, { recursive: true });
+    const scaffold = buildRuntimeSkillFile({
+      name: skillName,
+      description: sanitizeSkillText(req.body?.description, 'Describe what this skill does.', 500),
+      domain: sanitizeSkillText(req.body?.domain, 'general', 120),
+      triggers: sanitizeSkillList(req.body?.triggers, 20, 120),
+      whenToUse: sanitizeSkillText(req.body?.whenToUse, '', 800),
+      requiredTools: sanitizeSkillList(req.body?.requiredTools, 40, 80),
+      riskLevel: sanitizeSkillRiskLevel(req.body?.riskLevel),
+      body: sanitizeSkillBody(req.body?.content),
+    });
+    await fs.writeFile(skillFile, scaffold, 'utf-8');
+    invalidateSkillsCache();
+    res.json({ ok: true, name: skillName, filePath: skillFile, overwritten: Boolean(existing) });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -4687,7 +4763,7 @@ function sanitizeModelName(value: unknown): string {
 
 function inferModelCapabilities(name: string, details: Record<string, unknown> = {}): { text: boolean; image: boolean; audio: boolean; notes: string[] } {
   const haystack = `${name} ${Object.values(details).join(' ')}`.toLowerCase();
-  const image = /llava|bakllava|moondream|vision|qwen\d*(?:\.\d+)?vl|qwen.*vl|minicpm-v|granite.*vision|gemma.*vision/.test(haystack);
+  const image = isVisionCapableModelName(name, details);
   const audio = /whisper|audio|speech|wav2vec|parakeet|sensevoice/.test(haystack);
   const notes = [
     image ? 'Can likely reason over images when the chat path passes image data.' : 'Text chat model unless another modality is documented by the model.',
@@ -5005,6 +5081,112 @@ function suggestionReason(profile: OutputValidationProfile, matched = true): str
     case 'oracle-prime': return 'The prompt looks like a decision, risk, strategy, or uncertainty-heavy answer.';
     default: return 'Using the current custom profile because it is selected manually.';
   }
+}
+
+function parseMcpInstallCommand(install: string): { command: string; args: string[] } {
+  const parts = splitShellLikeArgs(install).map((part) => part === '${PWD}' ? '.' : part);
+  const command = parts[0]?.trim();
+  if (!command) throw new Error('MCP catalog entry is missing an install command.');
+  return { command, args: parts.slice(1) };
+}
+
+function splitShellLikeArgs(input: string): string[] {
+  const args: string[] = [];
+  let current = '';
+  let quote: 'single' | 'double' | null = null;
+  for (let index = 0; index < input.length; index++) {
+    const char = input[index];
+    if (quote === 'single') {
+      if (char === "'") quote = null;
+      else current += char;
+      continue;
+    }
+    if (quote === 'double') {
+      if (char === '"') quote = null;
+      else current += char;
+      continue;
+    }
+    if (char === "'") { quote = 'single'; continue; }
+    if (char === '"') { quote = 'double'; continue; }
+    if (/\s/.test(char)) {
+      if (current) {
+        args.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (current) args.push(current);
+  return args;
+}
+
+function buildRuntimeSkillFile(input: {
+  name: string;
+  description: string;
+  domain: string;
+  triggers: string[];
+  whenToUse: string;
+  requiredTools: string[];
+  riskLevel?: 'low' | 'medium' | 'high';
+  body: string;
+}): string {
+  const lines = [
+    '---',
+    `name: ${yamlScalar(input.name)}`,
+    `description: ${yamlScalar(input.description)}`,
+    `domain: ${yamlScalar(input.domain)}`,
+    ...yamlList('triggers', input.triggers),
+  ];
+  if (input.whenToUse) lines.push(`when_to_use: ${yamlScalar(input.whenToUse)}`);
+  if (input.requiredTools.length > 0) lines.push(...yamlList('required_tools', input.requiredTools));
+  if (input.riskLevel) lines.push(`risk_level: ${yamlScalar(input.riskLevel)}`);
+  lines.push('---', '', input.body);
+  return `${lines.join('\n').trimEnd()}\n`;
+}
+
+function yamlList(key: string, values: string[]): string[] {
+  if (values.length === 0) return [`${key}: []`];
+  return [`${key}:`, ...values.map((value) => `  - ${yamlScalar(value)}`)];
+}
+
+function yamlScalar(value: string): string {
+  return JSON.stringify(value.replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
+}
+
+function sanitizeSkillText(value: unknown, fallback: string, maxLength: number): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return (text || fallback).replace(/[\r\n]+/g, ' ').slice(0, maxLength);
+}
+
+function sanitizeSkillBody(value: unknown): string {
+  const body = typeof value === 'string' && value.trim()
+    ? value.trim()
+    : '# Instructions\n\nDescribe when to use this skill, the steps to follow, and how to validate the result.';
+  return body.slice(0, 20_000);
+}
+
+function sanitizeSkillList(value: unknown, maxItems: number, maxLength: number): string[] {
+  const source = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(',')
+      : [];
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const item of source) {
+    const text = String(item ?? '').trim().replace(/[\r\n]+/g, ' ').slice(0, maxLength);
+    if (!text || seen.has(text.toLowerCase())) continue;
+    seen.add(text.toLowerCase());
+    output.push(text);
+    if (output.length >= maxItems) break;
+  }
+  return output;
+}
+
+function sanitizeSkillRiskLevel(value: unknown): 'low' | 'medium' | 'high' | undefined {
+  const risk = String(value ?? '').trim().toLowerCase();
+  return risk === 'low' || risk === 'medium' || risk === 'high' ? risk : undefined;
 }
 
 function sanitizeModelCatalogSettings(value: unknown): ModelCatalogSettings {

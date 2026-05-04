@@ -54,6 +54,7 @@ async function main() {
     });
     await page.evaluate(() => document.getElementById('saveProfileFromFormBtn')?.click());
     await page.waitForFunction(() => document.getElementById('outputValidationProfilesStatus')?.textContent.includes('custom profiles saved'));
+    await page.evaluate(() => { window.__guidedProfileSavedSmoke = true; });
     await page.evaluate(() => Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes('Refresh trace exports'))?.click());
     await page.evaluate(async () => {
       const data = await fetch('/api/capabilities').then((response) => response.json());
@@ -150,7 +151,67 @@ async function main() {
     // create duplicate IDs before the dedup check runs.
     await page.evaluate(() => showLeftTab('tools', document.querySelector('[onclick*="showLeftTab(\'tools\'"]')));
     await page.waitForTimeout(500);
-    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered }) => {
+    await page.evaluate(async () => {
+      const deniedOutput = "Permission denied for 'file_write': Nervous System requires verification";
+      const modelSelect = document.getElementById('modelSelect');
+      if (modelSelect && !modelSelect.value) {
+        if (!modelSelect.options.length) modelSelect.add(new Option('ui-smoke-model', 'ui-smoke-model'));
+        modelSelect.value = modelSelect.options[1]?.value || modelSelect.options[0]?.value || 'ui-smoke-model';
+      }
+      const skipValidation = document.getElementById('skipValidationOnce');
+      if (skipValidation) skipValidation.checked = true;
+      const input = document.getElementById('chatInput');
+      input.value = 'trigger permission recovery smoke';
+      const welcomeClone = document.getElementById('welcome')?.cloneNode(true);
+      const encoder = new TextEncoder();
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = (resource, init) => {
+        const url = typeof resource === 'string' ? resource : resource?.url;
+        if (url === '/api/chat') {
+          const events = [
+            { type: 'tool_call', call: { id: 'smoke-denied-write', name: 'file_write', input: { path: 'agent-outputs/blocked.txt', content: 'blocked' } } },
+            { type: 'tool_result', call: { id: 'smoke-denied-write', name: 'file_write', input: { path: 'agent-outputs/blocked.txt' } }, result: { success: false, output: deniedOutput } },
+            { type: 'done', reason: 'completed', turns: 1 },
+          ];
+          const payload = events.map((event) => 'data: ' + JSON.stringify(event) + '\n\n').join('') + 'data: [DONE]\n\n';
+          return Promise.resolve(new Response(new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode(payload));
+              controller.close();
+            },
+          }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+        }
+        return originalFetch(resource, init);
+      };
+      try {
+        await sendMessage();
+      } finally {
+        window.fetch = originalFetch;
+        if (welcomeClone && !document.getElementById('welcome')) {
+          document.getElementById('chatArea')?.prepend(welcomeClone);
+        }
+      }
+      const row = document.querySelector('.tool-item-permission');
+      window.__permissionRecoverySmoke = Boolean(row)
+        && typeof isPermissionOrRecoveryFailure === 'function'
+        && isPermissionOrRecoveryFailure(deniedOutput)
+        && row.textContent.includes('Action blocked')
+        && row.textContent.includes('Auto-approve all');
+    });
+    const recoveryRow = page.locator('.tool-item-permission').first();
+    const recoveryBox = await recoveryRow.boundingBox();
+    const recoveryButtonBox = await recoveryRow.locator('button:has-text("Auto-approve all")').boundingBox();
+    const recoveryScreenshotPath = path.join(os.tmpdir(), `harness-permission-recovery-${Date.now()}.png`);
+    if (recoveryBox) await recoveryRow.screenshot({ path: recoveryScreenshotPath });
+    const recoveryLayoutSmoke = Boolean(recoveryBox)
+      && recoveryBox.width >= 320
+      && recoveryBox.height >= 30
+      && Boolean(recoveryButtonBox)
+      && recoveryButtonBox.width >= 90
+      && recoveryButtonBox.height >= 24
+      && fs.existsSync(recoveryScreenshotPath)
+      && fs.statSync(recoveryScreenshotPath).size > 100;
+    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, recoveryLayoutSmoke, recoveryScreenshotPath }) => {
       const ids = Array.from(document.querySelectorAll('[id]')).map((element) => element.id);
       // Dynamically-rendered panels may legitimately re-render with the same ID
       const dynamicPanelIds = new Set(['permissionPanel', 'capabilityAlignmentPanel', 'toolRegistryPanel', 'automationRunsSection', 'curatorRunsSection']);
@@ -161,6 +222,9 @@ async function main() {
         hasAppScript: Array.from(document.scripts).some((script) => /\/app\.js(\?|$)/.test(script.src)),
         hasChatHistoryApi: typeof window.HarnessChatHistory?.outboundChatHistory === 'function' && typeof window.HarnessChatHistory?.saveChatSession === 'function' && typeof window.HarnessChatHistory?.loadPersistedChatSession === 'function',
         hasPermissionPanel: Boolean(document.getElementById('permissionPanel')),
+        hasPermissionRecoveryActionRow: Boolean(window.__permissionRecoverySmoke),
+        hasPermissionRecoveryLayout: Boolean(recoveryLayoutSmoke),
+        permissionRecoveryScreenshotPath: recoveryScreenshotPath,
         hasCapabilityAlignmentPanel: Boolean(window.__capabilityAlignmentSmoke),
         hasChatInput: Boolean(document.getElementById('chatInput')),
         hasTraceExports: Boolean(document.getElementById('traceExports')),
@@ -200,8 +264,8 @@ async function main() {
         hasOutputValidationSettings: Boolean(document.getElementById('outputValidationProfile')) && Boolean(document.getElementById('outputValidationToggle')) && Boolean(document.getElementById('outputValidationAutoSelectToggle')),
         hasOutputValidationProfileEditor: Boolean(document.getElementById('outputValidationProfilesJson')) && Boolean(document.getElementById('saveOutputValidationProfilesBtn')) && Boolean(document.getElementById('customProfileId')) && Boolean(document.getElementById('customProfileChecks')),
         outputValidationProfiles: Array.from(document.querySelectorAll('#outputValidationProfile option')).map((option) => option.value),
-        settingsDoctorVisible: !document.getElementById('settingsDoctorHealth').classList.contains('initial-hidden'),
-        firstRunHealthVisible: !document.getElementById('firstRunHealth').classList.contains('initial-hidden'),
+        settingsDoctorVisible: Boolean(document.getElementById('settingsDoctorHealth')) && !document.getElementById('settingsDoctorHealth').classList.contains('initial-hidden'),
+        firstRunHealthVisible: Boolean(document.getElementById('firstRunHealth')) && !document.getElementById('firstRunHealth').classList.contains('initial-hidden'),
         hasContextDetails: Boolean(document.getElementById('contextDetails')),
         hasTraceEvalExamples: Boolean(document.getElementById('traceEvalExamples')),
         hasWeatherReplayEvalButton: Boolean(document.getElementById('createWeatherReplayEvalBtn')),
@@ -262,7 +326,7 @@ async function main() {
         hasReleaseVerification: Boolean(document.getElementById('verifyReleaseBtn')) && Boolean(document.getElementById('releaseVerificationPanel')),
         hasReleaseVerificationFunction: typeof window.verifyReleaseAsset === 'function',
         releaseVerificationRendered: !document.getElementById('releaseVerificationPanel').classList.contains('initial-hidden'),
-        guidedProfileSaved: document.getElementById('outputValidationProfilesStatus')?.textContent.includes('custom profiles saved'),
+        guidedProfileSaved: Boolean(window.__guidedProfileSavedSmoke),
         hasRunEvalDatasetButton: Boolean(document.getElementById('runEvalDatasetBtn')),
         hasRunLiveReplayDatasetButton: Boolean(document.getElementById('runLiveReplayDatasetBtn')),
         hasApplyCalibrationButton: Boolean(document.getElementById('applyCalibrationBtn')),
@@ -284,13 +348,15 @@ async function main() {
         hasApplyCalibrationFunction: typeof window.applyRoutingCalibration === 'function',
         duplicateIds,
       };
-    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered });
+    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, recoveryLayoutSmoke, recoveryScreenshotPath });
 
     const failures = [];
     if (!result.title.endsWith('Ollama Agent Harness')) failures.push(`Unexpected title: ${result.title}`);
     if (!result.hasAppScript) failures.push('ui/app.js script was not loaded');
     if (!result.hasChatHistoryApi) failures.push('chat history helper API was not available at runtime');
     if (!result.hasPermissionPanel) failures.push('permission panel was not created');
+    if (!result.hasPermissionRecoveryActionRow) failures.push('permission recovery action row did not render');
+    if (!result.hasPermissionRecoveryLayout) failures.push('permission recovery action row layout/screenshot check failed');
     if (!result.hasCapabilityAlignmentPanel) failures.push('capability alignment panel was not rendered');
     if (!result.hasChatInput) failures.push('chat input was not found');
     if (!result.hasTraceExports) failures.push('trace export panel was not found');

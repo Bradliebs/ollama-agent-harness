@@ -71,11 +71,11 @@ export async function startMcpServer(projectDir: string, id: string): Promise<Mc
   const active = runningServers.get(definition.id);
   if (active && !active.process.killed) return toStatus(definition);
 
-  const command = resolveCommandForPlatform(definition.command);
   const cwd = resolveMcpCwd(projectDir, definition.cwd);
-  const child = spawn(command, definition.args, {
+  const launch = resolveMcpLaunch(definition.command, definition.args);
+  const child = spawn(launch.command, launch.args, {
     cwd,
-    env: { ...process.env, ...definition.env },
+    env: buildMcpProcessEnv(definition.env),
     windowsHide: true,
   });
 
@@ -197,6 +197,45 @@ function resolveCommandForPlatform(command: string): string {
   if (os.platform() !== 'win32') return command;
   if (/^(npm|npx|pnpm|yarn|uvx)$/i.test(command)) return `${command}.cmd`;
   return command;
+}
+
+function resolveMcpLaunch(command: string, args: string[]): { command: string; args: string[] } {
+  const resolvedCommand = resolveCommandForPlatform(command);
+  if (os.platform() !== 'win32' || !/\.(?:cmd|bat)$/i.test(resolvedCommand)) {
+    return { command: resolvedCommand, args };
+  }
+  return {
+    command: process.env.ComSpec || 'cmd.exe',
+    args: ['/d', '/s', '/c', [resolvedCommand, ...args].map(quoteWindowsCommandArg).join(' ')],
+  };
+}
+
+function quoteWindowsCommandArg(value: string): string {
+  if (/^[A-Za-z0-9_/:.=+-]+$/.test(value)) return value;
+  return `"${value.replace(/(\\*)"/g, '$1$1\\"').replace(/\\+$/g, '$&$&')}"`;
+}
+
+function buildMcpProcessEnv(extraEnv?: Record<string, string>): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!isValidEnvKey(key)) continue;
+    if (!isValidEnvValue(value)) continue;
+    env[key] = value;
+  }
+  for (const [key, value] of Object.entries(extraEnv || {})) {
+    if (!isValidEnvKey(key)) continue;
+    if (!isValidEnvValue(value)) continue;
+    env[key] = value;
+  }
+  return env;
+}
+
+function isValidEnvKey(key: string): boolean {
+  return Boolean(key) && !key.includes('=') && !key.includes('\0');
+}
+
+function isValidEnvValue(value: unknown): value is string {
+  return typeof value === 'string' && !value.includes('\0');
 }
 
 function toStatus(definition: McpServerDefinition): McpServerStatus {

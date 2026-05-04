@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { Ollama } from 'ollama';
 import type { Tool, ToolResult } from '../types';
+import { findInstalledVisionModel, isVisionCapableModelName } from '../models/visionModels';
 import { resolveProjectReadPath } from './pathResolution';
 
 const MAX_IMAGE_BYTES = 10_000_000;
@@ -27,11 +28,6 @@ export const ImageAnalyzeTool: Tool = {
     const filePath = resolveProjectReadPath(input.path);
     if (!filePath) return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
     if (!isImagePath(filePath)) return { success: false, output: 'File does not look like a supported image type.', error: 'unsupported image type' };
-    const model = sanitizeString(input.model) || process.env.HARNESS_VISION_MODEL || process.env.OLLAMA_MODEL;
-    if (!model) {
-      return { success: false, output: 'No vision model was provided. Pass model or set HARNESS_VISION_MODEL.', error: 'missing vision model' };
-    }
-
     try {
       const stat = await fs.stat(filePath);
       if (stat.size > MAX_IMAGE_BYTES) {
@@ -39,6 +35,10 @@ export const ImageAnalyzeTool: Tool = {
       }
       const image = await fs.readFile(filePath);
       const client = new Ollama({ host: sanitizeString(input.host) || process.env.OLLAMA_HOST || 'http://localhost:11434' });
+      const model = await resolveVisionModel(input, client);
+      if (!model) {
+        return { success: false, output: 'No vision model was provided and no installed Ollama vision model could be auto-detected. Set HARNESS_VISION_MODEL to a model such as llava:latest.', error: 'missing vision model' };
+      }
       const response = await client.chat({
         model,
         stream: false as const,
@@ -55,6 +55,19 @@ export const ImageAnalyzeTool: Tool = {
     }
   },
 };
+
+async function resolveVisionModel(input: Record<string, unknown>, client: Ollama): Promise<string> {
+  const configuredModel = sanitizeString(input.model) || process.env.HARNESS_VISION_MODEL || '';
+  if (configuredModel) return configuredModel;
+  const selectedModel = sanitizeString(process.env.OLLAMA_MODEL);
+  if (selectedModel && isVisionCapableModelName(selectedModel)) return selectedModel;
+  try {
+    const response = await client.list();
+    return findInstalledVisionModel(response.models.map((model) => model.name)) ?? '';
+  } catch {
+    return '';
+  }
+}
 
 export const AudioTranscribeTool: Tool = {
   name: 'audio_transcribe',

@@ -3,23 +3,27 @@ import * as path from 'path';
 import { AudioTranscribeTool, ImageAnalyzeTool } from './multimodalTools';
 
 const mockChat = jest.fn();
+const mockList = jest.fn();
 
 jest.mock('ollama', () => ({
-  Ollama: jest.fn().mockImplementation(() => ({ chat: mockChat })),
+  Ollama: jest.fn().mockImplementation(() => ({ chat: mockChat, list: mockList })),
 }));
 
 describe('multimodal tools', () => {
   let fixtureDir: string;
   const originalVisionModel = process.env.HARNESS_VISION_MODEL;
   const originalAudioCommand = process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND;
+  const originalOllamaModel = process.env.OLLAMA_MODEL;
 
   beforeEach(async () => {
     fixtureDir = path.join(process.cwd(), '.harness', 'test-multimodal');
     await fs.rm(fixtureDir, { recursive: true, force: true });
     await fs.mkdir(fixtureDir, { recursive: true });
     mockChat.mockReset();
+    mockList.mockReset();
     delete process.env.HARNESS_VISION_MODEL;
     delete process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND;
+    delete process.env.OLLAMA_MODEL;
   });
 
   afterEach(async () => {
@@ -28,6 +32,8 @@ describe('multimodal tools', () => {
     else process.env.HARNESS_VISION_MODEL = originalVisionModel;
     if (originalAudioCommand === undefined) delete process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND;
     else process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND = originalAudioCommand;
+    if (originalOllamaModel === undefined) delete process.env.OLLAMA_MODEL;
+    else process.env.OLLAMA_MODEL = originalOllamaModel;
   });
 
   it('passes local image bytes to an Ollama vision model', async () => {
@@ -47,10 +53,23 @@ describe('multimodal tools', () => {
   it('requires a vision model for image analysis', async () => {
     const imagePath = path.join(fixtureDir, 'sample.png');
     await fs.writeFile(imagePath, Buffer.from([1]));
+    mockList.mockResolvedValue({ models: [{ name: 'qwen2.5-coder:7b' }] });
 
     const result = await ImageAnalyzeTool.execute({ path: imagePath });
 
     expect(result).toMatchObject({ success: false, error: 'missing vision model' });
+  });
+
+  it('auto-detects an installed Ollama vision model when none is configured', async () => {
+    const imagePath = path.join(fixtureDir, 'sample.png');
+    await fs.writeFile(imagePath, Buffer.from([5, 6, 7]));
+    mockList.mockResolvedValue({ models: [{ name: 'qwen2.5-coder:7b' }, { name: 'llava:latest' }] });
+    mockChat.mockResolvedValue({ message: { content: 'A car listing screenshot.' } });
+
+    const result = await ImageAnalyzeTool.execute({ path: imagePath, prompt: 'Read the listing.' });
+
+    expect(result).toMatchObject({ success: true, output: 'A car listing screenshot.' });
+    expect(mockChat).toHaveBeenCalledWith(expect.objectContaining({ model: 'llava:latest' }));
   });
 
   it('reports a clear audio transcription setup error when no command is configured', async () => {

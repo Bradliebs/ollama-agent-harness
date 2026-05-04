@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { AudioTranscribeTool } from '../tools/multimodalTools';
+import { findInstalledVisionModel } from '../models/visionModels';
 import { PdfReadTool } from '../tools/pdfTool';
 import { createBuiltinToolRegistry } from '../tools/registry';
 import { OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiKey } from '../core/chatClientFactory';
@@ -99,6 +100,7 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
     const matchingVisionModel = input.visionModel
       ? modelNames.some((name) => name === input.visionModel || name.startsWith(`${input.visionModel}:`))
       : false;
+    const detectedVisionModel = input.visionModel ? '' : findInstalledVisionModel(modelNames);
     return {
       ollama: {
         ok: true,
@@ -110,7 +112,9 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
           ok: matchingVisionModel,
           message: matchingVisionModel ? `Vision model '${input.visionModel}' is installed.` : `Vision model '${input.visionModel}' was not found in Ollama.`,
         }
-        : { ok: false, message: 'No vision model configured.' },
+        : detectedVisionModel
+          ? { ok: true, message: `Auto-detected vision model '${detectedVisionModel}'.` }
+          : { ok: false, message: 'No vision model configured and no installed vision model was auto-detected.' },
       audio,
       pdfOcr,
       local,

@@ -22,7 +22,7 @@ export const DocumentExportTool: Tool = {
       title: { type: 'string', description: 'Document title (used in docx/pdf headers)' },
       content: {
         type: 'object',
-        description: 'Document content. CSV: { rows: string[][] }. Excel: { sheets: [{ name, rows }] } or { rows }. Word/PDF: { body: [{ type: "paragraph", text, heading?, bold?, italic? }, { type: "table", headers: string[], rows: string[][] }] }. Legacy "paragraphs" array still works for backward compatibility.',
+        description: 'Document content. CSV: { rows: string[][] }. Excel: { sheets: [{ name, rows }] } or { rows }. Word/PDF: { markdown: string } or { body: [{ type: "paragraph", text, heading?, bold?, italic? }, { type: "table", headers: string[], rows: string[][] }] }. Legacy "paragraphs" array still works for backward compatibility.',
       },
     },
     required: ['path', 'format', 'content'],
@@ -172,6 +172,7 @@ interface TableInput {
 type BodyElement = ParagraphInput | TableInput;
 
 function parseBody(content: Record<string, unknown>): BodyElement[] {
+  if (typeof content.markdown === 'string') return markdownToBody(content.markdown);
   // Prefer "body" array (new format with mixed paragraphs and tables).
   if (Array.isArray(content.body)) return content.body as BodyElement[];
   // Fall back to legacy "paragraphs" array.
@@ -179,6 +180,73 @@ function parseBody(content: Record<string, unknown>): BodyElement[] {
     return (content.paragraphs as ParagraphInput[]).map((p) => ({ ...p, type: 'paragraph' as const }));
   }
   return [];
+}
+
+function markdownToBody(markdown: string): BodyElement[] {
+  const body: BodyElement[] = [];
+  const paragraphLines: string[] = [];
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n');
+
+  const flushParagraph = () => {
+    const text = paragraphLines.join(' ').replace(/\s+/g, ' ').trim();
+    paragraphLines.length = 0;
+    if (text) body.push({ type: 'paragraph', text });
+  };
+
+  const parseTableRow = (line: string): string[] => line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim());
+  const isTableSeparator = (line: string): boolean => parseTableRow(line).every((cell) => /^:?-{3,}:?$/.test(cell));
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const line = rawLine.trim();
+    if (!line) {
+      flushParagraph();
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      body.push({ type: 'paragraph', heading: heading[1].length, text: cleanMarkdownText(heading[2]) });
+      continue;
+    }
+
+    if (line.includes('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1].trim())) {
+      flushParagraph();
+      const headers = parseTableRow(line).map(cleanMarkdownText);
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].trim().includes('|')) {
+        rows.push(parseTableRow(lines[i].trim()).map(cleanMarkdownText));
+        i += 1;
+      }
+      i -= 1;
+      body.push({ type: 'table', headers, rows });
+      continue;
+    }
+
+    const listItem = line.match(/^[-*]\s+(.+)$/) || line.match(/^\d+[.)]\s+(.+)$/);
+    if (listItem) {
+      flushParagraph();
+      body.push({ type: 'paragraph', text: `- ${cleanMarkdownText(listItem[1])}` });
+      continue;
+    }
+
+    paragraphLines.push(cleanMarkdownText(line));
+  }
+
+  flushParagraph();
+  return body;
+}
+
+function cleanMarkdownText(value: string): string {
+  return value
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/__([^_]+)__/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    .trim();
 }
 
 async function writeDocx(filePath: string, title: string, content: Record<string, unknown>): Promise<void> {

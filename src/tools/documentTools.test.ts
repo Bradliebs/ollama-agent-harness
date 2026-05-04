@@ -161,6 +161,39 @@ describe('DocumentExportTool', () => {
     expect(stat.size).toBeGreaterThan(100);
   });
 
+  it('writes a full Markdown guide to DOCX without model mediation', async () => {
+    const filePath = path.join(tmpDir, 'ev-guide.docx');
+    const markdown = [
+      '# Complete EV Guide',
+      '',
+      '## Model Shortlist',
+      '',
+      '- **VW ID.3**: best overall under GBP 10,000.',
+      '- Nissan Leaf: proven budget alternative.',
+      '',
+      '| Model | Battery | Real-world range |',
+      '| --- | --- | --- |',
+      '| VW ID.3 | 58kWh | 180-240 miles |',
+      '| Nissan Leaf | 40kWh | 110-150 miles |',
+      '',
+      '## Recommendation',
+      '',
+      'Prioritise battery health, warranty coverage, and charging compatibility over headline mileage.',
+    ].join('\n');
+
+    const result = await DocumentExportTool.execute({
+      path: filePath,
+      format: 'docx',
+      title: 'Complete EV Guide',
+      content: { markdown },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('DOCX');
+    const stat = await fs.stat(filePath);
+    expect(stat.size).toBeGreaterThan(100);
+  });
+
   it('writes a PDF file with tables', async () => {
     const filePath = path.join(tmpDir, 'table.pdf');
     const result = await DocumentExportTool.execute({

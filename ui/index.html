@@ -22,6 +22,7 @@
     .panel-search input:focus{border-color:var(--accent)}
     .btn-sm{background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s}
     .btn-sm:hover{border-color:var(--accent);color:var(--text)}
+    .btn-sm:disabled{opacity:.55;cursor:default;border-color:var(--border);color:var(--text-dim)}
     .history-list,.file-tree,.skill-list,.memory-view{flex:1;overflow-y:auto;padding:8px}
     .history-item{padding:10px 12px;border-radius:var(--rs);cursor:pointer;margin-bottom:2px;transition:background .15s;display:flex;justify-content:space-between;align-items:center}
     .history-item:hover{background:var(--surface2)}
@@ -75,16 +76,122 @@
     .permission-actions{display:flex;gap:6px;flex-shrink:0}
     .btn-sm.danger{color:var(--error)}
     .inline-actions{display:flex;gap:4px}
+    .inline-actions.top-spaced{margin-top:4px}
     .initial-hidden{display:none}
+    .compare-select-hidden{display:none}
+    .autonomy-hud-action{cursor:pointer}
+    .hidden-by-default{display:none!important}
+    .attachment-validation-toggle{display:flex;align-items:center;gap:6px;margin-top:4px;cursor:pointer}
+    .settings-note{font-size:11px;color:var(--text-dim);margin-bottom:10px}
+    .settings-row-spaced{margin-top:10px}
+    .settings-status-inline{margin-left:8px;font-size:11px;color:var(--text-dim)}
+    .settings-action-row{display:flex;gap:6px;align-items:center;margin-bottom:6px}
+    .settings-flex-input{flex:1;min-width:0}
+    .settings-browser-panel{margin-bottom:8px;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px}
+    .settings-status-line{font-size:11px;color:var(--text-dim);min-height:14px}
+    .advanced-settings{margin-top:14px;border-top:1px solid var(--border);padding-top:10px}
+    .advanced-settings-summary{cursor:pointer;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);-webkit-user-select:none;user-select:none}
+    .advanced-settings-body{margin-top:10px}
+    .settings-action-wrap{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px}
+    .settings-preview-row{margin-top:10px;display:flex;gap:6px;align-items:center}
+    .settings-preview-result{margin-top:6px;font-size:11px;color:var(--text-dim)}
+    .settings-example-row{margin-top:6px;font-size:11px;color:var(--text-dim)}
+    .vision-status{display:inline-block;margin-left:6px;padding:1px 6px;border:1px solid var(--border);border-radius:999px;font-size:10px;color:var(--text-dim);font-weight:400;text-transform:none;letter-spacing:0}
+    .vision-status.ready{border-color:#50c878;color:#50c878;background:rgba(80,200,120,.08)}
+    .vision-status.warn{border-color:#ffb050;color:#ffb050;background:rgba(255,176,80,.08)}
+    .vision-status.error{border-color:#ff5050;color:#ff5050;background:rgba(255,80,80,.08)}
+    .picker-grid{display:flex;flex-wrap:wrap;gap:4px}
+    .accent-pick{width:24px;height:24px;border-radius:50%;border:2px solid var(--border)}
+    .accent-purple{background:#7c5cff}.accent-blue{background:#3b82f6}.accent-green{background:#10b981}.accent-amber{background:#f59e0b}.accent-red{background:#ef4444}.accent-pink{background:#ec4899}.accent-violet{background:#8b5cf6}.accent-cyan{background:#06b6d4}
+    .profile-action-row{display:flex;gap:6px;flex-wrap:wrap}
+    .profile-select-inline{flex:1;min-width:120px;padding:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px}
+    .profile-import-export-row{display:flex;gap:6px}
+    .full-autonomy-button{margin-bottom:4px;background:rgba(80,200,120,.15);border-color:#50c878;color:#50c878}
+    .timed-autonomy-button{margin-bottom:8px;background:rgba(255,176,80,.15);border-color:#ffb050;color:#ffb050}
+    .timed-autonomy-banner{margin-bottom:8px;padding:8px 10px;background:rgba(255,176,80,.1);border:1px solid #ffb050;border-radius:6px;font-size:12px;color:#ffb050}
+    .text-dim{color:var(--text-dim)}
+    .text-warning-xs{color:#ffb050;font-size:11px}
+    .accent-link{color:var(--accent)}
+    .accent-text{color:var(--accent)}
+    .accent-strong{color:var(--accent);font-weight:600}
+    .text-dim-inline{color:var(--text-dim);margin-left:8px}
+    .btn-success-soft{background:rgba(80,200,120,.15);border-color:#50c878;color:#50c878}
+    .btn-warning-soft{background:rgba(255,176,80,.15);border-color:#ffb050;color:#ffb050}
+    .btn-info-soft{background:rgba(138,180,248,.12);border-color:#8ab4f8;color:#8ab4f8}
+    .btn-xxs{font-size:9px;padding:1px 6px}
+    .btn-xxs-muted{font-size:9px;opacity:.5}
+    .btn-xxs-subtle{font-size:9px;opacity:.6}
+    .btn-xxs-warning{font-size:9px;padding:1px 6px;color:#ffb050;border-color:#ffb050}
+    .btn-inline-cancel{margin-left:8px;font-size:11px}
+    .btn-global-cancel{margin-left:8px;font-size:10px}
+    .mission-prompt-actions{text-align:right;margin-top:4px;padding:0 4px}
+    .clickable-dotted{cursor:pointer;text-decoration:underline dotted}
+    .clickable-summary{cursor:pointer}
+    .details-mt4{margin-top:4px}
+    .details-mt6{margin-top:6px}
+    .details-mt8{margin-top:8px}
+    .details-my6{margin:6px 0}
+    .details-body-mt4{margin-top:4px}
+    .trace-summary-xs{cursor:pointer;font-size:10px}
+    .trace-summary-sm{cursor:pointer;font-size:11px}
+    .trace-meta-xs-row{font-size:10px;display:flex;align-items:center;gap:4px}
+    .trace-meta-xxs{font-size:10px}
+    .trace-meta-sm{font-size:11px}
+    .trace-meta-sm-top{font-size:11px;margin-top:4px}
+    .trace-meta-warn{color:var(--warn,#c98900)}
+    .trace-meta-success{color:#50c878}
+    .trace-meta-warning{color:#ffb050}
+    .trace-meta-error{color:var(--error)}
+    .risk-critical{color:var(--error)}.risk-high{color:#ffb050}.risk-medium{color:#ffd700}.risk-low{color:var(--text-dim)}
+    .readiness-ready{color:#50c878}.readiness-none{color:#ff5050}.readiness-some{color:#ffb050}
+    .muted-pill{border-color:#888;color:#888}.success-pill{border-color:#50c878;color:#50c878}.running-pill,.info-pill{border-color:#5bb0ff;color:#5bb0ff}.warning-pill{border-color:#ffb050;color:#ffb050}.danger-pill{border-color:#ff5050;color:#ff5050}
+    .success-badge{background:rgba(80,200,120,.12);border-color:#50c878;color:#50c878}.danger-badge{background:rgba(255,80,80,.15);border-color:#ff5050;color:#ff5050}
+    .trace-item-spaced{margin-bottom:8px}.surface-trace-item{background:var(--surface)}.trace-title-padded{padding:0 4px}.panel-header-flat{border-bottom:none}
+    .panel-copy{padding:0 4px 6px}.panel-copy-loose{padding:0 8px 8px}.panel-empty{padding:8px}.trace-block-spaced{margin-top:6px}.trace-block-spaced-large{margin-top:8px}.spacer-6{height:6px}
+    .flex-fill{flex:1}.inline-row{display:flex;align-items:center;gap:6px;padding:4px 0}.metric-row{display:flex;justify-content:space-between;font-size:11px;padding:2px 0;gap:8px}.pill-row-spaced{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
+    .prewrap-text{white-space:pre-wrap;color:var(--text)}.prewrap-muted{white-space:pre-wrap;color:var(--text-dim)}.top-spaced-small{margin-top:2px}.top-spaced{margin-top:4px}
+    .timed-progress-track{height:2px;margin-top:4px;background:rgba(255,176,80,.2);border-radius:1px}
+    .timed-progress-track.global{margin-top:0;border-radius:0}
+    .timed-progress-fill{height:100%;width:0;background:#ffb050;transition:width 1s linear;border-radius:1px}
+    .global-autonomy-banner{position:fixed;left:0;right:0;z-index:9998;background:rgba(255,176,80,.12);border-bottom:1px solid #ffb050;color:#ffb050;padding:0;font-size:11px;font-family:inherit;flex-direction:column}
+    .global-autonomy-row{display:flex;align-items:center;gap:8px;padding:4px 12px}
+    .global-autonomy-note{margin-left:auto;opacity:.7}
+    .autonomy-log-modal{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center}
+    .autonomy-log-dialog{background:var(--surface,#1e1e1e);color:var(--fg,#eee);width:min(900px,92vw);height:min(70vh,640px);border-radius:8px;padding:16px;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+    .autonomy-log-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+    .autonomy-log-subtitle{opacity:.6;font-weight:400;font-size:.85em}
+    .autonomy-log-body{flex:1;overflow:auto;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.4;background:#000;color:#0f0;padding:12px;border-radius:4px;margin:0;white-space:pre-wrap;word-break:break-all}
+    .autonomy-log-note{margin-top:8px;font-size:11px;opacity:.6}
+    .model-adaptive-badge,.model-profile-suggestion{margin-top:4px;font-size:11px;color:var(--text-dim)}.model-inline-link{color:var(--accent);font-size:11px}.model-personality-hint{margin-top:4px;font-size:11px;color:var(--text-dim)}
+    .empty-panel-copy{padding:16px;color:var(--text-dim);font-size:13px;text-align:center}.audit-row{margin:0}.audit-summary{font-size:11px;cursor:pointer;list-style:none}.audit-event-known{color:#50c878}.audit-event-muted{color:var(--text-dim)}.audit-json-wrap{position:relative}.audit-json-pre{font-size:9px;background:var(--surface2);padding:4px 8px;border-radius:4px;margin:2px 0 4px;white-space:pre-wrap;color:var(--text-dim)}.audit-copy-btn{position:absolute;top:4px;right:4px}
     .attached-files{max-width:800px;margin:0 auto 6px;display:none;flex-wrap:wrap;gap:4px}
     .attachment-hint{max-width:800px;margin:0 auto 6px;color:var(--text-dim);font-size:11px;line-height:1.4}
     .attach-btn{width:34px;height:44px;font-size:18px}
+    .attached-file-chip{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:12px;display:flex;align-items:center;gap:4px}.attachment-icon-btn{background:none;border:none;cursor:pointer;font-size:14px;padding:0;color:var(--text-dim)}.attachment-icon-btn.accent{color:var(--accent)}.attachment-icon-btn.danger{color:var(--error)}.attachment-icon-btn.text{color:var(--text);font-size:18px}
+    .pdf-stream-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:9999}.pdf-stream-dialog{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;width:80%;max-width:800px;max-height:80vh;display:flex;flex-direction:column;gap:8px}.pdf-stream-header{display:flex;justify-content:space-between;align-items:center}.pdf-stream-log{flex:1;overflow:auto;font-family:var(--mono);font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px}.pdf-stream-status{font-size:12px;color:var(--muted)}.pdf-stream-page-title{color:var(--accent);margin-top:6px}
+    .profile-feedback-spaced{margin-left:6px}.recovery-actions{display:flex;gap:6px;flex-shrink:0}
     .full-width-button{width:100%;margin-top:4px}
     .pull-progress{font-size:11px;color:var(--text-dim);margin-top:6px}
     .trace-list,.palace-grid{display:flex;flex-direction:column;gap:6px;margin-top:8px}
     .trace-item,.palace-room{background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:8px;font-size:12px}
     .trace-title,.palace-title{font-weight:700;color:var(--text);margin-bottom:3px}
     .trace-meta,.palace-meta{color:var(--text-dim);font-size:11px}
+    .mcp-hub{padding:10px}
+    .mcp-hub-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}
+    .mcp-hub-title{font-weight:700;color:var(--text);font-size:13px;margin-bottom:3px}
+    .mcp-hub-sub{color:var(--text-dim);font-size:11px;line-height:1.45}
+    .mcp-path-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:7px;margin:8px 0 10px}
+    .mcp-path{background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:8px;display:flex;flex-direction:column;gap:6px;min-width:0}
+    .mcp-path strong{display:block;color:var(--text);font-size:12px}
+    .mcp-path span{display:block;color:var(--text-dim);font-size:11px;line-height:1.35}
+    .mcp-section{border-top:1px solid var(--border);padding-top:8px;margin-top:8px}
+    .mcp-section summary{cursor:pointer;color:var(--text);font-size:12px;font-weight:600;list-style:none;-webkit-user-select:none;user-select:none}
+    .mcp-section summary::before{content:'▸';display:inline-block;margin-right:6px;color:var(--accent);font-size:10px;transition:transform .15s}
+    .mcp-section[open] summary::before{transform:rotate(90deg)}
+    .mcp-catalog-row{padding:8px 0;border-top:1px solid var(--border)}
+    .mcp-catalog-row:first-child{border-top:0}
+    .mcp-command-row{display:flex;gap:6px;align-items:center;margin-top:5px;min-width:0}
+    .mcp-command-row code{flex:1;background:var(--surface3);border:1px solid var(--border);border-radius:5px;padding:4px 6px;font-size:11px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
     .trace-detail,.palace-detail{background:var(--surface3);border:1px solid var(--border);border-radius:7px;margin-top:8px;padding:8px;font-size:11px;color:var(--text-dim);line-height:1.45;max-height:260px;overflow:auto}
     .trace-row{padding:6px 0;border-top:1px solid var(--border)}
     .trace-row:first-child{border-top:0}
@@ -110,6 +217,13 @@
     .rag-tree-name.is-file{color:var(--text-dim)}
     .rag-status{font-size:12px;color:var(--text-dim);min-height:18px}
     .rag-backend-badge{display:inline-block;background:var(--accent-bg);border:1px solid var(--accent);color:var(--accent);border-radius:4px;padding:2px 6px;font-size:11px}
+    .key-source-badge{font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px}.key-source-badge.env{color:var(--text-dim);background:var(--surface2)}.key-source-badge.stored{color:var(--accent);background:var(--accent-bg)}.key-signup-link{font-size:10px;color:var(--accent);margin-left:4px}.settings-warning-line{font-size:11px;color:var(--warning)}.folder-warning{margin-bottom:6px}
+    .trace-value-line{margin-top:2px;color:var(--text)}.full-compact-input{width:100%;margin-bottom:6px}.trace-item-subtle{background:var(--surface2)}.permission-status-row{margin:4px 0}.compact-action-row{margin-top:4px;margin-bottom:4px}.row-dimmed{opacity:.55}.btn-show-more{margin-top:4px;font-size:10px}.audit-filter-row{display:flex;gap:4px;margin-bottom:4px}.audit-filter-select{font-size:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px}.audit-search-input{font-size:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px;flex:1;min-width:80px}.audit-date-label{font-size:9px;white-space:nowrap}.audit-date-input{font-size:9px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:1px 4px}
+    .kill-switch-banner{position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(255,80,80,.18);border-bottom:1px solid #ff5050;color:#ff5050;padding:6px 12px;font-size:12px;display:flex;align-items:center;gap:10px;font-family:inherit}.kill-switch-shortcut{margin-left:auto;opacity:.8}.automation-runs-section{margin:6px 4px}.template-action-row{margin-top:4px;flex-wrap:wrap}.automation-job-form{margin-top:8px;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px}.automation-job-input{width:100%;padding:4px 6px;margin-bottom:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px}.automation-output-pre{background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:6px;margin:4px 0;font-size:11px;white-space:pre-wrap;max-height:200px;overflow-y:auto}
+    .workflow-runs-title{margin-top:12px;padding:0 4px}.info-text{color:#5bb0ff}.muted-text{color:#666}.shortcuts-modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:9999}.shortcuts-dialog{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:400px;width:90%}.shortcuts-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.shortcuts-header h3{margin:0}.shortcut-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)}.shortcut-key{background:var(--surface2);padding:2px 8px;border-radius:4px;font-size:12px;font-family:monospace;border:1px solid var(--border)}.shortcut-desc{color:var(--text-dim);font-size:12px}
+    .folder-preset-row{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;font-size:10px}.btn-folder-preset{font-size:10px;padding:2px 8px}.folder-current-row{display:flex;gap:6px;align-items:center;margin-bottom:6px;padding:4px 6px;background:var(--surface);border-radius:4px}.folder-current-path{font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.btn-folder-use{font-size:10px;padding:3px 8px}.folder-up-row{margin-bottom:4px}.btn-folder-up{font-size:11px}.folder-empty{font-size:11px;color:var(--text-dim);padding:6px}.folder-list{max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:4px}.folder-list-row{padding:4px 8px;cursor:pointer;font-size:11px;border-bottom:1px solid var(--border)}.folder-list-row:hover{background:var(--surface)}.folder-overflow-note{font-size:10px;color:var(--text-dim);margin-top:4px}
+    .redirect-env-warning{font-size:11px;padding:6px 8px;background:var(--surface2);border:1px solid var(--warning);border-radius:6px;margin-bottom:6px}.redirect-rule-row{display:flex;gap:6px;align-items:center;margin-bottom:4px}.redirect-match-input{flex:1;min-width:0}.redirect-target-input{flex:2;min-width:0}
+    .learning-shell{padding:4px 0}.panel-kicker{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin-bottom:8px}.panel-kicker.spaced{margin:8px 0}.learning-search-row{display:flex;gap:4px;margin-bottom:8px}.learning-search-input,.compact-panel-input,.compact-panel-select{flex:1;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;min-width:0}.learning-stat-line{font-size:12px;color:var(--text-dim);margin-bottom:8px}.learning-stat-line strong{color:var(--text)}.learning-section-block{margin-bottom:12px}.learning-pattern-card{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:4px;font-size:11px}.learning-reflection-card{font-size:11px;color:var(--text-dim);margin-bottom:6px;padding:6px;background:var(--surface2);border-radius:6px}.learning-prompt-pre{font-size:10px;background:var(--surface2);padding:6px;border-radius:6px;white-space:pre-wrap;color:var(--text-dim)}.sparkline{display:block;margin-top:4px}.candidate-prompt-preview{font-size:11px;color:var(--text);white-space:pre-wrap;margin-top:4px}
     .rag-preview{margin-top:6px}
     .rag-preview-body{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px}
     .rag-diagnostic{display:flex;gap:8px;align-items:flex-start;padding:4px 0;border-top:1px solid var(--border);font-size:12px}
@@ -150,6 +264,7 @@
     .beginner-guide{max-width:640px;margin:0 auto 18px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;text-align:left}
     .guide-item{background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:9px;font-size:12px;color:var(--text-dim);line-height:1.4}
     .guide-item strong{display:block;color:var(--text);margin-bottom:3px}
+    .guided-tour{margin-bottom:12px}.guide-step{display:flex;gap:8px;align-items:flex-start;margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:8px;border-left:3px solid var(--accent)}.guide-step.success{border-left-color:#50c878}.guide-step-icon{font-size:18px;line-height:1}
     .walkthrough-checklist{max-width:640px;margin:0 auto 14px;text-align:left;display:flex;flex-direction:column;gap:6px}
     .walkthrough-step{display:grid;grid-template-columns:22px 1fr auto;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:8px;font-size:12px;color:var(--text-dim)}
     .walkthrough-step.done{border-color:var(--success);background:rgba(76,175,80,.08)}
@@ -201,6 +316,9 @@
     .tool-item.error{background:#2a1e1e;border-color:#4a2e2e}
     .tool-name{color:var(--accent);font-weight:600}
     .tool-detail{color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:550px}
+    .tool-item-permission{align-items:center;justify-content:space-between;gap:10px;background:rgba(255,176,80,.1);border-color:#ffb050}
+    .tool-item-permission .tool-detail{white-space:normal;max-width:none;flex:1}
+    .tool-item-permission .btn-sm{flex:0 0 auto}
     .tool-item-diff{flex-direction:column;align-items:stretch;gap:4px}
     .tool-item-diff > span:first-child,.tool-item-diff .tool-name,.tool-item-diff .tool-detail{display:inline}
     .diff-block{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:6px 8px;margin-top:4px;font-family:'Cascadia Code','Fira Code',monospace;font-size:11px;line-height:1.4;overflow-x:auto;max-width:100%}
@@ -513,7 +631,7 @@
           <option value="">Loading models...</option>
         </select>
         <button class="btn-icon" id="compareBtn" onclick="toggleCompare()" title="Compare next reply with a second model side-by-side">⚖️</button>
-        <select class="model-select compare-select" id="compareModelSelect" title="Compare model" style="display:none">
+        <select class="model-select compare-select compare-select-hidden" id="compareModelSelect" title="Compare model">
           <option value="">Compare with...</option>
         </select>
       </div>
@@ -527,7 +645,7 @@
         <span class="meta-sep">·</span>
         <span class="session-hud-val" id="sessionHudTime">0s</span>
       </div>
-      <div class="session-hud" id="autonomyHud" title="Autonomy loop progress (.forge-state.json)" style="display:none;cursor:pointer;" onclick="toggleAutonomyLog()">
+      <div class="session-hud autonomy-hud-action hidden-by-default" id="autonomyHud" title="Autonomy loop progress (.forge-state.json)" onclick="toggleAutonomyLog()">
         <span>🤖 Autonomy</span>
         <span class="session-hud-val" id="autonomyHudTask">idle</span>
         <span class="meta-sep">·</span>
@@ -653,7 +771,7 @@
           onpaste="handleChatPaste(event)"></textarea>
         <button class="send-btn" id="sendBtn" onclick="sendMessage()" disabled>➤</button>
       </div>
-      <label class="attachment-hint" style="display:flex;align-items:center;gap:6px;margin-top:4px;cursor:pointer" title="Skip output validation just for the next message; the global setting is unchanged.">
+      <label class="attachment-hint attachment-validation-toggle" title="Skip output validation just for the next message; the global setting is unchanged.">
         <input type="checkbox" id="skipValidationOnce"> Skip validation for this turn
       </label>
     </div>
@@ -692,46 +810,46 @@
     </div>
     <div class="settings-section">
       <h4>Remote API Keys</h4>
-      <div class="setting-row" style="font-size:11px;color:var(--text-dim);margin-bottom:10px">
+      <div class="setting-row settings-note">
         Stored locally in <code>.harness/api-keys.json</code> (chmod 600). Env-var keys take precedence. Saving an empty value clears the stored key.
       </div>
       <div id="apiKeysList"></div>
-      <div class="setting-row" style="margin-top:10px">
+      <div class="setting-row settings-row-spaced">
         <button class="btn-sm primary" onclick="saveApiKeys()">💾 Save keys</button>
-        <span id="apiKeysStatus" style="margin-left:8px;font-size:11px;color:var(--text-dim)"></span>
+        <span id="apiKeysStatus" class="settings-status-inline"></span>
       </div>
     </div>
     <div class="settings-section">
       <h4>📁 Agent Files</h4>
-      <div class="setting-row" style="font-size:11px;color:var(--text-dim);margin-bottom:10px">
+      <div class="setting-row settings-note">
         Where the agent puts files it creates. Editing files that already exist is unaffected.
       </div>
-      <div class="setting-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
-        <input type="text" id="agentOutputDirInput" placeholder="C:/AI/Harness/agent-outputs (default)" style="flex:1;min-width:0">
+      <div class="setting-row settings-action-row">
+        <input type="text" id="agentOutputDirInput" placeholder="C:/AI/Harness/agent-outputs (default)" class="settings-flex-input">
         <button class="btn-sm" onclick="toggleAgentOutputDirBrowser()" title="Browse for a folder">🗂 Browse</button>
         <button class="btn-sm primary" onclick="saveAgentOutputDir()">💾 Save</button>
       </div>
-      <div id="agentOutputDirBrowser" style="display:none;margin-bottom:8px;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px"></div>
-      <div id="agentOutputDirStatus" style="font-size:11px;color:var(--text-dim);min-height:14px"></div>
+      <div id="agentOutputDirBrowser" class="settings-browser-panel hidden-by-default"></div>
+      <div id="agentOutputDirStatus" class="settings-status-line"></div>
 
-      <details style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px">
-        <summary style="cursor:pointer;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);-webkit-user-select:none;user-select:none">⚙ Advanced: pattern-based rules</summary>
-        <div style="margin-top:10px">
-          <div class="setting-row" style="font-size:11px;color:var(--text-dim);margin-bottom:10px">
+      <details class="advanced-settings">
+        <summary class="advanced-settings-summary">⚙ Advanced: pattern-based rules</summary>
+        <div class="advanced-settings-body">
+          <div class="setting-row settings-note">
             Optional. Override the folder above for files matching a pattern. <code>*</code> matches any chars except <code>/</code>, <code>**</code> matches across separators. First matching rule wins.
           </div>
           <div id="fileRedirectsList"></div>
-          <div class="setting-row" style="margin-top:10px;flex-wrap:wrap;gap:6px">
+          <div class="setting-row settings-action-wrap">
             <button class="btn-sm" onclick="addFileRedirectRow()">+ Add rule</button>
             <button class="btn-sm primary" onclick="saveFileRedirects()">💾 Save rules</button>
-            <span id="fileRedirectsStatus" style="margin-left:8px;font-size:11px;color:var(--text-dim)"></span>
+            <span id="fileRedirectsStatus" class="settings-status-inline"></span>
           </div>
-          <div class="setting-row" style="margin-top:10px;display:flex;gap:6px;align-items:center">
-            <input type="text" id="fileRedirectsPreviewInput" placeholder="Preview a path, e.g. lottery-foo.js" style="flex:1;min-width:0">
+          <div class="setting-row settings-preview-row">
+            <input type="text" id="fileRedirectsPreviewInput" placeholder="Preview a path, e.g. lottery-foo.js" class="settings-flex-input">
             <button class="btn-sm" onclick="previewFileRedirects()">🔍 Preview</button>
           </div>
-          <div id="fileRedirectsPreviewResult" style="margin-top:6px;font-size:11px;color:var(--text-dim)"></div>
-          <div class="setting-row" style="margin-top:6px;font-size:11px;color:var(--text-dim)">
+          <div id="fileRedirectsPreviewResult" class="settings-preview-result"></div>
+          <div class="setting-row settings-example-row">
             Example: <code>{ "match": "lottery-*", "redirect": "C:/AI/Lottery-Toolkit/inbox" }</code>
           </div>
         </div>
@@ -739,18 +857,18 @@
     </div>
     <div class="settings-section">
       <h4>📱 Telegram Bot</h4>
-      <div class="setting-row" style="font-size:11px;color:var(--text-dim);margin-bottom:10px">
-        Talk to Oracle from your phone via Telegram. Create a bot with <a href="https://t.me/BotFather" target="_blank">@BotFather</a> and paste the token below.
+      <div class="setting-row settings-note">
+        Talk to Oracle from your phone via Telegram. Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> and paste the token below.
       </div>
-      <div class="setting-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
-        <input type="password" id="telegramTokenInput" placeholder="Bot token from @BotFather" style="flex:1;min-width:0">
+      <div class="setting-row settings-action-row">
+        <input type="password" id="telegramTokenInput" placeholder="Bot token from @BotFather" class="settings-flex-input">
         <button class="btn-sm primary" onclick="saveTelegramToken()">Connect</button>
         <button class="btn-sm" onclick="stopTelegram()">Stop</button>
       </div>
-      <div class="setting-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
-        <input type="text" id="telegramChatIdsInput" placeholder="Allowed chat IDs (comma-separated, empty = any)" style="flex:1;min-width:0">
+      <div class="setting-row settings-action-row">
+        <input type="text" id="telegramChatIdsInput" placeholder="Allowed chat IDs (comma-separated, empty = any)" class="settings-flex-input">
       </div>
-      <div id="telegramStatus" style="font-size:11px;color:var(--text-dim);min-height:14px">Loading...</div>
+      <div id="telegramStatus" class="settings-status-line">Loading...</div>
     </div>
     <div class="settings-section">
       <h4>Generation</h4>
@@ -835,7 +953,7 @@
     <div class="settings-section">
       <h4>Media Tools</h4>
       <div class="setting-row">
-        <label>Vision model</label>
+        <label>Vision model <span id="visionModelStatus" class="vision-status">checking</span></label>
         <input type="text" id="visionModel" placeholder="llava or qwen2-vl" onchange="updateMediaToolSetting('visionModel',this.value)" />
       </div>
       <div class="setting-row">
@@ -1018,7 +1136,7 @@
       </div>
       <div class="setting-row">
         <label>Avatar</label>
-        <div style="display:flex;flex-wrap:wrap;gap:4px" id="avatarPicker">
+        <div class="picker-grid" id="avatarPicker">
           <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🤖')">🤖</button>
           <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🧠')">🧠</button>
           <button class="btn-sm avatar-pick" onclick="setAgentAvatar('⚡')">⚡</button>
@@ -1035,20 +1153,20 @@
       </div>
       <div class="setting-row">
         <label>Accent color</label>
-        <div style="display:flex;flex-wrap:wrap;gap:4px" id="accentPicker">
-          <button class="btn-sm accent-pick" onclick="setAccentColor('#7c5cff')" style="background:#7c5cff;width:24px;height:24px;border-radius:50%;border:2px solid var(--border)"></button>
-          <button class="btn-sm accent-pick" onclick="setAccentColor('#3b82f6')" style="background:#3b82f6;width:24px;height:24px;border-radius:50%;border:2px solid var(--border)"></button>
-          <button class="btn-sm accent-pick" onclick="setAccentColor('#10b981')" style="background:#10b981;width:24px;height:24px;border-radius:50%;border:2px solid var(--border)"></button>
-          <button class="btn-sm accent-pick" onclick="setAccentColor('#f59e0b')" style="background:#f59e0b;width:24px;height:24px;border-radius:50%;border:2px solid var(--border)"></button>
-          <button class="btn-sm accent-pick" onclick="setAccentColor('#ef4444')" style="background:#ef4444;width:24px;height:24px;border-radius:50%;border:2px solid var(--border)"></button>
-          <button class="btn-sm accent-pick" onclick="setAccentColor('#ec4899')" style="background:#ec4899;width:24px;height:24px;border-radius:50%;border:2px solid var(--border)"></button>
-          <button class="btn-sm accent-pick" onclick="setAccentColor('#8b5cf6')" style="background:#8b5cf6;width:24px;height:24px;border-radius:50%;border:2px solid var(--border)"></button>
-          <button class="btn-sm accent-pick" onclick="setAccentColor('#06b6d4')" style="background:#06b6d4;width:24px;height:24px;border-radius:50%;border:2px solid var(--border)"></button>
+        <div class="picker-grid" id="accentPicker">
+          <button class="btn-sm accent-pick accent-purple" onclick="setAccentColor('#7c5cff')" title="Purple accent" aria-label="Purple accent"></button>
+          <button class="btn-sm accent-pick accent-blue" onclick="setAccentColor('#3b82f6')" title="Blue accent" aria-label="Blue accent"></button>
+          <button class="btn-sm accent-pick accent-green" onclick="setAccentColor('#10b981')" title="Green accent" aria-label="Green accent"></button>
+          <button class="btn-sm accent-pick accent-amber" onclick="setAccentColor('#f59e0b')" title="Amber accent" aria-label="Amber accent"></button>
+          <button class="btn-sm accent-pick accent-red" onclick="setAccentColor('#ef4444')" title="Red accent" aria-label="Red accent"></button>
+          <button class="btn-sm accent-pick accent-pink" onclick="setAccentColor('#ec4899')" title="Pink accent" aria-label="Pink accent"></button>
+          <button class="btn-sm accent-pick accent-violet" onclick="setAccentColor('#8b5cf6')" title="Violet accent" aria-label="Violet accent"></button>
+          <button class="btn-sm accent-pick accent-cyan" onclick="setAccentColor('#06b6d4')" title="Cyan accent" aria-label="Cyan accent"></button>
         </div>
       </div>
       <div class="setting-row">
         <label>Personality</label>
-        <select id="personalityPreset" onchange="applyPersonalityPreset(this.value)">
+        <select id="personalityPreset" title="Personality preset" onchange="applyPersonalityPreset(this.value)">
           <option value="">None (default assistant)</option>
           <option value="professional">Professional — precise, formal, structured</option>
           <option value="friendly">Friendly — warm, encouraging, uses examples</option>
@@ -1062,14 +1180,14 @@
       <div class="setting-row">
         <textarea id="personalityText" rows="3" placeholder="Describe your agent's personality, voice, and tone..." onchange="updateSetting('agentPersonality',this.value)"></textarea>
       </div>
-      <div class="setting-row" style="display:flex;gap:6px;flex-wrap:wrap">
+      <div class="setting-row profile-action-row">
         <button class="btn-sm" onclick="saveAgentProfile()">💾 Save profile</button>
-        <select id="profileSelect" onchange="loadAgentProfile(this.value)" style="flex:1;min-width:120px;padding:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px">
+        <select id="profileSelect" title="Saved profile" onchange="loadAgentProfile(this.value)" class="profile-select-inline">
           <option value="">Load saved profile...</option>
         </select>
         <button class="btn-sm danger" onclick="deleteAgentProfile()">🗑</button>
       </div>
-      <div class="setting-row" style="display:flex;gap:6px">
+      <div class="setting-row profile-import-export-row">
         <button class="btn-sm" onclick="exportAgentProfiles()">📥 Export profiles</button>
         <button class="btn-sm" onclick="document.getElementById('profileImportFile').click()">📤 Import profiles</button>
         <input type="file" id="profileImportFile" accept=".json" class="initial-hidden" onchange="importAgentProfiles(this.files)">
@@ -1090,12 +1208,12 @@
     </div>
     <div class="settings-section">
       <h4>Safety Mode</h4>
-      <button class="btn-sm full-width-button" style="margin-bottom:4px;background:rgba(80,200,120,.15);border-color:#50c878;color:#50c878" onclick="enableFullAutonomy()">⚡ Full Autonomy — unlock everything</button>
-      <button class="btn-sm full-width-button" style="margin-bottom:8px;background:rgba(255,176,80,.15);border-color:#ffb050;color:#ffb050" onclick="enableTimedAutonomy()">⏱ Timed Autonomy — unlock with time limit</button>
-      <div id="timedAutonomyBanner" style="display:none;margin-bottom:8px;padding:8px 10px;background:rgba(255,176,80,.1);border:1px solid #ffb050;border-radius:6px;font-size:12px;color:#ffb050"></div>
+      <button class="btn-sm full-width-button full-autonomy-button" onclick="enableFullAutonomy()">⚡ Full Autonomy — unlock everything</button>
+      <button class="btn-sm full-width-button timed-autonomy-button" onclick="enableTimedAutonomy()">⏱ Timed Autonomy — unlock with time limit</button>
+      <div id="timedAutonomyBanner" class="timed-autonomy-banner hidden-by-default"></div>
       <div class="mode-opt permission-mode-option active" onclick="setMode('dontAsk',this)">
         <div class="mode-t">🟢 Auto-approve all</div>
-        <div class="mode-d">Tools run without asking. All gated capabilities auto-grant.</div>
+        <div class="mode-d">Tools run without asking. Verifier/recovery gates are bypassed.</div>
       </div>
       <div class="mode-opt permission-mode-option" onclick="setMode('acceptEdits',this)">
         <div class="mode-t">🟡 Ask for commands</div>
@@ -1118,14 +1236,14 @@
   </div>
 </div>
 
-<div id="autonomyLogModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;align-items:center;justify-content:center;" onclick="if(event.target===this)toggleAutonomyLog()">
-  <div style="background:var(--surface,#1e1e1e);color:var(--fg,#eee);width:min(900px,92vw);height:min(70vh,640px);border-radius:8px;padding:16px;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.4);">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-      <strong>Autonomy log <span style="opacity:0.6;font-weight:normal;font-size:0.85em;">(.forge-run.log)</span></strong>
+<div id="autonomyLogModal" class="autonomy-log-modal hidden-by-default" onclick="if(event.target===this)toggleAutonomyLog()">
+  <div class="autonomy-log-dialog">
+    <div class="autonomy-log-header">
+      <strong>Autonomy log <span class="autonomy-log-subtitle">(.forge-run.log)</span></strong>
       <button class="btn-icon" onclick="toggleAutonomyLog()" title="Close">✕</button>
     </div>
-    <pre id="autonomyLogBody" style="flex:1;overflow:auto;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.4;background:#000;color:#0f0;padding:12px;border-radius:4px;margin:0;white-space:pre-wrap;word-break:break-all;">Loading…</pre>
-    <div style="margin-top:8px;font-size:11px;opacity:0.6;">Auto-refreshes while open. Click outside or press ✕ to close.</div>
+    <pre id="autonomyLogBody" class="autonomy-log-body">Loading…</pre>
+    <div class="autonomy-log-note">Auto-refreshes while open. Click outside or press ✕ to close.</div>
   </div>
 </div>
 
