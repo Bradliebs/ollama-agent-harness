@@ -63,6 +63,9 @@ import { getServiceLifecycle, initServiceLifecycle, transitionService, probeServ
 import { appendEvent, emitEvent, queryEvents, summarizeEventStore, generatePostmortem, createSnapshot, getSnapshot, listSnapshots, type EventCategory } from '../persistence/eventStore';
 import { subscribeEventStream } from '../persistence/eventStore';
 import { verifyCode, verifyService, verifyPromiseFulfillability } from '../core/doneStateVerifier';
+import { tryDeterministicShortcut } from '../core/deterministicShortcuts';
+import { calculateReadiness, type ReadinessInput } from '../core/readinessGate';
+import { validateStructuredOutput, detectSchema, BUILTIN_SCHEMAS } from '../core/structuredOutputValidator';
 import { buildRepoGraph, analyzeImpact, summarizeRepo, saveRepoGraph, loadRepoGraph } from '../core/codeIntelligence';
 import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
 import { heuristicVerifier } from '../mycelium/verifier';
@@ -3258,6 +3261,26 @@ app.post('/api/chat', async (req, res) => {
   }
 
   refreshCapabilityRegistry();
+
+  // Tier 0: Deterministic shortcut — bypass model entirely for simple computations.
+  if (messageText) {
+    const shortcut = tryDeterministicShortcut(messageText);
+    if (shortcut.handled) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.flushHeaders();
+      const answer = typeof shortcut.output === 'string' ? shortcut.output : JSON.stringify(shortcut.output, null, 2);
+      const response = `${answer}\n\n*${shortcut.explanation}*`;
+      res.write(`data: ${JSON.stringify({ type: 'text', content: response })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: 'done', reason: 'deterministic_shortcut' })}\n\n`);
+      emitEvent(PROJECT_DIR, 'system', 'deterministic_shortcut', { type: shortcut.type, input: messageText.slice(0, 100) }, 'system').catch(() => {});
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
+  }
+
   const operateResult = messageText ? await handleOperateModeRequest(PROJECT_DIR, messageText, undefined, {
     checkCapabilities: (required) => capabilityRegistry.formatLimitations(required as any[]),
   }) : null;
@@ -3678,6 +3701,19 @@ TOOL FALLBACK RULES:
           output_summary: summarizeForEvidence(event.result?.output)?.slice(0, 200),
           session_id: session.getSessionId(),
         }, 'agent', session.getSessionId()).catch(() => {});
+        // Schema validation: validate tool call arguments against matching schema.
+        const toolSchema = detectSchema({ toolName: event.call.name });
+        if (toolSchema && event.call.input && typeof event.call.input === 'object') {
+          const schemaResult = validateStructuredOutput(event.call.input as Record<string, unknown>, toolSchema);
+          if (!schemaResult.valid) {
+            emitEvent(PROJECT_DIR, 'tool', 'schema_validation_failed', {
+              tool: event.call.name,
+              schema: schemaResult.schema_id,
+              errors: schemaResult.errors.slice(0, 5),
+              score: schemaResult.score,
+            }, 'agent', session.getSessionId()).catch(() => {});
+          }
+        }
       }
       if (event.type === 'output_validation') {
         lastValidation = event.validation;
@@ -3949,6 +3985,16 @@ TOOL FALLBACK RULES:
     done_reason: doneReason,
     has_output: assistantTextBuffer.trim().length > 0,
   }, 'agent', session.getSessionId()).catch(() => {});
+
+  // Execution Readiness Gate: compute and emit readiness score for this turn.
+  const readinessInput: ReadinessInput = {
+    model_confidence: lastValidationScore !== undefined ? lastValidationScore : undefined,
+    verifier_score: typeof nsPainMultiplier === 'number' ? Math.max(0, 1 - (1 - nsPainMultiplier)) : undefined,
+    risk_score: myceliumClassification?.highRisk ? 0.8 : 0.2,
+    tool_reliability: toolCallCount > 0 ? toolSuccessCount / toolCallCount : undefined,
+  };
+  const readiness = calculateReadiness(readinessInput);
+  res.write(`data: ${JSON.stringify({ type: 'readiness', score: readiness.score, decision: readiness.decision, components: readiness.components, reasons: readiness.reasons })}\n\n`);
 
   res.write('data: [DONE]\n\n');
   res.end();
