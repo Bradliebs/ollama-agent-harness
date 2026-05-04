@@ -7,6 +7,7 @@ import { PdfReadTool } from '../tools/pdfTool';
 import { createBuiltinToolRegistry } from '../tools/registry';
 import { OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiKey } from '../core/chatClientFactory';
 import { FALLBACK_COOLDOWN_MS } from '../core/fallbackChatClient';
+import { loadSynthesisStats, adaptiveMaxTurns } from '../core/synthesisStats';
 
 export interface SetupHealthInput {
   host: string;
@@ -66,6 +67,8 @@ export interface SetupHealthResult {
   backends: BackendHealthCheck[];
   /** Fallback routing configuration for remote providers. */
   fallback: FallbackRoutingConfig;
+  /** Per-model synthesis turn statistics (optional, populated when stats file exists). */
+  synthesisStats?: Record<string, { fired: number; total: number; adaptiveMaxTurns: number }>;
 }
 
 export interface FallbackRoutingConfig {
@@ -85,6 +88,11 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
   const local = await checkLocalHealth(input.projectDir ?? process.cwd());
   const backends = checkBackendAuth();
   const fallback = checkFallbackConfig(backends);
+  const rawStats = await loadSynthesisStats(input.projectDir ?? process.cwd());
+  const synthesisStats: Record<string, { fired: number; total: number; adaptiveMaxTurns: number }> = {};
+  for (const [model, record] of Object.entries(rawStats)) {
+    synthesisStats[model] = { ...record, adaptiveMaxTurns: adaptiveMaxTurns(rawStats, model, 25) };
+  }
   try {
     const response = await new Ollama({ host: input.host }).list();
     const modelNames = response.models.map((model) => model.name);
@@ -108,6 +116,7 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
       local,
       backends,
       fallback,
+      ...(Object.keys(synthesisStats).length > 0 ? { synthesisStats } : {}),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -119,6 +128,7 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
       local,
       backends,
       fallback,
+      ...(Object.keys(synthesisStats).length > 0 ? { synthesisStats } : {}),
     };
   }
 }

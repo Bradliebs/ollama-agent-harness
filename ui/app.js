@@ -624,6 +624,20 @@ function renderModelCapabilityHint() {
   ].join('');
   const notes = (capabilities.notes || []).slice(0, 2).map(esc).join(' ');
   hint.innerHTML = '<strong>' + esc(model.name) + '</strong><div>' + pills + '</div><div>' + esc(notes || 'Harness detected a text chat model. Attachments are still available as local file paths for tools and analysis.') + '</div>' + getModelProfileSuggestion(model.name);
+  // Fetch synthesis stats and show adaptive turns badge if different from default.
+  fetch('/api/synthesis-stats').then(r => r.json()).then(data => {
+    if (!data.stats) return;
+    const record = data.stats[model.name];
+    if (!record) return;
+    const adaptive = record.adaptiveMaxTurns || data.defaultMaxTurns;
+    const def = data.defaultMaxTurns || 25;
+    if (adaptive > def) {
+      const badge = document.createElement('div');
+      badge.style.cssText = 'margin-top:4px;font-size:11px;color:var(--text-dim)';
+      badge.textContent = '🔄 Adaptive: ' + adaptive + ' turns (default ' + def + ') — synthesis fired ' + (record.fired || 0) + '/' + (record.total || 0) + ' sessions';
+      hint.appendChild(badge);
+    }
+  }).catch(() => {});
   renderAttachmentHint();
 }
 

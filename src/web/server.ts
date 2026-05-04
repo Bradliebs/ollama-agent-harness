@@ -1046,6 +1046,20 @@ app.get('/api/settings', async (_req, res) => {
   }
 });
 
+app.get('/api/synthesis-stats', async (_req, res) => {
+  try {
+    const stats = await loadSynthesisStats(PROJECT_DIR);
+    const withAdaptive: Record<string, unknown> = {};
+    for (const [model, record] of Object.entries(stats)) {
+      withAdaptive[model] = { ...record, adaptiveMaxTurns: adaptiveMaxTurns(stats, model, 25) };
+    }
+    res.json({ stats: withAdaptive, defaultMaxTurns: 25 });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
 app.post('/api/settings', async (req, res) => {
   await ensureSettingsLoaded();
   if (req.body.model !== undefined) currentModel = sanitizeModelName(req.body.model);

@@ -298,6 +298,14 @@ export function formatSetupHealth(result: SetupHealthResult): string {
       : 'disabled (HARNESS_REMOTE_AUTO_FALLBACK=0)';
     lines.push(formatHealthLine('Fallback', f.enabled && f.configuredCount > 1, `Provider fallback ${status}.`));
   }
+  if (result.synthesisStats && Object.keys(result.synthesisStats).length > 0) {
+    lines.push('Synthesis turn stats:');
+    for (const [model, record] of Object.entries(result.synthesisStats)) {
+      const ratio = record.total > 0 ? Math.round((record.fired / record.total) * 100) : 0;
+      const adaptive = record.adaptiveMaxTurns !== 25 ? ` (adaptive: ${record.adaptiveMaxTurns} turns)` : '';
+      lines.push(`  ${model}: ${record.fired}/${record.total} sessions (${ratio}%)${adaptive}`);
+    }
+  }
   return lines.join('\n');
 }
 
