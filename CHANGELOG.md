@@ -11,6 +11,29 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.17
+
+Tool failure resilience, browser fallback guidance, and server watchdog.
+
+### Resilience
+
+* Repeated tool failures (HTTP 429/403) now warn the model instead of killing the loop.
+* Model gets a system message to try alternative tools or different sites.
+* Failure counter resets after warning so the model can continue with other URLs.
+
+### System prompt
+
+* Added TOOL FALLBACK RULES: model told to use `browser_navigate` for blocked sites.
+* Model explicitly told not to retry rate-limited URLs.
+
+### Server
+
+* Added `start-watchdog.bat` — auto-restarts server on crash, cleans stale locks.
+
+### Stats
+
+* Synthesis stats tracking live: `kimi-k2.5:cloud` at 0/3 synthesis fires (autonomy prompt working).
+
 ## Ollama Agent Harness v0.3.16
 
 Mycelium-integrated autonomy with risk-aware auto-continue.
