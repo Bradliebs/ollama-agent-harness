@@ -598,6 +598,32 @@ describe('queryLoop runtime behavior', () => {
       expect(events.find((e) => e.type === 'auto_continue')).toBeUndefined();
       expect(events.find((e) => e.type === 'done')).toMatchObject({ reason: 'completed' });
     });
+
+    it('does not auto-continue on high-risk task types', async () => {
+      const client = makeClient([
+        { role: 'assistant', content: 'I found the account. Would you like me to execute the trade now?' },
+      ]);
+
+      const events = await collectEvents(client, [], {
+        config: { maxTurns: 10, autoContinue: true, taskType: 'financial_execution' },
+      });
+
+      expect(events.find((e) => e.type === 'auto_continue')).toBeUndefined();
+      expect(events.find((e) => e.type === 'done')).toMatchObject({ reason: 'completed' });
+    });
+
+    it('auto-continues on safe task types like financial_analysis', async () => {
+      const client = makeClient([
+        { role: 'assistant', content: 'Sales data loaded. Would you like me to analyze the profit margins too?' },
+        { role: 'assistant', content: 'Full analysis complete. Revenue: £45k, costs: £32k, net: £13k.' },
+      ]);
+
+      const events = await collectEvents(client, [], {
+        config: { maxTurns: 10, autoContinue: true, taskType: 'financial_analysis' },
+      });
+
+      expect(events.find((e) => e.type === 'auto_continue')).toBeDefined();
+    });
   });
 
   describe('detectPartialResult', () => {

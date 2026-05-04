@@ -44,6 +44,12 @@ export interface LoopConfig {
   autoContinue?: boolean;
   /** Max number of auto-continues before forcing a stop. Default 5. */
   autoContinueLimit?: number;
+  /**
+   * Mycelium task type classification. When set, auto-continue uses this
+   * to gate behavior: high-risk tasks (financial_execution, safety_critical,
+   * medical, legal) disable auto-continue to force human confirmation.
+   */
+  taskType?: string;
 }
 
 export type LoopEvent =

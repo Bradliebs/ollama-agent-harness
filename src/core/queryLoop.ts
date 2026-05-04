@@ -177,19 +177,22 @@ export async function* queryLoop(
 
     // Stop condition: text-only response (no tool calls)
     if (!assistantMessage.tool_calls?.length) {
-      // Auto-continue: if enabled and the text looks like a partial result
-      // with suggestions, inject a "continue" message instead of stopping.
-      if (config.autoContinue && autoContinueCount < autoContinueLimit && turn < maxTurns) {
+      // Auto-continue: if enabled, the text looks like a partial result,
+      // AND the task type is not high-risk (where human confirmation is required).
+      const HIGH_RISK_TASKS = new Set(['safety_critical', 'financial_execution', 'medical', 'legal']);
+      const isHighRisk = config.taskType ? HIGH_RISK_TASKS.has(config.taskType) : false;
+
+      if (config.autoContinue && !isHighRisk && autoContinueCount < autoContinueLimit && turn < maxTurns) {
         const text = assistantMessage.content ?? '';
         const reason = detectPartialResult(text);
         if (reason) {
           autoContinueCount++;
           yield { type: 'text', content: text };
           yield { type: 'auto_continue', turn, continuationCount: autoContinueCount, reason };
-          tracer?.recordEvent('auto_continue', { turn, count: autoContinueCount, reason });
+          tracer?.recordEvent('auto_continue', { turn, count: autoContinueCount, reason, taskType: config.taskType });
           messages.push({
             role: 'user',
-            content: 'Continue with all suggestions. Do not stop to ask — complete everything autonomously.',
+            content: 'Continue with all suggestions. Do not stop to ask — complete everything autonomously. Read all relevant files, do all analysis steps, and provide a comprehensive final result.',
           } as Message);
           if (session) {
             await appendSession(session, 'user_message', {

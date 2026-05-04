@@ -3126,6 +3126,7 @@ AUTONOMY RULES (critical):
       customProfiles: customOutputValidationProfiles,
     },
     autoContinue: true,
+    taskType: myceliumClassification?.type,
   };
 
   const keepAlive = setInterval(() => {
