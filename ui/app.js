@@ -2473,6 +2473,12 @@ async function sendMessage(opts) {
                 false);
             }
             break;
+          case 'escalation_advisory':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '🔴', 'escalation suggested',
+              'Readiness ' + Math.round(ev.readinessScore * 100) + '% — try ' + esc(ev.suggestedModel) + ' for better results',
+              false);
+            break;
           case 'synthesis_fired':
             toolBox = ensureToolBox(toolBox);
             appendToolItem(toolBox, '🔄', 'synthesis turn', 'model exhausted ' + ev.maxTurns + ' tool turns (' + ev.toolCallsTotal + ' calls) — forcing text summary', false);

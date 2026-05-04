@@ -11,6 +11,22 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.24
+
+Small Model Autopilot — deterministic shortcuts, readiness gate, structured output validation.
+
+### Small Model Autopilot
+
+* **Deterministic Shortcuts (Tier 0)** — date calculation, math/statistics, JSON parse, sorting, regex extraction, unit conversion, percentage, countdown, word count, base conversion bypass model calls entirely.
+* **Execution Readiness Gate** — weighted score (confidence × schema × verifier × ambiguity × risk × reliability) drives execute/verify/escalate decisions.
+* **Structured Output Validator** — 8 built-in schemas (tool_call, service_command, code_edit, planning_output, analysis_result, file_write, bash, web_search) with type checking and custom rules.
+* **Readiness-driven escalation** — when readiness < 0.60, UI shows escalation advisory suggesting a stronger model.
+* **Output text schema validation** — JSON blocks in assistant text validated against task-appropriate schemas.
+* **3 new nervous system reflexes** — small_model_first, small_model_failure_escalation, deterministic_shortcut.
+* **Bash command safety** — schema detects rm -rf /, format c:, fork bombs before execution.
+* **Shortcut hit rate** tracked in /api/subsystems/health with per-type breakdown.
+* **Readiness badge** shown in chat tool box after each turn.
+
 ## Ollama Agent Harness v0.3.23
 
 UX polish, live monitoring, and subsystem health visibility.

@@ -65,7 +65,7 @@ import { subscribeEventStream } from '../persistence/eventStore';
 import { verifyCode, verifyService, verifyPromiseFulfillability } from '../core/doneStateVerifier';
 import { tryDeterministicShortcut } from '../core/deterministicShortcuts';
 import { calculateReadiness, type ReadinessInput } from '../core/readinessGate';
-import { validateStructuredOutput, detectSchema, BUILTIN_SCHEMAS } from '../core/structuredOutputValidator';
+import { validateStructuredOutput, parseAndValidate, detectSchema, BUILTIN_SCHEMAS } from '../core/structuredOutputValidator';
 import { buildRepoGraph, analyzeImpact, summarizeRepo, saveRepoGraph, loadRepoGraph } from '../core/codeIntelligence';
 import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
 import { heuristicVerifier } from '../mycelium/verifier';
@@ -3989,6 +3989,23 @@ TOOL FALLBACK RULES:
     }
   }
 
+  // Schema validation: validate JSON blocks in assistant output text.
+  if (assistantTextBuffer.includes('```json') || assistantTextBuffer.includes('```{')) {
+    const taskType = myceliumClassification?.type;
+    const textSchema = detectSchema({ taskType: taskType === 'coding' ? 'plan' : taskType === 'research' ? 'review' : undefined });
+    if (textSchema) {
+      const { validation } = parseAndValidate(assistantTextBuffer, textSchema);
+      if (!validation.valid) {
+        emitEvent(PROJECT_DIR, 'system', 'output_schema_validation_failed', {
+          schema: validation.schema_id,
+          errors: validation.errors.slice(0, 5),
+          score: validation.score,
+          session_id: session.getSessionId(),
+        }, 'agent', session.getSessionId()).catch(() => {});
+      }
+    }
+  }
+
   // Event store: record chat turn completion.
   emitEvent(PROJECT_DIR, 'system', 'chat_turn_completed', {
     session_id: session.getSessionId(),
@@ -4008,6 +4025,23 @@ TOOL FALLBACK RULES:
   };
   const readiness = calculateReadiness(readinessInput);
   res.write(`data: ${JSON.stringify({ type: 'readiness', score: readiness.score, decision: readiness.decision, components: readiness.components, reasons: readiness.reasons })}\n\n`);
+
+  // Readiness-driven escalation: when score is low, suggest model upgrade for next turn.
+  if (readiness.decision === 'escalate' && activeModel) {
+    const modelBackend = activeModel.includes('/') ? activeModel.slice(0, activeModel.indexOf('/')) : 'ollama';
+    if (modelBackend === 'ollama' || !activeModel.includes('cloud')) {
+      // Find a stronger configured backend
+      const strongBackends = ['anthropic', 'openai', 'github'].filter((b) => {
+        const preset = OPENAI_COMPATIBLE_PRESETS[b];
+        return preset && readApiKey(preset);
+      });
+      if (strongBackends.length > 0) {
+        const suggested = `${strongBackends[0]}/${OPENAI_COMPATIBLE_PRESETS[strongBackends[0]].defaultModel}`;
+        res.write(`data: ${JSON.stringify({ type: 'escalation_advisory', currentModel: activeModel, suggestedModel: suggested, readinessScore: readiness.score, reason: 'Readiness score below threshold. Consider switching to a stronger model.' })}\n\n`);
+        emitEvent(PROJECT_DIR, 'model', 'escalation_suggested', { current: activeModel, suggested, readiness_score: readiness.score }, 'system').catch(() => {});
+      }
+    }
+  }
 
   res.write('data: [DONE]\n\n');
   res.end();

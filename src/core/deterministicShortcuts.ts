@@ -194,6 +194,89 @@ const SHORTCUT_PATTERNS: ShortcutPattern[] = [
       return { result, from: `${value} ${m[2]}`, to: `${result} ${m[3]}`, formula: `${from} → ${to}` };
     },
   },
+
+  // ── Percentage calculation ────────────────────────────────────
+  {
+    type: 'percentage',
+    match: (input) => /(?:what\s+is\s+)?\d+\.?\d*\s*%\s+of\s+\d+/i.test(input)
+      || /\d+\s+(?:out\s+of|\/)\s+\d+\s+(?:as\s+)?(?:a\s+)?percent/i.test(input),
+    execute: (input) => {
+      // "X% of Y"
+      const pctOf = input.match(/(\d+\.?\d*)\s*%\s+of\s+(\d+\.?\d*)/i);
+      if (pctOf) {
+        const result = (parseFloat(pctOf[1]) / 100) * parseFloat(pctOf[2]);
+        return { result: Math.round(result * 100) / 100, calculation: `${pctOf[1]}% of ${pctOf[2]}` };
+      }
+      // "X out of Y as percent"
+      const outOf = input.match(/(\d+\.?\d*)\s+(?:out\s+of|\/)\s+(\d+\.?\d*)/i);
+      if (outOf) {
+        const result = (parseFloat(outOf[1]) / parseFloat(outOf[2])) * 100;
+        return { result: Math.round(result * 100) / 100, unit: '%', calculation: `${outOf[1]} / ${outOf[2]}` };
+      }
+      return null;
+    },
+  },
+
+  // ── Countdown / time until ────────────────────────────────────
+  {
+    type: 'countdown',
+    match: (input) => /(?:how\s+(?:long|many\s+days)\s+until|countdown\s+to|days?\s+(?:left|remaining)\s+(?:until|to))\s+\d{4}/i.test(input),
+    execute: (input) => {
+      const dateMatch = input.match(/(\d{4}-\d{2}-\d{2})/);
+      if (!dateMatch) {
+        // Try "Month Day, Year"
+        const naturalMatch = input.match(/(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(\d{4})/i);
+        if (!naturalMatch) return null;
+        const months: Record<string, number> = { january: 0, february: 1, march: 2, april: 3, may: 4, june: 5, july: 6, august: 7, september: 8, october: 9, november: 10, december: 11 };
+        const target = new Date(parseInt(naturalMatch[3]), months[naturalMatch[1].toLowerCase()], parseInt(naturalMatch[2]));
+        const days = Math.ceil((target.getTime() - Date.now()) / 86_400_000);
+        return { days, target: target.toISOString().slice(0, 10), direction: days >= 0 ? 'future' : 'past' };
+      }
+      const target = new Date(dateMatch[1]);
+      const days = Math.ceil((target.getTime() - Date.now()) / 86_400_000);
+      return { days, target: dateMatch[1], direction: days >= 0 ? 'future' : 'past' };
+    },
+  },
+
+  // ── Word/character count ──────────────────────────────────────
+  {
+    type: 'word_count',
+    match: (input) => /(?:count|how many)\s+(?:words?|characters?|chars?|lines?)\s+(?:in|:)/i.test(input),
+    execute: (input) => {
+      // Extract the text after "in:" or "in "
+      const textMatch = input.match(/(?:in|:)\s*["']?([\s\S]+?)["']?\s*$/i);
+      if (!textMatch) return null;
+      const text = textMatch[1].trim();
+      return {
+        characters: text.length,
+        words: text.split(/\s+/).filter(Boolean).length,
+        lines: text.split('\n').length,
+      };
+    },
+  },
+
+  // ── Base conversion ───────────────────────────────────────────
+  {
+    type: 'base_conversion',
+    match: (input) => /(?:convert|what\s+is)\s+(?:0x[0-9a-f]+|0b[01]+|\d+)\s+(?:to|in)\s+(?:hex|binary|decimal|octal|base)/i.test(input),
+    execute: (input) => {
+      const m = input.match(/(?:convert|what\s+is)\s+(0x[0-9a-f]+|0b[01]+|\d+)\s+(?:to|in)\s+(hex|binary|decimal|octal|base\s*\d+)/i);
+      if (!m) return null;
+      const valueStr = m[1];
+      const toBase = m[2].toLowerCase();
+      let value: number;
+      if (valueStr.startsWith('0x')) value = parseInt(valueStr, 16);
+      else if (valueStr.startsWith('0b')) value = parseInt(valueStr.slice(2), 2);
+      else value = parseInt(valueStr, 10);
+      if (isNaN(value)) return null;
+      const result = toBase === 'hex' ? '0x' + value.toString(16)
+        : toBase === 'binary' ? '0b' + value.toString(2)
+        : toBase === 'octal' ? '0o' + value.toString(8)
+        : toBase.startsWith('base') ? value.toString(parseInt(toBase.replace('base', '').trim()) || 10)
+        : value.toString(10);
+      return { result, decimal: value, from: valueStr, to: toBase };
+    },
+  },
 ];
 
 // ─── Public API ─────────────────────────────────────────────────────
