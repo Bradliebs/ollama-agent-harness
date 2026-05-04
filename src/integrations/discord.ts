@@ -41,10 +41,12 @@ export function startDiscordBot(
   }
 
   let running = false;
+  let stopped = false;
   let client: import('discord.js').Client | null = null;
 
   const handle: DiscordBotHandle = {
     stop: () => {
+      stopped = true;
       running = false;
       client?.destroy();
       client = null;
@@ -55,6 +57,7 @@ export function startDiscordBot(
 
   // Dynamic import so discord.js is optional
   import('discord.js').then(async (discord) => {
+    if (stopped) return;
     const { Client, GatewayIntentBits, Partials } = discord;
 
     client = new Client({
@@ -68,6 +71,7 @@ export function startDiscordBot(
     });
 
     client.on('ready', () => {
+      if (stopped) return;
       running = true;
       logger.info('Discord', `Bot logged in as ${client?.user?.tag ?? 'unknown'}`);
     });
@@ -124,8 +128,9 @@ export function startDiscordBot(
       }
     });
 
-    await client.login(token);
+    if (!stopped) await client.login(token);
   }).catch((error) => {
+    if (stopped) return;
     const msg = error instanceof Error ? error.message : String(error);
     logger.warn('Discord', `Failed to start bot: ${msg}`);
   });

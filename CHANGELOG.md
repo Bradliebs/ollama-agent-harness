@@ -11,6 +11,15 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.19
+
+Release validation patch for the Discord bridge startup path.
+
+### Release validation
+
+* Prevented pending Discord bot startup failures from logging after tests stop the bot handle.
+* Keeps the release workflow validation step clean while preserving Discord startup warnings during real runs.
+
 ## Ollama Agent Harness v0.3.18
 
 Slack notifications, local MCP runtime management, and nervous-system motor enforcement.
