@@ -3097,7 +3097,7 @@ app.post('/api/chat', async (req, res) => {
     nervousContext += '\n' + formatRecoveryPlan(nervousResult.recoveryPlan);
   }
 
-  const toolSynthesisNudge = 'IMPORTANT: After using tools, you MUST always provide a final text response summarizing your findings. Never end your turn with only tool calls and no text output. If you have gathered enough information, stop calling tools and write your answer.';
+  const toolSynthesisNudge = 'IMPORTANT: After using tools, you MUST always provide a final text response summarizing your findings. Never end your turn with only tool calls and no text output. If you have gathered enough information, stop calling tools and write your answer.\n\nAUTONOMY: When the user gives you a task, complete it fully without stopping to ask permission. Do NOT present numbered options and ask which to continue with — just do all of them. Do NOT ask "would you like me to continue?" — just continue. Only stop when the work is genuinely complete.';
 
   const systemPrompt = [baseSystemPrompt, attachmentsBlock, myceliumContext, nervousContext, toolSynthesisNudge].filter(Boolean).join('\n\n');
 
@@ -3115,6 +3115,7 @@ app.post('/api/chat', async (req, res) => {
       profile: activeOutputValidation.profile,
       customProfiles: customOutputValidationProfiles,
     },
+    autoContinue: true,
   };
 
   const keepAlive = setInterval(() => {

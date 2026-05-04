@@ -34,6 +34,16 @@ export interface LoopConfig {
     profile?: OutputValidationProfile;
     customProfiles?: CustomOutputValidationProfile[];
   };
+  /**
+   * When enabled, the loop detects partial-result text responses (numbered
+   * suggestions, "would you like to continue", etc.) and automatically
+   * injects a "continue with all" user message instead of stopping.
+   * Prevents stop-start behavior where the model asks for confirmation
+   * instead of completing the full task autonomously.
+   */
+  autoContinue?: boolean;
+  /** Max number of auto-continues before forcing a stop. Default 5. */
+  autoContinueLimit?: number;
 }
 
 export type LoopEvent =
@@ -48,7 +58,8 @@ export type LoopEvent =
   | ErrorEvent
   | DoneEvent
   | UsageEvent
-  | SynthesisFiredEvent;
+  | SynthesisFiredEvent
+  | AutoContinueEvent;
 
 export interface TextEvent {
   type: 'text';
@@ -150,4 +161,14 @@ export interface SynthesisFiredEvent {
   model: string;
   maxTurns: number;
   toolCallsTotal: number;
+}
+
+/** Emitted when the loop auto-continues instead of stopping at a partial
+ * result. The model produced text with suggestions/questions, and the loop
+ * injected a "continue" message to keep going autonomously. */
+export interface AutoContinueEvent {
+  type: 'auto_continue';
+  turn: number;
+  continuationCount: number;
+  reason: string;
 }

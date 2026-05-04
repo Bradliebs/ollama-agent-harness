@@ -2364,6 +2364,10 @@ async function sendMessage(opts) {
             toolBox = ensureToolBox(toolBox);
             appendToolItem(toolBox, '🔄', 'synthesis turn', 'model exhausted ' + ev.maxTurns + ' tool turns (' + ev.toolCallsTotal + ' calls) — forcing text summary', false);
             break;
+          case 'auto_continue':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '🔁', 'auto-continue #' + ev.continuationCount, ev.reason + ' — continuing autonomously', false);
+            break;
           case 'error':
             thinkEl.remove();
             addMsg('assistant', '⚠️ ' + ev.message);

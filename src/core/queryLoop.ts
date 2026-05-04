@@ -57,6 +57,8 @@ export async function* queryLoop(
   // sessions whose final reply is a tool-result summary.
   let anyProductiveToolSucceeded = false;
   let totalToolCalls = 0;
+  let autoContinueCount = 0;
+  const autoContinueLimit = config.autoContinueLimit ?? 5;
 
   if (session) {
     await appendStatus(session, 'running', undefined, tracer);
@@ -175,6 +177,30 @@ export async function* queryLoop(
 
     // Stop condition: text-only response (no tool calls)
     if (!assistantMessage.tool_calls?.length) {
+      // Auto-continue: if enabled and the text looks like a partial result
+      // with suggestions, inject a "continue" message instead of stopping.
+      if (config.autoContinue && autoContinueCount < autoContinueLimit && turn < maxTurns) {
+        const text = assistantMessage.content ?? '';
+        const reason = detectPartialResult(text);
+        if (reason) {
+          autoContinueCount++;
+          yield { type: 'text', content: text };
+          yield { type: 'auto_continue', turn, continuationCount: autoContinueCount, reason };
+          tracer?.recordEvent('auto_continue', { turn, count: autoContinueCount, reason });
+          messages.push({
+            role: 'user',
+            content: 'Continue with all suggestions. Do not stop to ask — complete everything autonomously.',
+          } as Message);
+          if (session) {
+            await appendSession(session, 'user_message', {
+              kind: 'message',
+              message: { role: 'user', content: '[auto-continue]' },
+            }, tracer);
+          }
+          continue;
+        }
+      }
+
       let validationFailed = false;
       if (config.outputValidation?.enabled) {
         // Auto-promote oracle-prime → coding-answer when the run actually
@@ -327,6 +353,48 @@ export async function* queryLoop(
     await appendStatus(session, 'max_turns', undefined, tracer);
   }
   yield { type: 'done', reason: 'max_turns', turns: turn };
+}
+
+/**
+ * Detect whether a model's text response is a partial result that asks
+ * the user to continue, rather than a genuine final answer.
+ * Returns a reason string if partial, or null if it looks complete.
+ */
+export function detectPartialResult(text: string): string | null {
+  if (!text || text.length < 20) return null;
+  const lower = text.toLowerCase();
+
+  // Numbered suggestions pattern: "1. Do X\n2. Do Y" at the end
+  if (/\n\s*\d+\.\s+.{5,}\n\s*\d+\.\s+.{5,}\s*$/.test(text)) {
+    return 'numbered suggestions at end of response';
+  }
+
+  // Explicit continuation prompts
+  const continuationPhrases = [
+    'would you like me to',
+    'shall i continue',
+    'shall i proceed',
+    'want me to continue',
+    'want me to proceed',
+    'let me know if you',
+    'let me know which',
+    'would you like to proceed',
+    'should i go ahead',
+    'should i continue',
+    'do you want me to',
+    'i can also',
+    'i could also',
+    'what would you like me to do next',
+    'which option would you prefer',
+    'ready to proceed',
+  ];
+  for (const phrase of continuationPhrases) {
+    if (lower.includes(phrase)) {
+      return `continuation prompt: "${phrase}"`;
+    }
+  }
+
+  return null;
 }
 
 async function appendStatus(

@@ -1,5 +1,6 @@
 import type { Message } from 'ollama';
 import { queryLoop } from './queryLoop';
+import { detectPartialResult } from './queryLoop';
 import { RuntimeTracer } from './tracing';
 import type { LoopConfig, Tool, ToolCall, ToolResult } from '../types';
 
@@ -520,6 +521,106 @@ describe('queryLoop runtime behavior', () => {
         (m) => m.role === 'system' && typeof m.content === 'string' && m.content.includes('Do NOT call any tools'),
       );
       expect(synthInstruction).toBeDefined();
+    });
+  });
+
+  describe('autoContinue', () => {
+    function makeToolCallMessage(name: string): Message {
+      return {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ function: { name, arguments: {} } }],
+      } as Message;
+    }
+
+    it('auto-continues when model produces a partial result with suggestions', async () => {
+      const echo = makeTool('echo', true, async () => ({ success: true, output: 'ok' }));
+      const client = makeClient([
+        makeToolCallMessage('echo'),
+        { role: 'assistant', content: 'Here is what I found so far.\n\n1. Analyze sales data\n2. Check inventory levels\n\nWould you like me to continue with these?' },
+        { role: 'assistant', content: 'All analysis complete. Revenue is £45,000.' },
+      ]);
+
+      const events = await collectEvents(client, [echo], {
+        config: { maxTurns: 10, autoContinue: true },
+      });
+
+      const autoCont = events.find((e) => e.type === 'auto_continue');
+      expect(autoCont).toBeDefined();
+      expect(autoCont).toMatchObject({ type: 'auto_continue', continuationCount: 1 });
+      const texts = events.filter((e) => e.type === 'text');
+      expect(texts).toHaveLength(2);
+      expect(texts[1]).toMatchObject({ content: 'All analysis complete. Revenue is £45,000.' });
+      const done = events.find((e) => e.type === 'done');
+      expect(done).toMatchObject({ reason: 'completed' });
+    });
+
+    it('does not auto-continue when disabled', async () => {
+      const client = makeClient([
+        { role: 'assistant', content: 'Here is partial work.\n\nWould you like me to continue?' },
+      ]);
+
+      const events = await collectEvents(client, [], {
+        config: { maxTurns: 10, autoContinue: false },
+      });
+
+      expect(events.find((e) => e.type === 'auto_continue')).toBeUndefined();
+      expect(events.find((e) => e.type === 'done')).toMatchObject({ reason: 'completed' });
+    });
+
+    it('respects autoContinueLimit', async () => {
+      const client = makeClient([
+        { role: 'assistant', content: 'Step 1 done. Would you like me to continue?' },
+        { role: 'assistant', content: 'Step 2 done. Shall I continue?' },
+        { role: 'assistant', content: 'Step 3 done. Should I continue?' },
+      ]);
+
+      const events = await collectEvents(client, [], {
+        config: { maxTurns: 10, autoContinue: true, autoContinueLimit: 2 },
+      });
+
+      const autoCounts = events.filter((e) => e.type === 'auto_continue');
+      expect(autoCounts).toHaveLength(2);
+      // Third response stops the loop normally since limit reached
+      const done = events.find((e) => e.type === 'done');
+      expect(done).toMatchObject({ reason: 'completed' });
+    });
+
+    it('does not auto-continue on genuine final answers', async () => {
+      const client = makeClient([
+        { role: 'assistant', content: 'The total revenue for Q1 was £45,230. Costs were £32,100. Net profit: £13,130.' },
+      ]);
+
+      const events = await collectEvents(client, [], {
+        config: { maxTurns: 10, autoContinue: true },
+      });
+
+      expect(events.find((e) => e.type === 'auto_continue')).toBeUndefined();
+      expect(events.find((e) => e.type === 'done')).toMatchObject({ reason: 'completed' });
+    });
+  });
+
+  describe('detectPartialResult', () => {
+    it('detects "would you like me to" continuation prompts', () => {
+      expect(detectPartialResult('Here are the results. Would you like me to analyze further?')).toContain('would you like me to');
+    });
+
+    it('detects "shall I continue" prompts', () => {
+      expect(detectPartialResult('I have completed step 1. Shall I continue with step 2?')).toContain('shall i continue');
+    });
+
+    it('detects numbered suggestions at end', () => {
+      const text = 'Here is what I found:\n\n1. Analyze the sales trends\n2. Check inventory levels\n3. Review profit margins';
+      expect(detectPartialResult(text)).toContain('numbered suggestions');
+    });
+
+    it('returns null for genuine final answers', () => {
+      expect(detectPartialResult('The total revenue was £45,000 with a net profit of £13,130.')).toBeNull();
+    });
+
+    it('returns null for short or empty text', () => {
+      expect(detectPartialResult('')).toBeNull();
+      expect(detectPartialResult('OK')).toBeNull();
     });
   });
 });

@@ -385,6 +385,9 @@ async function runHeadless(
       case 'synthesis_fired':
         console.error(`🔄 synthesis turn: model exhausted ${event.maxTurns} tool turns (${event.toolCallsTotal} calls)`);
         break;
+      case 'auto_continue':
+        console.error(`🔁 auto-continue #${event.continuationCount}: ${event.reason}`);
+        break;
       case 'done':
         if (!assistantText.trim()) console.log(buildConsoleToolOnlyResponse({ toolCalls, toolSummaries, errors, doneReason: event.reason }));
         console.error(`\n--- ${event.reason} (${event.turns} turns) ---`);

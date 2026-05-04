@@ -11,6 +11,25 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.15
+
+Auto-continue eliminates stop-start behavior where models ask permission instead of completing tasks.
+
+### Query loop
+
+* Added `autoContinue` mode: when the model produces a partial result with suggestions or continuation prompts, the loop automatically injects a "continue with all" message and keeps going.
+* Detection covers numbered suggestion lists, "would you like me to continue", "shall I proceed", and 15 other common stop-start patterns.
+* Capped at 5 auto-continues per session (configurable via `autoContinueLimit`).
+* Autonomy system prompt nudge: models are told to complete tasks fully without stopping to ask.
+
+### UI
+
+* Auto-continue events shown as 🔁 badges in the tool box with the detection reason.
+
+### Tests
+
+* 9 new tests: 4 autoContinue loop tests, 5 detectPartialResult pattern tests.
+
 ## Ollama Agent Harness v0.3.14
 
 Synthesis turn telemetry, adaptive maxTurns, and stats management.
