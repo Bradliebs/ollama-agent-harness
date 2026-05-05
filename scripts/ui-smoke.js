@@ -191,18 +191,26 @@ async function main() {
           document.getElementById('chatArea')?.prepend(welcomeClone);
         }
       }
-      const row = document.querySelector('.tool-item-permission');
+      const row = await new Promise((resolve) => {
+        // sendMessage starts the SSE consumption but the row attaches inside
+        // the SSE handler, which may not have processed all chunks by the
+        // time sendMessage returns. Poll briefly so slow CI hosts don't lose
+        // the race local runs always win.
+        const startedAt = Date.now();
+        const tick = () => {
+          const found = document.querySelector('.tool-item-permission');
+          if (found || Date.now() - startedAt > 10000) return resolve(found);
+          setTimeout(tick, 50);
+        };
+        tick();
+      });
       window.__permissionRecoverySmoke = Boolean(row)
         && typeof isPermissionOrRecoveryFailure === 'function'
         && isPermissionOrRecoveryFailure(deniedOutput)
         && row.textContent.includes('Action blocked')
         && row.textContent.includes('Auto-approve all');
     });
-    // Wait for the in-page smoke flag to flip true so the SSE stream has been
-    // fully consumed and the .tool-item-permission row is rendered. This was
-    // a race on slow CI hosts where boundingBox would time out at 30s before
-    // the row attached. Local runs always won the race; CI did not.
-    await page.waitForFunction(() => window.__permissionRecoverySmoke === true, null, { timeout: 15_000 }).catch(() => {});
+    // Final outer wait for the row's locator to be visible before measuring.
     const recoveryRow = page.locator('.tool-item-permission').first();
     await recoveryRow.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
     const recoveryBox = await recoveryRow.boundingBox().catch(() => null);
