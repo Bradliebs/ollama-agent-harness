@@ -84,12 +84,27 @@
     .mem-section{margin-bottom:16px}
     .mem-section h5{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin-bottom:6px}
     .mem-section pre{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;white-space:pre-wrap;font-size:11px;font-family:'Cascadia Code','Fira Code',monospace;color:var(--text-dim)}
-    .tab-bar{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;border-bottom:1px solid var(--border);background:var(--border)}
+    .tab-bar{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;border-bottom:1px solid var(--border);background:var(--border);position:relative}
     .tab{padding:8px 4px;text-align:center;font-size:10.5px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;color:var(--text-dim);transition:all .15s;background:var(--surface);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;line-height:1.1;min-height:44px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .tab:hover{color:var(--text);background:var(--surface2)}
     .tab.active{color:var(--accent);border-bottom-color:var(--accent);background:var(--surface2)}
     .tab .tab-icon{font-size:14px;line-height:1}
     .tab .tab-label{font-size:10px;letter-spacing:.2px}
+    .tab.tab-more.has-active{color:var(--accent);border-bottom-color:var(--accent);background:var(--surface2)}
+    /* "More" overflow menu — anchors below the tab bar, lists rarely-used tabs. */
+    .more-menu{position:absolute;top:100%;right:0;background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--rs) var(--rs);box-shadow:0 6px 18px rgba(0,0,0,.35);z-index:10;min-width:160px;display:flex;flex-direction:column;padding:4px}
+    .more-menu.hidden-by-default{display:none}
+    .more-menu-item{padding:8px 10px;cursor:pointer;border-radius:4px;font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:8px}
+    .more-menu-item:hover{background:var(--surface2);color:var(--text)}
+    .more-menu-item.active{color:var(--accent);background:var(--accent-bg)}
+    .more-menu-icon{font-size:14px;width:18px;text-align:center}
+    /* No-model banner — shown in the chat area when modelSelect.value is empty. */
+    .no-model-banner{display:flex;gap:14px;align-items:flex-start;padding:14px 18px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:var(--rs);max-width:680px;margin:0 auto 18px}
+    .no-model-banner.hidden-by-default{display:none}
+    .no-model-icon{font-size:24px;color:var(--accent);line-height:1}
+    .no-model-banner strong{color:var(--text);font-size:14px}
+    .no-model-hint{font-size:12px;color:var(--text-dim);margin-top:6px;line-height:1.4}
+    .no-model-hint code{background:var(--surface2);padding:1px 5px;border-radius:3px;font-family:'Cascadia Code','Fira Code',monospace;font-size:11px}
     .topbar{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
     .logo{font-size:18px;font-weight:700;color:var(--accent);display:flex;align-items:center;gap:6px;white-space:nowrap}
     .model-wrap{position:relative;flex:1;max-width:350px}
@@ -696,41 +711,24 @@
       <div class="tab" onclick="showLeftTab('memory',this)" title="Memory entries">
         <div class="tab-icon">🧠</div><div class="tab-label">Memory</div>
       </div>
-      <div class="tab" onclick="showLeftTab('palace',this)" title="Memory palace">
-        <div class="tab-icon">🏛</div><div class="tab-label">Palace</div>
-      </div>
-      <div class="tab" onclick="showLeftTab('discovery',this)" title="Discover patterns">
-        <div class="tab-icon">🔮</div><div class="tab-label">Discover</div>
-      </div>
-      <div class="tab" onclick="showLeftTab('learning',this)" title="Learning trends">
-        <div class="tab-icon">📈</div><div class="tab-label">Learning</div>
-      </div>
-      <div class="tab" onclick="showLeftTab('snapshots',this)" title="Snapshots of skills + memory">
-        <div class="tab-icon">📦</div><div class="tab-label">Snaps</div>
-      </div>
-      <div class="tab" onclick="showLeftTab('rag',this)" title="Local RAG indexes">
-        <div class="tab-icon">🔎</div><div class="tab-label">RAG</div>
-      </div>
-      <div class="tab" onclick="showLeftTab('tools',this)" title="Local tools dashboard">
-        <div class="tab-icon">🛠</div><div class="tab-label">Tools</div>
-      </div>
-      <div class="tab" onclick="showLeftTab('runs',this)" title="Past runs (status, duration, errors)">
-        <div class="tab-icon">📜</div><div class="tab-label">Runs</div>
-      </div>
       <div class="tab" onclick="showLeftTab('workflows',this)" title="Workflows: declarative tool sequences">
         <div class="tab-icon">⚙</div><div class="tab-label">Flows</div>
       </div>
-      <div class="tab" onclick="showLeftTab('mycelium',this)" title="Mycelium: adaptive context network">
-        <div class="tab-icon">🍄</div><div class="tab-label">Mycelium</div>
+      <div class="tab tab-more" id="tabMoreBtn" onclick="toggleMoreMenu(event)" title="More views">
+        <div class="tab-icon">⋯</div><div class="tab-label">More</div>
       </div>
-      <div class="tab" onclick="showLeftTab('promises',this)" title="Promise ledger: agent commitments">
-        <div class="tab-icon">🤝</div><div class="tab-label">Promises</div>
-      </div>
-      <div class="tab" onclick="showLeftTab('events',this)" title="Event store: audit trail">
-        <div class="tab-icon">📋</div><div class="tab-label">Events</div>
-      </div>
-      <div class="tab" onclick="showLeftTab('codeintel',this)" title="Code intelligence: repo graph">
-        <div class="tab-icon">🧬</div><div class="tab-label">Code Intel</div>
+      <div class="more-menu hidden-by-default" id="moreMenu">
+        <div class="more-menu-item" data-tab="palace" onclick="selectFromMore('palace')"><span class="more-menu-icon">🏛</span> Palace</div>
+        <div class="more-menu-item" data-tab="discovery" onclick="selectFromMore('discovery')"><span class="more-menu-icon">🔮</span> Discover</div>
+        <div class="more-menu-item" data-tab="learning" onclick="selectFromMore('learning')"><span class="more-menu-icon">📈</span> Learning</div>
+        <div class="more-menu-item" data-tab="snapshots" onclick="selectFromMore('snapshots')"><span class="more-menu-icon">📦</span> Snapshots</div>
+        <div class="more-menu-item" data-tab="rag" onclick="selectFromMore('rag')"><span class="more-menu-icon">🔎</span> RAG</div>
+        <div class="more-menu-item" data-tab="tools" onclick="selectFromMore('tools')"><span class="more-menu-icon">🛠</span> Tools</div>
+        <div class="more-menu-item" data-tab="runs" onclick="selectFromMore('runs')"><span class="more-menu-icon">📜</span> Runs</div>
+        <div class="more-menu-item" data-tab="mycelium" onclick="selectFromMore('mycelium')"><span class="more-menu-icon">🍄</span> Mycelium</div>
+        <div class="more-menu-item" data-tab="promises" onclick="selectFromMore('promises')"><span class="more-menu-icon">🤝</span> Promises</div>
+        <div class="more-menu-item" data-tab="events" onclick="selectFromMore('events')"><span class="more-menu-icon">📋</span> Events</div>
+        <div class="more-menu-item" data-tab="codeintel" onclick="selectFromMore('codeintel')"><span class="more-menu-icon">🧬</span> Code Intel</div>
       </div>
     </div>
     <div class="history-list" id="historyList"></div>
@@ -759,16 +757,16 @@
         <select class="model-select" id="modelSelect" title="Model" disabled>
           <option value="">Loading models...</option>
         </select>
-        <button class="btn-icon" id="compareBtn" onclick="toggleCompare()" title="Compare next reply with a second model side-by-side">⚖️</button>
+        <button class="btn-icon hidden-by-default" id="compareBtn" onclick="toggleCompare()" title="Compare next reply with a second model side-by-side">⚖️</button>
         <select class="model-select compare-select compare-select-hidden" id="compareModelSelect" title="Compare model">
           <option value="">Compare with...</option>
         </select>
       </div>
-      <div class="context-hud" id="contextHud" title="Live context pressure">
+      <div class="context-hud hidden-by-default" id="contextHud" title="Live context pressure">
         <span id="contextLabel">Context 0%</span>
         <div class="context-meter"><div class="context-fill" id="contextFill"></div></div>
       </div>
-      <div class="session-hud empty" id="sessionHud" title="Session totals (this conversation)">
+      <div class="session-hud empty hidden-by-default" id="sessionHud" title="Session totals (this conversation)">
         <span>Session</span>
         <span class="session-hud-val" id="sessionHudTokens">0t</span>
         <span class="meta-sep">·</span>
@@ -791,6 +789,13 @@
 
     <div class="chat-area" id="chatArea">
       <div class="welcome" id="welcome">
+        <div id="noModelBanner" class="no-model-banner hidden-by-default">
+          <div class="no-model-icon">↑</div>
+          <div>
+            <strong>Pick a model from the dropdown above to start.</strong>
+            <div class="no-model-hint">No models installed yet? Run <code>ollama pull llama3.2</code> in a terminal, then refresh this page.</div>
+          </div>
+        </div>
         <div class="welcome-hero">
           <div class="welcome-eyebrow">Local-first AI agent · Ollama</div>
           <h2>What can I help you with?</h2>
@@ -1582,6 +1587,6 @@
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="./chatHistory.js?v=3"></script>
 <script src="./toolActivity.js?v=1"></script>
-<script src="./app.js?v=9"></script>
+<script src="./app.js?v=10"></script>
 </body>
 </html>

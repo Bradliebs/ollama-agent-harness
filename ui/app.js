@@ -98,8 +98,22 @@ async function loadModels() {
       return '<option value="' + escAttr(m.name) + '">' + esc(m.name + size + backendBadge) + '</option>';
     }).join('');
     sel.disabled = false;
-    sel.onchange = () => { renderModelCapabilityHint(); if (sel.value) { updateSetting('model', sel.value); document.getElementById('sendBtn').disabled = false; } };
-    if (models.length === 1) { sel.value = models[0].name; sel.dispatchEvent(new Event('change')); }
+    sel.onchange = () => { renderModelCapabilityHint(); if (sel.value) { updateSetting('model', sel.value); document.getElementById('sendBtn').disabled = false; updateNoModelEmptyState(); } };
+    // Pick a default model so users don't stare at "— Select model —" on first
+    // run. Priority: saved setting that still matches an installed model →
+    // first model in the list. Either way, fire change so the send button
+    // enables and the capability hint updates.
+    let defaultModel = '';
+    try {
+      const settings = await fetch('/api/settings').then((r) => r.json());
+      const saved = settings && typeof settings.model === 'string' ? settings.model : '';
+      if (saved && models.some((m) => m.name === saved)) defaultModel = saved;
+    } catch { /* ignore — fall through to first model */ }
+    if (!defaultModel && models.length > 0) defaultModel = models[0].name;
+    if (defaultModel) {
+      sel.value = defaultModel;
+      sel.dispatchEvent(new Event('change'));
+    }
     renderModelCapabilityHint();
     // Compare-with selector mirrors the primary model list.
     const cmp = document.getElementById('compareModelSelect');
@@ -110,10 +124,21 @@ async function loadModels() {
         return '<option value="' + escAttr(m.name) + '">' + esc(m.name + size + backendBadge) + '</option>';
       }).join('');
     }
+    updateNoModelEmptyState();
   } catch {
     dot.className = 'status-dot';
     sel.innerHTML = '<option>Server not running</option>';
   }
+}
+
+// When no model is selected, show a focused message instead of the busy
+// welcome. Called on load and on every model-select change.
+function updateNoModelEmptyState() {
+  const sel = document.getElementById('modelSelect');
+  const banner = document.getElementById('noModelBanner');
+  if (!banner) return;
+  if (!sel || !sel.value) banner.classList.remove('hidden-by-default');
+  else banner.classList.add('hidden-by-default');
 }
 
 async function readApiJson(response, endpointLabel) {
@@ -3540,6 +3565,13 @@ function updateSessionHud() {
   const displayMs = sessionUsage.totalTurnMs || sessionUsage.totalDurationMs || 0;
   timeEl.textContent = formatDurationCompact(displayMs);
   hud.classList.toggle('empty', sessionUsage.calls === 0);
+  // Reveal the HUD as soon as the session has any activity. Hidden by default
+  // so the topbar starts uncluttered for first-run users.
+  if (sessionUsage.calls > 0) {
+    hud.classList.remove('hidden-by-default');
+    const ctx = document.getElementById('contextHud');
+    if (ctx) ctx.classList.remove('hidden-by-default');
+  }
   hud.title = sessionUsage.calls === 0
     ? 'Session totals (this conversation) — no LLM calls yet'
     : 'Session totals: ' + sessionUsage.calls + ' call(s) · '
@@ -4501,7 +4533,7 @@ async function viewSkillDiff(ts, index) {
   target.classList.remove('hidden-by-default');
   target.innerHTML = 'Loading diff…';
   try {
-    const snap = await fetch('/api/skills/' + encodeURIComponent(activeSkillModalName) + '/history/' + encodeURIComponent(ts)).then((r) => r.json());
+    const snap = await fetch(`/api/skills/${encodeURIComponent(activeSkillModalName)}/history/${encodeURIComponent(ts)}`).then((r) => r.json());
     if (snap.error) { target.textContent = 'Failed: ' + snap.error; return; }
     target.innerHTML = renderSkillDiff(String(snap.content || ''), String(activeSkillModalRaw || ''))
       + '<div class="skill-modal-actions" style="margin-top:6px"><button class="btn-sm primary" onclick="revertSkillToHistory(\'' + escAttr(ts) + '\')">Looks good — revert to this version</button></div>';
@@ -4544,7 +4576,7 @@ async function revertSkillToHistory(ts) {
   const status = document.getElementById('skillModalStatus');
   if (status) status.textContent = 'Reverting…';
   try {
-    const snap = await fetch('/api/skills/' + encodeURIComponent(activeSkillModalName) + '/history/' + encodeURIComponent(ts)).then((r) => r.json());
+    const snap = await fetch(`/api/skills/${encodeURIComponent(activeSkillModalName)}/history/${encodeURIComponent(ts)}`).then((r) => r.json());
     if (snap.error) { if (status) status.textContent = 'Failed: ' + snap.error; return; }
     const response = await fetch('/api/skills/' + encodeURIComponent(activeSkillModalName), {
       method: 'PUT',
@@ -5090,8 +5122,47 @@ async function rebuildSessionSearchIndex() { const view = document.getElementByI
 
 async function loadPalaceEntry(id) { const detail = document.getElementById('palaceDetail'); if (!detail) return; detail.classList.remove('initial-hidden'); detail.textContent = 'Loading memory entry...'; try { const entryResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id)); const entryData = await entryResponse.json(); if (entryData.error) { detail.textContent = entryData.error; return; } const contextResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id) + '/context?window=3'); const contextData = await contextResponse.json(); const entry = entryData.entry; const transcriptRows = (contextData.events || []).map((event) => '<div class="transcript-row' + (event.isAnchor ? ' anchor' : '') + '"><div><strong>' + esc(event.kind) + '</strong> · ' + esc(event.timestamp) + '</div><div class="prewrap-text">' + esc(event.text || '[empty]') + '</div></div>').join(''); detail.innerHTML = '<div><strong>Session</strong> ' + esc(entry.sessionId) + '</div><div><strong>Event</strong> ' + esc(entry.id) + '</div><div><strong>Kind</strong> ' + esc(entry.kind) + '</div><div><strong>Time</strong> ' + esc(entry.timestamp) + '</div><div class="prewrap-text trace-block-spaced">' + esc(entry.text) + '</div><div class="trace-block-spaced-large"><strong>Transcript Context</strong>' + (transcriptRows || '<div class="transcript-row">No transcript context found.</div>') + '</div>'; } catch (error) { detail.textContent = error.message; } }
 
-function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); el.classList.add('active'); document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; const rn = document.getElementById('runsView'); if (rn) rn.style.display = tab === 'runs' ? 'block' : 'none'; const wf = document.getElementById('workflowsView'); if (wf) wf.style.display = tab === 'workflows' ? 'block' : 'none'; const my = document.getElementById('myceliumView'); if (my) my.style.display = tab === 'mycelium' ? 'block' : 'none'; const pr = document.getElementById('promisesView'); if (pr) pr.style.display = tab === 'promises' ? 'block' : 'none'; const ev = document.getElementById('eventsView'); if (ev) ev.style.display = tab === 'events' ? 'block' : 'none'; const ci = document.getElementById('codeintelView'); if (ci) ci.style.display = tab === 'codeintel' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); if (tab === 'runs') loadRuns(); if (tab === 'workflows') loadWorkflows(); if (tab === 'mycelium') loadMycelium(); if (tab === 'promises') loadPromises(); if (tab === 'events') loadEvents(); if (tab === 'codeintel') loadCodeIntel(); }
+function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); el.classList.add('active'); if (!MORE_MENU_TABS.includes(tab)) { const moreBtn = document.getElementById('tabMoreBtn'); if (moreBtn) moreBtn.classList.remove('has-active'); document.querySelectorAll('.more-menu-item').forEach((item) => item.classList.remove('active')); } document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; const rn = document.getElementById('runsView'); if (rn) rn.style.display = tab === 'runs' ? 'block' : 'none'; const wf = document.getElementById('workflowsView'); if (wf) wf.style.display = tab === 'workflows' ? 'block' : 'none'; const my = document.getElementById('myceliumView'); if (my) my.style.display = tab === 'mycelium' ? 'block' : 'none'; const pr = document.getElementById('promisesView'); if (pr) pr.style.display = tab === 'promises' ? 'block' : 'none'; const ev = document.getElementById('eventsView'); if (ev) ev.style.display = tab === 'events' ? 'block' : 'none'; const ci = document.getElementById('codeintelView'); if (ci) ci.style.display = tab === 'codeintel' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); if (tab === 'runs') loadRuns(); if (tab === 'workflows') loadWorkflows(); if (tab === 'mycelium') loadMycelium(); if (tab === 'promises') loadPromises(); if (tab === 'events') loadEvents(); if (tab === 'codeintel') loadCodeIntel(); }
 function toggleLeft() { document.getElementById('leftPanel').classList.toggle('hidden'); }
+
+// Tabs we don't show in the main bar — selected via the More overflow menu.
+const MORE_MENU_TABS = ['palace', 'discovery', 'learning', 'snapshots', 'rag', 'tools', 'runs', 'mycelium', 'promises', 'events', 'codeintel'];
+
+function toggleMoreMenu(event) {
+  if (event && event.stopPropagation) event.stopPropagation();
+  const menu = document.getElementById('moreMenu');
+  if (!menu) return;
+  menu.classList.toggle('hidden-by-default');
+  if (!menu.classList.contains('hidden-by-default')) {
+    // Close on outside click — bind once, then auto-remove.
+    setTimeout(() => {
+      const closer = (e) => {
+        if (!menu.contains(e.target) && e.target.id !== 'tabMoreBtn' && !document.getElementById('tabMoreBtn').contains(e.target)) {
+          menu.classList.add('hidden-by-default');
+          document.removeEventListener('click', closer);
+        }
+      };
+      document.addEventListener('click', closer);
+    }, 0);
+  }
+}
+
+function selectFromMore(tab) {
+  // Hide menu, dispatch the existing tab handler. Use the More button as the
+  // "active" element so the visual indicator stays on it while a More tab is in view.
+  const menu = document.getElementById('moreMenu');
+  if (menu) menu.classList.add('hidden-by-default');
+  const moreBtn = document.getElementById('tabMoreBtn');
+  if (moreBtn) {
+    showLeftTab(tab, moreBtn);
+    moreBtn.classList.add('has-active');
+  }
+  // Highlight the chosen item next time the menu opens.
+  document.querySelectorAll('.more-menu-item').forEach((item) => {
+    if (item.dataset.tab === tab) item.classList.add('active');
+    else item.classList.remove('active');
+  });
+}
 function toggleRight() {
   const panel = document.getElementById('rightPanel');
   if (!panel) return;
@@ -7002,7 +7073,13 @@ function renderCapabilityAlignmentPanel(capabilities, auditEvents) {
     + '</details>' : '';
   return '<div class="trace-list trace-block-spaced-large" id="capabilityAlignmentPanel">'
     + '<div class="trace-title trace-title-padded">Capability alignment · ' + esc(summaryText) + ' · active grants: ' + grantCount + '</div>'
-    + '<div class="trace-item"><div class="trace-title">Active grants</div>' + grantRows + presetRows + auditSection + '</div>'
+    + '<div class="trace-item">'
+    +   '<details' + (grantCount > 5 ? '' : ' open') + '>'
+    +     '<summary class="trace-title clickable-summary">Active grants (' + grantCount + ')</summary>'
+    +     '<div class="details-body-mt4">' + grantRows + '</div>'
+    +   '</details>'
+    +   presetRows + auditSection
+    + '</div>'
     + '<div class="trace-item">' + rows + '</div>'
     + '</div>';
 }
