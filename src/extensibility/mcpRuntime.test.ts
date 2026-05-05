@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { listMcpServers, removeMcpServer, startMcpServer, stopAllMcpServers, stopMcpServer, upsertMcpServer } from './mcpRuntime';
+import { discoverMcpServerTools, invokeMcpServerTool, listMcpServers, removeMcpServer, startMcpServer, stopAllMcpServers, stopMcpServer, upsertMcpServer } from './mcpRuntime';
 
 describe('mcpRuntime', () => {
   let projectDir: string;
@@ -61,5 +61,45 @@ describe('mcpRuntime', () => {
 
     await expect(removeMcpServer(projectDir, 'demo')).resolves.toBe(true);
     await expect(listMcpServers(projectDir)).resolves.toEqual([]);
+  });
+
+  it('discovers and invokes tools over MCP stdio', async () => {
+    const serverScript = path.join(projectDir, 'fake-mcp-server.js');
+    await fs.writeFile(serverScript, `
+let buffer = '';
+function send(id, result) {
+  const body = JSON.stringify({ jsonrpc: '2.0', id, result });
+  process.stdout.write('Content-Length: ' + Buffer.byteLength(body, 'utf-8') + '\\r\\n\\r\\n' + body);
+}
+function handle(message) {
+  if (message.method === 'initialize') send(message.id, { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1.0.0' } });
+  else if (message.method === 'tools/list') send(message.id, { tools: [{ name: 'echo', description: 'Echo input', inputSchema: { type: 'object', properties: { text: { type: 'string' } } } }] });
+  else if (message.method === 'tools/call') send(message.id, { content: [{ type: 'text', text: 'echo:' + message.params.arguments.text }] });
+}
+function drain() {
+  for (;;) {
+    const headerEnd = buffer.indexOf('\\r\\n\\r\\n');
+    if (headerEnd < 0) return;
+    const header = buffer.slice(0, headerEnd);
+    const match = header.match(/Content-Length:\\s*(\\d+)/i);
+    if (!match) return;
+    const length = Number(match[1]);
+    const bodyStart = headerEnd + 4;
+    if (buffer.length < bodyStart + length) return;
+    const body = buffer.slice(bodyStart, bodyStart + length);
+    buffer = buffer.slice(bodyStart + length);
+    handle(JSON.parse(body));
+  }
+}
+process.stdin.on('data', (chunk) => { buffer += String(chunk); drain(); });
+`, 'utf-8');
+    await upsertMcpServer(projectDir, { id: 'demo', command: process.execPath, args: [serverScript] });
+    await startMcpServer(projectDir, 'demo');
+
+    const discovered = await discoverMcpServerTools(projectDir, 'demo');
+    expect(discovered.tools).toEqual([expect.objectContaining({ name: 'echo', description: 'Echo input' })]);
+
+    const result = await invokeMcpServerTool(projectDir, 'demo', 'echo', { text: 'hello' });
+    expect(result).toEqual({ content: [{ type: 'text', text: 'echo:hello' }] });
   });
 });

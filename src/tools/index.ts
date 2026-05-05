@@ -14,9 +14,14 @@ import { DocumentExportTool } from './documentTools';
 import { TelegramNotifyTool } from './telegramTools';
 import type { Tool } from '../types';
 import { createBuiltinToolRegistry } from './registry';
+import { createToolRegistry } from './registry';
 
 export function getBuiltinTools(): Tool[] {
   return createBuiltinToolRegistry().listTools();
+}
+
+export function getRuntimeTools(projectDir: string): Tool[] {
+  return createToolRegistry(projectDir).listTools();
 }
 
 export { FileReadTool, FileWriteTool, FileEditTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool } from './fileTools';
@@ -34,5 +39,6 @@ export { CuratorPreviewTool, setCuratorToolRuntime } from './curatorTools';
 export { DocumentExportTool } from './documentTools';
 export { TelegramNotifyTool } from './telegramTools';
 export { ToolDispatcher } from './dispatcher';
-export { BUILTIN_TOOL_ENTRIES, ToolRegistry, createBuiltinToolRegistry } from './registry';
+export { BUILTIN_TOOL_ENTRIES, ToolRegistry, createBuiltinToolRegistry, createToolRegistry } from './registry';
+export { createMcpToolEntries, createMcpHarnessToolName } from './mcpTools';
 export type { ToolRegistryEntry } from './registry';

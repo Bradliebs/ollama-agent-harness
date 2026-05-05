@@ -165,7 +165,7 @@
   - target: src/extensibility/mcpRuntime.test.ts
   - target: src/web/server.ts
   - target: ui/app.js
-- [ ] close-gap-mcp-tool-invocation — Add protocol-level MCP tool discovery and invocation through a single gated ToolRegistry adapter after the runtime manager is stable.
+- [x] close-gap-mcp-tool-invocation — Add protocol-level MCP tool discovery and invocation through a single gated ToolRegistry adapter after the runtime manager is stable.
   - anchor: src/extensibility/mcpRuntime.ts
   - anchor: src/tools/registry.ts
   - anchor: src/tools/dispatcher.ts

@@ -1,4 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { OllamaClient, longLivedFetch, liftInlineToolCalls } from './ollamaClient';
 
 const mockChat = jest.fn();
@@ -52,6 +55,45 @@ describe('OllamaClient context configuration', () => {
       message: { role: 'assistant', content: 'hello' },
       usage: { promptTokens: 12, completionTokens: 3, totalDurationNs: 4_000_000 },
     });
+  });
+
+  it('writes payload metrics to debug logs', async () => {
+    async function* chunks() {
+      yield {
+        message: { role: 'assistant', content: 'ok' },
+        done: true,
+        prompt_eval_count: 1,
+        eval_count: 1,
+        total_duration: 1,
+      };
+    }
+    const tempDir = mkdtempSync(join(tmpdir(), 'harness-ollama-debug-'));
+    const debugPath = join(tempDir, 'debug.jsonl');
+    const previousDebugPath = process.env.HARNESS_DEBUG_LOG;
+    process.env.HARNESS_DEBUG_LOG = debugPath;
+    mockChat.mockResolvedValue(chunks());
+    const client = new OllamaClient({ model: 'test-model' });
+
+    try {
+      await client.chat(
+        [{ role: 'system', content: 'system prompt' }, { role: 'user', content: 'hello' }],
+        [{ type: 'function', function: { name: 'web_search', description: 'Search', parameters: { type: 'object' } } }],
+      );
+
+      const entry = JSON.parse(readFileSync(debugPath, 'utf-8').trim());
+      expect(entry.payload).toMatchObject({
+        messageChars: 18,
+        messageTokenEstimate: 5,
+        toolCount: 1,
+      });
+      expect(entry.payload.toolSchemaChars).toBeGreaterThan(0);
+      expect(entry.payload.toolSchemaTokenEstimate).toBeGreaterThan(0);
+      expect(entry.payload.totalChars).toBe(entry.payload.messageChars + entry.payload.toolSchemaChars);
+    } finally {
+      if (previousDebugPath === undefined) delete process.env.HARNESS_DEBUG_LOG;
+      else process.env.HARNESS_DEBUG_LOG = previousDebugPath;
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it('aborts an in-flight streamed chat response', async () => {

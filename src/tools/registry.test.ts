@@ -1,4 +1,8 @@
-import { createBuiltinToolRegistry, ToolRegistry } from './registry';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+import { createBuiltinToolRegistry, createToolRegistry, ToolRegistry } from './registry';
+import { upsertMcpServer } from '../extensibility/mcpRuntime';
 import type { Tool } from '../types';
 
 function makeTool(name: string): Tool {
@@ -44,5 +48,24 @@ describe('ToolRegistry', () => {
     const fileRead = registry.get('file_read');
     expect(fileRead?.riskLevel).toBe('low');
     expect(fileRead?.permissionCategory).toBe('read');
+  });
+
+  it('registers configured MCP tools as runtime entries', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-registry-mcp-'));
+    try {
+      await upsertMcpServer(projectDir, {
+        id: 'demo',
+        command: 'node',
+        tools: [{ name: 'echo', description: 'Echo input', inputSchema: { type: 'object', properties: { text: { type: 'string' } } } }],
+      });
+
+      const registry = createToolRegistry(projectDir);
+      const entry = registry.get('mcp_demo__echo');
+
+      expect(entry).toMatchObject({ toolset: 'mcp:demo', source: 'runtime', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'shell' });
+      expect(entry?.tool.parameters).toMatchObject({ type: 'object' });
+    } finally {
+      await fs.rm(projectDir, { recursive: true, force: true });
+    }
   });
 });

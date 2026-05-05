@@ -13,8 +13,8 @@ import { createChatClient, OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiK
 import { drainRemoteProviderFallbackEvents } from '../core/fallbackChatClient';
 import type { IChatClient } from '../core/chatClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
-import { getBuiltinTools } from '../tools';
-import { createBuiltinToolRegistry } from '../tools/registry';
+import { getRuntimeTools } from '../tools';
+import { createToolRegistry } from '../tools/registry';
 import { WorkflowRegistry } from '../workflows/workflowRegistry';
 import { runCurator, runDeterministicPhase, readCuratorLog, readCuratorProposals, restoreSkill, parseMergeProposals, applyMergeProposal, clearCuratorProposals, type CuratorConfig } from '../curator/curator';
 import { CuratorScheduler } from '../curator/scheduler';
@@ -33,7 +33,7 @@ import { buildMemoryPalace, getSemanticMemoryContext, getSemanticMemoryEntry, re
 import * as snapshots from '../persistence/snapshots';
 import * as ragIndex from '../persistence/ragIndex';
 import { MCP_CATALOG } from '../extensibility/mcpCatalog';
-import { listMcpServers, removeMcpServer, startMcpServer, stopMcpServer, upsertMcpServer } from '../extensibility/mcpRuntime';
+import { discoverMcpServerTools, invokeMcpServerTool, listMcpServers, removeMcpServer, startMcpServer, stopMcpServer, upsertMcpServer } from '../extensibility/mcpRuntime';
 import { assembleSystemContext, estimateTokenCount } from '../context/assembly';
 import { HookPipeline } from '../extensibility/hookPipeline';
 import { loadSkillsDir, matchSkillTrigger, scanSkillsDir, type SkillDefinition, type SkillDirectoryScan } from '../extensibility/skillLoader';
@@ -376,7 +376,7 @@ const defaultWebRuntime: WebRuntimeDeps = {
     }
     return new OllamaClient({ model, host }).getContextWindow();
   },
-  getTools: () => applyToolDisables(getBuiltinTools()),
+  getTools: () => applyToolDisables(getRuntimeTools(PROJECT_DIR)),
   createPermissionEngine: (mode) => {
     const engine = new PermissionEngine([], mode);
     if (killSwitchActive) engine.engageKillSwitch(killSwitchReason);
@@ -2752,7 +2752,7 @@ app.post('/api/permissions/kill-switch', (req, res) => {
 // registered tool with risk/category metadata grouped by toolset.
 app.get('/api/tools', (_req, res) => {
   try {
-    const registry = createBuiltinToolRegistry();
+    const registry = createToolRegistry(PROJECT_DIR);
     const tools = registry.listEntries().map((entry) => {
       const name = entry.tool.name;
       const enabled = isToolEnabled(name);
@@ -3091,7 +3091,7 @@ app.post('/api/tools/:name/toggle', async (req, res) => {
     await ensureSettingsLoaded();
     const toolName = String(req.params.name || '').trim();
     if (!toolName) { res.status(400).json({ error: 'tool name required' }); return; }
-    const registry = createBuiltinToolRegistry();
+    const registry = createToolRegistry(PROJECT_DIR);
     if (!registry.get(toolName)) { res.status(404).json({ error: 'unknown tool' }); return; }
     const currentlyEnabled = isToolEnabled(toolName);
     const desiredEnabled = req.body?.enabled === undefined ? !currentlyEnabled : Boolean(req.body.enabled);
@@ -3130,7 +3130,7 @@ app.post('/api/tools/bulk-toggle', async (req, res) => {
     const desiredEnabled = Boolean(req.body?.enabled);
     const expiresInMinutes = typeof req.body?.expiresInMinutes === 'number' && req.body.expiresInMinutes > 0
       ? Math.min(req.body.expiresInMinutes, 1440) : undefined;
-    const registry = createBuiltinToolRegistry();
+    const registry = createToolRegistry(PROJECT_DIR);
     const results: Array<{ name: string; enabled: boolean; enabledUntil?: string }> = [];
     for (const raw of names) {
       const toolName = String(raw).trim();
@@ -3192,7 +3192,7 @@ app.post('/api/workflows/:name/run', async (req, res) => {
     const dryRun = Boolean(req.body?.dryRun);
     const variables = typeof req.body?.variables === 'object' && req.body.variables !== null ? req.body.variables : undefined;
     const run = workflowRegistry.startRun(definition, { dryRun, variables });
-    const tools = applyToolDisables(getBuiltinTools());
+    const tools = applyToolDisables(getRuntimeTools(PROJECT_DIR));
     const permissions = webRuntime.createPermissionEngine(permissionMode);
     // Execute asynchronously so the HTTP request returns immediately with the
     // initial run state. Errors are captured on the run object itself.
@@ -3234,7 +3234,7 @@ app.post('/api/workflows/runs/:id/resume', async (req, res) => {
   const run = workflowRegistry.getRun(id);
   if (!run) { res.status(404).json({ error: 'run not found' }); return; }
   if (!workflowRegistry.resume(id)) { res.status(409).json({ error: 'run is not paused' }); return; }
-  const tools = applyToolDisables(getBuiltinTools());
+  const tools = applyToolDisables(getRuntimeTools(PROJECT_DIR));
   const permissions = webRuntime.createPermissionEngine(permissionMode);
   workflowRegistry.execute(id, { tools, permissions }).catch((error) => {
     logger.warn('Workflow', 'Workflow run threw on resume', { runId: id, error: error instanceof Error ? error.message : String(error) });
@@ -4509,6 +4509,27 @@ app.post('/api/mcp/runtime/servers/:id/stop', async (req, res) => {
   }
 });
 
+app.post('/api/mcp/runtime/servers/:id/discover-tools', async (req, res) => {
+  try {
+    if (killSwitchActive) { res.status(403).json({ error: 'Kill switch is active.' }); return; }
+    const server = await discoverMcpServerTools(PROJECT_DIR, req.params.id);
+    res.json({ server, servers: await listMcpServers(PROJECT_DIR) });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/mcp/runtime/servers/:id/tools/:toolName/invoke', async (req, res) => {
+  try {
+    if (killSwitchActive) { res.status(403).json({ error: 'Kill switch is active.' }); return; }
+    const input = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body as Record<string, unknown> : {};
+    const result = await invokeMcpServerTool(PROJECT_DIR, req.params.id, req.params.toolName, input);
+    res.json({ result });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 // Pull a model from Ollama
 app.post('/api/models/pull', async (req, res) => {
   const { name } = req.body;
@@ -5588,7 +5609,7 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   }
   configureAutomationScheduler();
   if (Array.isArray(settings.disabledTools)) {
-    const registry = createBuiltinToolRegistry();
+    const registry = createToolRegistry(PROJECT_DIR);
     disabledTools.clear();
     for (const name of settings.disabledTools) {
       const value = String(name).trim();

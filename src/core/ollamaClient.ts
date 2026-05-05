@@ -199,10 +199,21 @@ function writeDebugLog(model: string, messages: Message[], tools: Tool[] | undef
   const debugPath = process.env.HARNESS_DEBUG_LOG;
   if (!debugPath) return;
   try {
+    const messageChars = estimateMessageChars(messages);
+    const toolSchemaChars = estimateToolSchemaChars(tools);
     const entry = {
       timestamp: new Date().toISOString(),
       model,
       messageCount: messages.length,
+      payload: {
+        messageChars,
+        messageTokenEstimate: estimateTokensFromChars(messageChars),
+        toolCount: tools?.length ?? 0,
+        toolSchemaChars,
+        toolSchemaTokenEstimate: estimateTokensFromChars(toolSchemaChars),
+        totalChars: messageChars + toolSchemaChars,
+        totalTokenEstimate: estimateTokensFromChars(messageChars + toolSchemaChars),
+      },
       lastUserMessage: typeof messages[messages.length - 1]?.content === 'string'
         ? (messages[messages.length - 1].content as string).slice(0, 500)
         : null,
@@ -221,6 +232,25 @@ function writeDebugLog(model: string, messages: Message[], tools: Tool[] | undef
   } catch {
     // best-effort; debug logging must never break the main flow
   }
+}
+
+function estimateMessageChars(messages: Message[]): number {
+  return messages.reduce((total, message) => total + estimateContentChars(message.content), 0);
+}
+
+function estimateContentChars(content: Message['content']): number {
+  if (typeof content === 'string') return content.length;
+  if (Array.isArray(content)) return JSON.stringify(content).length;
+  return 0;
+}
+
+function estimateToolSchemaChars(tools: Tool[] | undefined): number {
+  if (!tools || tools.length === 0) return 0;
+  return JSON.stringify(tools).length;
+}
+
+function estimateTokensFromChars(chars: number): number {
+  return Math.ceil(chars / 4);
 }
 
 /**

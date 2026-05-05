@@ -1,7 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { McpStdioClient, type McpToolCallResult } from './mcpClient';
 
 export interface McpConfiguredTool {
   name: string;
@@ -30,6 +32,7 @@ export interface McpServerStatus extends McpServerDefinition {
 
 interface RunningMcpServer {
   process: ChildProcessWithoutNullStreams;
+  client: McpStdioClient;
   startedAt: string;
   lastError?: string;
 }
@@ -79,7 +82,7 @@ export async function startMcpServer(projectDir: string, id: string): Promise<Mc
     windowsHide: true,
   });
 
-  const record: RunningMcpServer = { process: child, startedAt: new Date().toISOString() };
+  const record: RunningMcpServer = { process: child, client: new McpStdioClient(child), startedAt: new Date().toISOString() };
   runningServers.set(definition.id, record);
   lastExitCodes.delete(definition.id);
 
@@ -98,12 +101,42 @@ export async function startMcpServer(projectDir: string, id: string): Promise<Mc
   return toStatus(definition);
 }
 
+export async function discoverMcpServerTools(projectDir: string, id: string): Promise<McpServerStatus> {
+  const definition = await findMcpServerDefinition(projectDir, id);
+  if (!definition) throw new Error('MCP server not found.');
+  const active = runningServers.get(definition.id);
+  if (!active || active.process.killed) throw new Error('MCP server is not running.');
+  const tools = await active.client.listTools();
+  const definitions = await readMcpServerDefinitions(projectDir);
+  const index = definitions.findIndex((item) => item.id === definition.id);
+  if (index >= 0) {
+    definitions[index] = { ...definitions[index], tools };
+    await writeMcpServerDefinitions(projectDir, definitions);
+  }
+  return toStatus({ ...definition, tools });
+}
+
+export async function invokeMcpServerTool(projectDir: string, serverId: string, toolName: string, input: Record<string, unknown>): Promise<McpToolCallResult> {
+  const definition = await findMcpServerDefinition(projectDir, serverId);
+  if (!definition) throw new Error('MCP server not found.');
+  if (!definition.enabled) throw new Error('MCP server is disabled.');
+  const configured = definition.tools.find((tool) => tool.name === toolName);
+  if (!configured) throw new Error('MCP tool is not configured. Discover tools before invocation.');
+  const active = runningServers.get(definition.id);
+  if (!active || active.process.killed) throw new Error('MCP server is not running.');
+  return active.client.callTool(toolName, input);
+}
+
 export async function stopMcpServer(id: string): Promise<boolean> {
   const normalizedId = normalizeMcpId(id);
   const active = normalizedId ? runningServers.get(normalizedId) : undefined;
   if (!active) return false;
+  const exitPromise = new Promise<void>((resolve) => {
+    active.process.once('exit', () => resolve());
+  });
   active.process.kill();
   runningServers.delete(normalizedId);
+  await Promise.race([exitPromise, new Promise<void>((resolve) => setTimeout(resolve, 250))]);
   return true;
 }
 
@@ -114,6 +147,17 @@ export async function stopAllMcpServers(): Promise<void> {
 export async function readMcpServerDefinitions(projectDir: string): Promise<McpServerDefinition[]> {
   try {
     const raw = await fs.readFile(path.join(projectDir, MCP_SERVERS_PATH), 'utf-8');
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((item) => sanitizeMcpServerDefinition(item as Record<string, unknown>));
+  } catch {
+    return [];
+  }
+}
+
+export function readMcpServerDefinitionsSync(projectDir: string): McpServerDefinition[] {
+  try {
+    const raw = fsSync.readFileSync(path.join(projectDir, MCP_SERVERS_PATH), 'utf-8');
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
     return parsed.map((item) => sanitizeMcpServerDefinition(item as Record<string, unknown>));

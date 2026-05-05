@@ -19,6 +19,7 @@ import { EmailDraftTool, EmailSendTool } from './emailTools';
 import { SlackNotifyTool } from './slackTools';
 import { TelegramNotifyTool } from './telegramTools';
 import { CalendarReadTool, CalendarWriteTool } from './calendarTools';
+import { createMcpToolEntries } from './mcpTools';
 
 export interface ToolRegistryEntry {
   tool: Tool;
@@ -67,6 +68,14 @@ export class ToolRegistry {
 export function createBuiltinToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();
   for (const entry of BUILTIN_TOOL_ENTRIES) registry.register(entry);
+  return registry;
+}
+
+export function createToolRegistry(projectDir?: string): ToolRegistry {
+  const registry = createBuiltinToolRegistry();
+  if (projectDir) {
+    for (const entry of createMcpToolEntries(projectDir)) registry.register(entry);
+  }
   return registry;
 }
 
