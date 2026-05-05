@@ -1,5 +1,6 @@
 import type { Server } from 'http';
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
 import http from 'http';
 import * as os from 'os';
 import * as path from 'path';
@@ -441,6 +442,30 @@ describe('web server API validation', () => {
       if (previous === undefined) delete process.env.HARNESS_DISABLE_STARTUP_CONNECTORS;
       else process.env.HARNESS_DISABLE_STARTUP_CONNECTORS = previous;
     }
+  });
+
+  it('keeps startTelegramBot and startDiscordBot inside the startupConnectorsEnabled gate', () => {
+    // Structural regression: the startup connector calls live in `app.listen(...)`
+    // so we cannot observe their side effect from a unit test. Pin the contract
+    // by extracting the `if (startupConnectorsEnabled()) { ... }` block via brace
+    // counting and asserting both calls live inside it.
+    const source = fsSync.readFileSync(path.join(__dirname, 'server.ts'), 'utf-8');
+    const gateIdx = source.indexOf('if (startupConnectorsEnabled())');
+    expect(gateIdx).toBeGreaterThan(-1);
+    const openIdx = source.indexOf('{', gateIdx);
+    expect(openIdx).toBeGreaterThan(-1);
+    let depth = 1;
+    let i = openIdx + 1;
+    while (i < source.length && depth > 0) {
+      const ch = source[i];
+      if (ch === '{') depth++;
+      else if (ch === '}') depth--;
+      i++;
+    }
+    expect(depth).toBe(0);
+    const block = source.slice(openIdx + 1, i - 1);
+    expect(block).toContain('startTelegramBot(');
+    expect(block).toContain('startDiscordBot(');
   });
 
   it('uses backend prefixes when inferring cloud tool support', () => {
@@ -1423,23 +1448,25 @@ describe('web server API validation', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: '_sse_smoke', paths: ['README.md'], backend: 'hash' }),
     });
-    expect(response.status).toBe(200);
-    expect(response.headers.get('content-type')).toContain('text/event-stream');
-    const reader = response.body!.getReader();
-    const decoder = new TextDecoder();
-    let buffered = '';
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffered += decoder.decode(value, { stream: true });
+    try {
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toContain('text/event-stream');
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffered = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffered += decoder.decode(value, { stream: true });
+      }
+      expect(buffered).toContain('event: preview');
+      expect(buffered).toContain('event: backend');
+      expect(buffered).toContain('event: file');
+      expect(buffered).toContain('event: done');
+    } finally {
+      // Cleanup the temporary index so it does not leak between runs.
+      await request('/api/rag/indexes/_sse_smoke', { method: 'DELETE' });
     }
-    expect(buffered).toContain('event: preview');
-    expect(buffered).toContain('event: backend');
-    expect(buffered).toContain('event: file');
-    expect(buffered).toContain('event: done');
-    // Cleanup the temporary index so it does not leak between runs.
-    const drop = await request('/api/rag/indexes/_sse_smoke', { method: 'DELETE' });
-    expect(drop.status).toBe(200);
   });
 
   it('exposes tool registry metadata for the dashboard', async () => {

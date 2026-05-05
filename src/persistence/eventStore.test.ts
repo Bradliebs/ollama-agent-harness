@@ -93,6 +93,28 @@ describe('eventStore', () => {
     expect(remaining[0].event_id).toBe(ev1.event_id);
   });
 
+  it('preserves chronological order when emissions share a millisecond timestamp', async () => {
+    // Force three events to share an identical timestamp the way fast CI hosts can.
+    // Without a file-append tiebreaker, queryEvents sort+reverse rotates the order
+    // and getUndoEvents returns the wrong slice.
+    const fixed = '2026-05-05T00:00:00.000Z';
+    const realToISOString = Date.prototype.toISOString;
+    jest.spyOn(Date.prototype, 'toISOString').mockReturnValue(fixed);
+    try {
+      const ev1 = await emitEvent(tmpDir, 'task', 'task_added', { title: 'a' }, 'user', 'svc-tie');
+      const ev2 = await emitEvent(tmpDir, 'task', 'task_added', { title: 'b' }, 'user', 'svc-tie');
+      const ev3 = await emitEvent(tmpDir, 'task', 'task_closed', { title: 'a' }, 'user', 'svc-tie');
+      expect(ev1.timestamp).toBe(ev2.timestamp);
+      expect(ev2.timestamp).toBe(ev3.timestamp);
+
+      const remaining = await getUndoEvents(tmpDir, 'svc-tie', ev2.event_id);
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0].event_id).toBe(ev1.event_id);
+    } finally {
+      Date.prototype.toISOString = realToISOString;
+    }
+  });
+
   it('summarizes the event store', async () => {
     await emitEvent(tmpDir, 'service', 'created', {}, 'user');
     await emitEvent(tmpDir, 'tool', 'called', {}, 'agent');

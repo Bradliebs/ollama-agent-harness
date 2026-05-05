@@ -35,6 +35,13 @@ export interface HarnessEvent {
   type: string;
   /** ISO timestamp. */
   timestamp: string;
+  /**
+   * Process-local monotonic sequence number. Assigned by appendEvent so
+   * events emitted in the same millisecond keep a deterministic order even
+   * when timestamps tie. Optional for backward compatibility with legacy
+   * JSONL lines written before this field existed.
+   */
+  seq?: number;
   /** Optional correlation key (service_id, session_id, etc). */
   subject_id?: string;
   /** Structured payload. */
@@ -85,6 +92,7 @@ function snapshotsDir(projectDir: string): string {
 
 const MAX_EVENT_LINES = 10_000;
 let knownEventLineCount = -1;
+let appendSeq = 0;
 
 /** SSE subscribers for live event streaming. */
 const eventStreamListeners = new Set<(event: HarnessEvent) => void>();
@@ -94,10 +102,11 @@ export function subscribeEventStream(listener: (event: HarnessEvent) => void): (
   return () => { eventStreamListeners.delete(listener); };
 }
 
-export async function appendEvent(projectDir: string, event: Omit<HarnessEvent, 'event_id' | 'timestamp'>): Promise<HarnessEvent> {
+export async function appendEvent(projectDir: string, event: Omit<HarnessEvent, 'event_id' | 'timestamp' | 'seq'>): Promise<HarnessEvent> {
   const full: HarnessEvent = {
     event_id: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
+    seq: ++appendSeq,
     ...event,
   };
   const fp = eventsFilePath(projectDir);
@@ -137,6 +146,13 @@ export async function queryEvents(projectDir: string, query: EventQuery = {}): P
   const results: HarnessEvent[] = [];
   const rl = readline.createInterface({ input: createReadStream(fp, 'utf-8'), crlfDelay: Infinity });
 
+  // Track file-append order so equal-timestamp events (rapid emissions in the
+  // same millisecond) keep a deterministic chronological order. Without this
+  // tiebreaker the DESC sort is stable but downstream callers that reverse the
+  // result get reordered events whenever timestamps tie. See eventStore.test
+  // 'gets undo events'.
+  const appendOrder = new Map<string, number>();
+  let nextOrder = 0;
   for await (const line of rl) {
     if (!line.trim()) continue;
     try {
@@ -147,12 +163,19 @@ export async function queryEvents(projectDir: string, query: EventQuery = {}): P
       if (query.actor && ev.actor !== query.actor) continue;
       if (query.after && ev.timestamp <= query.after) continue;
       if (query.before && ev.timestamp >= query.before) continue;
+      appendOrder.set(ev.event_id, nextOrder++);
       results.push(ev);
     } catch { /* skip corrupt lines */ }
   }
 
-  // Most recent first
-  results.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  // Most recent first; tie-break by seq when present, else by file-append order so
+  // chronological reversal stays deterministic.
+  results.sort((a, b) => {
+    const cmp = b.timestamp.localeCompare(a.timestamp);
+    if (cmp !== 0) return cmp;
+    if (typeof a.seq === 'number' && typeof b.seq === 'number') return b.seq - a.seq;
+    return (appendOrder.get(b.event_id) ?? 0) - (appendOrder.get(a.event_id) ?? 0);
+  });
   if (query.limit && results.length > query.limit) results.length = query.limit;
   return results;
 }

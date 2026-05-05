@@ -11,6 +11,49 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.27
+
+Release-pipeline rescue: fixes the recurrent CI flake that prevented every
+release between v0.3.20 and v0.3.26 from publishing. Bundles all deferred
+v0.3.21–v0.3.26 work (see those sections below) and adds the rescue itself.
+
+> **Release gap notice.** Tags v0.3.20 through v0.3.26 were created but their
+> Release workflows all failed at the same `src/persistence/eventStore.test.ts`
+> flake; no GitHub Release was ever published for those versions. The latest
+> published release before this is v0.3.19. v0.3.27 is the first release that
+> ships all intermediate work. Earlier failed runs were retained for audit and
+> are documented in the changelog below.
+
+### Release Pipeline Rescue
+
+* **`eventStore` same-millisecond ordering fix** — `queryEvents` now tie-breaks
+  equal-timestamp events by an in-memory file-append index and a new optional
+  monotonic `seq` field on each `HarnessEvent`. CI hosts emit events fast
+  enough to land in the same millisecond; the previous DESC sort was stable
+  but `getUndoEvents` reverses the result, so ties rotated and one extra
+  event always slipped past the cutoff. Pinned by a regression test that
+  mocks `Date.toISOString()` to force ties.
+* **`HarnessEvent.seq`** — new optional monotonic counter assigned by
+  `appendEvent`. Persisted in the event JSONL. Used as the primary tiebreaker
+  in `queryEvents` ordering; legacy events without `seq` fall back to
+  file-append order.
+* **`scripts/bump-version.js` + `npm run release:bump`** — single-source
+  version bump that updates `package.json`, the lockfile, the NSIS installer
+  metadata, and `release-provenance.json` together, eliminating the
+  4-mismatch failure that bit the v0.3.26 bump.
+* **`npm run verify:changelog`** — fails when `package.json` version has no
+  matching `## ... v<version>` section in CHANGELOG. Wired into the CI
+  workflow before `release:dry-run` so a tagged release whose notes would be
+  empty cannot reach the Publish step.
+* **Structural test for the connector startup gate** — pins
+  `startTelegramBot` and `startDiscordBot` to live inside the same
+  `if (startupConnectorsEnabled())` block so an accidental move outside the
+  gate fails CI rather than CI-poisoning the next release smoke.
+* **Test isolation hardening** — wraps the remaining trailing-cleanup test
+  patterns (RAG SSE smoke and one earlier sweep) in `try/finally` so a failed
+  assertion can no longer leak grants, kill-switch, permission mode, or
+  disabled-tool state into later tests in full-suite ordering.
+
 ## Ollama Agent Harness v0.3.26
 
 Routing visibility, MCP runtime, and release-pipeline hardening on top of v0.3.25.
