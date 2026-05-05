@@ -109,6 +109,25 @@ The First-run setup panel has the same check. Leave the audio test file blank wh
 
 Run `harness doctor` after changing model or media settings to confirm that Ollama and optional helpers are ready.
 
+## Auto-Routing Targets For Weak Local Models
+
+When `gemma4:e4b` or `gemma4:26b` is the active model and a turn needs tools or
+current information, Harness auto-routes to the first available stronger model
+from this list. Pull any of them locally with `ollama pull <model>` to make
+them eligible:
+
+| Cloud model | Notes |
+|-------------|-------|
+| `gpt-oss:20b-cloud` | Default routing target; reliable tool calls |
+| `gpt-oss:120b-cloud` | Stronger fallback when 20B is unavailable |
+| `qwen3-coder:480b-cloud` | Code-heavy tasks |
+| `deepseek-v3.1:671b-cloud` | Long-context reasoning |
+| `glm-5.1:cloud` | GLM 4/5 family; strong tool-calling, lighter footprint |
+| `kimi-k2.5:cloud` | Subscription gated; same lineage available free on Groq as `kimi-k2-instruct` |
+
+Local strong-tool alternatives (no `:cloud` suffix) such as `qwen2.5-coder:14b`
+also qualify and are preferred when present.
+
 ## Remote Provider Fallback
 
 Remote backends can be selected with `--backend` or by choosing a backend-prefixed model in the UI, such as `groq/llama-3.1-8b-instant`. Harness cycles to the next configured remote backend when a provider returns a limit-style failure such as HTTP 429, HTTP 413, quota exceeded, tokens-per-minute exceeded, or context-length exceeded.

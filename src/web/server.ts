@@ -5542,6 +5542,7 @@ const PREFERRED_AGENTIC_FALLBACK_MODELS = [
   'qwen2.5-coder:7b',
   'deepseek-v3.1:671b-cloud',
   'qwen3-coder:480b-cloud',
+  'glm-5.1:cloud',
 ];
 
 export async function resolveChatModelForRequest(requestedModel: string, messageText: string): Promise<ChatModelRoutingDecision> {
@@ -5586,7 +5587,10 @@ export function inferModelCapabilities(name: string, details: Record<string, unk
   // Tool-use capability heuristic based on model family and runtime path.
   const weakGemma4LocalToolModel = /^gemma4:(e4b|26b)$/i.test(name.trim());
   const weakToolModels = /phi-?3.*mini|tinyllama|smollm|qwen2?\.?5?-?(0\.5|1\.5|3)b/i;
-  const strongToolModels = /kimi|qwen.*coder.*(14|32|72)b|deepseek.*(v3|coder)|mistral.*(medium|large)|command-r|gpt-?4|claude|llama.*70b/i;
+  // Strong tool-use families. Includes :cloud variants of gpt-oss, qwen3-coder,
+  // deepseek-v3, and the GLM 4/5 family which were previously classified as
+  // unknown despite live probes confirming reliable tool calls.
+  const strongToolModels = /kimi|qwen.*coder.*(14|32|72|480)b|qwen3-coder.*cloud|gpt-oss.*cloud|deepseek.*(v3|coder)|glm-?[45](\.\d+)?(:cloud)?|mistral.*(medium|large)|command-r|gpt-?4|claude|llama.*70b/i;
 
   // Cloud backend models: use the preset's supportsTools flag when available.
   const slash = name.indexOf('/');

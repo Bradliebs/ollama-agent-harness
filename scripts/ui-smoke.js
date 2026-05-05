@@ -198,9 +198,17 @@ async function main() {
         && row.textContent.includes('Action blocked')
         && row.textContent.includes('Auto-approve all');
     });
+    // Wait for the in-page smoke flag to flip true so the SSE stream has been
+    // fully consumed and the .tool-item-permission row is rendered. This was
+    // a race on slow CI hosts where boundingBox would time out at 30s before
+    // the row attached. Local runs always won the race; CI did not.
+    await page.waitForFunction(() => window.__permissionRecoverySmoke === true, null, { timeout: 15_000 }).catch(() => {});
     const recoveryRow = page.locator('.tool-item-permission').first();
-    const recoveryBox = await recoveryRow.boundingBox();
-    const recoveryButtonBox = await recoveryRow.locator('button:has-text("Auto-approve all")').boundingBox();
+    await recoveryRow.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
+    const recoveryBox = await recoveryRow.boundingBox().catch(() => null);
+    const recoveryButtonBox = recoveryBox
+      ? await recoveryRow.locator('button:has-text("Auto-approve all")').boundingBox().catch(() => null)
+      : null;
     const recoveryScreenshotPath = path.join(os.tmpdir(), `harness-permission-recovery-${Date.now()}.png`);
     if (recoveryBox) await recoveryRow.screenshot({ path: recoveryScreenshotPath });
     const recoveryLayoutSmoke = Boolean(recoveryBox)

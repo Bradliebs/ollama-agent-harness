@@ -473,6 +473,17 @@ describe('web server API validation', () => {
     expect(inferModelCapabilities('replicate/meta/meta-llama-3-8b-instruct').toolUse).toBe('weak');
   });
 
+  it('classifies known :cloud Ollama models with the correct toolUse tier', () => {
+    // Strong-tools cloud variants verified by live probes (see user-memory llm-backends notes).
+    expect(inferModelCapabilities('gpt-oss:20b-cloud').toolUse).toBe('strong');
+    expect(inferModelCapabilities('gpt-oss:120b-cloud').toolUse).toBe('strong');
+    expect(inferModelCapabilities('qwen3-coder:480b-cloud').toolUse).toBe('strong');
+    expect(inferModelCapabilities('kimi-k2.5:cloud').toolUse).toBe('strong');
+    expect(inferModelCapabilities('glm-5.1:cloud').toolUse).toBe('strong');
+    // Weak-tools local model stays weak even when not auto-routed.
+    expect(inferModelCapabilities('gemma4:e4b').toolUse).toBe('weak');
+  });
+
   it('readiness plan-complete shows warn not blocked', async () => {
     const planPath = path.join(process.cwd(), 'IMPLEMENTATION_PLAN.md');
     const original = await fs.readFile(planPath, 'utf-8');
