@@ -17,12 +17,19 @@ async function main() {
     cleanupServer = await ensureTargetServer();
 
     const graph = await fetchJson('/api/mycelium');
-    assert(graph.stats?.nodes === 4, `expected 4 seeded nodes, got ${graph.stats?.nodes}`);
-    assert(graph.stats?.edges === 3, `expected 3 seeded edges, got ${graph.stats?.edges}`);
-    assert(graph.stats?.episodes === 1, `expected 1 seeded episode, got ${graph.stats?.episodes}`);
+    // The server seeds default safety/agent/workflow nodes on startup, so
+    // the live graph contains the 4 smoke nodes plus the auto-seeded set.
+    // Assert presence of the seeded shape rather than exact counts.
+    const expectedSeedIds = ['query.smoke', 'tool.smoke', 'verifier.smoke', 'safety.smoke'];
+    const nodeIds = new Set((graph.nodes || []).map((n) => n.id));
+    for (const id of expectedSeedIds) {
+      assert(nodeIds.has(id), `seeded node ${id} was not returned (got ${graph.stats?.nodes} nodes total)`);
+    }
+    assert((graph.stats?.edges ?? 0) >= 3, `expected at least 3 seeded edges, got ${graph.stats?.edges}`);
+    assert((graph.stats?.episodes ?? 0) >= 1, `expected at least 1 seeded episode, got ${graph.stats?.episodes}`);
     assert(Array.isArray(graph.nodes) && graph.nodes.some((node) => node.id === 'query.smoke'), 'seeded query node was not returned');
     assert(Array.isArray(graph.edges) && graph.edges.some((edge) => edge.blockedCount === 2), 'blocked route edge was not returned');
-    assert(Array.isArray(graph.episodes) && graph.episodes[0]?.blocked === true, 'blocked episode was not returned');
+    assert(Array.isArray(graph.episodes) && graph.episodes.some((ep) => ep.blocked === true), 'blocked episode was not returned');
 
     const lastRoute = await fetchJson('/api/mycelium/last-route');
     assert(lastRoute.episode?.query === 'smoke route inspection', 'last route query did not match seed');
