@@ -3877,6 +3877,9 @@ function maybeShowSlashPalette(value) {
   }
   // Hide once the user types past the command name (a space marks args mode).
   if (value.includes(' ')) { hideSlashPalette(); return; }
+  // Don't show the palette for a bare `/` — too distracting when users just
+  // want to type a literal slash. Wait for at least one alphanumeric char.
+  if (value.length < 2) { hideSlashPalette(); return; }
   const prefix = value.toLowerCase();
   const term = prefix.slice(1); // drop the leading '/' for description matching
   const all = getAllSlashCommands();
@@ -4016,23 +4019,9 @@ function welcomeMarkup() {
     + '<div class="flow-arrow">→</div>'
     + '<div class="flow-step flow-s4"><div class="flow-icon">✨</div><div class="flow-label">You get answers</div></div>'
     + '</div>'
-    + '<details class="welcome-disclosure" id="missionControlDisclosure"><summary>Advanced: Mission Control &amp; Nervous System</summary>'
-    + '<div class="mission-control" id="missionControlPanel"><div class="readiness-empty">Loading readiness...</div></div>'
-    + '</details>'
     + '<div class="quick-suggestions">'
     + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">📂</div><div class="qc-body"><div class="qc-title">List files in this project</div><div class="qc-desc">Tour what\'s here. I\'ll group by folder.</div></div></div>'
     + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">🔍</div><div class="qc-body"><div class="qc-title">Search for TODO in my code</div><div class="qc-desc">Find loose ends across the whole tree.</div></div></div>'
-    + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">🐍</div><div class="qc-body"><div class="qc-title">Help me write a Python script</div><div class="qc-desc">Generate, run, and iterate locally.</div></div></div>'
-    + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">⚡</div><div class="qc-body"><div class="qc-title">Create a skill for code review</div><div class="qc-desc">Save a reusable agent capability.</div></div></div>'
-    + '<div class="quick-card" onclick="openLeftTabByName(\'snapshots\')"><div class="qc-icon">📦</div><div class="qc-body"><div class="qc-title">Snapshot my skills + memory</div><div class="qc-desc">Reversible backups before risky edits.</div></div></div>'
-    + '<div class="quick-card" onclick="openLeftTabByName(\'rag\')"><div class="qc-icon">🔎</div><div class="qc-body"><div class="qc-title">Index my files for semantic search</div><div class="qc-desc">Build a local RAG index in seconds.</div></div></div>'
-    + '</div>'
-    + '<div class="welcome-tools">'
-    + '<strong>Explore:</strong>'
-    + '<span class="welcome-tool-chip" onclick="openLeftTabByName(\'files\')">📁 Files</span>'
-    + '<span class="welcome-tool-chip" onclick="openLeftTabByName(\'memory\')">🧠 Memory</span>'
-    + '<span class="welcome-tool-chip" onclick="openLeftTabByName(\'skills\')">⚡ Skills</span>'
-    + '<span class="welcome-tool-chip" onclick="toggleVoiceInput()">🎤 Voice input</span>'
     + '</div>'
     + '<details class="welcome-disclosure"><summary>What can I do? — full capability list</summary>'
     + '<div class="welcome-capabilities">'
@@ -5305,6 +5294,35 @@ function setupSettingsCollapse() {
       section.classList.add('open');
     }
   });
+  groupAdvancedSettings(panel);
+}
+
+// Hide rarely-touched sections behind a single "Advanced (N)" disclosure so
+// the right panel doesn't dump 14 expandable sections on the user. The set
+// of visible sections is identified by their h4 textContent (resilient to the
+// order of DOM insertion).
+const ALWAYS_VISIBLE_SETTINGS = new Set(['About', 'Connection', '📁 Agent Files', 'Safety Mode', 'Generation']);
+
+function groupAdvancedSettings(panel) {
+  if (panel.dataset.advancedGrouped === '1') return;
+  panel.dataset.advancedGrouped = '1';
+  const sections = Array.from(panel.querySelectorAll('.settings-section'));
+  const advanced = sections.filter((section) => {
+    const h4 = section.querySelector('h4');
+    if (!h4) return false;
+    // Match against the leading text of the heading (skip the trailing reset button).
+    const titleNode = Array.from(h4.childNodes).find((n) => n.nodeType === Node.TEXT_NODE);
+    const title = (titleNode ? titleNode.textContent : h4.textContent).trim();
+    return !ALWAYS_VISIBLE_SETTINGS.has(title);
+  });
+  if (advanced.length === 0) return;
+  const wrap = document.createElement('details');
+  wrap.className = 'settings-advanced-fold';
+  wrap.innerHTML = '<summary>Advanced (' + advanced.length + ' more sections)</summary>';
+  // Insert the wrap at the position of the first advanced section, then move
+  // every advanced section into it preserving their order.
+  advanced[0].parentNode.insertBefore(wrap, advanced[0]);
+  for (const section of advanced) wrap.appendChild(section);
 }
 
 function setAllSettingsSections(open) {

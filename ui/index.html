@@ -21,6 +21,12 @@
     .panel-search input{width:100%;padding:7px 10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px;outline:none}
     .panel-search input:focus{border-color:var(--accent)}
     .settings-collapse-actions{display:flex;gap:6px;margin-top:6px;justify-content:flex-end}
+    /* "Advanced" disclosure that wraps less-common settings sections. */
+    .settings-advanced-fold{border-top:1px solid var(--border);padding:0}
+    .settings-advanced-fold > summary{cursor:pointer;padding:14px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);-webkit-user-select:none;user-select:none;background:var(--surface);transition:background .15s}
+    .settings-advanced-fold > summary:hover{background:var(--surface2);color:var(--text)}
+    .settings-advanced-fold[open] > summary{color:var(--text)}
+    .settings-advanced-fold .settings-section{border-top:1px dashed var(--border)}
     .btn-sm{background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s}
     .btn-sm:hover{border-color:var(--accent);color:var(--text)}
     .btn-sm:disabled{opacity:.55;cursor:default;border-color:var(--border);color:var(--text-dim)}
@@ -772,7 +778,6 @@
         <span class="meta-sep">·</span>
         <span class="session-hud-val" id="sessionHudTime">0s</span>
       </div>
-      <div class="streaming-badge" id="streamingBadge" title="Model is generating a response">🔴 streaming</div>
       <div class="session-hud autonomy-hud-action hidden-by-default" id="autonomyHud" title="Autonomy loop progress (.forge-state.json)" onclick="toggleAutonomyLog()">
         <span>🤖 Autonomy</span>
         <span class="session-hud-val" id="autonomyHudTask">idle</span>
@@ -812,11 +817,36 @@
           <div class="flow-step flow-s4"><div class="flow-icon">✨</div><div class="flow-label">You get answers</div></div>
         </div>
 
-        <details class="welcome-disclosure"><summary>Advanced: Mission Control &amp; Nervous System</summary>
-        <div class="mission-control" id="missionControlPanel">
-          <div class="readiness-empty">Loading readiness...</div>
-        </div>
+        <details class="welcome-disclosure" id="welcomeFirstRun">
+          <summary>First time here? Walk through setup &amp; tutorial</summary>
+          <div class="welcome-disclosure-body">
+            <div class="beginner-guide" id="beginnerGuide">
+              <div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div>
+              <div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div>
+              <div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div>
+            </div>
+            <div class="walkthrough-checklist" id="walkthroughChecklist">
+              <div class="walkthrough-step"><div class="walkthrough-dot">1</div><div><strong>Check setup</strong>Confirm Ollama, optional vision, and optional audio helpers.</div><button class="btn-sm" onclick="openWalkthroughTarget('setup')">Open</button></div>
+              <div class="walkthrough-step"><div class="walkthrough-dot">2</div><div><strong>Create a profile</strong>Use the guided form instead of hand-writing JSON.</div><button class="btn-sm" onclick="openWalkthroughTarget('validation')">Open</button></div>
+              <div class="walkthrough-step"><div class="walkthrough-dot">3</div><div><strong>Export results</strong>Download validation trends from the Learning tab.</div><button class="btn-sm" onclick="openWalkthroughTarget('learning')">Open</button></div>
+              <div class="walkthrough-step"><div class="walkthrough-dot">4</div><div><strong>Verify install</strong>Check the running version and release provenance.</div><button class="btn-sm" onclick="openWalkthroughTarget('about')">Open</button></div>
+            </div>
+            <div class="first-run-setup" id="firstRunSetup">
+              <h3>First-run setup</h3>
+              <p>Set the local Ollama host and optional media helpers before your first chat.</p>
+              <div class="first-run-grid">
+                <div><label for="firstRunOllamaHost">Ollama host</label><input id="firstRunOllamaHost" type="text" value="http://localhost:11434"></div>
+                <div><label for="firstRunVisionModel">Vision model</label><input id="firstRunVisionModel" type="text" placeholder="llava"></div>
+                <div><label for="firstRunAudioCommand">Audio command</label><input id="firstRunAudioCommand" type="text" placeholder='whisper "{input}" --model base'></div>
+                <div><label for="firstRunAudioSamplePath">Audio test file</label><input id="firstRunAudioSamplePath" type="text" placeholder=".harness/uploads/sample.wav"></div>
+              </div>
+              <div class="first-run-actions"><button class="btn-sm" onclick="applyFirstRunSetup()">Save setup</button><button class="btn-sm" onclick="checkFirstRunHealth()">Check setup</button><span class="first-run-status" id="firstRunStatus">Optional. You can change these later in Settings.</span></div>
+              <div class="trace-detail initial-hidden" id="firstRunHealth"></div>
+            </div>
+          </div>
         </details>
+      </div>
+    </div>
 
         <div class="quick-suggestions" id="quickSuggestions">
           <div class="quick-card" onclick="sendTip(this.querySelector('.qc-title'))">
@@ -827,31 +857,6 @@
             <div class="qc-icon">🔍</div>
             <div class="qc-body"><div class="qc-title">Search for TODO in my code</div><div class="qc-desc">Find loose ends across the whole tree.</div></div>
           </div>
-          <div class="quick-card" onclick="sendTip(this.querySelector('.qc-title'))">
-            <div class="qc-icon">🐍</div>
-            <div class="qc-body"><div class="qc-title">Help me write a Python script</div><div class="qc-desc">Generate, run, and iterate locally.</div></div>
-          </div>
-          <div class="quick-card" onclick="sendTip(this.querySelector('.qc-title'))">
-            <div class="qc-icon">⚡</div>
-            <div class="qc-body"><div class="qc-title">Create a skill for code review</div><div class="qc-desc">Save a reusable agent capability.</div></div>
-          </div>
-          <div class="quick-card" onclick="openLeftTabByName('snapshots')">
-            <div class="qc-icon">📦</div>
-            <div class="qc-body"><div class="qc-title">Snapshot my skills + memory</div><div class="qc-desc">Reversible backups before risky edits.</div></div>
-          </div>
-          <div class="quick-card" onclick="openLeftTabByName('rag')">
-            <div class="qc-icon">🔎</div>
-            <div class="qc-body"><div class="qc-title">Index my files for semantic search</div><div class="qc-desc">Build a local RAG index in seconds.</div></div>
-          </div>
-        </div>
-
-        <div class="welcome-tools">
-          <strong>Try also:</strong>
-          <span class="welcome-tool-chip" onclick="openLeftTabByName('tools')">🛠 Local Tools</span>
-          <span class="welcome-tool-chip" onclick="openLeftTabByName('memory')">🧠 Memory</span>
-          <span class="welcome-tool-chip" onclick="openLeftTabByName('skills')">⚡ Skills</span>
-          <span class="welcome-tool-chip" onclick="toggleVoiceInput()">🎤 Voice input</span>
-          <span class="welcome-tool-chip" onclick="document.getElementById('chatInput').focus(); document.getElementById('chatInput').value='/'; autoSize(document.getElementById('chatInput'));">/ slash commands</span>
         </div>
 
         <div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div>
@@ -1587,6 +1592,6 @@
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="./chatHistory.js?v=3"></script>
 <script src="./toolActivity.js?v=1"></script>
-<script src="./app.js?v=11"></script>
+<script src="./app.js?v=12"></script>
 </body>
 </html>
