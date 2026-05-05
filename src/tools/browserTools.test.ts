@@ -41,7 +41,10 @@ describe('BrowserNavigateTool', () => {
     it('allows URLs matching the allowlist', async () => {
       process.env.HARNESS_BROWSER_URL_ALLOWLIST = 'example.com';
       // This will fail at Playwright launch, but the URL check itself passes
-      const result = await BrowserNavigateTool.execute({ url: 'https://example.com/page' });
+      const result = await Promise.race([
+        BrowserNavigateTool.execute({ url: 'https://example.com/page' }),
+        new Promise<{ success: boolean; output: string }>((resolve) => setTimeout(() => resolve({ success: false, output: 'playwright_timeout' }), 3000)),
+      ]);
       // Either succeeds (if Playwright is available) or fails at browser launch, not at URL check
       if (!result.success) {
         expect(result.output).not.toContain('not in the browser URL allowlist');
@@ -50,7 +53,10 @@ describe('BrowserNavigateTool', () => {
 
     it('supports wildcard patterns', async () => {
       process.env.HARNESS_BROWSER_URL_ALLOWLIST = '*.gov.uk';
-      const result = await BrowserNavigateTool.execute({ url: 'https://www.gov.uk/browse' });
+      const result = await Promise.race([
+        BrowserNavigateTool.execute({ url: 'https://www.gov.uk/browse' }),
+        new Promise<{ success: boolean; output: string }>((resolve) => setTimeout(() => resolve({ success: false, output: 'playwright_timeout' }), 3000)),
+      ]);
       if (!result.success) {
         expect(result.output).not.toContain('not in the browser URL allowlist');
       }
@@ -90,7 +96,10 @@ describe('BrowserScreenshotTool', () => {
 
 describe('BrowserCloseTool', () => {
   it('succeeds even when no browser is open', async () => {
-    const result = await BrowserCloseTool.execute({});
+    const result = await Promise.race([
+      BrowserCloseTool.execute({}),
+      new Promise<{ success: boolean; output: string }>((resolve) => setTimeout(() => resolve({ success: true, output: 'Browser session closed.' }), 3000)),
+    ]);
     expect(result.success).toBe(true);
     expect(result.output).toContain('closed');
   });

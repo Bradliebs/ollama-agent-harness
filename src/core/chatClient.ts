@@ -8,6 +8,12 @@ export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalDurationNs: number;
+  /** Nanoseconds spent loading the model into memory (0 when already cached). */
+  loadDurationNs?: number;
+  /** Nanoseconds spent evaluating the prompt (prefill). */
+  promptEvalDurationNs?: number;
+  /** Nanoseconds spent generating tokens. */
+  evalDurationNs?: number;
 }
 
 export interface ChatResult {

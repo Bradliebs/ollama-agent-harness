@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { adaptiveMaxTurns, clearSynthesisStats, loadSynthesisStats, recordSessionCompleted, recordSynthesisFired } from './synthesisStats';
+import { adaptiveMaxTurns, adaptiveTimeBudget, clearSynthesisStats, loadSynthesisStats, recordAvgTurnDuration, recordSessionCompleted, recordSynthesisFired } from './synthesisStats';
 
 describe('synthesisStats', () => {
   let projectDir: string;
@@ -84,5 +84,45 @@ describe('synthesisStats', () => {
     await recordSynthesisFired(projectDir, 'only-model');
     await clearSynthesisStats(projectDir, 'only-model');
     expect(await loadSynthesisStats(projectDir)).toEqual({});
+  });
+
+  describe('adaptive time budget', () => {
+    it('returns default budget when model has no history', () => {
+      expect(adaptiveTimeBudget({}, 'unknown', 180_000)).toBe(180_000);
+    });
+
+    it('returns default budget when model has fewer than 3 sessions', () => {
+      const stats = { 'new-model': { fired: 0, total: 2, avgTurnMs: 15_000 } };
+      expect(adaptiveTimeBudget(stats, 'new-model', 180_000)).toBe(180_000);
+    });
+
+    it('computes budget from avgTurnMs * 10 turns', () => {
+      const stats = { 'gemma4': { fired: 0, total: 5, avgTurnMs: 20_000 } };
+      // 20_000 * 10 = 200_000
+      expect(adaptiveTimeBudget(stats, 'gemma4', 180_000)).toBe(200_000);
+    });
+
+    it('clamps to minimum 60s', () => {
+      const stats = { 'fast-model': { fired: 0, total: 5, avgTurnMs: 2_000 } };
+      // 2_000 * 10 = 20_000 < MIN_BUDGET_MS
+      expect(adaptiveTimeBudget(stats, 'fast-model', 180_000)).toBe(60_000);
+    });
+
+    it('clamps to maximum 900s', () => {
+      const stats = { 'slow-model': { fired: 0, total: 5, avgTurnMs: 120_000 } };
+      // 120_000 * 10 = 1_200_000 > MAX_BUDGET_MS
+      expect(adaptiveTimeBudget(stats, 'slow-model', 180_000)).toBe(900_000);
+    });
+
+    it('records average turn duration with EMA', async () => {
+      await recordAvgTurnDuration(projectDir, 'test-model', 10_000);
+      let stats = await loadSynthesisStats(projectDir);
+      expect(stats['test-model'].avgTurnMs).toBe(10_000);
+
+      await recordAvgTurnDuration(projectDir, 'test-model', 20_000);
+      stats = await loadSynthesisStats(projectDir);
+      // EMA: 10_000 * 0.7 + 20_000 * 0.3 = 13_000
+      expect(stats['test-model'].avgTurnMs).toBe(13_000);
+    });
   });
 });

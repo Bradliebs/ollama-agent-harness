@@ -158,6 +158,9 @@ async function collectStreamingChatResponse(
         promptTokens: chunk.prompt_eval_count ?? usage.promptTokens,
         completionTokens: chunk.eval_count ?? usage.completionTokens,
         totalDurationNs: chunk.total_duration ?? usage.totalDurationNs,
+        loadDurationNs: chunk.load_duration ?? usage.loadDurationNs,
+        promptEvalDurationNs: chunk.prompt_eval_duration ?? usage.promptEvalDurationNs,
+        evalDurationNs: chunk.eval_duration ?? usage.evalDurationNs,
       };
     }
   } finally {
@@ -179,6 +182,9 @@ function chatResponseToResult(response: ChatResponse): ChatResult {
       promptTokens: response.prompt_eval_count ?? 0,
       completionTokens: response.eval_count ?? 0,
       totalDurationNs: response.total_duration ?? 0,
+      loadDurationNs: response.load_duration ?? 0,
+      promptEvalDurationNs: response.prompt_eval_duration ?? 0,
+      evalDurationNs: response.eval_duration ?? 0,
     },
   };
 }

@@ -674,10 +674,17 @@ function renderModelCapabilityHint() {
     if (!record) return;
     const adaptive = record.adaptiveMaxTurns || data.defaultMaxTurns;
     const def = data.defaultMaxTurns || 25;
-    if (adaptive > def) {
+    const adaptiveBudgetSec = record.adaptiveTimeBudgetMs ? Math.round(record.adaptiveTimeBudgetMs / 1000) : null;
+    const avgTurnSec = record.avgTurnMs ? (record.avgTurnMs / 1000).toFixed(1) : null;
+    if (adaptive > def || adaptiveBudgetSec) {
       const badge = document.createElement('div');
       badge.className = 'model-adaptive-badge';
-      badge.textContent = '🔄 Adaptive: ' + adaptive + ' turns (default ' + def + ') — synthesis fired ' + (record.fired || 0) + '/' + (record.total || 0) + ' sessions ';
+      const parts = [];
+      if (adaptive > def) parts.push('🔄 Adaptive: ' + adaptive + ' turns (default ' + def + ')');
+      if (adaptiveBudgetSec) parts.push('⏱️ ' + adaptiveBudgetSec + 's budget');
+      if (avgTurnSec) parts.push('~' + avgTurnSec + 's/turn');
+      parts.push('synthesis ' + (record.fired || 0) + '/' + (record.total || 0) + ' sessions');
+      badge.textContent = parts.join(' · ') + ' ';
       const resetBtn = document.createElement('a');
       resetBtn.href = '#';
       resetBtn.className = 'model-inline-link';
@@ -692,6 +699,47 @@ function renderModelCapabilityHint() {
 
 function capabilityPill(label, enabled) {
   return '<span class="capability-pill">' + (enabled ? '✓ ' : '○ ') + esc(label) + '</span>';
+}
+
+function loadModelStats() {
+  const panel = document.getElementById('modelStatsPanel');
+  if (!panel) return;
+  panel.textContent = 'Loading…';
+  fetch('/api/synthesis-stats').then(r => r.json()).then(data => {
+    if (!data.stats || Object.keys(data.stats).length === 0) {
+      panel.textContent = 'No model stats yet — run a few chat sessions first.';
+      return;
+    }
+    const rows = Object.entries(data.stats).sort((a, b) => (b[1].total || 0) - (a[1].total || 0)).map(([model, rec]) => {
+      const avg = rec.avgTurnMs ? (rec.avgTurnMs / 1000).toFixed(1) + 's' : '—';
+      const budget = rec.adaptiveTimeBudgetMs ? Math.round(rec.adaptiveTimeBudgetMs / 1000) + 's' : '—';
+      const turns = rec.adaptiveMaxTurns || data.defaultMaxTurns || 25;
+      const synthRate = rec.total > 0 ? Math.round((rec.fired / rec.total) * 100) + '%' : '—';
+      return '<tr><td>' + esc(model) + '</td><td>' + rec.total + '</td><td>' + avg + '</td><td>' + budget + '</td><td>' + turns + '</td><td>' + synthRate + '</td></tr>';
+    }).join('');
+    panel.innerHTML = '<table style="width:100%;font-size:11px;border-collapse:collapse;margin-top:4px">'
+      + '<thead><tr style="text-align:left;color:var(--text-dim)"><th>Model</th><th>Sessions</th><th>Avg turn</th><th>Budget</th><th>Max turns</th><th>Synth rate</th></tr></thead>'
+      + '<tbody>' + rows + '</tbody></table>'
+      + '<button class="btn-sm" style="margin-top:6px" onclick="exportModelStatsCsv()">Download CSV</button>';
+  }).catch(() => { panel.textContent = 'Failed to load stats.'; });
+}
+
+function exportModelStatsCsv() {
+  fetch('/api/synthesis-stats').then(r => r.json()).then(data => {
+    if (!data.stats) return;
+    const header = 'Model,Sessions,Fired,Avg Turn (ms),Adaptive Budget (ms),Max Turns,Synth Rate (%)';
+    const rows = Object.entries(data.stats).sort((a, b) => (b[1].total || 0) - (a[1].total || 0)).map(([model, rec]) => {
+      const synthRate = rec.total > 0 ? Math.round((rec.fired / rec.total) * 100) : 0;
+      return [model, rec.total || 0, rec.fired || 0, rec.avgTurnMs || 0, rec.adaptiveTimeBudgetMs || 0, rec.adaptiveMaxTurns || 25, synthRate].join(',');
+    });
+    const csv = [header, ...rows].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'model-stats-' + new Date().toISOString().slice(0, 10) + '.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }).catch(() => { alert('Failed to export stats.'); });
 }
 
 function getModelProfileSuggestion(modelName) {
@@ -773,6 +821,28 @@ async function loadSettings() {
     if (s.summarizerModel) document.getElementById('summarizerModel').value = s.summarizerModel;
     if (s.contextMaxTokens) document.getElementById('contextMaxTokens').value = s.contextMaxTokens;
     renderContextDetails(s.context || { configuredMaxTokens: s.contextMaxTokens, detectedMaxTokens: null, effectiveMaxTokens: s.contextMaxTokens });
+    const tbInput = document.getElementById('timeBudgetSec');
+    if (tbInput) {
+      const tbMs = s.timeBudgetMs || 0;
+      tbInput.value = tbMs > 0 ? Math.round(tbMs / 1000) : 180;
+      const hint = document.getElementById('timeBudgetHint');
+      if (hint) {
+        // Fetch synthesis stats to show the adaptive budget for the current model.
+        const modelName = s.model || '';
+        fetch('/api/synthesis-stats').then(r => r.json()).then(data => {
+          const rec = data.stats?.[modelName];
+          if (rec?.adaptiveTimeBudgetMs && tbMs <= 0) {
+            hint.textContent = 'Adaptive: ' + Math.round(rec.adaptiveTimeBudgetMs / 1000) + 's (~' + (rec.avgTurnMs / 1000).toFixed(1) + 's/turn × 10)';
+          } else if (tbMs > 0) {
+            hint.textContent = 'Custom: ' + Math.round(tbMs / 1000) + 's';
+          } else {
+            hint.textContent = 'Auto-detect: local 180s · cloud 600s';
+          }
+        }).catch(() => {
+          hint.textContent = tbMs > 0 ? 'Custom: ' + Math.round(tbMs / 1000) + 's' : 'Auto-detect: local 180s · cloud 600s';
+        });
+      }
+    }
     currentModelRouting = s.modelRouting || {};
     currentMediaTools = s.mediaTools || {};
     currentOutputValidation = s.outputValidation || { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: true };
@@ -2420,7 +2490,17 @@ async function sendMessage(opts) {
               promptTokens: ev.promptTokens || 0,
               completionTokens: ev.completionTokens || 0,
               totalDurationMs: ev.totalDurationMs || 0,
+              loadDurationMs: ev.loadDurationMs || 0,
+              promptEvalDurationMs: ev.promptEvalDurationMs || 0,
+              evalDurationMs: ev.evalDurationMs || 0,
             };
+            break;
+          case 'turn_complete':
+            // Enrich the current turn usage with wall-clock turn duration
+            // so the message footer shows total turn time (model + tools).
+            if (currentTurnUsage) currentTurnUsage.turnDurationMs = ev.durationMs;
+            sessionUsage.totalTurnMs += ev.durationMs || 0;
+            updateSessionHud();
             break;
           case 'context':
             updateContextHud(ev.pressure, ev.strategy, ev.qualityScore, ev.autosaved);
@@ -2483,6 +2563,41 @@ async function sendMessage(opts) {
             toolBox = ensureToolBox(toolBox);
             appendToolItem(toolBox, '🔄', 'synthesis turn', 'model exhausted ' + ev.maxTurns + ' tool turns (' + ev.toolCallsTotal + ' calls) — forcing text summary', false);
             break;
+          case 'time_budget_status': {
+            // Update or create the time budget progress bar in the thinking indicator.
+            const pct = Math.min(100, Math.round((ev.elapsedMs / ev.budgetMs) * 100));
+            const remaining = Math.max(0, Math.round((ev.budgetMs - ev.elapsedMs) / 1000));
+            let bar = thinkEl.querySelector('.time-budget-bar');
+            if (!bar) {
+              bar = document.createElement('div');
+              bar.className = 'time-budget-bar';
+              bar.style.cssText = 'margin-top:4px;height:4px;border-radius:2px;background:var(--surface2);overflow:hidden;max-width:200px';
+              const fill = document.createElement('div');
+              fill.className = 'time-budget-fill';
+              fill.style.cssText = 'height:100%;border-radius:2px;transition:width .5s,background .3s';
+              bar.appendChild(fill);
+              const label = document.createElement('div');
+              label.className = 'time-budget-label';
+              label.style.cssText = 'font-size:10px;color:var(--text-dim);margin-top:2px';
+              bar.appendChild(label);
+              thinkEl.appendChild(bar);
+            }
+            const fill = bar.querySelector('.time-budget-fill');
+            const label = bar.querySelector('.time-budget-label');
+            if (fill) {
+              fill.style.width = pct + '%';
+              fill.style.background = pct > 80 ? 'var(--danger,#e55)' : pct > 50 ? 'var(--warning,orange)' : 'var(--accent,#6cf)';
+            }
+            if (label) label.textContent = remaining + 's remaining · turn ' + ev.turn;
+            // Also show countdown in the topbar streaming badge so it's
+            // visible even when the thinking element scrolls off-screen.
+            const badge = document.getElementById('streamingBadge');
+            if (badge) {
+              const icon = pct > 80 ? '🟡' : '🔴';
+              badge.textContent = icon + ' turn ' + ev.turn + ' · ' + remaining + 's left';
+            }
+            break;
+          }
           case 'auto_continue':
             toolBox = ensureToolBox(toolBox);
             appendToolItem(toolBox, '🔁', 'auto-continue #' + ev.continuationCount, ev.reason + ' — continuing autonomously', false);
@@ -2501,13 +2616,21 @@ async function sendMessage(opts) {
               toolBox = ensureToolBox(toolBox);
               appendToolItem(toolBox, '⚠️', 'completed with validation failures', 'work finished but the output validator rejected the final reply', true);
             }
+            if (ev.reason === 'time_budget_synthesized') {
+              toolBox = ensureToolBox(toolBox);
+              appendToolItem(toolBox, '⏱️', 'time budget reached', 'wall-clock limit reached — model synthesized a summary of its work', false);
+            }
+            if (ev.reason === 'repetition_synthesized') {
+              toolBox = ensureToolBox(toolBox);
+              appendToolItem(toolBox, '🔁', 'repetition detected', 'model was repeating itself — forced synthesis to break the loop', false);
+            }
             break;
         }
       }
     }
     if (thinkEl.parentNode) thinkEl.remove();
     if (!assistantText && toolOnlyResultCount > 0) {
-      if (doneReason === 'max_turns_synthesized') {
+      if (doneReason === 'max_turns_synthesized' || doneReason === 'time_budget_synthesized' || doneReason === 'repetition_synthesized') {
         // Bonus synthesis turn fired but produced empty text — rare edge case.
         assistantText = 'Done (the model synthesized a response but it was empty).';
       } else {
@@ -2554,7 +2677,7 @@ async function sendMessage(opts) {
   document.getElementById('sendBtn').textContent = '➤';
   document.getElementById('sendBtn').title = 'Send';
   document.getElementById('sendBtn').classList.remove('streaming');
-  const badge2 = document.getElementById('streamingBadge'); if (badge2) badge2.classList.remove('active');
+  const badge2 = document.getElementById('streamingBadge'); if (badge2) { badge2.classList.remove('active'); badge2.textContent = '🔴 streaming'; }
   const skipOnceReset = document.getElementById('skipValidationOnce');
   if (skipOnceReset) skipOnceReset.checked = false;
   document.getElementById('chatInput').focus();
@@ -3310,11 +3433,11 @@ function scrollBottom() { const a = document.getElementById('chatArea'); a.scrol
 // finished assistant message and a running total in the topbar HUD.
 // All accumulators reset when the user starts a new chat (`newChat`).
 
-let sessionUsage = { calls: 0, promptTokens: 0, completionTokens: 0, totalDurationMs: 0, lastModel: null };
+let sessionUsage = { calls: 0, promptTokens: 0, completionTokens: 0, totalDurationMs: 0, totalTurnMs: 0, lastModel: null };
 let currentTurnUsage = null;
 
 function resetSessionUsage() {
-  sessionUsage = { calls: 0, promptTokens: 0, completionTokens: 0, totalDurationMs: 0, lastModel: null };
+  sessionUsage = { calls: 0, promptTokens: 0, completionTokens: 0, totalDurationMs: 0, totalTurnMs: 0, lastModel: null };
   currentTurnUsage = null;
   updateSessionHud();
 }
@@ -3341,14 +3464,17 @@ function updateSessionHud() {
   if (!hud || !tokensEl || !timeEl) return;
   const totalTokens = (sessionUsage.promptTokens || 0) + (sessionUsage.completionTokens || 0);
   tokensEl.textContent = formatTokensCompact(totalTokens);
-  timeEl.textContent = formatDurationCompact(sessionUsage.totalDurationMs || 0);
+  // Show wall-clock turn time when available, fall back to model inference time.
+  const displayMs = sessionUsage.totalTurnMs || sessionUsage.totalDurationMs || 0;
+  timeEl.textContent = formatDurationCompact(displayMs);
   hud.classList.toggle('empty', sessionUsage.calls === 0);
   hud.title = sessionUsage.calls === 0
     ? 'Session totals (this conversation) — no LLM calls yet'
     : 'Session totals: ' + sessionUsage.calls + ' call(s) · '
       + sessionUsage.promptTokens + ' prompt tokens · '
       + sessionUsage.completionTokens + ' completion tokens · '
-      + formatDurationCompact(sessionUsage.totalDurationMs)
+      + formatDurationCompact(sessionUsage.totalDurationMs) + ' model'
+      + (sessionUsage.totalTurnMs ? ' · ' + formatDurationCompact(sessionUsage.totalTurnMs) + ' wall-clock' : '')
       + (sessionUsage.lastModel ? ' · last model: ' + sessionUsage.lastModel : '');
 }
 
@@ -3363,13 +3489,29 @@ function attachMessageMeta(msgEl, usage) {
   const meta = document.createElement('div');
   meta.className = 'msg-meta';
   const tokensTotal = (usage.promptTokens || 0) + (usage.completionTokens || 0);
+  const hasTiming = usage.promptEvalDurationMs > 0 || usage.evalDurationMs > 0;
+  const timingTitle = hasTiming
+    ? (usage.promptEvalDurationMs ? formatDurationCompact(usage.promptEvalDurationMs) + ' prefill' : '')
+      + (usage.promptEvalDurationMs && usage.evalDurationMs ? ' + ' : '')
+      + (usage.evalDurationMs ? formatDurationCompact(usage.evalDurationMs) + ' gen' : '')
+      + (usage.loadDurationMs > 500 ? ' + ' + formatDurationCompact(usage.loadDurationMs) + ' load' : '')
+    : '';
+  const timingInline = hasTiming
+    ? '<span class="meta-sep">·</span><span style="color:var(--text-dim);font-size:10px" title="' + esc(timingTitle) + '">'
+      + formatDurationCompact(usage.promptEvalDurationMs || 0) + ' prefill · '
+      + formatDurationCompact(usage.evalDurationMs || 0) + ' gen'
+      + '</span>'
+    : '';
   meta.innerHTML =
     '<span class="meta-pill">' + esc(usage.model || '?') + '</span>'
     + '<span class="meta-sep">·</span>'
     + '<span title="' + (usage.promptTokens || 0) + ' prompt + ' + (usage.completionTokens || 0) + ' completion">'
     + formatTokensCompact(tokensTotal) + '</span>'
     + '<span class="meta-sep">·</span>'
-    + '<span>' + formatDurationCompact(usage.totalDurationMs || 0) + '</span>';
+    + '<span>' + formatDurationCompact(usage.totalDurationMs || 0) + '</span>'
+    + timingInline
+    + (usage.turnDurationMs ? '<span class="meta-sep">·</span><span title="Wall-clock turn time (model + tools)">' + formatDurationCompact(usage.turnDurationMs) + ' turn</span>' : '')
+    + (usage.loadDurationMs > 500 ? '<span class="meta-sep">·</span><span title="Time spent loading model into VRAM">🔥 ' + formatDurationCompact(usage.loadDurationMs) + ' load</span>' : '');
   body.appendChild(meta);
 }
 

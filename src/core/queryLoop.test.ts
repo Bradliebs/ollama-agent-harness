@@ -71,8 +71,8 @@ describe('queryLoop runtime behavior', () => {
 
     const events = await collectEvents(client, []);
 
-    expect(events.map((event) => event.type)).toEqual(['text', 'done']);
-    expect(events[0]).toEqual({ type: 'text', content: 'All done.' });
+    expect(events.map((event) => event.type)).toEqual(['turn_complete', 'text', 'done']);
+    expect(events[1]).toEqual({ type: 'text', content: 'All done.' });
   });
 
   it('emits output validation before final text when validation is enabled', async () => {
@@ -82,7 +82,7 @@ describe('queryLoop runtime behavior', () => {
       config: { outputValidation: { enabled: true, profile: 'oracle-prime' } },
     });
 
-    expect(events.map((event) => event.type)).toEqual(['output_validation', 'text', 'done']);
+    expect(events.map((event) => event.type)).toEqual(['output_validation', 'turn_complete', 'text', 'done']);
     expect(events[0]).toMatchObject({
       type: 'output_validation',
       validation: { profile: 'oracle-prime', status: 'fail' },
@@ -251,7 +251,7 @@ describe('queryLoop runtime behavior', () => {
 
     const events = await collectEvents(client, [tool]);
 
-    expect(events.map((event) => event.type)).toEqual(['tool_call', 'tool_result', 'text', 'done']);
+    expect(events.map((event) => event.type)).toEqual(['tool_call', 'tool_result', 'turn_complete', 'turn_complete', 'text', 'done']);
     expect(events[1]).toMatchObject({ type: 'tool_result', result: { success: true, output: 'echo:x' } });
   });
 
@@ -550,6 +550,194 @@ describe('queryLoop runtime behavior', () => {
       );
       expect(synthInstruction).toBeDefined();
     });
+
+    it('falls back to tool results when synthesis produces empty text', async () => {
+      const search = makeTool('web_search', true, async () => ({ success: true, output: 'Results: BBC News headline, CNN headline' }));
+      const client = makeClient([
+        makeToolCallMessage('web_search'),
+        // Synthesis turn returns empty content (model tried to call tools again)
+        { role: 'assistant', content: '' },
+      ]);
+
+      const events = await collectEvents(client, [search], {
+        config: { maxTurns: 1 },
+      });
+
+      const text = events.find((e) => e.type === 'text');
+      expect(text).toBeDefined();
+      expect((text as { content: string }).content).toContain('BBC News headline');
+      expect((text as { content: string }).content).toContain('what it found');
+    });
+
+    it('includes recent tool results in synthesis instruction for small models', async () => {
+      const search = makeTool('web_search', true, async () => ({ success: true, output: 'Top stories: AI advances, weather update' }));
+      const client = makeClient([
+        makeToolCallMessage('web_search'),
+        { role: 'assistant', content: 'Here is a summary of the news.' },
+      ]);
+
+      await collectEvents(client, [search], {
+        config: { maxTurns: 1 },
+      });
+
+      const lastCallMessages = client.chat.mock.calls[client.chat.mock.calls.length - 1][0] as Message[];
+      const synthInstruction = lastCallMessages.find(
+        (m) => m.role === 'system' && typeof m.content === 'string' && m.content.includes('recent tool results'),
+      );
+      expect(synthInstruction).toBeDefined();
+      expect((synthInstruction as Message).content).toContain('Top stories');
+    });
+  });
+
+  describe('wall-clock time budget', () => {
+    function makeToolCallMessage(name: string): Message {
+      return {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ function: { name, arguments: {} } }],
+      } as Message;
+    }
+
+    it('triggers synthesis when time budget is exceeded', async () => {
+      const echo = makeTool('echo', true, async () => ({ success: true, output: 'ok' }));
+      const client = makeClient([
+        makeToolCallMessage('echo'),
+        makeToolCallMessage('echo'),
+        { role: 'assistant', content: 'Here is my time-budget synthesis.' },
+      ]);
+
+      // Mock Date.now to simulate time passing beyond the budget after the first turn.
+      const realNow = Date.now;
+      let callCount = 0;
+      jest.spyOn(Date, 'now').mockImplementation(() => {
+        callCount++;
+        // First few calls return start time; subsequent calls return past-budget time.
+        return callCount <= 2 ? realNow() : realNow() + 200_000;
+      });
+
+      try {
+        const events = await collectEvents(client, [echo], {
+          config: { maxTurns: 20, maxTimeMs: 180_000 },
+        });
+
+        const done = events.find((e) => e.type === 'done');
+        expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'time_budget_synthesized' }));
+        const synth = events.find((e) => e.type === 'synthesis_fired');
+        expect(synth).toBeDefined();
+      } finally {
+        jest.restoreAllMocks();
+      }
+    });
+
+    it('does not trigger when time budget is unset', async () => {
+      const echo = makeTool('echo', true, async () => ({ success: true, output: 'ok' }));
+      const client = makeClient([
+        makeToolCallMessage('echo'),
+        { role: 'assistant', content: 'done normally' },
+      ]);
+
+      const events = await collectEvents(client, [echo], {
+        config: { maxTurns: 10 },
+      });
+
+      const done = events.find((e) => e.type === 'done');
+      expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'completed' }));
+    });
+
+    it('always allows at least one turn before checking time budget', async () => {
+      const echo = makeTool('echo', true, async () => ({ success: true, output: 'ok' }));
+      const client = makeClient([
+        makeToolCallMessage('echo'),
+        { role: 'assistant', content: 'Synthesized after time.' },
+      ]);
+
+      // Mock Date.now so every call returns past-budget time.
+      const base = Date.now();
+      jest.spyOn(Date, 'now').mockReturnValue(base + 500_000);
+
+      try {
+        const events = await collectEvents(client, [echo], {
+          config: { maxTurns: 10, maxTimeMs: 180_000 },
+        });
+
+        // Should have at least one tool call before time budget kicks in
+        expect(events.filter((e) => e.type === 'tool_call').length).toBeGreaterThanOrEqual(1);
+      } finally {
+        jest.restoreAllMocks();
+      }
+    });
+  });
+
+  describe('repetition detection', () => {
+    function makeToolCallMessage(name: string, args: Record<string, unknown> = {}): Message {
+      return {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ function: { name, arguments: args } }],
+      } as Message;
+    }
+
+    it('breaks to synthesis when model repeats the same text response', async () => {
+      // The model uses a tool first (so autoContinue remains active),
+      // then produces 3 identical text responses with a continuation
+      // prompt. autoContinue fires on turns 1 and 2, but the repetition
+      // detector catches the 3rd identical text (REPETITION_LIMIT=2).
+      const echo = makeTool('echo', true, async () => ({ success: true, output: 'ok' }));
+      const repeatedText = 'Here are results. Shall I continue?';
+      const client = makeClient([
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{ function: { name: 'echo', arguments: {} } }],
+        } as Message,
+        { role: 'assistant', content: repeatedText },
+        { role: 'assistant', content: repeatedText },
+        { role: 'assistant', content: repeatedText },
+        { role: 'assistant', content: 'Synthesized after repetition.' },
+      ]);
+
+      const events = await collectEvents(client, [echo], {
+        config: { maxTurns: 10, autoContinue: true, autoContinueLimit: 5 },
+      });
+
+      const done = events.find((e) => e.type === 'done');
+      expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'repetition_synthesized' }));
+      const error = events.find((e) => e.type === 'error' && (e as { message: string }).message.includes('repeating'));
+      expect(error).toBeDefined();
+    });
+
+    it('does not trigger when tool calls differ', async () => {
+      const echo = makeTool('echo', true, async () => ({ success: true, output: 'ok' }));
+      const client = makeClient([
+        makeToolCallMessage('echo', { value: 'a' }),
+        makeToolCallMessage('echo', { value: 'b' }),
+        { role: 'assistant', content: 'Done with different calls.' },
+      ]);
+
+      const events = await collectEvents(client, [echo], {
+        config: { maxTurns: 10 },
+      });
+
+      const done = events.find((e) => e.type === 'done');
+      expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'completed' }));
+    });
+
+    it('resets repetition counter when output changes', async () => {
+      const echo = makeTool('echo', true, async () => ({ success: true, output: 'ok' }));
+      const client = makeClient([
+        makeToolCallMessage('echo', { value: 'a' }),
+        makeToolCallMessage('echo', { value: 'b' }),
+        makeToolCallMessage('echo', { value: 'a' }),
+        { role: 'assistant', content: 'Done after interleaved calls.' },
+      ]);
+
+      const events = await collectEvents(client, [echo], {
+        config: { maxTurns: 10 },
+      });
+
+      const done = events.find((e) => e.type === 'done');
+      expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'completed' }));
+    });
   });
 
   describe('autoContinue', () => {
@@ -597,13 +785,19 @@ describe('queryLoop runtime behavior', () => {
     });
 
     it('respects autoContinueLimit', async () => {
+      const echo = makeTool('echo', true, async () => ({ success: true, output: 'ok' }));
       const client = makeClient([
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{ function: { name: 'echo', arguments: {} } }],
+        } as Message,
         { role: 'assistant', content: 'Step 1 done. Would you like me to continue?' },
         { role: 'assistant', content: 'Step 2 done. Shall I continue?' },
         { role: 'assistant', content: 'Step 3 done. Should I continue?' },
       ]);
 
-      const events = await collectEvents(client, [], {
+      const events = await collectEvents(client, [echo], {
         config: { maxTurns: 10, autoContinue: true, autoContinueLimit: 2 },
       });
 
@@ -625,6 +819,23 @@ describe('queryLoop runtime behavior', () => {
 
       expect(events.find((e) => e.type === 'auto_continue')).toBeUndefined();
       expect(events.find((e) => e.type === 'done')).toMatchObject({ reason: 'completed' });
+    });
+
+    it('stops auto-continuing after one chance when model never uses tools', async () => {
+      const client = makeClient([
+        { role: 'assistant', content: 'Here are some ideas. Would you like me to continue?' },
+        { role: 'assistant', content: 'More ideas. Shall I continue?' },
+        { role: 'assistant', content: 'Even more. Should I continue?' },
+      ]);
+
+      const events = await collectEvents(client, [], {
+        config: { maxTurns: 10, autoContinue: true, autoContinueLimit: 5 },
+      });
+
+      const autoCounts = events.filter((e) => e.type === 'auto_continue');
+      expect(autoCounts).toHaveLength(1);
+      const done = events.find((e) => e.type === 'done');
+      expect(done).toMatchObject({ reason: 'completed' });
     });
 
     it('does not auto-continue on high-risk task types', async () => {

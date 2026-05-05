@@ -59,6 +59,11 @@ export async function* queryLoop(
   let totalToolCalls = 0;
   let autoContinueCount = 0;
   const autoContinueLimit = config.autoContinueLimit ?? 5;
+  const loopStarted = Date.now();
+  const timeBudgetMs = config.maxTimeMs ?? 0;
+  let lastAssistantFingerprint = '';
+  let consecutiveRepeats = 0;
+  const REPETITION_LIMIT = 2;
 
   if (session) {
     await appendStatus(session, 'running', undefined, tracer);
@@ -82,7 +87,25 @@ export async function* queryLoop(
       return;
     }
 
+    // Wall-clock budget: when elapsed time exceeds the budget, trigger a
+    // synthesis turn instead of continuing. This naturally throttles slow
+    // local models while letting fast cloud APIs use more turns within the
+    // same time window. Skipped on the first turn so the model always gets
+    // at least one chance.
+    if (timeBudgetMs > 0 && turn > 0 && (Date.now() - loopStarted) >= timeBudgetMs) {
+      yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
+      tracer?.recordEvent('synthesis.time_budget', { model: config.model, elapsedMs: Date.now() - loopStarted, timeBudgetMs, turn });
+      break;
+    }
+
     turn++;
+
+    // Emit time budget progress so the UI can show a countdown indicator.
+    if (timeBudgetMs > 0) {
+      yield { type: 'time_budget_status', elapsedMs: Date.now() - loopStarted, budgetMs: timeBudgetMs, turn };
+    }
+
+    const turnStarted = Date.now();
 
     if (config.context?.enabled !== false) {
       const compactionConfig = { ...DEFAULT_COMPACTION_CONFIG, ...config.context };
@@ -157,6 +180,9 @@ export async function* queryLoop(
           promptTokens: result.usage.promptTokens ?? 0,
           completionTokens: result.usage.completionTokens ?? 0,
           totalDurationMs: Math.round((result.usage.totalDurationNs ?? 0) / 1_000_000),
+          loadDurationMs: Math.round((result.usage.loadDurationNs ?? 0) / 1_000_000),
+          promptEvalDurationMs: Math.round((result.usage.promptEvalDurationNs ?? 0) / 1_000_000),
+          evalDurationMs: Math.round((result.usage.evalDurationNs ?? 0) / 1_000_000),
         };
       }
     } catch (error) {
@@ -175,6 +201,36 @@ export async function* queryLoop(
       await appendSession(session, 'assistant_message', { kind: 'message', message: assistantMessage }, tracer);
     }
 
+    // Repetition detection: if the model produces the same text-only
+    // output twice in a row, it is stuck. Tool-call turns are excluded
+    // because the model may be retrying with different results — the
+    // repeatedToolFailureLimit guard handles that case separately.
+    // Break to synthesis after REPETITION_LIMIT consecutive repeats.
+    if (!assistantMessage.tool_calls?.length) {
+      const fingerprint = assistantFingerprint(assistantMessage);
+      if (fingerprint === lastAssistantFingerprint) {
+        consecutiveRepeats++;
+        if (consecutiveRepeats >= REPETITION_LIMIT) {
+          yield {
+            type: 'error',
+            message: `Model is repeating itself (${consecutiveRepeats + 1} identical turns). Forcing synthesis.`,
+            recoverable: true,
+          };
+          tracer?.recordEvent('repetition.detected', { turn, repeats: consecutiveRepeats + 1 });
+          yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
+          break;
+        }
+      } else {
+        consecutiveRepeats = 0;
+      }
+      lastAssistantFingerprint = fingerprint;
+    } else {
+      // Tool-call turns reset the repetition tracker since tool results
+      // vary and the repeatedToolFailureLimit guard covers that path.
+      consecutiveRepeats = 0;
+      lastAssistantFingerprint = '';
+    }
+
     // Stop condition: text-only response (no tool calls)
     if (!assistantMessage.tool_calls?.length) {
       // Auto-continue: if enabled, the text looks like a partial result,
@@ -182,7 +238,12 @@ export async function* queryLoop(
       const HIGH_RISK_TASKS = new Set(['safety_critical', 'financial_execution', 'medical', 'legal']);
       const isHighRisk = config.taskType ? HIGH_RISK_TASKS.has(config.taskType) : false;
 
-      if (config.autoContinue && !isHighRisk && autoContinueCount < autoContinueLimit && turn < maxTurns) {
+      // Skip auto-continue when the model clearly cannot use tools: if
+      // we already continued once and the model still hasn't made a single
+      // tool call, further continuations just burn compute on local models
+      // (e.g. gemma4 which chats instead of calling tools).
+      const toolCapableRun = totalToolCalls > 0 || autoContinueCount === 0;
+      if (config.autoContinue && !isHighRisk && toolCapableRun && autoContinueCount < autoContinueLimit && turn < maxTurns) {
         const text = assistantMessage.content ?? '';
         const reason = detectPartialResult(text);
         if (reason) {
@@ -237,6 +298,7 @@ export async function* queryLoop(
         yield { type: 'output_validation', validation };
         validationFailed = validation.status === 'fail';
       }
+      yield { type: 'turn_complete', turn, durationMs: Date.now() - turnStarted, toolCalls: 0 };
       yield { type: 'text', content: assistantMessage.content };
       if (session) {
         await appendStatus(session, 'completed', undefined, tracer);
@@ -296,6 +358,10 @@ export async function* queryLoop(
       if (result.success) anyToolSucceeded = true;
     }
 
+    // Emit per-turn wall-clock timing covering model call + tool execution.
+    const turnToolCalls = assistantMessage.tool_calls?.length ?? 0;
+    yield { type: 'turn_complete', turn, durationMs: Date.now() - turnStarted, toolCalls: turnToolCalls };
+
     // Tool-quality kill: terminate when the agent loops on non-productive
     // tools (reflect/consolidate/grep/list_files) without ever editing a
     // file. Bounded by `unproductiveTurnLimit` from LoopConfig.
@@ -320,19 +386,55 @@ export async function* queryLoop(
     }
   }
 
-  // Max turns reached — grant a bonus synthesis turn with tools stripped
-  // so the model MUST produce a text response summarising its work.
-  yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
-  tracer?.recordEvent('synthesis.fired', { model: config.model, maxTurns, totalToolCalls });
+  // Max turns, time budget, or repetition reached — grant a bonus synthesis
+  // turn with tools stripped so the model MUST produce a text response
+  // summarising its work.
+  const timeBudgetExceeded = timeBudgetMs > 0 && (Date.now() - loopStarted) >= timeBudgetMs;
+  const repetitionExceeded = consecutiveRepeats >= REPETITION_LIMIT;
+  const synthesisReason: 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' =
+    repetitionExceeded ? 'repetition_synthesized' : timeBudgetExceeded ? 'time_budget_synthesized' : 'max_turns_synthesized';
+  const sessionStatus = repetitionExceeded ? 'error' : timeBudgetExceeded ? 'time_budget' : 'max_turns';
+
+  if (!timeBudgetExceeded && !repetitionExceeded) {
+    // Only emit synthesis_fired for max-turns (time budget and repetition already emitted it above).
+    yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
+    tracer?.recordEvent('synthesis.fired', { model: config.model, maxTurns, totalToolCalls });
+  }
+
+  // Build a concrete synthesis prompt with the last few tool results
+  // so small models (gemma4:e4b, etc.) have the data right in front
+  // of them instead of needing to recall it from deep context.
+  const recentToolResults = messages
+    .filter((m) => m.role === 'tool' && typeof m.content === 'string')
+    .slice(-5)
+    .map((m) => (m.content as string).slice(0, 500))
+    .join('\n---\n');
+
+  const synthesisInstruction = recentToolResults
+    ? `You have used all available tool turns. Here is a summary of recent tool results:\n\n${recentToolResults}\n\nUsing the information above, write a helpful answer to the user's question. Do NOT call any tools. Just write your answer as plain text.`
+    : 'You have used all available tool turns. Provide a complete, useful text response now. Summarise everything you found. Do NOT call any tools.';
+
   messages.push({
     role: 'system',
-    content: 'You have used all available tool turns. Provide a complete, useful text response now. Summarise everything you found. Do NOT call any tools.',
+    content: synthesisInstruction,
   } as Message);
+
+  // Build a trimmed message list for the synthesis call. The full
+  // conversation can be 20k+ tokens which overwhelms small models.
+  // Keep: system prompt, last user message, and synthesis instruction.
+  // The synthesis instruction already contains the tool results.
+  const systemMsg = messages.find((m) => m.role === 'system' && m !== messages[messages.length - 1]);
+  const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+  const synthInstructionMsg = messages[messages.length - 1];
+  const synthMessages: Message[] = [];
+  if (systemMsg) synthMessages.push(systemMsg);
+  if (lastUserMsg) synthMessages.push(lastUserMsg);
+  synthMessages.push(synthInstructionMsg);
 
   turn++;
   const synthSpan = tracer?.startSpan('model.chat', { model: config.model, turn, synthesis: true });
   try {
-    const synthResult = await client.chat(messages, [], abortSignal);
+    const synthResult = await client.chat(synthMessages, [], abortSignal);
     const synthMessage = synthResult.message;
     synthSpan?.end('ok', { toolCalls: 0 });
 
@@ -344,6 +446,9 @@ export async function* queryLoop(
         promptTokens: synthResult.usage.promptTokens ?? 0,
         completionTokens: synthResult.usage.completionTokens ?? 0,
         totalDurationMs: Math.round((synthResult.usage.totalDurationNs ?? 0) / 1_000_000),
+        loadDurationMs: Math.round((synthResult.usage.loadDurationNs ?? 0) / 1_000_000),
+        promptEvalDurationMs: Math.round((synthResult.usage.promptEvalDurationNs ?? 0) / 1_000_000),
+        evalDurationMs: Math.round((synthResult.usage.evalDurationNs ?? 0) / 1_000_000),
       };
     }
 
@@ -352,11 +457,19 @@ export async function* queryLoop(
       await appendSession(session, 'assistant_message', { kind: 'message', message: synthMessage }, tracer);
     }
 
-    yield { type: 'text', content: synthMessage.content };
-    if (session) {
-      await appendStatus(session, 'max_turns', undefined, tracer);
+    // If the synthesis turn produced empty text (common with small models
+    // that try to call tools even when told not to), build a fallback
+    // from the tool results so the user at least sees what was found.
+    let synthesisText = typeof synthMessage.content === 'string' ? synthMessage.content.trim() : '';
+    if (!synthesisText && recentToolResults) {
+      synthesisText = `The model ran out of time but here is what it found:\n\n${recentToolResults}`;
     }
-    yield { type: 'done', reason: 'max_turns_synthesized', turns: turn };
+
+    yield { type: 'text', content: synthesisText || synthMessage.content };
+    if (session) {
+      await appendStatus(session, sessionStatus, undefined, tracer);
+    }
+    yield { type: 'done', reason: synthesisReason, turns: turn };
     return;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -364,11 +477,25 @@ export async function* queryLoop(
     yield { type: 'error', message: `Synthesis turn failed: ${msg}`, recoverable: false };
   }
 
-  // Synthesis failed — fall through to hard max_turns stop.
+  // Synthesis failed — fall through to hard stop.
   if (session) {
-    await appendStatus(session, 'max_turns', undefined, tracer);
+    await appendStatus(session, sessionStatus, undefined, tracer);
   }
-  yield { type: 'done', reason: 'max_turns', turns: turn };
+  yield { type: 'done', reason: repetitionExceeded ? 'repetition_synthesized' : timeBudgetExceeded ? 'time_budget_synthesized' : 'max_turns', turns: turn };
+}
+
+/**
+ * Compute a stable fingerprint for an assistant message so consecutive
+ * identical outputs can be detected. Covers both text-only and tool-call
+ * responses. Intentionally lightweight — no crypto, just string concat.
+ */
+function assistantFingerprint(message: Message): string {
+  const text = (typeof message.content === 'string' ? message.content : '').trim();
+  const calls = (message.tool_calls ?? [])
+    .map((tc) => `${tc.function?.name ?? ''}:${JSON.stringify(tc.function?.arguments ?? {})}`)
+    .sort()
+    .join('|');
+  return `${text}|||${calls}`;
 }
 
 /**

@@ -42,7 +42,7 @@ import { RateLimiter } from '../core/rateLimiter';
 import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
 import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, describeOutputValidationProfileSuggestion, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
-import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, clearSynthesisStats } from '../core/synthesisStats';
+import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, adaptiveTimeBudget, recordAvgTurnDuration, clearSynthesisStats } from '../core/synthesisStats';
 import { startNewSession, onSessionEnd, getEvolvedPrompt, recordSessionAutoContinue } from '../learning/engine';
 import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
 import { appendLearningCandidate, extractLearningCandidate, getLearningCandidateProvenance, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
@@ -132,6 +132,7 @@ interface WebSettings {
   agentProfiles: Record<string, { name: string; avatar: string; personality: string; model: string }>;
   summarizerModel: string;
   contextMaxTokens: number;
+  timeBudgetMs: number;
   context: { configuredMaxTokens: number; detectedMaxTokens: number | null; effectiveMaxTokens: number };
   temperature: number;
   topP: number;
@@ -248,6 +249,7 @@ let summarizerModel = '';
 const DEFAULT_CONTEXT_MAX_TOKENS = 8192;
 let contextMaxTokens = DEFAULT_CONTEXT_MAX_TOKENS;
 let detectedContextMaxTokens: number | null = null;
+let timeBudgetMs = 0; // 0 = auto-detect (180s local, 600s cloud)
 let temperature = 0.7;
 let topP = 0.9;
 let modelRouting: ModelRoutingPolicy = {};
@@ -1077,7 +1079,14 @@ app.get('/api/synthesis-stats', async (_req, res) => {
     const stats = await loadSynthesisStats(PROJECT_DIR);
     const withAdaptive: Record<string, unknown> = {};
     for (const [model, record] of Object.entries(stats)) {
-      withAdaptive[model] = { ...record, adaptiveMaxTurns: adaptiveMaxTurns(stats, model, 25) };
+      const backend = model.includes('/') ? model.slice(0, model.indexOf('/')) : 'ollama';
+      const isLocal = backend === 'ollama' && !model.includes('cloud');
+      const defaultBudget = isLocal ? 180_000 : 600_000;
+      withAdaptive[model] = {
+        ...record,
+        adaptiveMaxTurns: adaptiveMaxTurns(stats, model, 25),
+        adaptiveTimeBudgetMs: adaptiveTimeBudget(stats, model, defaultBudget),
+      };
     }
     res.json({ stats: withAdaptive, defaultMaxTurns: 25 });
   } catch (error) {
@@ -1142,6 +1151,7 @@ app.post('/api/settings', async (req, res) => {
   }
   configureAutomationScheduler();
   if (req.body.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(req.body.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
+  if (req.body.timeBudgetMs !== undefined) timeBudgetMs = clampNumber(req.body.timeBudgetMs, 0, 1_800_000, 0);
   if (req.body.temperature !== undefined) temperature = clampNumber(req.body.temperature, 0, 2, 0.7);
   if (req.body.topP !== undefined) topP = clampNumber(req.body.topP, 0, 1, 0.9);
   if (req.body.agentOutputDir !== undefined) {
@@ -3543,10 +3553,21 @@ TOOL FALLBACK RULES:
   const synthesisStats = await loadSynthesisStats(PROJECT_DIR);
   const effectiveMaxTurns = adaptiveMaxTurns(synthesisStats, activeModel, 25);
 
+  // Wall-clock budget: local Ollama models are slow per-turn so a generous
+  // turn budget hammers the GPU. Cloud APIs are fast so they can afford
+  // more turns. Use a time budget that naturally throttles local inference
+  // while preserving full agentic capability on cloud backends.
+  // User-configured timeBudgetMs (from Settings) overrides the auto-detect.
+  const chatBackend = activeModel.includes('/') ? activeModel.slice(0, activeModel.indexOf('/')) : 'ollama';
+  const isLocalBackend = chatBackend === 'ollama' && !activeModel.includes('cloud');
+  const defaultBudgetMs = isLocalBackend ? 180_000 : 600_000;
+  const effectiveTimeBudgetMs = timeBudgetMs > 0 ? timeBudgetMs : adaptiveTimeBudget(synthesisStats, activeModel, defaultBudgetMs);
+
   const config: LoopConfig = {
     model: activeModel,
     systemPrompt,
     maxTurns: effectiveMaxTurns,
+    maxTimeMs: effectiveTimeBudgetMs,
     abortSignal: abortController.signal,
     context: { maxTokens: activeContextMaxTokens, summarizerModel },
     outputValidation: {
@@ -3660,6 +3681,8 @@ TOOL FALLBACK RULES:
   let lastValidation: EvidenceCard['validation'];
   let doneReason: string | undefined;
   let autoContinueCount = 0;
+  let turnCount = 0;
+  let totalTurnMs = 0;
   // Per-tool success/total counters so the verifier can spot silent failures
   // in failure-prone tools (web_fetch, pdf_*) that the aggregate ratio dilutes.
   const toolStats = new Map<string, { success: number; total: number }>();
@@ -3743,6 +3766,14 @@ TOOL FALLBACK RULES:
       if (event.type === 'done') {
         doneReason = event.reason;
         recordSessionCompleted(PROJECT_DIR, activeModel).catch(() => {});
+        // Record average turn duration for adaptive time budget.
+        if (turnCount > 0) {
+          recordAvgTurnDuration(PROJECT_DIR, activeModel, Math.round(totalTurnMs / turnCount)).catch(() => {});
+        }
+      }
+      if (event.type === 'turn_complete') {
+        turnCount++;
+        totalTurnMs += (event as { durationMs?: number }).durationMs ?? 0;
       }
       if (event.type === 'synthesis_fired') {
         recordSynthesisFired(PROJECT_DIR, activeModel).catch(() => {});
@@ -5314,6 +5345,7 @@ function getCurrentSettings(): WebSettings {
     agentProfiles,
     summarizerModel,
     contextMaxTokens,
+    timeBudgetMs,
     context: {
       configuredMaxTokens: contextMaxTokens,
       detectedMaxTokens: detectedContextMaxTokens,
@@ -5506,6 +5538,7 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   }
   if (settings.capabilityGrants !== undefined) capabilityGrants = sanitizeCapabilityGrants(settings.capabilityGrants);
   if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
+  if (settings.timeBudgetMs !== undefined) timeBudgetMs = clampNumber(settings.timeBudgetMs, 0, 1_800_000, 0);
   if (settings.temperature !== undefined) temperature = clampNumber(settings.temperature, 0, 2, 0.7);
   if (settings.topP !== undefined) topP = clampNumber(settings.topP, 0, 1, 0.9);
   if (settings.agentOutputDir !== undefined) {

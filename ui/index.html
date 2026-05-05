@@ -923,6 +923,16 @@
       <button class="btn-sm full-width-button" onclick="rebuildSemanticMemory()">Rebuild semantic memory</button>
     </div>
     <div class="settings-section">
+      <h4>Agent Loop Limits</h4>
+      <div class="setting-row">
+        <label>Time budget (seconds)</label>
+        <input type="number" id="timeBudgetSec" title="Wall-clock time budget for agent loop" value="180" min="30" max="1800" step="30" onchange="updateSetting('timeBudgetMs',this.value*1000)" />
+      </div>
+      <div id="timeBudgetHint" class="trace-detail">Local models: 180s recommended · Cloud: 600s</div>
+      <div id="modelStatsPanel" class="trace-detail" style="margin-top:8px"></div>
+      <button class="btn-sm full-width-button" onclick="loadModelStats()" style="margin-top:6px">Show model stats</button>
+    </div>
+    <div class="settings-section">
       <h4>Helper Routing</h4>
       <div class="setting-row">
         <label>Small helper model</label>

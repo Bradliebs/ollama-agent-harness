@@ -39,7 +39,7 @@ export interface ContinuityCheckpoint {
   strategy: string;
 }
 
-export type SessionStatus = 'running' | 'completed' | 'max_turns' | 'aborted' | 'error';
+export type SessionStatus = 'running' | 'completed' | 'max_turns' | 'time_budget' | 'aborted' | 'error';
 
 export interface SessionMeta {
   sessionId: string;

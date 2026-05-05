@@ -5,6 +5,14 @@ export interface LoopConfig {
   model: string;
   systemPrompt: string;
   maxTurns: number;
+  /**
+   * Wall-clock budget in milliseconds. When elapsed time exceeds this
+   * budget the loop triggers a synthesis turn (tools stripped, model
+   * summarises its work) instead of continuing. This naturally throttles
+   * slow local models while letting fast cloud APIs use more turns.
+   * Set to 0 or undefined to disable.
+   */
+  maxTimeMs?: number;
   abortSignal?: AbortSignal;
   /**
    * Terminate the loop early when the agent runs `unproductiveTurnLimit`
@@ -65,7 +73,9 @@ export type LoopEvent =
   | DoneEvent
   | UsageEvent
   | SynthesisFiredEvent
-  | AutoContinueEvent;
+  | AutoContinueEvent
+  | TimeBudgetStatusEvent
+  | TurnCompleteEvent;
 
 export interface TextEvent {
   type: 'text';
@@ -136,7 +146,7 @@ export interface ErrorEvent {
 
 export interface DoneEvent {
   type: 'done';
-  reason: 'completed' | 'completed_with_validation_failures' | 'max_turns' | 'max_turns_synthesized' | 'aborted' | 'error' | 'unproductive' | 'repeated_tool_failure';
+  reason: 'completed' | 'completed_with_validation_failures' | 'max_turns' | 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' | 'aborted' | 'error' | 'unproductive' | 'repeated_tool_failure';
   turns: number;
 }
 
@@ -156,6 +166,12 @@ export interface UsageEvent {
   promptTokens: number;
   completionTokens: number;
   totalDurationMs: number;
+  /** Milliseconds spent loading the model into memory (0 when cached). */
+  loadDurationMs?: number;
+  /** Milliseconds spent evaluating the prompt (prefill). */
+  promptEvalDurationMs?: number;
+  /** Milliseconds spent generating tokens. */
+  evalDurationMs?: number;
 }
 
 /** Emitted when the bonus synthesis turn fires because the model exhausted
@@ -177,4 +193,24 @@ export interface AutoContinueEvent {
   turn: number;
   continuationCount: number;
   reason: string;
+}
+
+/** Emitted at the start of each turn when a wall-clock time budget is
+ * configured. Lets the UI render a progress indicator showing how much
+ * time the agent has left before synthesis fires. */
+export interface TimeBudgetStatusEvent {
+  type: 'time_budget_status';
+  elapsedMs: number;
+  budgetMs: number;
+  turn: number;
+}
+
+/** Emitted at the end of each turn with the wall-clock duration covering
+ * the model call plus all tool executions. Use alongside UsageEvent
+ * (model inference only) to see where time is spent. */
+export interface TurnCompleteEvent {
+  type: 'turn_complete';
+  turn: number;
+  durationMs: number;
+  toolCalls: number;
 }
