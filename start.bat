@@ -94,6 +94,5 @@ echo   ============================================
 echo.
 
 set PORT=4000
-start "" cmd /c "timeout /t 3 /nobreak >nul & start http://127.0.0.1:4000"
 call npm run serve
 pause
