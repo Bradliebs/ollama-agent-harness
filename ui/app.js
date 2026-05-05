@@ -2336,6 +2336,26 @@ async function sendMessage(opts) {
     }
   }
 
+  // /<skill-name> [args]: rewrite to "Use the skill: name with input: args" so
+  // the agent picks it up via existing trigger matching. Only applies when the
+  // first token matches a known runtime skill.
+  if (!isRegenerate && /^\s*\/[a-z][\w-]*/i.test(inp.value)) {
+    const trimmed = inp.value.trim();
+    const spaceIdx = trimmed.indexOf(' ');
+    const cmdToken = (spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx)).toLowerCase();
+    const skillCmd = dynamicSkillSlashCommands.find((c) => c.cmd.toLowerCase() === cmdToken);
+    if (skillCmd) {
+      const args = spaceIdx === -1 ? '' : trimmed.slice(spaceIdx + 1).trim();
+      const skillName = cmdToken.slice(1);
+      inp.value = args
+        ? 'Use the skill: ' + skillName + ' with input: ' + args
+        : 'Use the skill: ' + skillName;
+      autoSize(inp);
+      hideSlashPalette();
+      // Fall through to the normal send path below.
+    }
+  }
+
   if (isRegenerate) {
     const userMsg = chatMessages[opts.regenerateFromIndex - 1];
     if (!userMsg || userMsg.role !== 'user') return;
@@ -3772,6 +3792,9 @@ const SLASH_COMMANDS = [
   { cmd: '/settings',    desc: 'Toggle the settings panel',
     apply: () => { hideSlashPalette(); toggleRight(); },
     fallback: '' },
+  { cmd: '/help',        desc: 'Show all slash commands (built-in + skills)',
+    apply: () => { hideSlashPalette(); openHelpModal(); },
+    fallback: '' },
   { cmd: '/stop',        desc: 'Stop the current agent run',
     apply: () => { hideSlashPalette(); if (activeChatController) activeChatController.abort(); },
     fallback: '' },
@@ -3785,7 +3808,35 @@ const SLASH_COMMANDS = [
     takesArgs: true },
 ];
 
+// Dynamic slash commands populated from /api/skills so users can autocomplete
+// `/skill-name` directly from the chat composer. Refreshed by loadSkills().
+let dynamicSkillSlashCommands = [];
+
+function refreshSkillSlashCommands(skills) {
+  const seen = new Set(SLASH_COMMANDS.map((c) => c.cmd));
+  dynamicSkillSlashCommands = (skills || [])
+    .filter((s) => s && s.name && s.enabled !== false)
+    .map((s) => ({
+      cmd: '/' + s.name,
+      desc: s.description ? ('Skill · ' + s.description) : 'Run skill',
+      apply: ((name) => () => {
+        hideSlashPalette();
+        const input = document.getElementById('chatInput');
+        if (!input) return;
+        input.value = 'Use the skill: ' + name;
+        input.focus();
+        try { autoSize(input); } catch {}
+      })(s.name),
+      fallback: '',
+    }))
+    .filter((c) => !seen.has(c.cmd));
+}
+
 const slashPaletteState = { visible: false, index: 0, filtered: [] };
+
+function getAllSlashCommands() {
+  return SLASH_COMMANDS.concat(dynamicSkillSlashCommands);
+}
 
 function maybeShowSlashPalette(value) {
   if (!value || !value.startsWith('/')) {
@@ -3795,7 +3846,16 @@ function maybeShowSlashPalette(value) {
   // Hide once the user types past the command name (a space marks args mode).
   if (value.includes(' ')) { hideSlashPalette(); return; }
   const prefix = value.toLowerCase();
-  const filtered = SLASH_COMMANDS.filter((c) => c.cmd.startsWith(prefix));
+  const term = prefix.slice(1); // drop the leading '/' for description matching
+  const all = getAllSlashCommands();
+  // Prefer prefix matches on the command itself; fall back to substring match
+  // on description so `/search` finds `/web-research` etc. Prefix matches sort
+  // first so the obvious intent stays at the top of the palette.
+  const prefixHits = all.filter((c) => c.cmd.toLowerCase().startsWith(prefix));
+  const descHits = term.length >= 2
+    ? all.filter((c) => !c.cmd.toLowerCase().startsWith(prefix) && (c.desc || '').toLowerCase().includes(term))
+    : [];
+  const filtered = prefixHits.concat(descHits);
   if (filtered.length === 0) { hideSlashPalette(); return; }
   slashPaletteState.filtered = filtered;
   slashPaletteState.index = 0;
@@ -4004,7 +4064,251 @@ async function loadFiles(dir) {
   } catch {}
 }
 
-async function loadSkills() { try { const r = await fetch('/api/skills'); const d = await r.json(); const usageR = await fetch('/api/skills/usage').then((r) => r.json()).catch(() => ({ records: [] })); const curatorR = await fetch('/api/curator').then((r) => r.json()).catch(() => null); const usageMap = new Map((usageR.records || []).map((rec) => [rec.name, rec])); const list = document.getElementById('skillList'); list.innerHTML = ''; const runtime = (d.sources || []).find((source) => source.source === 'runtime') || { skills: d.skills || [], diagnostics: [], mutable: true }; const repo = (d.sources || []).find((source) => source.source === 'repo') || { skills: [], diagnostics: [], mutable: false }; let html = renderCuratorPanel(curatorR); html += renderSkillAutomationPanel(runtime, repo); html += '<div id="runtimeSkillSource" class="trace-list"><div class="trace-title">Runtime Skills</div>'; if (!runtime.skills || !runtime.skills.length) html += '<div class="empty-panel-copy">No runtime skills yet.<br><br>Ask the agent to <strong>"create a skill for..."</strong> and it will build one automatically.</div>'; else html += runtime.skills.map((s) => renderRuntimeSkillItem(s, usageMap.get(s.name))).join(''); html += '</div>' + renderSkillDiagnostics(runtime.diagnostics || []); html += '<div id="repoSkillSource" class="trace-list"><div class="trace-title">Repo Skills</div>' + ((repo.skills || []).length ? repo.skills.map(renderRepoSkillItem).join('') : '<div class="trace-meta">No repo skills found in .github/skills.</div>') + '</div>'; list.innerHTML = html; if (curatorR && curatorR.proposals) loadCuratorProposals(); } catch {} }
+async function loadSkills() {
+  try {
+    const r = await fetch('/api/skills');
+    const d = await r.json();
+    const usageR = await fetch('/api/skills/usage').then((r) => r.json()).catch(() => ({ records: [] }));
+    const curatorR = await fetch('/api/curator').then((r) => r.json()).catch(() => null);
+    const usageMap = new Map((usageR.records || []).map((rec) => [rec.name, rec]));
+    const list = document.getElementById('skillList');
+    if (!list) return;
+    list.innerHTML = '';
+    const runtime = (d.sources || []).find((source) => source.source === 'runtime') || { skills: d.skills || [], diagnostics: [], mutable: true };
+    const repo = (d.sources || []).find((source) => source.source === 'repo') || { skills: [], diagnostics: [], mutable: false };
+    // Refresh dynamic slash commands so the chat composer can autocomplete `/<skill-name>`.
+    refreshSkillSlashCommands(runtime.skills || []);
+    // Stash everything the filter handlers need so we can re-render in place
+    // without a network round-trip on every keystroke.
+    skillsState = { runtime: runtime.skills || [], repo: repo.skills || [], usageMap, repoInstalled: new Set((runtime.skills || []).map((s) => s.name)) };
+    const runtimeCount = skillsState.runtime.length;
+    const enabledCount = skillsState.runtime.filter((s) => s.enabled !== false).length;
+    const domains = Array.from(new Set([...skillsState.runtime, ...skillsState.repo].map((s) => s.domain || 'general'))).sort();
+    let html = '<div class="skills-gallery-header"><h4>Your skills</h4>'
+      + '<span class="skills-gallery-count">' + enabledCount + ' on / ' + runtimeCount + ' total</span></div>';
+    html += '<div class="skills-search-row">'
+      + '<input id="skillsSearchInput" type="text" placeholder="Search name or description..." oninput="filterSkillsGallery()">'
+      + '<select id="skillsDomainFilter" onchange="filterSkillsGallery()" title="Filter by domain">'
+      +   '<option value="">All domains</option>'
+      +   domains.map((dom) => '<option value="' + escAttr(dom) + '">' + esc(dom) + '</option>').join('')
+      + '</select>'
+      + '<select id="skillsSortFilter" onchange="filterSkillsGallery()" title="Sort skills">'
+      +   '<option value="recent">Recently used</option>'
+      +   '<option value="most">Most used</option>'
+      +   '<option value="name">Name (A→Z)</option>'
+      +   '<option value="domain">Domain</option>'
+      + '</select>'
+      + '</div>';
+    html += '<div id="skillsBulkToolbar" class="skills-bulk-toolbar hidden-by-default"></div>';
+    html += '<div id="skillsGalleryRuntime"></div>';
+    html += '<div id="skillsGalleryFeatured"></div>';
+    html += renderSkillAutomationPanel(runtime, repo);
+    html += renderCuratorPanel(curatorR);
+    html += renderSkillDiagnostics(runtime.diagnostics || []);
+    list.innerHTML = html;
+    renderSkillsGallery();
+    if (curatorR && curatorR.proposals) loadCuratorProposals();
+  } catch {}
+}
+
+// In-memory state for the Skills gallery so filter changes don't refetch.
+let skillsState = { runtime: [], repo: [], usageMap: new Map(), repoInstalled: new Set() };
+const skillsBulkSelection = new Set();
+
+function onSkillCardSelect(checkbox, name) {
+  if (checkbox.checked) skillsBulkSelection.add(name);
+  else skillsBulkSelection.delete(name);
+  renderSkillsBulkToolbar();
+}
+
+function renderSkillsBulkToolbar() {
+  const toolbar = document.getElementById('skillsBulkToolbar');
+  if (!toolbar) return;
+  if (skillsBulkSelection.size === 0) {
+    toolbar.classList.add('hidden-by-default');
+    toolbar.innerHTML = '';
+    return;
+  }
+  toolbar.classList.remove('hidden-by-default');
+  toolbar.innerHTML = '<strong>' + skillsBulkSelection.size + '</strong> selected · '
+    + '<button class="btn-sm" onclick="bulkSetSkillsEnabled(true)">Enable</button> '
+    + '<button class="btn-sm" onclick="bulkSetSkillsEnabled(false)">Disable</button> '
+    + '<button class="btn-sm" onclick="bulkSetSkillsPinned(true)">Pin</button> '
+    + '<button class="btn-sm" onclick="bulkSetSkillsPinned(false)">Unpin</button> '
+    + '<button class="btn-sm danger" onclick="bulkDeleteSkills()">🗑 Delete</button> '
+    + '<button class="btn-sm" onclick="clearSkillsBulkSelection()">Clear</button>';
+}
+
+function clearSkillsBulkSelection() {
+  skillsBulkSelection.clear();
+  document.querySelectorAll('.skill-card-select').forEach((cb) => { cb.checked = false; });
+  renderSkillsBulkToolbar();
+}
+
+async function bulkSetSkillsEnabled(enabled) {
+  const names = Array.from(skillsBulkSelection);
+  if (names.length === 0) return;
+  if (!confirm((enabled ? 'Enable' : 'Disable') + ' ' + names.length + ' skill(s)?')) return;
+  await Promise.all(names.map((name) => fetch('/api/skills/' + encodeURIComponent(name) + '/enabled', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  }).catch(() => {})));
+  clearSkillsBulkSelection();
+  await loadSkills();
+}
+
+async function bulkSetSkillsPinned(pinned) {
+  const names = Array.from(skillsBulkSelection);
+  if (names.length === 0) return;
+  if (!confirm((pinned ? 'Pin' : 'Unpin') + ' ' + names.length + ' skill(s)?')) return;
+  await Promise.all(names.map((name) => fetch('/api/skills/' + encodeURIComponent(name) + '/pin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pinned }),
+  }).catch(() => {})));
+  clearSkillsBulkSelection();
+  await loadSkills();
+}
+
+async function bulkDeleteSkills() {
+  const names = Array.from(skillsBulkSelection);
+  if (names.length === 0) return;
+  if (!confirm('Permanently delete ' + names.length + ' skill(s)?\n\n' + names.join('\n'))) return;
+  await Promise.all(names.map((name) => fetch('/api/skills/' + encodeURIComponent(name), { method: 'DELETE' }).catch(() => {})));
+  clearSkillsBulkSelection();
+  await loadSkills();
+}
+
+function filterSkillsGallery() {
+  renderSkillsGallery();
+}
+
+function renderSkillsGallery() {
+  const search = (document.getElementById('skillsSearchInput')?.value || '').toLowerCase().trim();
+  const domain = document.getElementById('skillsDomainFilter')?.value || '';
+  const sort = document.getElementById('skillsSortFilter')?.value || 'recent';
+  const matches = (s) => {
+    if (domain && (s.domain || 'general') !== domain) return false;
+    if (!search) return true;
+    return (s.name || '').toLowerCase().includes(search) || (s.description || '').toLowerCase().includes(search);
+  };
+  const sortFn = (a, b) => {
+    const ua = skillsState.usageMap.get(a.name) || {};
+    const ub = skillsState.usageMap.get(b.name) || {};
+    if (sort === 'name') return (a.name || '').localeCompare(b.name || '');
+    if (sort === 'domain') return (a.domain || 'general').localeCompare(b.domain || 'general') || (a.name || '').localeCompare(b.name || '');
+    if (sort === 'most') return (ub.useCount || 0) - (ua.useCount || 0);
+    // 'recent' default — most recently used first; never-used skills sink to bottom by name.
+    const ta = ua.lastUsedAt ? Date.parse(ua.lastUsedAt) : 0;
+    const tb = ub.lastUsedAt ? Date.parse(ub.lastUsedAt) : 0;
+    if (tb !== ta) return tb - ta;
+    return (a.name || '').localeCompare(b.name || '');
+  };
+  const runtimeContainer = document.getElementById('skillsGalleryRuntime');
+  const featuredContainer = document.getElementById('skillsGalleryFeatured');
+  if (runtimeContainer) {
+    const filtered = skillsState.runtime.filter(matches).slice().sort(sortFn);
+    if (filtered.length === 0) {
+      // First-run CTA: no skills installed AND no active filter. Otherwise just
+      // tell the user nothing matched their filter so they don't think the
+      // install action is broken.
+      const noFilters = !search && !domain;
+      const noSkillsAtAll = skillsState.runtime.length === 0;
+      if (noSkillsAtAll && noFilters) {
+        const repoCount = skillsState.repo.length;
+        const installCta = repoCount > 0
+          ? '<button class="btn-sm primary" onclick="runSkillAutomation()">+ Install ' + repoCount + ' starter skill(s)</button> '
+          : '';
+        runtimeContainer.innerHTML = '<div class="empty-panel-copy">'
+          + '<strong>No runtime skills yet.</strong><br><br>'
+          + installCta
+          + '<button class="btn-sm" onclick="document.getElementById(\'skillAutomationPanel\')?.scrollIntoView({behavior:\'smooth\'});">Create one manually</button>'
+          + '<br><br>Or ask the agent: <em>"create a skill for..."</em>.'
+          + '</div>';
+      } else {
+        runtimeContainer.innerHTML = '<div class="empty-panel-copy">No runtime skills match.</div>';
+      }
+    } else {
+      runtimeContainer.innerHTML = '<div class="skills-gallery">' + filtered.map((s) => renderRuntimeSkillCard(s, skillsState.usageMap.get(s.name))).join('') + '</div>';
+    }
+  }
+  if (featuredContainer) {
+    // Only show featured (repo) skills that are not yet installed in runtime — keeps the
+    // "Yours" gallery as the source of truth for live skills.
+    const featured = skillsState.repo.filter(matches).filter((s) => !skillsState.repoInstalled.has(s.name)).slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    if (featured.length === 0) {
+      featuredContainer.innerHTML = '';
+    } else {
+      featuredContainer.innerHTML = '<div class="skills-section-divider"><span>Featured (repo)</span><span class="skills-gallery-count">' + featured.length + ' available</span></div>'
+        + '<div class="skills-gallery">' + featured.map(renderRepoSkillCard).join('') + '</div>';
+    }
+  }
+}
+
+function renderRepoSkillCard(s) {
+  const id = s.id || s.name;
+  return '<div class="skill-card featured" data-repo-skill="' + escAttr(id) + '">'
+    + '<input type="checkbox" class="skill-card-select" title="Select for bulk install" onchange="onFeaturedSkillSelect(this, \'' + escAttr(id) + '\', \'' + escAttr(s.name) + '\')" onclick="event.stopPropagation()">'
+    + '<div class="skill-card-top">'
+    +   '<div>'
+    +     '<div class="skill-card-name">' + esc(s.name) + '</div>'
+    +     '<span class="skill-card-cmd">read-only</span>'
+    +   '</div>'
+    +   '<button class="skill-card-install" onclick="installRepoSkill(\'' + escAttr(id) + '\', \'' + escAttr(s.name) + '\')">+ Install</button>'
+    + '</div>'
+    + '<div class="skill-card-desc">' + esc(s.description || '(no description)') + '</div>'
+    + '<div class="skill-card-meta"><span class="capability-pill">' + esc(s.domain || 'repo') + '</span></div>'
+    + '</div>';
+}
+
+const featuredBulkSelection = new Map();
+
+function onFeaturedSkillSelect(checkbox, id, name) {
+  if (checkbox.checked) featuredBulkSelection.set(id, name);
+  else featuredBulkSelection.delete(id);
+  renderFeaturedBulkToolbar();
+}
+
+function renderFeaturedBulkToolbar() {
+  let toolbar = document.getElementById('featuredBulkToolbar');
+  const featuredContainer = document.getElementById('skillsGalleryFeatured');
+  if (!featuredContainer) return;
+  if (!toolbar) {
+    toolbar = document.createElement('div');
+    toolbar.id = 'featuredBulkToolbar';
+    toolbar.className = 'skills-bulk-toolbar';
+    featuredContainer.prepend(toolbar);
+  }
+  if (featuredBulkSelection.size === 0) {
+    toolbar.classList.add('hidden-by-default');
+    toolbar.innerHTML = '';
+    return;
+  }
+  toolbar.classList.remove('hidden-by-default');
+  toolbar.innerHTML = '<strong>' + featuredBulkSelection.size + '</strong> featured selected · '
+    + '<button class="btn-sm primary" onclick="installSelectedFeatured()">+ Install all</button> '
+    + '<button class="btn-sm" onclick="clearFeaturedBulkSelection()">Clear</button>';
+}
+
+function clearFeaturedBulkSelection() {
+  featuredBulkSelection.clear();
+  document.querySelectorAll('[data-repo-skill] .skill-card-select').forEach((cb) => { cb.checked = false; });
+  renderFeaturedBulkToolbar();
+}
+
+async function installSelectedFeatured() {
+  const entries = Array.from(featuredBulkSelection.entries());
+  if (entries.length === 0) return;
+  if (!confirm('Install ' + entries.length + ' featured skill(s) into runtime?')) return;
+  await Promise.all(entries.map(([id]) => fetch('/api/skills/install', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: id }),
+  }).catch(() => {})));
+  clearFeaturedBulkSelection();
+  await loadSkills();
+}
 
 function renderSkillAutomationPanel(runtime, repo) {
   const runtimeSkipped = (runtime.diagnostics || []).length;
@@ -4025,6 +4329,8 @@ function renderSkillAutomationPanel(runtime, repo) {
 }
 
 function renderRuntimeSkillItem(s, usage) {
+  // Legacy compact list renderer kept so any external callers keep working.
+  // The Skills panel now uses renderRuntimeSkillCard().
   const u = usage || {};
   const id = s.id || s.name;
   const pinned = u.pinned ? ' 📌' : '';
@@ -4033,6 +4339,336 @@ function renderRuntimeSkillItem(s, usage) {
   const lastUsed = u.lastUsedAt ? ' · last ' + new Date(u.lastUsedAt).toLocaleDateString() : '';
   const pinBtn = '<button class="sk-install" onclick="event.stopPropagation();togglePinSkill(\'' + escAttr(s.name) + '\', ' + (!u.pinned) + ')" title="' + (u.pinned ? 'Unpin' : 'Pin (curator will not archive)') + '">' + (u.pinned ? 'Unpin' : 'Pin') + '</button>';
   return '<div class="skill-item" onclick="useSkillFromList(\'' + escAttr(s.name) + '\')"><div class="sk-name">' + esc(s.name) + pinned + '</div><div class="sk-desc">' + esc(s.description) + '</div><div class="sk-meta"><span>' + esc(s.domain) + useInfo + lastUsed + archived + '</span><span>' + pinBtn + ' <button class="sk-del" onclick="event.stopPropagation();deleteSkill(\'' + escAttr(id) + '\')">🗑</button></span></div></div>';
+}
+
+function renderRuntimeSkillCard(s, usage) {
+  const u = usage || {};
+  const id = s.id || s.name;
+  const enabled = s.enabled !== false;
+  const cardClass = 'skill-card' + (enabled ? '' : ' disabled');
+  const slashCmd = '/' + s.name;
+  const pinIcon = u.pinned ? ' 📌' : '';
+  const archivedPill = u.archived ? '<span class="capability-pill muted-pill">archived</span>' : '';
+  const useInfo = (u.useCount || u.viewCount) ? '· used ' + (u.useCount || 0) + ' / viewed ' + (u.viewCount || 0) : '';
+  const lastUsed = u.lastUsedAt ? '· last ' + new Date(u.lastUsedAt).toLocaleDateString() : '';
+  const togglePinLabel = u.pinned ? 'Unpin' : 'Pin';
+  const togglePinTitle = u.pinned ? 'Unpin (curator may archive)' : 'Pin (curator will not archive)';
+  return '<div class="' + cardClass + '" data-skill-name="' + escAttr(s.name) + '">'
+    + '<input type="checkbox" class="skill-card-select" title="Select for bulk action" onchange="onSkillCardSelect(this, \'' + escAttr(s.name) + '\')" onclick="event.stopPropagation()">'
+    + '<div class="skill-card-top">'
+    +   '<div>'
+    +     '<div class="skill-card-name" onclick="openSkillModal(\'' + escAttr(s.name) + '\')" title="View / edit SKILL.md">' + esc(s.name) + pinIcon + '</div>'
+    +     '<span class="skill-card-cmd" onclick="useSkillFromList(\'' + escAttr(s.name) + '\')" title="Run this skill">' + esc(slashCmd) + '</span>'
+    +   '</div>'
+    +   '<label class="skill-toggle" title="' + (enabled ? 'Disable' : 'Enable') + ' this skill">'
+    +     '<input type="checkbox"' + (enabled ? ' checked' : '') + ' onchange="toggleSkillEnabled(\'' + escAttr(id) + '\', this.checked)">'
+    +     '<span class="skill-toggle-track"></span>'
+    +     '<span class="skill-toggle-thumb"></span>'
+    +   '</label>'
+    + '</div>'
+    + '<div class="skill-card-desc">' + esc(s.description || '(no description)') + '</div>'
+    + '<div class="skill-card-meta">'
+    +   '<span class="capability-pill">' + esc(s.domain || 'general') + '</span>'
+    +   archivedPill
+    +   '<span>' + esc(useInfo) + ' ' + esc(lastUsed) + '</span>'
+    + '</div>'
+    + '<div class="skill-card-actions">'
+    +   '<div class="skill-card-actions-left">'
+    +     '<button class="btn-sm" onclick="useSkillFromList(\'' + escAttr(s.name) + '\')">Use</button>'
+    +     '<button class="btn-sm" onclick="togglePinSkill(\'' + escAttr(s.name) + '\', ' + (!u.pinned) + ')" title="' + togglePinTitle + '">' + togglePinLabel + '</button>'
+    +   '</div>'
+    +   '<div class="skill-card-actions-right">'
+    +     '<button class="sk-del" title="Delete" onclick="deleteSkill(\'' + escAttr(id) + '\')">🗑</button>'
+    +   '</div>'
+    + '</div>'
+    + '</div>';
+}
+
+async function toggleSkillEnabled(name, enabled) {
+  try {
+    const response = await fetch('/api/skills/' + encodeURIComponent(name) + '/enabled', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+    const data = await response.json();
+    if (data.error) { alert('Toggle failed: ' + data.error); return; }
+    await loadSkills();
+  } catch (error) { alert('Toggle failed: ' + (error.message || error)); }
+}
+
+// --- Skill detail modal ---
+let activeSkillModalName = '';
+let activeSkillModalTab = 'form';
+let activeSkillModalParsed = null;
+let activeSkillModalRaw = '';
+
+async function openSkillModal(name) {
+  activeSkillModalName = name;
+  activeSkillModalTab = 'form';
+  const modal = document.getElementById('skillModal');
+  const title = document.getElementById('skillModalTitle');
+  const pathEl = document.getElementById('skillModalPath');
+  const status = document.getElementById('skillModalStatus');
+  if (!modal) return;
+  title.textContent = 'Edit skill · ' + name;
+  pathEl.textContent = '';
+  status.textContent = 'Loading…';
+  modal.classList.remove('hidden-by-default');
+  switchSkillModalTab('form');
+  try {
+    const [rawR, parsedR] = await Promise.all([
+      fetch('/api/skills/' + encodeURIComponent(name) + '?raw=1').then((r) => r.json()),
+      fetch('/api/skills/' + encodeURIComponent(name)).then((r) => r.json()),
+    ]);
+    if (rawR.error) { status.textContent = 'Failed: ' + rawR.error; return; }
+    activeSkillModalRaw = rawR.content || '';
+    activeSkillModalParsed = parsedR.error ? null : parsedR;
+    pathEl.textContent = rawR.filePath || '';
+    populateSkillModalForm(activeSkillModalParsed, activeSkillModalRaw);
+    document.getElementById('skillModalContent').value = activeSkillModalRaw;
+    status.textContent = '';
+  } catch (error) {
+    status.textContent = 'Failed to load: ' + (error.message || error);
+  }
+}
+
+function populateSkillModalForm(parsed, raw) {
+  const desc = document.getElementById('skillFormDescription');
+  const dom = document.getElementById('skillFormDomain');
+  const risk = document.getElementById('skillFormRiskLevel');
+  const triggers = document.getElementById('skillFormTriggers');
+  const whenTo = document.getElementById('skillFormWhenToUse');
+  const body = document.getElementById('skillFormBody');
+  const p = parsed || {};
+  if (desc) desc.value = p.description || '';
+  if (dom) dom.value = p.domain || '';
+  if (risk) risk.value = p.riskLevel || '';
+  if (triggers) triggers.value = (p.triggers || []).join(', ');
+  if (whenTo) whenTo.value = p.whenToUse || '';
+  if (body) body.value = stripFrontmatter(raw);
+}
+
+function stripFrontmatter(content) {
+  return String(content || '').replace(/^---\n[\s\S]*?\n---\n*/, '').trim();
+}
+
+function switchSkillModalTab(tab) {
+  activeSkillModalTab = tab;
+  const form = document.getElementById('skillModalForm');
+  const raw = document.getElementById('skillModalContent');
+  const hist = document.getElementById('skillModalHistoryView');
+  const tabForm = document.getElementById('skillModalTabForm');
+  const tabRaw = document.getElementById('skillModalTabRaw');
+  const tabHist = document.getElementById('skillModalTabHistory');
+  [form, raw, hist].forEach((el) => el && el.classList.add('hidden-by-default'));
+  [tabForm, tabRaw, tabHist].forEach((el) => el && el.classList.remove('active'));
+  if (tab === 'form') { form?.classList.remove('hidden-by-default'); tabForm?.classList.add('active'); }
+  else if (tab === 'raw') { raw?.classList.remove('hidden-by-default'); tabRaw?.classList.add('active'); raw.value = activeSkillModalRaw; }
+  else if (tab === 'history') { hist?.classList.remove('hidden-by-default'); tabHist?.classList.add('active'); loadSkillModalHistory(); }
+}
+
+async function loadSkillModalHistory() {
+  const view = document.getElementById('skillModalHistoryView');
+  if (!view || !activeSkillModalName) return;
+  view.innerHTML = '<div class="skill-modal-history-row">Loading…</div>';
+  try {
+    const data = await fetch('/api/skills/' + encodeURIComponent(activeSkillModalName) + '/history').then((r) => r.json());
+    const versions = data.versions || [];
+    if (versions.length === 0) { view.innerHTML = '<div class="skill-modal-history-row">No previous versions yet. Saves will be snapshotted automatically.</div>'; return; }
+    view.innerHTML = versions.map((v, i) => '<div class="skill-modal-history-row">'
+      + '<code>' + esc(v.timestamp) + '</code>'
+      + '<span>'
+      +   '<button class="btn-sm" onclick="viewSkillDiff(\'' + escAttr(v.timestamp) + '\', ' + i + ')">Diff</button> '
+      +   '<button class="btn-sm" onclick="revertSkillToHistory(\'' + escAttr(v.timestamp) + '\')">Revert</button>'
+      + '</span>'
+      + '</div><div id="skillDiffView' + i + '" class="skill-diff-view hidden-by-default"></div>').join('');
+  } catch (error) {
+    view.innerHTML = '<div class="skill-modal-history-row">Failed: ' + esc(error.message || error) + '</div>';
+  }
+}
+
+// Render a tiny line-by-line diff between an old snapshot and the current saved
+// content. Not LCS-quality — just naive equal-line removal so reviewers can
+// spot what changed without leaving the modal.
+async function viewSkillDiff(ts, index) {
+  const target = document.getElementById('skillDiffView' + index);
+  if (!target) return;
+  if (!target.classList.contains('hidden-by-default')) {
+    target.classList.add('hidden-by-default');
+    return;
+  }
+  target.classList.remove('hidden-by-default');
+  target.innerHTML = 'Loading diff…';
+  try {
+    const snap = await fetch('/api/skills/' + encodeURIComponent(activeSkillModalName) + '/history/' + encodeURIComponent(ts)).then((r) => r.json());
+    if (snap.error) { target.textContent = 'Failed: ' + snap.error; return; }
+    target.innerHTML = renderSkillDiff(String(snap.content || ''), String(activeSkillModalRaw || ''))
+      + '<div class="skill-modal-actions" style="margin-top:6px"><button class="btn-sm primary" onclick="revertSkillToHistory(\'' + escAttr(ts) + '\')">Looks good — revert to this version</button></div>';
+  } catch (error) {
+    target.textContent = 'Failed: ' + (error.message || error);
+  }
+}
+
+function renderSkillDiff(oldText, newText) {
+  const oldLines = oldText.split('\n');
+  const newLines = newText.split('\n');
+  const oldSet = new Set(oldLines);
+  const newSet = new Set(newLines);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < oldLines.length || j < newLines.length) {
+    const a = oldLines[i];
+    const b = newLines[j];
+    if (i < oldLines.length && j < newLines.length && a === b) {
+      out.push('<div class="diff-ctx">  ' + esc(a) + '</div>');
+      i++; j++;
+    } else if (j < newLines.length && !oldSet.has(b)) {
+      out.push('<div class="diff-add">+ ' + esc(b) + '</div>');
+      j++;
+    } else if (i < oldLines.length && !newSet.has(a)) {
+      out.push('<div class="diff-del">- ' + esc(a) + '</div>');
+      i++;
+    } else {
+      // Lines exist on both sides but order differs — emit as remove+add to keep it readable.
+      if (i < oldLines.length) { out.push('<div class="diff-del">- ' + esc(a) + '</div>'); i++; }
+      if (j < newLines.length) { out.push('<div class="diff-add">+ ' + esc(b) + '</div>'); j++; }
+    }
+  }
+  return out.length === 0 ? '<div class="diff-ctx">(no changes)</div>' : out.join('');
+}
+
+async function revertSkillToHistory(ts) {
+  if (!activeSkillModalName) return;
+  if (!confirm('Revert this skill to the version from ' + ts + '? The current content will be snapshotted before the revert.')) return;
+  const status = document.getElementById('skillModalStatus');
+  if (status) status.textContent = 'Reverting…';
+  try {
+    const snap = await fetch('/api/skills/' + encodeURIComponent(activeSkillModalName) + '/history/' + encodeURIComponent(ts)).then((r) => r.json());
+    if (snap.error) { if (status) status.textContent = 'Failed: ' + snap.error; return; }
+    const response = await fetch('/api/skills/' + encodeURIComponent(activeSkillModalName), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: snap.content }),
+    });
+    const data = await response.json();
+    if (data.error) { if (status) status.textContent = 'Failed: ' + data.error; return; }
+    if (status) status.textContent = 'Reverted.';
+    closeSkillModal();
+    await loadSkills();
+  } catch (error) {
+    if (status) status.textContent = 'Failed: ' + (error.message || error);
+  }
+}
+
+function closeSkillModal() {
+  const modal = document.getElementById('skillModal');
+  if (modal) modal.classList.add('hidden-by-default');
+  activeSkillModalName = '';
+  activeSkillModalParsed = null;
+  activeSkillModalRaw = '';
+}
+
+// --- /help slash-commands modal ---
+let helpModalIndex = 0;
+let helpModalCommands = [];
+
+function openHelpModal() {
+  const modal = document.getElementById('helpModal');
+  const list = document.getElementById('helpModalList');
+  if (!modal || !list) return;
+  helpModalCommands = getAllSlashCommands();
+  helpModalIndex = 0;
+  renderHelpModalList();
+  modal.classList.remove('hidden-by-default');
+  // Tiny global key handler bound while the modal is open.
+  document.addEventListener('keydown', helpModalKeyHandler);
+}
+
+function renderHelpModalList() {
+  const list = document.getElementById('helpModalList');
+  if (!list) return;
+  list.innerHTML = helpModalCommands.map((c, i) => '<div class="help-modal-row' + (i === helpModalIndex ? ' active' : '') + '" onclick="useSlashCommandFromHelp(\'' + escAttr(c.cmd) + '\')" data-help-index="' + i + '">'
+    + '<code>' + esc(c.cmd) + '</code>'
+    + '<span>' + esc(c.desc || '') + '</span>'
+    + '</div>').join('');
+  // Keep the active row in view when navigating with the keyboard.
+  const active = list.querySelector('.help-modal-row.active');
+  if (active && active.scrollIntoView) active.scrollIntoView({ block: 'nearest' });
+}
+
+function helpModalKeyHandler(e) {
+  const modal = document.getElementById('helpModal');
+  if (!modal || modal.classList.contains('hidden-by-default')) return;
+  if (e.key === 'ArrowDown') { e.preventDefault(); helpModalIndex = Math.min(helpModalIndex + 1, helpModalCommands.length - 1); renderHelpModalList(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); helpModalIndex = Math.max(helpModalIndex - 1, 0); renderHelpModalList(); }
+  else if (e.key === 'Enter') { e.preventDefault(); const c = helpModalCommands[helpModalIndex]; if (c) useSlashCommandFromHelp(c.cmd); }
+  else if (e.key === 'Escape') { e.preventDefault(); closeHelpModal(); }
+}
+
+function closeHelpModal() {
+  const modal = document.getElementById('helpModal');
+  if (modal) modal.classList.add('hidden-by-default');
+  document.removeEventListener('keydown', helpModalKeyHandler);
+}
+
+function useSlashCommandFromHelp(cmd) {
+  closeHelpModal();
+  const input = document.getElementById('chatInput');
+  if (!input) return;
+  input.value = cmd + ' ';
+  input.focus();
+  try { autoSize(input); maybeShowSlashPalette(input.value); } catch {}
+}
+
+async function saveSkillModal() {
+  const status = document.getElementById('skillModalStatus');
+  if (!activeSkillModalName) return;
+  let body;
+  if (activeSkillModalTab === 'raw') {
+    const ta = document.getElementById('skillModalContent');
+    const content = ta?.value || '';
+    if (!/^---\n[\s\S]*?\n---/.test(content.trim())) {
+      status.textContent = 'Content must start with YAML frontmatter (--- ... ---).';
+      return;
+    }
+    body = JSON.stringify({ content });
+  } else {
+    const description = (document.getElementById('skillFormDescription')?.value || '').trim();
+    const domain = (document.getElementById('skillFormDomain')?.value || '').trim();
+    const triggersRaw = (document.getElementById('skillFormTriggers')?.value || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const whenToUse = (document.getElementById('skillFormWhenToUse')?.value || '').trim();
+    const riskLevel = document.getElementById('skillFormRiskLevel')?.value || '';
+    const bodyText = (document.getElementById('skillFormBody')?.value || '').trim();
+    // Validation: keep messages specific so users know exactly what to fix.
+    if (description.length < 5 || /^describe what this skill does/i.test(description)) {
+      status.textContent = 'Description must be at least 5 characters and not the placeholder.';
+      return;
+    }
+    if (bodyText.length < 20) {
+      status.textContent = 'Body must be at least 20 characters.';
+      return;
+    }
+    const lower = triggersRaw.map((t) => t.toLowerCase());
+    const dupe = lower.find((t, i) => lower.indexOf(t) !== i);
+    if (dupe) { status.textContent = 'Triggers contain a duplicate: ' + dupe; return; }
+    body = JSON.stringify({ fields: { description, domain, triggers: triggersRaw, whenToUse, riskLevel, body: bodyText } });
+  }
+  status.textContent = 'Saving…';
+  try {
+    const response = await fetch('/api/skills/' + encodeURIComponent(activeSkillModalName), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    const data = await response.json();
+    if (data.error) { status.textContent = 'Save failed: ' + data.error; return; }
+    status.textContent = 'Saved.';
+    closeSkillModal();
+    await loadSkills();
+  } catch (error) {
+    status.textContent = 'Save failed: ' + (error.message || error);
+  }
 }
 
 async function togglePinSkill(name, pinned) {
@@ -4456,7 +5092,93 @@ async function loadPalaceEntry(id) { const detail = document.getElementById('pal
 
 function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); el.classList.add('active'); document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; const rn = document.getElementById('runsView'); if (rn) rn.style.display = tab === 'runs' ? 'block' : 'none'; const wf = document.getElementById('workflowsView'); if (wf) wf.style.display = tab === 'workflows' ? 'block' : 'none'; const my = document.getElementById('myceliumView'); if (my) my.style.display = tab === 'mycelium' ? 'block' : 'none'; const pr = document.getElementById('promisesView'); if (pr) pr.style.display = tab === 'promises' ? 'block' : 'none'; const ev = document.getElementById('eventsView'); if (ev) ev.style.display = tab === 'events' ? 'block' : 'none'; const ci = document.getElementById('codeintelView'); if (ci) ci.style.display = tab === 'codeintel' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); if (tab === 'runs') loadRuns(); if (tab === 'workflows') loadWorkflows(); if (tab === 'mycelium') loadMycelium(); if (tab === 'promises') loadPromises(); if (tab === 'events') loadEvents(); if (tab === 'codeintel') loadCodeIntel(); }
 function toggleLeft() { document.getElementById('leftPanel').classList.toggle('hidden'); }
-function toggleRight() { document.getElementById('rightPanel').classList.toggle('hidden'); }
+function toggleRight() {
+  const panel = document.getElementById('rightPanel');
+  if (!panel) return;
+  panel.classList.toggle('hidden');
+  if (!panel.classList.contains('hidden')) loadAbout();
+}
+
+// Reset a single Settings section to its default value via the existing
+// /api/settings endpoint. Keep the defaults table small and explicit so the
+// behavior of each "↺ Reset" button is obvious from the source.
+const SETTINGS_DEFAULTS = {
+  connection: { ollamaHost: 'http://localhost:11434' },
+  agentFiles: { agentOutputDir: '' },
+  safety: { permissionMode: 'dontAsk' },
+  modelGen: { temperature: 0.7, topP: 0.9, contextMaxTokens: 8192, timeBudgetMs: 0 },
+  webRead: { webReadMaxChars: 12000 },
+};
+
+async function resetSettingsSection(section) {
+  const payload = SETTINGS_DEFAULTS[section];
+  if (!payload) return;
+  if (!confirm('Reset the ' + section + ' section to defaults?')) return;
+  try {
+    const response = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (data.error) { alert('Reset failed: ' + data.error); return; }
+    // Reflect the new value in the UI inputs that the user can see.
+    if (section === 'connection') {
+      const el = document.getElementById('ollamaHost');
+      if (el) el.value = payload.ollamaHost;
+    } else if (section === 'agentFiles') {
+      const el = document.getElementById('agentOutputDirInput');
+      if (el) el.value = '';
+    } else if (section === 'safety') {
+      // Highlight the "Auto-approve all" mode option visually if present.
+      const opts = document.querySelectorAll('.permission-mode-option');
+      opts.forEach((opt) => opt.classList.remove('active'));
+      if (opts[0]) opts[0].classList.add('active');
+    } else if (section === 'modelGen') {
+      const t = document.getElementById('tempSlider'); if (t) { t.value = 0.7; document.getElementById('tempVal').textContent = '0.7'; }
+      const p = document.getElementById('topPSlider'); if (p) { p.value = 0.9; document.getElementById('topPVal').textContent = '0.9'; }
+      const c = document.getElementById('contextMaxTokens'); if (c) c.value = 8192;
+    } else if (section === 'webRead') {
+      const w = document.getElementById('webReadMaxChars'); if (w) w.value = 12000;
+    }
+    loadAbout();
+  } catch (error) { alert('Reset failed: ' + (error.message || error)); }
+}
+
+// Populate the About section with version, model, ollama host, permission/skill/memory counts.
+async function loadAbout() {
+  const version = document.getElementById('aboutVersion');
+  const summary = document.getElementById('aboutSummary');
+  if (!version || !summary) return;
+  try {
+    const [aboutR, settingsR, skillsR, memoryR] = await Promise.allSettled([
+      fetch('/api/about').then((r) => r.json()),
+      fetch('/api/settings').then((r) => r.json()),
+      fetch('/api/skills').then((r) => r.json()),
+      fetch('/api/memory').then((r) => r.json()).catch(() => null),
+    ]);
+    const about = aboutR.status === 'fulfilled' ? aboutR.value : {};
+    const settings = settingsR.status === 'fulfilled' ? settingsR.value : {};
+    const skillsData = skillsR.status === 'fulfilled' ? skillsR.value : { skills: [] };
+    const memoryData = memoryR.status === 'fulfilled' && memoryR.value ? memoryR.value : null;
+    const skillCount = (skillsData.skills || []).length;
+    const enabledSkillCount = (skillsData.skills || []).filter((s) => s.enabled !== false).length;
+    // /api/memory returns { decisions, patterns, notes } raw markdown strings; count non-empty.
+    const memoryFiles = memoryData ? Object.values(memoryData).filter((v) => typeof v === 'string' && v.trim().length > 0).length : 0;
+    const verLabel = about.version ? 'Harness v' + about.version : 'Harness';
+    version.textContent = verLabel;
+    summary.innerHTML = ''
+      + '<div><strong>Model</strong>' + esc(settings.model || '—') + '</div>'
+      + '<div><strong>Ollama host</strong>' + esc(settings.ollamaHost || '—') + '</div>'
+      + '<div><strong>Skills</strong>' + enabledSkillCount + ' on / ' + skillCount + ' total</div>'
+      + '<div><strong>Memory entries</strong>' + memoryFiles + ' file(s)</div>'
+      + '<div><strong>Permission mode</strong>' + esc(settings.permissionMode || '—') + '</div>'
+      + '<div><strong>Context cap</strong>' + esc(String(settings.contextMaxTokens || '—')) + ' tokens</div>';
+  } catch (error) {
+    version.textContent = 'Harness';
+    summary.textContent = 'Could not load about info: ' + (error.message || error);
+  }
+}
 
 /**
  * Convert each `.settings-section` in the right panel into a collapsible
@@ -4472,7 +5194,11 @@ function setupSettingsCollapse() {
   if (header && !panel.querySelector('.panel-search')) {
     const search = document.createElement('div');
     search.className = 'panel-search';
-    search.innerHTML = '<input type="text" id="settingsSearch" placeholder="🔍 Filter settings..." autocomplete="off">';
+    search.innerHTML = '<input type="text" id="settingsSearch" placeholder="🔍 Filter settings..." autocomplete="off">'
+      + '<div class="settings-collapse-actions">'
+      +   '<button class="btn-sm" onclick="setAllSettingsSections(true)" title="Open every section">Expand all</button>'
+      +   '<button class="btn-sm" onclick="setAllSettingsSections(false)" title="Collapse every section">Collapse all</button>'
+      + '</div>';
     header.insertAdjacentElement('afterend', search);
     search.querySelector('input').addEventListener('input', filterSettingsSections);
   }
@@ -4508,6 +5234,18 @@ function setupSettingsCollapse() {
       section.classList.add('open');
     }
   });
+}
+
+function setAllSettingsSections(open) {
+  const panel = document.getElementById('rightPanel');
+  if (!panel) return;
+  const sections = panel.querySelectorAll('.settings-section');
+  sections.forEach((section) => {
+    if (open) section.classList.add('open');
+    else section.classList.remove('open');
+  });
+  const remember = open ? Array.from(sections).map((s) => s.dataset.titleKey).filter(Boolean) : [];
+  try { localStorage.setItem('settingsOpenSections', JSON.stringify(remember)); } catch {}
 }
 
 function filterSettingsSections(event) {
@@ -6635,12 +7373,30 @@ function renderAutomationRunsSection(automations, runLog, runEvidence) {
     + '<button class="btn-sm" onclick="createJobFromTemplate(\'Weekly report\',\'Create a weekly report covering completed tasks, automation runs, learned patterns, and system health. Export as PDF to weekly-report.pdf.\',\'10080 minutes\')">Weekly report</button>'
     + '<button class="btn-sm" onclick="createJobFromTemplate(\'Email reminder\',\'Send an email to [your@email.com] with subject \\\'Daily Reminder\\\' summarizing pending tasks and today\\\'s priorities.\',\'1440 minutes\')">Email reminder</button>'
     + '</div></details>'
-    + '<div id="newAutomationJobForm" class="automation-job-form hidden-by-default">'
-    + '<input id="newJobName" type="text" placeholder="Job name" class="automation-job-input">'
-    + '<input id="newJobPrompt" type="text" placeholder="Prompt text" class="automation-job-input">'
-    + '<input id="newJobSchedule" type="text" placeholder="Schedule (e.g. every 2h, 30m, 0 9 * * *)" class="automation-job-input">'
-    + '<input id="newJobScript" type="text" placeholder="Script command (optional)" class="automation-job-input">'
-    + '<div class="inline-actions"><button class="btn-sm" onclick="createAutomationJob()">Create</button> <button class="btn-sm" onclick="hideNewAutomationJobForm()">Cancel</button></div>'
+    + '<div id="newAutomationJobForm" class="automation-wizard hidden-by-default">'
+    +   '<div class="automation-wizard-title">New automation job</div>'
+    +   '<div class="automation-field">'
+    +     '<label for="newJobName">Name</label>'
+    +     '<input id="newJobName" type="text" placeholder="e.g. Morning briefing">'
+    +   '</div>'
+    +   '<div class="automation-field">'
+    +     '<label for="newJobSchedule">Schedule</label>'
+    +     '<input id="newJobSchedule" type="text" placeholder="every 2h · 30 minutes · 0 9 * * *" oninput="previewAutomationSchedule(this.value)">'
+    +     '<span class="automation-field-hint">Plain English (every 2h, 30 minutes), or a cron expression (0 9 * * *).</span>'
+    +     '<span id="newJobSchedulePreview" class="automation-schedule-preview"></span>'
+    +   '</div>'
+    +   '<div class="automation-field">'
+    +     '<label for="newJobPrompt">Step 1 — what should the agent do?</label>'
+    +     '<textarea id="newJobPrompt" rows="3" placeholder="Summarize today\'s tasks, check inbox, write the digest to daily.md"></textarea>'
+    +   '</div>'
+    +   '<details class="details-mt6"><summary class="trace-meta clickable-summary">Advanced</summary>'
+    +     '<div class="automation-field details-body-mt4">'
+    +       '<label for="newJobScript">Script command (optional)</label>'
+    +       '<input id="newJobScript" type="text" placeholder="node scripts/pre-run.js">'
+    +       '<span class="automation-field-hint">Runs before the prompt; output is appended as context.</span>'
+    +     '</div>'
+    +   '</details>'
+    +   '<div class="inline-actions"><button class="btn-sm primary" onclick="createAutomationJob()">Create job</button> <button class="btn-sm" onclick="hideNewAutomationJobForm()">Cancel</button></div>'
     + '</div>'
     + renderAutomationRunLog(entries)
     + renderRunEvidenceLog(evidence)
@@ -6717,6 +7473,187 @@ async function runAutomationJobNow(jobId) {
 function showNewAutomationJobForm() {
   const form = document.getElementById('newAutomationJobForm');
   if (form) form.classList.remove('hidden-by-default');
+}
+
+// Debounced schedule preview — calls /api/automations/preview and shows the
+// resolved kind + next run time under the Schedule field.
+let schedulePreviewTimer = null;
+function previewAutomationSchedule(value) {
+  const out = document.getElementById('newJobSchedulePreview');
+  if (!out) return;
+  if (schedulePreviewTimer) clearTimeout(schedulePreviewTimer);
+  if (!value || !value.trim()) { out.textContent = ''; out.className = 'automation-schedule-preview'; return; }
+  out.textContent = '…';
+  out.className = 'automation-schedule-preview';
+  schedulePreviewTimer = setTimeout(async () => {
+    try {
+      const response = await fetch('/api/automations/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ schedule: value }),
+      });
+      const data = await response.json();
+      if (!data.ok) {
+        out.textContent = '✗ ' + (data.error || 'Invalid schedule');
+        out.className = 'automation-schedule-preview error';
+        return;
+      }
+      const next = data.nextRunAt ? new Date(data.nextRunAt).toLocaleString() : 'never';
+      let detail = '✓ ' + data.schedule.kind + ' · next run: ' + next;
+      if (data.schedule.kind === 'interval' && data.schedule.minutes) {
+        const m = data.schedule.minutes;
+        const human = m % 1440 === 0 ? (m / 1440) + 'd' : m % 60 === 0 ? (m / 60) + 'h' : m + 'm';
+        detail += ' · then every ' + human;
+      } else if (data.schedule.kind === 'cron' && data.schedule.expr) {
+        detail += ' · cron ' + data.schedule.expr;
+      }
+      out.textContent = detail;
+      out.className = 'automation-schedule-preview ok';
+    } catch (error) {
+      out.textContent = '✗ ' + (error.message || error);
+      out.className = 'automation-schedule-preview error';
+    }
+  }, 300);
+}
+
+// Cross-tab launcher for the Flows panel: switches to Runs, loads the data,
+// then opens the wizard and scrolls it into view.
+async function openAutomationWizardFromFlows() {
+  try { openLeftTabByName('runs'); } catch {}
+  try { await loadRuns(); } catch {}
+  setTimeout(() => {
+    showNewAutomationJobForm();
+    const form = document.getElementById('newAutomationJobForm');
+    if (form && typeof form.scrollIntoView === 'function') form.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, 200);
+}
+
+// --- Workflow wizard ---
+function openWorkflowWizard() {
+  const modal = document.getElementById('workflowWizard');
+  if (!modal) return;
+  document.getElementById('workflowWizardName').value = '';
+  document.getElementById('workflowWizardDescription').value = '';
+  document.getElementById('workflowWizardStatus').textContent = '';
+  document.getElementById('workflowWizardSteps').innerHTML = '';
+  // Fetch tool catalog once per wizard open so the per-step <datalist>
+  // autocompletes real tool names. Cached on window for cheap reuse.
+  fetchWorkflowToolList().then(() => addWorkflowWizardStep());
+  modal.classList.remove('hidden-by-default');
+}
+
+async function fetchWorkflowToolList() {
+  if (Array.isArray(window._workflowToolList) && window._workflowToolList.length > 0) return window._workflowToolList;
+  try {
+    const data = await fetch('/api/tools').then((r) => r.json());
+    window._workflowToolList = (data.tools || []).map((t) => t.name).filter(Boolean).sort();
+  } catch { window._workflowToolList = []; }
+  return window._workflowToolList;
+}
+
+function closeWorkflowWizard() {
+  const modal = document.getElementById('workflowWizard');
+  if (modal) modal.classList.add('hidden-by-default');
+}
+
+function addWorkflowWizardStep() {
+  const container = document.getElementById('workflowWizardSteps');
+  if (!container) return;
+  const idx = container.children.length;
+  const stepNumber = idx + 1;
+  const tools = window._workflowToolList || [];
+  const datalistId = 'wfToolList' + idx;
+  const datalist = '<datalist id="' + datalistId + '">' + tools.map((t) => '<option value="' + escAttr(t) + '">').join('') + '</datalist>';
+  const div = document.createElement('div');
+  div.className = 'workflow-wizard-step';
+  div.innerHTML = '<div class="workflow-wizard-step-header"><strong>Step ' + stepNumber + '</strong>'
+    + '<button class="btn-sm" onclick="this.closest(\'.workflow-wizard-step\').remove()">Remove</button></div>'
+    + '<div class="automation-field"><label>ID</label><input class="wf-step-id" type="text" placeholder="echo-step"></div>'
+    + '<div class="automation-field"><label>Tool</label><input class="wf-step-tool" type="text" list="' + datalistId + '" placeholder="file_read">' + datalist + '</div>'
+    + '<div class="automation-field"><label>Input (JSON)</label><textarea class="wf-step-input" rows="2" placeholder=\'{"path": "README.md"}\'></textarea></div>'
+    + '<label class="attachment-hint"><input type="checkbox" class="wf-step-continue"> Continue on error</label>';
+  container.appendChild(div);
+}
+
+// Starter workflow templates surfaced in the wizard so users don't stare at a
+// blank step list. Each template emits id/tool/input strings that match the
+// real tool registry (see /api/tools).
+const WORKFLOW_TEMPLATES = {
+  readSummarize: [
+    { id: 'read', tool: 'file_read', input: '{"path": "README.md"}' },
+    { id: 'summarize', tool: 'memory_write', input: '{"content": "Summary of README"}' },
+  ],
+  webSearchSave: [
+    { id: 'search', tool: 'web_search', input: '{"query": "ollama agent harness"}' },
+    { id: 'save', tool: 'file_write', input: '{"path": "agent-outputs/search.md", "content": "Results"}' },
+  ],
+  bashEcho: [
+    { id: 'hello', tool: 'bash', input: '{"command": "echo hello"}' },
+  ],
+};
+
+function applyWorkflowTemplate(key) {
+  const tmpl = WORKFLOW_TEMPLATES[key];
+  if (!tmpl) return;
+  const container = document.getElementById('workflowWizardSteps');
+  if (container) container.innerHTML = '';
+  tmpl.forEach(() => addWorkflowWizardStep());
+  // Backfill values into the freshly created step nodes.
+  const nodes = Array.from(document.querySelectorAll('#workflowWizardSteps .workflow-wizard-step'));
+  tmpl.forEach((step, i) => {
+    const node = nodes[i];
+    if (!node) return;
+    node.querySelector('.wf-step-id').value = step.id;
+    node.querySelector('.wf-step-tool').value = step.tool;
+    node.querySelector('.wf-step-input').value = step.input || '';
+  });
+}
+
+async function saveWorkflowWizard() {
+  const status = document.getElementById('workflowWizardStatus');
+  const name = (document.getElementById('workflowWizardName')?.value || '').trim();
+  const description = (document.getElementById('workflowWizardDescription')?.value || '').trim();
+  if (!name) { status.textContent = 'Name is required.'; return; }
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) { status.textContent = 'Name may only contain letters, numbers, dashes, underscores.'; return; }
+  const stepNodes = Array.from(document.querySelectorAll('#workflowWizardSteps .workflow-wizard-step'));
+  const steps = [];
+  for (const node of stepNodes) {
+    const id = node.querySelector('.wf-step-id').value.trim();
+    const tool = node.querySelector('.wf-step-tool').value.trim();
+    const inputRaw = node.querySelector('.wf-step-input').value.trim();
+    const continueOnError = node.querySelector('.wf-step-continue').checked;
+    if (!id || !tool) { status.textContent = 'Each step needs an id and tool.'; return; }
+    let input = undefined;
+    if (inputRaw) {
+      try { input = JSON.parse(inputRaw); }
+      catch { status.textContent = 'Step "' + id + '" has invalid JSON input.'; return; }
+    }
+    steps.push({ id, tool, input, continueOnError });
+  }
+  if (steps.length === 0) { status.textContent = 'Add at least one step.'; return; }
+  status.textContent = 'Saving…';
+  try {
+    let response = await fetch('/api/workflows', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, description, steps }),
+    });
+    if (response.status === 409) {
+      if (!confirm('Workflow "' + name + '" already exists. Overwrite?')) { status.textContent = 'Cancelled.'; return; }
+      response = await fetch('/api/workflows', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, description, steps, overwrite: true }),
+      });
+    }
+    const data = await response.json();
+    if (data.error) { status.textContent = 'Failed: ' + data.error; return; }
+    status.textContent = 'Created at ' + (data.filePath || '');
+    closeWorkflowWizard();
+    await loadWorkflows();
+  } catch (error) {
+    status.textContent = 'Failed: ' + (error.message || error);
+  }
 }
 
 function createJobFromTemplate(name, prompt, schedule) {
@@ -6909,15 +7846,23 @@ async function loadWorkflows() {
     ]);
     const defs = defsR.status === 'fulfilled' ? (defsR.value.workflows || []) : [];
     const runs = runsR.status === 'fulfilled' ? (runsR.value.runs || []) : [];
-    const header = '<div class="panel-header panel-header-flat"><h3>Workflows</h3><div class="inline-actions"><button class="btn-sm" onclick="loadWorkflows()">Refresh</button></div></div>';
-    const intro = '<div class="trace-meta panel-copy">Declarative tool sequences in <code>.harness/workflows/</code>. Use dry-run first; pause/resume/cancel any in-flight run.</div>';
+    const header = '<div class="panel-header panel-header-flat"><h3>Workflows</h3><div class="inline-actions"><button class="btn-sm" onclick="loadWorkflows()">Refresh</button> <button class="btn-sm" onclick="openWorkflowWizard()">+ New workflow</button> <button class="btn-sm" onclick="openAutomationWizardFromFlows()" title="Open the Runs tab and create a scheduled automation job">+ New automation</button></div></div>';
+    const intro = '<div class="trace-meta panel-copy">Declarative tool sequences in <code>.harness/workflows/</code>. Use dry-run first; pause/resume/cancel any in-flight run. For <strong>scheduled automation jobs</strong> (cron-style), use the button above — they live on the <em>Runs</em> tab.</div>';
     let defsHtml;
     if (defs.length === 0) {
-      defsHtml = '<div class="trace-meta panel-empty">No workflows yet. Drop a YAML file into <code>.harness/workflows/</code>.</div>';
+      defsHtml = '<div class="trace-meta panel-empty">No workflows yet. Use <strong>+ New workflow</strong> above to scaffold one.</div>';
     } else {
       defsHtml = '<div class="trace-list">' + defs.map(renderWorkflowDef).join('') + '</div>';
     }
-    const runsHtml = runs.length === 0 ? '' : '<div class="trace-title workflow-runs-title">Recent runs</div><div class="trace-list">' + runs.slice(0, 20).map(renderWorkflowRun).join('') + '</div>';
+    // Stash runs for the in-place filter handler.
+    workflowRunsCache = runs;
+    const runsHtml = runs.length === 0 ? '' : (
+      '<div class="trace-title workflow-runs-title">Recent runs</div>'
+      + '<div class="run-status-filter" id="runStatusFilter">'
+      +   ['all', 'running', 'paused', 'completed', 'failed', 'cancelled'].map((s) => '<span class="run-status-chip' + (s === 'all' ? ' active' : '') + '" data-status="' + s + '" onclick="filterWorkflowRuns(\'' + s + '\')">' + s + '</span>').join('')
+      + '</div>'
+      + '<div id="workflowRunsList" class="trace-list">' + runs.slice(0, 20).map(renderWorkflowRun).join('') + '</div>'
+    );
     view.innerHTML = header + intro + defsHtml + runsHtml;
   } catch (error) {
     view.innerHTML = '<div class="trace-meta">Failed to load: ' + esc(error.message || error) + '</div>';
@@ -6933,9 +7878,76 @@ function renderWorkflowDef(def) {
     + '<div class="trace-meta">' + def.stepCount + ' step(s)</div>'
     + '<div class="inline-actions trace-block-spaced">'
     +   '<button class="btn-sm" onclick="runWorkflow(\'' + escAttr(def.name) + '\', true)">Dry-run</button> '
-    +   '<button class="btn-sm primary" onclick="runWorkflow(\'' + escAttr(def.name) + '\', false)">Run</button>'
+    +   '<button class="btn-sm primary" onclick="runWorkflow(\'' + escAttr(def.name) + '\', false)">Run</button> '
+    +   '<button class="btn-sm" onclick="openWorkflowEditor(\'' + escAttr(def.name) + '\')">Edit YAML</button>'
     + '</div>'
     + '</div>';
+}
+
+// In-memory cache of the last loaded workflow runs so the status filter chips
+// can re-render without refetching.
+let workflowRunsCache = [];
+
+function filterWorkflowRuns(status) {
+  document.querySelectorAll('#runStatusFilter .run-status-chip').forEach((chip) => {
+    if (chip.dataset.status === status) chip.classList.add('active'); else chip.classList.remove('active');
+  });
+  const list = document.getElementById('workflowRunsList');
+  if (!list) return;
+  const subset = status === 'all' ? workflowRunsCache : workflowRunsCache.filter((r) => r.status === status);
+  list.innerHTML = subset.length === 0
+    ? '<div class="trace-meta">No runs with status "' + esc(status) + '".</div>'
+    : subset.slice(0, 20).map(renderWorkflowRun).join('');
+}
+
+// --- Workflow YAML editor ---
+let activeWorkflowEditorName = '';
+
+async function openWorkflowEditor(name) {
+  activeWorkflowEditorName = name;
+  const modal = document.getElementById('workflowEditor');
+  const ta = document.getElementById('workflowEditorContent');
+  const status = document.getElementById('workflowEditorStatus');
+  const path = document.getElementById('workflowEditorPath');
+  if (!modal || !ta) return;
+  document.getElementById('workflowEditorTitle').textContent = 'Edit workflow · ' + name;
+  ta.value = 'Loading…';
+  status.textContent = '';
+  path.textContent = '';
+  modal.classList.remove('hidden-by-default');
+  try {
+    const data = await fetch('/api/workflows/' + encodeURIComponent(name) + '?raw=1').then((r) => r.json());
+    if (data.error) { ta.value = ''; status.textContent = 'Failed: ' + data.error; return; }
+    ta.value = data.content || '';
+    path.textContent = data.filePath || '';
+  } catch (error) { status.textContent = 'Failed: ' + (error.message || error); }
+}
+
+function closeWorkflowEditor() {
+  const modal = document.getElementById('workflowEditor');
+  if (modal) modal.classList.add('hidden-by-default');
+  activeWorkflowEditorName = '';
+}
+
+async function saveWorkflowEditor() {
+  const status = document.getElementById('workflowEditorStatus');
+  if (!activeWorkflowEditorName) return;
+  const ta = document.getElementById('workflowEditorContent');
+  const content = ta?.value || '';
+  if (!content.trim()) { status.textContent = 'Content is empty.'; return; }
+  status.textContent = 'Saving…';
+  try {
+    const response = await fetch('/api/workflows/' + encodeURIComponent(activeWorkflowEditorName), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    });
+    const data = await response.json();
+    if (data.error) { status.textContent = 'Save failed: ' + data.error; return; }
+    status.textContent = 'Saved.';
+    closeWorkflowEditor();
+    await loadWorkflows();
+  } catch (error) { status.textContent = 'Save failed: ' + (error.message || error); }
 }
 
 function renderWorkflowRun(run) {
@@ -6949,10 +7961,14 @@ function renderWorkflowRun(run) {
   const dryBadge = run.dryRun ? ' <span class="capability-pill">dry-run</span>' : '';
   const completedSteps = (run.steps || []).filter((s) => s.status === 'completed' || s.status === 'failed' || s.status === 'denied' || s.status === 'skipped').length;
   const totalSteps = (run.steps || []).length;
-  const stepLines = (run.steps || []).map((s) => {
+  const stepLines = (run.steps || []).map((s, i) => {
     const stepClass = s.status === 'completed' ? 'trace-meta-success' : s.status === 'failed' || s.status === 'denied' ? 'trace-meta-error' : s.status === 'skipped' ? 'text-dim' : s.status === 'running' ? 'info-text' : 'muted-text';
     const detail = s.error ? ' — ' + esc(s.error) : (s.result?.output ? ' — ' + esc(String(s.result.output).slice(0, 80)) : '');
-    return '<div class="trace-meta trace-meta-sm ' + stepClass + '">' + esc(s.step.id) + ' (' + esc(s.step.tool) + ') · ' + esc(s.status) + detail + '</div>';
+    const expandable = (s.error || s.result) ? '<button class="btn-sm btn-xxs" onclick="toggleWorkflowStepDetail(\'' + escAttr(run.id) + '\', ' + i + ', this)">Details</button>' : '';
+    const detailContent = renderWorkflowStepDetail(s);
+    return '<div class="trace-meta trace-meta-sm ' + stepClass + '">' + esc(s.step.id) + ' (' + esc(s.step.tool) + ') · ' + esc(s.status) + detail + ' ' + expandable
+      + '<div id="wfStepDetail_' + escAttr(run.id) + '_' + i + '" class="hidden-by-default workflow-step-detail">' + detailContent + '</div>'
+      + '</div>';
   }).join('');
   const controls = run.status === 'running'
     ? '<button class="btn-sm" onclick="pauseWorkflowRun(\'' + escAttr(run.id) + '\')">Pause</button> <button class="btn-sm danger" onclick="cancelWorkflowRun(\'' + escAttr(run.id) + '\')">Cancel</button>'
@@ -6982,6 +7998,31 @@ async function runWorkflow(name, dryRun) {
 async function pauseWorkflowRun(id) {
   await fetch('/api/workflows/runs/' + encodeURIComponent(id) + '/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   loadWorkflows();
+}
+
+// Build the expandable detail block for a single workflow step. We try to show
+// the rich tool result when present, fall back to error text, and otherwise
+// note that the step had no recorded output.
+function renderWorkflowStepDetail(step) {
+  if (step.error) return '<pre class="workflow-step-pre">' + esc(String(step.error)) + '</pre>';
+  if (step.result) {
+    const output = step.result.output !== undefined ? step.result.output : step.result;
+    const text = typeof output === 'string' ? output : JSON.stringify(output, null, 2);
+    return '<pre class="workflow-step-pre">' + esc(text.slice(0, 4000)) + '</pre>';
+  }
+  return '<div class="trace-meta">No recorded output.</div>';
+}
+
+function toggleWorkflowStepDetail(runId, index, btn) {
+  const el = document.getElementById('wfStepDetail_' + runId + '_' + index);
+  if (!el) return;
+  if (el.classList.contains('hidden-by-default')) {
+    el.classList.remove('hidden-by-default');
+    if (btn) btn.textContent = 'Hide';
+  } else {
+    el.classList.add('hidden-by-default');
+    if (btn) btn.textContent = 'Details';
+  }
 }
 
 async function resumeWorkflowRun(id) {

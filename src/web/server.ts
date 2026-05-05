@@ -51,7 +51,7 @@ import { calibrateModelRoutingPolicy, summarizeRoutingMetrics } from '../agents/
 import { checkSetupHealth } from '../setup/health';
 import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCatalog';
 import { isVisionCapableModelName } from '../models/visionModels';
-import { createAutomationJob, deleteAutomationJob, executeDueJobs, listAutomationJobs, listDueAutomationJobs, readAutomationRunLog, updateAutomationJob } from '../automation/jobs';
+import { createAutomationJob, deleteAutomationJob, executeDueJobs, listAutomationJobs, listDueAutomationJobs, parseAutomationSchedule, computeNextAutomationRun, readAutomationRunLog, updateAutomationJob } from '../automation/jobs';
 import { prepareAutomationRun } from '../automation/runner';
 import { AutomationScheduler } from '../automation/scheduler';
 import { exportAgenticServices, getAgenticService, handleOperateModeRequest, importAgenticServices, listAgenticServices } from '../services/agenticServiceMode';
@@ -443,6 +443,7 @@ function mapSkillForApi(source: SkillApiSource): (skill: SkillDefinition) => Rec
     triggers: skill.triggers,
     filePath: skill.filePath,
     source,
+    enabled: skill.enabled !== false,
   });
 }
 
@@ -3079,6 +3080,21 @@ app.post('/api/automations/:id/execute', async (req, res) => {
   }
 });
 
+// Preview an automation schedule string without persisting anything. Used by
+// the wizard's "Next run" hint so users see what they're about to commit.
+app.post('/api/automations/preview', (req, res) => {
+  const value = typeof req.body?.schedule === 'string' ? req.body.schedule : '';
+  if (!value.trim()) { res.status(400).json({ error: 'schedule is required.' }); return; }
+  try {
+    const now = new Date();
+    const schedule = parseAutomationSchedule(value, now);
+    const nextRunAt = computeNextAutomationRun(schedule, undefined, now);
+    res.json({ ok: true, schedule, nextRunAt });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 app.post('/api/automations/jobs', async (req, res) => {
   try {
     await ensureSettingsLoaded();
@@ -3331,9 +3347,129 @@ app.get('/api/workflows/:name', async (req, res) => {
   const name = String(req.params.name || '').trim();
   if (!name) { res.status(400).json({ error: 'workflow name required' }); return; }
   try {
+    if (req.query.raw === '1') {
+      const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '');
+      if (!safeName || safeName !== name) { res.status(400).json({ error: 'invalid workflow name' }); return; }
+      // Workflows can be .yaml, .yml, or .json — try in priority order.
+      for (const ext of ['.yaml', '.yml', '.json']) {
+        const filePath = path.join(WORKFLOWS_DIR, `${safeName}${ext}`);
+        const content = await fs.readFile(filePath, 'utf-8').catch(() => null);
+        if (content !== null) { res.json({ name: safeName, filePath, content }); return; }
+      }
+      res.status(404).json({ error: 'workflow file not found' });
+      return;
+    }
     const definition = await workflowRegistry.load(name);
     if (!definition) { res.status(404).json({ error: 'workflow not found' }); return; }
     res.json(definition);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Replace a workflow YAML/JSON file's content. Body: { content: string, ext?: '.yaml'|'.yml'|'.json' }
+app.put('/api/workflows/:name', async (req, res) => {
+  const rawName = String(req.params.name || '').trim();
+  const name = rawName.replace(/[^a-zA-Z0-9_-]/g, '');
+  if (!name || name !== rawName) { res.status(400).json({ error: 'invalid workflow name' }); return; }
+  const content = typeof req.body?.content === 'string' ? req.body.content : '';
+  if (!content.trim()) { res.status(400).json({ error: 'content is required' }); return; }
+  if (content.length > 200_000) { res.status(413).json({ error: 'content too large (max 200KB)' }); return; }
+  try {
+    await fs.mkdir(WORKFLOWS_DIR, { recursive: true });
+    // Find existing file by extension; default to .yaml when creating new.
+    let target: string | null = null;
+    for (const ext of ['.yaml', '.yml', '.json']) {
+      const candidate = path.join(WORKFLOWS_DIR, `${name}${ext}`);
+      if (await fs.stat(candidate).catch(() => null)) { target = candidate; break; }
+    }
+    if (!target) target = path.join(WORKFLOWS_DIR, `${name}.yaml`);
+    // Validate by writing to a temp path under WORKFLOWS_DIR and asking the
+    // registry to load it. If parsing or tool resolution fails, reject without
+    // touching the original file. Only skipped when ?skipValidate=1.
+    const skipValidate = req.query.skipValidate === '1';
+    if (!skipValidate) {
+      const tempName = `__tmp__${name}__${Date.now()}`;
+      const tempExt = path.extname(target) || '.yaml';
+      const tempPath = path.join(WORKFLOWS_DIR, `${tempName}${tempExt}`);
+      try {
+        await fs.writeFile(tempPath, content, 'utf-8');
+        const definition = await workflowRegistry.load(tempName);
+        if (!definition) { res.status(400).json({ error: 'Workflow content failed to parse.' }); return; }
+        const knownTools = new Set(createToolRegistry(PROJECT_DIR).listEntries().map((entry) => entry.tool.name));
+        const unknown = definition.steps.map((s) => s.tool).filter((t) => t && !knownTools.has(t));
+        if (unknown.length > 0) {
+          res.status(400).json({ error: 'Unknown tool(s): ' + Array.from(new Set(unknown)).join(', ') });
+          return;
+        }
+      } finally {
+        await fs.unlink(tempPath).catch(() => {});
+      }
+    }
+    await fs.writeFile(target, content, 'utf-8');
+    res.json({ ok: true, name, filePath: target });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Create a new workflow YAML file from a structured payload. The wizard UI
+// posts here; YAML is hand-emitted so we don't need to add a YAML serializer
+// dependency. Body: { name, description?, steps: [{ id, tool, input?, description?, continueOnError? }] }
+app.post('/api/workflows', async (req, res) => {
+  const rawName = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  const name = rawName.replace(/[^a-zA-Z0-9_-]/g, '');
+  if (!name || name !== rawName) {
+    res.status(400).json({ error: 'name must contain only letters, numbers, dashes, and underscores.' });
+    return;
+  }
+  const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
+  if (steps.length === 0) { res.status(400).json({ error: 'At least one step is required.' }); return; }
+  // Validate every step's tool exists in the live registry so users see typos
+  // at create time instead of run time.
+  const knownTools = new Set(createToolRegistry(PROJECT_DIR).listEntries().map((entry) => entry.tool.name));
+  const unknownTools: string[] = [];
+  for (const raw of steps) {
+    const tool = String(raw?.tool || '').trim();
+    if (tool && !knownTools.has(tool)) unknownTools.push(tool);
+  }
+  if (unknownTools.length > 0) {
+    res.status(400).json({ error: 'Unknown tool(s): ' + Array.from(new Set(unknownTools)).join(', ') });
+    return;
+  }
+  const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
+  const filePath = path.join(WORKFLOWS_DIR, `${name}.yaml`);
+  try {
+    await fs.mkdir(WORKFLOWS_DIR, { recursive: true });
+    const existing = await fs.stat(filePath).catch(() => null);
+    if (existing && req.body?.overwrite !== true) {
+      res.status(409).json({ error: 'Workflow already exists. Pass overwrite=true to replace it.' });
+      return;
+    }
+    const lines: string[] = [`name: ${JSON.stringify(name)}`];
+    if (description) lines.push(`description: ${JSON.stringify(description)}`);
+    lines.push('steps:');
+    for (const raw of steps) {
+      const stepId = String(raw?.id || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+      const tool = String(raw?.tool || '').trim();
+      if (!stepId || !tool) {
+        res.status(400).json({ error: 'Each step needs a non-empty id and tool.' });
+        return;
+      }
+      lines.push(`  - id: ${JSON.stringify(stepId)}`);
+      lines.push(`    tool: ${JSON.stringify(tool)}`);
+      if (raw?.description) lines.push(`    description: ${JSON.stringify(String(raw.description))}`);
+      if (raw?.continueOnError === true) lines.push('    continueOnError: true');
+      const input = raw?.input;
+      if (input && typeof input === 'object') {
+        lines.push('    input:');
+        for (const [k, v] of Object.entries(input)) {
+          lines.push(`      ${JSON.stringify(k)}: ${JSON.stringify(v)}`);
+        }
+      }
+    }
+    await fs.writeFile(filePath, lines.join('\n') + '\n', 'utf-8');
+    res.json({ ok: true, name, filePath });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
@@ -4790,6 +4926,17 @@ app.get('/api/skills/:name', async (req, res) => {
   try {
     const skillName = safeLocalId(req.params.name);
     if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
+    if (req.query.raw === '1') {
+      const skillFile = path.join(SKILLS_DIR, skillName, 'SKILL.md');
+      try {
+        const content = await fs.readFile(skillFile, 'utf-8');
+        res.json({ name: skillName, filePath: skillFile, content });
+        return;
+      } catch {
+        res.status(404).json({ error: 'Skill not found' });
+        return;
+      }
+    }
     const skills = await loadSkillsDir(SKILLS_DIR);
     const skill = skills.find(s => s.name === skillName);
     if (!skill) { res.status(404).json({ error: 'Skill not found' }); return; }
@@ -4806,6 +4953,84 @@ app.delete('/api/skills/:name', async (req, res) => {
     invalidateSkillsCache();
     res.json({ ok: true });
   } catch { res.status(404).json({ error: 'Skill not found' }); }
+});
+
+// Replace SKILL.md content for a runtime skill. Body accepts EITHER:
+//   { content: string }     -> raw markdown (must start with frontmatter)
+//   { fields: { name, description, domain, triggers, whenToUse, requiredTools, riskLevel, body } }
+//                           -> structured form, server rebuilds frontmatter
+// Before writing, the previous content is snapshotted into
+// `.harness/skills/_history/<name>/<ISO>.md` so users can revert via the
+// /history endpoints below.
+app.put('/api/skills/:name', async (req, res) => {
+  const skillName = safeLocalId(req.params.name);
+  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
+  const skillFile = path.join(SKILLS_DIR, skillName, 'SKILL.md');
+  let content: string;
+  if (req.body?.fields && typeof req.body.fields === 'object') {
+    const f = req.body.fields as Record<string, unknown>;
+    content = buildRuntimeSkillFile({
+      name: skillName,
+      description: sanitizeSkillText(f.description, 'Describe what this skill does.', 500),
+      domain: sanitizeSkillText(f.domain, 'general', 120),
+      triggers: sanitizeSkillList(f.triggers, 20, 120),
+      whenToUse: sanitizeSkillText(f.whenToUse, '', 800),
+      requiredTools: sanitizeSkillList(f.requiredTools, 40, 80),
+      riskLevel: sanitizeSkillRiskLevel(f.riskLevel),
+      body: sanitizeSkillBody(f.body),
+    });
+  } else {
+    content = typeof req.body?.content === 'string' ? req.body.content : '';
+    if (!content.trim()) { res.status(400).json({ error: 'content or fields is required.' }); return; }
+    if (content.length > 200_000) { res.status(413).json({ error: 'Skill content too large (max 200KB).' }); return; }
+    if (!/^---\n[\s\S]*?\n---/.test(content)) {
+      res.status(400).json({ error: 'Content must start with YAML frontmatter (--- ... ---).' });
+      return;
+    }
+  }
+  try {
+    const existing = await fs.stat(skillFile).catch(() => null);
+    if (!existing) { res.status(404).json({ error: 'Skill not found' }); return; }
+    const previous = await fs.readFile(skillFile, 'utf-8').catch(() => '');
+    if (previous && previous !== content) await snapshotSkillHistory(skillName, previous);
+    await fs.writeFile(skillFile, content, 'utf-8');
+    invalidateSkillsCache();
+    res.json({ ok: true, name: skillName, filePath: skillFile });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// List previous SKILL.md snapshots for a runtime skill.
+app.get('/api/skills/:name/history', async (req, res) => {
+  const skillName = safeLocalId(req.params.name);
+  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
+  try {
+    const dir = path.join(SKILLS_DIR, '_history', skillName);
+    const entries = await fs.readdir(dir).catch(() => [] as string[]);
+    const versions = entries
+      .filter((name) => name.endsWith('.md'))
+      .sort()
+      .reverse()
+      .map((name) => ({ timestamp: name.replace(/\.md$/, ''), filePath: path.join(dir, name) }));
+    res.json({ name: skillName, versions });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Read a single historical snapshot.
+app.get('/api/skills/:name/history/:ts', async (req, res) => {
+  const skillName = safeLocalId(req.params.name);
+  const ts = String(req.params.ts || '').replace(/[^A-Za-z0-9._:\-]/g, '');
+  if (!skillName || !ts) { res.status(400).json({ error: 'Invalid identifier.' }); return; }
+  try {
+    const filePath = path.join(SKILLS_DIR, '_history', skillName, `${ts}.md`);
+    const content = await fs.readFile(filePath, 'utf-8');
+    res.json({ name: skillName, timestamp: ts, filePath, content });
+  } catch {
+    res.status(404).json({ error: 'Snapshot not found' });
+  }
 });
 
 // Install a read-only repo skill (.github/skills/<name>) into runtime (.harness/skills/<name>).
@@ -4979,6 +5204,35 @@ app.post('/api/skills/:name/pin', async (req, res) => {
     res.json({ ok: true, record });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Enable / disable a runtime skill by rewriting the `enabled:` line in its SKILL.md
+// frontmatter. Disabled skills stay on disk but are skipped by trigger matching.
+app.post('/api/skills/:name/enabled', async (req, res) => {
+  const skillName = safeLocalId(req.params.name);
+  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
+  const enabled = req.body?.enabled === undefined ? true : Boolean(req.body.enabled);
+  const skillFile = path.join(SKILLS_DIR, skillName, 'SKILL.md');
+  try {
+    const content = await fs.readFile(skillFile, 'utf-8');
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) { res.status(400).json({ error: 'SKILL.md is missing YAML frontmatter.' }); return; }
+    const yaml = fmMatch[1];
+    const enabledLine = `enabled: ${enabled ? 'true' : 'false'}`;
+    let newYaml: string;
+    if (/^enabled:\s*.*$/m.test(yaml)) {
+      newYaml = yaml.replace(/^enabled:\s*.*$/m, enabledLine);
+    } else {
+      newYaml = `${yaml}\n${enabledLine}`;
+    }
+    const newContent = content.replace(/^---\n[\s\S]*?\n---/, `---\n${newYaml}\n---`);
+    await fs.writeFile(skillFile, newContent, 'utf-8');
+    invalidateSkillsCache();
+    res.json({ ok: true, name: skillName, enabled });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(error && typeof error === 'object' && (error as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : 500).json({ error: msg });
   }
 });
 
@@ -6164,6 +6418,24 @@ function sanitizeSkillList(value: unknown, maxItems: number, maxLength: number):
 function sanitizeSkillRiskLevel(value: unknown): 'low' | 'medium' | 'high' | undefined {
   const risk = String(value ?? '').trim().toLowerCase();
   return risk === 'low' || risk === 'medium' || risk === 'high' ? risk : undefined;
+}
+
+// Save a snapshot of a skill's previous SKILL.md before overwriting. Caps at
+// the most recent 20 versions per skill so undo history stays bounded.
+async function snapshotSkillHistory(skillName: string, previousContent: string): Promise<void> {
+  try {
+    const dir = path.join(SKILLS_DIR, '_history', skillName);
+    await fs.mkdir(dir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    await fs.writeFile(path.join(dir, `${ts}.md`), previousContent, 'utf-8');
+    const files = (await fs.readdir(dir)).filter((name) => name.endsWith('.md')).sort();
+    while (files.length > 20) {
+      const oldest = files.shift();
+      if (oldest) await fs.unlink(path.join(dir, oldest)).catch(() => {});
+    }
+  } catch {
+    // History writes are best-effort; never block the primary save.
+  }
 }
 
 function sanitizeModelCatalogSettings(value: unknown): ModelCatalogSettings {

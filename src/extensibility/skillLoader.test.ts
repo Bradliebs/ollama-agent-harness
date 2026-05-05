@@ -69,4 +69,27 @@ describe('skillLoader', () => {
       await fs.rm(projectDir, { recursive: true, force: true });
     }
   });
+
+  it('treats `enabled: false` as disabled and omitted enabled as enabled-by-default', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-skill-enabled-'));
+    const skillsDir = path.join(projectDir, 'skills');
+    await fs.mkdir(path.join(skillsDir, 'on'), { recursive: true });
+    await fs.mkdir(path.join(skillsDir, 'off'), { recursive: true });
+    await fs.writeFile(path.join(skillsDir, 'on', 'SKILL.md'), [
+      '---', 'name: on-skill', 'description: Enabled skill', 'domain: t', 'triggers: []', '---', 'Body.',
+    ].join('\n'), 'utf-8');
+    await fs.writeFile(path.join(skillsDir, 'off', 'SKILL.md'), [
+      '---', 'name: off-skill', 'description: Disabled skill', 'domain: t', 'triggers: []', 'enabled: false', '---', 'Body.',
+    ].join('\n'), 'utf-8');
+
+    try {
+      const skills = await loadSkillsDir(skillsDir);
+      const on = skills.find((s) => s.name === 'on-skill');
+      const off = skills.find((s) => s.name === 'off-skill');
+      expect(on?.enabled).toBeUndefined();
+      expect(off?.enabled).toBe(false);
+    } finally {
+      await fs.rm(projectDir, { recursive: true, force: true });
+    }
+  });
 });

@@ -24,6 +24,8 @@ export interface SkillDefinition {
   validationChecks?: string[];
   /** Optional notes describing how to roll back if the skill misfires. */
   rollbackNotes?: string;
+  /** Whether this skill is currently enabled. Defaults to true when omitted. */
+  enabled?: boolean;
 }
 
 export interface SkillLoadDiagnostic {
@@ -50,6 +52,9 @@ export async function scanSkillsDir(skillsDir: string): Promise<SkillDirectorySc
     const entries = await fs.readdir(skillsDir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
+      // Skip internal directories like `_archive` (curator) and `_history` (undo
+      // snapshots). They are scoped storage, not user-facing skills.
+      if (entry.name.startsWith('_')) continue;
       const skillFile = path.join(skillsDir, entry.name, 'SKILL.md');
       try {
         const content = await fs.readFile(skillFile, 'utf-8');
@@ -98,6 +103,12 @@ export function parseSkillFile(content: string, filePath: string): SkillDefiniti
 
   const riskRaw = typeof frontmatter.risk_level === 'string' ? frontmatter.risk_level.toLowerCase() : '';
   const riskLevel: SkillRiskLevel | undefined = riskRaw === 'low' || riskRaw === 'medium' || riskRaw === 'high' ? riskRaw : undefined;
+  const enabledRaw = frontmatter.enabled;
+  // Treat omitted field as enabled. Only the literal strings/booleans `false`/`'false'`
+  // count as disabled, so existing skills without the field stay live.
+  const enabled: boolean | undefined = enabledRaw === undefined
+    ? undefined
+    : !(enabledRaw === false || (typeof enabledRaw === 'string' && enabledRaw.toLowerCase() === 'false'));
 
   return {
     name: (frontmatter.name as string) ?? path.basename(path.dirname(filePath)),
@@ -113,6 +124,7 @@ export function parseSkillFile(content: string, filePath: string): SkillDefiniti
     examples: Array.isArray(frontmatter.examples) ? frontmatter.examples as string[] : undefined,
     validationChecks: Array.isArray(frontmatter.validation_checks) ? frontmatter.validation_checks as string[] : undefined,
     rollbackNotes: typeof frontmatter.rollback_notes === 'string' ? frontmatter.rollback_notes as string : undefined,
+    enabled,
   };
 }
 
@@ -176,6 +188,7 @@ export function matchSkillTrigger(
 ): SkillDefinition | null {
   const normalized = userInput.toLowerCase().trim();
   for (const skill of skills) {
+    if (skill.enabled === false) continue;
     for (const trigger of skill.triggers) {
       if (normalized.includes(trigger.toLowerCase())) {
         return skill;

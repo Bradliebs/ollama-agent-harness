@@ -20,6 +20,7 @@
     .panel-search{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:48px;z-index:4}
     .panel-search input{width:100%;padding:7px 10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px;outline:none}
     .panel-search input:focus{border-color:var(--accent)}
+    .settings-collapse-actions{display:flex;gap:6px;margin-top:6px;justify-content:flex-end}
     .btn-sm{background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s}
     .btn-sm:hover{border-color:var(--accent);color:var(--text)}
     .btn-sm:disabled{opacity:.55;cursor:default;border-color:var(--border);color:var(--text-dim)}
@@ -41,6 +42,45 @@
     .skill-item .sk-meta{font-size:10px;color:var(--text-dim);margin-top:4px;display:flex;justify-content:space-between;align-items:center}
     .sk-del{background:none;border:none;color:var(--error);cursor:pointer;font-size:12px;opacity:0;transition:opacity .15s}
     .skill-item:hover .sk-del{opacity:.6}
+    /* Skills gallery: card grid layout for the runtime skill library. */
+    .skills-gallery-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 4px 10px;border-bottom:1px solid var(--border);margin-bottom:10px}
+    .skills-gallery-header h4{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);margin:0}
+    .skills-gallery-count{font-size:11px;color:var(--text-dim)}
+    .skills-gallery{display:grid;grid-template-columns:1fr;gap:8px;margin-bottom:14px}
+    .skill-card{background:var(--surface2);border:1px solid var(--border);border-radius:var(--rs);padding:10px 12px;display:flex;flex-direction:column;gap:6px;transition:border-color .15s,opacity .15s}
+    .skill-card:hover{border-color:var(--accent)}
+    .skill-card.disabled{opacity:.55}
+    .skill-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+    .skill-card-name{font-size:13px;font-weight:600;color:var(--accent);line-height:1.2;word-break:break-word}
+    .skill-card-cmd{display:inline-block;margin-top:2px;padding:1px 6px;border:1px solid var(--border);border-radius:5px;font-family:'Cascadia Code','Fira Code',monospace;font-size:10.5px;color:var(--text-dim);background:var(--surface);cursor:pointer}
+    .skill-card-cmd:hover{color:var(--accent);border-color:var(--accent)}
+    .skill-card-desc{font-size:11.5px;color:var(--text-dim);line-height:1.4}
+    .skill-card-meta{font-size:10.5px;color:var(--text-dim);display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+    .skill-card-actions{display:flex;align-items:center;gap:6px;justify-content:space-between;margin-top:2px}
+    .skill-card-actions-left{display:flex;align-items:center;gap:6px}
+    .skill-card-actions-right{display:flex;align-items:center;gap:4px}
+    .skill-toggle{position:relative;display:inline-block;width:30px;height:16px;flex-shrink:0;cursor:pointer}
+    .skill-toggle input{opacity:0;width:0;height:0}
+    .skill-toggle-track{position:absolute;inset:0;background:var(--surface3);border:1px solid var(--border);border-radius:16px;transition:background .15s,border-color .15s}
+    .skill-toggle-thumb{position:absolute;top:1px;left:1px;width:12px;height:12px;background:var(--text-dim);border-radius:50%;transition:transform .15s,background .15s}
+    .skill-toggle input:checked + .skill-toggle-track{background:var(--accent-bg);border-color:var(--accent)}
+    .skill-toggle input:checked + .skill-toggle-track + .skill-toggle-thumb,
+    .skill-toggle input:checked ~ .skill-toggle-thumb{transform:translateX(14px);background:var(--accent)}
+    .skill-card .sk-del{opacity:.55}
+    .skill-card .sk-del:hover{opacity:1}
+    /* About section in right settings panel — quick at-a-glance summary. */
+    .about-summary{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;font-size:11.5px;color:var(--text-dim);margin-top:4px}
+    .about-summary strong{display:block;color:var(--text);font-size:11px;font-weight:600;margin-bottom:1px}
+    .about-version{font-size:13px;font-weight:600;color:var(--accent)}
+    /* Automation wizard: cleaner labeled form (replaces stacked inputs). */
+    .automation-wizard{margin-top:10px;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--rs);display:flex;flex-direction:column;gap:10px}
+    .automation-wizard.hidden-by-default{display:none}
+    .automation-wizard-title{font-size:12px;font-weight:600;color:var(--text);text-transform:uppercase;letter-spacing:.5px}
+    .automation-field{display:flex;flex-direction:column;gap:3px}
+    .automation-field label{font-size:11px;color:var(--text-dim);font-weight:600}
+    .automation-field input,.automation-field textarea{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;font-family:inherit;outline:none}
+    .automation-field input:focus,.automation-field textarea:focus{border-color:var(--accent)}
+    .automation-field-hint{font-size:10.5px;color:var(--text-dim);font-weight:400}
     .mem-section{margin-bottom:16px}
     .mem-section h5{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin-bottom:6px}
     .mem-section pre{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;white-space:pre-wrap;font-size:11px;font-family:'Cascadia Code','Fira Code',monospace;color:var(--text-dim)}
@@ -560,6 +600,77 @@
     .welcome-disclosure-body .first-run-setup,
     .welcome-disclosure-body .model-capability-hint{margin:0 0 12px}
     .welcome-disclosure-body > *:last-child{margin-bottom:0}
+    /* Skill detail modal — full SKILL.md editor with cancel/save controls. */
+    .skill-modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9998}
+    .skill-modal.hidden-by-default{display:none}
+    .skill-modal-dialog{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;width:min(720px,92vw);max-height:88vh;display:flex;flex-direction:column;gap:10px;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+    .skill-modal-header{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .skill-modal-header h3{margin:0;font-size:14px;color:var(--accent)}
+    .skill-modal-meta{font-size:11px;color:var(--text-dim);font-family:'Cascadia Code','Fira Code',monospace}
+    .skill-modal-textarea{flex:1;min-height:340px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-family:'Cascadia Code','Fira Code',monospace;font-size:12px;line-height:1.5;resize:vertical;outline:none}
+    .skill-modal-textarea:focus{border-color:var(--accent)}
+    .skill-modal-status{font-size:11px;color:var(--text-dim);min-height:14px}
+    .skill-modal-actions{display:flex;gap:6px;justify-content:flex-end}
+    .skill-modal-tabs{display:flex;gap:4px;margin-bottom:4px}
+    .skill-modal-tab{padding:4px 10px;border:1px solid var(--border);border-radius:6px;font-size:11px;cursor:pointer;color:var(--text-dim);background:var(--surface2)}
+    .skill-modal-tab.active{color:var(--accent);border-color:var(--accent);background:var(--accent-bg)}
+    .skill-modal-form{display:flex;flex-direction:column;gap:8px;flex:1;overflow-y:auto;padding-right:4px}
+    .skill-modal-form .automation-field input,.skill-modal-form .automation-field select,.skill-modal-form .automation-field textarea{background:var(--surface2)}
+    .skill-modal-form-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .skill-modal-history{max-height:140px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px}
+    .skill-modal-history-row{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--text-dim);padding:3px 0;gap:8px}
+    .skill-modal-history-row code{font-family:'Cascadia Code','Fira Code',monospace;font-size:10.5px}
+    /* /help slash-commands modal — simple list of every available slash command. */
+    .help-modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9998}
+    .help-modal.hidden-by-default{display:none}
+    .help-modal-dialog{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;width:min(540px,92vw);max-height:80vh;display:flex;flex-direction:column;gap:10px}
+    .help-modal-header{display:flex;justify-content:space-between;align-items:center}
+    .help-modal-header h3{margin:0;font-size:14px;color:var(--accent)}
+    .help-modal-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px}
+    .help-modal-row{display:flex;gap:10px;padding:6px 8px;border-radius:6px;align-items:flex-start}
+    .help-modal-row:hover{background:var(--surface2)}
+    .help-modal-row code{font-family:'Cascadia Code','Fira Code',monospace;font-size:12px;color:var(--accent);min-width:120px}
+    .help-modal-row span{font-size:11.5px;color:var(--text-dim);line-height:1.4}
+    /* Snapshot diff view inside the skill modal history tab. */
+    .skill-diff-view{margin-top:6px;border:1px solid var(--border);border-radius:6px;padding:6px;font-family:'Cascadia Code','Fira Code',monospace;font-size:11px;line-height:1.5;max-height:240px;overflow:auto;background:var(--surface2)}
+    .skill-diff-view .diff-add{background:rgba(80,200,120,.16);color:var(--text)}
+    .skill-diff-view .diff-del{background:rgba(255,80,80,.16);color:var(--text);text-decoration:line-through;text-decoration-color:rgba(255,80,80,.5)}
+    .skill-diff-view .diff-ctx{color:var(--text-dim)}
+    /* Bulk-select toolbar shown when ≥1 skill card is checked. */
+    .skills-bulk-toolbar{position:sticky;top:0;z-index:1;background:var(--surface);border:1px solid var(--accent);border-radius:var(--rs);padding:6px 10px;margin-bottom:8px;display:flex;align-items:center;gap:8px;font-size:12px}
+    .skills-bulk-toolbar.hidden-by-default{display:none}
+    .skill-card-select{position:absolute;top:8px;right:48px;width:14px;height:14px;cursor:pointer}
+    .skill-card{position:relative}
+    /* Settings section reset button. */
+    .settings-reset-btn{margin-left:auto;background:none;border:none;color:var(--text-dim);font-size:11px;cursor:pointer;padding:2px 6px;border-radius:4px}
+    .settings-reset-btn:hover{color:var(--accent);background:var(--surface2)}
+    /* Workflow wizard modal — re-uses skill-modal styling for consistency. */
+    .workflow-wizard-step{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:6px;display:flex;flex-direction:column;gap:6px}
+    .workflow-wizard-step-header{display:flex;justify-content:space-between;align-items:center}
+    .workflow-wizard-step-header strong{font-size:11px;color:var(--text)}
+    .workflow-wizard-step .automation-field input,.workflow-wizard-step .automation-field textarea{background:var(--surface)}
+    .workflow-step-detail{margin-top:4px;padding:6px;background:var(--surface);border:1px solid var(--border);border-radius:4px}
+    .workflow-step-pre{margin:0;font-family:'Cascadia Code','Fira Code',monospace;font-size:11px;white-space:pre-wrap;max-height:240px;overflow:auto;color:var(--text)}
+    .help-modal-row.active{background:var(--accent-bg);outline:1px solid var(--accent)}
+    /* Workflow run-status filter chips. */
+    .run-status-filter{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0 8px}
+    .run-status-chip{padding:2px 8px;border:1px solid var(--border);border-radius:999px;font-size:11px;color:var(--text-dim);cursor:pointer;background:var(--surface2);text-transform:capitalize}
+    .run-status-chip:hover{border-color:var(--accent);color:var(--accent)}
+    .run-status-chip.active{border-color:var(--accent);background:var(--accent-bg);color:var(--accent)}
+    /* Skills gallery search/filter row above the runtime card grid. */
+    .skills-search-row{display:flex;gap:6px;align-items:center;margin:6px 4px 8px}
+    .skills-search-row input,.skills-search-row select{background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:12px;outline:none}
+    .skills-search-row input{flex:1;min-width:0}
+    .skills-search-row input:focus,.skills-search-row select:focus{border-color:var(--accent)}
+    .skills-section-divider{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);margin:14px 4px 6px;display:flex;align-items:center;justify-content:space-between}
+    .skill-card.featured .skill-card-name{color:var(--text)}
+    .skill-card.featured{border-style:dashed}
+    .skill-card-install{background:var(--accent-bg);color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer}
+    .skill-card-install:hover{background:var(--accent);color:#fff}
+    /* Schedule preview hint under the wizard schedule field. */
+    .automation-schedule-preview{font-size:11px;color:var(--text-dim);min-height:14px;font-family:'Cascadia Code','Fira Code',monospace}
+    .automation-schedule-preview.error{color:var(--error)}
+    .automation-schedule-preview.ok{color:var(--success)}
   </style>
 </head>
 <body>
@@ -821,8 +932,15 @@
       <button class="btn-sm" onclick="toggleRight()">✕</button>
     </div>
     <div id="promiseWidget" class="promise-widget initial-hidden"></div>
+    <div class="settings-section open" id="aboutSection">
+      <h4>About</h4>
+      <div class="settings-section-body">
+        <div class="about-version" id="aboutVersion">Loading…</div>
+        <div class="about-summary" id="aboutSummary"></div>
+      </div>
+    </div>
     <div class="settings-section">
-      <h4>Connection</h4>
+      <h4>Connection<button class="settings-reset-btn" onclick="event.stopPropagation();resetSettingsSection('connection')" title="Reset to defaults">↺ Reset</button></h4>
       <div class="setting-row">
         <label>Ollama Host</label>
         <input type="text" id="ollamaHost" title="Ollama Host" value="http://localhost:11434" onchange="updateSetting('ollamaHost',this.value)" />
@@ -840,7 +958,7 @@
       </div>
     </div>
     <div class="settings-section">
-      <h4>📁 Agent Files</h4>
+      <h4>📁 Agent Files<button class="settings-reset-btn" onclick="event.stopPropagation();resetSettingsSection('agentFiles')" title="Reset to defaults">↺ Reset</button></h4>
       <div class="setting-row settings-note">
         Where the agent puts files it creates. Editing files that already exist is unaffected.
       </div>
@@ -944,7 +1062,7 @@
       <div id="desktopInputEvidence" class="settings-status-line">Loading...</div>
     </div>
     <div class="settings-section">
-      <h4>Generation</h4>
+      <h4>Generation<button class="settings-reset-btn" onclick="event.stopPropagation();resetSettingsSection('modelGen')" title="Reset to defaults">↺ Reset</button></h4>
       <div class="setting-row">
         <label>Temperature</label>
         <div class="slider-row">
@@ -963,7 +1081,7 @@
       </div>
     </div>
     <div class="settings-section">
-      <h4>Context Continuity</h4>
+      <h4>Context Continuity<button class="settings-reset-btn" onclick="event.stopPropagation();resetSettingsSection('webRead')" title="Reset web read max chars to default">↺ Reset</button></h4>
       <div class="setting-row">
         <label>Max context tokens</label>
         <input type="number" id="contextMaxTokens" title="Max context tokens" value="8192" min="1024" step="512" onchange="updateSetting('contextMaxTokens',this.value)" />
@@ -1304,7 +1422,7 @@
       </div>
     </div>
     <div class="settings-section">
-      <h4>Safety Mode</h4>
+      <h4>Safety Mode<button class="settings-reset-btn" onclick="event.stopPropagation();resetSettingsSection('safety')" title="Reset to defaults">↺ Reset</button></h4>
       <button class="btn-sm full-width-button full-autonomy-button" onclick="enableFullAutonomy()">⚡ Full Autonomy — unlock everything</button>
       <button class="btn-sm full-width-button timed-autonomy-button" onclick="enableTimedAutonomy()">⏱ Timed Autonomy — unlock with time limit</button>
       <div id="timedAutonomyBanner" class="timed-autonomy-banner hidden-by-default"></div>
@@ -1344,9 +1462,126 @@
   </div>
 </div>
 
+<div id="skillModal" class="skill-modal hidden-by-default" onclick="if(event.target===this)closeSkillModal()">
+  <div class="skill-modal-dialog">
+    <div class="skill-modal-header">
+      <h3 id="skillModalTitle">Edit skill</h3>
+      <button class="btn-icon" onclick="closeSkillModal()" title="Close">✕</button>
+    </div>
+    <div class="skill-modal-meta" id="skillModalPath"></div>
+    <div class="skill-modal-tabs">
+      <div class="skill-modal-tab active" id="skillModalTabForm" onclick="switchSkillModalTab('form')">Form</div>
+      <div class="skill-modal-tab" id="skillModalTabRaw" onclick="switchSkillModalTab('raw')">Raw markdown</div>
+      <div class="skill-modal-tab" id="skillModalTabHistory" onclick="switchSkillModalTab('history')">History</div>
+    </div>
+    <div class="skill-modal-form" id="skillModalForm">
+      <div class="automation-field">
+        <label for="skillFormDescription">Description</label>
+        <input id="skillFormDescription" type="text" placeholder="One-line description">
+      </div>
+      <div class="skill-modal-form-row">
+        <div class="automation-field">
+          <label for="skillFormDomain">Domain</label>
+          <input id="skillFormDomain" type="text" placeholder="general">
+        </div>
+        <div class="automation-field">
+          <label for="skillFormRiskLevel">Risk level</label>
+          <select id="skillFormRiskLevel">
+            <option value="">— none —</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+        </div>
+      </div>
+      <div class="automation-field">
+        <label for="skillFormTriggers">Triggers (comma-separated)</label>
+        <input id="skillFormTriggers" type="text" placeholder="weekly review, hotel monitor">
+      </div>
+      <div class="automation-field">
+        <label for="skillFormWhenToUse">When to use (optional)</label>
+        <input id="skillFormWhenToUse" type="text" placeholder="Before tagging a release">
+      </div>
+      <div class="automation-field">
+        <label for="skillFormBody">Body / instructions</label>
+        <textarea id="skillFormBody" rows="10" class="skill-modal-textarea" spellcheck="false"></textarea>
+      </div>
+    </div>
+    <textarea id="skillModalContent" class="skill-modal-textarea hidden-by-default" spellcheck="false"></textarea>
+    <div id="skillModalHistoryView" class="skill-modal-history hidden-by-default"></div>
+    <div class="skill-modal-status" id="skillModalStatus"></div>
+    <div class="skill-modal-actions">
+      <button class="btn-sm" onclick="closeSkillModal()">Cancel</button>
+      <button class="btn-sm primary" onclick="saveSkillModal()">💾 Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="helpModal" class="help-modal hidden-by-default" onclick="if(event.target===this)closeHelpModal()">
+  <div class="help-modal-dialog">
+    <div class="help-modal-header">
+      <h3>Slash commands</h3>
+      <button class="btn-icon" onclick="closeHelpModal()" title="Close">✕</button>
+    </div>
+    <div class="help-modal-list" id="helpModalList"></div>
+  </div>
+</div>
+
+<div id="workflowWizard" class="skill-modal hidden-by-default" onclick="if(event.target===this)closeWorkflowWizard()">
+  <div class="skill-modal-dialog">
+    <div class="skill-modal-header">
+      <h3>New workflow</h3>
+      <button class="btn-icon" onclick="closeWorkflowWizard()" title="Close">✕</button>
+    </div>
+    <div class="skill-modal-form">
+      <div class="automation-field">
+        <label for="workflowWizardName">Name</label>
+        <input id="workflowWizardName" type="text" placeholder="my-workflow">
+        <span class="automation-field-hint">Letters, numbers, dashes only. Saved as <code>.harness/workflows/&lt;name&gt;.yaml</code>.</span>
+      </div>
+      <div class="automation-field">
+        <label for="workflowWizardDescription">Description (optional)</label>
+        <input id="workflowWizardDescription" type="text" placeholder="Short description">
+      </div>
+      <div class="automation-field">
+        <label for="workflowWizardTemplate">Start from template (optional)</label>
+        <select id="workflowWizardTemplate" onchange="applyWorkflowTemplate(this.value)">
+          <option value="">— blank —</option>
+          <option value="readSummarize">Read & summarize file</option>
+          <option value="webSearchSave">Web search → save markdown</option>
+          <option value="bashEcho">Bash: echo hello</option>
+        </select>
+      </div>
+      <div id="workflowWizardSteps"></div>
+      <button class="btn-sm" onclick="addWorkflowWizardStep()">+ Add step</button>
+    </div>
+    <div class="skill-modal-status" id="workflowWizardStatus"></div>
+    <div class="skill-modal-actions">
+      <button class="btn-sm" onclick="closeWorkflowWizard()">Cancel</button>
+      <button class="btn-sm primary" onclick="saveWorkflowWizard()">💾 Create</button>
+    </div>
+  </div>
+</div>
+
+<div id="workflowEditor" class="skill-modal hidden-by-default" onclick="if(event.target===this)closeWorkflowEditor()">
+  <div class="skill-modal-dialog">
+    <div class="skill-modal-header">
+      <h3 id="workflowEditorTitle">Edit workflow</h3>
+      <button class="btn-icon" onclick="closeWorkflowEditor()" title="Close">✕</button>
+    </div>
+    <div class="skill-modal-meta" id="workflowEditorPath"></div>
+    <textarea id="workflowEditorContent" class="skill-modal-textarea" spellcheck="false"></textarea>
+    <div class="skill-modal-status" id="workflowEditorStatus"></div>
+    <div class="skill-modal-actions">
+      <button class="btn-sm" onclick="closeWorkflowEditor()">Cancel</button>
+      <button class="btn-sm primary" onclick="saveWorkflowEditor()">💾 Save</button>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="./chatHistory.js?v=3"></script>
 <script src="./toolActivity.js?v=1"></script>
-<script src="./app.js?v=3"></script>
+<script src="./app.js?v=9"></script>
 </body>
 </html>
