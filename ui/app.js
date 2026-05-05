@@ -736,10 +736,12 @@ function loadModelStats() {
       const budget = rec.adaptiveTimeBudgetMs ? Math.round(rec.adaptiveTimeBudgetMs / 1000) + 's' : '—';
       const turns = rec.adaptiveMaxTurns || data.defaultMaxTurns || 25;
       const synthRate = rec.total > 0 ? Math.round((rec.fired / rec.total) * 100) + '%' : '—';
-      return '<tr><td>' + esc(model) + '</td><td>' + rec.total + '</td><td>' + avg + '</td><td>' + budget + '</td><td>' + turns + '</td><td>' + synthRate + '</td></tr>';
+      const toolRate = rec.toolCalls > 0 ? Math.round(((rec.toolSuccesses || 0) / rec.toolCalls) * 100) + '%' : '—';
+      const finalRate = rec.total > 0 ? Math.round(((rec.finalTextResponses || 0) / rec.total) * 100) + '%' : '—';
+      return '<tr><td>' + esc(model) + '</td><td>' + rec.total + '</td><td>' + avg + '</td><td>' + budget + '</td><td>' + turns + '</td><td>' + synthRate + '</td><td>' + (rec.toolCalls || 0) + '</td><td>' + toolRate + '</td><td>' + finalRate + '</td></tr>';
     }).join('');
     panel.innerHTML = '<table style="width:100%;font-size:11px;border-collapse:collapse;margin-top:4px">'
-      + '<thead><tr style="text-align:left;color:var(--text-dim)"><th>Model</th><th>Sessions</th><th>Avg turn</th><th>Budget</th><th>Max turns</th><th>Synth rate</th></tr></thead>'
+      + '<thead><tr style="text-align:left;color:var(--text-dim)"><th>Model</th><th>Sessions</th><th>Avg turn</th><th>Budget</th><th>Max turns</th><th>Synth rate</th><th>Tool calls</th><th>Tool success</th><th>Final text</th></tr></thead>'
       + '<tbody>' + rows + '</tbody></table>'
       + '<button class="btn-sm" style="margin-top:6px" onclick="exportModelStatsCsv()">Download CSV</button>';
   }).catch(() => { panel.textContent = 'Failed to load stats.'; });
@@ -748,10 +750,12 @@ function loadModelStats() {
 function exportModelStatsCsv() {
   fetch('/api/synthesis-stats').then(r => r.json()).then(data => {
     if (!data.stats) return;
-    const header = 'Model,Sessions,Fired,Avg Turn (ms),Adaptive Budget (ms),Max Turns,Synth Rate (%)';
+    const header = 'Model,Sessions,Fired,Avg Turn (ms),Adaptive Budget (ms),Max Turns,Synth Rate (%),Tool Calls,Tool Successes,Tool Success Rate (%),Final Text Responses,Final Text Rate (%),Parser Lifted Tool Calls';
     const rows = Object.entries(data.stats).sort((a, b) => (b[1].total || 0) - (a[1].total || 0)).map(([model, rec]) => {
       const synthRate = rec.total > 0 ? Math.round((rec.fired / rec.total) * 100) : 0;
-      return [model, rec.total || 0, rec.fired || 0, rec.avgTurnMs || 0, rec.adaptiveTimeBudgetMs || 0, rec.adaptiveMaxTurns || 25, synthRate].join(',');
+      const toolRate = rec.toolCalls > 0 ? Math.round(((rec.toolSuccesses || 0) / rec.toolCalls) * 100) : 0;
+      const finalRate = rec.total > 0 ? Math.round(((rec.finalTextResponses || 0) / rec.total) * 100) : 0;
+      return [model, rec.total || 0, rec.fired || 0, rec.avgTurnMs || 0, rec.adaptiveTimeBudgetMs || 0, rec.adaptiveMaxTurns || 25, synthRate, rec.toolCalls || 0, rec.toolSuccesses || 0, toolRate, rec.finalTextResponses || 0, finalRate, rec.parserLiftedToolCalls || 0].join(',');
     });
     const csv = [header, ...rows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });

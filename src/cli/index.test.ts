@@ -1,10 +1,17 @@
-import { buildConsoleToolOnlyResponse, formatSetupHealth, parseArgs } from './index';
+import { buildConsoleToolOnlyResponse, buildSystemPrompt, formatSetupHealth, parseArgs } from './index';
 
 describe('cli setup doctor', () => {
   it('parses output validation profile options', () => {
     const options = parseArgs(['--validate-output', 'tool-result-summary']);
 
     expect(options.outputValidation).toBe('tool-result-summary');
+  });
+
+  it('nudges current-events prompts toward web_search in headless mode', () => {
+    const prompt = buildSystemPrompt({});
+
+    expect(prompt).toContain('current events');
+    expect(prompt).toContain('web_search first');
   });
 
   it('parses doctor options', () => {

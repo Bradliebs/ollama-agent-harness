@@ -331,14 +331,14 @@ function formatHealthLine(label: string, ok: boolean, message: string): string {
   return `${ok ? 'OK' : 'WARN'} ${label}: ${message}`;
 }
 
-function buildSystemPrompt(modelRouting: ModelRoutingPolicy): string {
+export function buildSystemPrompt(modelRouting: ModelRoutingPolicy): string {
   const routingLines = Object.entries(modelRouting)
     .filter(([, value]) => value !== undefined && value !== '')
     .map(([key, value]) => `${key}: ${value}`);
   const routingText = routingLines.length
     ? `\n\nHelper model routing policy:\n${routingLines.join('\n')}`
     : '';
-  return 'You are a helpful coding assistant. Use the available tools to help the user with their task. Read files, write code, and execute commands as needed.' + routingText;
+  return 'You are a helpful coding assistant. Use the available tools to help the user with their task. Read files, write code, and execute commands as needed. When the user asks about current events, news, weather, prices, scores, or anything that changes over time, call web_search first and then summarize the results. Do not answer recent-information requests from training data alone.' + routingText;
 }
 
 function summarizeConsoleToolResult(name: string, success: boolean, output: string): string | null {

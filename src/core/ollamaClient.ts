@@ -239,7 +239,7 @@ function writeDebugLog(model: string, messages: Message[], tools: Tool[] | undef
 export function liftInlineToolCalls(message: Message | undefined): void {
   if (!message || message.tool_calls?.length) return;
   const text = typeof message.content === 'string' ? message.content : '';
-  if (!text || (text.indexOf('"name"') === -1 && text.indexOf('"function"') === -1)) return;
+  if (!text || (text.indexOf('"name"') === -1 && text.indexOf('"function"') === -1 && text.indexOf('"tool') === -1)) return;
 
   const lifted: ToolCall[] = [];
   const removalSpans: Array<[number, number]> = [];
@@ -252,9 +252,9 @@ export function liftInlineToolCalls(message: Message | undefined): void {
     } catch {
       continue;
     }
-    const call = coerceToolCall(parsed);
-    if (call) {
-      lifted.push(call);
+    const calls = coerceToolCalls(parsed);
+    if (calls.length > 0) {
+      lifted.push(...calls);
       removalSpans.push(span);
     }
   }
@@ -307,12 +307,28 @@ function findJsonObjectSpans(text: string): Array<[number, number]> {
   return spans;
 }
 
-/** Accept either `{name, arguments}` or `{function: {name, arguments}}`. */
+function coerceToolCalls(value: unknown): ToolCall[] {
+  if (Array.isArray(value)) return value.flatMap(coerceToolCalls);
+  const direct = coerceToolCall(value);
+  if (direct) return [direct];
+  if (!value || typeof value !== 'object') return [];
+  const obj = value as Record<string, unknown>;
+
+  const envelopes = [obj.tool_calls, obj.toolCalls, obj.function_calls, obj.functionCalls, obj.calls, obj.tools];
+  for (const envelope of envelopes) {
+    const calls = coerceToolCalls(envelope);
+    if (calls.length > 0) return calls;
+  }
+
+  return coerceToolCalls(obj.tool_call ?? obj.toolCall ?? obj.function_call ?? obj.functionCall);
+}
+
+/** Accept `{name, arguments}`, `{tool, arguments}`, or `{function: {name, arguments}}`. */
 function coerceToolCall(value: unknown): ToolCall | null {
   if (!value || typeof value !== 'object') return null;
   const obj = value as Record<string, unknown>;
 
-  let name: unknown = obj.name;
+  let name: unknown = obj.name ?? obj.tool ?? obj.tool_name ?? obj.toolName;
   let args: unknown = obj.arguments ?? obj.parameters ?? obj.args;
 
   if (!name && obj.function && typeof obj.function === 'object') {

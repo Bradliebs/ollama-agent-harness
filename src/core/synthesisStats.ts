@@ -8,6 +8,18 @@ export interface ModelSynthesisRecord {
   /** Exponential moving average of wall-clock milliseconds per turn.
    * Updated after each session to drive adaptive time budgets. */
   avgTurnMs?: number;
+  /** Total model-requested tool calls observed across sessions. */
+  toolCalls?: number;
+  /** Successful tool dispatches observed across sessions. */
+  toolSuccesses?: number;
+  /** Sessions where at least one tool was requested. */
+  toolSessions?: number;
+  /** Sessions that ended with visible assistant text. */
+  finalTextResponses?: number;
+  /** Sessions that ended without visible assistant text. */
+  emptyTextResponses?: number;
+  /** Tool calls recovered from inline JSON fallback parsing, when known. */
+  parserLiftedToolCalls?: number;
 }
 
 export type SynthesisStatsMap = Record<string, ModelSynthesisRecord>;
@@ -86,6 +98,31 @@ export async function recordAvgTurnDuration(projectDir: string, model: string, a
   record.avgTurnMs = record.avgTurnMs
     ? Math.round(record.avgTurnMs * (1 - alpha) + avgTurnMs * alpha)
     : Math.round(avgTurnMs);
+  stats[model] = record;
+  await fs.mkdir(path.dirname(statsPath(projectDir)), { recursive: true });
+  await fs.writeFile(statsPath(projectDir), JSON.stringify(stats, null, 2), 'utf-8');
+}
+
+export interface ToolUseStatsInput {
+  toolCalls: number;
+  toolSuccesses: number;
+  finalTextResponse: boolean;
+  parserLiftedToolCalls?: number;
+}
+
+export async function recordToolUseStats(projectDir: string, model: string, input: ToolUseStatsInput): Promise<void> {
+  const stats = await loadSynthesisStats(projectDir);
+  const record = stats[model] ?? { fired: 0, total: 0 };
+  const toolCalls = Math.max(0, Math.floor(input.toolCalls));
+  const toolSuccesses = Math.max(0, Math.min(toolCalls, Math.floor(input.toolSuccesses)));
+  record.toolCalls = (record.toolCalls ?? 0) + toolCalls;
+  record.toolSuccesses = (record.toolSuccesses ?? 0) + toolSuccesses;
+  if (toolCalls > 0) record.toolSessions = (record.toolSessions ?? 0) + 1;
+  if (input.finalTextResponse) record.finalTextResponses = (record.finalTextResponses ?? 0) + 1;
+  else record.emptyTextResponses = (record.emptyTextResponses ?? 0) + 1;
+  if (input.parserLiftedToolCalls && input.parserLiftedToolCalls > 0) {
+    record.parserLiftedToolCalls = (record.parserLiftedToolCalls ?? 0) + Math.floor(input.parserLiftedToolCalls);
+  }
   stats[model] = record;
   await fs.mkdir(path.dirname(statsPath(projectDir)), { recursive: true });
   await fs.writeFile(statsPath(projectDir), JSON.stringify(stats, null, 2), 'utf-8');

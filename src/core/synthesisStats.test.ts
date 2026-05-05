@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { adaptiveMaxTurns, adaptiveTimeBudget, clearSynthesisStats, loadSynthesisStats, recordAvgTurnDuration, recordSessionCompleted, recordSynthesisFired } from './synthesisStats';
+import { adaptiveMaxTurns, adaptiveTimeBudget, clearSynthesisStats, loadSynthesisStats, recordAvgTurnDuration, recordSessionCompleted, recordSynthesisFired, recordToolUseStats } from './synthesisStats';
 
 describe('synthesisStats', () => {
   let projectDir: string;
@@ -38,6 +38,22 @@ describe('synthesisStats', () => {
 
     const stats = await loadSynthesisStats(projectDir);
     expect(stats['test-model']).toMatchObject({ fired: 2, total: 3 });
+  });
+
+  it('records per-model tool-use and final-response counters', async () => {
+    await recordSessionCompleted(projectDir, 'gemma4:e4b');
+    await recordToolUseStats(projectDir, 'gemma4:e4b', { toolCalls: 3, toolSuccesses: 2, finalTextResponse: true, parserLiftedToolCalls: 1 });
+    await recordToolUseStats(projectDir, 'gemma4:e4b', { toolCalls: 0, toolSuccesses: 0, finalTextResponse: false });
+
+    const stats = await loadSynthesisStats(projectDir);
+    expect(stats['gemma4:e4b']).toMatchObject({
+      toolCalls: 3,
+      toolSuccesses: 2,
+      toolSessions: 1,
+      finalTextResponses: 1,
+      emptyTextResponses: 1,
+      parserLiftedToolCalls: 1,
+    });
   });
 
   it('returns default maxTurns when model has no history', () => {

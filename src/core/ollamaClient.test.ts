@@ -205,6 +205,29 @@ describe('liftInlineToolCalls fallback parser', () => {
     expect(message.tool_calls.map((tc: any) => tc.function.name)).toEqual(['a', 'b']);
   });
 
+  it('lifts tool calls from a tool_calls envelope', () => {
+    const message: any = {
+      role: 'assistant',
+      content: '{"tool_calls":[{"function":{"name":"web_search","arguments":"{\\"query\\":\\"latest news today\\"}"}}]}',
+    };
+    liftInlineToolCalls(message);
+    expect(message.tool_calls).toEqual([
+      { function: { name: 'web_search', arguments: { query: 'latest news today' } } },
+    ]);
+    expect(message.content).toBe('');
+  });
+
+  it('lifts tool calls from tool_call and tool-name aliases', () => {
+    const message: any = {
+      role: 'assistant',
+      content: '{"tool_call":{"tool_name":"file_read","parameters":{"path":"README.md"}}}',
+    };
+    liftInlineToolCalls(message);
+    expect(message.tool_calls).toEqual([
+      { function: { name: 'file_read', arguments: { path: 'README.md' } } },
+    ]);
+  });
+
   it('does nothing when tool_calls already populated by the model', () => {
     const message: any = {
       role: 'assistant',

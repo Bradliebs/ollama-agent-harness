@@ -42,7 +42,7 @@ import { RateLimiter } from '../core/rateLimiter';
 import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
 import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, describeOutputValidationProfileSuggestion, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
-import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, adaptiveTimeBudget, recordAvgTurnDuration, clearSynthesisStats } from '../core/synthesisStats';
+import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, adaptiveTimeBudget, recordAvgTurnDuration, clearSynthesisStats, recordToolUseStats } from '../core/synthesisStats';
 import { startNewSession, onSessionEnd, getEvolvedPrompt, recordSessionAutoContinue } from '../learning/engine';
 import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
 import { appendLearningCandidate, extractLearningCandidate, getLearningCandidateProvenance, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
@@ -795,7 +795,7 @@ app.get('/api/models', async (_req, res) => {
         models.push({
           name: backendId + '/' + m.id,
           parameterSize: m.label,
-          capabilities: inferModelCapabilities(m.id, {}),
+          capabilities: inferModelCapabilities(`${backendId}/${m.id}`, {}),
           backend: backendId,
         });
       }
@@ -805,7 +805,7 @@ app.get('/api/models', async (_req, res) => {
         models.push({
           name: 'replicate/' + m.id,
           parameterSize: m.label,
-          capabilities: inferModelCapabilities(m.id, {}),
+          capabilities: inferModelCapabilities(`replicate/${m.id}`, {}),
           backend: 'replicate',
         });
       }
@@ -1082,10 +1082,14 @@ app.get('/api/synthesis-stats', async (_req, res) => {
       const backend = model.includes('/') ? model.slice(0, model.indexOf('/')) : 'ollama';
       const isLocal = backend === 'ollama' && !model.includes('cloud');
       const defaultBudget = isLocal ? 180_000 : 600_000;
+      const toolSuccessRate = record.toolCalls && record.toolCalls > 0 ? (record.toolSuccesses ?? 0) / record.toolCalls : undefined;
+      const finalTextRate = record.total > 0 ? (record.finalTextResponses ?? 0) / record.total : undefined;
       withAdaptive[model] = {
         ...record,
         adaptiveMaxTurns: adaptiveMaxTurns(stats, model, 25),
         adaptiveTimeBudgetMs: adaptiveTimeBudget(stats, model, defaultBudget),
+        toolSuccessRate,
+        finalTextRate,
       };
     }
     res.json({ stats: withAdaptive, defaultMaxTurns: 25 });
@@ -3875,6 +3879,12 @@ TOOL FALLBACK RULES:
   }
 
   // Auto-reflection: analyze this session's tool usage (runs silently, non-blocking)
+  recordToolUseStats(PROJECT_DIR, activeModel, {
+    toolCalls: toolCallCount,
+    toolSuccesses: toolSuccessCount,
+    finalTextResponse: assistantTextBuffer.trim().length > 0,
+  }).catch(() => {});
+
   webRuntime.onSessionEnd().then(({ reflection, newPatterns }) => {
     if (reflection.insights.length > 0) {
       logger.info('Learning', `Session reflection: ${reflection.insights.join('; ')}`);
@@ -4199,6 +4209,7 @@ app.post('/api/sessions/import', async (req, res) => {
       }
     }
     await storage.markStatus(body.meta.status || 'completed');
+    await rebuildSessionSearchIndexWithMetadata(PROJECT_DIR);
     res.json({ sessionId: storage.getSessionId(), eventCount: body.events.length });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -5334,15 +5345,16 @@ function sanitizeModelName(value: unknown): string {
   return String(value ?? '').trim().slice(0, 120);
 }
 
-function inferModelCapabilities(name: string, details: Record<string, unknown> = {}): { text: boolean; image: boolean; audio: boolean; toolUse: 'strong' | 'weak' | 'unknown'; notes: string[] } {
+export function inferModelCapabilities(name: string, details: Record<string, unknown> = {}): { text: boolean; image: boolean; audio: boolean; toolUse: 'strong' | 'weak' | 'unknown'; notes: string[] } {
   const haystack = `${name} ${Object.values(details).join(' ')}`.toLowerCase();
   const image = isVisionCapableModelName(name, details);
   const audio = /whisper|audio|speech|wav2vec|parakeet|sensevoice/.test(haystack);
 
-  // Tool-use capability heuristic based on model family and size.
-  // Small chat-focused models often ignore tool schemas and answer from
-  // training data instead of calling web_search/file_read etc.
-  const weakToolModels = /gemma.*e[24]b|gemma.*2b|gemma.*4b|phi-?3.*mini|tinyllama|smollm|qwen2?\.?5?-?(0\.5|1\.5|3)b/i;
+  // Tool-use capability heuristic based on model family and runtime path.
+  // Gemma 4 E2B/E4B are edge-oriented function-calling models, but local
+  // reliability can depend on whether the runtime applies their chat/tool template.
+  const gemma4EdgeToolModel = /gemma\s*4?.*e[24]b|gemma4.*[24]b|gemma-?4.*[24]b/i.test(name);
+  const weakToolModels = /phi-?3.*mini|tinyllama|smollm|qwen2?\.?5?-?(0\.5|1\.5|3)b/i;
   const strongToolModels = /kimi|qwen.*coder.*(14|32|72)b|deepseek.*(v3|coder)|mistral.*(medium|large)|command-r|gpt-?4|claude|llama.*70b/i;
 
   // Cloud backend models: use the preset's supportsTools flag when available.
@@ -5352,11 +5364,13 @@ function inferModelCapabilities(name: string, details: Record<string, unknown> =
     const backend = name.slice(0, slash).toLowerCase();
     const preset = OPENAI_COMPATIBLE_PRESETS[backend];
     if (preset) cloudToolSupport = preset.supportsTools ?? null;
+    else if (backend === 'replicate') cloudToolSupport = REPLICATE_PRESET.supportsTools ?? null;
   }
 
   const toolUse: 'strong' | 'weak' | 'unknown' =
     cloudToolSupport === false ? 'weak'
     : cloudToolSupport === true ? 'strong'
+    : gemma4EdgeToolModel ? 'strong'
     : weakToolModels.test(name) ? 'weak'
     : strongToolModels.test(name) ? 'strong'
     : 'unknown';
@@ -5364,6 +5378,7 @@ function inferModelCapabilities(name: string, details: Record<string, unknown> =
   const notes = [
     image ? 'Can likely reason over images when the chat path passes image data.' : 'Text chat model unless another modality is documented by the model.',
     audio ? 'Audio-related model detected; transcription or audio tooling may be needed before chat.' : '',
+    gemma4EdgeToolModel ? 'Gemma 4 E2B/E4B supports native tool/function calling; if calls are missed, check the Ollama/runtime chat template and JSON parser path before switching models.' : '',
     toolUse === 'weak' ? 'This model may not reliably call tools (web_search, file_read, etc.). For research or file tasks, consider a larger model.' : '',
     cloudToolSupport === false ? 'This cloud backend does not support tool calling.' : '',
   ].filter(Boolean);

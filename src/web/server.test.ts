@@ -3,7 +3,7 @@ import * as fs from 'fs/promises';
 import http from 'http';
 import * as os from 'os';
 import * as path from 'path';
-import { app, setWebRuntimeOverrides, stopUploadsAutoPrune } from './server';
+import { app, inferModelCapabilities, setWebRuntimeOverrides, stopUploadsAutoPrune } from './server';
 import { runtimeTracer } from '../core/tracing';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { appendLearningCandidate, extractLearningCandidate } from '../learning/sessionLearning';
@@ -242,6 +242,19 @@ describe('web server API validation', () => {
       expect(section.status).toEqual(expect.any(String));
       expect(Array.isArray(section.checks)).toBe(true);
     }
+  });
+
+  it('classifies Gemma 4 edge models as tool-capable instead of weak', () => {
+    const capabilities = inferModelCapabilities('gemma4:e4b');
+
+    expect(capabilities.toolUse).toBe('strong');
+    expect(capabilities.notes.join(' ')).toContain('native tool/function calling');
+    expect(capabilities.notes.join(' ')).not.toContain('consider a larger model');
+  });
+
+  it('uses backend prefixes when inferring cloud tool support', () => {
+    expect(inferModelCapabilities('github/gpt-4o-mini').toolUse).toBe('strong');
+    expect(inferModelCapabilities('replicate/meta/meta-llama-3-8b-instruct').toolUse).toBe('weak');
   });
 
   it('readiness plan-complete shows warn not blocked', async () => {
@@ -1587,6 +1600,26 @@ describe('web server API validation', () => {
     const index = await request('/api/sessions/search-index/rebuild', { method: 'POST' });
     expect(index.status).toBe(200);
     await expect(index.json()).resolves.toMatchObject({ status: { exists: true, fresh: true }, index: { metadata: expect.objectContaining({ entryCount: expect.any(Number) }) } });
+  });
+
+  it('rebuilds the session search index after importing a session', async () => {
+    const response = await request('/api/sessions/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        meta: { model: 'import-test-model', title: 'Imported search fixture', status: 'completed' },
+        events: [
+          { type: 'user_message', data: { kind: 'message', message: { role: 'user', content: 'Imported transcript contains nebula-index-token' } } },
+          { type: 'assistant_message', data: { kind: 'message', message: { role: 'assistant', content: 'Search should find nebula-index-token after import.' } } },
+        ],
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const index = await request('/api/sessions/search-index/rebuild', { method: 'POST' });
+    expect(index.status).toBe(200);
+    const body = await index.json() as { index: { entries: Array<{ text: string }> } };
+    expect(body.index.entries.some((entry) => entry.text.includes('nebula-index-token'))).toBe(true);
   });
 
   it('saves custom output validation profiles and exposes them in settings', async () => {
