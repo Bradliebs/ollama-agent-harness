@@ -431,6 +431,21 @@ describe('web server API validation', () => {
     }
   });
 
+  it('routes Gemma to glm-5.1:cloud when no higher-priority cloud model is available', async () => {
+    // Pin the contract that glm-5.1:cloud is in the agentic fallback list and
+    // gets selected when GPT-OSS variants are not pulled locally.
+    const restore = setWebRuntimeOverrides({
+      listModels: jest.fn().mockResolvedValue(['gemma4:e4b', 'glm-5.1:cloud']),
+    });
+    try {
+      const decision = await resolveChatModelForRequest('gemma4:e4b', 'What is in global news today?');
+
+      expect(decision).toMatchObject({ routed: true, from: 'gemma4:e4b', model: 'glm-5.1:cloud' });
+    } finally {
+      restore();
+    }
+  });
+
   it('can suppress startup connector side effects for release smoke', () => {
     const previous = process.env.HARNESS_DISABLE_STARTUP_CONNECTORS;
     try {

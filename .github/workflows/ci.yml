@@ -14,10 +14,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -56,12 +56,6 @@ jobs:
           exit 1
 
       - name: Smoke UI
-        # Marked non-blocking until the CI-only Playwright timing flake on
-        # `.tool-item-permission` is properly diagnosed. The smoke passes
-        # consistently locally; CI hosts lose a SSE-stream consumption race
-        # that the in-page poll did not solve. Tracked as a follow-up so the
-        # release-workflow CI-status gate is not permanently blocked.
-        continue-on-error: true
         run: npm run smoke:ui -- http://127.0.0.1:4310/
 
       - name: Verify CHANGELOG version section

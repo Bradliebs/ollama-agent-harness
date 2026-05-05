@@ -19,7 +19,11 @@ npm test -- --runInBand
 npm run verify:changelog
 npm run release:dry-run
 
-# 4. Commit, push, wait for green CI, then tag
+# 4. One-shot pre-flight (working tree clean + upstream sync + changelog +
+#    versions match + typecheck + tag does not exist)
+npm run release:ready
+
+# 5. Commit, push, wait for green CI, then tag
 git add -A
 git commit -m "chore(release): bump to v<new-version>"
 git push origin master
@@ -125,6 +129,7 @@ the previous. It will happily bump backwards. Don't.
 | `.github/workflows/release.yml` | Tag-driven publish |
 | `scripts/bump-version.js` | Single-source version bumper (`release:bump`) |
 | `scripts/check-changelog-version.js` | CHANGELOG section gate (`verify:changelog`) |
+| `scripts/check-release-ready.js` | One-shot pre-tag readiness check (`release:ready`) |
 | `scripts/verify-release-versions.js` | Version metadata cross-check (`verify:versions`) |
 | `scripts/release-dry-run.js` | Local dry-run of the publish path (`release:dry-run`) |
 | `scripts/release-notes.js` | CHANGELOG-driven note generator (`release:notes`) |

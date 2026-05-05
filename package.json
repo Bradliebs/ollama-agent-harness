@@ -39,6 +39,7 @@
     "release:provenance": "node scripts/generate-release-provenance.js --write",
     "release:dry-run": "node scripts/release-dry-run.js",
     "release:bump": "node scripts/bump-version.js",
+    "release:ready": "node scripts/check-release-ready.js",
     "verify:versions": "node scripts/verify-release-versions.js",
     "verify:changelog": "node scripts/check-changelog-version.js",
     "release:notes": "node scripts/release-notes.js",
