@@ -442,6 +442,34 @@ All runtime state goes under `.harness/` in your project directory:
 | `.harness/evidence/` | Run evidence cards (automation, autonomy) |
 | `.harness/telegram-chat-ids.json` | Telegram notification recipients |
 
+## Releasing
+
+The release pipeline is single-source-of-truth for version metadata and gated
+on a green CI run for the same commit.
+
+```powershell
+npm run release:bump -- 0.4.0   # update package.json + lockfile + installer + provenance
+git add -A
+git commit -m "chore(release): bump to v0.4.0"
+git push origin master           # triggers CI
+git tag -a v0.4.0 -m "v0.4.0"
+git push origin v0.4.0           # triggers Release workflow once CI is green
+```
+
+* `npm run release:bump` is the only supported way to bump the version. It
+  syncs `package.json`, `package-lock.json`, `installer/harness-installer.nsi`,
+  and `release-provenance.json` together so they cannot drift.
+* Add a matching `## Ollama Agent Harness vX.Y.Z` section to
+  [CHANGELOG.md](CHANGELOG.md) before tagging. CI runs
+  `npm run verify:changelog` and refuses to publish a tag whose notes would
+  be empty.
+* The Release workflow refuses to publish if the CI workflow on the same
+  commit did not conclude successfully. Push `master` first, wait for CI to
+  go green, then push the tag.
+
+See [docs/RELEASE-PIPELINE.md](docs/RELEASE-PIPELINE.md) for the full
+runbook including failure recovery.
+
 ## More information
 
 * **[START-HERE.md](START-HERE.md)** — complete beginner guide (install Node.js, install Ollama, first chat)

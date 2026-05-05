@@ -16,6 +16,37 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Require successful CI on tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Belt-and-braces: refuse to publish if the most recent CI run for
+          # this exact commit did not conclude successfully. The Release
+          # workflow re-runs validation below, but a green CI on the same SHA
+          # is the supported pre-condition for a public release.
+          for attempt in 1 2 3 4 5; do
+            status=$(gh run list --workflow CI --commit "${GITHUB_SHA}" --limit 1 --json status,conclusion --jq '.[0] | (.status + ":" + (.conclusion // ""))' 2>/dev/null || true)
+            case "${status}" in
+              completed:success)
+                echo "CI on ${GITHUB_SHA} concluded successfully."
+                exit 0
+                ;;
+              completed:*)
+                echo "CI on ${GITHUB_SHA} concluded with: ${status#completed:}" >&2
+                exit 1
+                ;;
+              "")
+                echo "No CI run yet for ${GITHUB_SHA}; waiting (attempt ${attempt})..."
+                ;;
+              *)
+                echo "CI on ${GITHUB_SHA} status: ${status} (attempt ${attempt})"
+                ;;
+            esac
+            sleep 30
+          done
+          echo "Timed out waiting for CI on ${GITHUB_SHA}." >&2
+          exit 1
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:

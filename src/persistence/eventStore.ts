@@ -93,6 +93,12 @@ function snapshotsDir(projectDir: string): string {
 const MAX_EVENT_LINES = 10_000;
 let knownEventLineCount = -1;
 let appendSeq = 0;
+// Serialize background pruning + appends so concurrent emissions can't race
+// with a prune (which rewrites the file). Reads still see the file at a
+// consistent moment because fs.appendFile and fs.writeFile are atomic at the
+// syscall level on every supported OS, but the in-memory invariants
+// (knownEventLineCount, appendSeq) only stay correct if we serialize.
+let writeChain: Promise<unknown> = Promise.resolve();
 
 /** SSE subscribers for live event streaming. */
 const eventStreamListeners = new Set<(event: HarnessEvent) => void>();
@@ -103,25 +109,31 @@ export function subscribeEventStream(listener: (event: HarnessEvent) => void): (
 }
 
 export async function appendEvent(projectDir: string, event: Omit<HarnessEvent, 'event_id' | 'timestamp' | 'seq'>): Promise<HarnessEvent> {
-  const full: HarnessEvent = {
-    event_id: crypto.randomUUID(),
-    timestamp: new Date().toISOString(),
-    seq: ++appendSeq,
-    ...event,
-  };
-  const fp = eventsFilePath(projectDir);
-  await fs.mkdir(path.dirname(fp), { recursive: true });
-  await fs.appendFile(fp, JSON.stringify(full) + '\n', 'utf-8');
-  // Notify live stream listeners.
-  for (const listener of eventStreamListeners) {
-    try { listener(full); } catch { /* best-effort */ }
-  }
-  // Auto-prune when line count is estimated to exceed the cap.
-  knownEventLineCount = knownEventLineCount < 0 ? MAX_EVENT_LINES : knownEventLineCount + 1;
-  if (knownEventLineCount > MAX_EVENT_LINES) {
-    pruneEventStore(projectDir, MAX_EVENT_LINES).catch(() => {});
-  }
-  return full;
+  const next = writeChain.then(async () => {
+    const full: HarnessEvent = {
+      event_id: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      seq: ++appendSeq,
+      ...event,
+    };
+    const fp = eventsFilePath(projectDir);
+    await fs.mkdir(path.dirname(fp), { recursive: true });
+    await fs.appendFile(fp, JSON.stringify(full) + '\n', 'utf-8');
+    // Notify live stream listeners.
+    for (const listener of eventStreamListeners) {
+      try { listener(full); } catch { /* best-effort */ }
+    }
+    // Auto-prune when line count is estimated to exceed the cap. Awaited so
+    // the next chained append/query observes the post-prune state.
+    knownEventLineCount = knownEventLineCount < 0 ? MAX_EVENT_LINES : knownEventLineCount + 1;
+    if (knownEventLineCount > MAX_EVENT_LINES) {
+      try { await pruneEventStore(projectDir, MAX_EVENT_LINES); } catch { /* best-effort */ }
+    }
+    return full;
+  });
+  // Keep the chain alive even if this append rejects.
+  writeChain = next.catch(() => {});
+  return next;
 }
 
 /** Convenience: emit a typed event. */
