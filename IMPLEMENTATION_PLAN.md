@@ -173,7 +173,7 @@
   - target: src/extensibility/mcpClient.test.ts
   - target: src/tools/mcpTools.ts
   - target: src/tools/registry.ts
-- [ ] close-gap-desktop-input-sandbox — Add bounded desktop input replay only after a previewable action plan, active desktop-control grant, kill-switch checks before every input, and screenshot-before/screenshot-after evidence capture.
+- [x] close-gap-desktop-input-sandbox — Add bounded desktop input replay only after a previewable action plan, active desktop-control grant, kill-switch checks before every input, and screenshot-before/screenshot-after evidence capture.
   - anchor: src/tools/desktopTools.ts
   - anchor: src/permissions/capabilities.ts
   - anchor: docs/CAPABILITY-SANDBOX.md

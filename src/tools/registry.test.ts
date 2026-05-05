@@ -48,6 +48,11 @@ describe('ToolRegistry', () => {
     const fileRead = registry.get('file_read');
     expect(fileRead?.riskLevel).toBe('low');
     expect(fileRead?.permissionCategory).toBe('read');
+    const desktopInput = registry.get('desktop_input_replay');
+    expect(desktopInput?.toolset).toBe('desktop');
+    expect(desktopInput?.riskLevel).toBe('high');
+    expect(desktopInput?.enabledByDefault).toBe(false);
+    expect(desktopInput?.canDryRun).toBe(true);
   });
 
   it('registers configured MCP tools as runtime entries', async () => {

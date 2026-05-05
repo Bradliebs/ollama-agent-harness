@@ -33,6 +33,8 @@
     "smoke:release": "node scripts/release-smoke.js",
     "smoke:remote-backends": "node scripts/remote-backend-smoke.js",
     "diagnose:mistral": "node scripts/mistral-roundtrip.js",
+    "debug:payloads": "node scripts/debug-payload-summary.js",
+    "verify:versions": "node scripts/verify-release-versions.js",
     "release:notes": "node scripts/release-notes.js",
     "release:manifest": "node scripts/release-manifest.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",

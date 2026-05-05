@@ -211,7 +211,34 @@ async function main() {
       && recoveryButtonBox.height >= 24
       && fs.existsSync(recoveryScreenshotPath)
       && fs.statSync(recoveryScreenshotPath).size > 100;
-    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, recoveryLayoutSmoke, recoveryScreenshotPath }) => {
+    const mcpDiscoverClickSmoke = await page.evaluate(async () => {
+      if (typeof renderMcpRuntimeList !== 'function' || typeof mcpRuntimeDiscoverTools !== 'function') return false;
+      const host = document.createElement('div');
+      host.innerHTML = renderMcpRuntimeList([{ id: 'smoke-mcp', command: 'node', args: [], running: true, tools: [] }]);
+      document.body.appendChild(host);
+      const originalFetch = window.fetch.bind(window);
+      const originalLoadToolsDashboard = window.loadToolsDashboard;
+      let endpointHit = false;
+      window.fetch = (resource, init) => {
+        const url = typeof resource === 'string' ? resource : resource?.url;
+        if (url === '/api/mcp/runtime/servers/smoke-mcp/discover-tools' && init?.method === 'POST') {
+          endpointHit = true;
+          return Promise.resolve(new Response(JSON.stringify({ server: { id: 'smoke-mcp', running: true, tools: [{ name: 'echo' }] } }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        return originalFetch(resource, init);
+      };
+      window.loadToolsDashboard = async () => {};
+      try {
+        host.querySelector('button[onclick*="mcpRuntimeDiscoverTools"]')?.click();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return endpointHit && document.body.textContent.includes('Discovered 1 MCP tool');
+      } finally {
+        window.fetch = originalFetch;
+        window.loadToolsDashboard = originalLoadToolsDashboard;
+        host.remove();
+      }
+    });
+    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, recoveryLayoutSmoke, recoveryScreenshotPath, mcpDiscoverClickSmoke }) => {
       const ids = Array.from(document.querySelectorAll('[id]')).map((element) => element.id);
       // Dynamically-rendered panels may legitimately re-render with the same ID
       const dynamicPanelIds = new Set(['permissionPanel', 'capabilityAlignmentPanel', 'toolRegistryPanel', 'automationRunsSection', 'curatorRunsSection']);
@@ -231,6 +258,7 @@ async function main() {
         hasTraceInspector: Boolean(document.getElementById('traceInspector')),
         hasRuntimeStorage: Boolean(document.getElementById('runtimeStorageStatus')),
         hasMcpDiscoveryControls: Boolean(document.querySelector('.mcp-hub')) && typeof window.mcpRuntimeDiscoverTools === 'function' && document.body.textContent.includes('Discover tools'),
+        mcpDiscoverClickSmoke: Boolean(mcpDiscoverClickSmoke),
         hasRuntimeSkillSource: Boolean(document.getElementById('runtimeSkillSource')),
         hasRepoSkillSource: Boolean(document.getElementById('repoSkillSource')),
         hasSkillDiagnostics: Boolean(document.getElementById('skillDiagnostics')),
@@ -349,7 +377,7 @@ async function main() {
         hasApplyCalibrationFunction: typeof window.applyRoutingCalibration === 'function',
         duplicateIds,
       };
-    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, recoveryLayoutSmoke, recoveryScreenshotPath });
+    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible: learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, recoveryLayoutSmoke, recoveryScreenshotPath, mcpDiscoverClickSmoke });
 
     const failures = [];
     if (!result.title.endsWith('Ollama Agent Harness')) failures.push(`Unexpected title: ${result.title}`);
@@ -364,6 +392,7 @@ async function main() {
     if (!result.hasTraceInspector) failures.push('trace inspector panel was not found');
     if (!result.hasRuntimeStorage) failures.push('runtime storage panel was not found');
     if (!result.hasMcpDiscoveryControls) failures.push('MCP discovery controls were not rendered');
+    if (!result.mcpDiscoverClickSmoke) failures.push('MCP discovery click path did not call the discover endpoint');
     if (!result.hasRuntimeSkillSource) failures.push('runtime skill source panel was not rendered');
     if (!result.hasRepoSkillSource) failures.push('repo skill source panel was not rendered');
     if (!result.hasSkillDiagnostics) failures.push('skill diagnostics panel was not rendered');

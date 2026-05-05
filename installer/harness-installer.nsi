@@ -119,7 +119,7 @@ Section "Install"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OllamaAgentHarness" \
     "Publisher" "Ollama Agent Harness"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OllamaAgentHarness" \
-    "DisplayVersion" "0.3.20"
+    "DisplayVersion" "0.3.25"
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OllamaAgentHarness" \
     "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OllamaAgentHarness" \

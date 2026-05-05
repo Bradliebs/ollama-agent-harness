@@ -38,6 +38,7 @@ export { RagSearchTool, RagListIndexesTool, setRagRuntime } from './ragTools';
 export { CuratorPreviewTool, setCuratorToolRuntime } from './curatorTools';
 export { DocumentExportTool } from './documentTools';
 export { TelegramNotifyTool } from './telegramTools';
+export { DesktopInputReplayTool } from './desktopInputTools';
 export { ToolDispatcher } from './dispatcher';
 export { BUILTIN_TOOL_ENTRIES, ToolRegistry, createBuiltinToolRegistry, createToolRegistry } from './registry';
 export { createMcpToolEntries, createMcpHarnessToolName } from './mcpTools';

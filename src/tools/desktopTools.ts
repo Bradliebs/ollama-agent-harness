@@ -37,7 +37,7 @@ export const DesktopScreenshotTool: Tool = {
     const outputPath = path.join(screenshotDir, filename);
 
     try {
-      await captureScreenshot(outputPath, region === 'active');
+      await captureDesktopScreenshot(outputPath, region === 'active');
 
       // Verify the file was created
       const stat = await fs.stat(outputPath);
@@ -60,7 +60,7 @@ export const DesktopScreenshotTool: Tool = {
   },
 };
 
-async function captureScreenshot(outputPath: string, activeWindowOnly: boolean): Promise<void> {
+export async function captureDesktopScreenshot(outputPath: string, activeWindowOnly: boolean): Promise<void> {
   const platform = os.platform();
 
   if (platform === 'win32') {
@@ -84,7 +84,7 @@ async function captureScreenshot(outputPath: string, activeWindowOnly: boolean):
   }
 }
 
-function execPromise(command: string, timeoutMs: number): Promise<string> {
+export function execPromise(command: string, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
     exec(command, { timeout: timeoutMs }, (error, stdout) => {
       if (error) reject(error);

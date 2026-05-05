@@ -33,7 +33,7 @@ Every high-risk connector needs these controls before it can run:
 
 ### Full desktop computer control
 
-Desktop control stays design-only until Harness has a visible automation bridge, bounded input replay, screen-state capture that excludes sensitive regions, and a persistent emergency-stop affordance.
+Desktop control is gated. Screenshot capture and bounded text/key/wait replay require explicit grants, previewable action plans, kill-switch checks during execution, and before/after screenshot evidence. Screen-state capture does not yet redact sensitive regions, so desktop tools remain disabled by default.
 
 ### Browser profile access
 

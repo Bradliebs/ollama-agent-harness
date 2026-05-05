@@ -13,6 +13,7 @@ import { CreateSkillTool, ListSkillsTool, SkillTool } from './skillTools';
 import { WebFetchTool } from './webFetchTool';
 import { WebReadTool, WebSearchTool } from './webSearchTool';
 import { DesktopScreenshotTool } from './desktopTools';
+import { DesktopInputReplayTool } from './desktopInputTools';
 import { BrowserBookmarksTool, BrowserNavigateTool, BrowserClickTool, BrowserFillTool, BrowserReadTool, BrowserScreenshotTool, BrowserCloseTool } from './browserTools';
 import { InstallSkillTool } from './skillInstallTool';
 import { EmailDraftTool, EmailSendTool } from './emailTools';
@@ -113,6 +114,7 @@ export const BUILTIN_TOOL_ENTRIES: ToolRegistryEntry[] = [
   { tool: RagListIndexesTool, toolset: 'rag', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'rag', canDryRun: false },
   { tool: CuratorPreviewTool, toolset: 'curator', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
   { tool: DesktopScreenshotTool, toolset: 'desktop', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'desktop', canDryRun: false },
+  { tool: DesktopInputReplayTool, toolset: 'desktop', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'desktop', canDryRun: true },
   { tool: BrowserBookmarksTool, toolset: 'browser', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'browser', canDryRun: false },
   { tool: BrowserNavigateTool, toolset: 'browser', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'browser', canDryRun: false },
   { tool: BrowserClickTool, toolset: 'browser', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'browser', canDryRun: false },
