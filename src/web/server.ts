@@ -4166,6 +4166,22 @@ app.post('/api/sessions/:id/fork', async (req, res) => {
   }
 });
 
+app.get('/api/sessions/:id/export', async (req, res) => {
+  try {
+    const sessionId = safeLocalId(req.params.id);
+    if (!sessionId) { res.status(400).json({ error: 'Invalid session id.' }); return; }
+    const storage = new SessionStorage(PROJECT_DIR, '', sessionId);
+    const [meta, events] = await Promise.all([storage.getMeta(), storage.readAll()]);
+    const exportData = { meta, events, exportedAt: new Date().toISOString() };
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="session-${sessionId.slice(0, 8)}.json"`);
+    res.json(exportData);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
 app.post('/api/memory/rebuild', async (_req, res) => {
   try {
     const entries = await rebuildSemanticMemory(PROJECT_DIR);
@@ -5304,7 +5320,20 @@ function inferModelCapabilities(name: string, details: Record<string, unknown> =
   // training data instead of calling web_search/file_read etc.
   const weakToolModels = /gemma.*e[24]b|gemma.*2b|gemma.*4b|phi-?3.*mini|tinyllama|smollm|qwen2?\.?5?-?(0\.5|1\.5|3)b/i;
   const strongToolModels = /kimi|qwen.*coder.*(14|32|72)b|deepseek.*(v3|coder)|mistral.*(medium|large)|command-r|gpt-?4|claude|llama.*70b/i;
-  const toolUse: 'strong' | 'weak' | 'unknown' = weakToolModels.test(name) ? 'weak'
+
+  // Cloud backend models: use the preset's supportsTools flag when available.
+  const slash = name.indexOf('/');
+  let cloudToolSupport: boolean | null = null;
+  if (slash > 0) {
+    const backend = name.slice(0, slash).toLowerCase();
+    const preset = OPENAI_COMPATIBLE_PRESETS[backend];
+    if (preset) cloudToolSupport = preset.supportsTools ?? null;
+  }
+
+  const toolUse: 'strong' | 'weak' | 'unknown' =
+    cloudToolSupport === false ? 'weak'
+    : cloudToolSupport === true ? 'strong'
+    : weakToolModels.test(name) ? 'weak'
     : strongToolModels.test(name) ? 'strong'
     : 'unknown';
 
@@ -5312,6 +5341,7 @@ function inferModelCapabilities(name: string, details: Record<string, unknown> =
     image ? 'Can likely reason over images when the chat path passes image data.' : 'Text chat model unless another modality is documented by the model.',
     audio ? 'Audio-related model detected; transcription or audio tooling may be needed before chat.' : '',
     toolUse === 'weak' ? 'This model may not reliably call tools (web_search, file_read, etc.). For research or file tasks, consider a larger model.' : '',
+    cloudToolSupport === false ? 'This cloud backend does not support tool calling.' : '',
   ].filter(Boolean);
   return { text: true, image, audio, toolUse, notes };
 }

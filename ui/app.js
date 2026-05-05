@@ -6640,6 +6640,7 @@ function renderRunRow(run) {
     + errorRow
     + '<div class="inline-actions" style="margin-top:6px">'
     +   '<button class="btn-sm" onclick="openRunSession(\'' + escAttr(run.sessionId) + '\')">Open transcript</button> '
+    +   '<button class="btn-sm" onclick="exportSession(\'' + escAttr(run.sessionId) + '\')">Export JSON</button> '
     +   '<button class="btn-sm" onclick="copyRunId(\'' + escAttr(run.sessionId) + '\', this)">Copy ID</button>'
     + '</div>'
     + '</div>';
@@ -6656,6 +6657,13 @@ function formatRunDuration(ms) {
 
 function openRunSession(sessionId) {
   window.open('/api/sessions/' + encodeURIComponent(sessionId), '_blank');
+}
+
+function exportSession(sessionId) {
+  const a = document.createElement('a');
+  a.href = '/api/sessions/' + encodeURIComponent(sessionId) + '/export';
+  a.download = 'session-' + sessionId.slice(0, 8) + '.json';
+  a.click();
 }
 
 function copyRunId(sessionId, button) {
