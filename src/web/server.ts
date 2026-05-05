@@ -4182,6 +4182,30 @@ app.get('/api/sessions/:id/export', async (req, res) => {
   }
 });
 
+app.post('/api/sessions/import', async (req, res) => {
+  try {
+    const body = req.body;
+    if (!body?.meta || !Array.isArray(body?.events)) {
+      res.status(400).json({ error: 'Invalid session export: must have meta and events array.' });
+      return;
+    }
+    const model = body.meta.model || currentModel || 'imported';
+    const storage = new SessionStorage(PROJECT_DIR, model);
+    await storage.initialize();
+    if (body.meta.title) storage.setMeta('title', body.meta.title);
+    for (const event of body.events) {
+      if (event.type && event.data) {
+        await storage.append(event.type, event.data);
+      }
+    }
+    await storage.markStatus(body.meta.status || 'completed');
+    res.json({ sessionId: storage.getSessionId(), eventCount: body.events.length });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
 app.post('/api/memory/rebuild', async (_req, res) => {
   try {
     const entries = await rebuildSemanticMemory(PROJECT_DIR);

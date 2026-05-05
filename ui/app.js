@@ -671,6 +671,23 @@ function renderModelCapabilityHint() {
   ].filter(Boolean).join('');
   const notes = (capabilities.notes || []).slice(0, 3).map(esc).join(' ');
   hint.innerHTML = '<strong>' + esc(model.name) + '</strong><div>' + pills + '</div><div>' + esc(notes || 'Harness detected a text chat model. Attachments are still available as local file paths for tools and analysis.') + '</div>' + getModelProfileSuggestion(model.name);
+
+  // When the selected model has weak tool support, suggest an alternative
+  // from the available models that is known to handle tools well.
+  if (capabilities.toolUse === 'weak') {
+    const sel = document.getElementById('modelSelect');
+    if (sel) {
+      const strongPattern = /kimi|qwen.*coder.*(14|32|72)b|deepseek.*(v3|coder)|mistral.*(medium|large)|command-r|llama.*70b/i;
+      const options = Array.from(sel.options).map(o => o.value).filter(v => v && v !== model.name && strongPattern.test(v));
+      if (options.length > 0) {
+        const rec = document.createElement('div');
+        rec.className = 'model-adaptive-badge';
+        rec.innerHTML = '💡 For web search and tool tasks, try <a href="#" class="model-inline-link" onclick="document.getElementById(\'modelSelect\').value=\'' + escAttr(options[0]) + '\';updateSetting(\'model\',\'' + escAttr(options[0]) + '\');renderModelCapabilityHint();event.preventDefault();">' + esc(options[0]) + '</a>' + (options.length > 1 ? ' or ' + (options.length - 1) + ' other model(s)' : '');
+        hint.appendChild(rec);
+      }
+    }
+  }
+
   // Fetch synthesis stats and show adaptive turns badge if different from default.
   fetch('/api/synthesis-stats').then(r => r.json()).then(data => {
     if (!data.stats) return;
@@ -6364,7 +6381,7 @@ async function loadRuns() {
     const runs = data.runs || [];
     const counts = data.counts || {};
     const runEvidence = Array.isArray(data.evidence) ? data.evidence : [];
-    const summary = '<div class="panel-header panel-header-flat"><h3>Runs</h3><div class="inline-actions"><button class="btn-sm" onclick="loadRuns()">Refresh</button></div></div>'
+    const summary = '<div class="panel-header panel-header-flat"><h3>Runs</h3><div class="inline-actions"><button class="btn-sm" onclick="loadRuns()">Refresh</button> <button class="btn-sm" onclick="document.getElementById(\'sessionImportFile\').click()">Import session</button><input type="file" id="sessionImportFile" accept=".json" style="display:none" onchange="importSessionFile(this.files)"></div></div>'
       + '<div class="trace-meta panel-copy">' + (data.total || 0) + ' chat run(s) · '
       + Object.entries(counts).map(([k, v]) => esc(k) + ': ' + v).join(' · ')
       + '</div>';
@@ -6664,6 +6681,26 @@ function exportSession(sessionId) {
   a.href = '/api/sessions/' + encodeURIComponent(sessionId) + '/export';
   a.download = 'session-' + sessionId.slice(0, 8) + '.json';
   a.click();
+}
+
+async function importSessionFile(files) {
+  if (!files || files.length === 0) return;
+  try {
+    const text = await files[0].text();
+    const data = JSON.parse(text);
+    const response = await fetch('/api/sessions/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    const result = await response.json();
+    if (result.error) throw new Error(result.error);
+    showToast('Session imported: ' + result.sessionId.slice(0, 8) + ' (' + result.eventCount + ' events)', 3000, 'success');
+    loadRuns();
+  } catch (error) {
+    showToast('Import failed: ' + (error.message || error), 3000, 'error');
+  }
+  document.getElementById('sessionImportFile').value = '';
 }
 
 function copyRunId(sessionId, button) {
