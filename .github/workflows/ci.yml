@@ -57,3 +57,6 @@ jobs:
 
       - name: Smoke UI
         run: npm run smoke:ui -- http://127.0.0.1:4310/
+
+      - name: Smoke release archive
+        run: npm run release:dry-run

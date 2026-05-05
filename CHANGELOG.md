@@ -11,6 +11,43 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.26
+
+Routing visibility, MCP runtime, and release-pipeline hardening on top of v0.3.25.
+
+### Routing & Context
+
+* **Visible routed-model UI feedback** — when auto-routing escalates a weak-tools model, the chat surfaces the model that actually ran the turn.
+* **Context budget breakdown** — first-turn prompt assembly now emits a `context_breakdown` event covering system, history, mycelium, and tool inputs so prompt bloat is explainable.
+* **Configurable web-read budget** — `webReadMaxChars` setting caps per-tool payloads; default trims oversized pages before they reach the model.
+* **Repeated web-read guard** — URLs that already failed during the same run are blocked from being re-fetched.
+* **Mycelium context cap** — router-injected context is bounded to keep small models inside their context window.
+* **Cloud model tool-capability hints** — `inferModelCapabilities` now consults the provider preset's `supportsTools` flag for backend-prefixed models (Groq/Mistral/OpenAI = strong; Cerebras/Cloudflare/DeepInfra = weak).
+* **Model recommendation engine** — when a weak-tools model is selected, the capability hint suggests a tool-capable alternative.
+
+### MCP Runtime
+
+* **Stdio MCP tool invocation** — discovered MCP tools are exposed through the standard `ToolRegistry` so the agent can call them like any builtin.
+* **MCP discovery controls** — dashboard now surfaces add/remove/refresh actions for configured MCP servers.
+
+### Connectors & Evidence
+
+* **Connector readiness surfaces** — Slack, WhatsApp, and similar integrations expose readiness state so health endpoints can reason about them.
+* **Gated desktop input replay** — `desktopInputTools` allow replaying recorded desktop events under explicit capability grants.
+* **Session import/export** — `GET /api/sessions/:id/export` and `POST /api/sessions/import` round-trip a session as JSON; UI adds Import and Export buttons.
+
+### Release Pipeline
+
+* **Aligned release provenance** — `npm run release:provenance` now matches CI inputs; the GitHub workflow uses the same script.
+* **`release:dry-run` builds before staging** — local dry-run produces the same archive shape CI publishes (`dist`, `ui`, `scripts`, `package.json`, `package-lock.json`, `README.md`, `start.bat`, `release-provenance.json`).
+* **`HARNESS_DISABLE_STARTUP_CONNECTORS=1`** — startup guard suppresses Telegram/Discord side effects during release smoke and validation runs.
+* **Bounded news + lean Gemma diagnostics** — `npm run smoke:bounded-news` and `npm run diagnose:gemma-tool` are tracked diagnostics that exercise routing without unbounded model burn.
+
+### Fixes
+
+* **Tool-use reliability metrics** — corrected counters for models that emit JSON-in-content tool calls.
+* **Test isolation** — automation lifecycle and kill-switch persistence tests now wrap cleanup in `try/finally` so a failing assertion can no longer leak grants or kill-switch state into later tests.
+
 ## Ollama Agent Harness v0.3.25
 
 Agent Loop Safety Suite — wall-clock time budget, repetition detection, adaptive pacing, and full observability overhaul. Motivated by small models (Gemma 4 E4B) hammering the GPU on research queries.

@@ -32,6 +32,7 @@ hermes-agent-main/
 Harness-Setup.exe
 release/*.zip
 release/*.zip.sha256.json
+release/release-notes.md
 
 # autonomy run logs
 .forge-run*.log

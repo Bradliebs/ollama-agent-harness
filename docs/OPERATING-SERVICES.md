@@ -162,6 +162,16 @@ secrets and never return raw secret values. Legacy connector secrets found in
 `.harness/settings.json` are migrated into `.harness/api-keys.json` during
 settings load.
 
+### Release Smoke Override
+
+Set `HARNESS_DISABLE_STARTUP_CONNECTORS=1` before `npm run serve` (or any
+release-validation flow) to suppress Telegram and Discord startup side effects
+without removing their configuration. The flag is consumed by `src/web/server.ts`
+via `startupConnectorsEnabled()` and is the supported way to start the server
+for release smoke, `release:dry-run`, or `smoke:bounded-news` against a built
+`dist`. Production startup leaves the flag unset and connectors initialize
+normally.
+
 ## Desktop Input Evidence
 
 Desktop input replay writes audit and screenshot evidence under
