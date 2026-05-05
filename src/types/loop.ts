@@ -68,6 +68,7 @@ export type LoopEvent =
   | ToolResultEvent
   | ProviderFallbackEvent
   | ContextEvent
+  | ContextBreakdownEvent
   | ContextWarningEvent
   | ErrorEvent
   | DoneEvent
@@ -129,6 +130,18 @@ export interface ContextEvent {
   maxTokens: number;
   qualityScore?: number;
   qualityPassed?: boolean;
+}
+
+export interface ContextBreakdownEvent {
+  type: 'context_breakdown';
+  totalTokens: number;
+  maxTokens: number;
+  pressure: number;
+  systemTokens: number;
+  historyTokens: number;
+  toolResultTokens: number;
+  currentUserTokens: number;
+  messageCount: number;
 }
 
 export interface ContextWarningEvent {

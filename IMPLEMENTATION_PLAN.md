@@ -180,7 +180,7 @@
   - target: src/tools/desktopInputTools.ts
   - target: src/tools/desktopInputTools.test.ts
   - target: src/tools/registry.ts
-- [ ] close-gap-communication-connectors — Add first-class Slack and WhatsApp status/setup surfaces beside Telegram and Discord, with connector-specific allowlists, readiness checks, and notification-only defaults before any two-way chat bridge.
+- [x] close-gap-communication-connectors — Add first-class Slack and WhatsApp status/setup surfaces beside Telegram and Discord, with connector-specific allowlists, readiness checks, and notification-only defaults before any two-way chat bridge.
   - anchor: src/integrations/telegram.ts
   - anchor: src/integrations/discord.ts
   - anchor: src/web/server.ts

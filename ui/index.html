@@ -820,7 +820,7 @@
       <h3>Settings</h3>
       <button class="btn-sm" onclick="toggleRight()">✕</button>
     </div>
-    <div id="promiseWidget" class="promise-widget" style="display:none"></div>
+    <div id="promiseWidget" class="promise-widget initial-hidden"></div>
     <div class="settings-section">
       <h4>Connection</h4>
       <div class="setting-row">
@@ -891,6 +891,59 @@
       <div id="telegramStatus" class="settings-status-line">Loading...</div>
     </div>
     <div class="settings-section">
+      <h4>Discord Bot</h4>
+      <div class="setting-row settings-note">
+        Status and allowlist setup for the Discord chat bridge.
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="password" id="discordTokenInput" placeholder="Discord bot token" class="settings-flex-input">
+        <button class="btn-sm primary" onclick="saveDiscordToken()">Connect</button>
+        <button class="btn-sm" onclick="stopDiscord()">Stop</button>
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="text" id="discordChannelIdsInput" placeholder="Allowed channel IDs (comma-separated)" class="settings-flex-input">
+      </div>
+      <div id="discordStatus" class="settings-status-line">Loading...</div>
+    </div>
+    <div class="settings-section">
+      <h4>Slack Notifications</h4>
+      <div class="setting-row settings-note">
+        Notification-only Slack setup through an incoming webhook.
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="password" id="slackWebhookInput" placeholder="https://hooks.slack.com/services/..." class="settings-flex-input">
+        <button class="btn-sm primary" onclick="saveSlackWebhook()">Save</button>
+      </div>
+      <div id="slackStatus" class="settings-status-line">Loading...</div>
+    </div>
+    <div class="settings-section">
+      <h4>WhatsApp Status</h4>
+      <div class="setting-row settings-note">
+        Status-only WhatsApp Cloud API setup. Recipients are allowlisted before any future notification tool can use them.
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="password" id="whatsappAccessTokenInput" placeholder="WhatsApp access token" class="settings-flex-input">
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="text" id="whatsappPhoneNumberIdInput" placeholder="Phone number ID" class="settings-flex-input">
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="text" id="whatsappAllowedRecipientsInput" placeholder="Allowed recipients, comma-separated" class="settings-flex-input">
+        <button class="btn-sm primary" onclick="saveWhatsAppSetup()">Save</button>
+      </div>
+      <div id="whatsappStatus" class="settings-status-line">Loading...</div>
+    </div>
+    <div class="settings-section">
+      <h4>Desktop Input Evidence</h4>
+      <div class="setting-row settings-note">
+        Recent desktop input replay audit entries and before/after screenshots from .harness/desktop.
+      </div>
+      <div class="setting-row settings-action-row">
+        <button class="btn-sm" onclick="loadDesktopInputEvidence()">Refresh</button>
+      </div>
+      <div id="desktopInputEvidence" class="settings-status-line">Loading...</div>
+    </div>
+    <div class="settings-section">
       <h4>Generation</h4>
       <div class="setting-row">
         <label>Temperature</label>
@@ -915,7 +968,17 @@
         <label>Max context tokens</label>
         <input type="number" id="contextMaxTokens" title="Max context tokens" value="8192" min="1024" step="512" onchange="updateSetting('contextMaxTokens',this.value)" />
       </div>
+      <div class="setting-row settings-action-row">
+        <button class="btn-sm" onclick="applyContextPreset(8192)">Local Small</button>
+        <button class="btn-sm" onclick="applyContextPreset(16384)">Local Large</button>
+        <button class="btn-sm" onclick="applyContextPreset(32768)">Cloud</button>
+        <button class="btn-sm" onclick="applyContextPreset(65536)">Max</button>
+      </div>
       <div id="contextDetails" class="trace-detail">Detected context unavailable</div>
+      <div class="setting-row">
+        <label>Web read max chars</label>
+        <input type="number" id="webReadMaxChars" title="Maximum characters returned by each web_read result" value="12000" min="1000" max="50000" step="1000" onchange="updateSetting('webReadMaxChars',this.value)" />
+      </div>
       <div class="setting-row">
         <label>Summarizer model</label>
         <input type="text" id="summarizerModel" placeholder="Optional smaller model" onchange="updateSetting('summarizerModel',this.value)" />
@@ -929,8 +992,8 @@
         <input type="number" id="timeBudgetSec" title="Wall-clock time budget for agent loop" value="180" min="30" max="1800" step="30" onchange="updateSetting('timeBudgetMs',this.value*1000)" />
       </div>
       <div id="timeBudgetHint" class="trace-detail">Local models: 180s recommended · Cloud: 600s</div>
-      <div id="modelStatsPanel" class="trace-detail" style="margin-top:8px"></div>
-      <button class="btn-sm full-width-button" onclick="loadModelStats()" style="margin-top:6px">Show model stats</button>
+      <div id="modelStatsPanel" class="trace-detail"></div>
+      <button class="btn-sm full-width-button trace-block-spaced" onclick="loadModelStats()">Show model stats</button>
     </div>
     <div class="settings-section">
       <h4>Helper Routing</h4>
@@ -945,6 +1008,10 @@
       <div class="setting-row">
         <label>Strong helper model</label>
         <input type="text" id="strongHelperModel" placeholder="Escalated helper model" onchange="updateRoutingSetting('strongModel',this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Agentic fallback model</label>
+        <input type="text" id="fallbackHelperModel" placeholder="Preferred fallback for weak tool/current-info turns" onchange="updateRoutingSetting('fallbackModel',this.value)" />
       </div>
       <div class="setting-row">
         <label>Confidence threshold</label>

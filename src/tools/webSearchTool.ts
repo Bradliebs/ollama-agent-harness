@@ -1,8 +1,19 @@
 import type { Tool, ToolResult } from '../types';
 
 const MAX_RESULTS = 8;
-const MAX_CONTENT = 50_000;
+export const DEFAULT_WEB_READ_MAX_CHARS = 12_000;
+let webReadMaxChars = DEFAULT_WEB_READ_MAX_CHARS;
 const SPARSE_TEXT_MIN_CHARS = 600;
+
+export function configureWebReadTool(options: { maxChars?: number }): void {
+  webReadMaxChars = sanitizeWebReadMaxChars(options.maxChars, webReadMaxChars);
+}
+
+export function sanitizeWebReadMaxChars(value: unknown, fallback = DEFAULT_WEB_READ_MAX_CHARS): number {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(50_000, Math.max(1_000, Math.round(numeric)));
+}
 
 /**
  * WebSearchTool — searches the web using DuckDuckGo's HTML interface.
@@ -137,7 +148,7 @@ export const WebReadTool: Tool = {
 
       // If it's plain text or JSON, return as-is
       if (!contentType.includes('html')) {
-        const truncated = body.length > MAX_CONTENT ? body.slice(0, MAX_CONTENT) + '\n...(truncated)' : body;
+        const truncated = truncateForWebRead(body);
         return { success: true, output: truncated };
       }
 
@@ -147,7 +158,7 @@ export const WebReadTool: Tool = {
         ? await buildWeatherFallback(url, body)
         : '';
       const combined = fallback ? `${text}\n\n${fallback}` : text;
-      const truncated = combined.length > MAX_CONTENT ? combined.slice(0, MAX_CONTENT) + '\n...(truncated)' : combined;
+      const truncated = truncateForWebRead(combined);
 
       return { success: true, output: `Content from ${url}:\n\n${truncated}` };
     } catch (error) {
@@ -156,6 +167,12 @@ export const WebReadTool: Tool = {
     }
   },
 };
+
+function truncateForWebRead(text: string): string {
+  return text.length > webReadMaxChars
+    ? text.slice(0, webReadMaxChars) + `\n...(truncated to ${webReadMaxChars} chars by web_read context budget)`
+    : text;
+}
 
 function extractReadableText(html: string): string {
   let text = html;

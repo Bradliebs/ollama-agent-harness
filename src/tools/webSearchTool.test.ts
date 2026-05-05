@@ -1,12 +1,13 @@
 /// <reference types="jest" />
 
-import { WebReadTool } from './webSearchTool';
+import { configureWebReadTool, WebReadTool } from './webSearchTool';
 
 describe('WebReadTool weather fallback', () => {
   const originalFetch = global.fetch;
 
   afterEach(() => {
     global.fetch = originalFetch;
+    configureWebReadTool({ maxChars: 12_000 });
     jest.restoreAllMocks();
   });
 
@@ -30,5 +31,26 @@ describe('WebReadTool weather fallback', () => {
 
     expect(result.success).toBe(true);
     expect(result.output).not.toContain('[Weather fallback]');
+  });
+
+  it('truncates large readable pages to the web_read context budget', async () => {
+    global.fetch = jest.fn().mockResolvedValue(new Response('<html><body><main><h1>Large story</h1><p>' + 'Detailed paragraph. '.repeat(1200) + '</p></main></body></html>', { headers: { 'content-type': 'text/html' } }));
+
+    const result = await WebReadTool.execute({ url: 'https://example.test/large-story' });
+
+    expect(result.success).toBe(true);
+    expect(result.output.length).toBeLessThan(13_000);
+    expect(result.output).toContain('truncated to 12000 chars by web_read context budget');
+  });
+
+  it('honors a configured web_read context budget', async () => {
+    configureWebReadTool({ maxChars: 2_000 });
+    global.fetch = jest.fn().mockResolvedValue(new Response('<html><body><main><h1>Large story</h1><p>' + 'Detailed paragraph. '.repeat(500) + '</p></main></body></html>', { headers: { 'content-type': 'text/html' } }));
+
+    const result = await WebReadTool.execute({ url: 'https://example.test/large-story' });
+
+    expect(result.success).toBe(true);
+    expect(result.output.length).toBeLessThan(2_800);
+    expect(result.output).toContain('truncated to 2000 chars by web_read context budget');
   });
 });

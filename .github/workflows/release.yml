@@ -34,15 +34,7 @@ jobs:
       - name: Package release asset
         run: |
           mkdir -p release
-          cat > release-provenance.json <<EOF
-          {
-            "version": "${GITHUB_REF_NAME#v}",
-            "commit": "${GITHUB_SHA}",
-            "assetName": "ollama-agent-harness-${GITHUB_REF_NAME}.zip",
-            "releaseUrl": "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}",
-            "generatedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          }
-          EOF
+          npm run release:provenance -- --version "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" --repository "${GITHUB_REPOSITORY}" --built-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           zip -r "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip" dist ui scripts package.json package-lock.json README.md start.bat release-provenance.json
 
       - name: Generate release SHA manifest

@@ -3,12 +3,13 @@ import * as fs from 'fs/promises';
 import http from 'http';
 import * as os from 'os';
 import * as path from 'path';
-import { app, inferModelCapabilities, setWebRuntimeOverrides, stopUploadsAutoPrune } from './server';
+import { app, inferModelCapabilities, resetSettingsLoadedForTest, resolveChatModelForRequest, setWebRuntimeOverrides, startupConnectorsEnabled, stopUploadsAutoPrune } from './server';
 import { runtimeTracer } from '../core/tracing';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { appendLearningCandidate, extractLearningCandidate } from '../learning/sessionLearning';
 import { appendSubagentRoutingMetric } from '../agents/subagent';
 import { FileReadTool } from '../tools/fileTools';
+import { SlackNotifyTool } from '../tools/slackTools';
 import { createAutomationJob } from '../automation/jobs';
 import { rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
 import { writeModelCatalogCache } from '../models/modelCatalog';
@@ -20,10 +21,12 @@ describe('web server API validation', () => {
   let server: Server;
   let baseUrl: string;
   let originalSettings: string | null = null;
+  let originalApiKeys: string | null = null;
   let originalValidationProfiles: string | null = null;
   let originalMcpServers: string | null = null;
   let logSpy: jest.SpyInstance;
   const settingsPath = path.join(process.cwd(), '.harness', 'settings.json');
+  const apiKeysPath = path.join(process.cwd(), '.harness', 'api-keys.json');
   const validationProfilesPath = path.join(process.cwd(), '.harness', 'output-validation-profiles.json');
   const mcpServersPath = path.join(process.cwd(), '.harness', 'mcp', 'servers.json');
 
@@ -33,6 +36,11 @@ describe('web server API validation', () => {
       originalSettings = await fs.readFile(settingsPath, 'utf-8');
     } catch {
       originalSettings = null;
+    }
+    try {
+      originalApiKeys = await fs.readFile(apiKeysPath, 'utf-8');
+    } catch {
+      originalApiKeys = null;
     }
     try {
       originalValidationProfiles = await fs.readFile(validationProfilesPath, 'utf-8');
@@ -62,6 +70,12 @@ describe('web server API validation', () => {
     } else {
       await fs.mkdir(path.dirname(settingsPath), { recursive: true });
       await fs.writeFile(settingsPath, originalSettings, 'utf-8');
+    }
+    if (originalApiKeys === null) {
+      await fs.rm(apiKeysPath, { force: true });
+    } else {
+      await fs.mkdir(path.dirname(apiKeysPath), { recursive: true });
+      await fs.writeFile(apiKeysPath, originalApiKeys, 'utf-8');
     }
     if (originalValidationProfiles === null) {
       await fs.rm(validationProfilesPath, { force: true });
@@ -172,6 +186,157 @@ describe('web server API validation', () => {
     await expect(fs.readFile(settingsPath, 'utf-8')).resolves.toContain('modelCatalog');
   });
 
+  it('reports communication connector setup without invoking live services', async () => {
+    const savedConnectorEnv = {
+      HARNESS_DISCORD_BOT_TOKEN: process.env.HARNESS_DISCORD_BOT_TOKEN,
+      HARNESS_SLACK_WEBHOOK_URL: process.env.HARNESS_SLACK_WEBHOOK_URL,
+      HARNESS_WHATSAPP_ACCESS_TOKEN: process.env.HARNESS_WHATSAPP_ACCESS_TOKEN,
+    };
+    delete process.env.HARNESS_DISCORD_BOT_TOKEN;
+    delete process.env.HARNESS_SLACK_WEBHOOK_URL;
+    delete process.env.HARNESS_WHATSAPP_ACCESS_TOKEN;
+
+    await request('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ discordBotToken: 'discord-test-token', discordAllowedChannelIds: '123,456' }),
+    });
+    await request('/api/slack/webhook', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ webhookUrl: 'https://hooks.slack.com/services/T000/B000/secret' }),
+    });
+    await request('/api/whatsapp/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accessToken: 'wa-token', phoneNumberId: '1234567890', allowedRecipients: '+447700900123,bad-value' }),
+    });
+
+    const response = await request('/api/connectors/status');
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { connectors: { discord: { configured: boolean; hasAllowedChannelIds: boolean }; slack: { ready: boolean; mode: string }; whatsapp: { ready: boolean; mode: string; allowedRecipientCount: number } } };
+    expect(body.connectors.discord).toMatchObject({ configured: true, hasAllowedChannelIds: true });
+    expect(body.connectors.slack).toMatchObject({ ready: true, mode: 'notification-only' });
+    expect(body.connectors.whatsapp).toMatchObject({ ready: true, mode: 'status-only', allowedRecipientCount: 1 });
+
+    const settingsResponse = await request('/api/settings');
+    const settings = await settingsResponse.json() as { discordBotToken: string; slackWebhookUrl: string; whatsappAccessToken: string; connectorSecretStatus: { discordBotToken: { configured: boolean }; slackWebhookUrl: { configured: boolean }; whatsappAccessToken: { configured: boolean } } };
+    expect(settings.discordBotToken).toBe('');
+    expect(settings.slackWebhookUrl).toBe('');
+    expect(settings.whatsappAccessToken).toBe('');
+    expect(settings.connectorSecretStatus.discordBotToken.configured).toBe(true);
+    expect(settings.connectorSecretStatus.slackWebhookUrl.configured).toBe(true);
+    expect(settings.connectorSecretStatus.whatsappAccessToken.configured).toBe(true);
+    expect(settings.connectorSecretStatus.discordBotToken).toMatchObject({ source: 'file' });
+    expect(settings.connectorSecretStatus.slackWebhookUrl).toMatchObject({ source: 'file' });
+    expect(settings.connectorSecretStatus.whatsappAccessToken).toMatchObject({ source: 'file' });
+
+    const apiKeysRaw = await fs.readFile(apiKeysPath, 'utf-8');
+    expect(apiKeysRaw).toContain('discord-test-token');
+    expect(apiKeysRaw).toContain('https://hooks.slack.com/services/T000/B000/secret');
+    expect(apiKeysRaw).toContain('wa-token');
+    const settingsRaw = await fs.readFile(settingsPath, 'utf-8');
+    expect(settingsRaw).not.toContain('discord-test-token');
+    expect(settingsRaw).not.toContain('https://hooks.slack.com/services/T000/B000/secret');
+    expect(settingsRaw).not.toContain('wa-token');
+
+    for (const [name, value] of Object.entries(savedConnectorEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  it('migrates legacy connector secrets from settings into api-key storage on load', async () => {
+    const savedConnectorEnv = {
+      HARNESS_DISCORD_BOT_TOKEN: process.env.HARNESS_DISCORD_BOT_TOKEN,
+      HARNESS_SLACK_WEBHOOK_URL: process.env.HARNESS_SLACK_WEBHOOK_URL,
+      HARNESS_WHATSAPP_ACCESS_TOKEN: process.env.HARNESS_WHATSAPP_ACCESS_TOKEN,
+    };
+    delete process.env.HARNESS_DISCORD_BOT_TOKEN;
+    delete process.env.HARNESS_SLACK_WEBHOOK_URL;
+    delete process.env.HARNESS_WHATSAPP_ACCESS_TOKEN;
+    await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+    await fs.writeFile(settingsPath, JSON.stringify({
+      discordBotToken: 'legacy-discord-token',
+      discordAllowedChannelIds: '777',
+      slackWebhookUrl: 'https://hooks.slack.com/services/T111/B222/legacy',
+      whatsappAccessToken: 'legacy-whatsapp-token',
+      whatsappPhoneNumberId: '1234567890',
+      whatsappAllowedRecipients: '+447700900123',
+    }, null, 2), 'utf-8');
+    await fs.writeFile(apiKeysPath, '{}', 'utf-8');
+    resetSettingsLoadedForTest();
+
+    const response = await request('/api/settings');
+
+    expect(response.status).toBe(200);
+    const settings = await response.json() as { discordBotToken: string; slackWebhookUrl: string; whatsappAccessToken: string; discordAllowedChannelIds: string; connectorSecretStatus: { discordBotToken: { source: string }; slackWebhookUrl: { source: string }; whatsappAccessToken: { source: string } } };
+    expect(settings.discordBotToken).toBe('');
+    expect(settings.slackWebhookUrl).toBe('');
+    expect(settings.whatsappAccessToken).toBe('');
+    expect(settings.discordAllowedChannelIds).toBe('777');
+    expect(settings.connectorSecretStatus.discordBotToken.source).toBe('file');
+    expect(settings.connectorSecretStatus.slackWebhookUrl.source).toBe('file');
+    expect(settings.connectorSecretStatus.whatsappAccessToken.source).toBe('file');
+    const apiKeysRaw = await fs.readFile(apiKeysPath, 'utf-8');
+    expect(apiKeysRaw).toContain('legacy-discord-token');
+    expect(apiKeysRaw).toContain('https://hooks.slack.com/services/T111/B222/legacy');
+    expect(apiKeysRaw).toContain('legacy-whatsapp-token');
+    const settingsRaw = await fs.readFile(settingsPath, 'utf-8');
+    expect(settingsRaw).not.toContain('legacy-discord-token');
+    expect(settingsRaw).not.toContain('https://hooks.slack.com/services/T111/B222/legacy');
+    expect(settingsRaw).not.toContain('legacy-whatsapp-token');
+
+    for (const [name, value] of Object.entries(savedConnectorEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  it('loads stored Slack webhook for slack_notify during settings startup', async () => {
+    const savedWebhook = process.env.HARNESS_SLACK_WEBHOOK_URL;
+    const savedFetch = global.fetch;
+    try {
+      delete process.env.HARNESS_SLACK_WEBHOOK_URL;
+      await fs.mkdir(path.dirname(apiKeysPath), { recursive: true });
+      await fs.writeFile(apiKeysPath, JSON.stringify({ HARNESS_SLACK_WEBHOOK_URL: 'https://hooks.slack.com/services/Tstartup/Bstartup/secret' }, null, 2), 'utf-8');
+      resetSettingsLoadedForTest();
+
+      const settingsResponse = await request('/api/settings');
+      expect(settingsResponse.status).toBe(200);
+
+      const fetchMock = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(async () => ({ ok: true, status: 200, text: async () => 'ok' } as Response));
+      global.fetch = fetchMock;
+      const result = await SlackNotifyTool.execute({ title: 'Startup', body: 'Stored webhook loaded' });
+
+      expect(result).toMatchObject({ success: true });
+      expect(fetchMock).toHaveBeenCalledWith('https://hooks.slack.com/services/Tstartup/Bstartup/secret', expect.objectContaining({ method: 'POST' }));
+    } finally {
+      global.fetch = savedFetch;
+      if (savedWebhook === undefined) delete process.env.HARNESS_SLACK_WEBHOOK_URL;
+      else process.env.HARNESS_SLACK_WEBHOOK_URL = savedWebhook;
+      if (originalApiKeys === null) await fs.rm(apiKeysPath, { force: true });
+      else await fs.writeFile(apiKeysPath, originalApiKeys, 'utf-8');
+      resetSettingsLoadedForTest();
+    }
+  });
+
+  it('lists desktop input audit entries and screenshot evidence', async () => {
+    const desktopDir = path.join(process.cwd(), '.harness', 'desktop');
+    await fs.mkdir(desktopDir, { recursive: true });
+    await fs.writeFile(path.join(desktopDir, 'desktop-input-audit.jsonl'), `${JSON.stringify({ timestamp: '2026-05-05T00:00:00.000Z', outcome: 'executed' })}\n`, 'utf-8');
+    await fs.writeFile(path.join(desktopDir, 'desktop-input-before-2026-05-05T00-00-00-000Z.png'), 'fake', 'utf-8');
+
+    const response = await request('/api/desktop-input/evidence');
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { auditPath: string; audit: Array<{ outcome?: string }>; screenshots: Array<{ name: string; url: string }> };
+    expect(body.auditPath).toBe('.harness/desktop/desktop-input-audit.jsonl');
+    expect(body.audit).toEqual(expect.arrayContaining([expect.objectContaining({ outcome: 'executed' })]));
+    expect(body.screenshots).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'desktop-input-before-2026-05-05T00-00-00-000Z.png', url: expect.stringContaining('/api/desktop-input/evidence/file/') })]));
+  });
+
   it('returns discovery payloads for catalog, extensions, automations, and session search', async () => {
     const pluginDir = path.join(process.cwd(), '.harness', 'plugins', 'trusted-plugin');
     const skillDir = path.join(process.cwd(), '.harness', 'skills', 'discovery-skill');
@@ -244,12 +409,38 @@ describe('web server API validation', () => {
     }
   });
 
-  it('classifies Gemma 4 edge models as tool-capable instead of weak', () => {
+  it('classifies local Gemma 4 models as weak for Harness tool-calling turns', () => {
     const capabilities = inferModelCapabilities('gemma4:e4b');
 
-    expect(capabilities.toolUse).toBe('strong');
-    expect(capabilities.notes.join(' ')).toContain('native tool/function calling');
-    expect(capabilities.notes.join(' ')).not.toContain('consider a larger model');
+    expect(capabilities.toolUse).toBe('weak');
+    expect(capabilities.notes.join(' ')).toContain('auto-route tool/current-information tasks');
+    expect(capabilities.notes.join(' ')).toContain('consider a larger model');
+  });
+
+  it('auto-routes Gemma current-information turns to an available agentic model', async () => {
+    const restore = setWebRuntimeOverrides({
+      listModels: jest.fn().mockResolvedValue(['gemma4:e4b', 'gpt-oss:20b-cloud']),
+    });
+    try {
+      const decision = await resolveChatModelForRequest('gemma4:e4b', 'What is in global news today?');
+
+      expect(decision).toMatchObject({ routed: true, from: 'gemma4:e4b', model: 'gpt-oss:20b-cloud' });
+    } finally {
+      restore();
+    }
+  });
+
+  it('can suppress startup connector side effects for release smoke', () => {
+    const previous = process.env.HARNESS_DISABLE_STARTUP_CONNECTORS;
+    try {
+      delete process.env.HARNESS_DISABLE_STARTUP_CONNECTORS;
+      expect(startupConnectorsEnabled()).toBe(true);
+      process.env.HARNESS_DISABLE_STARTUP_CONNECTORS = '1';
+      expect(startupConnectorsEnabled()).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.HARNESS_DISABLE_STARTUP_CONNECTORS;
+      else process.env.HARNESS_DISABLE_STARTUP_CONNECTORS = previous;
+    }
   });
 
   it('uses backend prefixes when inferring cloud tool support', () => {
@@ -2204,9 +2395,9 @@ describe('web server API validation', () => {
       expect(body).toContain('data: {"type":"text","content":"mocked response"}');
       expect(body).toContain('data: [DONE]');
       expect(getModelContextWindow).toHaveBeenCalledWith('test-model', expect.any(String));
-      expect(createClient).toHaveBeenCalledWith('test-model', expect.any(String), 32768);
+      expect(createClient).toHaveBeenCalledWith('test-model', expect.any(String), 1024);
       const settings = await request('/api/settings');
-      await expect(settings.json()).resolves.toMatchObject({ context: { detectedMaxTokens: 32768, effectiveMaxTokens: 32768 } });
+      await expect(settings.json()).resolves.toMatchObject({ context: { configuredMaxTokens: 1024, detectedMaxTokens: 32768, effectiveMaxTokens: 1024 } });
     } finally {
       restore();
     }

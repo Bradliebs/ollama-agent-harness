@@ -65,6 +65,8 @@ window.addEventListener('DOMContentLoaded', () => {
   loadFileRedirects();
   loadAgentOutputDir();
   loadTelegramStatus();
+  loadConnectorStatuses();
+  loadDesktopInputEvidence();
   // Restore prior chat session if the user reloaded mid-conversation.
   if (chatMessages.length > 0) {
     const chatArea = document.getElementById('chatArea');
@@ -845,6 +847,7 @@ async function loadSettings() {
     if (s.ollamaHost) document.getElementById('ollamaHost').value = s.ollamaHost;
     if (s.summarizerModel) document.getElementById('summarizerModel').value = s.summarizerModel;
     if (s.contextMaxTokens) document.getElementById('contextMaxTokens').value = s.contextMaxTokens;
+    if (s.webReadMaxChars) document.getElementById('webReadMaxChars').value = s.webReadMaxChars;
     renderContextDetails(s.context || { configuredMaxTokens: s.contextMaxTokens, detectedMaxTokens: null, effectiveMaxTokens: s.contextMaxTokens });
     const tbInput = document.getElementById('timeBudgetSec');
     if (tbInput) {
@@ -878,6 +881,7 @@ async function loadSettings() {
     const small = document.getElementById('smallHelperModel');
     const def = document.getElementById('defaultHelperModel');
     const strong = document.getElementById('strongHelperModel');
+    const fallback = document.getElementById('fallbackHelperModel');
     const confidence = document.getElementById('helperConfidenceThreshold');
     const vision = document.getElementById('visionModel');
     const audio = document.getElementById('audioTranscribeCommand');
@@ -897,6 +901,7 @@ async function loadSettings() {
     if (small) small.value = currentModelRouting.smallModel || '';
     if (def) def.value = currentModelRouting.defaultModel || '';
     if (strong) strong.value = currentModelRouting.strongModel || '';
+    if (fallback) fallback.value = currentModelRouting.fallbackModel || '';
     if (confidence && currentModelRouting.confidenceEscalationThreshold !== undefined) confidence.value = currentModelRouting.confidenceEscalationThreshold;
     if (vision) vision.value = currentMediaTools.visionModel || '';
     if (audio) audio.value = currentMediaTools.audioTranscribeCommand || '';
@@ -1439,6 +1444,16 @@ function renderContextDetails(context) {
   const detected = context.detectedMaxTokens || 0;
   const effective = context.effectiveMaxTokens || configured;
   details.innerHTML = '<div><strong>Configured</strong> ' + esc(configured || 'unknown') + ' tokens</div><div><strong>Detected</strong> ' + (detected ? esc(detected) + ' tokens' : 'not detected yet') + '</div><div><strong>Effective</strong> ' + esc(effective || 'unknown') + ' tokens</div>';
+}
+
+async function applyContextPreset(tokens) {
+  const input = document.getElementById('contextMaxTokens');
+  if (input) input.value = tokens;
+  const response = await updateSetting('contextMaxTokens', tokens);
+  try {
+    const settings = await response.json();
+    renderContextDetails(settings.context || { configuredMaxTokens: tokens, detectedMaxTokens: null, effectiveMaxTokens: tokens });
+  } catch {}
 }
 
 function updateSetting(k, v) {
@@ -2490,6 +2505,10 @@ async function sendMessage(opts) {
             toolBox = ensureToolBox(toolBox);
             appendToolItem(toolBox, '⚠️', 'provider fallback', ev.fromBackend + ' → ' + ev.toBackend + (ev.cooldownSec ? ' · cooldown ' + ev.cooldownSec + 's' : '') + ' · ' + (ev.reason || 'limit reached'), false);
             break;
+          case 'model_routed':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '🧭', 'model routed', ev.from + ' → ' + ev.to + (ev.reason ? ' · ' + ev.reason : ''), false);
+            break;
           case 'mode_classification':
             toolBox = ensureToolBox(toolBox);
             appendToolItem(toolBox, '🏷️', 'mode: ' + (ev.mode || 'unknown').toUpperCase(), ev.reason + (ev.suppressedModes && ev.suppressedModes.length ? ' · suppressed: ' + ev.suppressedModes.join(', ') : ''), false);
@@ -2497,6 +2516,10 @@ async function sendMessage(opts) {
           case 'context_warning':
             toolBox = ensureToolBox(toolBox);
             appendToolItem(toolBox, '⚠️', 'context warning', ev.message || ('~' + ev.estimatedTokens + ' tokens vs ' + ev.maxTokens + ' limit'), true);
+            break;
+          case 'context_breakdown':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '🧮', 'context budget', formatContextBreakdown(ev), ev.totalTokens > ev.maxTokens);
             break;
           case 'usage':
             // Fold per-LLM-call usage into the running session totals (topbar
@@ -2913,6 +2936,10 @@ function updateContextHud(pressure, strategy, qualityScore, autosaved) {
   fill.style.width = Math.min(100, pct) + '%';
   fill.className = 'context-fill' + (pct > 85 ? ' hot' : pct > 65 ? ' warn' : '');
   label.textContent = 'Context ' + pct + '%' + (strategy ? ' · ' + strategy : '') + (qualityScore !== undefined ? ' · Q' + Math.round(qualityScore * 100) : '') + (autosaved ? ' · saved' : '');
+}
+
+function formatContextBreakdown(ev) {
+  return '~' + ev.totalTokens + '/' + ev.maxTokens + ' tokens · system ' + ev.systemTokens + ' · history ' + ev.historyTokens + ' · tools ' + ev.toolResultTokens + ' · current ' + ev.currentUserTokens;
 }
 
 function ensurePermissionPanel() {
@@ -4686,6 +4713,146 @@ async function stopTelegram() {
     status.textContent = 'Bot stopped.';
   } catch (e) {
     status.textContent = '⚠ ' + (e.message || e);
+  }
+}
+
+async function loadConnectorStatuses() {
+  await Promise.allSettled([loadDiscordStatus(), loadSlackStatus(), loadWhatsAppStatus()]);
+}
+
+async function loadDiscordStatus() {
+  const status = document.getElementById('discordStatus');
+  const tokenInput = document.getElementById('discordTokenInput');
+  const channelIdsInput = document.getElementById('discordChannelIdsInput');
+  if (!status) return;
+  try {
+    const [statusRes, settingsRes] = await Promise.all([fetch('/api/discord/status'), fetch('/api/settings')]);
+    const st = await readApiJson(statusRes, 'Discord status API');
+    const settings = await readApiJson(settingsRes, 'Settings API');
+    if (tokenInput) tokenInput.value = '';
+    if (channelIdsInput) channelIdsInput.value = settings.discordAllowedChannelIds || '';
+    status.innerHTML = esc(st.running ? 'Bot is running.' : st.configured ? 'Token set. Click Connect to start the bridge.' : 'Not configured.') + connectorSourceBadge(settings.connectorSecretStatus?.discordBotToken);
+  } catch (e) {
+    status.textContent = 'Could not load Discord status: ' + (e.message || e);
+  }
+}
+
+async function saveDiscordToken() {
+  const tokenInput = document.getElementById('discordTokenInput');
+  const channelIdsInput = document.getElementById('discordChannelIdsInput');
+  const status = document.getElementById('discordStatus');
+  if (!tokenInput || !status) return;
+  status.textContent = 'Connecting...';
+  try {
+    const response = await fetch('/api/discord/token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: tokenInput.value.trim(), channelIds: channelIdsInput?.value.trim() || '' }) });
+    const data = await readApiJson(response, 'Discord token API');
+    status.textContent = data.ok ? 'Discord token saved. Bridge is starting.' : 'Discord token saved, but bridge did not start.';
+  } catch (e) {
+    status.textContent = 'Discord setup failed: ' + (e.message || e);
+  }
+}
+
+async function stopDiscord() {
+  const status = document.getElementById('discordStatus');
+  if (!status) return;
+  try {
+    const response = await fetch('/api/discord/stop', { method: 'POST' });
+    await readApiJson(response, 'Discord stop API');
+    status.textContent = 'Discord bot stopped.';
+  } catch (e) {
+    status.textContent = 'Could not stop Discord bot: ' + (e.message || e);
+  }
+}
+
+async function loadSlackStatus() {
+  const status = document.getElementById('slackStatus');
+  const input = document.getElementById('slackWebhookInput');
+  if (!status) return;
+  try {
+    const [statusRes, settingsRes] = await Promise.all([fetch('/api/slack/status'), fetch('/api/settings')]);
+    const st = await readApiJson(statusRes, 'Slack status API');
+    const settings = await readApiJson(settingsRes, 'Settings API');
+    if (input) input.value = '';
+    status.innerHTML = esc(st.ready ? 'Slack notifications are ready.' : st.message || 'Slack is not configured.') + connectorSourceBadge(settings.connectorSecretStatus?.slackWebhookUrl);
+  } catch (e) {
+    status.textContent = 'Could not load Slack status: ' + (e.message || e);
+  }
+}
+
+async function saveSlackWebhook() {
+  const input = document.getElementById('slackWebhookInput');
+  const status = document.getElementById('slackStatus');
+  if (!input || !status) return;
+  status.textContent = 'Saving...';
+  try {
+    const response = await fetch('/api/slack/webhook', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ webhookUrl: input.value.trim() }) });
+    const data = await readApiJson(response, 'Slack webhook API');
+    status.textContent = data.status?.message || 'Slack settings saved.';
+  } catch (e) {
+    status.textContent = 'Slack setup failed: ' + (e.message || e);
+  }
+}
+
+async function loadWhatsAppStatus() {
+  const status = document.getElementById('whatsappStatus');
+  const tokenInput = document.getElementById('whatsappAccessTokenInput');
+  const phoneInput = document.getElementById('whatsappPhoneNumberIdInput');
+  const recipientsInput = document.getElementById('whatsappAllowedRecipientsInput');
+  if (!status) return;
+  try {
+    const [statusRes, settingsRes] = await Promise.all([fetch('/api/whatsapp/status'), fetch('/api/settings')]);
+    const st = await readApiJson(statusRes, 'WhatsApp status API');
+    const settings = await readApiJson(settingsRes, 'Settings API');
+    if (tokenInput) tokenInput.value = '';
+    if (phoneInput) phoneInput.value = settings.whatsappPhoneNumberId || '';
+    if (recipientsInput) recipientsInput.value = settings.whatsappAllowedRecipients || '';
+    status.innerHTML = esc(st.ready ? 'WhatsApp setup is ready for status-only use with ' + st.allowedRecipientCount + ' allowed recipient(s).' : st.message || 'WhatsApp is not configured.') + connectorSourceBadge(settings.connectorSecretStatus?.whatsappAccessToken);
+  } catch (e) {
+    status.textContent = 'Could not load WhatsApp status: ' + (e.message || e);
+  }
+}
+
+async function saveWhatsAppSetup() {
+  const tokenInput = document.getElementById('whatsappAccessTokenInput');
+  const phoneInput = document.getElementById('whatsappPhoneNumberIdInput');
+  const recipientsInput = document.getElementById('whatsappAllowedRecipientsInput');
+  const status = document.getElementById('whatsappStatus');
+  if (!status) return;
+  status.textContent = 'Saving...';
+  try {
+    const response = await fetch('/api/whatsapp/setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessToken: tokenInput?.value.trim() || '', phoneNumberId: phoneInput?.value.trim() || '', allowedRecipients: recipientsInput?.value.trim() || '' }) });
+    const data = await readApiJson(response, 'WhatsApp setup API');
+    status.textContent = data.status?.message || 'WhatsApp settings saved.';
+  } catch (e) {
+    status.textContent = 'WhatsApp setup failed: ' + (e.message || e);
+  }
+}
+
+function connectorSourceBadge(info) {
+  if (!info || !info.configured) return '';
+  if (info.source === 'env') return ' <span class="key-source-badge env">from env</span>';
+  if (info.source === 'file') return ' <span class="key-source-badge stored">stored</span>';
+  return '';
+}
+
+async function loadDesktopInputEvidence() {
+  const panel = document.getElementById('desktopInputEvidence');
+  if (!panel) return;
+  panel.textContent = 'Loading desktop input evidence...';
+  try {
+    const response = await fetch('/api/desktop-input/evidence');
+    const data = await readApiJson(response, 'Desktop input evidence API');
+    const audit = Array.isArray(data.audit) ? data.audit : [];
+    const screenshots = Array.isArray(data.screenshots) ? data.screenshots : [];
+    const auditHtml = audit.length
+      ? audit.slice(-5).reverse().map((entry) => '<details class="audit-row"><summary>' + esc(entry.timestamp || 'unknown time') + ' · ' + esc(entry.outcome || 'event') + '</summary><pre class="audit-json-pre">' + esc(JSON.stringify(entry, null, 2)) + '</pre></details>').join('')
+      : '<div class="readiness-empty">No desktop input audit entries yet.</div>';
+    const screenshotHtml = screenshots.length
+      ? '<div class="document-list">' + screenshots.slice(-6).reverse().map((file) => '<div class="document-item"><div><strong>' + esc(file.name) + '</strong><span>Screenshot evidence</span></div><a class="btn-sm" href="' + esc(file.url) + '" target="_blank" rel="noopener">Open</a></div>').join('') + '</div>'
+      : '<div class="readiness-empty">No desktop screenshots yet.</div>';
+    panel.innerHTML = '<div class="settings-note">Audit log: <code>' + esc(data.auditPath || '.harness/desktop/desktop-input-audit.jsonl') + '</code></div>' + auditHtml + screenshotHtml;
+  } catch (e) {
+    panel.textContent = 'Could not load desktop input evidence: ' + (e.message || e);
   }
 }
 

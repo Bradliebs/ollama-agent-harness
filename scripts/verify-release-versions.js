@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { generateReleaseProvenance } = require('./generate-release-provenance');
 
 const root = path.resolve(__dirname, '..');
 const packageJson = readJson(path.join(root, 'package.json'));
@@ -10,6 +11,7 @@ const installerPath = path.join(root, 'installer', 'harness-installer.nsi');
 const provenancePath = path.join(root, 'release-provenance.json');
 const installerText = fs.existsSync(installerPath) ? fs.readFileSync(installerPath, 'utf-8') : '';
 const provenance = fs.existsSync(provenancePath) ? readJson(provenancePath) : null;
+const generatedProvenance = generateReleaseProvenance({ root, existingPath: provenancePath });
 
 const checks = [];
 checks.push({ name: 'package.json', version: packageVersion, expected: packageVersion });
@@ -17,8 +19,9 @@ checks.push({ name: 'installer VIProductVersion', version: normalizeInstallerVer
 checks.push({ name: 'installer FileVersion', version: extract(installerText, /VIAddVersionKey\s+"FileVersion"\s+"([^"]+)"/), expected: packageVersion });
 checks.push({ name: 'installer DisplayVersion', version: extract(installerText, /"DisplayVersion"\s+"([^"]+)"/), expected: packageVersion });
 if (provenance) {
-  checks.push({ name: 'release-provenance version', version: String(provenance.version || '').trim(), expected: packageVersion });
-  checks.push({ name: 'release-provenance assetName', version: extractAssetVersion(String(provenance.assetName || '')), expected: packageVersion });
+  checks.push({ name: 'release-provenance version', version: String(provenance.version || '').trim(), expected: generatedProvenance.version });
+  checks.push({ name: 'release-provenance assetName', version: String(provenance.assetName || '').trim(), expected: generatedProvenance.assetName });
+  checks.push({ name: 'release-provenance releaseUrl', version: String(provenance.releaseUrl || '').trim(), expected: generatedProvenance.releaseUrl });
 }
 
 const failures = checks.filter((check) => check.version !== check.expected);
@@ -44,8 +47,4 @@ function extract(text, pattern) {
 
 function normalizeInstallerVersion(value) {
   return String(value || '').replace(/\.0$/, '').trim();
-}
-
-function extractAssetVersion(value) {
-  return value.match(/v(\d+\.\d+\.\d+)/)?.[1] || '';
 }

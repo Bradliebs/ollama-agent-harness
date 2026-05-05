@@ -74,6 +74,9 @@ import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } fr
 import { appendRunEvidence, readRunEvidence, type StoredRunEvidence } from '../persistence/evidenceStore';
 import { startTelegramBot, stopTelegramBot, isTelegramBotRunning, sendTelegramNotification, loadPersistedChatIds, getTelegramPollingLockInfo } from '../integrations/telegram';
 import { startDiscordBot, stopDiscordBot, isDiscordBotRunning } from '../integrations/discord';
+import { getSlackConnectorStatus, sanitizeSlackWebhookUrl } from '../integrations/slack';
+import { getWhatsAppConnectorStatus, sanitizeWhatsAppSetup } from '../integrations/whatsapp';
+import { configureWebReadTool, DEFAULT_WEB_READ_MAX_CHARS, sanitizeWebReadMaxChars } from '../tools/webSearchTool';
 import { addWebhook, removeWebhook, listWebhooks, loadWebhooksFromEnv, sendWebhookNotification } from '../integrations/webhooks';
 import { NervousSystemController } from '../nervous';
 import { listShellCommandAllowlistPresets } from '../automation/runner';
@@ -82,6 +85,8 @@ import type { ModelRoutingPolicy } from '../agents/modelRouting';
 import type { LoopConfig, LoopEvent, PermissionMode, Tool } from '../types';
 import type { EvidenceCard, EvidenceFileSummary, EvidenceMode, EvidenceToolSummary } from '../types/evidence';
 import type { Message } from 'ollama';
+
+const MODULE_LOAD_STARTED_AT = Date.now();
 
 const app = express();
 app.use(express.json({ limit: '1mb' }));
@@ -132,6 +137,7 @@ interface WebSettings {
   agentProfiles: Record<string, { name: string; avatar: string; personality: string; model: string }>;
   summarizerModel: string;
   contextMaxTokens: number;
+  webReadMaxChars: number;
   timeBudgetMs: number;
   context: { configuredMaxTokens: number; detectedMaxTokens: number | null; effectiveMaxTokens: number };
   temperature: number;
@@ -168,6 +174,25 @@ interface WebSettings {
   telegramBotToken: string;
   /** Comma-separated Telegram chat IDs allowed to use the bot. Empty = any. */
   telegramAllowedChatIds: string;
+  discordBotToken: string;
+  discordAllowedChannelIds: string;
+  slackWebhookUrl: string;
+  whatsappAccessToken: string;
+  whatsappPhoneNumberId: string;
+  whatsappAllowedRecipients: string;
+}
+
+interface ConnectorSecretStatus {
+  configured: boolean;
+  source: 'env' | 'file' | 'none';
+}
+
+interface PublicWebSettings extends WebSettings {
+  connectorSecretStatus: {
+    discordBotToken: ConnectorSecretStatus;
+    slackWebhookUrl: ConnectorSecretStatus;
+    whatsappAccessToken: ConnectorSecretStatus;
+  };
 }
 
 interface MediaToolSettings {
@@ -225,6 +250,7 @@ interface ExtensionActivationSettings {
 interface WebRuntimeDeps {
   createClient(model: string, host: string, numCtx?: number): IChatClient;
   getModelContextWindow(model: string, host: string): Promise<number | null>;
+  listModels(host: string): Promise<string[]>;
   getTools(): Tool[];
   createPermissionEngine(mode: PermissionMode): PermissionEngine;
   createSession(projectDir: string, model: string): SessionStorage;
@@ -247,8 +273,10 @@ let agentAvatar = '';
 let agentProfiles: Record<string, { name: string; avatar: string; personality: string; model: string }> = {};
 let summarizerModel = '';
 const DEFAULT_CONTEXT_MAX_TOKENS = 8192;
+const MYCELIUM_CONTEXT_MAX_CHARS = 4_000;
 let contextMaxTokens = DEFAULT_CONTEXT_MAX_TOKENS;
 let detectedContextMaxTokens: number | null = null;
+let webReadMaxChars = DEFAULT_WEB_READ_MAX_CHARS;
 let timeBudgetMs = 0; // 0 = auto-detect (180s local, 600s cloud)
 let temperature = 0.7;
 let topP = 0.9;
@@ -269,6 +297,10 @@ let telegramBotToken: string = process.env.HARNESS_TELEGRAM_BOT_TOKEN ?? '';
 let telegramAllowedChatIds: string = process.env.HARNESS_TELEGRAM_ALLOWED_CHAT_IDS ?? '';
 let discordBotToken: string = process.env.HARNESS_DISCORD_BOT_TOKEN ?? '';
 let discordAllowedChannelIds: string = process.env.HARNESS_DISCORD_ALLOWED_CHANNEL_IDS ?? '';
+let slackWebhookUrl: string = process.env.HARNESS_SLACK_WEBHOOK_URL ?? '';
+let whatsappAccessToken: string = process.env.HARNESS_WHATSAPP_ACCESS_TOKEN ?? '';
+let whatsappPhoneNumberId: string = process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID ?? '';
+let whatsappAllowedRecipients: string = process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS ?? '';
 let outputValidation: OutputValidationSettings = { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: true };
 let customOutputValidationProfiles: CustomOutputValidationProfile[] = [];
 let modelCatalog: ModelCatalogSettings = { url: '', ttlHours: 24 };
@@ -376,7 +408,11 @@ const defaultWebRuntime: WebRuntimeDeps = {
     }
     return new OllamaClient({ model, host }).getContextWindow();
   },
-  getTools: () => applyToolDisables(getRuntimeTools(PROJECT_DIR)),
+  listModels: (host) => new OllamaClient({ model: '', host }).listModels(),
+  getTools: () => {
+    configureWebReadTool({ maxChars: webReadMaxChars });
+    return applyToolDisables(getRuntimeTools(PROJECT_DIR));
+  },
   createPermissionEngine: (mode) => {
     const engine = new PermissionEngine([], mode);
     if (killSwitchActive) engine.engageKillSwitch(killSwitchReason);
@@ -944,12 +980,7 @@ app.get('/api/api-keys', async (_req, res) => {
 app.post('/api/api-keys', async (req, res) => {
   try {
     const incoming = req.body && typeof req.body === 'object' ? req.body : {};
-    let stored: Record<string, string> = {};
-    try {
-      const raw = await fs.readFile(API_KEYS_PATH, 'utf-8');
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') stored = parsed as Record<string, string>;
-    } catch {}
+    const stored = await readStoredApiKeysFile();
     let changed = false;
     for (const [name, rawValue] of Object.entries(incoming)) {
       if (!ALLOWED_API_KEY_NAMES.has(name)) continue;
@@ -980,6 +1011,39 @@ app.post('/api/api-keys', async (req, res) => {
     res.status(500).json({ error: msg });
   }
 });
+
+async function readStoredApiKeysFile(): Promise<Record<string, string>> {
+  try {
+    const raw = await fs.readFile(API_KEYS_PATH, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, string> : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writeStoredApiKeysFile(stored: Record<string, string>): Promise<void> {
+  await fs.mkdir(path.dirname(API_KEYS_PATH), { recursive: true });
+  await fs.writeFile(API_KEYS_PATH, JSON.stringify(stored, null, 2), { encoding: 'utf-8', mode: 0o600 });
+}
+
+async function storeConnectorSecret(name: string, value: string): Promise<void> {
+  if (!ALLOWED_API_KEY_NAMES.has(name)) return;
+  const stored = await readStoredApiKeysFile();
+  const trimmed = value.trim();
+  if (trimmed) {
+    stored[name] = trimmed;
+    if (!process.env[name] || !process.env[name]!.trim()) process.env[name] = trimmed;
+    FILE_SOURCED_KEYS.add(name);
+  } else {
+    delete stored[name];
+    if (FILE_SOURCED_KEYS.has(name)) {
+      delete process.env[name];
+      FILE_SOURCED_KEYS.delete(name);
+    }
+  }
+  await writeStoredApiKeysFile(stored);
+}
 
 // File-write redirect rules. Lets the user route any agent file_write
 // whose path matches a glob into a specific directory (typically a
@@ -1067,7 +1131,7 @@ app.get('/api/settings', async (_req, res) => {
   try {
     await ensureSettingsLoaded();
     checkAutonomyExpiry();
-    res.json(getCurrentSettings());
+    res.json(getPublicSettings());
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -1155,6 +1219,10 @@ app.post('/api/settings', async (req, res) => {
   }
   configureAutomationScheduler();
   if (req.body.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(req.body.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
+  if (req.body.webReadMaxChars !== undefined) {
+    webReadMaxChars = sanitizeWebReadMaxChars(req.body.webReadMaxChars, DEFAULT_WEB_READ_MAX_CHARS);
+    configureWebReadTool({ maxChars: webReadMaxChars });
+  }
   if (req.body.timeBudgetMs !== undefined) timeBudgetMs = clampNumber(req.body.timeBudgetMs, 0, 1_800_000, 0);
   if (req.body.temperature !== undefined) temperature = clampNumber(req.body.temperature, 0, 2, 0.7);
   if (req.body.topP !== undefined) topP = clampNumber(req.body.topP, 0, 1, 0.9);
@@ -1171,9 +1239,28 @@ app.post('/api/settings', async (req, res) => {
     // their config.
     syncAgentOutputDirIntoAllowedPaths();
   }
+  if (req.body.discordBotToken !== undefined) await storeConnectorSecret('HARNESS_DISCORD_BOT_TOKEN', String(req.body.discordBotToken).trim().slice(0, 200));
+  if (req.body.discordAllowedChannelIds !== undefined) discordAllowedChannelIds = String(req.body.discordAllowedChannelIds).trim().slice(0, 500);
+  if (req.body.slackWebhookUrl !== undefined) {
+    await storeConnectorSecret('HARNESS_SLACK_WEBHOOK_URL', sanitizeSlackWebhookUrl(req.body.slackWebhookUrl));
+  }
+  if (req.body.whatsappAccessToken !== undefined || req.body.whatsappPhoneNumberId !== undefined || req.body.whatsappAllowedRecipients !== undefined) {
+    const sanitized = sanitizeWhatsAppSetup({
+      accessToken: req.body.whatsappAccessToken ?? connectorSecretValue('HARNESS_WHATSAPP_ACCESS_TOKEN'),
+      phoneNumberId: req.body.whatsappPhoneNumberId ?? whatsappPhoneNumberId,
+      allowedRecipients: req.body.whatsappAllowedRecipients ?? whatsappAllowedRecipients,
+    });
+    await storeConnectorSecret('HARNESS_WHATSAPP_ACCESS_TOKEN', sanitized.accessToken);
+    whatsappPhoneNumberId = sanitized.phoneNumberId;
+    whatsappAllowedRecipients = sanitized.allowedRecipients;
+    if (whatsappPhoneNumberId) process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID = whatsappPhoneNumberId;
+    else delete process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID;
+    if (whatsappAllowedRecipients) process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS = whatsappAllowedRecipients;
+    else delete process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS;
+  }
   await saveSettingsToDisk();
   logger.info('Settings', 'Updated', { model: currentModel, permissionMode, temperature, topP });
-  res.json(getCurrentSettings());
+  res.json(getPublicSettings());
 });
 
 app.get('/api/output-validation/profiles', async (_req, res) => {
@@ -1588,7 +1675,7 @@ app.post('/api/telegram/stop', (_req, res) => {
 app.get('/api/discord/status', (_req, res) => {
   res.json({
     running: isDiscordBotRunning(),
-    configured: Boolean(discordBotToken || process.env.HARNESS_DISCORD_BOT_TOKEN),
+    configured: Boolean(connectorSecretValue('HARNESS_DISCORD_BOT_TOKEN')),
   });
 });
 
@@ -1597,7 +1684,7 @@ app.post('/api/discord/token', async (req, res) => {
   const channelIds = typeof req.body?.channelIds === 'string' ? req.body.channelIds.trim() : '';
   if (!token) { res.status(400).json({ error: 'Discord bot token is required.' }); return; }
   stopDiscordBot();
-  discordBotToken = token;
+  await storeConnectorSecret('HARNESS_DISCORD_BOT_TOKEN', token.slice(0, 200));
   discordAllowedChannelIds = channelIds;
   await ensureSettingsLoaded();
   await saveSettingsToDisk();
@@ -1609,6 +1696,76 @@ app.post('/api/discord/token', async (req, res) => {
 app.post('/api/discord/stop', (_req, res) => {
   stopDiscordBot();
   res.json({ ok: true, running: false });
+});
+
+app.get('/api/slack/status', (_req, res) => {
+  res.json(getSlackConnectorStatus(connectorSecretValue('HARNESS_SLACK_WEBHOOK_URL')));
+});
+
+app.post('/api/slack/webhook', async (req, res) => {
+  await storeConnectorSecret('HARNESS_SLACK_WEBHOOK_URL', sanitizeSlackWebhookUrl(req.body?.webhookUrl));
+  await saveSettingsToDisk();
+  res.json({ ok: true, status: getSlackConnectorStatus(connectorSecretValue('HARNESS_SLACK_WEBHOOK_URL')) });
+});
+
+app.get('/api/whatsapp/status', (_req, res) => {
+  res.json(getWhatsAppConnectorStatus({ accessToken: connectorSecretValue('HARNESS_WHATSAPP_ACCESS_TOKEN'), phoneNumberId: whatsappPhoneNumberId || process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID, allowedRecipients: whatsappAllowedRecipients || process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS }));
+});
+
+app.post('/api/whatsapp/setup', async (req, res) => {
+  const sanitized = sanitizeWhatsAppSetup({ accessToken: req.body?.accessToken, phoneNumberId: req.body?.phoneNumberId, allowedRecipients: req.body?.allowedRecipients });
+  await storeConnectorSecret('HARNESS_WHATSAPP_ACCESS_TOKEN', sanitized.accessToken);
+  whatsappPhoneNumberId = sanitized.phoneNumberId;
+  whatsappAllowedRecipients = sanitized.allowedRecipients;
+  if (whatsappPhoneNumberId) process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID = whatsappPhoneNumberId;
+  else delete process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID;
+  if (whatsappAllowedRecipients) process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS = whatsappAllowedRecipients;
+  else delete process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS;
+  await saveSettingsToDisk();
+  res.json({ ok: true, status: getWhatsAppConnectorStatus({ accessToken: connectorSecretValue('HARNESS_WHATSAPP_ACCESS_TOKEN'), phoneNumberId: whatsappPhoneNumberId, allowedRecipients: whatsappAllowedRecipients }) });
+});
+
+app.get('/api/connectors/status', (_req, res) => {
+  res.json({
+    connectors: {
+      telegram: { connector: 'telegram', configured: Boolean(telegramBotToken), running: isTelegramBotRunning(), hasAllowedChatIds: Boolean(telegramAllowedChatIds), mode: 'chat-bridge' },
+      discord: { connector: 'discord', configured: Boolean(connectorSecretValue('HARNESS_DISCORD_BOT_TOKEN')), running: isDiscordBotRunning(), hasAllowedChannelIds: Boolean(discordAllowedChannelIds), mode: 'chat-bridge' },
+      slack: getSlackConnectorStatus(connectorSecretValue('HARNESS_SLACK_WEBHOOK_URL')),
+      whatsapp: getWhatsAppConnectorStatus({ accessToken: connectorSecretValue('HARNESS_WHATSAPP_ACCESS_TOKEN'), phoneNumberId: whatsappPhoneNumberId || process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID, allowedRecipients: whatsappAllowedRecipients || process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS }),
+    },
+  });
+});
+
+app.get('/api/desktop-input/evidence', async (_req, res) => {
+  try {
+    const dir = path.join(PROJECT_DIR, '.harness', 'desktop');
+    const auditPath = path.join(dir, 'desktop-input-audit.jsonl');
+    const auditRaw = await fs.readFile(auditPath, 'utf-8').catch(() => '');
+    const audit = auditRaw.split(/\r?\n/)
+      .filter((line) => line.trim())
+      .slice(-50)
+      .map((line) => {
+        try { return JSON.parse(line) as Record<string, unknown>; } catch { return { malformed: true, raw: line.slice(0, 500) }; }
+      });
+    const files = await fs.readdir(dir).catch(() => []);
+    const screenshots = files
+      .filter((name) => /^desktop-input-(before|after)-[A-Za-z0-9_.-]+\.png$/.test(name))
+      .sort()
+      .slice(-50)
+      .map((name) => ({ name, url: `/api/desktop-input/evidence/file/${encodeURIComponent(name)}` }));
+    res.json({ auditPath: '.harness/desktop/desktop-input-audit.jsonl', audit, screenshots });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/desktop-input/evidence/file/:name', (req, res) => {
+  const name = String(req.params.name || '');
+  if (!/^desktop-input-(before|after)-[A-Za-z0-9_.-]+\.png$/.test(name)) {
+    res.status(404).json({ error: 'Desktop evidence file not found.' });
+    return;
+  }
+  res.sendFile(path.join(PROJECT_DIR, '.harness', 'desktop', name));
 });
 
 app.get('/api/webhooks', (_req, res) => {
@@ -3364,8 +3521,10 @@ app.post('/api/chat', async (req, res) => {
     return;
   }
 
-  const activeModel = model || currentModel;
-  if (!activeModel) { res.status(400).json({ error: 'No model selected.' }); return; }
+  const requestedModel = model || currentModel;
+  if (!requestedModel) { res.status(400).json({ error: 'No model selected.' }); return; }
+  const routedModel = await resolveChatModelForRequest(requestedModel, messageText);
+  const activeModel = routedModel.model;
 
   const skipValidationThisTurn = req.body?.skipValidation === true;
   if (process.env.NODE_ENV !== 'test' && !rateLimiter.tryConsume()) {
@@ -3387,6 +3546,9 @@ app.post('/api/chat', async (req, res) => {
   const modeClassification = (req as any).__modeClassification;
   if (modeClassification) {
     res.write(`data: ${JSON.stringify({ type: 'mode_classification', ...modeClassification })}\n\n`);
+  }
+  if (routedModel.routed) {
+    res.write(`data: ${JSON.stringify({ type: 'model_routed', from: routedModel.from, to: routedModel.model, reason: routedModel.reason })}\n\n`);
   }
 
   const abortController = new AbortController();
@@ -3502,7 +3664,7 @@ app.post('/api/chat', async (req, res) => {
       myceliumContext =
         `\n\n--- Mycelium context (adaptive routing) ---\n` +
         `[Task type: ${myceliumResult.classification.type}; high_risk: ${myceliumResult.classification.highRisk}; exploration: ${myceliumResult.classification.explorationRate}]\n` +
-        myceliumResult.contextText +
+        formatMyceliumContextText(myceliumResult.contextText, MYCELIUM_CONTEXT_MAX_CHARS) +
         safetyBlock;
     }
   } catch (error) {
@@ -5366,15 +5528,63 @@ function sanitizeModelName(value: unknown): string {
   return String(value ?? '').trim().slice(0, 120);
 }
 
+interface ChatModelRoutingDecision {
+  model: string;
+  routed: boolean;
+  from?: string;
+  reason?: string;
+}
+
+const PREFERRED_AGENTIC_FALLBACK_MODELS = [
+  'gpt-oss:20b-cloud',
+  'gpt-oss:120b-cloud',
+  'qwen2.5-coder:14b',
+  'qwen2.5-coder:7b',
+  'deepseek-v3.1:671b-cloud',
+  'qwen3-coder:480b-cloud',
+];
+
+export async function resolveChatModelForRequest(requestedModel: string, messageText: string): Promise<ChatModelRoutingDecision> {
+  if (!shouldAutoRouteFromModel(requestedModel, messageText)) return { model: requestedModel, routed: false };
+  const available = await webRuntime.listModels(ollamaHost).catch(() => []);
+  const fallback = chooseAgenticFallbackModel(requestedModel, available, modelRouting);
+  if (!fallback) return { model: requestedModel, routed: false };
+  return {
+    model: fallback,
+    routed: true,
+    from: requestedModel,
+    reason: `${requestedModel} is not reliable for tool/current-information turns; routed to available agentic model ${fallback}.`,
+  };
+}
+
+function shouldAutoRouteFromModel(modelName: string, messageText: string): boolean {
+  return isKnownWeakAgenticModel(modelName) && promptNeedsAgenticTools(messageText);
+}
+
+function isKnownWeakAgenticModel(modelName: string): boolean {
+  return /^gemma4:(e4b|26b)$/i.test(modelName.trim());
+}
+
+function promptNeedsAgenticTools(messageText: string): boolean {
+  const text = messageText.toLowerCase();
+  return /\b(news|today|latest|current|recent|weather|price|prices|score|scores|search|web|browse|look up|read file|write file|edit file|run command|repo|codebase)\b/.test(text);
+}
+
+function chooseAgenticFallbackModel(requestedModel: string, availableModels: string[], policy: ModelRoutingPolicy = {}): string | undefined {
+  const available = new Set(availableModels.map((name) => name.toLowerCase()));
+  const candidates = [policy.strongModel, policy.defaultModel, policy.fallbackModel, ...PREFERRED_AGENTIC_FALLBACK_MODELS]
+    .map((name) => sanitizeModelName(name))
+    .filter((name) => name && name.toLowerCase() !== requestedModel.toLowerCase());
+  return candidates.find((name) => available.has(name.toLowerCase()));
+}
+
 export function inferModelCapabilities(name: string, details: Record<string, unknown> = {}): { text: boolean; image: boolean; audio: boolean; toolUse: 'strong' | 'weak' | 'unknown'; notes: string[] } {
   const haystack = `${name} ${Object.values(details).join(' ')}`.toLowerCase();
   const image = isVisionCapableModelName(name, details);
   const audio = /whisper|audio|speech|wav2vec|parakeet|sensevoice/.test(haystack);
 
   // Tool-use capability heuristic based on model family and runtime path.
-  // Gemma 4 E2B/E4B are edge-oriented function-calling models, but local
-  // reliability can depend on whether the runtime applies their chat/tool template.
-  const gemma4EdgeToolModel = /gemma\s*4?.*e[24]b|gemma4.*[24]b|gemma-?4.*[24]b/i.test(name);
+  const weakGemma4LocalToolModel = /^gemma4:(e4b|26b)$/i.test(name.trim());
   const weakToolModels = /phi-?3.*mini|tinyllama|smollm|qwen2?\.?5?-?(0\.5|1\.5|3)b/i;
   const strongToolModels = /kimi|qwen.*coder.*(14|32|72)b|deepseek.*(v3|coder)|mistral.*(medium|large)|command-r|gpt-?4|claude|llama.*70b/i;
 
@@ -5391,7 +5601,7 @@ export function inferModelCapabilities(name: string, details: Record<string, unk
   const toolUse: 'strong' | 'weak' | 'unknown' =
     cloudToolSupport === false ? 'weak'
     : cloudToolSupport === true ? 'strong'
-    : gemma4EdgeToolModel ? 'strong'
+    : weakGemma4LocalToolModel ? 'weak'
     : weakToolModels.test(name) ? 'weak'
     : strongToolModels.test(name) ? 'strong'
     : 'unknown';
@@ -5399,7 +5609,7 @@ export function inferModelCapabilities(name: string, details: Record<string, unk
   const notes = [
     image ? 'Can likely reason over images when the chat path passes image data.' : 'Text chat model unless another modality is documented by the model.',
     audio ? 'Audio-related model detected; transcription or audio tooling may be needed before chat.' : '',
-    gemma4EdgeToolModel ? 'Gemma 4 E2B/E4B supports native tool/function calling; if calls are missed, check the Ollama/runtime chat template and JSON parser path before switching models.' : '',
+    weakGemma4LocalToolModel ? 'Live probes show this local Gemma 4 model is unreliable for Harness tool-calling turns; auto-route tool/current-information tasks to a stronger available model.' : '',
     toolUse === 'weak' ? 'This model may not reliably call tools (web_search, file_read, etc.). For research or file tasks, consider a larger model.' : '',
     cloudToolSupport === false ? 'This cloud backend does not support tool calling.' : '',
   ].filter(Boolean);
@@ -5451,11 +5661,12 @@ function getCurrentSettings(): WebSettings {
     agentProfiles,
     summarizerModel,
     contextMaxTokens,
+    webReadMaxChars,
     timeBudgetMs,
     context: {
       configuredMaxTokens: contextMaxTokens,
       detectedMaxTokens: detectedContextMaxTokens,
-      effectiveMaxTokens: Math.max(contextMaxTokens, detectedContextMaxTokens ?? 0),
+      effectiveMaxTokens: contextMaxTokens,
     },
     temperature,
     topP,
@@ -5479,16 +5690,57 @@ function getCurrentSettings(): WebSettings {
     agentOutputDir,
     telegramBotToken,
     telegramAllowedChatIds,
+    discordBotToken: '',
+    discordAllowedChannelIds,
+    slackWebhookUrl: '',
+    whatsappAccessToken: '',
+    whatsappPhoneNumberId: whatsappPhoneNumberId || process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID || '',
+    whatsappAllowedRecipients: whatsappAllowedRecipients || process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS || '',
   };
+}
+
+function getPublicSettings(): PublicWebSettings {
+  const settings = getCurrentSettings();
+  return {
+    ...settings,
+    discordBotToken: '',
+    slackWebhookUrl: '',
+    whatsappAccessToken: '',
+    connectorSecretStatus: {
+      discordBotToken: getConnectorSecretStatus('HARNESS_DISCORD_BOT_TOKEN'),
+      slackWebhookUrl: getConnectorSecretStatus('HARNESS_SLACK_WEBHOOK_URL'),
+      whatsappAccessToken: getConnectorSecretStatus('HARNESS_WHATSAPP_ACCESS_TOKEN'),
+    },
+  };
+}
+
+function getConnectorSecretStatus(envName: string): ConnectorSecretStatus {
+  const envValue = process.env[envName];
+  if (typeof envValue === 'string' && envValue.trim().length > 0) return { configured: true, source: FILE_SOURCED_KEYS.has(envName) ? 'file' : 'env' };
+  return { configured: false, source: 'none' };
+}
+
+function connectorSecretValue(envName: string): string {
+  return typeof process.env[envName] === 'string' ? process.env[envName]!.trim() : '';
+}
+
+function formatMyceliumContextText(contextText: string, maxChars: number): string {
+  if (contextText.length <= maxChars) return contextText;
+  const lines = contextText.split('\n').filter((line) => line.trim());
+  const selected: string[] = [];
+  let chars = 0;
+  for (const line of lines) {
+    if (chars + line.length + 1 > maxChars) break;
+    selected.push(line);
+    chars += line.length + 1;
+  }
+  return selected.join('\n') + `\n...(mycelium route context trimmed from ${lines.length} to ${selected.length} item(s) for prompt budget)`;
 }
 
 async function resolveContextMaxTokens(model: string): Promise<number> {
   const configured = Number.isFinite(contextMaxTokens) ? contextMaxTokens : DEFAULT_CONTEXT_MAX_TOKENS;
   const detected = await webRuntime.getModelContextWindow(model, ollamaHost);
   detectedContextMaxTokens = detected;
-  if (!detected || detected <= configured) return configured;
-  contextMaxTokens = clampNumber(detected, 1024, 200_000, configured);
-  await saveSettingsToDisk().catch(() => {});
   return contextMaxTokens;
 }
 
@@ -5501,9 +5753,37 @@ async function ensureSettingsLoaded(): Promise<void> {
     const raw = await fs.readFile(SETTINGS_PATH, 'utf-8');
     const settings = JSON.parse(raw) as Partial<WebSettings>;
     applyStoredSettings(settings);
+    await migrateLegacyConnectorSecrets(settings);
   } catch {
     // Missing or malformed settings should not prevent the local UI from starting.
   }
+}
+
+export function resetSettingsLoadedForTest(): void {
+  settingsLoaded = false;
+}
+
+async function migrateLegacyConnectorSecrets(settings: Partial<WebSettings>): Promise<void> {
+  let migrated = false;
+  const discordToken = String(settings.discordBotToken ?? '').trim().slice(0, 200);
+  if (discordToken) {
+    await storeConnectorSecret('HARNESS_DISCORD_BOT_TOKEN', discordToken);
+    migrated = true;
+  }
+  const slackWebhook = sanitizeSlackWebhookUrl(settings.slackWebhookUrl);
+  if (slackWebhook) {
+    await storeConnectorSecret('HARNESS_SLACK_WEBHOOK_URL', slackWebhook);
+    migrated = true;
+  }
+  const whatsappToken = String(settings.whatsappAccessToken ?? '').trim().slice(0, 500);
+  if (whatsappToken) {
+    await storeConnectorSecret('HARNESS_WHATSAPP_ACCESS_TOKEN', whatsappToken);
+    migrated = true;
+  }
+  discordBotToken = '';
+  slackWebhookUrl = '';
+  whatsappAccessToken = '';
+  if (migrated) await saveSettingsToDisk();
 }
 
 /**
@@ -5571,7 +5851,11 @@ const ALLOWED_API_KEY_NAMES = new Set([
   'HARNESS_SMTP_USER',
   'HARNESS_SMTP_PASS',
   'HARNESS_SMTP_FROM',
+  'HARNESS_DISCORD_BOT_TOKEN',
   'HARNESS_SLACK_WEBHOOK_URL',
+  'HARNESS_WHATSAPP_ACCESS_TOKEN',
+  'HARNESS_WHATSAPP_PHONE_NUMBER_ID',
+  'HARNESS_WHATSAPP_ALLOWED_RECIPIENTS',
 ]);
 
 function applyStoredSettings(settings: Partial<WebSettings>): void {
@@ -5644,6 +5928,10 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   }
   if (settings.capabilityGrants !== undefined) capabilityGrants = sanitizeCapabilityGrants(settings.capabilityGrants);
   if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
+  if (settings.webReadMaxChars !== undefined) {
+    webReadMaxChars = sanitizeWebReadMaxChars(settings.webReadMaxChars, DEFAULT_WEB_READ_MAX_CHARS);
+    configureWebReadTool({ maxChars: webReadMaxChars });
+  }
   if (settings.timeBudgetMs !== undefined) timeBudgetMs = clampNumber(settings.timeBudgetMs, 0, 1_800_000, 0);
   if (settings.temperature !== undefined) temperature = clampNumber(settings.temperature, 0, 2, 0.7);
   if (settings.topP !== undefined) topP = clampNumber(settings.topP, 0, 1, 0.9);
@@ -5661,6 +5949,27 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   }
   if (settings.telegramAllowedChatIds !== undefined) {
     telegramAllowedChatIds = String(settings.telegramAllowedChatIds).trim().slice(0, 500);
+  }
+  if (settings.discordBotToken !== undefined) {
+    discordBotToken = '';
+  }
+  if (settings.discordAllowedChannelIds !== undefined) {
+    discordAllowedChannelIds = String(settings.discordAllowedChannelIds).trim().slice(0, 500);
+  }
+  if (settings.slackWebhookUrl !== undefined) {
+    slackWebhookUrl = '';
+  }
+  if (settings.whatsappAccessToken !== undefined || settings.whatsappPhoneNumberId !== undefined || settings.whatsappAllowedRecipients !== undefined) {
+    const sanitized = sanitizeWhatsAppSetup({
+      accessToken: '',
+      phoneNumberId: settings.whatsappPhoneNumberId ?? whatsappPhoneNumberId,
+      allowedRecipients: settings.whatsappAllowedRecipients ?? whatsappAllowedRecipients,
+    });
+    whatsappAccessToken = '';
+    whatsappPhoneNumberId = sanitized.phoneNumberId;
+    whatsappAllowedRecipients = sanitized.allowedRecipients;
+    if (whatsappPhoneNumberId) process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID = whatsappPhoneNumberId;
+    if (whatsappAllowedRecipients) process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS = whatsappAllowedRecipients;
   }
 }
 
@@ -6177,12 +6486,22 @@ async function checkSourceDistFreshness(): Promise<void> {
 }
 
 export async function startServer(): Promise<void> {
+  const startupProfile = createStartupProfile();
+  startupProfile.record('module-route-init', MODULE_LOAD_STARTED_AT);
   await ensureSettingsLoaded();
+  startupProfile.record('settings-load');
+  const staleSessionCount = await SessionStorage.markStaleRunningSessions(PROJECT_DIR, MODULE_LOAD_STARTED_AT).catch(() => 0);
+  if (staleSessionCount > 0) logger.warn('Sessions', `Marked ${staleSessionCount} stale running session(s) as aborted after restart`);
+  startupProfile.record('stale-session-cleanup');
   await checkSourceDistFreshness();
+  startupProfile.record('source-freshness');
   const preferred = parseInt(process.env.PORT ?? '3000', 10);
   const port = await findAvailablePort(preferred);
+  startupProfile.record('port-selection');
 
   app.listen(port, LOCAL_HOST, () => {
+    startupProfile.record('listen-ready');
+    logger.info('Startup', 'Web startup phases', startupProfile.summary());
     const url = `http://${LOCAL_HOST}:${port}`;
     if (port !== preferred) {
       console.log(`\n  ⚠️  Port ${preferred} was in use — using ${port} instead.`);
@@ -6192,20 +6511,22 @@ export async function startServer(): Promise<void> {
     console.log(`  Open in your browser:  ${url}`);
     console.log(`  Ollama host:           ${ollamaHost}`);
 
-    // Start Telegram bot if token is configured.
-    const tgToken = telegramBotToken || process.env.HARNESS_TELEGRAM_BOT_TOKEN;
-    if (tgToken) {
-      loadPersistedChatIds(PROJECT_DIR).then(() => {
-        const bot = startTelegramBot(tgToken, url, telegramAllowedChatIds ? telegramAllowedChatIds.split(',') : undefined);
-        if (bot) console.log(`  Telegram bot:          connected`);
-      }).catch(() => {});
-    }
+    if (startupConnectorsEnabled()) {
+      // Start Telegram bot if token is configured.
+      const tgToken = telegramBotToken || process.env.HARNESS_TELEGRAM_BOT_TOKEN;
+      if (tgToken) {
+        loadPersistedChatIds(PROJECT_DIR).then(() => {
+          const bot = startTelegramBot(tgToken, url, telegramAllowedChatIds ? telegramAllowedChatIds.split(',') : undefined);
+          if (bot) console.log(`  Telegram bot:          connected`);
+        }).catch(() => {});
+      }
 
-    // Start Discord bot if token is configured.
-    const dcToken = discordBotToken || process.env.HARNESS_DISCORD_BOT_TOKEN;
-    if (dcToken) {
-      const bot = startDiscordBot(dcToken, url, discordAllowedChannelIds ? discordAllowedChannelIds.split(',').map((s) => s.trim()).filter(Boolean) : undefined);
-      if (bot) console.log(`  Discord bot:           connecting...`);
+      // Start Discord bot if token is configured.
+      const dcToken = discordBotToken || process.env.HARNESS_DISCORD_BOT_TOKEN;
+      if (dcToken) {
+        const bot = startDiscordBot(dcToken, url, discordAllowedChannelIds ? discordAllowedChannelIds.split(',').map((s) => s.trim()).filter(Boolean) : undefined);
+        if (bot) console.log(`  Discord bot:           connecting...`);
+      }
     }
 
     console.log(`\n  Press Ctrl+C to stop.\n`);
@@ -6249,7 +6570,26 @@ export async function startServer(): Promise<void> {
   });
 }
 
+function createStartupProfile(): { record: (phase: string, since?: number) => void; summary: () => Record<string, number> } {
+  const timings: Record<string, number> = {};
+  let last = Date.now();
+  return {
+    record(phase: string, since = last): void {
+      const now = Date.now();
+      timings[phase] = now - since;
+      last = now;
+    },
+    summary(): Record<string, number> {
+      return { ...timings };
+    },
+  };
+}
+
 export { app };
+
+export function startupConnectorsEnabled(): boolean {
+  return process.env.HARNESS_DISABLE_STARTUP_CONNECTORS !== '1';
+}
 
 export function setWebRuntimeOverrides(overrides: Partial<WebRuntimeDeps>): () => void {
   webRuntime = { ...defaultWebRuntime, ...overrides };

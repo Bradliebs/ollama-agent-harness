@@ -56,4 +56,34 @@ describe('SessionStorage', () => {
     expect(Array.isArray(events)).toBe(true);
     // No error thrown = successful recovery
   });
+
+  test('marks stale running sessions as aborted after server restart', async () => {
+    const staleStorage = new SessionStorage(TEST_DIR, 'gemma4:e4b');
+    await staleStorage.initialize();
+    await staleStorage.updateMeta({
+      status: 'running',
+      updatedAt: '2026-05-05T14:36:21.786Z',
+      title: 'stale run',
+    });
+    const completedStorage = new SessionStorage(TEST_DIR, 'gemma4:e4b');
+    await completedStorage.initialize();
+    await completedStorage.updateMeta({
+      status: 'completed',
+      updatedAt: '2026-05-05T14:36:21.786Z',
+      title: 'completed run',
+    });
+
+    const marked = await SessionStorage.markStaleRunningSessions(TEST_DIR, Date.parse('2026-05-05T14:54:41.893Z'));
+
+    expect(marked).toBe(1);
+    await expect(staleStorage.getMeta()).resolves.toMatchObject({
+      status: 'aborted',
+      title: 'stale run',
+      lastError: 'Server restarted before this run completed.',
+    });
+    await expect(completedStorage.getMeta()).resolves.toMatchObject({
+      status: 'completed',
+      title: 'completed run',
+    });
+  });
 });

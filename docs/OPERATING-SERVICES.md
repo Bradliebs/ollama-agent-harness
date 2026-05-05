@@ -129,6 +129,52 @@ The classifier applies pattern-matching rules with priorities. Operate-mode patt
 
 Source: `src/services/modeClassifier.ts`
 
+## Communication Connectors
+
+The Settings panel shows connector setup and readiness beside the existing
+Telegram controls. Each connector has a deliberately narrow operating mode.
+
+| Connector | Setup fields | Mode |
+|-----------|--------------|------|
+| Telegram | Bot token and allowed chat IDs | `chat-bridge` |
+| Discord | Bot token and allowed channel IDs | `chat-bridge` |
+| Slack | Incoming webhook URL | `notification-only` |
+| WhatsApp | Access token, phone number ID, and allowed recipients | `status-only` |
+
+Slack uses only incoming webhook URLs that match
+`https://hooks.slack.com/services/*`. WhatsApp setup reports readiness only
+when an access token, numeric phone number ID, and recipient allowlist are
+present. The WhatsApp connector does not send messages until a separate
+notification tool is explicitly added.
+
+Connector status is available through `/api/connectors/status`. Bearer secrets
+are stored locally in `.harness/api-keys.json`, using the same no-echo storage
+path as remote backend API keys:
+
+* `HARNESS_DISCORD_BOT_TOKEN`
+* `HARNESS_SLACK_WEBHOOK_URL`
+* `HARNESS_WHATSAPP_ACCESS_TOKEN`
+
+Non-secret connector configuration remains in `.harness/settings.json`, such as
+Discord channel allowlists, WhatsApp phone number IDs, and WhatsApp recipient
+allowlists. Settings responses report configured/source metadata for connector
+secrets and never return raw secret values. Legacy connector secrets found in
+`.harness/settings.json` are migrated into `.harness/api-keys.json` during
+settings load.
+
+## Desktop Input Evidence
+
+Desktop input replay writes audit and screenshot evidence under
+`.harness/desktop/` after a confirmed run. Evidence includes:
+
+* `.harness/desktop/desktop-input-audit.jsonl`
+* `desktop-input-before-*.png`
+* `desktop-input-after-*.png`
+
+The Settings panel exposes recent audit entries and screenshot links through
+`/api/desktop-input/evidence`. File serving is limited to desktop replay
+screenshot names under `.harness/desktop/`.
+
 ## Capability Registry
 
 Before promising ongoing reminders, notifications, or proactive updates, the harness checks whether the required capabilities exist at runtime.

@@ -19,9 +19,12 @@ const MAX_ACTIONS = 10;
 const MAX_TEXT_LENGTH = 500;
 const MAX_KEY_LENGTH = 80;
 const MAX_WAIT_MS = 2_000;
+const MAX_AUDIT_ENTRIES = 50;
+const MAX_SCREENSHOT_FILES = 50;
 const SETTINGS_PATH = path.join('.harness', 'settings.json');
 const DESKTOP_DIR = path.join('.harness', 'desktop');
 const AUDIT_FILE = 'desktop-input-audit.jsonl';
+const SCREENSHOT_PATTERN = /^desktop-input-(before|after)-[A-Za-z0-9_.-]+\.png$/;
 
 export const DesktopInputReplayTool: Tool = {
   name: 'desktop_input_replay',
@@ -173,4 +176,24 @@ async function appendDesktopInputAudit(projectDir: string, event: Record<string,
     ...event,
   };
   await fs.appendFile(path.join(dir, AUDIT_FILE), `${JSON.stringify(entry)}\n`, 'utf-8');
+  await pruneDesktopInputEvidence(projectDir);
+}
+
+async function pruneDesktopInputEvidence(projectDir: string): Promise<void> {
+  const dir = path.join(projectDir, DESKTOP_DIR);
+  const auditPath = path.join(dir, AUDIT_FILE);
+  try {
+    const auditRaw = await fs.readFile(auditPath, 'utf-8');
+    const lines = auditRaw.split(/\r?\n/).filter((line) => line.trim());
+    if (lines.length > MAX_AUDIT_ENTRIES) {
+      await fs.writeFile(auditPath, `${lines.slice(-MAX_AUDIT_ENTRIES).join('\n')}\n`, 'utf-8');
+    }
+  } catch {
+    // Missing audit files are fine; the next append will create one.
+  }
+
+  const files = await fs.readdir(dir).catch(() => []);
+  const screenshots = files.filter((name) => SCREENSHOT_PATTERN.test(name)).sort();
+  const staleScreenshots = screenshots.slice(0, Math.max(0, screenshots.length - MAX_SCREENSHOT_FILES));
+  await Promise.all(staleScreenshots.map((name) => fs.rm(path.join(dir, name), { force: true })));
 }

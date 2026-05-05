@@ -255,6 +255,26 @@ describe('queryLoop runtime behavior', () => {
     expect(events[1]).toMatchObject({ type: 'tool_result', result: { success: true, output: 'echo:x' } });
   });
 
+  it('skips repeated blocked web reads and asks the model to choose another source', async () => {
+    const webRead = makeTool('web_read', true, jest.fn().mockResolvedValue({ success: false, output: 'HTTP 401 Unauthorized', error: 'HTTP 401' }));
+    const blockedUrl = 'https://example.test/paywalled-story';
+    const client = makeClient([
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'web_read', arguments: { url: blockedUrl } } }] } as Message,
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'web_read', arguments: { url: blockedUrl } } }] } as Message,
+      { role: 'assistant', content: 'Used another source instead.' },
+    ]);
+
+    const events = await collectEvents(client, [webRead], { config: { maxTurns: 5 } });
+
+    expect(webRead.execute).toHaveBeenCalledTimes(1);
+    const repeatedResult = events.find((event) => event.type === 'tool_result' && 'result' in event && String(event.result.output).includes('Skipped repeated web_read'));
+    expect(repeatedResult).toMatchObject({
+      type: 'tool_result',
+      result: { success: false, error: 'repeated blocked URL' },
+    });
+    expect(events.find((event) => event.type === 'text')).toMatchObject({ content: 'Used another source instead.' });
+  });
+
   it('returns permission denial as a tool result', async () => {
     const tool = makeTool('write', false, async () => ({ success: true, output: 'should not run' }));
     const client = makeClient([
@@ -381,6 +401,22 @@ describe('queryLoop runtime behavior', () => {
 
     expect(events[0]).toMatchObject({ type: 'context', strategy: 'auto_compact', autosaved: false });
     expect(events.map((event) => event.type)).toContain('text');
+  });
+
+  it('emits a context breakdown when the prompt approaches the configured budget', async () => {
+    const client = makeClient([{ role: 'assistant', content: 'Done.' }]);
+
+    const events = await collectEvents(client, [], {
+      config: { context: { enabled: false, maxTokens: 40 } },
+      initialMessages: [{ role: 'user', content: 'hello '.repeat(40) }],
+    });
+
+    expect(events.find((event) => event.type === 'context_breakdown')).toMatchObject({
+      type: 'context_breakdown',
+      maxTokens: 40,
+      currentUserTokens: expect.any(Number),
+      totalTokens: expect.any(Number),
+    });
   });
 
   it('records model and session trace records when tracing is enabled', async () => {

@@ -20,6 +20,8 @@ async function main() {
     assertFile(workDir, 'scripts/release-notes.js');
     assertFile(workDir, 'scripts/telegram-smoke.js');
     assertFile(workDir, 'scripts/audit-triage.js');
+    assertFile(workDir, 'scripts/lean-gemma-tool-probe.js');
+    assertFile(workDir, 'scripts/bounded-news-smoke.js');
     assertFile(workDir, 'ui/index.html');
     assertFile(workDir, 'start.bat');
     assertFile(workDir, 'release-provenance.json');
@@ -105,7 +107,7 @@ async function assertCompiledServerStarts(cwd) {
   const port = 4329;
   const child = spawn('node', ['dist/web/server.js'], {
     cwd,
-    env: { ...process.env, PORT: String(port), NO_OPEN: '1' },
+    env: { ...process.env, PORT: String(port), NO_OPEN: '1', HARNESS_DISABLE_STARTUP_CONNECTORS: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';

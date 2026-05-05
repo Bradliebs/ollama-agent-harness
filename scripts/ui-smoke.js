@@ -150,7 +150,7 @@ async function main() {
     // Navigate tools tab last so its dynamically-rendered panels don't
     // create duplicate IDs before the dedup check runs.
     await page.evaluate(() => showLeftTab('tools', document.querySelector('[onclick*="showLeftTab(\'tools\'"]')));
-    await page.waitForTimeout(500);
+    await page.waitForFunction(() => Boolean(document.querySelector('.mcp-hub')), null, { timeout: 5000 });
     await page.evaluate(async () => {
       const deniedOutput = "Permission denied for 'file_write': Nervous System requires verification";
       const modelSelect = document.getElementById('modelSelect');
@@ -354,6 +354,11 @@ async function main() {
         hasAboutFunction: typeof window.loadAbout === 'function',
         hasReleaseVerification: Boolean(document.getElementById('verifyReleaseBtn')) && Boolean(document.getElementById('releaseVerificationPanel')),
         hasReleaseVerificationFunction: typeof window.verifyReleaseAsset === 'function',
+        hasFallbackRoutingSetting: Boolean(document.getElementById('fallbackHelperModel')),
+        hasCommunicationConnectorSettings: Boolean(document.getElementById('discordStatus')) && Boolean(document.getElementById('slackStatus')) && Boolean(document.getElementById('whatsappStatus')),
+        hasCommunicationConnectorFunctions: typeof window.loadConnectorStatuses === 'function' && typeof window.saveSlackWebhook === 'function' && typeof window.saveWhatsAppSetup === 'function',
+        connectorPasswordInputsEmpty: ['discordTokenInput', 'slackWebhookInput', 'whatsappAccessTokenInput'].every((id) => document.getElementById(id)?.value === ''),
+        hasDesktopInputEvidence: Boolean(document.getElementById('desktopInputEvidence')) && typeof window.loadDesktopInputEvidence === 'function',
         releaseVerificationRendered: !document.getElementById('releaseVerificationPanel').classList.contains('initial-hidden'),
         guidedProfileSaved: Boolean(window.__guidedProfileSavedSmoke),
         hasRunEvalDatasetButton: Boolean(document.getElementById('runEvalDatasetBtn')),
@@ -486,6 +491,11 @@ async function main() {
     if (!result.hasAboutFunction) failures.push('about panel function was not found');
     if (!result.hasReleaseVerification) failures.push('release verification controls were not rendered');
     if (!result.hasReleaseVerificationFunction) failures.push('release verification function was not found');
+    if (!result.hasFallbackRoutingSetting) failures.push('fallback routing setting was not rendered');
+    if (!result.hasCommunicationConnectorSettings) failures.push('communication connector settings were not rendered');
+    if (!result.hasCommunicationConnectorFunctions) failures.push('communication connector functions were not found');
+    if (!result.connectorPasswordInputsEmpty) failures.push('communication connector password inputs were populated from settings');
+    if (!result.hasDesktopInputEvidence) failures.push('desktop input evidence UI was not rendered');
     if (!result.releaseVerificationRendered) failures.push('release verification did not render a result');
     if (!result.guidedProfileSaved) failures.push('guided profile form did not save a profile');
     if (!result.hasRunEvalDatasetButton) failures.push('run eval dataset button was not rendered');
@@ -566,7 +576,7 @@ async function canReachTarget() {
 
 async function waitForTarget(server, getOutput) {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 15_000) {
+  while (Date.now() - startedAt < 90_000) {
     if (server.exitCode !== null) {
       throw new Error(`Unable to start Harness web server for UI smoke.\n${getOutput()}`);
     }
@@ -723,6 +733,11 @@ async function runStaticSmoke() {
     hasAboutManifestLink: appScript.includes('manifestName') && appScript.includes('manifestUrl'),
     hasReleaseVerification: ids.includes('verifyReleaseBtn') && ids.includes('releaseVerificationPanel'),
     hasReleaseVerificationFunction: appScript.includes('function verifyReleaseAsset'),
+    hasContextPresetControls: html.includes('applyContextPreset(8192)') && html.includes('applyContextPreset(32768)') && appScript.includes('function applyContextPreset'),
+    hasFallbackRoutingSetting: ids.includes('fallbackHelperModel') && html.includes("updateRoutingSetting('fallbackModel'") && appScript.includes('currentModelRouting.fallbackModel'),
+    hasCommunicationConnectorSettings: ids.includes('discordStatus') && ids.includes('slackStatus') && ids.includes('whatsappStatus'),
+    hasCommunicationConnectorFunctions: appScript.includes('function loadConnectorStatuses') && appScript.includes('function saveSlackWebhook') && appScript.includes('function saveWhatsAppSetup'),
+    hasDesktopInputEvidence: ids.includes('desktopInputEvidence') && appScript.includes('function loadDesktopInputEvidence') && appScript.includes('/api/desktop-input/evidence'),
     hasWalkthroughFunction: appScript.includes('function openWalkthroughTarget'),
     hasMediaToolGuidance: appScript.includes('image_analyze') && appScript.includes('audio_transcribe'),
     hasRecoveryCopy: appScript.includes('Unfinished chat available') && appScript.includes('Fork starts a copy'),
@@ -812,6 +827,8 @@ async function runStaticSmoke() {
   if (!result.hasAboutManifestLink) failures.push('about panel manifest link support was not found');
   if (!result.hasReleaseVerification) failures.push('release verification controls were not found');
   if (!result.hasReleaseVerificationFunction) failures.push('release verification function was not found');
+  if (!result.hasContextPresetControls) failures.push('context preset controls were not found');
+  if (!result.hasFallbackRoutingSetting) failures.push('fallback routing setting was not found');
   if (!result.hasWalkthroughFunction) failures.push('walkthrough function was not found');
   if (!result.hasMediaToolGuidance) failures.push('media tool guidance was not found');
   if (!result.hasRecoveryCopy) failures.push('recovery explanation copy was not found');

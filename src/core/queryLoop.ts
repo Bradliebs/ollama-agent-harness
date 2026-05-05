@@ -64,6 +64,7 @@ export async function* queryLoop(
   let lastAssistantFingerprint = '';
   let consecutiveRepeats = 0;
   const REPETITION_LIMIT = 2;
+  const blockedWebUrls = new Map<string, string>();
 
   if (session) {
     await appendStatus(session, 'running', undefined, tracer);
@@ -154,12 +155,21 @@ export async function* queryLoop(
     // This catches oversized payloads before they hit a 413 from the provider.
     const preCallTokenEstimate = estimateTokenCount(messages);
     const contextLimit = config.context?.maxTokens ?? DEFAULT_COMPACTION_CONFIG.maxTokens;
+    const contextBreakdown = buildContextBreakdown(messages);
+    if (preCallTokenEstimate > Math.floor(contextLimit * 0.75)) {
+      yield {
+        type: 'context_breakdown',
+        ...contextBreakdown,
+        maxTokens: contextLimit,
+        pressure: Math.min(1, preCallTokenEstimate / contextLimit),
+      };
+    }
     if (preCallTokenEstimate > contextLimit) {
       yield {
         type: 'context_warning',
         estimatedTokens: preCallTokenEstimate,
         maxTokens: contextLimit,
-        message: `Context size (~${preCallTokenEstimate} tokens) exceeds limit (${contextLimit}). The provider may reject this request. Consider reducing message size.`,
+        message: `Context size (~${preCallTokenEstimate} tokens) exceeds the configured Harness limit (${contextLimit}). This usually comes from accumulated system context, history, and web_read results; the provider may reject the request.`,
       };
     }
 
@@ -319,7 +329,27 @@ export async function* queryLoop(
     }));
     totalToolCalls += toolCalls.length;
 
-    const toolResults = await dispatcher.dispatch(toolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer });
+    const dispatchableToolCalls: ToolCall[] = [];
+    const skippedToolResults: { call: ToolCall; result: { success: false; output: string; error: string } }[] = [];
+    for (const call of toolCalls) {
+      const url = normalizeWebToolUrl(call);
+      const blockedReason = url ? blockedWebUrls.get(url) : undefined;
+      if (blockedReason) {
+        skippedToolResults.push({
+          call,
+          result: {
+            success: false,
+            output: `Skipped repeated ${call.name} for blocked URL: ${url}. Previous failure: ${blockedReason}. Choose a different search result or source instead.`,
+            error: 'repeated blocked URL',
+          },
+        });
+      } else {
+        dispatchableToolCalls.push(call);
+      }
+    }
+
+    const dispatchedToolResults = await dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer });
+    const toolResults = [...skippedToolResults, ...dispatchedToolResults];
     let producedFileChange = false;
     for (const { call, result } of toolResults) {
       yield { type: 'tool_call', call };
@@ -331,6 +361,10 @@ export async function* queryLoop(
         await appendSession(session, 'tool_result', { kind: 'tool_result', call, result }, tracer);
       }
       messages.push({ role: 'tool', content: result.output, ...(call.id ? { tool_call_id: call.id } : {}) } as Message);
+      const url = normalizeWebToolUrl(call);
+      if (url && !result.success && isBlockedWebFailure(result.output ?? result.error)) {
+        blockedWebUrls.set(url, String(result.error ?? result.output ?? 'blocked').slice(0, 120));
+      }
       if (result.success) {
         toolFailureCounts.delete(call.name);
       } else if (repeatedToolFailureLimit > 0) {
@@ -482,6 +516,48 @@ export async function* queryLoop(
     await appendStatus(session, sessionStatus, undefined, tracer);
   }
   yield { type: 'done', reason: repetitionExceeded ? 'repetition_synthesized' : timeBudgetExceeded ? 'time_budget_synthesized' : 'max_turns', turns: turn };
+}
+
+function normalizeWebToolUrl(call: ToolCall): string | null {
+  if (call.name !== 'web_read' && call.name !== 'web_fetch') return null;
+  const rawUrl = call.input?.url;
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) return null;
+  try {
+    const parsed = new URL(rawUrl.trim());
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return rawUrl.trim();
+  }
+}
+
+function isBlockedWebFailure(output: unknown): boolean {
+  return /HTTP\s+(401|403|407|408|409|423|429|451|500|502|503|504)\b|rate.?limit|forbidden|unauthori[sz]ed|access denied/i.test(String(output ?? ''));
+}
+
+function buildContextBreakdown(messages: Message[]): { totalTokens: number; systemTokens: number; historyTokens: number; toolResultTokens: number; currentUserTokens: number; messageCount: number } {
+  const lastUserIndex = messages.map((message) => message.role).lastIndexOf('user');
+  let systemTokens = 0;
+  let historyTokens = 0;
+  let toolResultTokens = 0;
+  let currentUserTokens = 0;
+
+  messages.forEach((message, index) => {
+    const tokens = estimateTokenCount([message]);
+    if (message.role === 'system') systemTokens += tokens;
+    else if (message.role === 'tool') toolResultTokens += tokens;
+    else if (index === lastUserIndex && message.role === 'user') currentUserTokens += tokens;
+    else historyTokens += tokens;
+  });
+
+  return {
+    totalTokens: systemTokens + historyTokens + toolResultTokens + currentUserTokens,
+    systemTokens,
+    historyTokens,
+    toolResultTokens,
+    currentUserTokens,
+    messageCount: messages.length,
+  };
 }
 
 /**

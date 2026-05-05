@@ -118,4 +118,36 @@ export class SessionStorage {
     const sessions = await SessionStorage.listSessions(projectDir);
     return sessions.filter((session) => session.status === 'running' || session.status === 'error' || session.status === 'aborted');
   }
+
+  static async markStaleRunningSessions(projectDir: string, staleBeforeMs: number = Date.now()): Promise<number> {
+    const sessionsDir = path.join(projectDir, '.harness', 'sessions');
+    let files: string[];
+    try {
+      files = await fs.readdir(sessionsDir);
+    } catch {
+      return 0;
+    }
+
+    let marked = 0;
+    for (const file of files.filter((name) => name.endsWith('.meta.json'))) {
+      const metaPath = path.join(sessionsDir, file);
+      try {
+        const meta = JSON.parse(await fs.readFile(metaPath, 'utf-8')) as SessionMeta;
+        if (meta.status !== 'running') continue;
+        const updatedMs = Date.parse(meta.updatedAt ?? meta.createdAt);
+        if (Number.isFinite(updatedMs) && updatedMs >= staleBeforeMs) continue;
+        const next: SessionMeta = {
+          ...meta,
+          status: 'aborted',
+          updatedAt: new Date().toISOString(),
+          lastError: meta.lastError ?? 'Server restarted before this run completed.',
+        };
+        await fs.writeFile(metaPath, JSON.stringify(next, null, 2), 'utf-8');
+        marked++;
+      } catch {
+        // Skip corrupt meta files; listSessions follows the same tolerant policy.
+      }
+    }
+    return marked;
+  }
 }
