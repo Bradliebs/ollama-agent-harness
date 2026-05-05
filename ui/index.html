@@ -10,11 +10,11 @@
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;overflow:hidden}
     .layout{display:flex;width:100%;height:100%}
-    .left-panel{width:260px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;transition:margin-left .3s}
-    .left-panel.hidden{margin-left:-260px}
+    .left-panel{width:320px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;transition:margin-left .3s}
+    .left-panel.hidden{margin-left:-320px}
     .main-panel{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
-    .right-panel{width:480px;background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto;transition:margin-right .3s}
-    .right-panel.hidden{margin-right:-480px}
+    .right-panel{width:560px;background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto;transition:margin-right .3s}
+    .right-panel.hidden{margin-right:-560px}
     .panel-header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:5}
     .panel-header h3{font-size:14px;font-weight:600}
     .panel-search{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:48px;z-index:4}
@@ -451,8 +451,8 @@
        cause horizontal overflow that hides close buttons offscreen. Make
        the right panel a fixed overlay starting at this breakpoint instead
        of just at the prior 900px breakpoint. */
-    @media(max-width:1400px){.right-panel{position:fixed;top:0;bottom:0;right:-480px;width:min(480px,92vw);z-index:100;transition:right .25s}.right-panel.visible,.right-panel:not(.hidden){right:0}}
-    @media(max-width:900px){.left-panel{position:fixed;top:0;bottom:0;z-index:100}.left-panel{left:-260px}.left-panel.visible{left:0}}
+    @media(max-width:1500px){.right-panel{position:fixed;top:0;bottom:0;right:-560px;width:min(560px,92vw);z-index:100;transition:right .25s}.right-panel.visible,.right-panel:not(.hidden){right:0}}
+    @media(max-width:900px){.left-panel{position:fixed;top:0;bottom:0;z-index:100}.left-panel{left:-320px}.left-panel.visible{left:0}}
     /* Per-message metadata footer (model · tokens · latency) */
     .msg-meta{margin-top:6px;font-size:11px;color:var(--text-dim);display:flex;flex-wrap:wrap;gap:6px;align-items:center;line-height:1.4}
     .msg-meta .meta-sep{opacity:.5}
@@ -1587,6 +1587,6 @@
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="./chatHistory.js?v=3"></script>
 <script src="./toolActivity.js?v=1"></script>
-<script src="./app.js?v=10"></script>
+<script src="./app.js?v=11"></script>
 </body>
 </html>
