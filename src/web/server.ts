@@ -3532,6 +3532,11 @@ app.post('/api/chat', async (req, res) => {
 
   const toolSynthesisNudge = `IMPORTANT: After using tools, you MUST always provide a final text response summarizing your findings. Never end your turn with only tool calls and no text output. If you have gathered enough information, stop calling tools and write your answer.
 
+TOOL USE RULES (critical):
+- When the user asks about current events, news, weather, prices, scores, or anything that changes over time, you MUST call web_search first. Do NOT answer from your training data — it is outdated.
+- When the user asks "what's in the news" or similar, call web_search with a relevant query like "latest news today" and then summarize the results.
+- Your training data has a knowledge cutoff. For anything recent, ALWAYS search first.
+
 AUTONOMY RULES (critical):
 - When the user gives you a task, complete it FULLY. Do not stop partway through.
 - Do NOT present numbered options and ask the user to choose. Just do ALL of them.
@@ -5289,15 +5294,26 @@ function sanitizeModelName(value: unknown): string {
   return String(value ?? '').trim().slice(0, 120);
 }
 
-function inferModelCapabilities(name: string, details: Record<string, unknown> = {}): { text: boolean; image: boolean; audio: boolean; notes: string[] } {
+function inferModelCapabilities(name: string, details: Record<string, unknown> = {}): { text: boolean; image: boolean; audio: boolean; toolUse: 'strong' | 'weak' | 'unknown'; notes: string[] } {
   const haystack = `${name} ${Object.values(details).join(' ')}`.toLowerCase();
   const image = isVisionCapableModelName(name, details);
   const audio = /whisper|audio|speech|wav2vec|parakeet|sensevoice/.test(haystack);
+
+  // Tool-use capability heuristic based on model family and size.
+  // Small chat-focused models often ignore tool schemas and answer from
+  // training data instead of calling web_search/file_read etc.
+  const weakToolModels = /gemma.*e[24]b|gemma.*2b|gemma.*4b|phi-?3.*mini|tinyllama|smollm|qwen2?\.?5?-?(0\.5|1\.5|3)b/i;
+  const strongToolModels = /kimi|qwen.*coder.*(14|32|72)b|deepseek.*(v3|coder)|mistral.*(medium|large)|command-r|gpt-?4|claude|llama.*70b/i;
+  const toolUse: 'strong' | 'weak' | 'unknown' = weakToolModels.test(name) ? 'weak'
+    : strongToolModels.test(name) ? 'strong'
+    : 'unknown';
+
   const notes = [
     image ? 'Can likely reason over images when the chat path passes image data.' : 'Text chat model unless another modality is documented by the model.',
     audio ? 'Audio-related model detected; transcription or audio tooling may be needed before chat.' : '',
+    toolUse === 'weak' ? 'This model may not reliably call tools (web_search, file_read, etc.). For research or file tasks, consider a larger model.' : '',
   ].filter(Boolean);
-  return { text: true, image, audio, notes };
+  return { text: true, image, audio, toolUse, notes };
 }
 
 function parseHttpUrl(value: unknown): string | null {

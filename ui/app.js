@@ -659,13 +659,17 @@ function renderModelCapabilityHint() {
     renderAttachmentHint();
     return;
   }
-  const capabilities = model.capabilities || { text: true, image: false, audio: false, notes: [] };
+  const capabilities = model.capabilities || { text: true, image: false, audio: false, toolUse: 'unknown', notes: [] };
+  const toolUsePill = capabilities.toolUse === 'weak' ? '<span class="capability-pill" style="color:var(--warning,orange)">⚠ Tools</span>'
+    : capabilities.toolUse === 'strong' ? '<span class="capability-pill">✓ Tools</span>'
+    : '';
   const pills = [
     capabilityPill('Text', true),
     capabilityPill('Images', capabilities.image),
     capabilityPill('Audio', capabilities.audio),
-  ].join('');
-  const notes = (capabilities.notes || []).slice(0, 2).map(esc).join(' ');
+    toolUsePill,
+  ].filter(Boolean).join('');
+  const notes = (capabilities.notes || []).slice(0, 3).map(esc).join(' ');
   hint.innerHTML = '<strong>' + esc(model.name) + '</strong><div>' + pills + '</div><div>' + esc(notes || 'Harness detected a text chat model. Attachments are still available as local file paths for tools and analysis.') + '</div>' + getModelProfileSuggestion(model.name);
   // Fetch synthesis stats and show adaptive turns badge if different from default.
   fetch('/api/synthesis-stats').then(r => r.json()).then(data => {

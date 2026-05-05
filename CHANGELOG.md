@@ -11,6 +11,42 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.25
+
+Agent Loop Safety Suite — wall-clock time budget, repetition detection, adaptive pacing, and full observability overhaul. Motivated by small models (Gemma 4 E4B) hammering the GPU on research queries.
+
+### Safety Guards
+
+* **autoContinue limiter** — stops after 1 continuation when the model never uses tools, preventing chat-only models from burning compute on repeated text generation.
+* **Wall-clock time budget** (`maxTimeMs`) — 3 min local / 10 min cloud default, triggers a synthesis turn instead of aborting. Model always gets at least one turn. User-configurable via Settings.
+* **Repetition detection** — consecutive identical text-only responses break to synthesis after 2 repeats.
+* **Synthesis context trimming** — synthesis call gets system + last user message + tool results only, not the full conversation history.
+* **Synthesis fallback** — when synthesis produces empty text, surfaces the raw tool results so the user always sees something useful.
+* **Richer synthesis prompt** — includes last 5 tool results directly for small models that cannot recall from deep context.
+* **Tool-use nudge** — system prompt now instructs models to use `web_search` for current-events queries instead of answering from training data.
+
+### Adaptive Pacing
+
+* **Per-model turn duration tracking** — EMA (α=0.3) of wall-clock turn time in synthesis stats.
+* **Adaptive time budget** — after 3+ sessions, `maxTimeMs` auto-computes as `avgTurnMs × 10 turns`, clamped 60s–900s. Fast cloud APIs get tighter budgets; slow local models get more time.
+
+### Observability
+
+* **`TurnCompleteEvent`** — wall-clock duration per turn (model + tools) emitted to UI.
+* **`TimeBudgetStatusEvent`** — elapsed/budget each turn drives UI progress bar.
+* **`UsageEvent` expanded** — now carries `loadDurationMs`, `promptEvalDurationMs`, `evalDurationMs` from Ollama.
+* **Session HUD** — shows wall-clock time in topbar; tooltip shows model vs wall-clock breakdown.
+* **Message footer** — prefill/gen timing, turn duration, VRAM load indicator (>500 ms shows actual load time).
+* **Topbar countdown** — streaming badge shows turn number and seconds remaining during active chat.
+* **Per-model stats dashboard** — table in Settings with sessions, avg turn, budget, max turns, synthesis rate, and CSV export.
+* **Model capability hints** — UI warns when a model is unlikely to call tools reliably.
+
+### Fixes
+
+* **Double browser tab on `start.bat`** — removed duplicate browser open (server handles it via `NO_OPEN`).
+* **Browser tool test timeouts** — `Promise.race` with 3s fallback for Playwright-dependent assertions.
+* **Desktop screenshot test timeout** — same pattern.
+
 ## Ollama Agent Harness v0.3.24
 
 Small Model Autopilot — deterministic shortcuts, readiness gate, structured output validation.
