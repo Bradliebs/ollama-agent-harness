@@ -452,6 +452,7 @@ npm run release:bump -- 0.4.0   # update package.json + lockfile + installer + p
 git add -A
 git commit -m "chore(release): bump to v0.4.0"
 git push origin master           # triggers CI
+npm run release:ready            # one-shot pre-flight: clean tree, upstream sync, CHANGELOG, versions, typecheck, tag
 git tag -a v0.4.0 -m "v0.4.0"
 git push origin v0.4.0           # triggers Release workflow once CI is green
 ```
@@ -459,6 +460,9 @@ git push origin v0.4.0           # triggers Release workflow once CI is green
 * `npm run release:bump` is the only supported way to bump the version. It
   syncs `package.json`, `package-lock.json`, `installer/harness-installer.nsi`,
   and `release-provenance.json` together so they cannot drift.
+* `npm run release:ready` is read-only and runs every gate that CI and the
+  Release workflow will hit. Treat its output as the go/no-go signal before
+  pushing a tag.
 * Add a matching `## Ollama Agent Harness vX.Y.Z` section to
   [CHANGELOG.md](CHANGELOG.md) before tagging. CI runs
   `npm run verify:changelog` and refuses to publish a tag whose notes would

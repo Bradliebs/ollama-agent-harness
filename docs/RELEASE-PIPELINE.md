@@ -87,6 +87,31 @@ step. If any fail, fix the underlying issue rather than skipping the gate.
   and connectors initialise normally. See
   [docs/OPERATING-SERVICES.md](OPERATING-SERVICES.md) §Release Smoke Override.
 
+## Optional pre-push hook
+
+To run `release:ready` automatically before pushing a release tag without
+adding a Husky dependency, drop this script into `.git/hooks/pre-push` and
+`chmod +x`:
+
+```bash
+#!/usr/bin/env bash
+# Run release:ready when pushing a tag matching v*.*.*. Lets ordinary
+# branch pushes through unchanged.
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/tags/v[0-9]*.[0-9]*.[0-9]*)
+      echo "Pre-push: $remote_ref triggers npm run release:ready"
+      npm run release:ready || exit 1
+      ;;
+  esac
+done
+exit 0
+```
+
+`.git/hooks/` is per-checkout and intentionally not tracked, so each
+contributor opts in. The hook is a defence in depth on top of the
+release-workflow CI-status gate.
+
 ## Recovery procedures
 
 ### A failed Release workflow run

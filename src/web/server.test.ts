@@ -499,6 +499,24 @@ describe('web server API validation', () => {
     expect(inferModelCapabilities('gemma4:e4b').toolUse).toBe('weak');
   });
 
+  it('classifies every agentic-fallback routing target as strong', () => {
+    // Sweep guard: every model the auto-router will pick MUST classify as
+    // strong-tools, otherwise we would route a weak Gemma turn into another
+    // weak model and produce no improvement. Mirrors PREFERRED_AGENTIC_FALLBACK_MODELS
+    // in src/web/server.ts; update this list when that one changes.
+    const fallbackTargets = [
+      'gpt-oss:20b-cloud',
+      'gpt-oss:120b-cloud',
+      'qwen2.5-coder:14b',
+      'deepseek-v3.1:671b-cloud',
+      'qwen3-coder:480b-cloud',
+      'glm-5.1:cloud',
+    ];
+    for (const model of fallbackTargets) {
+      expect({ model, toolUse: inferModelCapabilities(model).toolUse }).toEqual({ model, toolUse: 'strong' });
+    }
+  });
+
   it('readiness plan-complete shows warn not blocked', async () => {
     const planPath = path.join(process.cwd(), 'IMPLEMENTATION_PLAN.md');
     const original = await fs.readFile(planPath, 'utf-8');

@@ -5539,7 +5539,6 @@ const PREFERRED_AGENTIC_FALLBACK_MODELS = [
   'gpt-oss:20b-cloud',
   'gpt-oss:120b-cloud',
   'qwen2.5-coder:14b',
-  'qwen2.5-coder:7b',
   'deepseek-v3.1:671b-cloud',
   'qwen3-coder:480b-cloud',
   'glm-5.1:cloud',
@@ -5579,6 +5578,35 @@ function chooseAgenticFallbackModel(requestedModel: string, availableModels: str
   return candidates.find((name) => available.has(name.toLowerCase()));
 }
 
+/**
+ * Classify a model's text/image/audio/tool-use capabilities from its name plus
+ * any details surfaced by the backend (`OllamaModel.details`, `ListModel.details`).
+ *
+ * The classification drives UI hints, the agentic auto-routing fallback list,
+ * and the `weak`/`strong` toolUse warning in the model picker. It is a best-
+ * effort heuristic, not an authoritative capability registry.
+ *
+ * Tool-use tiers and their evidence sources:
+ *
+ * 1. Backend prefix ("provider/model") wins when the provider's preset declares
+ *    `supportsTools`. Drives Groq/Mistral/OpenAI = strong, Cerebras/Cloudflare/
+ *    DeepInfra = weak. See OPENAI_COMPATIBLE_PRESETS and REPLICATE_PRESET.
+ * 2. `weakGemma4LocalToolModel` — pinned to gemma4:e4b/26b based on live probes
+ *    that show full Harness tool turns are unreliable even though tiny one-tool
+ *    loops succeed. See user-memory llm-backends.md.
+ * 3. `weakToolModels` — small base models that historically misfire on tool
+ *    calls (phi-3-mini, tinyllama, smollm, qwen2.5-3b and below).
+ * 4. `strongToolModels` — families with confirmed reliable tool calling. The
+ *    regex covers kimi, qwen-coder 14B/32B/72B/480B, gpt-oss :cloud variants,
+ *    deepseek-v3/coder, the GLM 4/5 family (including :cloud variants), the
+ *    mistral-medium/large families, command-r, gpt-4*, claude*, llama 70b.
+ * 5. Falls back to `unknown` when nothing matches; the UI surfaces no warning
+ *    for unknown so we err on the side of letting the user try.
+ *
+ * To extend: add the model family to `strongToolModels` or `weakToolModels`,
+ * then add a test in src/web/server.test.ts under "classifies known :cloud
+ * Ollama models" or its sibling tests.
+ */
 export function inferModelCapabilities(name: string, details: Record<string, unknown> = {}): { text: boolean; image: boolean; audio: boolean; toolUse: 'strong' | 'weak' | 'unknown'; notes: string[] } {
   const haystack = `${name} ${Object.values(details).join(' ')}`.toLowerCase();
   const image = isVisionCapableModelName(name, details);
