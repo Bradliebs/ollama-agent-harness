@@ -20,10 +20,10 @@ InstallDirRegKey HKCU "Software\OllamaAgentHarness" "InstallDir"
 RequestExecutionLevel user
 
 ; --- Version info ---
-VIProductVersion "0.3.20.0"
+VIProductVersion "0.3.25.0"
 VIAddVersionKey "ProductName" "Ollama Agent Harness"
 VIAddVersionKey "FileDescription" "Local-first agentic AI system"
-VIAddVersionKey "FileVersion" "0.3.20"
+VIAddVersionKey "FileVersion" "0.3.25"
 VIAddVersionKey "LegalCopyright" "MIT License"
 
 ; --- UI ---

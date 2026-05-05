@@ -8,7 +8,9 @@ const { toolToSchema } = require('../dist/types/tool');
 
 const model = process.env.HARNESS_PROBE_MODEL || 'gemma4:e4b';
 const host = (process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/$/, '');
-const timeoutMs = Number(process.env.HARNESS_PROBE_TIMEOUT_MS || 30000);
+const profile = process.env.HARNESS_PROBE_PROFILE || 'default';
+const profileTimeoutMs = profile === 'long-local' ? 180000 : 30000;
+const timeoutMs = Number(process.env.HARNESS_PROBE_TIMEOUT_MS || profileTimeoutMs);
 const outputPath = process.argv[2] || path.join('agent-outputs', 'gemma4-e4b-payload-isolation-2026-05-05.json');
 
 function estimateChars(messages, tools) {
@@ -94,7 +96,7 @@ async function main() {
     console.log(`probe ${name}`);
     results.push(await runProbe(name, messages, tools, options));
   }
-  const output = { model, host, timeoutMs, createdAt: new Date().toISOString(), results };
+  const output = { model, host, profile, timeoutMs, createdAt: new Date().toISOString(), results };
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, JSON.stringify(output, null, 2), 'utf-8');
   console.log(outputPath);

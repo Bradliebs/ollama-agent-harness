@@ -230,6 +230,7 @@ async function main() {
         hasTraceExports: Boolean(document.getElementById('traceExports')),
         hasTraceInspector: Boolean(document.getElementById('traceInspector')),
         hasRuntimeStorage: Boolean(document.getElementById('runtimeStorageStatus')),
+        hasMcpDiscoveryControls: Boolean(document.querySelector('.mcp-hub')) && typeof window.mcpRuntimeDiscoverTools === 'function' && document.body.textContent.includes('Discover tools'),
         hasRuntimeSkillSource: Boolean(document.getElementById('runtimeSkillSource')),
         hasRepoSkillSource: Boolean(document.getElementById('repoSkillSource')),
         hasSkillDiagnostics: Boolean(document.getElementById('skillDiagnostics')),
@@ -362,6 +363,7 @@ async function main() {
     if (!result.hasTraceExports) failures.push('trace export panel was not found');
     if (!result.hasTraceInspector) failures.push('trace inspector panel was not found');
     if (!result.hasRuntimeStorage) failures.push('runtime storage panel was not found');
+    if (!result.hasMcpDiscoveryControls) failures.push('MCP discovery controls were not rendered');
     if (!result.hasRuntimeSkillSource) failures.push('runtime skill source panel was not rendered');
     if (!result.hasRepoSkillSource) failures.push('repo skill source panel was not rendered');
     if (!result.hasSkillDiagnostics) failures.push('skill diagnostics panel was not rendered');

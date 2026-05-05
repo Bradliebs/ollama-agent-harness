@@ -32,6 +32,7 @@ export class OllamaClient implements IChatClient {
     tools?: Tool[],
     abortSignal?: AbortSignal,
   ): Promise<ChatResult> {
+    writeDebugLogRequest(this.model, messages, tools);
     const response = await this.client.chat({
       model: this.model,
       messages,
@@ -47,7 +48,7 @@ export class OllamaClient implements IChatClient {
     } else {
       result = chatResponseToResult(response);
     }
-    writeDebugLog(this.model, messages, tools, result);
+    writeDebugLogResponse(this.model, messages, tools, result);
     return result;
   }
 
@@ -195,39 +196,53 @@ function chatResponseToResult(response: ChatResponse): ChatResult {
  * trivially greppable. Disabled (free) when the env is unset, which keeps
  * production runs zero-overhead.
  */
-function writeDebugLog(model: string, messages: Message[], tools: Tool[] | undefined, result: ChatResult): void {
+function writeDebugLogRequest(model: string, messages: Message[], tools: Tool[] | undefined): void {
+  writeDebugLogEntry(buildDebugBaseEntry(model, messages, tools, 'request'));
+}
+
+function writeDebugLogResponse(model: string, messages: Message[], tools: Tool[] | undefined, result: ChatResult): void {
+  writeDebugLogEntry({
+    ...buildDebugBaseEntry(model, messages, tools, 'response'),
+    response: {
+      role: result.message.role,
+      content: typeof result.message.content === 'string' ? result.message.content.slice(0, 2000) : null,
+      toolCalls: result.message.tool_calls?.map((tc) => ({
+        name: tc.function?.name,
+        arguments: tc.function?.arguments,
+      })) ?? [],
+    },
+    usage: result.usage,
+  });
+}
+
+function buildDebugBaseEntry(model: string, messages: Message[], tools: Tool[] | undefined, phase: 'request' | 'response'): Record<string, unknown> {
+  const messageChars = estimateMessageChars(messages);
+  const toolSchemaChars = estimateToolSchemaChars(tools);
+  return {
+    timestamp: new Date().toISOString(),
+    phase,
+    model,
+    messageCount: messages.length,
+    payload: {
+      messageChars,
+      messageTokenEstimate: estimateTokensFromChars(messageChars),
+      toolCount: tools?.length ?? 0,
+      toolSchemaChars,
+      toolSchemaTokenEstimate: estimateTokensFromChars(toolSchemaChars),
+      totalChars: messageChars + toolSchemaChars,
+      totalTokenEstimate: estimateTokensFromChars(messageChars + toolSchemaChars),
+    },
+    lastUserMessage: typeof messages[messages.length - 1]?.content === 'string'
+      ? (messages[messages.length - 1].content as string).slice(0, 500)
+      : null,
+    toolNames: tools?.map((t) => t.function?.name).filter(Boolean) ?? [],
+  };
+}
+
+function writeDebugLogEntry(entry: Record<string, unknown>): void {
   const debugPath = process.env.HARNESS_DEBUG_LOG;
   if (!debugPath) return;
   try {
-    const messageChars = estimateMessageChars(messages);
-    const toolSchemaChars = estimateToolSchemaChars(tools);
-    const entry = {
-      timestamp: new Date().toISOString(),
-      model,
-      messageCount: messages.length,
-      payload: {
-        messageChars,
-        messageTokenEstimate: estimateTokensFromChars(messageChars),
-        toolCount: tools?.length ?? 0,
-        toolSchemaChars,
-        toolSchemaTokenEstimate: estimateTokensFromChars(toolSchemaChars),
-        totalChars: messageChars + toolSchemaChars,
-        totalTokenEstimate: estimateTokensFromChars(messageChars + toolSchemaChars),
-      },
-      lastUserMessage: typeof messages[messages.length - 1]?.content === 'string'
-        ? (messages[messages.length - 1].content as string).slice(0, 500)
-        : null,
-      toolNames: tools?.map((t) => t.function?.name).filter(Boolean) ?? [],
-      response: {
-        role: result.message.role,
-        content: typeof result.message.content === 'string' ? result.message.content.slice(0, 2000) : null,
-        toolCalls: result.message.tool_calls?.map((tc) => ({
-          name: tc.function?.name,
-          arguments: tc.function?.arguments,
-        })) ?? [],
-      },
-      usage: result.usage,
-    };
     appendFileSync(debugPath, JSON.stringify(entry) + '\n', 'utf-8');
   } catch {
     // best-effort; debug logging must never break the main flow

@@ -80,15 +80,21 @@ describe('OllamaClient context configuration', () => {
         [{ type: 'function', function: { name: 'web_search', description: 'Search', parameters: { type: 'object' } } }],
       );
 
-      const entry = JSON.parse(readFileSync(debugPath, 'utf-8').trim());
-      expect(entry.payload).toMatchObject({
+      const entries = readFileSync(debugPath, 'utf-8').trim().split(/\r?\n/).map((line) => JSON.parse(line));
+      expect(entries).toHaveLength(2);
+      expect(entries[0].phase).toBe('request');
+      expect(entries[1].phase).toBe('response');
+      expect(entries[0].response).toBeUndefined();
+      expect(entries[1].response).toMatchObject({ role: 'assistant', content: 'ok' });
+      expect(entries[0].payload).toMatchObject({
         messageChars: 18,
         messageTokenEstimate: 5,
         toolCount: 1,
       });
-      expect(entry.payload.toolSchemaChars).toBeGreaterThan(0);
-      expect(entry.payload.toolSchemaTokenEstimate).toBeGreaterThan(0);
-      expect(entry.payload.totalChars).toBe(entry.payload.messageChars + entry.payload.toolSchemaChars);
+      expect(entries[0].payload.toolSchemaChars).toBeGreaterThan(0);
+      expect(entries[0].payload.toolSchemaTokenEstimate).toBeGreaterThan(0);
+      expect(entries[0].payload.totalChars).toBe(entries[0].payload.messageChars + entries[0].payload.toolSchemaChars);
+      expect(entries[1].payload).toEqual(entries[0].payload);
     } finally {
       if (previousDebugPath === undefined) delete process.env.HARNESS_DEBUG_LOG;
       else process.env.HARNESS_DEBUG_LOG = previousDebugPath;

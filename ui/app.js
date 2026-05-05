@@ -5855,15 +5855,17 @@ function renderMcpRuntimeList(servers) {
   }
   return servers.map((server) => {
     const status = server.running ? 'running' : 'stopped';
-    const tools = Array.isArray(server.tools) && server.tools.length ? server.tools.map((tool) => tool.name).join(', ') : 'No tools configured';
+    const toolCount = Array.isArray(server.tools) ? server.tools.length : 0;
+    const tools = toolCount ? server.tools.map((tool) => tool.name).join(', ') : 'No tools discovered';
     return '<div class="trace-item trace-item-subtle trace-block-spaced">'
       + '<div class="trace-title">' + esc(server.id || '(unnamed)') + ' <span class="rag-backend-badge">' + esc(status) + '</span></div>'
       + '<div class="trace-meta">' + esc((server.command || '') + (Array.isArray(server.args) && server.args.length ? ' ' + server.args.join(' ') : '')) + '</div>'
-      + '<div class="trace-meta">Tools: ' + esc(tools) + '</div>'
+      + '<div class="trace-meta">Tools (' + toolCount + '): ' + esc(tools) + '</div>'
       + (server.lastError ? '<div class="trace-meta trace-meta-warning">' + esc(server.lastError) + '</div>' : '')
       + '<div class="inline-actions trace-block-spaced">'
       + '<button class="btn-sm" onclick="mcpRuntimeStart(\'' + escAttr(server.id) + '\')"' + (server.running ? ' disabled' : '') + '>Start</button>'
       + '<button class="btn-sm" onclick="mcpRuntimeStop(\'' + escAttr(server.id) + '\')"' + (!server.running ? ' disabled' : '') + '>Stop</button>'
+      + '<button class="btn-sm" onclick="mcpRuntimeDiscoverTools(\'' + escAttr(server.id) + '\')"' + (!server.running ? ' disabled' : '') + '>Discover tools</button>'
       + '<button class="btn-sm danger" onclick="mcpRuntimeDelete(\'' + escAttr(server.id) + '\')">Remove</button>'
       + '</div>'
       + '</div>';
@@ -5911,7 +5913,18 @@ async function mcpRuntimeStart(id) {
     const d = await r.json();
     if (d.error) { alert(d.error); return; }
     const pid = d.server && d.server.pid ? ' (pid ' + d.server.pid + ')' : '';
-    showToast('Started MCP server "' + id + '"' + pid + '. It is a local process; tools appear once MCP tool discovery is wired.', 5000, 'success');
+    showToast('Started MCP server "' + id + '"' + pid + '. Run Discover tools to expose its tools in the registry.', 5000, 'success');
+    await loadToolsDashboard();
+  } catch (e) { alert(e.message); }
+}
+
+async function mcpRuntimeDiscoverTools(id) {
+  try {
+    const r = await fetch('/api/mcp/runtime/servers/' + encodeURIComponent(id) + '/discover-tools', { method: 'POST' });
+    const d = await r.json();
+    if (d.error) { alert(d.error); return; }
+    const count = Array.isArray(d.server?.tools) ? d.server.tools.length : 0;
+    showToast('Discovered ' + count + ' MCP tool(s) for "' + id + '".', 5000, 'success');
     await loadToolsDashboard();
   } catch (e) { alert(e.message); }
 }
