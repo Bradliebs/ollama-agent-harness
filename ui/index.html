@@ -121,10 +121,11 @@
     .no-model-hint{font-size:12px;color:var(--text-dim);margin-top:6px;line-height:1.4}
     .no-model-hint code{background:var(--surface2);padding:1px 5px;border-radius:3px;font-family:'Cascadia Code','Fira Code',monospace;font-size:11px}
     .topbar{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
-    /* On narrow viewports, hide the logo text and the New-chat icon so the
-       topbar stays single-line with the model selector + status pill. */
+    /* On narrow viewports, hide the 'Harness' word in the logo so the topbar
+       stays single-line. We use a child span so we don't double up the emoji. */
+    .logo .logo-word{transition:max-width .15s,opacity .15s}
     @media(max-width:1100px){
-      .logo{font-size:0;gap:0}.logo::before{content:'\1F916';font-size:18px}
+      .logo .logo-word{max-width:0;opacity:0;overflow:hidden}
       .topbar-btns .btn-icon[onclick*="newChat"]{display:none}
     }
     /* Files-tab filter input — small inline filter above the tree. */
@@ -784,7 +785,7 @@
   <div class="main-panel">
     <div class="topbar">
       <button class="btn-icon" onclick="toggleLeft()" title="History">☰</button>
-      <div class="logo" id="topbarLogo">🤖 Harness</div>
+      <div class="logo" id="topbarLogo">🤖<span class="logo-word"> Harness</span></div>
       <div class="model-wrap">
         <select class="model-select" id="modelSelect" title="Model" disabled>
           <option value="">Loading models...</option>
@@ -832,37 +833,6 @@
           <h2>What can I help you with?</h2>
           <p>Type a message below and press Enter. I can read files, write code, search the web, and remember things across sessions.</p>
         </div>
-
-        <details class="welcome-disclosure" id="welcomeFirstRun">
-          <summary>First time here? Walk through setup &amp; tutorial</summary>
-          <div class="welcome-disclosure-body">
-            <div class="beginner-guide" id="beginnerGuide">
-              <div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div>
-              <div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div>
-              <div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div>
-            </div>
-            <div class="walkthrough-checklist" id="walkthroughChecklist">
-              <div class="walkthrough-step"><div class="walkthrough-dot">1</div><div><strong>Check setup</strong>Confirm Ollama, optional vision, and optional audio helpers.</div><button class="btn-sm" onclick="openWalkthroughTarget('setup')">Open</button></div>
-              <div class="walkthrough-step"><div class="walkthrough-dot">2</div><div><strong>Create a profile</strong>Use the guided form instead of hand-writing JSON.</div><button class="btn-sm" onclick="openWalkthroughTarget('validation')">Open</button></div>
-              <div class="walkthrough-step"><div class="walkthrough-dot">3</div><div><strong>Export results</strong>Download validation trends from the Learning tab.</div><button class="btn-sm" onclick="openWalkthroughTarget('learning')">Open</button></div>
-              <div class="walkthrough-step"><div class="walkthrough-dot">4</div><div><strong>Verify install</strong>Check the running version and release provenance.</div><button class="btn-sm" onclick="openWalkthroughTarget('about')">Open</button></div>
-            </div>
-            <div class="first-run-setup" id="firstRunSetup">
-              <h3>First-run setup</h3>
-              <p>Set the local Ollama host and optional media helpers before your first chat.</p>
-              <div class="first-run-grid">
-                <div><label for="firstRunOllamaHost">Ollama host</label><input id="firstRunOllamaHost" type="text" value="http://localhost:11434"></div>
-                <div><label for="firstRunVisionModel">Vision model</label><input id="firstRunVisionModel" type="text" placeholder="llava"></div>
-                <div><label for="firstRunAudioCommand">Audio command</label><input id="firstRunAudioCommand" type="text" placeholder='whisper "{input}" --model base'></div>
-                <div><label for="firstRunAudioSamplePath">Audio test file</label><input id="firstRunAudioSamplePath" type="text" placeholder=".harness/uploads/sample.wav"></div>
-              </div>
-              <div class="first-run-actions"><button class="btn-sm" onclick="applyFirstRunSetup()">Save setup</button><button class="btn-sm" onclick="checkFirstRunHealth()">Check setup</button><span class="first-run-status" id="firstRunStatus">Optional. You can change these later in Settings.</span></div>
-              <div class="trace-detail initial-hidden" id="firstRunHealth"></div>
-            </div>
-          </div>
-        </details>
-      </div>
-    </div>
 
         <div class="quick-suggestions" id="quickSuggestions">
           <div class="quick-card" onclick="sendTip(this.querySelector('.qc-title'))">
@@ -1363,7 +1333,7 @@
       <div id="runtimeStorageStatus" class="trace-detail"></div>
     </div>
     <div class="settings-section">
-      <h4>About</h4>
+      <h4>Release verification</h4>
       <button class="btn-sm full-width-button" onclick="loadAbout()">Refresh version info</button>
       <button id="verifyReleaseBtn" class="btn-sm full-width-button" onclick="verifyReleaseAsset()">Verify release asset</button>
       <div id="aboutPanel" class="trace-detail">Version information loading...</div>
@@ -1608,6 +1578,6 @@
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="./chatHistory.js?v=3"></script>
 <script src="./toolActivity.js?v=1"></script>
-<script src="./app.js?v=15"></script>
+<script src="./app.js?v=16"></script>
 </body>
 </html>

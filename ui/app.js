@@ -82,20 +82,22 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('chatInput').focus();
 });
 
-async function loadModels() {
+function setHarnessStatus(state, label, title) {
   const dot = document.getElementById('statusDot');
   const pill = document.getElementById('statusPill');
   const pillLabel = document.getElementById('statusLabel');
+  if (dot) dot.className = 'status-dot' + (state === 'ok' ? ' ok' : state === 'loading' ? ' loading' : '');
+  if (pill) {
+    pill.classList.remove('ok', 'loading', 'error');
+    if (state) pill.classList.add(state);
+    if (title) pill.title = title;
+  }
+  if (pillLabel) pillLabel.textContent = label;
+}
+
+async function loadModels() {
   const sel = document.getElementById('modelSelect');
-  const setStatus = (state, label, title) => {
-    if (dot) dot.className = 'status-dot' + (state === 'ok' ? ' ok' : state === 'loading' ? ' loading' : '');
-    if (pill) {
-      pill.classList.remove('ok', 'loading', 'error');
-      if (state) pill.classList.add(state);
-      if (title) pill.title = title;
-    }
-    if (pillLabel) pillLabel.textContent = label;
-  };
+  const setStatus = setHarnessStatus;
   try {
     const r = await fetch('/api/models');
     const d = await r.json();
@@ -114,7 +116,15 @@ async function loadModels() {
       return '<option value="' + escAttr(m.name) + '">' + esc(m.name + size + backendBadge) + '</option>';
     }).join('');
     sel.disabled = false;
-    sel.onchange = () => { renderModelCapabilityHint(); if (sel.value) { updateSetting('model', sel.value); document.getElementById('sendBtn').disabled = false; updateNoModelEmptyState(); } };
+    sel.onchange = () => {
+      renderModelCapabilityHint();
+      if (sel.value) {
+        updateSetting('model', sel.value);
+        document.getElementById('sendBtn').disabled = false;
+        updateNoModelEmptyState();
+        setStatus('ok', 'Connected', 'Connected · model: ' + sel.value);
+      }
+    };
     // Pick a default model so users don't stare at "— Select model —" on first
     // run. Priority: saved setting that still matches an installed model →
     // first model in the list. Either way, fire change so the send button
@@ -129,6 +139,9 @@ async function loadModels() {
     if (defaultModel) {
       sel.value = defaultModel;
       sel.dispatchEvent(new Event('change'));
+      // Surface the active model in the status pill tooltip so users can
+      // verify which one is wired up without opening the dropdown.
+      setStatus('ok', 'Connected', 'Connected · model: ' + defaultModel);
     }
     renderModelCapabilityHint();
     // Compare-with selector mirrors the primary model list.
