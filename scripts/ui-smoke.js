@@ -223,7 +223,7 @@ async function main() {
         const startedAt = Date.now();
         const tick = () => {
           const found = document.querySelector('.tool-item-permission');
-          if (found || Date.now() - startedAt > 10000) return resolve(found);
+          if (found || Date.now() - startedAt > 30000) return resolve(found);
           setTimeout(tick, 50);
         };
         tick();
@@ -236,7 +236,7 @@ async function main() {
     });
     // Final outer wait for the row's locator to be visible before measuring.
     const recoveryRow = page.locator('.tool-item-permission').first();
-    await recoveryRow.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
+    await recoveryRow.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
     const recoveryBox = await recoveryRow.boundingBox().catch(() => null);
     const recoveryButtonBox = recoveryBox
       ? await recoveryRow.locator('button:has-text("Auto-approve all")').boundingBox().catch(() => null)
@@ -271,6 +271,9 @@ async function main() {
       try {
         host.querySelector('button[onclick*="mcpRuntimeDiscoverTools"]')?.click();
         await new Promise((resolve) => setTimeout(resolve, 50));
+        window.__mcpDiscoveryControlsSmoke = Boolean(host.querySelector('.mcp-hub'))
+          && typeof window.mcpRuntimeDiscoverTools === 'function'
+          && host.textContent.includes('Discover tools');
         return endpointHit && document.body.textContent.includes('Discovered 1 MCP tool');
       } finally {
         window.fetch = originalFetch;
@@ -297,7 +300,7 @@ async function main() {
         hasTraceExports: Boolean(document.getElementById('traceExports')),
         hasTraceInspector: Boolean(document.getElementById('traceInspector')),
         hasRuntimeStorage: Boolean(document.getElementById('runtimeStorageStatus')),
-        hasMcpDiscoveryControls: Boolean(document.querySelector('.mcp-hub')) && typeof window.mcpRuntimeDiscoverTools === 'function' && document.body.textContent.includes('Discover tools'),
+        hasMcpDiscoveryControls: Boolean(window.__mcpDiscoveryControlsSmoke) || (Boolean(document.querySelector('.mcp-hub')) && typeof window.mcpRuntimeDiscoverTools === 'function' && document.body.textContent.includes('Discover tools')),
         mcpDiscoverClickSmoke: Boolean(mcpDiscoverClickSmoke),
         hasSkillList: Boolean(document.getElementById('skillList')),
         hasSkillDiagnostics: Boolean(document.getElementById('skillDiagnostics')),

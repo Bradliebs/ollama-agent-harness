@@ -11,6 +11,23 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.29
+
+Roll-forward release after the v0.3.28 tag was blocked by CI smoke timing.
+The v0.3.28 source commit is preserved, and this patch adds the release-runner
+hardening needed for the tag workflow to publish cleanly.
+
+### Release Pipeline
+
+* **CI UI smoke hardening** - waits longer for the permission recovery action
+  row on slower GitHub runners and captures MCP discovery-control evidence at
+  the point where the synthetic MCP panel is rendered.
+* **Installer build verified locally** - `Harness-Setup.exe` builds with NSIS
+  `makensis` once the installed NSIS path is used directly.
+* **Slash palette remains pinned** - bare `/` in the chat composer opens the
+  slash-command palette immediately, with smoke coverage verifying `/help` is
+  present.
+
 ## Ollama Agent Harness v0.3.28
 
 Runtime-state hardening and release readiness for local testing. This release
