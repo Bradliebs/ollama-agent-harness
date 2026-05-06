@@ -4987,7 +4987,36 @@ function copySkillDiagnosticPath(filePath) {
   if (navigator.clipboard?.writeText) navigator.clipboard.writeText(filePath).catch(() => {});
 }
 
-async function loadMemory() { try { const r = await fetch('/api/memory'); const d = await r.json(); const view = document.getElementById('memoryView'); if (!d.decisions && !d.patterns && !d.notes) { view.innerHTML = '<div class="empty-panel-copy">No memories yet.<br><br>The agent saves decisions, patterns, and notes here as it learns.</div>'; return; } let html = ''; if (d.decisions) html += '<div class="mem-section"><h5>Decisions</h5><pre>' + esc(d.decisions) + '</pre></div>'; if (d.patterns) html += '<div class="mem-section"><h5>Patterns</h5><pre>' + esc(d.patterns) + '</pre></div>'; if (d.notes) html += '<div class="mem-section"><h5>Notes</h5><pre>' + esc(d.notes) + '</pre></div>'; view.innerHTML = html; } catch {} }
+async function loadMemory() {
+  try {
+    const r = await fetch('/api/memory');
+    const d = await r.json();
+    const view = document.getElementById('memoryView');
+    if (!d.decisions && !d.patterns && !d.notes) {
+      view.innerHTML = '<div class="empty-panel-copy">No memories yet.<br><br>The agent saves decisions, patterns, and notes here as it learns.</div>';
+      return;
+    }
+    // Each section gets a tiny "Edit via chat" link that prefills a chat
+    // prompt asking the agent to open the file. Saves users from hunting
+    // through .harness/memory/ themselves.
+    const renderSection = (title, key, content) => '<div class="mem-section">'
+      + '<h5>' + esc(title) + ' <button class="btn-sm mem-edit-btn" onclick="editMemoryViaChat(\'' + key + '\')">Edit via chat</button></h5>'
+      + '<pre>' + esc(content) + '</pre></div>';
+    let html = '';
+    if (d.decisions) html += renderSection('Decisions', 'decisions', d.decisions);
+    if (d.patterns) html += renderSection('Patterns', 'patterns', d.patterns);
+    if (d.notes) html += renderSection('Notes', 'notes', d.notes);
+    view.innerHTML = html;
+  } catch {}
+}
+
+function editMemoryViaChat(key) {
+  const input = document.getElementById('chatInput');
+  if (!input) return;
+  input.value = 'Open .harness/memory/' + key + '.md and walk me through what to add or remove.';
+  input.focus();
+  try { autoSize(input); } catch {}
+}
 
 async function loadMemoryPalace() { try { const response = await fetch('/api/memory/palace'); const data = await response.json(); const view = document.getElementById('memoryPalaceView'); if (!data.rooms || !data.rooms.length) { view.innerHTML = '<div class="empty-panel-copy">No palace rooms yet.</div>'; return; } view.innerHTML = '<div class="palace-grid">' + data.rooms.map((room) => '<div class="palace-room"><div class="palace-title">' + esc(room.title) + '</div><div class="palace-meta">' + room.entryCount + ' memories · ' + room.sessions.length + ' sessions</div>' + room.anchors.map((anchor) => '<button class="palace-anchor" onclick="loadPalaceEntry(\'' + escAttr(anchor.id) + '\')"><strong>' + esc(anchor.kind) + '</strong> · ' + esc(anchor.text) + '</button>').join('') + '</div>').join('') + '</div><div id="palaceDetail" class="palace-detail initial-hidden"></div>'; } catch (error) { document.getElementById('memoryPalaceView').textContent = error.message; } }
 
@@ -5211,9 +5240,12 @@ function toggleRight() {
 
 // Restore the right panel open/closed state from a previous session. Default
 // is closed (the panel ships with .hidden in markup) so first-run users still
-// see the cleanest possible chat surface.
+// see the cleanest possible chat surface. Skipped on narrow viewports where
+// the panel goes overlay — auto-opening an overlay panel on load would block
+// the chat composer behind a sheet the user has to dismiss first.
 function restoreRightPanelState() {
   try {
+    if (window.innerWidth < 1300) return;
     if (localStorage.getItem('harness_right_panel') === 'open') {
       const panel = document.getElementById('rightPanel');
       if (panel && panel.classList.contains('hidden')) {

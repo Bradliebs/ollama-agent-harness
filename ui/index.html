@@ -97,7 +97,9 @@
     .automation-field input:focus,.automation-field textarea:focus{border-color:var(--accent)}
     .automation-field-hint{font-size:10.5px;color:var(--text-dim);font-weight:400}
     .mem-section{margin-bottom:16px}
-    .mem-section h5{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin-bottom:6px}
+    .mem-section h5{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:6px}
+    .mem-edit-btn{font-size:10px;padding:1px 6px;text-transform:none;letter-spacing:0;background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);border-radius:4px;cursor:pointer}
+    .mem-edit-btn:hover{color:var(--accent);border-color:var(--accent)}
     .mem-section pre{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;white-space:pre-wrap;font-size:11px;font-family:'Cascadia Code','Fira Code',monospace;color:var(--text-dim)}
     .tab-bar{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;border-bottom:1px solid var(--border);background:var(--border);position:relative}
     .tab{padding:8px 4px;text-align:center;font-size:10.5px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;color:var(--text-dim);transition:all .15s;background:var(--surface);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;line-height:1.1;min-height:44px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1578,6 +1580,6 @@
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="./chatHistory.js?v=3"></script>
 <script src="./toolActivity.js?v=1"></script>
-<script src="./app.js?v=16"></script>
+<script src="./app.js?v=17"></script>
 </body>
 </html>
