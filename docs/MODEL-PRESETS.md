@@ -2,7 +2,7 @@
 title: Model Presets
 description: Beginner-friendly Ollama model choices for coding, vision, helper routing, and summarization in Harness
 author: Bradliebs
-ms.date: 2026-04-29
+ms.date: 2026-05-06
 ms.topic: guide
 keywords:
   - ollama
@@ -108,6 +108,34 @@ The First-run setup panel has the same check. Leave the audio test file blank wh
 | Summarizer | `qwen2.5:3b` |
 
 Run `harness doctor` after changing model or media settings to confirm that Ollama and optional helpers are ready.
+
+## Adding An Ollama Cloud Model
+
+Harness discovers Ollama Cloud models through your local Ollama runtime. Pull
+the model first, then confirm that Ollama lists it:
+
+```powershell
+ollama pull <model>:cloud
+ollama list
+```
+
+After the model appears in `ollama list`, select it in the Harness model picker
+or pass it to the CLI:
+
+```powershell
+harness --model <model>:cloud
+```
+
+For tool-routing confidence, run the routing validator after building:
+
+```powershell
+npm run build
+npm run validate:routing
+```
+
+The validator treats first-turn native tool calls as the pass condition. Some
+cloud models rephrase the final tool result, so exact final text matching is
+reported separately from routing success.
 
 ## Auto-Routing Targets For Weak Local Models
 

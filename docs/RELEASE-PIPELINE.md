@@ -54,6 +54,27 @@ response for the permission-recovery smoke prompt, while leaving normal chat
 traffic on the regular model-backed path. Keep the flag scoped to validation
 runs.
 
+## Installer smoke test
+
+After building the Windows NSIS installer, run the installer smoke before
+uploading `Harness-Setup.exe`:
+
+```powershell
+npm run smoke:installer -- .\Harness-Setup.exe
+```
+
+The smoke installs into a disposable temp directory, checks the installed CLI,
+registry metadata, shortcuts, and first server startup, then uninstalls and
+waits for cleanup. It refuses to run when an existing Harness install footprint
+is present so it does not overwrite a real local setup.
+
+Keep installer smoke manual unless CI has a Windows runner with NSIS available.
+The main CI job runs on Ubuntu, so it cannot execute the NSIS installer. If this
+becomes a CI gate, add a separate Windows job that installs NSIS, builds
+`Harness-Setup.exe`, runs `npm run smoke:installer -- .\Harness-Setup.exe`, and
+uploads logs only after cleanup confirms no registry or shortcut footprint
+remains.
+
 ## Failure modes seen in practice
 
 ### 1. `eventStore` same-millisecond ordering flake
@@ -148,6 +169,11 @@ exists on GitHub but the Release does not. Two options:
 
 ### Cleaning up failed Release runs
 
+Successful roll-forward releases do not require deleting failed tags or failed
+workflow history. If a failed tag has no GitHub Release object and a newer patch
+release is published, keep the failed workflow run as audit history unless it is
+actively confusing users or release automation.
+
 ```powershell
 gh run list --workflow Release --limit 20
 gh run delete <run-id>
@@ -177,6 +203,7 @@ the previous. It will happily bump backwards. Don't.
 | `scripts/check-release-ready.js` | One-shot pre-tag readiness check (`release:ready`) |
 | `scripts/verify-release-versions.js` | Version metadata cross-check (`verify:versions`) |
 | `scripts/release-dry-run.js` | Local dry-run of the publish path (`release:dry-run`) |
+| `scripts/installer-smoke.js` | Windows-only NSIS install, first-run, and uninstall smoke (`smoke:installer`) |
 | `scripts/release-notes.js` | CHANGELOG-driven note generator (`release:notes`) |
 | `scripts/release-manifest.js` | SHA-256 manifest generator (`release:manifest`) |
 | `scripts/generate-release-provenance.js` | Provenance generator (`release:provenance`) |

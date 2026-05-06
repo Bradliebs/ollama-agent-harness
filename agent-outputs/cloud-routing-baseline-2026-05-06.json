@@ -1,0 +1,45 @@
+{
+  "ok": true,
+  "host": "http://127.0.0.1:11434",
+  "results": [
+    {
+      "model": "glm-5.1:cloud",
+      "ok": true,
+      "status": 0,
+      "toolCallOk": true,
+      "exactFinalOk": false,
+      "firstToolCallNames": [
+        "get_fixed_time"
+      ],
+      "firstPromptTokens": 172,
+      "secondPromptTokens": 230,
+      "stderr": ""
+    },
+    {
+      "model": "kimi-k2.5:cloud",
+      "ok": true,
+      "status": 0,
+      "toolCallOk": true,
+      "exactFinalOk": false,
+      "firstToolCallNames": [
+        "get_fixed_time"
+      ],
+      "firstPromptTokens": 83,
+      "secondPromptTokens": 163,
+      "stderr": ""
+    },
+    {
+      "model": "kimi-k2.6:cloud",
+      "ok": true,
+      "status": 0,
+      "toolCallOk": true,
+      "exactFinalOk": false,
+      "firstToolCallNames": [
+        "get_fixed_time"
+      ],
+      "firstPromptTokens": 83,
+      "secondPromptTokens": 164,
+      "stderr": ""
+    }
+  ]
+}
