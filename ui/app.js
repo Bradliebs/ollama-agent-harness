@@ -1,6 +1,97 @@
 marked.setOptions({ breaks: true, gfm: true });
 
 let isSending = false;
+// Reply-to-message state. When set, the next outbound user message is
+// prefixed with a markdown blockquote of the referenced assistant reply
+// so the model knows which earlier turn the user is responding to.
+let pendingReply = null;
+// ─── Active sub-agents bar ────────────────────────────────────────
+// Renders a compact pill row above the chat input showing every
+// currently-running sub-agent with a cancel button. Driven by the
+// /api/subagents endpoint and refreshed by WS events
+// (subagent.start / subagent.end / subagent.cancel). When the list is
+// empty the bar is hidden so it never adds vertical noise.
+async function loadActiveSubagentsBar() {
+  const host = document.getElementById('activeSubagentsBar');
+  if (!host) return;
+  try {
+    const response = await fetch('/api/subagents');
+    const data = await response.json();
+    const list = Array.isArray(data && data.subagents) ? data.subagents : [];
+    if (list.length === 0) {
+      host.style.display = 'none';
+      host.innerHTML = '';
+      return;
+    }
+    const safeEsc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    const pills = list.map((record) => {
+      const seconds = Math.max(0, Math.round((record.durationMs || 0) / 1000));
+      const snippet = safeEsc((record.promptSnippet || '').slice(0, 60));
+      const idAttr = safeEsc(record.id);
+      return '<span class="active-subagent-pill" style="display:inline-flex;align-items:center;gap:6px;padding:2px 6px;margin:2px;border-radius:10px;background:var(--surface2,rgba(120,120,120,0.15));font-size:11px">'
+        + '<span style="color:var(--accent)">\u26AC</span>'
+        + '<strong>' + safeEsc(record.name || 'subagent') + '</strong>'
+        + '<span style="color:var(--text-dim)">' + seconds + 's</span>'
+        + (snippet ? '<span style="color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + snippet + '">' + snippet + '</span>' : '')
+        + '<button type="button" class="msg-action-btn" title="Cancel sub-agent" onclick="cancelActiveSubagent(\'' + idAttr.replace(/'/g, "\\'") + '\')" style="padding:0 6px">\u2715</button>'
+        + '</span>';
+    }).join('');
+    host.style.display = 'block';
+    host.innerHTML = '<div style="padding:4px 6px;border-bottom:1px solid var(--border)"><span style="font-size:11px;color:var(--text-dim);margin-right:6px">Active sub-agents (' + list.length + ')</span>' + pills + '</div>';
+  } catch {
+    // Best-effort — don't disturb chat on transient failures.
+    host.style.display = 'none';
+    host.innerHTML = '';
+  }
+}
+
+async function cancelActiveSubagent(id) {
+  if (!id) return;
+  try {
+    await fetch('/api/subagents/' + encodeURIComponent(id) + '/cancel', { method: 'POST' });
+    loadActiveSubagentsBar();
+  } catch (error) {
+    console.warn('Cancel sub-agent failed', error);
+  }
+}
+
+if (typeof window !== 'undefined') {
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', loadActiveSubagentsBar);
+  else loadActiveSubagentsBar();
+  // Periodic refresh as a safety net so the bar reflects in-flight runs
+  // even when the WS reconnects mid-flight.
+  setInterval(() => {
+    const host = document.getElementById('activeSubagentsBar');
+    if (host) loadActiveSubagentsBar();
+  }, 5000);
+}
+function renderPendingReplyChip() {
+  const host = document.getElementById('pendingReplyChip') || (() => {
+    const inp = document.getElementById('chatInput');
+    if (!inp || !inp.parentNode) return null;
+    const el = document.createElement('div');
+    el.id = 'pendingReplyChip';
+    el.className = 'pending-reply-chip';
+    el.style.cssText = 'display:none;margin:4px 0;padding:6px 8px;border-left:3px solid var(--accent,#6cf);background:var(--surface2,rgba(120,120,120,0.1));font-size:12px;color:var(--text-dim,#aaa);border-radius:4px;display:flex;align-items:center;gap:6px';
+    inp.parentNode.insertBefore(el, inp);
+    return el;
+  })();
+  if (!host) return;
+  if (!pendingReply) { host.style.display = 'none'; host.innerHTML = ''; return; }
+  host.style.display = 'flex';
+  const snippet = (pendingReply.snippet || '').slice(0, 140).replace(/\s+/g, ' ');
+  host.innerHTML = '<span style="flex:1">↪ Replying to: <em>' + (window.HarnessChatHistory && window.HarnessChatHistory.escapeHtml ? window.HarnessChatHistory.escapeHtml(snippet) : snippet.replace(/[<>&"]/g, '')) + '</em></span><button type="button" class="msg-action-btn" id="cancelPendingReplyBtn" title="Cancel reply" style="padding:2px 6px">✕</button>';
+  const cancel = document.getElementById('cancelPendingReplyBtn');
+  if (cancel) cancel.onclick = () => { pendingReply = null; renderPendingReplyChip(); };
+}
+function startReplyTo(messageIndex) {
+  const msg = chatMessages[messageIndex];
+  if (!msg || msg.role !== 'assistant') return;
+  pendingReply = { index: messageIndex, snippet: String(msg.content || '').trim() };
+  renderPendingReplyChip();
+  const inp = document.getElementById('chatInput');
+  if (inp) inp.focus();
+}
 function saveChatSession() {
   window.HarnessChatHistory.saveChatSession({ chatMessages, currentChatId });
 }
@@ -2531,6 +2622,16 @@ async function sendMessage(opts) {
 
   if (!text || isSending) return;
   if (!model) { alert('Select a model first.'); return; }
+  // If the user clicked 💬 Reply on an earlier assistant message, prefix
+  // the outbound text with a markdown blockquote of that reply so the
+  // model can resolve "this", "that error", etc. unambiguously. The
+  // chip clears after one send.
+  if (!isRegenerate && pendingReply && pendingReply.snippet) {
+    const quoteLines = String(pendingReply.snippet).split('\n').slice(0, 6).map((l) => '> ' + l).join('\n');
+    text = quoteLines + '\n\n' + text;
+    pendingReply = null;
+    renderPendingReplyChip();
+  }
   const skipOnceEl = document.getElementById('skipValidationOnce');
   const skipValidationOnce = !!(skipOnceEl && skipOnceEl.checked);
   if (!skipValidationOnce) await maybeSuggestOutputValidationProfile(text);
@@ -3761,8 +3862,14 @@ function attachMessageActions(msgEl, messageIndex) {
       setTimeout(() => { copy.innerHTML = '📋 Copy'; }, 1500);
     });
   };
+  const reply = document.createElement('button');
+  reply.className = 'msg-action-btn';
+  reply.title = 'Reply to this message — quote it in your next prompt';
+  reply.innerHTML = '💬 Reply';
+  reply.onclick = () => { startReplyTo(messageIndex); };
   row.appendChild(regen);
   row.appendChild(copy);
+  row.appendChild(reply);
   body.appendChild(row);
 }
 
@@ -5270,11 +5377,11 @@ async function rebuildSessionSearchIndex() { const view = document.getElementByI
 
 async function loadPalaceEntry(id) { const detail = document.getElementById('palaceDetail'); if (!detail) return; detail.classList.remove('initial-hidden'); detail.textContent = 'Loading memory entry...'; try { const entryResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id)); const entryData = await entryResponse.json(); if (entryData.error) { detail.textContent = entryData.error; return; } const contextResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id) + '/context?window=3'); const contextData = await contextResponse.json(); const entry = entryData.entry; const transcriptRows = (contextData.events || []).map((event) => '<div class="transcript-row' + (event.isAnchor ? ' anchor' : '') + '"><div><strong>' + esc(event.kind) + '</strong> · ' + esc(event.timestamp) + '</div><div class="prewrap-text">' + esc(event.text || '[empty]') + '</div></div>').join(''); detail.innerHTML = '<div><strong>Session</strong> ' + esc(entry.sessionId) + '</div><div><strong>Event</strong> ' + esc(entry.id) + '</div><div><strong>Kind</strong> ' + esc(entry.kind) + '</div><div><strong>Time</strong> ' + esc(entry.timestamp) + '</div><div class="prewrap-text trace-block-spaced">' + esc(entry.text) + '</div><div class="trace-block-spaced-large"><strong>Transcript Context</strong>' + (transcriptRows || '<div class="transcript-row">No transcript context found.</div>') + '</div>'; } catch (error) { detail.textContent = error.message; } }
 
-function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); if (el) el.classList.add('active'); if (!MORE_MENU_TABS.includes(tab)) { const moreBtn = document.getElementById('tabMoreBtn'); if (moreBtn) moreBtn.classList.remove('has-active'); document.querySelectorAll('.more-menu-item').forEach((item) => item.classList.remove('active')); } document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; const rn = document.getElementById('runsView'); if (rn) rn.style.display = tab === 'runs' ? 'block' : 'none'; const wf = document.getElementById('workflowsView'); if (wf) wf.style.display = tab === 'workflows' ? 'block' : 'none'; const my = document.getElementById('myceliumView'); if (my) my.style.display = tab === 'mycelium' ? 'block' : 'none'; const pr = document.getElementById('promisesView'); if (pr) pr.style.display = tab === 'promises' ? 'block' : 'none'; const ev = document.getElementById('eventsView'); if (ev) ev.style.display = tab === 'events' ? 'block' : 'none'; const ci = document.getElementById('codeintelView'); if (ci) ci.style.display = tab === 'codeintel' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); if (tab === 'runs') loadRuns(); if (tab === 'workflows') loadWorkflows(); if (tab === 'mycelium') loadMycelium(); if (tab === 'promises') loadPromises(); if (tab === 'events') loadEvents(); if (tab === 'codeintel') loadCodeIntel(); }
+function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); if (el) el.classList.add('active'); if (!MORE_MENU_TABS.includes(tab)) { const moreBtn = document.getElementById('tabMoreBtn'); if (moreBtn) moreBtn.classList.remove('has-active'); document.querySelectorAll('.more-menu-item').forEach((item) => item.classList.remove('active')); } document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; const rn = document.getElementById('runsView'); if (rn) rn.style.display = tab === 'runs' ? 'block' : 'none'; const wf = document.getElementById('workflowsView'); if (wf) wf.style.display = tab === 'workflows' ? 'block' : 'none'; const my = document.getElementById('myceliumView'); if (my) my.style.display = tab === 'mycelium' ? 'block' : 'none'; const pr = document.getElementById('promisesView'); if (pr) pr.style.display = tab === 'promises' ? 'block' : 'none'; const ev = document.getElementById('eventsView'); if (ev) ev.style.display = tab === 'events' ? 'block' : 'none'; const ci = document.getElementById('codeintelView'); if (ci) ci.style.display = tab === 'codeintel' ? 'block' : 'none'; const tk = document.getElementById('tasksView'); if (tk) tk.style.display = tab === 'tasks' ? 'block' : 'none'; const au = document.getElementById('auditView'); if (au) au.style.display = tab === 'audit' ? 'block' : 'none'; const tg = document.getElementById('triggersView'); if (tg) tg.style.display = tab === 'triggers' ? 'block' : 'none'; const ag = document.getElementById('agentsView'); if (ag) ag.style.display = tab === 'agents' ? 'block' : 'none'; const sq = document.getElementById('squadsView'); if (sq) sq.style.display = tab === 'squads' ? 'block' : 'none'; const idn = document.getElementById('identityView'); if (idn) idn.style.display = tab === 'identity' ? 'block' : 'none'; const arf = document.getElementById('artifactsView'); if (arf) arf.style.display = tab === 'artifacts' ? 'block' : 'none'; const hl = document.getElementById('healthView'); if (hl) hl.style.display = tab === 'health' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); if (tab === 'runs') loadRuns(); if (tab === 'workflows') loadWorkflows(); if (tab === 'mycelium') loadMycelium(); if (tab === 'promises') loadPromises(); if (tab === 'events') loadEvents(); if (tab === 'codeintel') loadCodeIntel(); if (tab === 'tasks') loadTasks(); if (tab === 'audit') loadAudit(); if (tab === 'triggers') loadTriggers(); if (tab === 'agents') loadAgents(); if (tab === 'squads') loadSquads(); if (tab === 'identity') loadIdentity(); if (tab === 'artifacts') loadArtifacts(); if (tab === 'health') loadHealth(); }
 function toggleLeft() { document.getElementById('leftPanel').classList.toggle('hidden'); }
 
 // Tabs we don't show in the main bar — selected via the More overflow menu.
-const MORE_MENU_TABS = ['palace', 'discovery', 'learning', 'snapshots', 'rag', 'tools', 'runs', 'mycelium', 'promises', 'events', 'codeintel'];
+const MORE_MENU_TABS = ['palace', 'discovery', 'learning', 'snapshots', 'rag', 'tools', 'runs', 'mycelium', 'promises', 'events', 'codeintel', 'tasks', 'audit', 'triggers', 'agents', 'squads', 'identity', 'artifacts', 'health'];
 
 function toggleMoreMenu(event) {
   if (event && event.stopPropagation) event.stopPropagation();
@@ -6222,9 +6329,36 @@ function renderCandidateQueue(data) {
   const rows = candidates.slice(-8).reverse().map((candidate) => {
     const disabled = candidate.reviewStatus !== 'pending' || !candidate.accepted;
     const status = candidate.reviewStatus || 'pending';
-    return '<div class="trace-item"><div class="trace-title">Candidate · ' + esc(status) + '</div><div class="trace-meta">Quality ' + Math.round((candidate.qualityScore || 0) * 100) + '% · ' + esc(candidate.toolNames?.join(', ') || 'no tools') + '</div><div class="candidate-prompt-preview">' + esc((candidate.prompt || '').slice(0, 180)) + '</div><div class="inline-actions trace-block-spaced"><button class="btn-sm" onclick="inspectLearningCandidate(\'' + escAttr(candidate.id) + '\')">Details</button><button class="btn-sm" ' + (disabled ? 'disabled' : '') + ' onclick="reviewLearningCandidate(\'' + escAttr(candidate.id) + '\',\'promote\')">Promote</button><button class="btn-sm danger" ' + (candidate.reviewStatus !== 'pending' ? 'disabled' : '') + ' onclick="reviewLearningCandidate(\'' + escAttr(candidate.id) + '\',\'reject\')">Reject</button></div></div>';
+    return '<div class="trace-item"><div class="trace-title">Candidate · ' + esc(status) + '</div><div class="trace-meta">Quality ' + Math.round((candidate.qualityScore || 0) * 100) + '% · ' + esc(candidate.toolNames?.join(', ') || 'no tools') + '</div><div class="candidate-prompt-preview">' + esc((candidate.prompt || '').slice(0, 180)) + '</div><div id="gate-' + escAttr(candidate.id) + '" class="candidate-gate-status trace-meta initial-hidden"></div><div class="inline-actions trace-block-spaced"><button class="btn-sm" onclick="inspectLearningCandidate(\'' + escAttr(candidate.id) + '\')">Details</button><button class="btn-sm" onclick="checkPromotionGate(\'' + escAttr(candidate.id) + '\')">Gate</button><button class="btn-sm" ' + (disabled ? 'disabled' : '') + ' onclick="reviewLearningCandidate(\'' + escAttr(candidate.id) + '\',\'promote\')">Promote</button><button class="btn-sm danger" ' + (candidate.reviewStatus !== 'pending' ? 'disabled' : '') + ' onclick="reviewLearningCandidate(\'' + escAttr(candidate.id) + '\',\'reject\')">Reject</button></div></div>';
   }).join('');
   return '<div id="learningCandidateQueue" class="trace-list"><div class="trace-title">Learning Candidate Review</div>' + (rows || '<div class="trace-meta">No candidates yet</div>') + '<div id="candidateProvenanceDetail" class="trace-item initial-hidden"></div></div>';
+}
+
+async function checkPromotionGate(candidateId) {
+  if (!candidateId) return;
+  const host = document.getElementById('gate-' + candidateId);
+  if (!host) return;
+  host.classList.remove('initial-hidden');
+  host.style.display = 'block';
+  host.innerHTML = '<em>Checking promotion gate…</em>';
+  try {
+    const response = await fetch('/api/learning/candidates/' + encodeURIComponent(candidateId) + '/gate');
+    const data = await response.json();
+    if (data.error) { host.textContent = data.error; return; }
+    const colour = data.allowed ? 'var(--success,#50c878)' : 'var(--warning,orange)';
+    const enabledNote = data.gate_enabled ? '' : ' <span style="color:var(--text-dim)">(advisory only — set HARNESS_PROMOTION_GATE_ENABLED=1 to enforce)</span>';
+    const violations = (data.safety_violations || []).map((violation) =>
+      '<div class="trace-meta" style="color:var(--danger,#e55)">⚠ ' + esc(violation.severity) + ' · ' + esc(violation.ruleLabel) + ' (in ' + esc(violation.matchedIn) + '): ' + esc(violation.excerpt) + '</div>',
+    ).join('');
+    host.innerHTML = '<div style="border-left:3px solid ' + colour + ';padding:6px 8px;margin-top:4px">'
+      + '<strong>Gate ' + (data.allowed ? '✓ allowed' : '✕ blocked') + '</strong>' + enabledNote
+      + '<div class="trace-meta">' + esc(data.reason) + '</div>'
+      + '<div class="trace-meta">Recent runs: ' + data.pass_count + '/' + data.considered_runs + ' passing (need ' + data.required_passes + ')</div>'
+      + violations
+      + '</div>';
+  } catch (error) {
+    host.textContent = 'Gate check failed: ' + (error && error.message ? error.message : error);
+  }
 }
 
 function renderEvalDatasetManager(data) {
@@ -8940,11 +9074,684 @@ function buildEventTimeline(events) {
   return '<div style="display:flex;align-items:flex-end;gap:1px;height:50px;margin:8px 0;padding:4px 0">' + bars + '</div>';
 }
 
+async function loadTasks() {
+  const view = document.getElementById('tasksView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-meta">Loading tasks…</div>';
+  try {
+    const response = await fetch('/api/tasks');
+    const data = await response.json();
+    if (data.error) { view.textContent = data.error; return; }
+    const tasks = Array.isArray(data.tasks) ? data.tasks : [];
+    const summary = data.summary || {};
+    const groups = ['pending', 'assigned', 'in_progress', 'blocked', 'review', 'done', 'failed', 'cancelled'];
+    const groupLabels = { pending: 'Pending', assigned: 'Assigned', in_progress: 'In Progress', blocked: 'Blocked', review: 'Review', done: 'Done', failed: 'Failed', cancelled: 'Cancelled' };
+    const summaryLine = '<div class="tools-summary-line"><strong>' + (summary.total || 0) + '</strong> tasks · ' + groups.map((g) => esc(groupLabels[g]) + ': ' + (summary[g] || 0)).join(' · ') + '</div>';
+    const newForm = '<div class="automation-wizard"><div class="automation-wizard-title">New task</div><div class="automation-field"><label for="newTaskTitle">Title</label><input id="newTaskTitle" type="text" placeholder="Short summary" /></div><div class="automation-field"><label for="newTaskAssignee">Assignee (optional)</label><input id="newTaskAssignee" type="text" placeholder="agent id" /></div><div class="automation-field"><label for="newTaskPriority">Priority</label><input id="newTaskPriority" type="text" placeholder="low | normal | high" value="normal" /></div><div class="settings-collapse-actions"><button class="btn-sm" onclick="createTaskFromForm()">+ Create</button></div></div>';
+    const groupHtml = groups.map((status) => {
+      const items = tasks.filter((task) => task.status === status);
+      if (items.length === 0) return '';
+      const rows = items.map((task) => {
+        const progress = Math.max(0, Math.min(100, Number(task.progressPercent) || 0));
+        const lastCheckIn = Array.isArray(task.checkIns) && task.checkIns.length > 0 ? task.checkIns[task.checkIns.length - 1] : null;
+        const meta = [
+          task.priority ? esc(task.priority) : null,
+          task.assigneeId ? '→ ' + esc(task.assigneeId) : null,
+          lastCheckIn ? 'last: ' + esc(lastCheckIn.message).slice(0, 60) : null,
+        ].filter(Boolean).join(' · ');
+        const actionable = status !== 'done' && status !== 'cancelled' && status !== 'failed';
+        const advance = actionable ? '<button class="btn-sm" onclick="updateTaskStatus(\'' + esc(task.id) + '\', \'done\')">Done</button> <button class="btn-sm" onclick="updateTaskStatus(\'' + esc(task.id) + '\', \'cancelled\')">Cancel</button>' : '';
+        return '<div class="skill-card"><div class="skill-card-top"><div><div class="skill-card-name">' + esc(task.title) + '</div><div class="skill-card-meta">' + meta + '</div></div><div class="skill-card-actions-right">' + advance + ' <button class="sk-del" onclick="deleteTaskById(\'' + esc(task.id) + '\')" title="Delete task">✕</button></div></div><div style="height:6px;background:var(--surface3);border-radius:4px;overflow:hidden;margin-top:6px"><div style="height:100%;width:' + progress + '%;background:var(--accent)"></div></div></div>';
+      }).join('');
+      return '<div class="mem-section"><h5>' + esc(groupLabels[status]) + ' (' + items.length + ')</h5><div class="skills-gallery">' + rows + '</div></div>';
+    }).join('');
+    view.innerHTML = summaryLine + newForm + (groupHtml || '<div class="trace-meta">No tasks yet — create one above.</div>');
+  } catch (error) {
+    view.textContent = 'Failed to load tasks: ' + (error && error.message ? error.message : error);
+  }
+}
+
+async function createTaskFromForm() {
+  const titleEl = document.getElementById('newTaskTitle');
+  const assigneeEl = document.getElementById('newTaskAssignee');
+  const priorityEl = document.getElementById('newTaskPriority');
+  const title = titleEl ? titleEl.value.trim() : '';
+  if (!title) { alert('Title is required.'); return; }
+  const body = { title };
+  if (assigneeEl && assigneeEl.value.trim()) body.assigneeId = assigneeEl.value.trim();
+  if (priorityEl && priorityEl.value.trim()) body.priority = priorityEl.value.trim();
+  try {
+    const response = await fetch('/api/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    if (titleEl) titleEl.value = '';
+    await loadTasks();
+  } catch (error) {
+    alert('Create failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function updateTaskStatus(id, status) {
+  try {
+    const response = await fetch('/api/tasks/' + encodeURIComponent(id), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    await loadTasks();
+  } catch (error) {
+    alert('Update failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function deleteTaskById(id) {
+  if (!confirm('Delete this task?')) return;
+  try {
+    const response = await fetch('/api/tasks/' + encodeURIComponent(id), { method: 'DELETE' });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    await loadTasks();
+  } catch (error) {
+    alert('Delete failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+// Live updates: when the WebSocket pushes a task event, refresh the board if visible.
+(function attachTasksWebSocket() {
+  if (typeof WebSocket === 'undefined') return;
+  let ws = null;
+  let reconnectTimer = null;
+  function connect() {
+    try {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      ws = new WebSocket(proto + '://' + location.host + '/ws');
+      ws.addEventListener('message', (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (!message) return;
+          // Server may batch events into `event_batch` when WS coalescing
+          // is on. Fan out to the same per-event handler so downstream
+          // logic stays unchanged.
+          if (message.type === 'event_batch' && Array.isArray(message.events)) {
+            for (const inner of message.events) {
+              if (inner && inner.type === 'event' && inner.event) handleHarnessEvent(inner.event);
+            }
+            return;
+          }
+          if (message.type !== 'event' || !message.event) return;
+          handleHarnessEvent(message.event);
+        } catch { /* ignore parse errors */ }
+      });
+      function handleHarnessEvent(harnessEvent) {
+        const category = harnessEvent.category;
+        const type = harnessEvent.type;
+        if (category === 'task') {
+          const view = document.getElementById('tasksView');
+          if (view && view.style.display === 'block') loadTasks();
+        } else if (category === 'tool' || category === 'permission') {
+          const view = document.getElementById('auditView');
+          if (view && view.style.display === 'block') loadAudit();
+        } else if (category === 'notification' && type === 'trigger.message') {
+          const view = document.getElementById('triggersView');
+          if (view && view.style.display === 'block') loadTriggers();
+        } else if (category === 'system' && (type === 'subagent.start' || type === 'subagent.end' || type === 'subagent.cancel')) {
+          // Live refresh of the active sub-agents bar above the chat input.
+          loadActiveSubagentsBar();
+        }
+      }
+      ws.addEventListener('close', scheduleReconnect);
+      ws.addEventListener('error', () => { try { ws && ws.close(); } catch {} });
+    } catch {
+      scheduleReconnect();
+    }
+  }
+  function scheduleReconnect() {
+    if (reconnectTimer) return;
+    reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 3000);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', connect);
+  else connect();
+})();
+
+// Local UI state for the audit tab — persists across re-renders within
+// a session but not across page reloads (it's a quick-look filter).
+const auditFilterState = { eventType: '', tool: '' };
+
+async function loadAudit() {
+  const view = document.getElementById('auditView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-meta">Loading audit log…</div>';
+  try {
+    const response = await fetch('/api/permissions/audit?limit=500');
+    const data = await response.json();
+    if (data.error) { view.textContent = data.error; return; }
+    const allEntries = Array.isArray(data.entries) ? data.entries.slice().reverse() : [];
+    if (allEntries.length === 0) {
+      view.innerHTML = '<div class="tools-summary-line"><strong>0</strong> audit entries — every tool call is appended to .harness/audit.log.</div>';
+      return;
+    }
+    const eventTypes = Array.from(new Set(allEntries.map((entry) => entry.eventType))).sort();
+    const tools = Array.from(new Set(allEntries.map((entry) => entry.tool || '(none)'))).sort();
+    const filtered = allEntries.filter((entry) => {
+      if (auditFilterState.eventType && entry.eventType !== auditFilterState.eventType) return false;
+      if (auditFilterState.tool && (entry.tool || '(none)') !== auditFilterState.tool) return false;
+      return true;
+    });
+    const eventChips = ['<span class="trace-meta" style="margin-right:6px">Event:</span>',
+      '<button class="btn-sm" onclick="setAuditFilter(\'eventType\',\'\')"' + (auditFilterState.eventType === '' ? ' style="border-color:var(--accent);color:var(--accent)"' : '') + '>all</button>',
+      ...eventTypes.map((t) => '<button class="btn-sm" onclick="setAuditFilter(\'eventType\',\'' + esc(t) + '\')"' + (auditFilterState.eventType === t ? ' style="border-color:var(--accent);color:var(--accent)"' : '') + '>' + esc(t) + '</button>'),
+    ].join(' ');
+    const toolChips = ['<span class="trace-meta" style="margin:0 6px 0 12px">Tool:</span>',
+      '<button class="btn-sm" onclick="setAuditFilter(\'tool\',\'\')"' + (auditFilterState.tool === '' ? ' style="border-color:var(--accent);color:var(--accent)"' : '') + '>all</button>',
+      ...tools.map((t) => '<button class="btn-sm" onclick="setAuditFilter(\'tool\',\'' + esc(t) + '\')"' + (auditFilterState.tool === t ? ' style="border-color:var(--accent);color:var(--accent)"' : '') + '>' + esc(t) + '</button>'),
+    ].join(' ');
+    const summary = '<div class="tools-summary-line"><strong>' + filtered.length + '</strong> of <strong>' + allEntries.length + '</strong> entries shown</div><div class="settings-collapse-actions" style="flex-wrap:wrap;justify-content:flex-start;gap:4px">' + eventChips + toolChips + '</div>';
+    const rows = filtered.map((entry) => {
+      const eventClass = entry.eventType === 'PostToolUseFailure' ? 'error'
+        : entry.eventType === 'PreToolUse' ? 'accent'
+        : '';
+      const inputBlock = entry.input ? '<div class="trace-meta">Input: ' + esc(String(entry.input).slice(0, 400)) + '</div>' : '';
+      const outputBlock = entry.output ? '<div class="trace-meta">Output: ' + esc(String(entry.output).slice(0, 400)) + '</div>' : '';
+      const errorBlock = entry.error ? '<div class="trace-meta" style="color:var(--error)">Error: ' + esc(entry.error) + '</div>' : '';
+      const toolName = entry.tool || '(no tool)';
+      const drillButton = entry.tool ? ' <button class="btn-sm" onclick="setAuditFilter(\'tool\',\'' + esc(entry.tool) + '\')">drill</button>' : '';
+      return '<div class="skill-card"><div class="skill-card-top"><div><div class="skill-card-name ' + eventClass + '">' + esc(entry.eventType) + ' · ' + esc(toolName) + '</div><div class="skill-card-meta">' + esc(entry.timestamp) + '</div></div><div class="skill-card-actions-right">' + drillButton + '</div></div>' + inputBlock + outputBlock + errorBlock + '</div>';
+    }).join('');
+    view.innerHTML = summary + '<div class="skills-gallery">' + (rows || '<div class="trace-meta">No entries match the current filter.</div>') + '</div>';
+  } catch (error) {
+    view.textContent = 'Failed to load audit log: ' + (error && error.message ? error.message : error);
+  }
+}
+
+function setAuditFilter(field, value) {
+  auditFilterState[field] = value;
+  loadAudit();
+}
+
+async function loadTriggers() {
+  const view = document.getElementById('triggersView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-meta">Loading triggers…</div>';
+  try {
+    const response = await fetch('/api/triggers');
+    const data = await response.json();
+    if (data.error) { view.textContent = data.error; return; }
+    const triggers = Array.isArray(data.triggers) ? data.triggers : [];
+    const enabled = data.enabled === true;
+    const status = '<div class="tools-summary-line">Trigger scheduler: <strong>' + (enabled ? 'enabled' : 'disabled') + '</strong> · ' + triggers.length + ' trigger(s) configured</div>';
+    const newForm = '<div class="automation-wizard"><div class="automation-wizard-title">New trigger</div><div class="automation-field"><label for="newTriggerId">Id</label><input id="newTriggerId" type="text" placeholder="email-poll" /></div><div class="automation-field"><label for="newTriggerCommand">Command</label><input id="newTriggerCommand" type="text" placeholder="node" /></div><div class="automation-field"><label for="newTriggerArgs">Args (space-separated)</label><input id="newTriggerArgs" type="text" placeholder="scripts/check-email.js" /></div><div class="automation-field"><label for="newTriggerInterval">Interval (seconds, min 5)</label><input id="newTriggerInterval" type="number" value="30" min="5" /></div><div class="settings-collapse-actions"><button class="btn-sm" onclick="createTriggerFromForm()">+ Create</button></div></div>';
+    const rows = triggers.map((trigger) => {
+      const meta = [
+        'every ' + trigger.intervalSeconds + 's',
+        trigger.enabled === false ? 'disabled' : 'enabled',
+      ].join(' · ');
+      const cmdLine = esc(trigger.command) + (Array.isArray(trigger.args) && trigger.args.length ? ' ' + esc(trigger.args.join(' ')) : '');
+      const toggleLabel = trigger.enabled === false ? 'Enable' : 'Disable';
+      const toggleVal = trigger.enabled === false ? 'true' : 'false';
+      return '<div class="skill-card"><div class="skill-card-top"><div><div class="skill-card-name">' + esc(trigger.id) + '</div><div class="skill-card-meta">' + meta + '</div><div class="skill-card-meta"><code>' + cmdLine + '</code></div></div><div class="skill-card-actions-right"><button class="btn-sm" onclick="setTriggerEnabled(\'' + esc(trigger.id) + '\', ' + toggleVal + ')">' + toggleLabel + '</button> <button class="sk-del" onclick="deleteTriggerById(\'' + esc(trigger.id) + '\')" title="Delete trigger">✕</button></div></div></div>';
+    }).join('');
+    view.innerHTML = status + newForm + (rows ? '<div class="skills-gallery">' + rows + '</div>' : '<div class="trace-meta">No triggers yet — create one above.</div>');
+  } catch (error) {
+    view.textContent = 'Failed to load triggers: ' + (error && error.message ? error.message : error);
+  }
+}
+
+async function createTriggerFromForm() {
+  const idEl = document.getElementById('newTriggerId');
+  const commandEl = document.getElementById('newTriggerCommand');
+  const argsEl = document.getElementById('newTriggerArgs');
+  const intervalEl = document.getElementById('newTriggerInterval');
+  const id = idEl ? idEl.value.trim() : '';
+  const command = commandEl ? commandEl.value.trim() : '';
+  if (!id || !command) { alert('id and command are required.'); return; }
+  const args = argsEl && argsEl.value.trim() ? argsEl.value.trim().split(/\s+/) : [];
+  const intervalSeconds = intervalEl ? Math.max(5, Number(intervalEl.value) || 30) : 30;
+  try {
+    const response = await fetch('/api/triggers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, command, args, intervalSeconds, enabled: true }) });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    if (idEl) idEl.value = '';
+    if (commandEl) commandEl.value = '';
+    if (argsEl) argsEl.value = '';
+    await loadTriggers();
+  } catch (error) {
+    alert('Create failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function setTriggerEnabled(id, enabled) {
+  try {
+    const response = await fetch('/api/triggers/' + encodeURIComponent(id), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    await loadTriggers();
+  } catch (error) {
+    alert('Update failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function deleteTriggerById(id) {
+  if (!confirm('Delete trigger ' + id + '?')) return;
+  try {
+    const response = await fetch('/api/triggers/' + encodeURIComponent(id), { method: 'DELETE' });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    await loadTriggers();
+  } catch (error) {
+    alert('Delete failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function loadAgents() {
+  const view = document.getElementById('agentsView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-meta">Loading agents…</div>';
+  try {
+    const response = await fetch('/api/agents');
+    const data = await response.json();
+    if (data.error) { view.textContent = data.error; return; }
+    const agents = Array.isArray(data.agents) ? data.agents : [];
+    const summary = '<div class="tools-summary-line"><strong>' + agents.length + '</strong> agents (built-in + custom under .harness/agents/)</div>';
+    const newForm = '<div class="automation-wizard"><div class="automation-wizard-title">New custom agent</div><div class="automation-field"><label for="newAgentId">Id</label><input id="newAgentId" type="text" placeholder="finance-analyst" /></div><div class="automation-field"><label for="newAgentName">Name</label><input id="newAgentName" type="text" placeholder="Finance Analyst" /></div><div class="automation-field"><label for="newAgentDescription">Description</label><input id="newAgentDescription" type="text" placeholder="Reviews ledgers and budgets." /></div><div class="automation-field"><label for="newAgentPreset">Preset (optional)</label><input id="newAgentPreset" type="text" placeholder="explore | plan | review | summarize | general" /></div><div class="automation-field"><label for="newAgentSystemPrompt">System prompt</label><textarea id="newAgentSystemPrompt" rows="4" placeholder="You are a Finance Analyst..."></textarea></div><div class="settings-collapse-actions"><button class="btn-sm" onclick="createAgentFromForm()">+ Create</button></div></div>';
+    const rows = agents.map((agent) => {
+      const sourceBadge = agent.source === 'custom' ? 'custom' : 'built-in';
+      const meta = [
+        sourceBadge,
+        agent.role ? esc(agent.role) : null,
+        agent.preset ? 'preset: ' + esc(agent.preset) : null,
+      ].filter(Boolean).join(' · ');
+      const allowed = Array.isArray(agent.allowedTools) && agent.allowedTools.length > 0
+        ? '<div class="skill-card-meta">tools: ' + esc(agent.allowedTools.slice(0, 6).join(', ')) + (agent.allowedTools.length > 6 ? '…' : '') + '</div>' : '';
+      const description = agent.description ? '<div class="skill-card-desc">' + esc(agent.description) + '</div>' : '';
+      const actions = agent.source === 'custom' ? '<button class="sk-del" onclick="deleteAgentById(\'' + esc(agent.id) + '\')" title="Delete custom agent">✕</button>' : '';
+      return '<div class="skill-card"><div class="skill-card-top"><div><div class="skill-card-name">' + esc(agent.name) + '</div><div class="skill-card-meta">' + meta + '</div></div><div class="skill-card-actions-right">' + actions + '</div></div>' + description + allowed + '</div>';
+    }).join('');
+    view.innerHTML = summary + newForm + '<div class="skills-gallery">' + rows + '</div>';
+  } catch (error) {
+    view.textContent = 'Failed to load agents: ' + (error && error.message ? error.message : error);
+  }
+}
+
+async function createAgentFromForm() {
+  const fields = ['newAgentId', 'newAgentName', 'newAgentDescription', 'newAgentPreset', 'newAgentSystemPrompt'].map((id) => document.getElementById(id));
+  const [idEl, nameEl, descEl, presetEl, promptEl] = fields;
+  const id = idEl ? idEl.value.trim() : '';
+  const name = nameEl ? nameEl.value.trim() : '';
+  const systemPrompt = promptEl ? promptEl.value.trim() : '';
+  if (!id || !name || !systemPrompt) { alert('id, name, and system prompt are required.'); return; }
+  const body = {
+    id,
+    name,
+    description: descEl ? descEl.value.trim() : '',
+    preset: presetEl && presetEl.value.trim() ? presetEl.value.trim() : undefined,
+    systemPrompt,
+  };
+  try {
+    const response = await fetch('/api/agents', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    fields.forEach((field) => { if (field) field.value = ''; });
+    await loadAgents();
+  } catch (error) {
+    alert('Create failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function deleteAgentById(id) {
+  if (!confirm('Delete custom agent ' + id + '?')) return;
+  try {
+    const response = await fetch('/api/agents/' + encodeURIComponent(id), { method: 'DELETE' });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    await loadAgents();
+  } catch (error) {
+    alert('Delete failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function loadSquads() {
+  const view = document.getElementById('squadsView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-meta">Loading squads…</div>';
+  try {
+    const response = await fetch('/api/squads');
+    const data = await response.json();
+    if (data.error) { view.textContent = data.error; return; }
+    const squads = Array.isArray(data.squads) ? data.squads : [];
+    const summary = '<div class="tools-summary-line"><strong>' + squads.length + '</strong> squad(s) configured</div>';
+    const newForm = '<div class="automation-wizard"><div class="automation-wizard-title">New squad</div><div class="automation-field"><label for="newSquadId">Id</label><input id="newSquadId" type="text" placeholder="eng" /></div><div class="automation-field"><label for="newSquadName">Name</label><input id="newSquadName" type="text" placeholder="Engineering" /></div><div class="automation-field"><label for="newSquadLead">Lead agent id</label><input id="newSquadLead" type="text" placeholder="architect" /></div><div class="automation-field"><label for="newSquadAutonomy">Autonomy</label><input id="newSquadAutonomy" type="text" value="supervised" placeholder="supervised | semi-autonomous | autonomous" /></div><div class="settings-collapse-actions"><button class="btn-sm" onclick="createSquadFromForm()">+ Create</button></div></div>';
+    const rows = squads.map((squad) => {
+      const meta = [
+        'lead: ' + esc(squad.leadAgentId || '?'),
+        esc(squad.autonomy || 'supervised'),
+        squad.roster && squad.roster.length ? squad.roster.length + ' on roster' : null,
+      ].filter(Boolean).join(' · ');
+      const desc = squad.description ? '<div class="skill-card-desc">' + esc(squad.description) + '</div>' : '';
+      const rules = Array.isArray(squad.routingRules) ? squad.routingRules : [];
+      const rulesRows = rules.length === 0
+        ? '<div class="trace-meta" style="margin-top:6px">No routing rules — every message falls back to lead agent.</div>'
+        : '<div class="trace-meta" style="margin-top:6px"><strong>' + rules.length + ' routing rule(s)</strong> (highest priority wins):</div>'
+          + rules.map((rule, idx) => '<div class="settings-collapse-actions" style="justify-content:flex-start;gap:6px;margin-top:4px"><code style="flex:1;background:var(--surface3);padding:3px 6px;border-radius:4px;font-size:11px">/' + esc(rule.pattern) + '/i</code> → <strong>' + esc(rule.agentId) + '</strong> <span class="trace-meta">(p=' + (rule.priority || 0) + ')</span> <button class="sk-del" onclick="deleteSquadRule(\'' + esc(squad.id) + '\',' + idx + ')" title="Delete rule">✕</button></div>').join('');
+      const ruleForm = '<div class="settings-collapse-actions" style="gap:4px;margin-top:8px;flex-wrap:wrap"><input id="newRulePattern_' + esc(squad.id) + '" type="text" placeholder="regex pattern" style="flex:2;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px;font-family:monospace" /><input id="newRuleAgent_' + esc(squad.id) + '" type="text" placeholder="agent id" style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px" /><input id="newRulePriority_' + esc(squad.id) + '" type="number" placeholder="priority" value="10" style="width:70px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px" /><button class="btn-sm" onclick="addSquadRule(\'' + esc(squad.id) + '\')">+ Rule</button></div>';
+      return '<div class="skill-card"><div class="skill-card-top"><div><div class="skill-card-name">' + esc(squad.name) + '</div><div class="skill-card-meta">' + meta + '</div></div><div class="skill-card-actions-right"><button class="sk-del" onclick="deleteSquadById(\'' + esc(squad.id) + '\')" title="Delete squad">✕</button></div></div>' + desc + rulesRows + ruleForm + '</div>';
+    }).join('');
+    view.innerHTML = summary + newForm + (rows ? '<div class="skills-gallery">' + rows + '</div>' : '<div class="trace-meta">No squads yet — create one above.</div>');
+  } catch (error) {
+    view.textContent = 'Failed to load squads: ' + (error && error.message ? error.message : error);
+  }
+}
+
+async function createSquadFromForm() {
+  const fields = ['newSquadId', 'newSquadName', 'newSquadLead', 'newSquadAutonomy'].map((id) => document.getElementById(id));
+  const [idEl, nameEl, leadEl, autonomyEl] = fields;
+  const id = idEl ? idEl.value.trim() : '';
+  const name = nameEl ? nameEl.value.trim() : '';
+  const leadAgentId = leadEl ? leadEl.value.trim() : '';
+  if (!id || !name || !leadAgentId) { alert('id, name, and lead agent id are required.'); return; }
+  const body = { id, name, leadAgentId, autonomy: autonomyEl && autonomyEl.value.trim() ? autonomyEl.value.trim() : 'supervised' };
+  try {
+    const response = await fetch('/api/squads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    fields.forEach((field) => { if (field) field.value = field === autonomyEl ? 'supervised' : ''; });
+    await loadSquads();
+  } catch (error) {
+    alert('Create failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function deleteSquadById(id) {
+  if (!confirm('Delete squad ' + id + '?')) return;
+  try {
+    const response = await fetch('/api/squads/' + encodeURIComponent(id), { method: 'DELETE' });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    await loadSquads();
+  } catch (error) {
+    alert('Delete failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function addSquadRule(squadId) {
+  const patternEl = document.getElementById('newRulePattern_' + squadId);
+  const agentEl = document.getElementById('newRuleAgent_' + squadId);
+  const priorityEl = document.getElementById('newRulePriority_' + squadId);
+  const pattern = patternEl ? patternEl.value.trim() : '';
+  const agentId = agentEl ? agentEl.value.trim() : '';
+  if (!pattern || !agentId) { alert('pattern and agent id are required.'); return; }
+  // Validate regex client-side so the user sees immediate feedback.
+  try { new RegExp(pattern); } catch (error) { alert('Invalid regex: ' + (error && error.message ? error.message : error)); return; }
+  const priority = priorityEl ? Math.floor(Number(priorityEl.value) || 0) : 0;
+  try {
+    const current = await fetch('/api/squads/' + encodeURIComponent(squadId)).then((r) => r.json());
+    if (current.error || !current.squad) throw new Error(current.error || 'Squad not found');
+    const routingRules = Array.isArray(current.squad.routingRules) ? current.squad.routingRules.slice() : [];
+    routingRules.push({ pattern, agentId, priority });
+    const response = await fetch('/api/squads/' + encodeURIComponent(squadId), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ routingRules }) });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    if (patternEl) patternEl.value = '';
+    if (agentEl) agentEl.value = '';
+    await loadSquads();
+  } catch (error) {
+    alert('Add rule failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function deleteSquadRule(squadId, index) {
+  try {
+    const current = await fetch('/api/squads/' + encodeURIComponent(squadId)).then((r) => r.json());
+    if (current.error || !current.squad) throw new Error(current.error || 'Squad not found');
+    const routingRules = Array.isArray(current.squad.routingRules) ? current.squad.routingRules.slice() : [];
+    if (index < 0 || index >= routingRules.length) return;
+    routingRules.splice(index, 1);
+    const response = await fetch('/api/squads/' + encodeURIComponent(squadId), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ routingRules }) });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    await loadSquads();
+  } catch (error) {
+    alert('Delete rule failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function loadIdentity() {
+  const view = document.getElementById('identityView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-meta">Loading identity…</div>';
+  try {
+    const response = await fetch('/api/identity');
+    const data = await response.json();
+    if (data.error) { view.textContent = data.error; return; }
+    const soul = (data && typeof data.soul === 'string') ? data.soul : '';
+    const user = (data && typeof data.user === 'string') ? data.user : '';
+    const entries = (data && data.structured && Array.isArray(data.structured.entries)) ? data.structured.entries : [];
+    const summary = '<div class="tools-summary-line">Identity files persisted under <strong>.harness/identity/</strong></div>';
+    const soulPanel = '<div class="mem-section"><h5>SOUL.md <button class="mem-edit-btn" onclick="saveIdentityFile(\'SOUL.md\')">Save</button></h5><textarea id="identitySoulText" rows="8" style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:\'Cascadia Code\',\'Fira Code\',monospace;font-size:12px">' + esc(soul) + '</textarea></div>';
+    const userPanel = '<div class="mem-section"><h5>USER.md <button class="mem-edit-btn" onclick="saveIdentityFile(\'USER.md\')">Save</button></h5><textarea id="identityUserText" rows="8" style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:\'Cascadia Code\',\'Fira Code\',monospace;font-size:12px">' + esc(user) + '</textarea></div>';
+    const newEntryForm = '<div class="automation-wizard"><div class="automation-wizard-title">New structured fact</div><div class="automation-field"><label for="newIdentityCategory">Category</label><input id="newIdentityCategory" type="text" placeholder="preference | project | person" /></div><div class="automation-field"><label for="newIdentitySummary">Summary</label><input id="newIdentitySummary" type="text" placeholder="Prefers concise answers" /></div><div class="settings-collapse-actions"><button class="btn-sm" onclick="addIdentityEntry()">+ Add</button></div></div>';
+    const entryRows = entries.map((entry) => {
+      return '<div class="skill-card"><div class="skill-card-top"><div><div class="skill-card-name">' + esc(entry.category) + '</div><div class="skill-card-meta">' + esc(entry.summary) + '</div></div><div class="skill-card-actions-right"><button class="sk-del" onclick="deleteIdentityEntry(\'' + esc(entry.id) + '\')" title="Delete entry">✕</button></div></div></div>';
+    }).join('');
+    const entriesPanel = '<div class="mem-section"><h5>structured.json (' + entries.length + ' entries)</h5>' + newEntryForm + (entryRows ? '<div class="skills-gallery">' + entryRows + '</div>' : '<div class="trace-meta">No structured facts yet.</div>') + '</div>';
+    view.innerHTML = summary + soulPanel + userPanel + entriesPanel;
+  } catch (error) {
+    view.textContent = 'Failed to load identity: ' + (error && error.message ? error.message : error);
+  }
+}
+
+async function saveIdentityFile(fileName) {
+  const textareaId = fileName === 'SOUL.md' ? 'identitySoulText' : 'identityUserText';
+  const el = document.getElementById(textareaId);
+  if (!el) return;
+  try {
+    const response = await fetch('/api/identity/' + encodeURIComponent(fileName), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: el.value }) });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+  } catch (error) {
+    alert('Save failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function addIdentityEntry() {
+  const categoryEl = document.getElementById('newIdentityCategory');
+  const summaryEl = document.getElementById('newIdentitySummary');
+  const category = categoryEl ? categoryEl.value.trim() : '';
+  const summary = summaryEl ? summaryEl.value.trim() : '';
+  if (!category || !summary) { alert('category and summary are required.'); return; }
+  try {
+    const response = await fetch('/api/identity/structured', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ category, summary }) });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    if (categoryEl) categoryEl.value = '';
+    if (summaryEl) summaryEl.value = '';
+    await loadIdentity();
+  } catch (error) {
+    alert('Add failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function deleteIdentityEntry(id) {
+  if (!confirm('Delete entry ' + id + '?')) return;
+  try {
+    const response = await fetch('/api/identity/structured/' + encodeURIComponent(id), { method: 'DELETE' });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    await loadIdentity();
+  } catch (error) {
+    alert('Delete failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+// ─── Artifacts browser ─────────────────────────────────────────────
+// Cross-session view of every file the agent has written into
+// agent-outputs/ (or the configured Agent Files directory). Auto-tagged
+// by file extension so users can filter quickly without an LLM.
+let _artifactsState = { category: '', search: '' };
+async function loadArtifacts() {
+  const view = document.getElementById('artifactsView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-meta">Loading artifacts…</div>';
+  try {
+    const params = new URLSearchParams();
+    if (_artifactsState.category) params.set('category', _artifactsState.category);
+    if (_artifactsState.search) params.set('search', _artifactsState.search);
+    const queryString = params.toString();
+    const artifactsUrl = queryString ? '/api/artifacts?' + queryString : '/api/artifacts';
+    const response = await fetch(artifactsUrl);
+    const data = await response.json();
+    if (data.error) { view.textContent = data.error; return; }
+    const root = data.root || '';
+    const records = Array.isArray(data.artifacts) ? data.artifacts : [];
+    const categories = ['', 'code', 'document', 'data', 'image', 'web', 'script', 'archive', 'other'];
+    const catOptions = categories.map((cat) => '<option value="' + esc(cat) + '"' + (_artifactsState.category === cat ? ' selected' : '') + '>' + (cat || 'all categories') + '</option>').join('');
+    const header = '<div class="tools-summary-line"><strong>' + records.length + '</strong> artifact(s) under <code>' + esc(root) + '</code></div>'
+      + '<div style="display:flex;gap:8px;align-items:center;margin:8px 0">'
+      + '<input type="search" id="artifactsSearchInput" placeholder="Search filename…" value="' + esc(_artifactsState.search) + '" style="flex:1;padding:4px 8px" />'
+      + '<select id="artifactsCategorySelect" style="padding:4px 8px">' + catOptions + '</select>'
+      + '<button class="btn-secondary" onclick="loadArtifacts()" style="padding:4px 10px">Refresh</button>'
+      + '</div>';
+    if (records.length === 0) {
+      view.innerHTML = header + '<div class="trace-meta">No artifacts yet — files written by the agent will appear here.</div>';
+      bindArtifactControls();
+      return;
+    }
+    const rows = records.map((record) => {
+      const sizeKb = record.size >= 1024 ? (record.size / 1024).toFixed(1) + ' KB' : record.size + ' B';
+      const dateLabel = record.modifiedAt ? record.modifiedAt.replace('T', ' ').slice(0, 19) : '';
+      const tagPills = (record.tags || []).slice(0, 5).map((tag) => '<span class="trace-tag" style="font-size:10px;padding:1px 6px;margin-right:4px;border-radius:8px;background:var(--surface2);color:var(--text-dim)">' + esc(tag) + '</span>').join('');
+      return '<div class="trace-row" style="padding:6px 8px;border-bottom:1px solid var(--border)">'
+        + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">'
+        + '<a href="#" onclick="openArtifactPreview(\'' + esc(record.relativePath).replace(/'/g, "\\'") + '\');return false" style="font-weight:600;color:var(--accent);text-decoration:none">' + esc(record.relativePath) + '</a>'
+        + '<span class="trace-meta" style="font-size:11px;white-space:nowrap">' + esc(sizeKb) + ' · ' + esc(dateLabel) + '</span>'
+        + '</div>'
+        + '<div style="margin-top:2px">' + tagPills + '</div>'
+        + '</div>';
+    }).join('');
+    view.innerHTML = header + '<div class="trace-list">' + rows + '</div><div id="artifactPreview"></div>';
+    bindArtifactControls();
+  } catch (error) {
+    view.textContent = 'Failed to load artifacts: ' + (error && error.message ? error.message : error);
+  }
+}
+
+function bindArtifactControls() {
+  const search = document.getElementById('artifactsSearchInput');
+  if (search) {
+    search.oninput = (e) => {
+      _artifactsState.search = e.target.value || '';
+      // debounce via timeout
+      clearTimeout(window._artifactsSearchTimer);
+      window._artifactsSearchTimer = setTimeout(() => loadArtifacts(), 250);
+    };
+  }
+  const catSel = document.getElementById('artifactsCategorySelect');
+  if (catSel) {
+    catSel.onchange = (e) => {
+      _artifactsState.category = e.target.value || '';
+      loadArtifacts();
+    };
+  }
+}
+
+async function openArtifactPreview(relativePath) {
+  const host = document.getElementById('artifactPreview');
+  if (!host) return;
+  host.innerHTML = '<div class="trace-meta">Loading preview of ' + esc(relativePath) + '…</div>';
+  try {
+    const response = await fetch('/api/artifacts/content?path=' + encodeURIComponent(relativePath));
+    const data = await response.json();
+    if (data.error) { host.textContent = data.error; return; }
+    const truncatedNote = data.truncated ? ' (truncated to first 256 KB)' : '';
+    host.innerHTML = '<div class="trace-section" style="margin-top:12px"><div class="tools-summary-line"><strong>' + esc(relativePath) + '</strong> · ' + data.size + ' bytes' + truncatedNote + '</div>'
+      + '<pre style="white-space:pre-wrap;background:var(--surface2);padding:8px;border-radius:4px;max-height:480px;overflow:auto">' + esc(data.content) + '</pre></div>';
+  } catch (error) {
+    host.textContent = 'Preview failed: ' + (error && error.message ? error.message : error);
+  }
+}
+
+async function loadHealth() {
+  const view = document.getElementById('healthView');
+  if (!view) return;
+  view.innerHTML = '<div class="trace-meta">Loading system health…</div>';
+  try {
+    const response = await fetch('/api/system/health');
+    const data = await response.json();
+    if (data.error) { view.textContent = data.error; return; }
+    const killBadge = data.kill_switch && data.kill_switch.active
+      ? '<span style="color:var(--error);font-weight:600">KILL SWITCH ACTIVE</span> — ' + esc(data.kill_switch.reason || '')
+      : '<span style="color:var(--success)">kill switch off</span>';
+    const taskSummary = data.tasks ? Object.entries(data.tasks).filter(([key]) => key !== 'total').map(([key, val]) => esc(key) + ': ' + val).join(' · ') : '';
+    const summaryLine = '<div class="tools-summary-line">' + killBadge + ' · capability grants: <strong>' + (data.capabilities ? data.capabilities.active_grants : 0) + '</strong> active / ' + (data.capabilities ? data.capabilities.total_grants : 0) + ' total · squads: <strong>' + (data.squads ? data.squads.total : 0) + '</strong> · tasks: <strong>' + (data.tasks ? data.tasks.total : 0) + '</strong>' + (taskSummary ? ' (' + taskSummary + ')' : '') + '</div>';
+    function flagToggle(label, key, enabled) {
+      const stateLabel = enabled ? 'ON' : 'OFF';
+      const colour = enabled ? 'var(--accent)' : 'var(--text-dim)';
+      return '<div class="settings-collapse-actions" style="justify-content:space-between;gap:8px;margin-top:6px"><span style="color:' + colour + ';font-weight:600">' + esc(label) + ' — ' + stateLabel + '</span><div><button class="btn-sm" onclick="setHealthFlag(\'' + esc(key) + '\', true)">enable</button> <button class="btn-sm" onclick="setHealthFlag(\'' + esc(key) + '\', false)">disable</button> <button class="btn-sm" onclick="setHealthFlag(\'' + esc(key) + '\', null)">env</button></div></div>';
+    }
+    const flagsPanel = '<div class="mem-section"><h5>Feature flags (override env defaults)</h5>'
+      + flagToggle('Heartbeat', 'heartbeatEnabled', data.heartbeat && data.heartbeat.enabled)
+      + flagToggle('Triggers', 'triggersEnabled', data.triggers && data.triggers.enabled)
+      + flagToggle('Concierge', 'conciergeEnabled', data.concierge && data.concierge.enabled)
+      + flagToggle('Concierge auto-route', 'conciergeAutoRoute', data.concierge && data.concierge.auto_route)
+      + flagToggle('Squad auto-route', 'squadAutoRoute', data.squads && data.squads.auto_route)
+      + flagToggle('OTLP trace export', 'otelExportEnabled', data.observability && data.observability.otel_export_enabled)
+      + '</div>';
+    const lastHb = data.heartbeat && data.heartbeat.last_run_summary;
+    const lastHbBlock = lastHb ? '<div class="trace-meta" style="margin-top:6px">Last tick: ' + esc(lastHb.timestamp) + ' (' + lastHb.durationMs + ' ms; ' + lastHb.actions.length + ' action(s))</div>' : '<div class="trace-meta" style="margin-top:6px">No ticks recorded yet.</div>';
+    const recentRows = data.heartbeat && Array.isArray(data.heartbeat.recent_runs)
+      ? data.heartbeat.recent_runs.slice(-10).reverse().map((run) => '<div class="trace-meta">• ' + esc(run.timestamp) + ' · ' + run.durationMs + ' ms · ' + run.actions.map((act) => (act.ok ? '✓' : '✕') + esc(act.name)).join(' · ') + '</div>').join('')
+      : '';
+    // Inline SVG sparkline: tick durations across the last N heartbeat
+    // runs. Pure DOM, no library — renders inline so it scales with the
+    // panel and stays empty when there's nothing yet.
+    function buildHeartbeatSparkline(runs) {
+      if (!runs || runs.length < 2) return '';
+      const sample = runs.slice(-30).map((run) => Number(run.durationMs) || 0);
+      const w = 240;
+      const h = 36;
+      const max = Math.max(...sample, 1);
+      const stepX = w / Math.max(1, sample.length - 1);
+      const points = sample.map((value, idx) => {
+        const x = (idx * stepX).toFixed(1);
+        const y = (h - (value / max) * (h - 4) - 2).toFixed(1);
+        return x + ',' + y;
+      }).join(' ');
+      const lastValue = sample[sample.length - 1];
+      const avg = Math.round(sample.reduce((sum, value) => sum + value, 0) / sample.length);
+      return '<div style="margin-top:6px;display:flex;align-items:center;gap:8px">'
+        + '<svg width="' + w + '" height="' + h + '" style="display:block">'
+        + '<polyline fill="none" stroke="var(--accent,#6cf)" stroke-width="1.5" points="' + points + '"></polyline>'
+        + '</svg>'
+        + '<span class="trace-meta" style="font-size:11px">last ' + sample.length + ' ticks · avg ' + avg + ' ms · current ' + lastValue + ' ms</span>'
+        + '</div>';
+    }
+    const sparkline = data.heartbeat && Array.isArray(data.heartbeat.recent_runs) ? buildHeartbeatSparkline(data.heartbeat.recent_runs) : '';
+    const heartbeatPanel = '<div class="mem-section"><h5>Heartbeat (' + (data.heartbeat && data.heartbeat.running ? 'running' : 'stopped') + ')</h5>' + lastHbBlock + sparkline + recentRows + '</div>';
+    const conciergeRows = data.concierge && Array.isArray(data.concierge.recent_decisions) && data.concierge.recent_decisions.length > 0
+      ? data.concierge.recent_decisions.slice(-10).reverse().map((entry) => '<div class="trace-meta">• ' + esc(entry.timestamp) + ' · ' + (entry.delegateTo ? '→ ' + esc(entry.delegateTo) : 'direct') + ' · conf=' + (typeof entry.confidence === 'number' ? entry.confidence.toFixed(2) : '?') + (entry.autoRouted ? ' [auto]' : '') + ' · ' + esc(entry.messagePreview).slice(0, 80) + '</div>').join('')
+      : '<div class="trace-meta">No concierge decisions recorded yet.</div>';
+    const conciergePanel = '<div class="mem-section"><h5>Concierge decisions</h5>' + conciergeRows + '</div>';
+    const otherPanel = '<div class="mem-section"><h5>Schedulers</h5><div class="trace-meta">Automation: ' + (data.automation && data.automation.running ? 'running' : 'stopped') + '</div><div class="trace-meta">Curator: ' + (data.curator && data.curator.running ? 'running' : 'stopped') + '</div></div>';
+    view.innerHTML = summaryLine + flagsPanel + heartbeatPanel + conciergePanel + otherPanel;
+  } catch (error) {
+    view.textContent = 'Failed to load health: ' + (error && error.message ? error.message : error);
+  }
+}
+
+async function setHealthFlag(key, enabled) {
+  try {
+    const body = {};
+    body[key] = enabled;
+    const response = await fetch('/api/system/feature-flags', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    await loadHealth();
+  } catch (error) {
+    alert('Update failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
 async function loadEvents() {
   const view = document.getElementById('eventsView');
   if (!view) return;
-  view.innerHTML = '<div class="trace-meta">Loading events…</div>';
-  try {
+  view.innerHTML = '<div class="trace-meta">Loading events…</div>';  try {
     const [summaryR, eventsR] = await Promise.allSettled([
       fetch('/api/events/summary').then((r) => r.json()),
       fetch('/api/events?limit=50').then((r) => r.json()),

@@ -23,6 +23,7 @@ import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
 import { scanSkillsDir, type SkillDefinition } from '../extensibility/skillLoader';
 import { loadSkillUsage, saveSkillUsage, setSkillArchived, type SkillUsageRecord, type SkillUsageStore } from '../extensibility/skillUsage';
+import { loadSafetyRules, scanSafetyText, type SafetyViolation } from '../learning/promotionGate';
 
 export interface CuratorConfig {
   /** Days without use before a skill is considered stale. */
@@ -42,7 +43,7 @@ export const DEFAULT_CURATOR_CONFIG: CuratorConfig = {
   enableLlmPhase: false,
 };
 
-export type CuratorActionKind = 'archive' | 'restore' | 'merge-proposed' | 'skip-pinned' | 'skip-active' | 'skip-cap';
+export type CuratorActionKind = 'archive' | 'restore' | 'merge-proposed' | 'skip-pinned' | 'skip-active' | 'skip-cap' | 'skip-safety';
 
 export interface CuratorAction {
   kind: CuratorActionKind;
@@ -52,6 +53,8 @@ export interface CuratorAction {
   daysSinceUse?: number;
   viewCount?: number;
   useCount?: number;
+  /** Populated when kind === 'skip-safety'. */
+  safetyViolations?: SafetyViolation[];
 }
 
 export interface CuratorRunSummary {
@@ -205,12 +208,33 @@ export async function runDeterministicPhase(
   const archiveCandidates = candidates.filter((action) => action.kind === 'archive');
   const archived: CuratorAction[] = [];
 
+  // Per-skill safety pre-check. Built-in + any custom rules in
+  // .harness/safety-rules.json. A high-severity match blocks archive
+  // (we'd rather surface the skill than silently rotate it) and is
+  // recorded as `skip-safety`. Off-by-default via env so the existing
+  // archive flow stays unchanged unless the operator opts in.
+  const safetyEnabled = process.env.HARNESS_CURATOR_SAFETY_GATE === '1';
+  const safetyRules = safetyEnabled ? await loadSafetyRules(projectDir).catch(() => undefined) : undefined;
+  const skillByName = new Map<string, SkillDefinition>();
+  for (const skill of scan.skills) skillByName.set(skill.name, skill);
+
   if (!options.dryRun) {
     let count = 0;
     for (const candidate of archiveCandidates) {
       if (count >= config.maxArchivePerRun) {
         archived.push({ kind: 'skip-cap', skill: candidate.skill, reason: `Per-run cap (${config.maxArchivePerRun}) reached.` });
         continue;
+      }
+      if (safetyEnabled && safetyRules) {
+        const skill = skillByName.get(candidate.skill);
+        const violations = skill ? scanSafetyText(skill.content, 'outcome', safetyRules) : [];
+        const blocking = violations.find((violation) => violation.severity === 'high');
+        if (blocking) {
+          archived.push({ kind: 'skip-safety', skill: candidate.skill, reason: `Safety rule fired: ${blocking.ruleLabel} (${blocking.severity})`, safetyViolations: violations });
+          await appendAuditLog(projectDir, { phase: 'deterministic', action: 'skip-safety', skill: candidate.skill, ruleId: blocking.ruleId });
+          runtimeTracer.recordEvent('curator.skip_safety', { skill: candidate.skill, ruleId: blocking.ruleId, severity: blocking.severity });
+          continue;
+        }
       }
       try {
         await archiveSkill(projectDir, candidate.skill);

@@ -51,7 +51,7 @@ export type { ServiceCommandType, ExtractedCommand, CommandExtractionResult, Sta
 export { DEFAULT_EXECUTORS, registerDefaultExecutors } from './services/workerExecutors';
 export { discoverExtensionManifests } from './extensibility/extensionManifest';
 export type { ExtensionManifest, ExtensionManifestKind } from './extensibility/extensionManifest';
-export { AgentTool, appendSubagentRoutingMetric, listSubagentRoutingMetrics, runSubagent, resolveSubagentConfig } from './agents/subagent';
+export { AgentTool, appendSubagentRoutingMetric, createSubagentTool, listSubagentRoutingMetrics, runSubagent, resolveSubagentConfig } from './agents/subagent';
 export type { SubagentRoutingMetric } from './agents/subagent';
 export { HELPER_AGENT_PRESETS, calibrateModelRoutingPolicy, createHelperAgentConfig, getHelperAgentPreset, selectModelForTask, summarizeRoutingMetrics } from './agents/modelRouting';
 export type { HelperAgentPreset, HelperTaskType, ModelRoutingCalibration, ModelRoutingDecision, ModelRoutingInput, ModelRoutingPolicy, ModelTier, RoutingMetricBucket, RoutingMetricInput, RoutingMetricsSummary, TaskRisk } from './agents/modelRouting';
@@ -65,9 +65,7 @@ export type { LoopConfig, LoopEvent, OutputValidationEvent, Tool, ToolResult, To
 
 // ─── Promise Ledger ─────────────────────────────────────────────────
 export { createPromise, listPromises, updatePromise, checkObligations, fulfilPromise, failPromise, detectCommitments } from './services/promiseLedger';
-export type { AgentPromise, PromiseStatus, PromiseBreachEvent, ObligationCheckResult } from './services/promiseLedger';
-
-// ─── Service Lifecycle ──────────────────────────────────────────────
+export type { AgentPromise, PromiseStatus, PromiseBreachEvent, ObligationCheckResult } from './services/promiseLedger';// ─── Service Lifecycle ──────────────────────────────────────────────
 export { canTransition, getServiceLifecycle, getServiceTemplate, initServiceLifecycle, probeServiceHealth, transitionService, SERVICE_TEMPLATES } from './services/serviceLifecycle';
 export type { ServiceLifecycleStatus, ServiceLifecycleState, ServiceTransitionResult, ServiceTemplate } from './services/serviceLifecycle';
 
@@ -78,6 +76,47 @@ export type { EventCategory, HarnessEvent, EventSnapshot, EventQuery, EventStore
 // ─── Done-State Verifier ────────────────────────────────────────────
 export { verifyCode, verifyService, verifyPromiseFulfillability } from './core/doneStateVerifier';
 export type { VerificationDomain, VerificationStatus, VerificationCheck, VerificationResult, PromiseVerifyInput } from './core/doneStateVerifier';
+
+// ─── Task Store ─────────────────────────────────────────────────────
+export { createTask, deleteTask, detectStaleTasks, getTask, listTasks, recordCheckIn, summarizeTasks, updateTask } from './services/taskStore';
+export type { Task, TaskCheckIn, TaskPriority, TaskStatus, CreateTaskInput, UpdateTaskInput, StaleTaskReport } from './services/taskStore';
+
+// ─── Memory Intelligence ────────────────────────────────────────────
+export { appendMemorySection, parseMemoryFile, renderMemoryFileForPrompt, runMemoryGc, runMemoryMaintenance, searchMemory, serializeMemoryFile } from './services/memoryIntelligence';
+export type { Importance, MemoryFile, MemorySection, MemoryGcSummary, MemoryMaintenanceSummary, RankedSection } from './services/memoryIntelligence';
+
+// ─── Self-Learning Heartbeat ────────────────────────────────────────
+export { SelfLearningHeartbeat, createIdentityGcAction, createWorkAssignedTasksAction, defaultHeartbeatActions, readHeartbeatHistory, writeHeartbeatHistory } from './services/selfLearningHeartbeat';
+export type { HeartbeatAction, HeartbeatActionResult, HeartbeatRunRecord, IdentityGcActionOptions, SelfLearningHeartbeatOptions, TaskAgentRunner, WorkAssignedTasksOptions } from './services/selfLearningHeartbeat';
+
+// ─── Custom Agents ──────────────────────────────────────────────────
+export { BUILTIN_AGENT_ROLES, loadAgentDefinitions, parseAgentFile, resolveAgentDefinition, scanAgentDefinitions, writeCustomAgent } from './agents/agentLoader';
+export type { AgentDefinition, AgentLoadDiagnostic, AgentDirectoryScan, AgentRole as CustomAgentRole, CreateCustomAgentInput } from './agents/agentLoader';
+
+// ─── Triggers ───────────────────────────────────────────────────────
+export { TriggerScheduler, loadTriggers, normalizeEnvelope, saveTriggers } from './services/triggerScheduler';
+export type { TriggerDefinition, TriggerEnvelope, TriggerExecutionResult, TriggerSchedulerOptions, TriggerSpawnFn } from './services/triggerScheduler';
+
+// ─── Concierge Triage ───────────────────────────────────────────────
+export { classifyIntent, logConciergeDecision, readConciergeLog } from './services/concierge';
+export type { ConciergeLogEntry, TriageOptions, TriageResult } from './services/concierge';
+
+// ─── Audit Hook ─────────────────────────────────────────────────────
+export { auditFilePath, createAuditHooks, readAuditLog, renderRecentAuditForPrompt } from './permissions/audit';
+export type { AuditEntry, AuditHookOptions, RenderRecentAuditOptions } from './permissions/audit';
+
+// ─── Docker Sandbox ─────────────────────────────────────────────────
+export { createDockerExecTool } from './tools/dockerExecTool';
+export type { DockerExecOptions, DockerSpawnFn } from './tools/dockerExecTool';
+
+// ─── Squad Channels ─────────────────────────────────────────────────
+export { createSquad, deleteSquad, getSquad, listSquads, planHandoff, routeMessage, updateSquad } from './services/squad';
+export type { CreateSquadInput, HandoffPlan, RouteResult, SquadAgentSlot, SquadAutonomy, SquadDefinition, SquadRoutingRule } from './services/squad';
+export { clearSquadForSession, getSquadForSession, resolveSessionSquad, setSquadForSession } from './services/squadSessions';
+
+// ─── Identity Layer ─────────────────────────────────────────────────
+export { deleteStructuredEntry, exportIdentity, importIdentity, queryStructured, readIdentityFile, readIdentitySnapshot, readStructuredStore, renderIdentityForPrompt, runIdentityGc, upsertStructuredEntry, writeIdentityFile } from './services/identity';
+export type { IdentityExport, IdentityFileName, IdentityGcOptions, IdentityGcSummary, IdentitySnapshot, ImportIdentityOptions, ImportIdentitySummary, StructuredEntry, StructuredStore, UpsertStructuredInput } from './services/identity';
 
 // ─── Subagent Orchestrator ──────────────────────────────────────────
 export { orchestrate, mergeResults, getAgentRoleDefaults } from './agents/orchestrator';

@@ -601,6 +601,11 @@ async function appendEvalTraceRun(projectDir: string, run: EvalTraceRun): Promis
   await fs.appendFile(filePath, JSON.stringify(run) + '\n', 'utf-8');
 }
 
+/** Public wrapper around the internal append so external pipelines (e.g. the simulator) can persist runs into the same trend file the promotion gate consults. */
+export async function persistEvalTraceRun(projectDir: string, run: EvalTraceRun): Promise<void> {
+  return appendEvalTraceRun(projectDir, run);
+}
+
 function inferTask(snapshot: TraceSnapshot): string {
   const modelSpan = snapshot.spans.find((span) => span.name === 'model.chat');
   const model = modelSpan?.attributes.model;

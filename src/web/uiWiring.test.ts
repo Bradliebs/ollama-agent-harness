@@ -154,6 +154,13 @@ describe('web UI wiring', () => {
       promises: 'promisesView',
       events: 'eventsView',
       codeintel: 'codeintelView',
+      tasks: 'tasksView',
+      audit: 'auditView',
+      triggers: 'triggersView',
+      agents: 'agentsView',
+      squads: 'squadsView',
+      identity: 'identityView',
+      health: 'healthView',
     };
     const showLeftTab = appJs.match(/function showLeftTab\(tab, el\) \{(?<body>.*?)\nfunction toggleLeft/s)?.groups?.body ?? '';
 

@@ -71,6 +71,30 @@ export const CLI_COMMAND_REGISTRY: CliCommandDef[] = [
       { flags: ['classify', '--query'], valueName: '"..."', description: 'Print task classifier verdict' },
     ],
   },
+  {
+    name: 'tui',
+    description: 'Open a terminal chat client that shares the running daemon session',
+    aliases: [],
+    usage: 'harness tui [--base-url <url>] [--model <name>]',
+    options: [
+      { flags: ['--base-url'], valueName: '<url>', description: 'Daemon base URL (default: http://127.0.0.1:4300)' },
+      { flags: ['--model'], valueName: '<name>', description: 'Model id to send with chat requests (defaults to daemon current)' },
+    ],
+  },
+  {
+    name: 'simulate',
+    description: 'Run scripted adversarial probes against a running daemon and report pass/fail',
+    aliases: [],
+    usage: 'harness simulate [--base-url <url>] [--model <name>] [--probe <id>] [--category <name>]',
+    options: [
+      { flags: ['--base-url'], valueName: '<url>', description: 'Daemon base URL (default: http://127.0.0.1:4300)' },
+      { flags: ['--model'], valueName: '<name>', description: 'Model id to send with chat requests' },
+      { flags: ['--probe'], valueName: '<id>', description: 'Run a single probe by id (repeatable)' },
+      { flags: ['--category'], valueName: '<name>', description: 'Restrict to one category: prompt-injection, secret-exfil, tool-misuse, safety-refusal, baseline (repeatable)' },
+      { flags: ['--probe-timeout'], valueName: '<ms>', description: 'Per-probe wall-clock cap in ms (default: 60000)' },
+      { flags: ['--persist'], description: 'Persist the run as an EvalTraceRun under .harness/evals/ so the promotion gate counts it' },
+    ],
+  },
 ];
 
 export function resolveCliCommand(name: string | undefined): CliCommandDef | undefined {

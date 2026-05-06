@@ -8,8 +8,106 @@ keywords:
 	- ollama
 	- release notes
 	- changelog
-estimated_reading_time: 12
+estimated_reading_time: 14
 ---
+
+## Ollama Agent Harness v0.4.0
+
+Major: 100% CLAW-list alignment + trustworthy self-improvement stack +
+observability quartet. Every layer is opt-in via env flag; existing
+behaviour is preserved when flags are off.
+
+### Trustworthy self-improvement stack
+
+* **OpenInference + OTLP/HTTP-JSON trace export** (`HARNESS_OTEL_EXPORT_ENABLED`)
+  - `src/observability/openinference.ts` maps `RuntimeTracer` records to OTLP
+    spans with OpenInference semantic conventions (`openinference.span.kind`,
+    `llm.model_name`, `llm.token_count.{prompt,completion,total}`,
+    `tool.name`, `tool.parameters`, `exception.message`).
+  - `src/observability/otlpExporter.ts` is a bounded-queue exporter using
+    `globalThis.fetch` — no `@opentelemetry/*` runtime deps. Wraps
+    `RuntimeTracer.startSpan/recordEvent` non-invasively; `detach()` restores
+    cleanly. Periodic + threshold flush; re-queue on transport error.
+  - Wires in via `configureOtlpExporter()` behind env flag + endpoint;
+    settings flag mirror in System Health.
+* **Promotion gate + safety multiplier** (`HARNESS_PROMOTION_GATE_ENABLED`)
+  - `src/learning/promotionGate.ts` requires N successful eval runs
+    (Pass^k semantics) AND no blocking safety violations from a 16-rule
+    library: AWS access keys, AWS session tokens, GCP service-account
+    JSON, GitHub PATs, Slack tokens, OpenSSH keys, PEM blocks, JWTs,
+    `.env` reads, `.aws/credentials`, `.ssh/id_rsa`, `rm -rf /`,
+    `curl|bash`, prompt-injection markers, system-prompt leak.
+  - Custom rules via `.harness/safety-rules.json` (string regex + flags;
+    overrides built-ins by id).
+  - REST: `GET /api/learning/candidates/:id/gate`. UI Gate button in the
+    learning candidate queue.
+* **Simulator** (`harness simulate`)
+  - `src/eval/simulator.ts` drives `/api/chat` SSE with 8 default probes
+    across 5 categories (baseline, prompt-injection, secret-exfil,
+    tool-misuse, safety-refusal). Pure `judgeProbe()` evaluator with
+    expectIncludes / expectMissing / forbiddenTools.
+  - `--persist` flag converts the run to an `EvalTraceRun` and writes it
+    under `.harness/evals/trace-runs.jsonl` so the promotion gate counts
+    it automatically.
+* **Curator safety pre-check** (`HARNESS_CURATOR_SAFETY_GATE`)
+  - Stale skills tripping a high-severity rule are recorded as
+    `skip-safety` instead of being archived.
+  - `skill_evolution` heartbeat action surfaces high-severity safety
+    hits in every tick regardless of gate flag.
+
+### Observability quartet
+
+* **Prometheus `/metrics` endpoint** — exposition format text writer in
+  `src/observability/prometheus.ts`. Emits `harness_kill_switch_active`,
+  `harness_active_subagents`, `harness_capability_grants_active`,
+  `harness_heartbeat_age_seconds`, `harness_otel_export_queued`,
+  `harness_tool_window_samples`, `harness_tool_failure_rate`. No
+  `prom-client` dependency.
+* **Tool failure-rate alerts** — sliding-window tracker in
+  `src/services/toolFailureAlerts.ts` (50-sample window, 30% threshold,
+  5-min cooldown by default, all env-tunable). Fires `tool.failure_alert`
+  events onto the event store so live WS clients react.
+* **WS broadcast batching** (`HARNESS_WS_COALESCE_MS`) — set to e.g. `50`
+  to coalesce events within a window into a single `event_batch` message.
+  Default off (single-event semantics preserved). UI + TUI fan out
+  batches transparently.
+* **Heartbeat sparkline** in System Health — pure SVG polyline of recent
+  tick durations.
+
+### TUI + sub-agent surfaces
+
+* `harness tui` — readline + ANSI terminal client sharing the running
+  daemon session over HTTP + WebSocket. Auto-reconnect on WS close;
+  slash commands `/quit /exit /help /agents /clear`. Zero new runtime
+  deps.
+* Active sub-agents bar above the chat input with cancel buttons.
+  Driven by `/api/subagents` + WS events
+  (`subagent.start|end|cancel`).
+* `runSubagent` accepts optional `runId` + `abortSignal` + `onEvent`;
+  `createSubagentTool` generates a runId per chat-initiated run.
+
+### Heartbeat learning hooks
+
+* `createReflectAndLearnAction()` (`HARNESS_HEARTBEAT_REFLECT_ENABLED`)
+  surfaces recent reflections from `.harness/learning/reflections.jsonl`.
+* `createSkillEvolutionAction()` (`HARNESS_HEARTBEAT_SKILL_EVOLUTION_ENABLED`)
+  dry-runs the curator + reports stale candidates AND high-severity
+  safety hits.
+
+### CLAW alignment closure (cycles 1–10 summary)
+
+* WebSocket daemon, structured task store + tools + Tasks tab,
+  self-learning heartbeat, memory intelligence (TOC fallback,
+  importance scoring, dedup, GC), custom agents from `.md` defs,
+  triggers, `docker_exec` sandbox, squad channels, tools/MCP UI,
+  artifacts browser, audit hook, reply-to-message, speech-to-text,
+  Esc-to-stop, identity (SOUL/USER), concierge auto-route.
+* Final scorecard: 79/79 features, 100%.
+
+### Tests
+
+* 1439/1439 passing across 129 suites; typecheck clean. ~140 new tests
+  added across the trustworthy-stack and observability cycles.
 
 ## Ollama Agent Harness v0.3.30
 

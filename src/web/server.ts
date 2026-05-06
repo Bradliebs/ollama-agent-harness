@@ -18,6 +18,13 @@ import { createToolRegistry } from '../tools/registry';
 import { WorkflowRegistry } from '../workflows/workflowRegistry';
 import { runCurator, runDeterministicPhase, readCuratorLog, readCuratorProposals, restoreSkill, parseMergeProposals, applyMergeProposal, clearCuratorProposals, type CuratorConfig } from '../curator/curator';
 import { CuratorScheduler } from '../curator/scheduler';
+import { SelfLearningHeartbeat, createIdentityGcAction, createReflectAndLearnAction, createSkillEvolutionAction, createWorkAssignedTasksAction, defaultHeartbeatActions, readHeartbeatHistory } from '../services/selfLearningHeartbeat';
+import { TriggerScheduler, loadTriggers, saveTriggers, type TriggerDefinition } from '../services/triggerScheduler';
+import { listArtifacts, readArtifact, type ArtifactCategory } from '../services/artifactCatalog';
+import { cancelSubagent, listActiveSubagents, subscribeSubagentRegistry } from '../services/subagentRegistry';
+import { createToolFailureAlerts, type ToolFailureAlertTracker } from '../services/toolFailureAlerts';
+import { formatPrometheusMetrics, type PrometheusMetric } from '../observability/prometheus';
+import { createTask, deleteTask, getTask, listTasks, recordCheckIn, summarizeTasks, updateTask, type TaskPriority, type TaskStatus } from '../services/taskStore';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { clearFileWriteRedirectCache, drainUploadsFallbacks, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -36,17 +43,25 @@ import { MCP_CATALOG } from '../extensibility/mcpCatalog';
 import { discoverMcpServerTools, invokeMcpServerTool, listMcpServers, removeMcpServer, startMcpServer, stopMcpServer, upsertMcpServer } from '../extensibility/mcpRuntime';
 import { assembleSystemContext, estimateTokenCount } from '../context/assembly';
 import { HookPipeline } from '../extensibility/hookPipeline';
+import { createAuditHooks, readAuditLog, renderRecentAuditForPrompt } from '../permissions/audit';
 import { loadSkillsDir, matchSkillTrigger, scanSkillsDir, type SkillDefinition, type SkillDirectoryScan } from '../extensibility/skillLoader';
 import { discoverExtensionManifests } from '../extensibility/extensionManifest';
 import { RateLimiter } from '../core/rateLimiter';
 import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
+import { attachOtlpExporter, type OtlpExporter } from '../observability/otlpExporter';
+import { mintTraceId } from '../observability/openinference';
 import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, describeOutputValidationProfileSuggestion, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
 import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, adaptiveTimeBudget, recordAvgTurnDuration, clearSynthesisStats, recordToolUseStats } from '../core/synthesisStats';
 import { startNewSession, onSessionEnd, getEvolvedPrompt, recordSessionAutoContinue } from '../learning/engine';
 import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
-import { appendLearningCandidate, extractLearningCandidate, getLearningCandidateProvenance, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
-import { listSubagentRoutingMetrics } from '../agents/subagent';
+import { appendLearningCandidate, evaluatePromotionGateForCandidate, extractLearningCandidate, getLearningCandidateProvenance, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
+import { createSubagentTool, listSubagentRoutingMetrics } from '../agents/subagent';
+import { BUILTIN_AGENT_ROLES, loadAgentDefinitions } from '../agents/agentLoader';
+import { classifyIntent, logConciergeDecision, readConciergeLog } from '../services/concierge';
+import { createSquad, deleteSquad, getSquad, listSquads, routeMessage, updateSquad } from '../services/squad';
+import { resolveSessionSquad } from '../services/squadSessions';
+import { deleteStructuredEntry, exportIdentity, importIdentity, queryStructured, readIdentityFile, readIdentitySnapshot, renderIdentityForPrompt, upsertStructuredEntry, writeIdentityFile, type IdentityFileName } from '../services/identity';
 import { calibrateModelRoutingPolicy, summarizeRoutingMetrics } from '../agents/modelRouting';
 import { checkSetupHealth } from '../setup/health';
 import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCatalog';
@@ -66,6 +81,7 @@ import { getServiceLifecycle, initServiceLifecycle, transitionService, probeServ
 import { appendEvent, emitEvent, queryEvents, summarizeEventStore, generatePostmortem, createSnapshot, getSnapshot, listSnapshots, type EventCategory } from '../persistence/eventStore';
 import { subscribeEventStream } from '../persistence/eventStore';
 import { verifyCode, verifyService, verifyPromiseFulfillability } from '../core/doneStateVerifier';
+import { attachWsServer } from './wsServer';
 import { tryDeterministicShortcut } from '../core/deterministicShortcuts';
 import { calculateReadiness, type ReadinessInput } from '../core/readinessGate';
 import { validateStructuredOutput, parseAndValidate, detectSchema, BUILTIN_SCHEMAS } from '../core/structuredOutputValidator';
@@ -329,7 +345,44 @@ let curatorSettings: CuratorSettings = sanitizeCuratorSettings({});
 let automationSchedulerSettings: AutomationSchedulerSettings = sanitizeAutomationSchedulerSettings({});
 let lastUserActivityMs = Date.now();
 let curatorScheduler: CuratorScheduler | null = null;
-let automationScheduler: AutomationScheduler | null = null;
+// Self-learning heartbeat. Disabled unless HARNESS_HEARTBEAT_ENABLED=1 so
+// existing installs keep the same behavior. Survives restarts via in-memory
+// timestamp; the scheduler internally gates on interval + kill switch.
+let selfLearningHeartbeat: SelfLearningHeartbeat | null = null;
+let heartbeatLastRunMs = 0;
+// Trigger scheduler. Disabled unless HARNESS_TRIGGERS_ENABLED=1.
+let triggerScheduler: TriggerScheduler | null = null;let automationScheduler: AutomationScheduler | null = null;
+
+// System-health feature toggles. Each value is one of:
+//   undefined  → fall back to env (legacy behaviour, default for fresh installs)
+//   true/false → explicit override from settings.json (Settings UI)
+// The env var is still authoritative when set explicitly to truthy/falsy
+// values; only "unset" yields to the settings override.
+interface SystemFeatureFlags {
+  heartbeatEnabled?: boolean;
+  triggersEnabled?: boolean;
+  conciergeEnabled?: boolean;
+  conciergeAutoRoute?: boolean;
+  squadAutoRoute?: boolean;
+  otelExportEnabled?: boolean;
+}
+let systemFeatureFlags: SystemFeatureFlags = {};
+
+function readEnvFlag(name: string): boolean | undefined {
+  const raw = process.env[name];
+  if (raw === undefined) return undefined;
+  const value = raw.trim().toLowerCase();
+  if (!value) return undefined;
+  if (value === '1' || value === 'true' || value === 'on') return true;
+  if (value === '0' || value === 'false' || value === 'off') return false;
+  return undefined;
+}
+
+function resolveFeatureFlag(envName: string, settingKey: keyof SystemFeatureFlags): boolean {
+  const fromEnv = readEnvFlag(envName);
+  if (fromEnv !== undefined) return fromEnv;
+  return systemFeatureFlags[settingKey] === true;
+}
 
 /** Check whether a tool is effectively enabled right now, considering timed enables. */
 function isToolEnabled(name: string): boolean {
@@ -341,7 +394,16 @@ function isToolEnabled(name: string): boolean {
     timedToolEnables.delete(name);
     saveSettingsToDisk().catch(() => {});
   }
+  // Capability-grant gate: an active grant for `arbitrary-shell` enables the
+  // docker_exec sandbox tool atomically. Granting the capability is the
+  // single act that flips both the policy posture and the usable tool.
+  if (name === 'docker_exec' && hasActiveCapability('arbitrary-shell')) return true;
   return false;
+}
+
+function hasActiveCapability(capabilityId: string, now = new Date()): boolean {
+  const active = listActiveCapabilityGrants(capabilityGrants, now);
+  return active.some((grant) => grant.capabilityId === capabilityId);
 }
 
 /** Check and revert timed autonomy if expired. */
@@ -372,6 +434,176 @@ function applyToolDisables(tools: Tool[]): Tool[] {
   return tools.filter((tool) => isToolEnabled(tool.name));
 }
 
+// ─── Custom agents cache ────────────────────────────────────────────
+// Re-read .harness/agents/ at most once every 30s. Cheap, but avoids
+// scanning the directory on every chat call.
+let cachedCustomAgents: import('../agents/agentLoader').AgentDefinition[] = [];
+let cachedCustomAgentsAt = 0;
+const CUSTOM_AGENTS_TTL_MS = 30_000;
+
+async function refreshCustomAgentsIfStale(now = Date.now()): Promise<void> {
+  if (now - cachedCustomAgentsAt < CUSTOM_AGENTS_TTL_MS) return;
+  try {
+    cachedCustomAgents = await loadAgentDefinitions(PROJECT_DIR);
+    cachedCustomAgentsAt = now;
+  } catch {
+    // Best-effort — keep the previous cache.
+  }
+}
+
+function getCachedCustomAgentsSnapshot(): import('../agents/agentLoader').AgentDefinition[] {
+  return cachedCustomAgents.slice();
+}
+
+/**
+ * Build the chat tool list: registry tools (after disables) plus a live
+ * `agent` tool bound to the current parent client and tool snapshot. The
+ * subagent tool sees the same enabled tool set as the parent loop, minus
+ * itself (recursion guard happens inside filterToolsForSubagent).
+ */
+function buildChatTools(parentClient: import('../core/chatClient').IChatClient): Tool[] {
+  const baseTools = applyToolDisables(getRuntimeTools(PROJECT_DIR));
+  const subagentTool = createSubagentTool({
+    getParentClient: () => parentClient,
+    getAvailableTools: () => baseTools,
+    getCustomAgents: getCachedCustomAgentsSnapshot,
+  });
+  return [...baseTools.filter((tool) => tool.name !== 'agent'), subagentTool];
+}
+
+function conciergeEnabled(): boolean {
+  return resolveFeatureFlag('HARNESS_CONCIERGE_ENABLED', 'conciergeEnabled');
+}
+
+function conciergeAutoRouteEnabled(): boolean {
+  return resolveFeatureFlag('HARNESS_CONCIERGE_AUTO_ROUTE', 'conciergeAutoRoute');
+}
+
+/**
+ * When the concierge is enabled, classify the user's message and return a
+ * brief system note suggesting delegation. The note is intended to be
+ * appended to the system prompt for that turn so the model can decide
+ * whether to call the `agent` tool. Returns null when the message should
+ * be answered directly.
+ */
+function buildConciergeNote(userMessage: string): string | null {
+  if (!conciergeEnabled()) return null;
+  if (typeof userMessage !== 'string' || !userMessage.trim()) return null;
+  const allAgents = [...getCachedCustomAgentsSnapshot(), ...BUILTIN_AGENT_ROLES];
+  const triage = classifyIntent(userMessage, allAgents);
+  // Always log the decision (note path) so operators can see what the
+  // concierge thinks even when nothing is delegated.
+  logConciergeDecision(PROJECT_DIR, {
+    messagePreview: userMessage,
+    delegateTo: triage.delegateTo,
+    reason: triage.reason,
+    matchedKeyword: triage.matchedKeyword,
+    confidence: triage.confidence,
+    autoRouted: false,
+  }).catch(() => {});
+  if (!triage.delegateTo) return null;
+  return `Concierge triage: this turn looks like a fit for the "${triage.delegateTo}" sub-agent (reason: ${triage.reason}, confidence: ${triage.confidence.toFixed(2)}). You may delegate by calling the \`agent\` tool with { agent_id: "${triage.delegateTo}", prompt: "<task>" }, or answer directly if you prefer.`;
+}
+
+/**
+ * Auto-route mode. When HARNESS_CONCIERGE_AUTO_ROUTE is set, the concierge
+ * runs the suggested sub-agent directly and returns the summary so the
+ * server can short-circuit the normal model loop. Returns null if the
+ * message should fall through to the normal flow.
+ */
+async function maybeConciergeAutoRoute(
+  userMessage: string,
+  parentClient: import('../core/chatClient').IChatClient,
+): Promise<{ agentId: string; reason: string; summary: string } | null> {
+  if (!conciergeEnabled() || !conciergeAutoRouteEnabled()) return null;
+  if (typeof userMessage !== 'string' || !userMessage.trim()) return null;
+  const allAgents = [...getCachedCustomAgentsSnapshot(), ...BUILTIN_AGENT_ROLES];
+  const triage = classifyIntent(userMessage, allAgents);
+  if (!triage.delegateTo) return null;
+  const baseTools = applyToolDisables(getRuntimeTools(PROJECT_DIR));
+  const { runSubagent } = await import('../agents/subagent');
+  const summary = await runSubagent(
+    {
+      name: triage.delegateTo,
+      systemPrompt: '',
+      agentId: triage.delegateTo,
+      customAgents: getCachedCustomAgentsSnapshot(),
+    },
+    userMessage,
+    parentClient,
+    baseTools.filter((tool) => tool.name !== 'agent'),
+  );
+  await emitEvent(PROJECT_DIR, 'system', 'concierge.auto_route', {
+    agentId: triage.delegateTo,
+    reason: triage.reason,
+    confidence: triage.confidence,
+    messagePreview: userMessage.slice(0, 200),
+  }, 'concierge').catch(() => {});
+  await logConciergeDecision(PROJECT_DIR, {
+    messagePreview: userMessage,
+    delegateTo: triage.delegateTo,
+    reason: triage.reason,
+    matchedKeyword: triage.matchedKeyword,
+    confidence: triage.confidence,
+    autoRouted: true,
+  }).catch(() => {});
+  return { agentId: triage.delegateTo, reason: triage.reason, summary };
+}
+
+function squadAutoRouteEnabled(): boolean {
+  return resolveFeatureFlag('HARNESS_SQUAD_AUTO_ROUTE', 'squadAutoRoute');
+}
+
+/**
+ * When the chat request specifies a squadId that resolves to a known squad,
+ * use the squad's routing rules to suggest an agent and prepend a system
+ * note. Returns null when no squad is associated with this turn.
+ */
+async function buildSquadRoutingNote(squadId: string | undefined, userMessage: string): Promise<string | null> {
+  if (!squadId || !userMessage.trim()) return null;
+  const squad = await getSquad(PROJECT_DIR, squadId).catch(() => undefined);
+  if (!squad) return null;
+  const route = routeMessage(squad, userMessage);
+  return `Squad "${squad.id}" routed this turn to "${route.agentId}" (${route.reason}). Delegate via the \`agent\` tool with { agent_id: "${route.agentId}", prompt: "<task>" } when appropriate.`;
+}
+
+/**
+ * Squad auto-route. When HARNESS_SQUAD_AUTO_ROUTE is set and the chat
+ * request specifies a squadId, the routed agent runs directly via
+ * runSubagent and the summary is streamed back. Returns null otherwise.
+ */
+async function maybeSquadAutoRoute(
+  squadId: string | undefined,
+  userMessage: string,
+  parentClient: import('../core/chatClient').IChatClient,
+): Promise<{ agentId: string; reason: string; summary: string; squadId: string } | null> {
+  if (!squadAutoRouteEnabled()) return null;
+  if (!squadId || !userMessage.trim()) return null;
+  const squad = await getSquad(PROJECT_DIR, squadId).catch(() => undefined);
+  if (!squad) return null;
+  const route = routeMessage(squad, userMessage);
+  const baseTools = applyToolDisables(getRuntimeTools(PROJECT_DIR)).filter((tool) => tool.name !== 'agent');
+  const { runSubagent } = await import('../agents/subagent');
+  const summary = await runSubagent(
+    {
+      name: route.agentId,
+      systemPrompt: '',
+      agentId: route.agentId,
+      customAgents: getCachedCustomAgentsSnapshot(),
+    },
+    userMessage,
+    parentClient,
+    baseTools,
+  );
+  await emitEvent(PROJECT_DIR, 'system', 'squad.auto_route', {
+    squadId: squad.id,
+    agentId: route.agentId,
+    reason: route.reason,
+    messagePreview: userMessage.slice(0, 200),
+  }, 'squad').catch(() => {});
+  return { agentId: route.agentId, reason: route.reason, summary, squadId: squad.id };
+}
+
 function hasDryRunIntent(input: Record<string, unknown>): boolean {
   return input.dryRun === true || input.dry_run === true || input.preview === true;
 }
@@ -387,6 +619,12 @@ function shouldBypassNervousVerification(): boolean {
 
 const rateLimiter = new RateLimiter(10, 2);
 const hookPipeline = new HookPipeline();
+// Audit-everything: write each tool call (pre + post + failure) to
+// .harness/audit.log unless explicitly opted out via env. Hooks log only —
+// they never block, so this is safe to enable by default.
+if ((process.env.HARNESS_AUDIT_LOG ?? '').trim().toLowerCase() !== 'off') {
+  for (const hook of createAuditHooks({ projectDir: PROJECT_DIR })) hookPipeline.register(hook);
+}
 const permissionPrompts = new PermissionPromptBroker();
 const capabilityRegistry: CapabilityRegistry = createDefaultCapabilityRegistry();
 const defaultWebRuntime: WebRuntimeDeps = {
@@ -415,7 +653,12 @@ const defaultWebRuntime: WebRuntimeDeps = {
   listModels: (host) => new OllamaClient({ model: '', host }).listModels(),
   getTools: () => {
     configureWebReadTool({ maxChars: webReadMaxChars });
-    return applyToolDisables(getRuntimeTools(PROJECT_DIR));
+    // The subagent tool needs a parent client to delegate to; create one
+    // for the current model. The custom-agents cache is refreshed
+    // opportunistically so on-disk changes apply within ~30s.
+    refreshCustomAgentsIfStale().catch(() => {});
+    const parentClient = webRuntime.createClient(currentModel || 'llama3.1:8b', ollamaHost);
+    return buildChatTools(parentClient);
   },
   createPermissionEngine: (mode) => {
     const engine = new PermissionEngine([], mode);
@@ -2142,6 +2385,667 @@ app.get('/api/services/:id/health', async (req, res) => {
   }
 });
 
+// ─── Tasks ──────────────────────────────────────────────────────────
+// Structured task lifecycle. Mutations also emit events through the event
+// store so live WebSocket clients refresh without polling.
+
+const VALID_TASK_STATUSES = new Set<TaskStatus>(['pending', 'assigned', 'in_progress', 'blocked', 'review', 'done', 'failed', 'cancelled']);
+const VALID_TASK_PRIORITIES = new Set<TaskPriority>(['low', 'normal', 'high']);
+
+app.get('/api/tasks', async (req, res) => {
+  try {
+    const status = typeof req.query.status === 'string' ? req.query.status as TaskStatus : undefined;
+    if (status && !VALID_TASK_STATUSES.has(status)) { res.status(400).json({ error: 'Invalid status filter.' }); return; }
+    const assigneeId = typeof req.query.assignee === 'string' ? req.query.assignee : undefined;
+    const tasks = await listTasks(PROJECT_DIR, { status, assigneeId });
+    const summary = await summarizeTasks(PROJECT_DIR);
+    res.json({ tasks, summary });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/tasks/:id', async (req, res) => {
+  try {
+    const task = await getTask(PROJECT_DIR, req.params.id);
+    if (!task) { res.status(404).json({ error: 'Task not found.' }); return; }
+    res.json({ task });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/tasks', async (req, res) => {
+  try {
+    const { title, description, priority, assigneeId, parentTaskId, dependsOn, tags, metadata } = req.body ?? {};
+    if (!title || typeof title !== 'string') { res.status(400).json({ error: 'title is required.' }); return; }
+    if (priority && !VALID_TASK_PRIORITIES.has(priority)) { res.status(400).json({ error: 'Invalid priority.' }); return; }
+    const task = await createTask(PROJECT_DIR, {
+      title, description, priority, assigneeId, parentTaskId,
+      dependsOn: Array.isArray(dependsOn) ? dependsOn : undefined,
+      tags: Array.isArray(tags) ? tags : undefined,
+      metadata: metadata && typeof metadata === 'object' ? metadata : undefined,
+    });
+    res.json({ task });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.patch('/api/tasks/:id', async (req, res) => {
+  try {
+    const { title, description, status, priority, assigneeId, dependsOn, tags, metadata } = req.body ?? {};
+    if (status && !VALID_TASK_STATUSES.has(status)) { res.status(400).json({ error: 'Invalid status.' }); return; }
+    if (priority && !VALID_TASK_PRIORITIES.has(priority)) { res.status(400).json({ error: 'Invalid priority.' }); return; }
+    const task = await updateTask(PROJECT_DIR, req.params.id, {
+      title, description, status, priority, assigneeId,
+      dependsOn: Array.isArray(dependsOn) ? dependsOn : undefined,
+      tags: Array.isArray(tags) ? tags : undefined,
+      metadata: metadata && typeof metadata === 'object' ? metadata : undefined,
+    });
+    res.json({ task });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(message.startsWith('Task not found') ? 404 : 500).json({ error: message });
+  }
+});
+
+app.post('/api/tasks/:id/check-in', async (req, res) => {
+  try {
+    const { progressPercent, message, status } = req.body ?? {};
+    if (typeof message !== 'string' || !message.trim()) { res.status(400).json({ error: 'message is required.' }); return; }
+    if (status && !VALID_TASK_STATUSES.has(status)) { res.status(400).json({ error: 'Invalid status.' }); return; }
+    const task = await recordCheckIn(PROJECT_DIR, req.params.id, {
+      progressPercent: typeof progressPercent === 'number' ? progressPercent : undefined,
+      message,
+      status: status as TaskStatus | undefined,
+    });
+    res.json({ task });
+  } catch (error) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    res.status(errMsg.startsWith('Task not found') ? 404 : 500).json({ error: errMsg });
+  }
+});
+
+app.delete('/api/tasks/:id', async (req, res) => {
+  try {
+    const removed = await deleteTask(PROJECT_DIR, req.params.id);
+    if (!removed) { res.status(404).json({ error: 'Task not found.' }); return; }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Triggers ───────────────────────────────────────────────────────
+// Persisted in .harness/triggers/triggers.json. The TriggerScheduler is
+// started during boot when HARNESS_TRIGGERS_ENABLED is set.
+
+function sanitizeTriggerInput(value: unknown): TriggerDefinition | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.id !== 'string' || !v.id.trim()) return null;
+  if (typeof v.command !== 'string' || !v.command.trim()) return null;
+  const intervalSeconds = Number(v.intervalSeconds);
+  if (!Number.isFinite(intervalSeconds) || intervalSeconds < 1) return null;
+  const args = Array.isArray(v.args) ? v.args.filter((arg): arg is string => typeof arg === 'string') : undefined;
+  const cwd = typeof v.cwd === 'string' && v.cwd.trim() ? v.cwd : undefined;
+  const enabled = v.enabled === undefined ? true : Boolean(v.enabled);
+  return { id: v.id.trim(), command: v.command.trim(), args, cwd, intervalSeconds: Math.floor(intervalSeconds), enabled };
+}
+
+app.get('/api/triggers', async (_req, res) => {
+  try {
+    const triggers = await loadTriggers(PROJECT_DIR);
+    res.json({ enabled: triggersEnabled(), triggers });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/triggers', async (req, res) => {
+  try {
+    const definition = sanitizeTriggerInput(req.body);
+    if (!definition) { res.status(400).json({ error: 'id, command, intervalSeconds are required.' }); return; }
+    const triggers = await loadTriggers(PROJECT_DIR);
+    if (triggers.some((trigger) => trigger.id === definition.id)) {
+      res.status(409).json({ error: `Trigger ${definition.id} already exists.` }); return;
+    }
+    triggers.push(definition);
+    await saveTriggers(PROJECT_DIR, triggers);
+    if (triggerScheduler) await triggerScheduler.invalidate().catch(() => {});
+    res.json({ trigger: definition });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.patch('/api/triggers/:id', async (req, res) => {
+  try {
+    const triggers = await loadTriggers(PROJECT_DIR);
+    const idx = triggers.findIndex((trigger) => trigger.id === req.params.id);
+    if (idx === -1) { res.status(404).json({ error: 'Trigger not found.' }); return; }
+    const updates = req.body ?? {};
+    const merged: TriggerDefinition = {
+      ...triggers[idx],
+      ...(typeof updates.command === 'string' ? { command: updates.command.trim() } : {}),
+      ...(Array.isArray(updates.args) ? { args: updates.args.filter((arg: unknown): arg is string => typeof arg === 'string') } : {}),
+      ...(typeof updates.cwd === 'string' ? { cwd: updates.cwd } : {}),
+      ...(updates.intervalSeconds !== undefined ? { intervalSeconds: Math.max(1, Math.floor(Number(updates.intervalSeconds))) } : {}),
+      ...(updates.enabled !== undefined ? { enabled: Boolean(updates.enabled) } : {}),
+    };
+    triggers[idx] = merged;
+    await saveTriggers(PROJECT_DIR, triggers);
+    if (triggerScheduler) await triggerScheduler.invalidate().catch(() => {});
+    res.json({ trigger: merged });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.delete('/api/triggers/:id', async (req, res) => {
+  try {
+    const triggers = await loadTriggers(PROJECT_DIR);
+    const idx = triggers.findIndex((trigger) => trigger.id === req.params.id);
+    if (idx === -1) { res.status(404).json({ error: 'Trigger not found.' }); return; }
+    triggers.splice(idx, 1);
+    await saveTriggers(PROJECT_DIR, triggers);
+    if (triggerScheduler) await triggerScheduler.invalidate().catch(() => {});
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Artifacts catalog ───────────────────────────────────
+// Cross-session view of files written by the agent into agent-outputs/.
+// Read-only; the artifact root is the same directory file_write redirects
+// new bare-filename writes to, honouring HARNESS_AGENT_OUTPUT_DIR.
+function artifactRoot(): string {
+  const override = (process.env.HARNESS_AGENT_OUTPUT_DIR ?? '').trim();
+  if (override) {
+    return path.isAbsolute(override) ? override : path.resolve(PROJECT_DIR, override);
+  }
+  return path.join(PROJECT_DIR, 'agent-outputs');
+}
+
+app.get('/api/artifacts', async (req, res) => {
+  try {
+    const limit = req.query.limit ? Math.max(1, Math.min(1000, Number(req.query.limit))) : undefined;
+    const category = typeof req.query.category === 'string' ? req.query.category as ArtifactCategory : undefined;
+    const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+    const root = artifactRoot();
+    const records = await listArtifacts(root, { limit, category, search });
+    res.json({ root, count: records.length, artifacts: records });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/artifacts/content', async (req, res) => {
+  try {
+    const relative = typeof req.query.path === 'string' ? req.query.path : '';
+    if (!relative) { res.status(400).json({ error: 'path query parameter required.' }); return; }
+    const result = await readArtifact(artifactRoot(), relative);
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Active sub-agents ─────────────────────────────────
+app.get('/api/subagents', async (_req, res) => {
+  try {
+    const records = listActiveSubagents().map((record) => ({
+      id: record.id,
+      name: record.name,
+      promptSnippet: record.promptSnippet,
+      startedAtMs: record.startedAtMs,
+      durationMs: Date.now() - record.startedAtMs,
+    }));
+    res.json({ count: records.length, subagents: records });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/subagents/:id/cancel', async (req, res) => {
+  try {
+    const ok = cancelSubagent(req.params.id);
+    if (!ok) { res.status(404).json({ error: 'Sub-agent not found.' }); return; }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Bridge registry mutations onto the event store so live WebSocket
+// clients can react to start / end / cancel without polling. Server
+// startup wires this once; the unsubscribe handle is stored on the
+// module so a restart would clean it up if we ever needed to.
+let _subagentRegistryUnsubscribe: (() => void) | null = null;
+function wireSubagentRegistryBridge(): void {
+  if (_subagentRegistryUnsubscribe) return;
+  _subagentRegistryUnsubscribe = subscribeSubagentRegistry((event) => {
+    if (event.kind === 'start') {
+      emitEvent(PROJECT_DIR, 'system', 'subagent.start', { id: event.record.id, name: event.record.name, promptSnippet: event.record.promptSnippet, startedAtMs: event.record.startedAtMs }, 'subagent', event.record.id).catch(() => {});
+    } else if (event.kind === 'end') {
+      emitEvent(PROJECT_DIR, 'system', 'subagent.end', { id: event.id }, 'subagent', event.id).catch(() => {});
+    } else if (event.kind === 'cancel') {
+      emitEvent(PROJECT_DIR, 'system', 'subagent.cancel', { id: event.id }, 'subagent', event.id).catch(() => {});
+    }
+  });
+}
+wireSubagentRegistryBridge();
+
+// ─── Tool failure alerts ───────────────────────────────────────────
+// Sliding window per tool. When the failure rate exceeds the configured
+// threshold over a recent window, we fire a single tool.failure_alert
+// event onto the event store so live WS clients (and audit dashboards)
+// can react. Cooldown prevents alert storms.
+const toolFailureAlerts: ToolFailureAlertTracker = createToolFailureAlerts({
+  windowSize: Number(process.env.HARNESS_TOOL_ALERT_WINDOW ?? '50') || 50,
+  minSamples: Number(process.env.HARNESS_TOOL_ALERT_MIN_SAMPLES ?? '10') || 10,
+  failureThreshold: Number(process.env.HARNESS_TOOL_ALERT_THRESHOLD ?? '0.30') || 0.30,
+  cooldownMs: Number(process.env.HARNESS_TOOL_ALERT_COOLDOWN_MS ?? `${5 * 60 * 1000}`) || 5 * 60 * 1000,
+});
+toolFailureAlerts.subscribe((alert) => {
+  emitEvent(PROJECT_DIR, 'tool', 'tool.failure_alert', {
+    tool: alert.tool,
+    failure_rate: alert.failureRate,
+    failure_count: alert.failureCount,
+    total_count: alert.totalCount,
+    threshold: alert.threshold,
+    fired_at: alert.firedAt,
+  }, 'system', alert.tool).catch(() => {});
+});
+
+// ─── Prometheus /metrics ───────────────────────────────────────────
+// Exposition-format snapshot of liveness + tool stats. No new deps.
+app.get('/metrics', (_req, res) => {
+  try {
+    const subagents = listActiveSubagents();
+    const heartbeatAgeMs = heartbeatLastRunMs ? Date.now() - heartbeatLastRunMs : 0;
+    const alertStatus = toolFailureAlerts.status();
+    const toolSampleSamples = Object.entries(alertStatus).flatMap(([tool, snap]) => [
+      { value: snap.samples, labels: { tool } },
+    ]);
+    const toolFailureSamples = Object.entries(alertStatus).flatMap(([tool, snap]) => [
+      { value: snap.failureRate, labels: { tool } },
+    ]);
+    const metrics: PrometheusMetric[] = [
+      {
+        name: 'harness_kill_switch_active',
+        help: 'Whether the global kill switch is engaged (0 or 1)',
+        type: 'gauge',
+        samples: [{ value: killSwitchActive ? 1 : 0 }],
+      },
+      {
+        name: 'harness_active_subagents',
+        help: 'Number of currently running sub-agents',
+        type: 'gauge',
+        samples: [{ value: subagents.length }],
+      },
+      {
+        name: 'harness_capability_grants_active',
+        help: 'Number of currently active capability grants',
+        type: 'gauge',
+        samples: [{ value: listActiveCapabilityGrants(capabilityGrants).length }],
+      },
+      {
+        name: 'harness_heartbeat_age_seconds',
+        help: 'Seconds since the last heartbeat tick (0 if never)',
+        type: 'gauge',
+        samples: [{ value: Math.floor(heartbeatAgeMs / 1000) }],
+      },
+      {
+        name: 'harness_otel_export_queued',
+        help: 'Currently queued spans/events in the OTLP exporter',
+        type: 'gauge',
+        samples: [{ value: otlpExporterHandle?.exporter.status().queued ?? 0 }],
+      },
+      {
+        name: 'harness_tool_window_samples',
+        help: 'Tool calls observed in the failure-alert sliding window',
+        type: 'gauge',
+        samples: toolSampleSamples.length > 0 ? toolSampleSamples : [{ value: 0 }],
+      },
+      {
+        name: 'harness_tool_failure_rate',
+        help: 'Per-tool failure rate over the failure-alert sliding window (0..1)',
+        type: 'gauge',
+        samples: toolFailureSamples.length > 0 ? toolFailureSamples : [{ value: 0 }],
+      },
+    ];
+    res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+    res.send(formatPrometheusMetrics(metrics));
+  } catch (error) {
+    res.status(500).send(`# error: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
+});
+
+// ─── Agents (built-in + custom) ─────────────────────────────────────
+// List, create, and delete custom agent definitions stored under
+// .harness/agents/. Built-in roles are also surfaced so the UI can render
+// the full catalogue in one view.
+
+app.get('/api/agents', async (_req, res) => {
+  try {
+    const customAgents = await loadAgentDefinitions(PROJECT_DIR);
+    const builtins = BUILTIN_AGENT_ROLES.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      description: agent.description,
+      role: agent.role,
+      preset: agent.preset,
+      personality: agent.personality,
+      goal: agent.goal,
+      strengths: agent.strengths,
+      allowedTools: agent.allowedTools,
+      systemPrompt: agent.systemPrompt,
+      enabled: agent.enabled,
+      filePath: '<builtin>',
+      source: 'builtin',
+    }));
+    const customs = customAgents.map((agent) => ({ ...agent, source: 'custom' }));
+    // Custom agents shadow built-ins of the same id; surface the custom one.
+    const seen = new Set<string>();
+    const merged: Array<Record<string, unknown>> = [];
+    for (const agent of [...customs, ...builtins]) {
+      if (seen.has(agent.id)) continue;
+      seen.add(agent.id);
+      merged.push(agent);
+    }
+    res.json({ agents: merged });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/agents', async (req, res) => {
+  try {
+    const { id, name, description, role, model: agentModel, preset, personality, goal, systemPrompt, allowedTools } = req.body ?? {};
+    if (typeof id !== 'string' || !id.trim()) { res.status(400).json({ error: 'id is required.' }); return; }
+    if (typeof name !== 'string' || !name.trim()) { res.status(400).json({ error: 'name is required.' }); return; }
+    if (typeof systemPrompt !== 'string' || !systemPrompt.trim()) { res.status(400).json({ error: 'systemPrompt is required.' }); return; }
+    const { writeCustomAgent } = await import('../agents/agentLoader');
+    const filePath = await writeCustomAgent(PROJECT_DIR, {
+      id: id.trim(),
+      name: name.trim(),
+      description: typeof description === 'string' ? description.trim() : '',
+      role: typeof role === 'string' ? role : undefined,
+      model: typeof agentModel === 'string' ? agentModel : undefined,
+      preset: typeof preset === 'string' ? preset as never : undefined,
+      personality: typeof personality === 'string' ? personality : undefined,
+      goal: typeof goal === 'string' ? goal : undefined,
+      systemPrompt,
+      allowedTools: Array.isArray(allowedTools) ? allowedTools.filter((tool: unknown): tool is string => typeof tool === 'string') : undefined,
+    });
+    res.json({ id: id.trim(), filePath });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.delete('/api/agents/:id', async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    if (!/^[a-z0-9][a-z0-9-_]*$/i.test(id)) { res.status(400).json({ error: 'Invalid agent id.' }); return; }
+    const fp = path.join(PROJECT_DIR, '.harness', 'agents', `${id}.md`);
+    try {
+      await fs.unlink(fp);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes('ENOENT') || msg.includes('no such file')) { res.status(404).json({ error: 'Agent not found.' }); return; }
+      throw error;
+    }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Squads ─────────────────────────────────────────────────────────
+// Persistent agent rosters with regex-based routing rules. Each squad
+// lives under .harness/squads/<id>.json. Mutations emit events that the
+// WebSocket broadcaster forwards to live UI clients.
+
+app.get('/api/squads', async (_req, res) => {
+  try {
+    const squads = await listSquads(PROJECT_DIR);
+    res.json({ squads });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/squads/:id', async (req, res) => {
+  try {
+    const squad = await getSquad(PROJECT_DIR, req.params.id);
+    if (!squad) { res.status(404).json({ error: 'Squad not found.' }); return; }
+    res.json({ squad });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/squads', async (req, res) => {
+  try {
+    const squad = await createSquad(PROJECT_DIR, req.body ?? {});
+    res.json({ squad });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = message.includes('already exists') ? 409 : 400;
+    res.status(status).json({ error: message });
+  }
+});
+
+app.patch('/api/squads/:id', async (req, res) => {
+  try {
+    const squad = await updateSquad(PROJECT_DIR, req.params.id, req.body ?? {});
+    res.json({ squad });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = message.includes('not found') ? 404 : 400;
+    res.status(status).json({ error: message });
+  }
+});
+
+app.delete('/api/squads/:id', async (req, res) => {
+  try {
+    const removed = await deleteSquad(PROJECT_DIR, req.params.id);
+    if (!removed) { res.status(404).json({ error: 'Squad not found.' }); return; }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/squads/:id/route', async (req, res) => {
+  try {
+    const squad = await getSquad(PROJECT_DIR, req.params.id);
+    if (!squad) { res.status(404).json({ error: 'Squad not found.' }); return; }
+    const message = typeof req.body?.message === 'string' ? req.body.message : '';
+    if (!message.trim()) { res.status(400).json({ error: 'message is required.' }); return; }
+    res.json({ result: routeMessage(squad, message) });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Identity ───────────────────────────────────────────────────────
+// SOUL.md / USER.md / structured.json under .harness/identity/. The
+// identity layer is rendered into the chat system prompt (when
+// non-empty) so the agent's persistent persona and the user's stored
+// preferences shape replies.
+
+app.get('/api/identity', async (_req, res) => {
+  try {
+    const snapshot = await readIdentitySnapshot(PROJECT_DIR);
+    res.json(snapshot);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+const VALID_IDENTITY_FILES = new Set<IdentityFileName>(['SOUL.md', 'USER.md']);
+
+app.put('/api/identity/:file', async (req, res) => {
+  try {
+    const fileName = req.params.file as IdentityFileName;
+    if (!VALID_IDENTITY_FILES.has(fileName)) { res.status(400).json({ error: 'file must be SOUL.md or USER.md.' }); return; }
+    const content = typeof req.body?.content === 'string' ? req.body.content : '';
+    await writeIdentityFile(PROJECT_DIR, fileName, content);
+    const reread = await readIdentityFile(PROJECT_DIR, fileName);
+    res.json({ file: fileName, content: reread });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/identity/structured', async (req, res) => {
+  try {
+    const category = typeof req.query.category === 'string' ? req.query.category : undefined;
+    const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+    const entries = await queryStructured(PROJECT_DIR, { category, q });
+    res.json({ entries });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/identity/structured', async (req, res) => {
+  try {
+    const { id, category, summary, metadata } = req.body ?? {};
+    if (typeof category !== 'string' || !category.trim()) { res.status(400).json({ error: 'category is required.' }); return; }
+    if (typeof summary !== 'string' || !summary.trim()) { res.status(400).json({ error: 'summary is required.' }); return; }
+    const entry = await upsertStructuredEntry(PROJECT_DIR, {
+      id: typeof id === 'string' ? id : undefined,
+      category,
+      summary,
+      metadata: metadata && typeof metadata === 'object' ? metadata : undefined,
+    });
+    res.json({ entry });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.delete('/api/identity/structured/:id', async (req, res) => {
+  try {
+    const removed = await deleteStructuredEntry(PROJECT_DIR, req.params.id);
+    if (!removed) { res.status(404).json({ error: 'Structured entry not found.' }); return; }
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/identity/export', async (_req, res) => {
+  try {
+    const payload = await exportIdentity(PROJECT_DIR);
+    res.json(payload);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/identity/import', async (req, res) => {
+  try {
+    const mergeStructured = req.body?.mergeStructured !== false;
+    const overwriteFiles = req.body?.overwriteFiles !== false;
+    const summary = await importIdentity(PROJECT_DIR, req.body, { mergeStructured, overwriteFiles });
+    res.json({ summary });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(400).json({ error: message });
+  }
+});
+
+// ─── System Health ──────────────────────────────────────────────────
+// Aggregated dashboard endpoint surfacing live state across the daemon's
+// background subsystems.
+
+app.get('/api/system/health', async (_req, res) => {
+  try {
+    const [recentEvents, heartbeatHistory, conciergeLog, taskSummary, squadCount] = await Promise.all([
+      queryEvents(PROJECT_DIR, { limit: 200 }).catch(() => []),
+      readHeartbeatHistory(PROJECT_DIR, 20).catch(() => []),
+      readConciergeLog(PROJECT_DIR, 20).catch(() => []),
+      summarizeTasks(PROJECT_DIR).catch(() => null),
+      listSquads(PROJECT_DIR).then((squads) => squads.length).catch(() => 0),
+    ]);
+    const lastHeartbeat = heartbeatHistory[heartbeatHistory.length - 1] ?? null;
+    res.json({
+      kill_switch: { active: killSwitchActive, reason: killSwitchReason },
+      capabilities: {
+        active_grants: listActiveCapabilityGrants(capabilityGrants).length,
+        total_grants: capabilityGrants.length,
+      },
+      heartbeat: {
+        enabled: heartbeatEnabled(),
+        running: Boolean(selfLearningHeartbeat),
+        last_run_at: heartbeatLastRunMs ? new Date(heartbeatLastRunMs).toISOString() : null,
+        recent_runs: heartbeatHistory,
+        last_run_summary: lastHeartbeat,
+      },
+      triggers: {
+        enabled: triggersEnabled(),
+        running: Boolean(triggerScheduler),
+      },
+      automation: {
+        running: Boolean(automationScheduler),
+      },
+      curator: {
+        running: Boolean(curatorScheduler),
+      },
+      concierge: {
+        enabled: conciergeEnabled(),
+        auto_route: conciergeAutoRouteEnabled(),
+        recent_decisions: conciergeLog,
+      },
+      squads: {
+        total: squadCount,
+        auto_route: squadAutoRouteEnabled(),
+      },
+      tasks: taskSummary,
+      events: { recent_count: recentEvents.length },
+      observability: {
+        otel_export_enabled: otelExportEnabled(),
+        otel_endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? '',
+        exporter_status: otlpExporterHandle ? otlpExporterHandle.exporter.status() : null,
+      },
+      feature_flags: { ...systemFeatureFlags },
+    });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.patch('/api/system/feature-flags', (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const next: SystemFeatureFlags = { ...systemFeatureFlags };
+    const valid: Array<keyof SystemFeatureFlags> = ['heartbeatEnabled', 'triggersEnabled', 'conciergeEnabled', 'conciergeAutoRoute', 'squadAutoRoute', 'otelExportEnabled'];
+    for (const key of valid) {
+      if (key in body) {
+        const raw = (body as Record<string, unknown>)[key];
+        if (raw === null || raw === undefined) delete next[key];
+        else next[key] = Boolean(raw);
+      }
+    }
+    systemFeatureFlags = next;
+    saveSettingsToDisk().catch(() => {});
+    // Re-apply scheduler configurations so changes take effect immediately.
+    try { configureSelfLearningHeartbeat(); } catch { /* best-effort */ }
+    try { configureTriggerScheduler(); } catch { /* best-effort */ }
+    try { configureOtlpExporter(); } catch { /* best-effort */ }
+    res.json({ feature_flags: systemFeatureFlags });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 // ─── Promise Ledger ─────────────────────────────────────────────────
 
 app.get('/api/promises', async (req, res) => {
@@ -2956,6 +3860,18 @@ app.post('/api/runtime/cleanup', async (req, res) => {
 
 app.get('/api/permissions/pending', (_req, res) => {
   res.json({ prompts: permissionPrompts.list() });
+});
+
+// Audit log: every tool call (PreToolUse + PostToolUse + PostToolUseFailure)
+// gets a JSONL entry in .harness/audit.log. Returns the most recent N entries.
+app.get('/api/permissions/audit', async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(2000, Number(req.query.limit) || 200));
+    const entries = await readAuditLog(PROJECT_DIR, limit);
+    res.json({ total: entries.length, entries });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 // Read-only view of the permission posture for the Permissions UI.
@@ -3775,6 +4691,64 @@ app.post('/api/chat', async (req, res) => {
     }
   }
 
+  // Tier 0.5a: Squad auto-route — when HARNESS_SQUAD_AUTO_ROUTE is set and
+  // the chat request specifies a squadId, the squad's routing rules pick
+  // the agent and we delegate directly. Falls through on failure.
+  // sessionId is opt-in: when provided, the server persists the squadId so
+  // future turns from the same session do not need to re-pass it.
+  const sessionIdHint = typeof req.body?.sessionId === 'string' && req.body.sessionId.trim() ? req.body.sessionId.trim() : '';
+  const explicitSquadId = typeof req.body?.squadId === 'string' && req.body.squadId.trim() ? req.body.squadId.trim() : undefined;
+  const squadId = sessionIdHint
+    ? await resolveSessionSquad(PROJECT_DIR, sessionIdHint, explicitSquadId).catch(() => explicitSquadId)
+    : explicitSquadId;
+  if (messageText && squadId && squadAutoRouteEnabled()) {
+    try {
+      const parentClient = webRuntime.createClient(model || currentModel || 'llama3.1:8b', ollamaHost);
+      const auto = await maybeSquadAutoRoute(squadId, messageText, parentClient);
+      if (auto) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+        const text = `${auto.summary}\n\n*Squad ${auto.squadId} auto-routed to ${auto.agentId} — ${auto.reason}.*`;
+        res.write(`data: ${JSON.stringify({ type: 'text', content: text })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'done', reason: 'squad_auto_route' })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
+    } catch (error) {
+      logger.warn('Squad', 'Squad auto-route failed; falling through', { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  // Tier 0.5: Concierge auto-route — when enabled, the concierge runs the
+  // suggested sub-agent directly and streams back its summary instead of
+  // invoking the main loop. The ordinary concierge note path still fires
+  // when auto-route is off; both modes coexist.
+  if (messageText && conciergeEnabled() && conciergeAutoRouteEnabled()) {
+    try {
+      const parentClient = webRuntime.createClient(model || currentModel || 'llama3.1:8b', ollamaHost);
+      const autoRoute = await maybeConciergeAutoRoute(messageText, parentClient);
+      if (autoRoute) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+        const text = `${autoRoute.summary}\n\n*Concierge auto-routed to ${autoRoute.agentId} — ${autoRoute.reason}.*`;
+        res.write(`data: ${JSON.stringify({ type: 'text', content: text })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'done', reason: 'concierge_auto_route' })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
+    } catch (error) {
+      // Auto-route failures fall through to the normal model loop. We log
+      // but never block the user's turn.
+      logger.warn('Concierge', 'Auto-route failed; falling through to main loop', { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   const operateResult = messageText ? await handleOperateModeRequest(PROJECT_DIR, messageText, undefined, {
     checkCapabilities: (required) => capabilityRegistry.formatLimitations(required as any[]),
   }) : null;
@@ -4029,7 +5003,11 @@ TOOL FALLBACK RULES:
 - You have browser_navigate, browser_read, browser_click tools available for sites that block simple HTTP requests.
 - Prefer web_search + web_read for initial research, fall back to browser_navigate for blocked sites.`;
 
-  const systemPrompt = [baseSystemPrompt, attachmentsBlock, myceliumContext, codeIntelContext, nervousContext, toolSynthesisNudge].filter(Boolean).join('\n\n');
+  const conciergeNote = buildConciergeNote(typeof message === 'string' ? message : '');
+  const squadNote = await buildSquadRoutingNote(squadId, typeof message === 'string' ? message : '').catch(() => null);
+  const identityBlock = await renderIdentityForPrompt(PROJECT_DIR, { maxChars: 4000 }).catch(() => '');
+  const recentAuditBlock = await renderRecentAuditForPrompt(PROJECT_DIR).catch(() => '');
+  const systemPrompt = [baseSystemPrompt, identityBlock, attachmentsBlock, myceliumContext, codeIntelContext, nervousContext, recentAuditBlock, squadNote, conciergeNote, toolSynthesisNudge].filter(Boolean).join('\n\n');
 
   const synthesisStats = await loadSynthesisStats(PROJECT_DIR);
   const effectiveMaxTurns = adaptiveMaxTurns(synthesisStats, activeModel, 25);
@@ -4210,6 +5188,9 @@ TOOL FALLBACK RULES:
           stats.total++;
           if (event.result?.success) stats.success++;
           toolStats.set(event.call.name, stats);
+          // Sliding-window alert tracker. Fires once per tool when the
+          // recent failure rate crosses the configured threshold.
+          toolFailureAlerts.record(event.call.name, Boolean(event.result?.success));
         }
         // Event store: emit per-tool events for audit trail + postmortem analysis.
         emitEvent(PROJECT_DIR, 'tool', event.result?.success ? 'tool_succeeded' : 'tool_failed', {
@@ -5645,6 +6626,29 @@ app.get('/api/learning/candidates/:id/provenance', async (req, res) => {
   }
 });
 
+app.get('/api/learning/candidates/:id/gate', async (req, res) => {
+  const candidateId = safeEvalExampleId(req.params.id);
+  if (!candidateId) { res.status(400).json({ error: 'Invalid learning candidate id.' }); return; }
+  try {
+    const verdict = await evaluatePromotionGateForCandidate(PROJECT_DIR, candidateId);
+    if (!verdict.candidateFound) { res.status(404).json({ error: verdict.reason }); return; }
+    res.json({
+      gate_enabled: process.env.HARNESS_PROMOTION_GATE_ENABLED === '1',
+      candidate_id: verdict.candidateId,
+      allowed: verdict.allowed,
+      reason: verdict.reason,
+      pass_count: verdict.passCount,
+      considered_runs: verdict.consideredRuns,
+      required_passes: verdict.requiredPasses,
+      pass_at_all: verdict.passAtAll,
+      safety_violations: verdict.safetyViolations,
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
 // --- API: File Upload ---
 app.post('/api/upload', express.raw({ type: '*/*', limit: '10mb' }), async (req, res) => {
   const filename = req.headers['x-filename'] as string;
@@ -5826,6 +6830,137 @@ export function stopCuratorScheduler(): void {
     curatorScheduler.stop();
     curatorScheduler = null;
   }
+}
+
+function heartbeatEnabled(): boolean {
+  return resolveFeatureFlag('HARNESS_HEARTBEAT_ENABLED', 'heartbeatEnabled');
+}
+
+function configureSelfLearningHeartbeat(): void {
+  if (selfLearningHeartbeat) {
+    selfLearningHeartbeat.stop();
+    selfLearningHeartbeat = null;
+  }
+  if (!heartbeatEnabled()) return;
+  const intervalMinutes = Number(process.env.HARNESS_HEARTBEAT_INTERVAL_MIN ?? '15') || 15;
+  // Default action set plus a work_assigned_tasks action that delegates to
+  // the assigned sub-agent via runSubagent. The runner reuses the same
+  // chat-client + tool snapshot the chat path uses so behaviour stays
+  // consistent with interactive runs.
+  const actions = defaultHeartbeatActions();
+  actions.push(createIdentityGcAction({}));
+  // Optional learning-flavoured actions, off by default. Both are
+  // deterministic / read-only — no LLM calls — so they are safe to enable.
+  if (process.env.HARNESS_HEARTBEAT_REFLECT_ENABLED === '1') {
+    actions.push(createReflectAndLearnAction());
+  }
+  if (process.env.HARNESS_HEARTBEAT_SKILL_EVOLUTION_ENABLED === '1') {
+    actions.push(createSkillEvolutionAction({}));
+  }
+  actions.push(createWorkAssignedTasksAction({
+    knownAgentIds: async () => {
+      const customs = await loadAgentDefinitions(PROJECT_DIR).catch(() => []);
+      return new Set([
+        ...BUILTIN_AGENT_ROLES.map((agent) => agent.id),
+        ...customs.map((agent) => agent.id),
+      ]);
+    },
+    runner: async ({ task, agentId }) => {
+      const { runSubagent } = await import('../agents/subagent');
+      const customAgents = await loadAgentDefinitions(PROJECT_DIR).catch(() => []);
+      const parentClient = webRuntime.createClient(currentModel || 'llama3.1:8b', ollamaHost);
+      const baseTools = applyToolDisables(getRuntimeTools(PROJECT_DIR)).filter((tool) => tool.name !== 'agent');
+      return runSubagent(
+        { name: agentId, systemPrompt: '', agentId, customAgents },
+        `${task.title}${task.description ? `\n\n${task.description}` : ''}`,
+        parentClient,
+        baseTools,
+      );
+    },
+  }));
+  selfLearningHeartbeat = new SelfLearningHeartbeat({
+    projectDir: PROJECT_DIR,
+    intervalMinutes,
+    actions,
+    isKillSwitchActive: () => killSwitchActive,
+    isEnabled: () => heartbeatEnabled() && !killSwitchActive,
+    getLastRunMs: () => heartbeatLastRunMs,
+    recordRunMs: (timestamp) => { heartbeatLastRunMs = timestamp; },
+  });
+  selfLearningHeartbeat.start();
+}
+
+export function stopSelfLearningHeartbeat(): void {
+  if (selfLearningHeartbeat) {
+    selfLearningHeartbeat.stop();
+    selfLearningHeartbeat = null;
+  }
+}
+
+function triggersEnabled(): boolean {
+  return resolveFeatureFlag('HARNESS_TRIGGERS_ENABLED', 'triggersEnabled');
+}
+
+function configureTriggerScheduler(): void {
+  if (triggerScheduler) {
+    triggerScheduler.stop();
+    triggerScheduler = null;
+  }
+  if (!triggersEnabled()) return;
+  triggerScheduler = new TriggerScheduler({
+    projectDir: PROJECT_DIR,
+    isKillSwitchActive: () => killSwitchActive,
+    isEnabled: () => triggersEnabled() && !killSwitchActive,
+  });
+  triggerScheduler.start();
+}
+
+export function stopTriggerScheduler(): void {
+  if (triggerScheduler) {
+    triggerScheduler.stop();
+    triggerScheduler = null;
+  }
+}
+
+// ─── OTLP / OpenInference trace export ─────────────────────────────
+// Optional fan-out from the in-process RuntimeTracer to an OTLP/HTTP
+// collector (Phoenix, Laminar, Langfuse, OTel Collector). Uses a tiny
+// JSON-encoded HTTP exporter — no @opentelemetry/* runtime deps.
+let otlpExporterHandle: { exporter: OtlpExporter; detach: () => Promise<void> } | null = null;
+
+function otelExportEnabled(): boolean {
+  return resolveFeatureFlag('HARNESS_OTEL_EXPORT_ENABLED', 'otelExportEnabled');
+}
+
+function configureOtlpExporter(): void {
+  // Detach any prior exporter so flag toggles are clean.
+  if (otlpExporterHandle) {
+    otlpExporterHandle.detach().catch(() => { /* best-effort */ });
+    otlpExporterHandle = null;
+  }
+  if (!otelExportEnabled()) return;
+  const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
+  if (!endpoint) {
+    logger.warn('Observability', 'HARNESS_OTEL_EXPORT_ENABLED is set but OTEL_EXPORTER_OTLP_ENDPOINT is empty; OTLP export inactive');
+    return;
+  }
+  const traceIdHex = mintTraceId(`${process.pid}-${Date.now()}`);
+  otlpExporterHandle = attachOtlpExporter(runtimeTracer, {
+    endpoint,
+    authorization: process.env.OTEL_EXPORTER_OTLP_HEADERS?.split('=').slice(1).join('=') || undefined,
+    traceIdHex,
+    serviceName: process.env.OTEL_SERVICE_NAME ?? 'harness',
+    serviceVersion: '1',
+    logger: { warn: (message, meta) => logger.warn('Observability', message, meta ?? {}) },
+  });
+  logger.info('Observability', 'OTLP exporter attached', { endpoint });
+}
+
+export function stopOtlpExporter(): Promise<void> {
+  if (!otlpExporterHandle) return Promise.resolve();
+  const handle = otlpExporterHandle;
+  otlpExporterHandle = null;
+  return handle.detach();
 }
 
 function configureAutomationScheduler(): void {
@@ -7001,7 +8136,7 @@ export async function startServer(): Promise<void> {
   const port = await findAvailablePort(preferred);
   startupProfile.record('port-selection');
 
-  app.listen(port, LOCAL_HOST, () => {
+  const httpServer = app.listen(port, LOCAL_HOST, () => {
     startupProfile.record('listen-ready');
     logger.info('Startup', 'Web startup phases', startupProfile.summary());
     const url = `http://${LOCAL_HOST}:${port}`;
@@ -7012,6 +8147,7 @@ export async function startServer(): Promise<void> {
     console.log(`  ───────────────────────`);
     console.log(`  Open in your browser:  ${url}`);
     console.log(`  Ollama host:           ${ollamaHost}`);
+    console.log(`  WebSocket:             ws://${LOCAL_HOST}:${port}/ws`);
 
     if (startupConnectorsEnabled()) {
       // Start Telegram bot if token is configured.
@@ -7032,6 +8168,39 @@ export async function startServer(): Promise<void> {
     }
 
     console.log(`\n  Press Ctrl+C to stop.\n`);
+
+    // Attach WebSocket server for live multi-client event streaming.
+    try {
+      attachWsServer(httpServer, {
+        coalesceWindowMs: Number(process.env.HARNESS_WS_COALESCE_MS ?? '0') || 0,
+      });
+    } catch (error) {
+      logger.warn('Startup', 'Failed to attach WebSocket server', { error: error instanceof Error ? error.message : String(error) });
+    }
+
+    // Start the self-learning heartbeat (no-op unless HARNESS_HEARTBEAT_ENABLED).
+    try {
+      configureSelfLearningHeartbeat();
+      if (selfLearningHeartbeat) console.log(`  Heartbeat:             enabled`);
+    } catch (error) {
+      logger.warn('Startup', 'Failed to start self-learning heartbeat', { error: error instanceof Error ? error.message : String(error) });
+    }
+
+    // Start the trigger scheduler (no-op unless HARNESS_TRIGGERS_ENABLED).
+    try {
+      configureTriggerScheduler();
+      if (triggerScheduler) console.log(`  Triggers:              enabled`);
+    } catch (error) {
+      logger.warn('Startup', 'Failed to start trigger scheduler', { error: error instanceof Error ? error.message : String(error) });
+    }
+
+    // Attach OTLP exporter (no-op unless HARNESS_OTEL_EXPORT_ENABLED + endpoint set).
+    try {
+      configureOtlpExporter();
+      if (otlpExporterHandle) console.log(`  OTLP exporter:         enabled`);
+    } catch (error) {
+      logger.warn('Startup', 'Failed to attach OTLP exporter', { error: error instanceof Error ? error.message : String(error) });
+    }
 
     // Load webhooks from env.
     loadWebhooksFromEnv();

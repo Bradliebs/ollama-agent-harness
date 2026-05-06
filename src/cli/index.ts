@@ -19,8 +19,20 @@ import { runMyceliumCli } from '../mycelium/cli';
 import type { LoopConfig, PermissionMode } from '../types';
 
 interface CliOptions {
-  command?: 'doctor' | 'mycelium';
+  command?: 'doctor' | 'mycelium' | 'tui' | 'simulate';
   myceliumArgs?: string[];
+  /** Daemon base URL for the `tui` command. */
+  tuiBaseUrl?: string;
+  /** Optional model id for the `tui` command. */
+  tuiModel?: string;
+  /** Probe ids accumulated for the `simulate` command. */
+  simulateProbeIds?: string[];
+  /** Probe categories accumulated for the `simulate` command. */
+  simulateCategories?: string[];
+  /** Per-probe timeout (ms) for the `simulate` command. */
+  simulateProbeTimeoutMs?: number;
+  /** Persist the simulator run as an EvalTraceRun. */
+  simulatePersist?: boolean;
   model: string;
   host: string;
   permissionMode: PermissionMode;
@@ -61,6 +73,12 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
     // Everything after 'mycelium' is forwarded to the subcommand handler.
     options.myceliumArgs = args.slice(1);
     args = [];
+  } else if (command?.name === 'tui') {
+    options.command = 'tui';
+    args = args.slice(1);
+  } else if (command?.name === 'simulate') {
+    options.command = 'simulate';
+    args = args.slice(1);
   }
 
   for (let i = 0; i < args.length; i++) {
@@ -130,6 +148,25 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
         break;
       case '--prompt-file':
         options.promptFile = args[++i];
+        break;
+      case '--base-url':
+        options.tuiBaseUrl = args[++i];
+        break;
+      case '--probe':
+        options.simulateProbeIds = options.simulateProbeIds ?? [];
+        options.simulateProbeIds.push(args[++i]);
+        break;
+      case '--category':
+        options.simulateCategories = options.simulateCategories ?? [];
+        options.simulateCategories.push(args[++i]);
+        break;
+      case '--probe-timeout': {
+        const ms = parseInt(args[++i], 10);
+        if (Number.isFinite(ms) && ms > 0) options.simulateProbeTimeoutMs = ms;
+        break;
+      }
+      case '--persist':
+        options.simulatePersist = true;
         break;
       case '--help':
       case '-h':
@@ -210,6 +247,37 @@ export async function main(): Promise<void> {
     const result = await runMyceliumCli({ projectDir: process.cwd(), args: options.myceliumArgs ?? [] });
     console.log(result.output);
     process.exitCode = result.exitCode;
+    return;
+  }
+
+  if (options.command === 'tui') {
+    const { runTui } = await import('../tui');
+    await runTui({
+      baseUrl: options.tuiBaseUrl,
+      // Only forward the model when the user explicitly customised it;
+      // empty string lets the daemon pick its current selection.
+      model: options.model && options.model !== 'qwen2.5-coder:7b' ? options.model : undefined,
+    });
+    return;
+  }
+
+  if (options.command === 'simulate') {
+    const { runSimulation, formatSimulationSummary } = await import('../eval/simulator');
+    const run = await runSimulation({
+      baseUrl: options.tuiBaseUrl,
+      model: options.model && options.model !== 'qwen2.5-coder:7b' ? options.model : undefined,
+      filterIds: options.simulateProbeIds,
+      filterCategories: options.simulateCategories as Array<'prompt-injection' | 'secret-exfil' | 'tool-misuse' | 'safety-refusal' | 'baseline'> | undefined,
+      perProbeTimeoutMs: options.simulateProbeTimeoutMs,
+      persistEvalRunProjectDir: options.simulatePersist ? process.cwd() : undefined,
+    });
+    console.log(formatSimulationSummary(run));
+    if (options.simulatePersist) {
+      console.log(`\n  Persisted run ${run.id} → .harness/evals/trace-runs.jsonl (promotion gate will count it)`);
+    }
+    if (run.failed > 0 || run.errored > 0) {
+      process.exitCode = 1;
+    }
     return;
   }
 

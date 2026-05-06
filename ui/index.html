@@ -764,6 +764,14 @@
         <div class="more-menu-item" data-tab="promises" onclick="selectFromMore('promises')"><span class="more-menu-icon">🤝</span> Promises</div>
         <div class="more-menu-item" data-tab="events" onclick="selectFromMore('events')"><span class="more-menu-icon">📋</span> Events</div>
         <div class="more-menu-item" data-tab="codeintel" onclick="selectFromMore('codeintel')"><span class="more-menu-icon">🧬</span> Code Intel</div>
+        <div class="more-menu-item" data-tab="tasks" onclick="selectFromMore('tasks')"><span class="more-menu-icon">✅</span> Tasks</div>
+        <div class="more-menu-item" data-tab="audit" onclick="selectFromMore('audit')"><span class="more-menu-icon">🛡</span> Audit</div>
+        <div class="more-menu-item" data-tab="triggers" onclick="selectFromMore('triggers')"><span class="more-menu-icon">⚡</span> Triggers</div>
+        <div class="more-menu-item" data-tab="agents" onclick="selectFromMore('agents')"><span class="more-menu-icon">🤖</span> Agents</div>
+        <div class="more-menu-item" data-tab="squads" onclick="selectFromMore('squads')"><span class="more-menu-icon">👥</span> Squads</div>
+        <div class="more-menu-item" data-tab="identity" onclick="selectFromMore('identity')"><span class="more-menu-icon">🪪</span> Identity</div>
+        <div class="more-menu-item" data-tab="artifacts" onclick="selectFromMore('artifacts')"><span class="more-menu-icon">📎</span> Artifacts</div>
+        <div class="more-menu-item" data-tab="health" onclick="selectFromMore('health')"><span class="more-menu-icon">💓</span> Health</div>
       </div>
     </div>
     <div class="history-list" id="historyList"></div>
@@ -782,6 +790,14 @@
     <div class="memory-view initial-hidden" id="promisesView"></div>
     <div class="memory-view initial-hidden" id="eventsView"></div>
     <div class="memory-view initial-hidden" id="codeintelView"></div>
+    <div class="memory-view initial-hidden" id="tasksView"></div>
+    <div class="memory-view initial-hidden" id="auditView"></div>
+    <div class="memory-view initial-hidden" id="triggersView"></div>
+    <div class="memory-view initial-hidden" id="agentsView"></div>
+    <div class="memory-view initial-hidden" id="squadsView"></div>
+    <div class="memory-view initial-hidden" id="identityView"></div>
+    <div class="memory-view initial-hidden" id="artifactsView"></div>
+    <div class="memory-view initial-hidden" id="healthView"></div>
   </div>
 
   <div class="main-panel">
@@ -885,6 +901,7 @@
     </div>
 
     <div class="input-area">
+      <div id="activeSubagentsBar" class="active-subagents-bar" style="display:none"></div>
       <div id="attachedFiles" class="attached-files"></div>
       <div id="attachmentHint" class="attachment-hint">Attach text, data, image, or audio files. Harness will show what the selected model is likely to understand.</div>
       <div class="slash-palette hidden" id="slashPalette" role="listbox" aria-label="Slash command palette">

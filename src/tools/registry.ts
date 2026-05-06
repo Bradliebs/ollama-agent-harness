@@ -21,7 +21,10 @@ import { SlackNotifyTool } from './slackTools';
 import { TelegramNotifyTool } from './telegramTools';
 import { CalendarReadTool, CalendarWriteTool } from './calendarTools';
 import { createMcpToolEntries } from './mcpTools';
-
+import { TaskManageTool, TaskProgressTool } from './taskTools';
+import { CreateCustomAgentTool } from './agentTools';
+import { SquadInspectTool } from './squadTools';
+import { createDockerExecTool } from './dockerExecTool';
 export interface ToolRegistryEntry {
   tool: Tool;
   toolset: string;
@@ -130,4 +133,9 @@ export const BUILTIN_TOOL_ENTRIES: ToolRegistryEntry[] = [
   { tool: CalendarReadTool, toolset: 'communications', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
   { tool: CalendarWriteTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'write', canDryRun: false },
   { tool: DocumentExportTool, toolset: 'documents', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'write', canDryRun: false },
+  { tool: TaskManageTool, toolset: 'tasks', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false },
+  { tool: TaskProgressTool, toolset: 'tasks', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false },
+  { tool: CreateCustomAgentTool, toolset: 'agents', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'skills', canDryRun: false },
+  { tool: SquadInspectTool, toolset: 'agents', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
+  { tool: createDockerExecTool(), toolset: 'shell', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'shell', canDryRun: false },
 ];

@@ -178,7 +178,15 @@ export async function* queryLoop(
     try {
       const result = await client.chat(messages, ollamaTools, abortSignal);
       assistantMessage = result.message;
-      modelSpan?.end('ok', { toolCalls: assistantMessage.tool_calls?.length ?? 0 });
+      modelSpan?.end('ok', {
+        toolCalls: assistantMessage.tool_calls?.length ?? 0,
+        // Surface token usage on the span itself so the OpenInference
+        // exporter can map it to llm.token_count.* attributes.
+        ...(result.usage ? {
+          promptTokens: result.usage.promptTokens ?? 0,
+          completionTokens: result.usage.completionTokens ?? 0,
+        } : {}),
+      });
       // Surface per-call telemetry so the UI can render an inline footer
       // (model · tokens · latency) under each assistant turn and roll a
       // session-total HUD in the topbar.
@@ -470,7 +478,13 @@ export async function* queryLoop(
   try {
     const synthResult = await client.chat(synthMessages, [], abortSignal);
     const synthMessage = synthResult.message;
-    synthSpan?.end('ok', { toolCalls: 0 });
+    synthSpan?.end('ok', {
+      toolCalls: 0,
+      ...(synthResult.usage ? {
+        promptTokens: synthResult.usage.promptTokens ?? 0,
+        completionTokens: synthResult.usage.completionTokens ?? 0,
+      } : {}),
+    });
 
     if (synthResult.usage) {
       yield {

@@ -103,6 +103,67 @@ describe('Curator deterministic phase', () => {
   });
 });
 
+describe('Curator safety gate (HARNESS_CURATOR_SAFETY_GATE)', () => {
+  const ENV_KEY = 'HARNESS_CURATOR_SAFETY_GATE';
+  let originalEnv: string | undefined;
+
+  beforeEach(() => { originalEnv = process.env[ENV_KEY]; });
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = originalEnv;
+  });
+
+  it('records skip-safety instead of archiving when a stale skill trips a high-severity rule', async () => {
+    process.env[ENV_KEY] = '1';
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-curator-safety-'));
+    const skillsDir = path.join(projectDir, '.harness', 'skills');
+    await fs.mkdir(path.join(skillsDir, 'leaky'), { recursive: true });
+    // Skill content contains an AWS access key id (high-severity rule).
+    await fs.writeFile(
+      path.join(skillsDir, 'leaky', 'SKILL.md'),
+      '---\nname: leaky\ndescription: leaky\ndomain: t\n---\n# leaky\nAKIAIOSFODNN7EXAMPLE',
+      'utf-8',
+    );
+    const store: SkillUsageStore = {
+      version: 1,
+      records: { leaky: { name: 'leaky', useCount: 0, viewCount: 1, lastUsedAt: nowMinusDays(120), pinned: false, archived: false, firstSeenAt: nowMinusDays(180), updatedAt: nowMinusDays(120) } },
+    };
+    await saveSkillUsage(projectDir, store);
+
+    const summary = await runDeterministicPhase(projectDir, DEFAULT_CURATOR_CONFIG, { isKillSwitchActive: () => false });
+    const archived = summary.archived.filter((action) => action.kind === 'archive');
+    const skipped = summary.archived.filter((action) => action.kind === 'skip-safety');
+    expect(archived).toHaveLength(0);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0].safetyViolations?.[0].severity).toBe('high');
+
+    await fs.rm(projectDir, { recursive: true, force: true });
+  });
+
+  it('archives normally when the safety gate is off (default)', async () => {
+    delete process.env[ENV_KEY];
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-curator-safety-off-'));
+    const skillsDir = path.join(projectDir, '.harness', 'skills');
+    await fs.mkdir(path.join(skillsDir, 'leaky'), { recursive: true });
+    await fs.writeFile(
+      path.join(skillsDir, 'leaky', 'SKILL.md'),
+      '---\nname: leaky\ndescription: leaky\ndomain: t\n---\n# leaky\nAKIAIOSFODNN7EXAMPLE',
+      'utf-8',
+    );
+    const store: SkillUsageStore = {
+      version: 1,
+      records: { leaky: { name: 'leaky', useCount: 0, viewCount: 1, lastUsedAt: nowMinusDays(120), pinned: false, archived: false, firstSeenAt: nowMinusDays(180), updatedAt: nowMinusDays(120) } },
+    };
+    await saveSkillUsage(projectDir, store);
+
+    const summary = await runDeterministicPhase(projectDir, DEFAULT_CURATOR_CONFIG, { isKillSwitchActive: () => false });
+    const archived = summary.archived.filter((action) => action.kind === 'archive');
+    expect(archived).toHaveLength(1);
+
+    await fs.rm(projectDir, { recursive: true, force: true });
+  });
+});
+
 describe('parseMergeProposals', () => {
   it('parses cluster headings, merge lists, rationale, and proposed description', () => {
     const md = [

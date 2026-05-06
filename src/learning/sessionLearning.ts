@@ -2,6 +2,8 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { SessionEvent } from '../types';
 import { SessionStorage } from '../persistence/sessionStorage';
+import { evaluatePromotionGate, loadSafetyRules, type PromotionGateConfig, type PromotionGateResult } from './promotionGate';
+import { listEvalTraceRuns } from './evalTrace';
 
 export interface LearningCandidateOptions {
   minToolSuccessRate?: number;
@@ -173,6 +175,14 @@ export async function reviewLearningCandidate(
   }
   let memoryPath: string | undefined;
   if (action === 'promote') {
+    // Optional Claw-Eval-style gate. Off by default so existing flows
+    // are unchanged; enabling it requires HARNESS_PROMOTION_GATE_ENABLED.
+    if (process.env.HARNESS_PROMOTION_GATE_ENABLED === '1') {
+      const gate = await evaluatePromotionGateForCandidate(projectDir, candidateId);
+      if (!gate.allowed) {
+        throw new Error(`Promotion blocked by gate: ${gate.reason}`);
+      }
+    }
     const promoted = await promoteLearningCandidate(projectDir, candidate);
     if (!promoted) {
       throw new Error('Only accepted candidates can be promoted');
@@ -190,6 +200,40 @@ export async function reviewLearningCandidate(
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.appendFile(filePath, JSON.stringify(review) + '\n', 'utf-8');
   return review;
+}
+
+/**
+ * Stand-alone wrapper used by the promotion gate REST endpoint and by
+ * `reviewLearningCandidate` above. Looks up the candidate by id, pulls
+ * the recent eval-run history, and runs the pure gate evaluator.
+ */
+export async function evaluatePromotionGateForCandidate(
+  projectDir: string,
+  candidateId: string,
+  config?: PromotionGateConfig,
+): Promise<PromotionGateResult & { candidateId: string; candidateFound: boolean }> {
+  const candidate = (await listLearningCandidates(projectDir, 1000)).find((item) => item.id === candidateId);
+  if (!candidate) {
+    return {
+      candidateId,
+      candidateFound: false,
+      allowed: false,
+      reason: `Learning candidate not found: ${candidateId}`,
+      passCount: 0,
+      consideredRuns: 0,
+      requiredPasses: config?.requiredPasses ?? 3,
+      safetyViolations: [],
+      passAtAll: false,
+    };
+  }
+  const recentEvalRuns = await listEvalTraceRuns(projectDir, 50).catch(() => []);
+  const safetyRules = await loadSafetyRules(projectDir).catch(() => undefined);
+  const verdict = evaluatePromotionGate({
+    candidate,
+    recentEvalRuns,
+    config: { ...config, safetyRules: safetyRules ?? config?.safetyRules },
+  });
+  return { candidateId, candidateFound: true, ...verdict };
 }
 
 export async function getLearningCandidateProvenance(
