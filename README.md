@@ -502,6 +502,7 @@ runbook including failure recovery.
 
 * **[START-HERE.md](START-HERE.md)** — complete beginner guide (install Node.js, install Ollama, first chat)
 * **[CHANGELOG.md](CHANGELOG.md)** — release notes for every version
+* **[System breakdown](docs/SYSTEM-BREAKDOWN.md)** — single-page reference covering every subsystem, env flag, and operational runbook
 * [Model presets guide](docs/MODEL-PRESETS.md) — beginner-friendly model recommendations
 * [Validation profiles](docs/VALIDATION-PROFILES.md) — output validation reference
 * [Mycelium router](docs/MYCELIUM-ROUTER.md) — adaptive context routing reference
