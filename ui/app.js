@@ -61,6 +61,7 @@ window.addEventListener('DOMContentLoaded', () => {
   if (Notification.permission === 'default') Notification.requestPermission();
   window.addEventListener('focus', () => { document.title = document.title.replace(/^🔔 /, ''); });
   setupSettingsCollapse();
+  restoreRightPanelState();
   loadApiKeys();
   loadFileRedirects();
   loadAgentOutputDir();
@@ -83,12 +84,27 @@ window.addEventListener('DOMContentLoaded', () => {
 
 async function loadModels() {
   const dot = document.getElementById('statusDot');
+  const pill = document.getElementById('statusPill');
+  const pillLabel = document.getElementById('statusLabel');
   const sel = document.getElementById('modelSelect');
+  const setStatus = (state, label, title) => {
+    if (dot) dot.className = 'status-dot' + (state === 'ok' ? ' ok' : state === 'loading' ? ' loading' : '');
+    if (pill) {
+      pill.classList.remove('ok', 'loading', 'error');
+      if (state) pill.classList.add(state);
+      if (title) pill.title = title;
+    }
+    if (pillLabel) pillLabel.textContent = label;
+  };
   try {
     const r = await fetch('/api/models');
     const d = await r.json();
-    if (d.error) { dot.className = 'status-dot'; sel.innerHTML = '<option>' + esc(d.error) + '</option>'; return; }
-    dot.className = 'status-dot ok'; dot.title = 'Connected';
+    if (d.error) {
+      setStatus('error', 'Offline', d.error);
+      sel.innerHTML = '<option>' + esc(d.error) + '</option>';
+      return;
+    }
+    setStatus('ok', 'Connected', 'Connected to Ollama');
     const models = d.models || [];
     availableModels = models;
     if (!models.length) { sel.innerHTML = '<option value="">No models installed</option>'; return; }
@@ -125,8 +141,15 @@ async function loadModels() {
       }).join('');
     }
     updateNoModelEmptyState();
+    // Once the model is settled, drop the cursor in the chat composer so the
+    // user can just start typing. Only when no other element is focused (to
+    // avoid stealing focus while the user is mid-edit elsewhere).
+    if (sel.value && document.activeElement === document.body) {
+      const input = document.getElementById('chatInput');
+      if (input) input.focus();
+    }
   } catch {
-    dot.className = 'status-dot';
+    setStatus('error', 'Offline', 'Server not running');
     sel.innerHTML = '<option>Server not running</option>';
   }
 }
@@ -4123,9 +4146,15 @@ async function loadSkills() {
     html += '<div id="skillsBulkToolbar" class="skills-bulk-toolbar hidden-by-default"></div>';
     html += '<div id="skillsGalleryRuntime"></div>';
     html += '<div id="skillsGalleryFeatured"></div>';
-    html += renderSkillAutomationPanel(runtime, repo);
-    html += renderCuratorPanel(curatorR);
-    html += renderSkillDiagnostics(runtime.diagnostics || []);
+    // Curator + automation + diagnostics are admin surfaces — fold them under
+    // a single "Manage skills" disclosure so they don't dominate the panel.
+    const automationHtml = renderSkillAutomationPanel(runtime, repo);
+    const curatorHtml = renderCuratorPanel(curatorR);
+    const diagnosticsHtml = renderSkillDiagnostics(runtime.diagnostics || []);
+    html += '<details class="skills-manage-fold">'
+      + '<summary>Manage skills (curator, automation, diagnostics)</summary>'
+      + '<div class="skills-manage-body">' + automationHtml + curatorHtml + diagnosticsHtml + '</div>'
+      + '</details>';
     list.innerHTML = html;
     renderSkillsGallery();
     if (curatorR && curatorR.proposals) loadCuratorProposals();
@@ -5156,7 +5185,25 @@ function toggleRight() {
   const panel = document.getElementById('rightPanel');
   if (!panel) return;
   panel.classList.toggle('hidden');
-  if (!panel.classList.contains('hidden')) loadAbout();
+  const isOpen = !panel.classList.contains('hidden');
+  // Persist so the panel state survives reloads.
+  try { localStorage.setItem('harness_right_panel', isOpen ? 'open' : 'closed'); } catch {}
+  if (isOpen) loadAbout();
+}
+
+// Restore the right panel open/closed state from a previous session. Default
+// is closed (the panel ships with .hidden in markup) so first-run users still
+// see the cleanest possible chat surface.
+function restoreRightPanelState() {
+  try {
+    if (localStorage.getItem('harness_right_panel') === 'open') {
+      const panel = document.getElementById('rightPanel');
+      if (panel && panel.classList.contains('hidden')) {
+        panel.classList.remove('hidden');
+        loadAbout();
+      }
+    }
+  } catch {}
 }
 
 // Reset a single Settings section to its default value via the existing
@@ -6735,9 +6782,21 @@ async function loadToolsDashboard() {
       : (registry.capabilities || { items: [], summary: {}, grants: [] });
     const perm = permR.status === 'fulfilled' ? permR.value : null;
     const header = '<div class="panel-header panel-header-flat"><h3>Local Tools</h3><div class="inline-actions"><button class="btn-sm" onclick="loadToolsDashboard()">Refresh</button></div></div>';
+    // One-line summary so users see "what do I have" before scrolling through
+    // the per-capability list. Counts come straight from the data we already
+    // fetched.
+    const toolsArr = registry.tools || [];
+    const enabledCount = toolsArr.filter((t) => t.enabled !== false).length;
+    const grantCount = (capabilities.grants || []).length;
+    const blockedCount = (capabilities.items || []).filter((c) => c.alignment === 'blocked').length;
+    const summaryLine = '<div class="tools-summary-line">'
+      + '<strong>' + enabledCount + '</strong> tools enabled · '
+      + '<strong>' + grantCount + '</strong> active grant(s)'
+      + (blockedCount > 0 ? ' · <span class="text-warning-xs">' + blockedCount + ' blocked</span>' : '')
+      + '</div>';
     const auditR = await fetch('/api/capabilities/audit').then((r) => r.json()).catch(() => ({ events: [] }));
     const auditEvents = Array.isArray(auditR.events) ? auditR.events : [];
-    view.innerHTML = header + renderPermissionPanel(perm) + renderCapabilityAlignmentPanel(capabilities, auditEvents) + renderToolRegistryPanel(registry) + '<div class="trace-list" id="toolsDashboardCards"><div class="trace-item"><div class="trace-title">Dashboard details</div><div class="trace-meta">Loading local status…</div></div></div>';
+    view.innerHTML = header + summaryLine + renderPermissionPanel(perm) + renderCapabilityAlignmentPanel(capabilities, auditEvents) + renderToolRegistryPanel(registry) + '<div class="trace-list" id="toolsDashboardCards"><div class="trace-item"><div class="trace-title">Dashboard details</div><div class="trace-meta">Loading local status…</div></div></div>';
 
     // Schedule auto-refresh when timed tool enables are active
     scheduleTimedToolRefresh(registry);

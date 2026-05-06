@@ -27,6 +27,15 @@
     .settings-advanced-fold > summary:hover{background:var(--surface2);color:var(--text)}
     .settings-advanced-fold[open] > summary{color:var(--text)}
     .settings-advanced-fold .settings-section{border-top:1px dashed var(--border)}
+    /* Skills "Manage" disclosure groups curator/automation/diagnostics. */
+    .skills-manage-fold{margin-top:14px;border-top:1px solid var(--border);padding-top:8px}
+    .skills-manage-fold > summary{cursor:pointer;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);padding:6px 4px;-webkit-user-select:none;user-select:none}
+    .skills-manage-fold > summary:hover{color:var(--text)}
+    .skills-manage-fold[open] > summary{color:var(--text)}
+    .skills-manage-body{margin-top:8px;display:flex;flex-direction:column;gap:6px}
+    /* One-line summary at the top of the Tools dashboard. */
+    .tools-summary-line{padding:8px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--rs);margin:8px 4px;font-size:12px;color:var(--text-dim)}
+    .tools-summary-line strong{color:var(--text);font-weight:600}
     .btn-sm{background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s}
     .btn-sm:hover{border-color:var(--accent);color:var(--text)}
     .btn-sm:disabled{opacity:.55;cursor:default;border-color:var(--border);color:var(--text-dim)}
@@ -117,6 +126,14 @@
     .model-wrap::after{content:'▾';position:absolute;right:10px;top:50%;transform:translateY(-50%);color:var(--text-dim);pointer-events:none;font-size:12px}
     .model-select{width:100%;padding:8px 32px 8px 12px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:var(--rs);font-size:13px;appearance:none;cursor:pointer;outline:none}
     .model-select:hover{border-color:var(--accent)}
+    .status-pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border:1px solid var(--border);border-radius:999px;background:var(--surface2);font-size:11px;color:var(--text-dim);white-space:nowrap}
+    .status-pill .status-dot{width:7px;height:7px;border-radius:50%;background:var(--error);flex-shrink:0}
+    .status-pill.ok .status-dot{background:var(--success)}
+    .status-pill.ok{border-color:rgba(80,200,120,.35);color:#50c878}
+    .status-pill.loading .status-dot{background:var(--warning);animation:pulse 1s infinite}
+    .status-pill.loading{border-color:rgba(255,176,80,.35);color:#ffb050}
+    .status-pill.error{border-color:rgba(255,80,80,.4);color:#ff8080}
+    /* Legacy bare-dot shim — keep selectors working for any other callers. */
     .status-dot{width:8px;height:8px;border-radius:50%;background:var(--error);flex-shrink:0}
     .status-dot.ok{background:var(--success)}
     .status-dot.loading{background:var(--warning);animation:pulse 1s infinite}
@@ -784,7 +801,7 @@
         <span class="meta-sep">·</span>
         <span class="session-hud-val" id="autonomyHudCounts">0/0</span>
       </div>
-      <div class="status-dot loading" id="statusDot" title="Connecting..."></div>
+      <div class="status-pill loading" id="statusPill" title="Connecting..."><span class="status-dot"></span><span id="statusLabel">Connecting</span></div>
       <div class="topbar-btns">
         <button class="btn-icon" id="themeToggle" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
         <button class="btn-icon" onclick="newChat()" title="New chat">✨</button>
@@ -1592,6 +1609,6 @@
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="./chatHistory.js?v=3"></script>
 <script src="./toolActivity.js?v=1"></script>
-<script src="./app.js?v=12"></script>
+<script src="./app.js?v=13"></script>
 </body>
 </html>
