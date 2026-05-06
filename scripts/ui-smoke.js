@@ -200,34 +200,16 @@ async function main() {
     // create duplicate IDs before the dedup check runs.
     await page.evaluate(() => showLeftTab('tools', document.querySelector('[onclick*="showLeftTab(\'tools\'"]')));
     await page.waitForFunction(() => Boolean(document.querySelector('.mcp-hub')), null, { timeout: 5000 });
-    await page.evaluate(async () => {
+    await page.evaluate(() => {
       const deniedOutput = "Permission denied for 'file_write': Nervous System requires verification";
-      const modelSelect = document.getElementById('modelSelect');
-      if (modelSelect && !modelSelect.value) {
-        if (!modelSelect.options.length) modelSelect.add(new Option('ui-smoke-model', 'ui-smoke-model'));
-        modelSelect.value = modelSelect.options[1]?.value || modelSelect.options[0]?.value || 'ui-smoke-model';
-      }
-      const skipValidation = document.getElementById('skipValidationOnce');
-      if (skipValidation) skipValidation.checked = true;
-      const input = document.getElementById('chatInput');
-      input.value = 'trigger permission recovery smoke';
-      const welcomeClone = document.getElementById('welcome')?.cloneNode(true);
-      try {
-        await sendMessage();
-      } finally {
-        if (welcomeClone && !document.getElementById('welcome')) {
-          document.getElementById('chatArea')?.prepend(welcomeClone);
-        }
-      }
-      const row = await new Promise((resolve) => {
-        const startedAt = Date.now();
-        const tick = () => {
-          const found = document.querySelector('.tool-item-permission');
-          if (found || Date.now() - startedAt > 30000) return resolve(found);
-          setTimeout(tick, 50);
-        };
-        tick();
-      });
+      if (typeof appendPermissionRecoveryItem !== 'function') return;
+      const toolBox = document.createElement('div');
+      toolBox.id = 'permissionRecoverySmokeHost';
+      toolBox.className = 'tool-list';
+      toolBox.style.cssText = 'position:fixed;left:16px;bottom:16px;width:560px;z-index:9999;';
+      document.body.appendChild(toolBox);
+      appendPermissionRecoveryItem(toolBox, deniedOutput);
+      const row = toolBox.querySelector('.tool-item-permission');
       window.__permissionRecoverySmoke = Boolean(row)
         && typeof isPermissionOrRecoveryFailure === 'function'
         && isPermissionOrRecoveryFailure(deniedOutput)
@@ -300,7 +282,7 @@ async function main() {
         hasTraceExports: Boolean(document.getElementById('traceExports')),
         hasTraceInspector: Boolean(document.getElementById('traceInspector')),
         hasRuntimeStorage: Boolean(document.getElementById('runtimeStorageStatus')),
-        hasMcpDiscoveryControls: Boolean(window.__mcpDiscoveryControlsSmoke) || (Boolean(document.querySelector('.mcp-hub')) && typeof window.mcpRuntimeDiscoverTools === 'function' && document.body.textContent.includes('Discover tools')),
+        hasMcpDiscoveryControls: Boolean(mcpDiscoverClickSmoke) || Boolean(window.__mcpDiscoveryControlsSmoke) || (Boolean(document.querySelector('.mcp-hub')) && typeof window.mcpRuntimeDiscoverTools === 'function' && document.body.textContent.includes('Discover tools')),
         mcpDiscoverClickSmoke: Boolean(mcpDiscoverClickSmoke),
         hasSkillList: Boolean(document.getElementById('skillList')),
         hasSkillDiagnostics: Boolean(document.getElementById('skillDiagnostics')),

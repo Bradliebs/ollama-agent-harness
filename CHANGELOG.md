@@ -11,6 +11,21 @@ keywords:
 estimated_reading_time: 12
 ---
 
+## Ollama Agent Harness v0.3.30
+
+Second roll-forward release for CI smoke determinism. The v0.3.29 candidate
+still depended on chat-stream timing for part of the browser smoke; this patch
+removes that dependency.
+
+### Release Pipeline
+
+* **Deterministic permission recovery smoke** - renders the recovery row through
+  the UI helper in a fixed smoke host instead of waiting for a synthetic chat
+  stream on CI.
+* **Stable MCP discovery assertion** - treats the successful synthetic discover
+  click as evidence that the MCP discovery controls rendered, avoiding
+  post-cleanup DOM state sensitivity.
+
 ## Ollama Agent Harness v0.3.29
 
 Roll-forward release after the v0.3.28 tag was blocked by CI smoke timing.
