@@ -3450,10 +3450,21 @@ function renderMd(el, text) {
   el.innerHTML = marked.parse(text);
   el.querySelectorAll('pre').forEach((pre) => {
     if (pre.querySelector('.copy-btn')) return;
+    // Capture the code text BEFORE the button is appended so the
+    // copied content can never contain the literal "Copy" / "Copied!"
+    // string from the button itself. Prefer the inner <code> element
+    // (what marked emits for fenced blocks); fall back to <pre>.
+    const codeEl = pre.querySelector('code');
+    const original = (codeEl ? codeEl.textContent : pre.textContent) || '';
     const btn = document.createElement('button');
     btn.className = 'copy-btn';
     btn.textContent = 'Copy';
-    btn.onclick = () => { navigator.clipboard.writeText(pre.textContent.replace('Copy', '').trim()); btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy', 1500); };
+    btn.onclick = () => {
+      navigator.clipboard.writeText(original).then(() => {
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+      }).catch((e) => { btn.textContent = 'Failed'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); console.error('clipboard', e); });
+    };
     pre.style.position = 'relative';
     pre.appendChild(btn);
   });
@@ -3867,9 +3878,37 @@ function attachMessageActions(msgEl, messageIndex) {
   reply.title = 'Reply to this message — quote it in your next prompt';
   reply.innerHTML = '💬 Reply';
   reply.onclick = () => { startReplyTo(messageIndex); };
+  const save = document.createElement('button');
+  save.className = 'msg-action-btn';
+  save.title = 'Save this reply to a file in agent-outputs/';
+  save.innerHTML = '💾 Save';
+  save.onclick = async () => {
+    const content = (chatMessages[messageIndex] && chatMessages[messageIndex].content) || '';
+    if (!content) return;
+    const suggested = window.prompt('Save reply as (filename, leave blank for auto):', '');
+    if (suggested === null) return; // cancel
+    save.innerHTML = '⏳ Saving';
+    try {
+      const r = await fetch('/api/save-output', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, filename: suggested.trim() || undefined }),
+      });
+      const data = await r.json();
+      if (data.error) throw new Error(data.error);
+      save.innerHTML = '✅ ' + (data.relativePath || data.name);
+      save.title = 'Saved → ' + (data.relativePath || data.path);
+      setTimeout(() => { save.innerHTML = '💾 Save'; save.title = 'Save this reply to a file in agent-outputs/'; }, 4000);
+    } catch (e) {
+      save.innerHTML = '✗ Failed';
+      setTimeout(() => { save.innerHTML = '💾 Save'; }, 2000);
+      alert('Save failed: ' + (e && e.message ? e.message : e));
+    }
+  };
   row.appendChild(regen);
   row.appendChild(copy);
   row.appendChild(reply);
+  row.appendChild(save);
   body.appendChild(row);
 }
 

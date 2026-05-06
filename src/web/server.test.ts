@@ -2388,6 +2388,86 @@ describe('web server API validation', () => {
     await expect(audioUpload.json()).resolves.toMatchObject({ name: 'voice.wav', mimeType: 'audio/wav', mediaKind: 'audio' });
   });
 
+  describe('POST /api/save-output', () => {
+    it('rejects empty content', async () => {
+      const r = await request('/api/save-output', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: '' }),
+      });
+      expect(r.status).toBe(400);
+    });
+
+    it('writes content to agent-outputs/ with auto-generated filename when none provided', async () => {
+      const r = await request('/api/save-output', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'hello from save-output' }),
+      });
+      expect(r.status).toBe(200);
+      const body = await r.json() as { name: string; path: string; relativePath: string; bytes: number };
+      expect(body.name).toMatch(/^reply-.+\.md$/);
+      expect(body.bytes).toBe(Buffer.byteLength('hello from save-output', 'utf-8'));
+      // The file must actually exist on disk and contain what we sent.
+      const written = await fs.readFile(body.path, 'utf-8');
+      expect(written).toBe('hello from save-output');
+      await fs.rm(body.path, { force: true });
+    });
+
+    it('strips path traversal from caller-provided filenames', async () => {
+      const r = await request('/api/save-output', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'guarded', filename: '../../etc/passwd' }),
+      });
+      expect(r.status).toBe(200);
+      const body = await r.json() as { name: string; path: string };
+      // What we actually care about: the resulting filename has no path
+      // separators and no parent-traversal segments. The directory it
+      // lands in is whatever getAgentOutputDir() resolves to (project
+      // agent-outputs/ by default, or HARNESS_AGENT_OUTPUT_DIR when the
+      // operator overrode it). Don't hard-code a folder name.
+      expect(body.name).not.toMatch(/[\\/]/);
+      expect(body.name).not.toContain('..');
+      expect(body.name).toMatch(/^passwd(-\d+)?(\.[a-zA-Z0-9]+)?$/);
+      // The full path must be the directory + that exact basename — proof
+      // the request never reached anywhere up the parent tree.
+      expect(path.basename(body.path)).toBe(body.name);
+      await fs.rm(body.path, { force: true });
+    });
+
+    it('auto-suffixes when the chosen name already exists', async () => {
+      const r1 = await request('/api/save-output', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'first', filename: 'collision-target.md' }),
+      });
+      const r2 = await request('/api/save-output', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'second', filename: 'collision-target.md' }),
+      });
+      expect(r1.status).toBe(200);
+      expect(r2.status).toBe(200);
+      const b1 = await r1.json() as { name: string; path: string };
+      const b2 = await r2.json() as { name: string; path: string };
+      expect(b1.name).toBe('collision-target.md');
+      expect(b2.name).toBe('collision-target-2.md');
+      await fs.rm(b1.path, { force: true });
+      await fs.rm(b2.path, { force: true });
+    });
+
+    it('rejects content above the byte cap', async () => {
+      const tooBig = 'x'.repeat(1_000_001);
+      const r = await request('/api/save-output', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: tooBig }),
+      });
+      expect(r.status).toBe(413);
+    });
+  });
+
   it('manages eval trace examples through dataset endpoints', async () => {
     const created = await request('/api/evals/trace-examples', {
       method: 'POST',

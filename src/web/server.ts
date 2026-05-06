@@ -26,7 +26,7 @@ import { createToolFailureAlerts, type ToolFailureAlertTracker } from '../servic
 import { formatPrometheusMetrics, type PrometheusMetric } from '../observability/prometheus';
 import { createTask, deleteTask, getTask, listTasks, recordCheckIn, summarizeTasks, updateTask, type TaskPriority, type TaskStatus } from '../services/taskStore';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
-import { clearFileWriteRedirectCache, drainUploadsFallbacks, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths } from '../tools/pathResolution';
+import { clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { invalidateSkillsCache, setSkillsDir } from '../tools/skillTools';
 import { setRagRuntime } from '../tools/ragTools';
@@ -6819,6 +6819,52 @@ function inferMediaKind(fileName: string, mimeType: string): 'image' | 'audio' |
   if (lowerMime.startsWith('text/') || /\.(txt|md|csv|json|log|ts|js|py|cs|rs|html|css)$/.test(lowerName)) return 'text';
   if (/\.(jsonl|xml|yaml|yml|parquet|sqlite|db)$/.test(lowerName)) return 'data';
   return 'other';
+}
+
+// --- API: Save chat output to agent-outputs/ ---
+// UI-initiated "💾 Save reply" path: writes a chat reply (or any
+// piece of text) to the agent-outputs/ corral. Path resolution is
+// deliberately strict — basename only, no traversal, never overwrites
+// an existing file (auto-suffixes -2, -3, …). Reuses getAgentOutputDir
+// so the user's HARNESS_AGENT_OUTPUT_DIR setting is honoured.
+const SAVE_OUTPUT_MAX_BYTES = 1_000_000; // 1 MB cap; replies are text, this is generous
+app.post('/api/save-output', express.json({ limit: '2mb' }), async (req, res) => {
+  try {
+    const content = typeof req.body?.content === 'string' ? req.body.content : '';
+    if (!content) { res.status(400).json({ error: 'content is required' }); return; }
+    if (Buffer.byteLength(content, 'utf-8') > SAVE_OUTPUT_MAX_BYTES) {
+      res.status(413).json({ error: `content exceeds ${SAVE_OUTPUT_MAX_BYTES} byte cap` });
+      return;
+    }
+    const requested = typeof req.body?.filename === 'string' ? req.body.filename.trim() : '';
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const fallback = `reply-${stamp}.md`;
+    const baseRaw = requested ? path.basename(requested) : fallback;
+    const safeBase = baseRaw.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 200) || fallback;
+    const outDir = getAgentOutputDir();
+    await fs.mkdir(outDir, { recursive: true });
+    const ext = path.extname(safeBase);
+    const stem = ext ? safeBase.slice(0, -ext.length) : safeBase;
+    let candidate = path.join(outDir, safeBase);
+    let suffix = 2;
+    // Never overwrite — keeps the "save what the model just produced" path
+    // safe even when the same auto-name collides within the same minute.
+    while (await fileExists(candidate)) {
+      candidate = path.join(outDir, `${stem}-${suffix}${ext || '.md'}`);
+      suffix += 1;
+      if (suffix > 100) { res.status(500).json({ error: 'Could not allocate a unique filename' }); return; }
+    }
+    await fs.writeFile(candidate, content, 'utf-8');
+    const rel = path.relative(PROJECT_DIR, candidate).split(path.sep).join('/');
+    logger.info('SaveOutput', `Saved chat output → ${rel} (${Buffer.byteLength(content, 'utf-8')} bytes)`);
+    res.json({ path: candidate, relativePath: rel.startsWith('..') ? candidate : rel, name: path.basename(candidate), bytes: Buffer.byteLength(content, 'utf-8') });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+async function fileExists(fp: string): Promise<boolean> {
+  try { await fs.access(fp); return true; } catch { return false; }
 }
 
 app.get('/api/uploads', async (_req, res) => {
