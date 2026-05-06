@@ -30,7 +30,7 @@ You chat with a model, it can call tools (read/write files, run bash, search the
 ```mermaid
 flowchart LR
     A["🖥️ Install\nNode.js + Ollama"] -->|pull a model| B["🤖 Start Harness\nstart.bat or npm run ui"]
-    B -->|opens browser| C["🌐 Chat UI\nhttp://127.0.0.1:4000"]
+    B -->|opens browser| C["🌐 Chat UI\nhttp://127.0.0.1:4300"]
     C -->|type a message| D["💬 AI Responds\nusing local model"]
     D -->|needs a file?| E["🔧 Tools\nread, write, search, run"]
     E -->|result| D
@@ -89,7 +89,7 @@ harness
 
 1. Clone this repo
 2. Double-click `start.bat` (Windows) or run `./start.sh` (Mac/Linux)
-3. Open **http://127.0.0.1:4000** in your browser
+3. Open **http://127.0.0.1:4300** in your browser
 
 ### Option D — Terminal (from source)
 
@@ -98,7 +98,7 @@ npm install
 npm run ui
 ```
 
-Open **http://127.0.0.1:4000** in your browser. That is the full UI — start chatting in the main panel.
+Open **http://127.0.0.1:4300** in your browser. That is the full UI — start chatting in the main panel.
 
 ### CLI mode
 
@@ -118,7 +118,7 @@ npm test -- --runInBand
 With the UI server running, smoke-test the browser:
 
 ```powershell
-npm run smoke:ui -- http://127.0.0.1:4000/
+npm run smoke:ui -- http://127.0.0.1:4300/
 ```
 
 To validate the current checkout without accidentally reusing a stale local UI

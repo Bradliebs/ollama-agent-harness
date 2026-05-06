@@ -41,7 +41,7 @@ Ollama runs the AI models on your computer.
 1. Find the file called `start.bat` in this folder
 2. Double-click it
 3. A black window will appear showing the setup progress
-4. When it says "Starting Ollama Agent Harness", open your browser and go to **<http://127.0.0.1:4000>**
+4. When it says "Starting Ollama Agent Harness", open your browser and go to **<http://127.0.0.1:4300>**
 
 **Option B — Terminal:**
 
@@ -53,7 +53,7 @@ Ollama runs the AI models on your computer.
    npm run ui
    ```
 
-3. Open the URL shown in the terminal (usually **<http://127.0.0.1:4000>**)
+3. Open the URL shown in the terminal (usually **<http://127.0.0.1:4300>**)
 
 ### Step 4: Start chatting
 
@@ -156,7 +156,7 @@ Make sure Ollama is running. Open a terminal and type `ollama serve`. Then refre
 
 ### The browser shows a blank page
 
-Check the terminal window — it should show a URL like `http://127.0.0.1:4000`. Go to that exact URL.
+Check the terminal window — it should show a URL like `http://127.0.0.1:4300`. Go to that exact URL.
 
 ### How do I stop the server?
 

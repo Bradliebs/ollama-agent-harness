@@ -16,8 +16,8 @@ del .harness\server.pid >nul 2>nul
 goto END
 
 :NO_PID
-echo No server PID file found. Trying to find node on port 4000...
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":4000.*LISTEN"') do (
+echo No server PID file found. Trying to find node on port 4300...
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":4300.*LISTEN"') do (
     echo Killing PID %%p
     taskkill /PID %%p /F >nul 2>nul
 )

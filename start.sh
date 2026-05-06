@@ -61,7 +61,7 @@ if [ ! -f "dist/web/server.js" ]; then
 fi
 
 # Step 6: Launch
-PORT="${PORT:-4000}"
+PORT="${PORT:-4300}"
 echo ""
 echo "  🚀 Starting Ollama Agent Harness..."
 echo "  Open in your browser: http://127.0.0.1:${PORT}"

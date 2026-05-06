@@ -79,20 +79,20 @@ exit /b 1
 
 :: Step 5: Launch
 echo.
-echo   Checking for an existing Harness server on port 4000...
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":4000.*LISTEN"') do (
+echo   Checking for an existing Harness server on port 4300...
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":4300.*LISTEN"') do (
 	echo   Stopping stale server PID %%p
 	taskkill /PID %%p /F >nul 2>nul
 )
 echo.
 echo   Starting Ollama Agent Harness...
 echo   Your browser will open automatically.
-echo   If not, go to: http://127.0.0.1:4000
+echo   If not, go to: http://127.0.0.1:4300
 echo.
 echo   Press Ctrl+C to stop the server.
 echo   ============================================
 echo.
 
-set PORT=4000
+set PORT=4300
 call npm run serve
 pause
