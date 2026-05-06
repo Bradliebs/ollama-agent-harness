@@ -112,6 +112,7 @@ const REPO_SKILLS_DIR = path.join(PROJECT_DIR, '.github', 'skills');
 const TRACES_DIR = path.join(PROJECT_DIR, '.harness', 'traces');
 const DOCUMENTS_DIR = path.join(PROJECT_DIR, '.harness', 'documents');
 const SETTINGS_PATH = path.join(PROJECT_DIR, '.harness', 'settings.json');
+const SETTINGS_SAVE_RETRY_DELAYS_MS = [25, 75, 150, 300, 600];
 const API_KEYS_PATH = path.join(PROJECT_DIR, '.harness', 'api-keys.json');
 const FILE_REDIRECTS_PATH = path.join(PROJECT_DIR, '.harness', 'file-write-redirects.json');
 const OUTPUT_VALIDATION_PROFILES_PATH = path.join(PROJECT_DIR, '.harness', 'output-validation-profiles.json');
@@ -6678,7 +6679,31 @@ async function _doSaveSettings(): Promise<void> {
   // Atomic write: write to temp file then rename
   const tmpPath = SETTINGS_PATH + '.tmp';
   await fs.writeFile(tmpPath, json, 'utf-8');
-  await fs.rename(tmpPath, SETTINGS_PATH);
+  await renameSettingsFileWithRetry(tmpPath, SETTINGS_PATH);
+}
+
+async function renameSettingsFileWithRetry(tmpPath: string, targetPath: string): Promise<void> {
+  for (let attempt = 0; attempt <= SETTINGS_SAVE_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      await fs.rename(tmpPath, targetPath);
+      return;
+    } catch (error) {
+      if (!isTransientSettingsRenameError(error) || attempt === SETTINGS_SAVE_RETRY_DELAYS_MS.length) throw error;
+      const code = (error as NodeJS.ErrnoException).code || 'unknown';
+      logger.warn('Settings', 'Retrying settings save after transient rename failure', { code, attempt: attempt + 1 });
+      await delay(SETTINGS_SAVE_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+function isTransientSettingsRenameError(error: unknown): boolean {
+  if (process.platform !== 'win32') return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function getRuntimeStorageSummary(): Promise<{ traces: { count: number; bytes: number }; semanticIndex: { exists: boolean; bytes: number } }> {
