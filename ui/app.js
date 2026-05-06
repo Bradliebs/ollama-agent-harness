@@ -5348,7 +5348,15 @@ function setupSettingsCollapse() {
 // the right panel doesn't dump 14 expandable sections on the user. The set
 // of visible sections is identified by their h4 textContent (resilient to the
 // order of DOM insertion).
-const ALWAYS_VISIBLE_SETTINGS = new Set(['About', 'Connection', '📁 Agent Files', 'Safety Mode', 'Generation']);
+const ALWAYS_VISIBLE_SETTINGS = new Set([
+  'About',
+  'Connection',
+  'Remote API Keys',
+  '📁 Agent Files',
+  'Safety Mode',
+  'Generation',
+  'Agent Identity',
+]);
 
 function groupAdvancedSettings(panel) {
   if (panel.dataset.advancedGrouped === '1') return;
