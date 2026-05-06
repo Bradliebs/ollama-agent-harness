@@ -67,6 +67,14 @@ Calendar editing stays design-only until change previews, attendee allowlists, c
 
 Background jobs are gated. Jobs that execute scripts or invoke high-risk tools need capability-scoped grants, time budgets, run logs, and kill-switch checks.
 
+## Capability template starters
+
+Capability template starters are preview-first. Clients can inspect starter detail through the template starter API, then call the action API with `action: "preview"` to see the write targets without persisting anything. Creation only happens when the client sends `action: "create"`.
+
+Document starters write generated artifacts under `.harness/documents` using the same document generation path as the Documents panel. Automation starters create disabled-by-policy-normal jobs under `.harness/automations/jobs.json`; running script-backed starters still requires active `arbitrary-shell` and `background-autonomous-jobs` grants, command allowlist matching, and capability audit entries.
+
+The Dependency Vulnerability Scan starter uses `npm audit --audit-level=moderate`, which matches the read-only dependency audit preset. Without active grants, execution is blocked and an `automation_script.denied` audit event records the command and job id.
+
 ### Self-modifying code
 
 Self-modifying code is gated. Code changes need pre-change snapshots, focused validation commands, and a reviewable diff before any automation treats generated code as trusted.

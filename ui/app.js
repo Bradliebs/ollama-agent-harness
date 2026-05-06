@@ -260,10 +260,12 @@ function renderReadiness(data) {
     + '<div class="mission-grid">' + sections.map(renderReadinessSection).join('') + '</div>'
     + '<div class="mission-prompt-actions"><button class="btn-sm btn-xxs-muted" onclick="exportMissionPrompts()">Export prompts</button> <button class="btn-sm btn-xxs-muted" onclick="importMissionPrompts()">Import</button></div>'
     + '<div class="nervous-panel" id="nervousPanel"><div class="readiness-empty">Loading nervous system...</div></div>'
+    + '<div class="subsystem-health" id="capabilityTemplatePanel"><div class="readiness-empty">Loading capability templates...</div></div>'
     + '<div class="subsystem-health" id="subsystemHealthPanel"><div class="readiness-empty">Loading subsystem health...</div></div>'
     + '<div class="autonomy-builder" id="autonomyBuilderPanel"><div class="readiness-empty">Loading autonomy plan...</div></div>'
     + '<div class="document-studio" id="documentStudioPanel">' + renderDocumentStudioShell() + '</div>';
   loadNervousStatus();
+  loadCapabilityTemplates();
   loadSubsystemHealth();
   loadAutonomyPlanPreview();
   loadDocuments();
@@ -554,6 +556,74 @@ async function loadSubsystemHealth() {
       + rows;
   } catch (error) {
     panel.innerHTML = '<div class="readiness-empty">Subsystem health unavailable: ' + esc(error.message || error) + '</div>';
+  }
+}
+
+async function loadCapabilityTemplates() {
+  const panel = document.getElementById('capabilityTemplatePanel');
+  if (!panel) return;
+  try {
+    const response = await fetch('/api/capability-templates');
+    const data = await readApiJson(response, 'Capability templates API');
+    const templates = (data.templates || []).slice(0, 6);
+    const rows = templates.map((template) => {
+      const icon = template.status === 'ready' ? '✅' : template.status === 'partial' ? '⚠️' : '❌';
+      const missing = (template.missingCapabilities || []).concat(template.missingConnectors || []).slice(0, 3).join(', ');
+      const starters = (template.starterKinds || []).length ? 'starter: ' + template.starterKinds.join(', ') : '';
+      const action = (template.hasStarter || (template.starterKinds || []).length > 0) ? '<button class="btn-xs" onclick="loadCapabilityTemplateStarterDetail(\'' + escAttr(template.id) + '\')">Details</button>' : '';
+      return '<div class="trace-meta trace-meta-xs-row"><span>' + icon + ' ' + esc(template.title) + ' <span style="opacity:0.55">' + esc(template.readinessScore) + '%</span></span><span style="opacity:0.68">' + esc(starters || missing || template.nextAction || 'ready') + ' ' + action + '</span></div>';
+    }).join('');
+    const ready = templates.filter((template) => template.status === 'ready').length;
+    panel.innerHTML = '<div class="autonomy-head"><div><strong>Capability Templates</strong><span>' + esc(ready) + '/' + esc(templates.length) + ' ready · OpenClaw-style closure map</span></div><button class="btn-sm" onclick="loadCapabilityTemplates()">Refresh</button></div>'
+      + (rows || '<div class="readiness-empty">No templates available.</div>')
+      + '<div id="capabilityTemplateDetail" class="first-run-status">Select Details to preview a starter before creating it.</div>';
+  } catch (error) {
+    panel.innerHTML = '<div class="readiness-empty">Capability templates unavailable: ' + esc(error.message || error) + '</div>';
+  }
+}
+
+async function loadCapabilityTemplateStarterDetail(templateId) {
+  const detail = document.getElementById('capabilityTemplateDetail');
+  if (!detail) return;
+  detail.textContent = 'Loading starter preview...';
+  try {
+    const response = await fetch('/api/capability-templates/' + encodeURIComponent(templateId) + '/starter');
+    const data = await readApiJson(response, 'Capability starter API');
+    const starter = data.starter || {};
+    const artifactHtml = (starter.artifacts || []).map((artifact) => '<li><strong>' + esc(artifact.label || artifact.type || 'Artifact') + '</strong>: ' + esc(artifact.path || '') + '</li>').join('');
+    const triggerHtml = (starter.triggerContracts || []).map((trigger) => '<li><strong>' + esc(trigger.mode || 'trigger') + '</strong>: ' + esc(trigger.source || '') + ' <span style="opacity:0.65">' + esc(trigger.status || '') + '</span></li>').join('');
+    const payload = starter.document || starter.automationJob || {};
+    detail.innerHTML = '<div><strong>' + esc(starter.title || templateId) + '</strong> <span style="opacity:0.65">' + esc(starter.kind || '') + '</span></div>'
+      + '<div>' + esc(starter.summary || '') + '</div>'
+      + (payload.name ? '<div><strong>Creates:</strong> ' + esc(payload.name) + '</div>' : '')
+      + (payload.format ? '<div><strong>Format:</strong> ' + esc(payload.format) + '</div>' : '')
+      + (payload.scriptCommand ? '<div><strong>Command:</strong> <code>' + esc(payload.scriptCommand) + '</code></div>' : '')
+      + (artifactHtml ? '<ul>' + artifactHtml + '</ul>' : '')
+      + (triggerHtml ? '<div><strong>Triggers:</strong><ul>' + triggerHtml + '</ul></div>' : '')
+      + '<div class="autonomy-actions"><button class="btn-sm" onclick="runCapabilityTemplateStarterAction(\'' + escAttr(templateId) + '\', \'preview\')">Preview</button><button class="btn-sm primary" onclick="runCapabilityTemplateStarterAction(\'' + escAttr(templateId) + '\', \'create\')">Create</button></div>'
+      + '<div id="capabilityTemplateActionStatus" class="trace-meta">Preview before create. Automation starters still require normal grants when they run.</div>';
+  } catch (error) {
+    detail.innerHTML = '<div class="settings-warning-line">Starter unavailable: ' + esc(error.message || error) + '</div>';
+  }
+}
+
+async function runCapabilityTemplateStarterAction(templateId, action) {
+  const status = document.getElementById('capabilityTemplateActionStatus') || document.getElementById('capabilityTemplateDetail');
+  if (status) status.textContent = action === 'create' ? 'Creating starter...' : 'Previewing starter...';
+  try {
+    const response = await fetch('/api/capability-templates/' + encodeURIComponent(templateId) + '/actions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    });
+    const data = await readApiJson(response, 'Capability starter action API');
+    if (status) {
+      if (data.job) status.textContent = 'Created automation job: ' + data.job.name;
+      else if (data.document) status.textContent = 'Created document: ' + data.document.filename;
+      else status.textContent = 'Preview ready: ' + (data.preview?.kind || data.starter?.kind || 'starter');
+    }
+  } catch (error) {
+    if (status) status.textContent = 'Starter action failed: ' + (error.message || error);
   }
 }
 
@@ -3917,12 +3987,16 @@ function maybeShowSlashPalette(value) {
   }
   // Hide once the user types past the command name (a space marks args mode).
   if (value.includes(' ')) { hideSlashPalette(); return; }
-  // Don't show the palette for a bare `/` — too distracting when users just
-  // want to type a literal slash. Wait for at least one alphanumeric char.
-  if (value.length < 2) { hideSlashPalette(); return; }
   const prefix = value.toLowerCase();
   const term = prefix.slice(1); // drop the leading '/' for description matching
   const all = getAllSlashCommands();
+  if (value === '/') {
+    slashPaletteState.filtered = all;
+    slashPaletteState.index = 0;
+    slashPaletteState.visible = true;
+    renderSlashPalette();
+    return;
+  }
   // Prefer prefix matches on the command itself; fall back to substring match
   // on description so `/search` finds `/web-research` etc. Prefix matches sort
   // first so the obvious intent stays at the top of the palette.
@@ -7515,11 +7589,12 @@ async function loadRuns() {
   if (!view) return;
   view.innerHTML = '<div class="trace-list"><div class="trace-title">Runs</div><div class="trace-meta">Loading…</div></div>';
   try {
-    const [runsR, curatorR, discoveryR, autoRunsR] = await Promise.allSettled([
+    const [runsR, curatorR, discoveryR, autoRunsR, safetyR] = await Promise.allSettled([
       fetch('/api/runs').then((r) => r.json()),
       fetch('/api/curator').then((r) => r.json()),
       fetch('/api/discovery').then((r) => r.json()),
       fetch('/api/automations/runs').then((r) => r.json()),
+      fetch('/api/automations/jobs/safety').then((r) => r.json()),
     ]);
     const data = runsR.status === 'fulfilled' ? runsR.value : { error: 'failed to load' };
     if (data.error) { view.innerHTML = '<div class="trace-meta">Failed: ' + esc(data.error) + '</div>'; return; }
@@ -7532,7 +7607,7 @@ async function loadRuns() {
       + '</div>';
     const curatorSection = curatorR.status === 'fulfilled' ? renderCuratorRunsSection(curatorR.value) : '';
     const autoRunLog = autoRunsR.status === 'fulfilled' ? (autoRunsR.value.runs || []) : [];
-    const automationSection = discoveryR.status === 'fulfilled' ? renderAutomationRunsSection(discoveryR.value.automations, autoRunLog, runEvidence) : '';
+    const automationSection = discoveryR.status === 'fulfilled' ? renderAutomationRunsSection(discoveryR.value.automations, autoRunLog, runEvidence, safetyR.status === 'fulfilled' ? safetyR.value.audit : null) : '';
     if (runs.length === 0) {
       view.innerHTML = summary + automationSection + curatorSection + '<div class="trace-meta panel-empty">(no chat runs yet — start a chat to record one)</div>';
       return;
@@ -7544,7 +7619,7 @@ async function loadRuns() {
   }
 }
 
-function renderAutomationRunsSection(automations, runLog, runEvidence) {
+function renderAutomationRunsSection(automations, runLog, runEvidence, safetyAudit) {
   if (!automations) return '';
   const jobs = Array.isArray(automations.jobs) ? automations.jobs : [];
   const due = Array.isArray(automations.due) ? automations.due : [];
@@ -7552,6 +7627,10 @@ function renderAutomationRunsSection(automations, runLog, runEvidence) {
   const schedulerRunning = automations.schedulerRunning;
   const entries = Array.isArray(runLog) ? runLog : [];
   const evidence = Array.isArray(runEvidence) ? runEvidence.filter((card) => card.kind === 'automation' || card.kind === 'autonomy' || isOperatingServiceEvidence(card)) : [];
+  const safety = safetyAudit || {};
+  const safetyHtml = safety.totalJobs !== undefined
+    ? '<div id="automationJobSafetyPanel" class="trace-meta">Safety audit: ' + esc(safety.archiveCandidateCount || 0) + ' archive candidate(s), ' + esc(safety.protectedCount || 0) + ' protected job(s). Run <code>npm run audit:automation-jobs</code> for details.</div>'
+    : '';
   const schedulerBadge = schedulerRunning
     ? '<span class="capability-pill running-pill">running</span>'
     : '<span class="capability-pill muted-pill">idle</span>';
@@ -7587,6 +7666,7 @@ function renderAutomationRunsSection(automations, runLog, runEvidence) {
   return '<div class="trace-item automation-runs-section" id="automationRunsSection">'
     + '<div class="trace-title">⚙ Automation jobs (' + jobs.length + ') ' + schedulerBadge + ' ' + dueBadge + '</div>'
     + '<div class="trace-meta">Grants: ' + (policy.activeGrantCount || 0) + ' active · Kill switch: ' + (policy.killSwitchActive ? 'engaged' : 'off') + '</div>'
+    + safetyHtml
     + '<div class="trace-block-spaced">' + jobRows + '</div>'
     + '<div class="inline-actions trace-block-spaced">' + newJobBtn + ' ' + executeBtn + '</div>'
     + '<details class="details-mt6"><summary class="trace-meta trace-summary-sm">📋 Job templates</summary>'

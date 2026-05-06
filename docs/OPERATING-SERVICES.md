@@ -216,6 +216,71 @@ When a service feature requires unavailable capabilities, the harness reports th
 
 Source: `src/services/capabilityRegistry.ts`
 
+## Capability Template Catalog
+
+Capability templates translate high-value operating ideas into a readiness
+contract before any high-risk connector is implemented. The catalog is available
+through `/api/capability-templates` and appears in Mission Control.
+
+Each template records:
+
+* The recommended surface: operating service, automation, workflow, or document
+* Required runtime capabilities, such as scheduler, email, calendar, shell, or
+  vector memory
+* Required and optional connectors
+* Safety controls that must exist before external writes or notifications run
+* Evidence that should be captured when the template executes
+* Closure steps for turning a partial template into a working workflow
+
+The built-in catalog starts with the highest-return OpenClaw-style workflows:
+Morning Brief, Meeting Notes to Action Items, Automated PR Review, Dependency
+Vulnerability Scanner, Content Repurposing Pipeline, and Memory-Powered Second
+Brain. Templates can be ready, partial, or blocked depending on current
+capabilities and connector status.
+
+The catalog is intentionally a readiness layer, not an integration shortcut.
+Google, GitHub, Notion, Slack ingress, and other live connectors should attach to
+this contract only after their sandbox requirements are satisfied: allowlists,
+draft or preview mode, confirmation for external effects, redaction, and run
+evidence.
+
+Source: `src/services/capabilityTemplates.ts`
+
+### Starter Payloads and Connector Contracts
+
+Template starters close the next layer of capability gaps without enabling live
+integrations by default. `/api/capability-templates/starters` returns reusable
+payloads for existing guarded surfaces:
+
+* Meeting Notes to Action Items and Content Repurposing return Document Studio
+  request payloads that save draft artifacts under `.harness/documents`.
+* Dependency Vulnerability Scanner returns an automation job request that runs
+  `npm audit --audit-level=moderate` through the script-backed automation
+  policy. The command still requires active shell and background-job grants,
+  kill-switch clearance, and the dependency-audit allowlist preset.
+
+Connector contracts are exposed through `/api/connectors/contracts`. They define
+the read, draft, confirmed-write, notification, and ingress operations that
+future Google, GitHub, Notion, Telegram, and Slack connectors must implement.
+Each operation lists required controls and evidence before a live connector can
+move beyond design status.
+
+Message ingress policy is exposed through `/api/message-ingress/policy`.
+Telegram ingress can build on the existing chat-id allowlist and bot lock, while
+Slack ingress stays design-only until signed request verification and workspace
+or channel allowlists exist. Both channels require redaction, run evidence,
+kill-switch checks, and approval before external effects or memory promotion.
+
+Starter trigger contracts capture the useful part of CLAW-style lightweight
+triggers without adding a separate daemon. Starters can declare manual,
+scheduled, message-ingest, or event trigger modes with required controls and
+evidence. Ready triggers map to existing Harness surfaces, such as Document
+Studio or the automation scheduler. Design-only triggers describe future wiring,
+such as lockfile-change events or message uploads, and remain inert until the
+matching connector controls are implemented.
+
+Source: `src/services/capabilityTemplateStarters.ts`
+
 ## Model Registry and Router
 
 The model registry stores detailed metadata for each available model: strengths, weaknesses, cost level, privacy level, speed level, context limits, JSON/tool support, and enabled state.

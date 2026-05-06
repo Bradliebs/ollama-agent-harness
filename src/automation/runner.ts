@@ -27,6 +27,7 @@ export const SHELL_COMMAND_ALLOWLIST_PRESETS: ShellCommandPreset[] = [
   { id: 'file-discovery', label: 'Read-only file discovery', pattern: /^(rg\s+--files(?:\s+(?!.*\.\.)[-\w./*]+)?|dir(?:\s+(?!.*\.\.)[-\w./*]+)?|Get-ChildItem(?:\s+(?!.*\.\.)[-\w./*]+)?)$/i, examples: ['rg --files', 'dir', 'Get-ChildItem'] },
   { id: 'tool-version', label: 'Tool version checks', pattern: /^(node|npm|git)\s+(--version|-v)$/i, examples: ['node --version', 'npm --version', 'git --version'] },
   { id: 'project-validation', label: 'Project validation scripts', pattern: /^npm\s+run\s+(typecheck|build|smoke:ui)$/i, examples: ['npm run typecheck', 'npm run build', 'npm run smoke:ui'] },
+  { id: 'dependency-audit', label: 'Read-only dependency audit', pattern: /^npm\s+audit(?:\s+--audit-level=(low|moderate|high|critical))?(?:\s+--json)?$/i, examples: ['npm audit', 'npm audit --audit-level=moderate', 'npm audit --audit-level=high --json'] },
 ];
 
 export interface AutomationPolicyContext {

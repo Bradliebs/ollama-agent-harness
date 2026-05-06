@@ -121,6 +121,30 @@ With the UI server running, smoke-test the browser:
 npm run smoke:ui -- http://127.0.0.1:4000/
 ```
 
+To validate the current checkout without accidentally reusing a stale local UI
+server, run the fresh smoke. It starts its own server on the default smoke port
+and fails if that port is already occupied:
+
+```powershell
+npm run smoke:ui:fresh
+```
+
+To inspect local automation jobs without modifying runtime state, build first
+and run the automation job audit:
+
+```powershell
+npm run build
+npm run audit:automation-jobs
+```
+
+To archive known test-created duplicate automation jobs after reviewing the
+audit output, run the cleanup command. It writes an archive JSON under
+`.harness/automations/archive/` before updating the active jobs file:
+
+```powershell
+npm run cleanup:automation-jobs -- --apply
+```
+
 Smoke-test the Mycelium API route-inspection surface with a temporary seeded
 graph:
 

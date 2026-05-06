@@ -1,5 +1,9 @@
-import { matchShellCommandPreset, listShellCommandAllowlistPresets, buildAutomationPrompt, SHELL_COMMAND_ALLOWLIST_PRESETS } from './runner';
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
+import { matchShellCommandPreset, listShellCommandAllowlistPresets, buildAutomationPrompt, SHELL_COMMAND_ALLOWLIST_PRESETS, prepareAutomationRun } from './runner';
 import type { AutomationJob } from './jobs';
+import { readCapabilityAuditEvents } from '../permissions/capabilityAudit';
 
 describe('matchShellCommandPreset', () => {
   it('matches git read-only commands', () => {
@@ -29,6 +33,12 @@ describe('matchShellCommandPreset', () => {
     expect(matchShellCommandPreset('npm run smoke:ui')).toMatchObject({ id: 'project-validation' });
   });
 
+  it('matches read-only dependency audits', () => {
+    expect(matchShellCommandPreset('npm audit')).toMatchObject({ id: 'dependency-audit' });
+    expect(matchShellCommandPreset('npm audit --audit-level=moderate')).toMatchObject({ id: 'dependency-audit' });
+    expect(matchShellCommandPreset('npm audit --audit-level=high --json')).toMatchObject({ id: 'dependency-audit' });
+  });
+
   it('rejects commands not in any preset', () => {
     expect(matchShellCommandPreset('rm -rf /')).toBeNull();
     expect(matchShellCommandPreset('node -e "process.exit(1)"')).toBeNull();
@@ -36,6 +46,7 @@ describe('matchShellCommandPreset', () => {
     expect(matchShellCommandPreset('powershell -c "Get-Process"')).toBeNull();
     expect(matchShellCommandPreset('npm install malicious-pkg')).toBeNull();
     expect(matchShellCommandPreset('npm run test')).toBeNull();
+    expect(matchShellCommandPreset('npm audit fix')).toBeNull();
   });
 
   it('rejects command chaining and injection attempts', () => {
@@ -112,5 +123,30 @@ describe('buildAutomationPrompt', () => {
     expect(result).toContain('Base prompt');
     expect(result).toContain('Script context:');
     expect(result).toContain('CHANGE DETECTED');
+  });
+});
+
+describe('prepareAutomationRun dependency scan policy', () => {
+  it('blocks the Dependency Vulnerability Scan starter without grants and records audit evidence', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-dependency-scan-'));
+    const job: AutomationJob = {
+      id: 'dependency-vulnerability-scan',
+      name: 'Dependency Vulnerability Scan',
+      prompt: 'Run dependency scan and summarize vulnerabilities, remediation urgency, and lockfile changes needed.',
+      schedule: { kind: 'interval', minutes: 10_080, display: 'weekly' },
+      enabled: true,
+      createdAt: '2026-05-01T00:00:00.000Z',
+      updatedAt: '2026-05-01T00:00:00.000Z',
+      scriptCommand: 'npm audit --audit-level=moderate',
+    };
+
+    const result = await prepareAutomationRun(projectDir, job, new Date('2026-05-06T00:00:00.000Z'));
+    const events = await readCapabilityAuditEvents(projectDir);
+
+    expect(result.scriptOutput).toContain('Script blocked by arbitrary-shell');
+    expect(result.prompt).toContain('Script context:');
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'automation_script.denied', jobId: job.id, command: 'npm audit --audit-level=moderate' }),
+    ]));
   });
 });

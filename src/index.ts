@@ -42,6 +42,8 @@ export { classifyMode, getModeDescription, MODE_DESCRIPTIONS } from './services/
 export type { HarnessMode, ModeClassification } from './services/modeClassifier';
 export { CapabilityRegistry, createDefaultCapabilityRegistry, SERVICE_FEATURE_REQUIREMENTS, getFeatureRequirements } from './services/capabilityRegistry';
 export type { CapabilityId, CapabilityStatus, Capability, CapabilityCheckResult, CapabilityChecker } from './services/capabilityRegistry';
+export { BUILTIN_CAPABILITY_TEMPLATE_STARTERS, BUILTIN_CONNECTOR_CONTRACTS, BUILTIN_MESSAGE_INGRESS_POLICY, CONNECTOR_CONTRACT_FIXTURES, getCapabilityTemplateStarter, getMessageIngressPolicy, listCapabilityTemplateStarters, listConnectorContractFixtures, listConnectorReadinessContracts, validateConnectorReadinessContracts } from './services/capabilityTemplateStarters';
+export type { AutomationTemplateStarter, CapabilityTemplateStarter, CapabilityTemplateStarterArtifact, CapabilityTemplateStarterKind, CapabilityTemplateTriggerContract, CapabilityTemplateTriggerMode, CapabilityTemplateTriggerStatus, ConnectorContractFixture, ConnectorContractValidationFinding, ConnectorOperationContract, ConnectorOperationMode, ConnectorReadinessContract, DocumentTemplateStarter, MessageIngressChannelPolicy, MessageIngressPolicy } from './services/capabilityTemplateStarters';
 export { WorkerQueue } from './services/workerQueue';
 export type { WorkerJob, WorkerJobResult, WorkerJobType, WorkerJobStatus, WorkerExecutor, WorkerQueueSnapshot } from './services/workerQueue';
 export { extractCommands, parseJsonCommands, validateStateTransition, createTransitionEvent } from './services/commandExtractor';

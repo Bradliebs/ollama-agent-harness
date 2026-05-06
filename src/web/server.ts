@@ -52,11 +52,14 @@ import { checkSetupHealth } from '../setup/health';
 import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCatalog';
 import { isVisionCapableModelName } from '../models/visionModels';
 import { createAutomationJob, deleteAutomationJob, executeDueJobs, listAutomationJobs, listDueAutomationJobs, parseAutomationSchedule, computeNextAutomationRun, readAutomationRunLog, updateAutomationJob } from '../automation/jobs';
+import { auditAutomationJobSafety } from '../automation/jobSafety';
 import { prepareAutomationRun } from '../automation/runner';
 import { AutomationScheduler } from '../automation/scheduler';
 import { exportAgenticServices, getAgenticService, handleOperateModeRequest, importAgenticServices, listAgenticServices } from '../services/agenticServiceMode';
 import { classifyMode } from '../services/modeClassifier';
 import { createDefaultCapabilityRegistry, type CapabilityRegistry } from '../services/capabilityRegistry';
+import { evaluateCapabilityTemplates, type ConnectorReadinessInput } from '../services/capabilityTemplates';
+import { getCapabilityTemplateStarter, getMessageIngressPolicy, listCapabilityTemplateStarters, listConnectorContractFixtures, listConnectorReadinessContracts, validateConnectorReadinessContracts, type CapabilityTemplateStarter } from '../services/capabilityTemplateStarters';
 import { WorkerQueue } from '../services/workerQueue';
 import { createPromise, listPromises, updatePromise, checkObligations, fulfilPromise, failPromise, detectCommitments, type PromiseStatus } from '../services/promiseLedger';
 import { getServiceLifecycle, initServiceLifecycle, transitionService, probeServiceHealth, SERVICE_TEMPLATES, type ServiceLifecycleStatus } from '../services/serviceLifecycle';
@@ -1738,6 +1741,130 @@ app.get('/api/connectors/status', (_req, res) => {
   });
 });
 
+app.get('/api/capability-templates', async (_req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    const registry = createDefaultCapabilityRegistry();
+    const telegramReady = Boolean(telegramBotToken && isTelegramBotRunning() && telegramAllowedChatIds);
+    const discordReady = Boolean(connectorSecretValue('HARNESS_DISCORD_BOT_TOKEN') && isDiscordBotRunning() && discordAllowedChannelIds);
+    const slackStatus = getSlackConnectorStatus(connectorSecretValue('HARNESS_SLACK_WEBHOOK_URL'));
+    const whatsAppStatus = getWhatsAppConnectorStatus({ accessToken: connectorSecretValue('HARNESS_WHATSAPP_ACCESS_TOKEN'), phoneNumberId: whatsappPhoneNumberId || process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID, allowedRecipients: whatsappAllowedRecipients || process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS });
+    const ragIndexes = await ragIndex.listIndexes(PROJECT_DIR).catch(() => []);
+    const anyNotificationReady = telegramReady || discordReady || Boolean(slackStatus.configured) || Boolean(whatsAppStatus.configured && whatsAppStatus.hasAllowedRecipients);
+    const cloudConfigured = Object.values(OPENAI_COMPATIBLE_PRESETS).some((preset) => Boolean(readApiKey(preset)));
+    if (anyNotificationReady) registry.register('notifications', 'Push notifications', 'available');
+    if (telegramReady) registry.register('telegram', 'Telegram messaging', 'available');
+    if (ragIndexes.length > 0) registry.register('vector_memory', 'Vector/semantic memory', 'available');
+    if (cloudConfigured) registry.register('cloud_models', 'Cloud LLM backends', 'available');
+    if (process.env.HARNESS_SMTP_HOST && process.env.HARNESS_SMTP_USER && process.env.HARNESS_SMTP_PASS) registry.register('email', 'Email sending', 'available');
+
+    const connectors: Record<string, ConnectorReadinessInput> = {
+      telegram: { connector: 'telegram', configured: Boolean(telegramBotToken), running: isTelegramBotRunning(), hasAllowedChatIds: Boolean(telegramAllowedChatIds), mode: 'chat-bridge' },
+      discord: { connector: 'discord', configured: Boolean(connectorSecretValue('HARNESS_DISCORD_BOT_TOKEN')), running: isDiscordBotRunning(), hasAllowedChannelIds: Boolean(discordAllowedChannelIds), mode: 'chat-bridge' },
+      slack: { connector: 'slack', configured: Boolean(slackStatus.configured), mode: slackStatus.mode },
+      whatsapp: { connector: 'whatsapp', configured: Boolean(whatsAppStatus.configured), hasAllowedRecipients: Boolean(whatsAppStatus.hasAllowedRecipients), mode: whatsAppStatus.mode },
+    };
+    const starters = listCapabilityTemplateStarters();
+    const templates = evaluateCapabilityTemplates(registry, connectors).map((template) => ({
+      ...template,
+      starterKinds: starters.filter((starter) => starter.templateId === template.id).map((starter) => starter.kind),
+      hasStarter: starters.some((starter) => starter.templateId === template.id),
+    }));
+    res.json({ generatedAt: new Date().toISOString(), templates });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/capability-templates/starters', (_req, res) => {
+  try {
+    res.json({ starters: listCapabilityTemplateStarters() });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/capability-templates/:id/starter', (req, res) => {
+  try {
+    const templateId = String(req.params.id ?? '').trim();
+    const starter = getCapabilityTemplateStarter(templateId);
+    if (!starter) {
+      res.status(404).json({ error: 'Capability template starter not found.' });
+      return;
+    }
+    res.json({ starter });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/connectors/contracts', (_req, res) => {
+  try {
+    const contracts = listConnectorReadinessContracts();
+    res.json({ contracts, fixtures: listConnectorContractFixtures(), findings: validateConnectorReadinessContracts(contracts) });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/capability-templates/:id/actions', async (req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    const templateId = String(req.params.id ?? '').trim();
+    const starter = getCapabilityTemplateStarter(templateId);
+    if (!starter) {
+      res.status(404).json({ error: 'Capability template starter not found.' });
+      return;
+    }
+    const action = req.body?.action === 'create' ? 'create' : 'preview';
+    if (action === 'preview') {
+      res.json({ ok: true, action, starter, preview: starterActionPreview(starter) });
+      return;
+    }
+    if (starter.kind === 'document') {
+      if (!starter.document) { res.status(400).json({ error: 'Starter has no document payload.' }); return; }
+      const document = await createGeneratedDocument({
+        title: starter.title,
+        template: normalizeDocumentTemplate(starter.document.template),
+        format: normalizeDocumentFormat(starter.document.format),
+        sourceLabel: starter.document.sourceLabel,
+        content: starter.document.content,
+      });
+      res.json({ ok: true, action, kind: starter.kind, starter, document: document.metadata, content: document.content });
+      return;
+    }
+    if (starter.kind === 'automation') {
+      if (!starter.automationJob) { res.status(400).json({ error: 'Starter has no automation payload.' }); return; }
+      const job = await createAutomationJob(PROJECT_DIR, {
+        name: starter.automationJob.name,
+        prompt: starter.automationJob.prompt,
+        schedule: starter.automationJob.schedule,
+        scriptCommand: starter.automationJob.scriptCommand,
+      });
+      logger.info('CapabilityTemplates', 'Starter automation job created', { templateId, jobId: job.id, name: job.name });
+      res.json({ ok: true, action, kind: starter.kind, starter, job });
+      return;
+    }
+    res.status(400).json({ error: `Unsupported starter kind: ${starter.kind}` });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.get('/api/message-ingress/policy', (_req, res) => {
+  try {
+    res.json({ policy: getMessageIngressPolicy() });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
 app.get('/api/desktop-input/evidence', async (_req, res) => {
   try {
     const dir = path.join(PROJECT_DIR, '.harness', 'desktop');
@@ -2545,6 +2672,29 @@ async function convertMarkdownDocument(markdown: string, outputPath: string, for
   if (code !== 0) throw new Error(`pandoc failed to generate ${format.toUpperCase()} output.`);
 }
 
+function starterActionPreview(starter: CapabilityTemplateStarter): Record<string, unknown> {
+  if (starter.kind === 'document') return { kind: starter.kind, document: starter.document, writes: ['.harness/documents'] };
+  if (starter.kind === 'automation') return { kind: starter.kind, automationJob: starter.automationJob, writes: ['.harness/automations/jobs.json'] };
+  return { kind: starter.kind };
+}
+
+async function createGeneratedDocument(input: { title: string; template: DocumentTemplate; format: DocumentFormat; sourceLabel: string; content: string; evidence?: EvidenceCard }): Promise<{ metadata: GeneratedDocumentMetadata; content: string }> {
+  const markdown = buildGeneratedDocumentMarkdown(input);
+  const body = input.format === 'html' ? markdownToDocumentHtml(markdown, input.title) : markdown;
+  await fs.mkdir(DOCUMENTS_DIR, { recursive: true });
+  const id = `${new Date().toISOString().replace(/[:.]/g, '-')}-${documentSlug(input.title)}-${crypto.randomBytes(3).toString('hex')}`;
+  const extension = input.format === 'html' ? 'html' : input.format === 'pdf' ? 'pdf' : input.format === 'docx' ? 'docx' : 'md';
+  const filename = `${id}.${extension}`;
+  const filePath = path.join(DOCUMENTS_DIR, filename);
+  if (input.format === 'pdf' || input.format === 'docx') await convertMarkdownDocument(markdown, filePath, input.format);
+  else await fs.writeFile(filePath, body, 'utf-8');
+  const stat = await fs.stat(filePath);
+  const metadata: GeneratedDocumentMetadata = { id, title: input.title, template: input.template, format: input.format, filename, createdAt: new Date().toISOString(), sourceLabel: input.sourceLabel, size: stat.size };
+  await fs.writeFile(path.join(DOCUMENTS_DIR, `${id}.json`), JSON.stringify(metadata, null, 2), 'utf-8');
+  if (input.evidence) await appendLearningCandidate(PROJECT_DIR, createEvidenceLearningCandidate(metadata, input.evidence, markdown));
+  return { metadata, content: input.format === 'pdf' || input.format === 'docx' ? markdown : body };
+}
+
 function createEvidenceLearningCandidate(document: GeneratedDocumentMetadata, evidence: EvidenceCard, content: string) {
   const qualityScore = Number(Math.min(1, 0.65 + Math.min(evidence.tools.length, 4) * 0.05 + (evidence.validation ? 0.1 : 0)).toFixed(3));
   return {
@@ -2629,20 +2779,8 @@ app.post('/api/documents/generate', async (req, res) => {
     const sourceLabel = String(req.body?.sourceLabel || 'Harness chat').trim().slice(0, 120) || 'Harness chat';
     const content = String(req.body?.content || '').slice(0, 200_000);
     const evidence = req.body?.evidence && typeof req.body.evidence === 'object' ? req.body.evidence as EvidenceCard : undefined;
-    const markdown = buildGeneratedDocumentMarkdown({ title, template, sourceLabel, content, evidence });
-    const body = format === 'html' ? markdownToDocumentHtml(markdown, title) : markdown;
-    await fs.mkdir(DOCUMENTS_DIR, { recursive: true });
-    const id = `${new Date().toISOString().replace(/[:.]/g, '-')}-${documentSlug(title)}-${crypto.randomBytes(3).toString('hex')}`;
-    const extension = format === 'html' ? 'html' : format === 'pdf' ? 'pdf' : format === 'docx' ? 'docx' : 'md';
-    const filename = `${id}.${extension}`;
-    const filePath = path.join(DOCUMENTS_DIR, filename);
-    if (format === 'pdf' || format === 'docx') await convertMarkdownDocument(markdown, filePath, format);
-    else await fs.writeFile(filePath, body, 'utf-8');
-    const stat = await fs.stat(filePath);
-    const metadata: GeneratedDocumentMetadata = { id, title, template, format, filename, createdAt: new Date().toISOString(), sourceLabel, size: stat.size };
-    await fs.writeFile(path.join(DOCUMENTS_DIR, `${id}.json`), JSON.stringify(metadata, null, 2), 'utf-8');
-    if (evidence) await appendLearningCandidate(PROJECT_DIR, createEvidenceLearningCandidate(metadata, evidence, markdown));
-    res.json({ ok: true, document: metadata, content: format === 'pdf' || format === 'docx' ? markdown : body });
+    const document = await createGeneratedDocument({ title, template, format, sourceLabel, content, evidence });
+    res.json({ ok: true, document: document.metadata, content: document.content });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -3093,6 +3231,17 @@ app.post('/api/automations/preview', (req, res) => {
     res.json({ ok: true, schedule, nextRunAt });
   } catch (error) {
     res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/automations/jobs/safety', async (_req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    const jobs = await listAutomationJobs(PROJECT_DIR);
+    res.json({ audit: auditAutomationJobSafety(jobs) });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
   }
 });
 

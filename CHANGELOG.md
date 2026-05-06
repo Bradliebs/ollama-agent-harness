@@ -2,7 +2,7 @@
 title: Ollama Agent Harness Changelog
 description: Release notes generated from local RPI changes logs for Ollama Agent Harness
 author: Bradliebs
-ms.date: 2026-05-03
+ms.date: 2026-05-06
 ms.topic: reference
 keywords:
 	- ollama
@@ -10,6 +10,46 @@ keywords:
 	- changelog
 estimated_reading_time: 12
 ---
+
+## Ollama Agent Harness v0.3.28
+
+Runtime-state hardening and release readiness for local testing. This release
+keeps the Harness local-first and model-agnostic while making the automation
+surface safer to inspect, clean up, and smoke-test before packaging.
+
+### Runtime State Safety
+
+* **Automation job safety audit** — classifies known deterministic test-created
+  jobs separately from protected user and service jobs, with a non-destructive
+  `npm run audit:automation-jobs` report for live `.harness` state.
+* **Reversible duplicate job archive** — adds
+  `npm run cleanup:automation-jobs -- --apply`, which writes an archive under
+  `.harness/automations/archive/` before removing known test-created duplicate
+  jobs from the active jobs file.
+* **Server runtime-state guardrails** — server API tests now snapshot, seed,
+  diff, and restore automation runtime state so live jobs are not mutated by
+  test execution.
+
+### Capability Readiness
+
+* **CLAW-style trigger contracts** — capability starters now expose explicit
+  trigger metadata for manual, scheduled, event, and message-ingest entry
+  points without adding a new daemon or SDK dependency.
+* **Capability starter UI smoke** — the fresh browser smoke now verifies that
+  starter details render trigger contracts and preview successfully.
+* **Automation safety UI panel** — the Runs tab surfaces live archive-candidate
+  and protected-job counts from the new safety API.
+
+### Validation & Packaging
+
+* **Fresh UI smoke mode** — `npm run smoke:ui:fresh` starts its own local
+  server and refuses stale port reuse, reducing false-positive browser smoke
+  results on Windows.
+* **Dependency audit grant smoke** — adds an opt-in smoke for read-only
+  dependency audit execution while continuing to reject mutating `npm audit fix`
+  commands.
+* **TypeScript config refresh** — removes deprecated `baseUrl` usage while
+  keeping path mappings explicit and compatible with the repo compiler.
 
 ## Ollama Agent Harness v0.3.27
 

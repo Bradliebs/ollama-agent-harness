@@ -15,6 +15,7 @@ import { createAutomationJob } from '../automation/jobs';
 import { rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
 import { writeModelCatalogCache } from '../models/modelCatalog';
 import type { LoopEvent, SessionEvent } from '../types';
+import { cleanupHarnessArtifacts, diffHarnessRuntimeState, restoreHarnessRuntimeState, seedHarnessAutomationJobsForTest, snapshotHarnessRuntimeState, type HarnessDocumentArtifact, type HarnessRuntimeStateSnapshot } from '../testSupport/harnessCleanup.test-support';
 
 jest.setTimeout(30_000);
 
@@ -25,6 +26,7 @@ describe('web server API validation', () => {
   let originalApiKeys: string | null = null;
   let originalValidationProfiles: string | null = null;
   let originalMcpServers: string | null = null;
+  let runtimeStateSnapshot: HarnessRuntimeStateSnapshot;
   let logSpy: jest.SpyInstance;
   const settingsPath = path.join(process.cwd(), '.harness', 'settings.json');
   const apiKeysPath = path.join(process.cwd(), '.harness', 'api-keys.json');
@@ -53,6 +55,8 @@ describe('web server API validation', () => {
     } catch {
       originalMcpServers = null;
     }
+    runtimeStateSnapshot = await snapshotHarnessRuntimeState(process.cwd());
+    await seedHarnessAutomationJobsForTest(process.cwd());
     await new Promise<void>((resolve) => {
       server = app.listen(0, '127.0.0.1', () => resolve());
     });
@@ -90,11 +94,20 @@ describe('web server API validation', () => {
       await fs.mkdir(path.dirname(mcpServersPath), { recursive: true });
       await fs.writeFile(mcpServersPath, originalMcpServers, 'utf-8');
     }
+    const runtimeDiff = await diffHarnessRuntimeState(process.cwd(), runtimeStateSnapshot);
+    await restoreHarnessRuntimeState(process.cwd(), runtimeStateSnapshot);
+    expect(runtimeDiff.addedDocuments).toEqual([]);
+    expect(runtimeDiff.removedDocuments).toEqual([]);
+    await expect(diffHarnessRuntimeState(process.cwd(), runtimeStateSnapshot)).resolves.toEqual({ automationJobsChanged: false, addedDocuments: [], removedDocuments: [] });
     logSpy.mockRestore();
   });
 
   async function request(route: string, init?: RequestInit): Promise<Response> {
     return fetch(`${baseUrl}${route}`, init);
+  }
+
+  async function cleanupApiArtifacts(input: { automationJobIds?: string[]; documents?: HarnessDocumentArtifact[] }): Promise<void> {
+    await cleanupHarnessArtifacts({ projectDir: process.cwd(), request, ...input });
   }
 
   it('rejects invalid permission mode settings', async () => {
@@ -271,6 +284,89 @@ describe('web server API validation', () => {
     }
   });
 
+  it('returns capability templates with readiness gaps and closure steps', async () => {
+    const response = await request('/api/capability-templates');
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { templates: Array<{ id: string; status: string; readinessScore: number; missingCapabilities: string[]; missingConnectors: string[]; closeSteps: string[]; starterKinds: string[]; hasStarter: boolean }> };
+    const morningBrief = body.templates.find((template) => template.id === 'morning-brief');
+    const meetingNotes = body.templates.find((template) => template.id === 'meeting-notes-actions');
+    const prReview = body.templates.find((template) => template.id === 'automated-pr-review');
+    expect(morningBrief?.status).toEqual(expect.any(String));
+    expect(morningBrief?.readinessScore).toEqual(expect.any(Number));
+    expect(Array.isArray(morningBrief?.missingCapabilities)).toBe(true);
+    expect(Array.isArray(morningBrief?.missingConnectors)).toBe(true);
+    expect(meetingNotes?.status).toBe('ready');
+    expect(meetingNotes?.readinessScore).toBe(100);
+    expect(meetingNotes?.starterKinds).toContain('document');
+    expect(meetingNotes?.hasStarter).toBe(true);
+    expect(Array.isArray(meetingNotes?.closeSteps)).toBe(true);
+    expect(prReview?.closeSteps).toEqual(expect.arrayContaining([expect.stringContaining('GitHub connector')]));
+  });
+
+  it('returns capability template starters and connector safety contracts', async () => {
+    const startersResponse = await request('/api/capability-templates/starters');
+    const dependencyStarterResponse = await request('/api/capability-templates/dependency-vulnerability-scan/starter');
+    const contractsResponse = await request('/api/connectors/contracts');
+    const ingressResponse = await request('/api/message-ingress/policy');
+
+    expect(startersResponse.status).toBe(200);
+    expect(dependencyStarterResponse.status).toBe(200);
+    expect(contractsResponse.status).toBe(200);
+    expect(ingressResponse.status).toBe(200);
+
+    const starters = await startersResponse.json() as { starters: Array<{ templateId: string; kind: string }> };
+    const dependencyStarter = await dependencyStarterResponse.json() as { starter: { automationJob: { scriptCommand: string } } };
+    const contracts = await contractsResponse.json() as { contracts: Array<{ id: string; operations: Array<{ mode: string }> }>; fixtures: Array<{ connectorId: string }>; findings: unknown[] };
+    const ingress = await ingressResponse.json() as { policy: { channels: Array<{ connector: string; requiredControls: string[] }> } };
+
+    expect(starters.starters).toEqual(expect.arrayContaining([expect.objectContaining({ templateId: 'meeting-notes-actions', kind: 'document' })]));
+    expect(dependencyStarter.starter.automationJob.scriptCommand).toBe('npm audit --audit-level=moderate');
+    expect(contracts.contracts).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'github', operations: expect.arrayContaining([expect.objectContaining({ mode: 'draft' })]) })]));
+    expect(contracts.fixtures).toEqual(expect.arrayContaining([expect.objectContaining({ connectorId: 'github' })]));
+    expect(contracts.findings).toEqual([]);
+    expect(ingress.policy.channels).toEqual(expect.arrayContaining([expect.objectContaining({ connector: 'telegram', requiredControls: expect.arrayContaining(['sender allowlist']) })]));
+  });
+
+  it('previews and creates capability template starters only through explicit actions', async () => {
+    const createdDocuments: HarnessDocumentArtifact[] = [];
+    const createdAutomationJobIds: string[] = [];
+    try {
+      const preview = await request('/api/capability-templates/meeting-notes-actions/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'preview' }),
+      });
+      expect(preview.status).toBe(200);
+      const previewBody = await preview.json() as { action: string; preview: { kind: string; writes: string[] } };
+      expect(previewBody).toMatchObject({ action: 'preview', preview: { kind: 'document' } });
+      expect(previewBody.preview.writes).toContain('.harness/documents');
+
+      const documentCreate = await request('/api/capability-templates/meeting-notes-actions/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'create' }),
+      });
+      expect(documentCreate.status).toBe(200);
+      const documentBody = await documentCreate.json() as { document: { id: string; filename: string; title: string; format: string }; content: string };
+      createdDocuments.push({ id: documentBody.document.id, filename: documentBody.document.filename });
+      expect(documentBody.document).toMatchObject({ title: 'Meeting Notes to Action Items Starter', format: 'markdown' });
+      expect(documentBody.content).toContain('## Situation');
+
+      const automationCreate = await request('/api/capability-templates/dependency-vulnerability-scan/actions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'create' }),
+      });
+      expect(automationCreate.status).toBe(200);
+      const automationBody = await automationCreate.json() as { job: { id: string; name: string; scriptCommand: string } };
+      createdAutomationJobIds.push(automationBody.job.id);
+      expect(automationBody.job).toMatchObject({ name: 'Dependency Vulnerability Scan', scriptCommand: 'npm audit --audit-level=moderate' });
+    } finally {
+      await cleanupApiArtifacts({ automationJobIds: createdAutomationJobIds, documents: createdDocuments });
+    }
+  });
+
   it('migrates legacy connector secrets from settings into api-key storage on load', async () => {
     const savedConnectorEnv = {
       HARNESS_DISCORD_BOT_TOKEN: process.env.HARNESS_DISCORD_BOT_TOKEN,
@@ -364,29 +460,37 @@ describe('web server API validation', () => {
   it('returns discovery payloads for catalog, extensions, automations, and session search', async () => {
     const pluginDir = path.join(process.cwd(), '.harness', 'plugins', 'trusted-plugin');
     const skillDir = path.join(process.cwd(), '.harness', 'skills', 'discovery-skill');
+    const createdAutomationJobIds: string[] = [];
     await fs.mkdir(pluginDir, { recursive: true });
     await fs.mkdir(skillDir, { recursive: true });
     await fs.writeFile(path.join(pluginDir, 'plugin.json'), JSON.stringify({ name: 'trusted-plugin', description: 'Discovery test plugin.', version: '1.0.0', providesTools: ['test_tool'], providesHooks: ['beforeRun'] }, null, 2), 'utf-8');
     await fs.writeFile(path.join(skillDir, 'SKILL.md'), '---\nname: discovery-skill\ndescription: Discovery test skill.\ndomain: tests\ntriggers:\n  - discovery\n---\n\n# Discovery Skill\n', 'utf-8');
-    await createAutomationJob(process.cwd(), { name: 'due discovery job', prompt: 'summarize status', schedule: '1 minutes' }, new Date('2026-04-30T00:00:00.000Z'));
-    await writeModelCatalogCache(process.cwd(), { version: 1, updatedAt: new Date().toISOString(), providers: { ollama: { models: [{ id: 'test-model:latest', description: 'Discovery test model' }] } } });
-    await rebuildSessionSearchIndexWithMetadata(process.cwd());
+    try {
+      const job = await createAutomationJob(process.cwd(), { name: 'due discovery job', prompt: 'summarize status', schedule: '1 minutes' }, new Date('2026-04-30T00:00:00.000Z'));
+      createdAutomationJobIds.push(job.id);
+      await writeModelCatalogCache(process.cwd(), { version: 1, updatedAt: new Date().toISOString(), providers: { ollama: { models: [{ id: 'test-model:latest', description: 'Discovery test model' }] } } });
+      await rebuildSessionSearchIndexWithMetadata(process.cwd());
 
-    const response = await request('/api/discovery');
+      const response = await request('/api/discovery');
 
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      modelCatalog: { manifest: { providers: { ollama: { models: expect.arrayContaining([expect.objectContaining({ id: 'test-model:latest' })]) } } } },
-      extensions: {
-        manifests: expect.arrayContaining([expect.objectContaining({ name: 'trusted-plugin', activation: expect.objectContaining({ status: expect.any(String) }) }), expect.objectContaining({ name: 'discovery-skill' })]),
-        skills: {
-          runtime: expect.objectContaining({ total: expect.any(Number), diagnosticCount: expect.any(Number) }),
-          repo: expect.objectContaining({ total: expect.any(Number), diagnosticCount: expect.any(Number) }),
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        modelCatalog: { manifest: { providers: { ollama: { models: expect.arrayContaining([expect.objectContaining({ id: 'test-model:latest' })]) } } } },
+        extensions: {
+          manifests: expect.arrayContaining([expect.objectContaining({ name: 'trusted-plugin', activation: expect.objectContaining({ status: expect.any(String) }) }), expect.objectContaining({ name: 'discovery-skill' })]),
+          skills: {
+            runtime: expect.objectContaining({ total: expect.any(Number), diagnosticCount: expect.any(Number) }),
+            repo: expect.objectContaining({ total: expect.any(Number), diagnosticCount: expect.any(Number) }),
+          },
         },
-      },
-      automations: { total: expect.any(Number), due: expect.arrayContaining([expect.objectContaining({ name: 'due discovery job' })]) },
-      sessionSearch: { exists: true, fresh: true, entryCount: expect.any(Number) },
-    });
+        automations: { total: expect.any(Number), due: expect.arrayContaining([expect.objectContaining({ name: 'due discovery job' })]) },
+        sessionSearch: { exists: true, fresh: true, entryCount: expect.any(Number) },
+      });
+    } finally {
+      await cleanupApiArtifacts({ automationJobIds: createdAutomationJobIds });
+      await fs.rm(pluginDir, { recursive: true, force: true });
+      await fs.rm(skillDir, { recursive: true, force: true });
+    }
   });
 
   it('returns capability alignment policy for high-risk automation surfaces', async () => {
@@ -911,36 +1015,49 @@ describe('web server API validation', () => {
   });
 
   it('generates and downloads Markdown documents', async () => {
-    const response = await request('/api/documents/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'Server Test Brief', template: 'brief', format: 'markdown', content: 'Summarize the tested server behavior.' }),
-    });
+    const createdDocuments: HarnessDocumentArtifact[] = [];
+    try {
+      const response = await request('/api/documents/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Server Test Brief', template: 'brief', format: 'markdown', content: 'Summarize the tested server behavior.' }),
+      });
 
-    expect(response.status).toBe(200);
-    const data = await response.json() as { document: { id: string; filename: string; format: string }; content: string };
-    expect(data.document.filename).toMatch(/\.md$/);
-    expect(data.document.format).toBe('markdown');
-    expect(data.content).toContain('# Server Test Brief');
+      expect(response.status).toBe(200);
+      const data = await response.json() as { document: { id: string; filename: string; format: string }; content: string };
+      createdDocuments.push(data.document);
+      expect(data.document.filename).toMatch(/\.md$/);
+      expect(data.document.format).toBe('markdown');
+      expect(data.content).toContain('# Server Test Brief');
 
-    const download = await request(`/api/documents/${data.document.id}/download`);
-    expect(download.status).toBe(200);
-    expect(download.headers.get('content-type')).toContain('text/markdown');
-    await expect(download.text()).resolves.toContain('Summarize the tested server behavior.');
+      const download = await request(`/api/documents/${data.document.id}/download`);
+      expect(download.status).toBe(200);
+      expect(download.headers.get('content-type')).toContain('text/markdown');
+      await expect(download.text()).resolves.toContain('Summarize the tested server behavior.');
+    } finally {
+      await cleanupApiArtifacts({ documents: createdDocuments });
+    }
   });
 
   it('lists generated documents and supports HTML output', async () => {
-    const generated = await request('/api/documents/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'Server Test Report', template: 'report', format: 'html', content: 'Report body.' }),
-    });
-    expect(generated.status).toBe(200);
+    const createdDocuments: HarnessDocumentArtifact[] = [];
+    try {
+      const generated = await request('/api/documents/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Server Test Report', template: 'report', format: 'html', content: 'Report body.' }),
+      });
+      expect(generated.status).toBe(200);
+      const generatedBody = await generated.json() as { document: { id: string; filename: string } };
+      createdDocuments.push(generatedBody.document);
 
-    const list = await request('/api/documents');
-    expect(list.status).toBe(200);
-    const data = await list.json() as { documents: Array<{ title: string; format: string }> };
-    expect(data.documents).toEqual(expect.arrayContaining([expect.objectContaining({ title: 'Server Test Report', format: 'html' })]));
+      const list = await request('/api/documents');
+      expect(list.status).toBe(200);
+      const data = await list.json() as { documents: Array<{ title: string; format: string }> };
+      expect(data.documents).toEqual(expect.arrayContaining([expect.objectContaining({ title: 'Server Test Report', format: 'html' })]));
+    } finally {
+      await cleanupApiArtifacts({ documents: createdDocuments });
+    }
   });
 
   it('exposes optional document export formats and richer templates', async () => {
@@ -948,18 +1065,25 @@ describe('web server API validation', () => {
     expect(formats.status).toBe(200);
     await expect(formats.json()).resolves.toMatchObject({ formats: { markdown: { available: true }, html: { available: true }, pdf: expect.any(Object), docx: expect.any(Object) } });
 
-    const generated = await request('/api/documents/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'Server Test ADR', template: 'adr', format: 'markdown', content: 'We need a durable decision record.' }),
-    });
-    expect(generated.status).toBe(200);
-    const data = await generated.json() as { content: string; document: { template: string } };
-    expect(data.document.template).toBe('adr');
-    expect(data.content).toContain('## Decision');
+    const createdDocuments: HarnessDocumentArtifact[] = [];
+    try {
+      const generated = await request('/api/documents/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Server Test ADR', template: 'adr', format: 'markdown', content: 'We need a durable decision record.' }),
+      });
+      expect(generated.status).toBe(200);
+      const data = await generated.json() as { content: string; document: { id: string; filename: string; template: string } };
+      createdDocuments.push(data.document);
+      expect(data.document.template).toBe('adr');
+      expect(data.content).toContain('## Decision');
+    } finally {
+      await cleanupApiArtifacts({ documents: createdDocuments });
+    }
   });
 
   it('turns evidence-backed documents into learning candidates', async () => {
+    const createdDocuments: HarnessDocumentArtifact[] = [];
     const evidence = {
       id: 'evidence-test-card',
       kind: 'chat',
@@ -972,30 +1096,42 @@ describe('web server API validation', () => {
       artifacts: [],
       recovery: { sessionId: 'evidence-test-session' },
     };
-    const generated = await request('/api/documents/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'Evidence Learning Handoff', template: 'handoff', format: 'markdown', content: 'Evidence should become reviewable.', evidence }),
-    });
-    expect(generated.status).toBe(200);
+    try {
+      const generated = await request('/api/documents/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Evidence Learning Handoff', template: 'handoff', format: 'markdown', content: 'Evidence should become reviewable.', evidence }),
+      });
+      expect(generated.status).toBe(200);
+      const generatedBody = await generated.json() as { document: { id: string; filename: string } };
+      createdDocuments.push(generatedBody.document);
 
-    const learning = await request('/api/learning');
-    expect(learning.status).toBe(200);
-    const data = await learning.json() as { candidates: Array<{ prompt: string; reviewStatus: string }> };
-    expect(data.candidates).toEqual(expect.arrayContaining([expect.objectContaining({ prompt: 'Generate a learning-backed document.', reviewStatus: 'pending' })]));
+      const learning = await request('/api/learning');
+      expect(learning.status).toBe(200);
+      const data = await learning.json() as { candidates: Array<{ prompt: string; reviewStatus: string }> };
+      expect(data.candidates).toEqual(expect.arrayContaining([expect.objectContaining({ prompt: 'Generate a learning-backed document.', reviewStatus: 'pending' })]));
+    } finally {
+      await cleanupApiArtifacts({ documents: createdDocuments });
+    }
   });
 
   it('persists evidence for automation runs', async () => {
-    await createAutomationJob(process.cwd(), { name: 'evidence run job', prompt: 'capture evidence for this run', schedule: '1 minutes' }, new Date('2026-04-30T00:00:00.000Z'));
+    const createdAutomationJobIds: string[] = [];
+    const job = await createAutomationJob(process.cwd(), { name: 'evidence run job', prompt: 'capture evidence for this run', schedule: '1 minutes' }, new Date('2026-04-30T00:00:00.000Z'));
+    createdAutomationJobIds.push(job.id);
 
-    const executed = await request('/api/automations/execute-due', { method: 'POST' });
-    expect(executed.status).toBe(200);
-    const body = await executed.json() as { evidence: Array<{ kind: string; runName: string }> };
-    expect(body.evidence).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'automation', runName: 'evidence run job' })]));
+    try {
+      const executed = await request('/api/automations/execute-due', { method: 'POST' });
+      expect(executed.status).toBe(200);
+      const body = await executed.json() as { evidence: Array<{ kind: string; runName: string }> };
+      expect(body.evidence).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'automation', runName: 'evidence run job' })]));
 
-    const stored = await request('/api/evidence/runs');
-    expect(stored.status).toBe(200);
-    await expect(stored.json()).resolves.toMatchObject({ evidence: expect.arrayContaining([expect.objectContaining({ kind: 'automation', runName: 'evidence run job' })]) });
+      const stored = await request('/api/evidence/runs');
+      expect(stored.status).toBe(200);
+      await expect(stored.json()).resolves.toMatchObject({ evidence: expect.arrayContaining([expect.objectContaining({ kind: 'automation', runName: 'evidence run job' })]) });
+    } finally {
+      await cleanupApiArtifacts({ automationJobIds: createdAutomationJobIds });
+    }
   });
 
   it('returns empty evidence array when evidence store is missing', async () => {
@@ -1083,6 +1219,20 @@ describe('web server API validation', () => {
     });
   });
 
+  it('reports automation job safety without modifying jobs', async () => {
+    const job = await createAutomationJob(process.cwd(), { name: 'due discovery job', prompt: 'summarize status', schedule: '1 minutes' }, new Date('2026-04-30T00:00:00.000Z'));
+    try {
+      const response = await request('/api/automations/jobs/safety');
+
+      expect(response.status).toBe(200);
+      const body = await response.json() as { audit: { archiveCandidateCount: number; groups: Array<{ name: string; status: string }> } };
+      expect(body.audit.archiveCandidateCount).toBeGreaterThanOrEqual(1);
+      expect(body.audit.groups).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'due discovery job', status: 'archive-candidate' })]));
+    } finally {
+      await cleanupApiArtifacts({ automationJobIds: [job.id] });
+    }
+  });
+
   it('rejects grants for blocked capability surfaces', async () => {
     const response = await request('/api/capabilities/grants', {
       method: 'POST',
@@ -1146,7 +1296,9 @@ describe('web server API validation', () => {
   });
 
   it('executes a due job end-to-end and records audit trail', async () => {
-    await createAutomationJob(process.cwd(), { name: 'lifecycle-test-job', prompt: 'Check lifecycle', schedule: '1 minutes', scriptCommand: 'node --version' }, new Date('2026-04-30T00:00:00.000Z'));
+    const createdAutomationJobIds: string[] = [];
+    const job = await createAutomationJob(process.cwd(), { name: 'lifecycle-test-job', prompt: 'Check lifecycle', schedule: '1 minutes', scriptCommand: 'node --version' }, new Date('2026-04-30T00:00:00.000Z'));
+    createdAutomationJobIds.push(job.id);
 
     const created = await request('/api/capabilities/grants', {
       method: 'POST',
@@ -1189,6 +1341,7 @@ describe('web server API validation', () => {
       // Clean up grants regardless of assertion outcome so later tests start clean.
       if (shellGrant?.id) await request(`/api/capabilities/grants/${encodeURIComponent(shellGrant.id)}`, { method: 'DELETE' });
       if (bgGrant?.id) await request(`/api/capabilities/grants/${encodeURIComponent(bgGrant.id)}`, { method: 'DELETE' });
+      await cleanupApiArtifacts({ automationJobIds: createdAutomationJobIds });
     }
   });
 
@@ -1254,7 +1407,7 @@ describe('web server API validation', () => {
     expect(editedBody.job.name).toBe('Renamed job');
     expect(editedBody.job.enabled).toBe(true);
 
-    await request(`/api/automations/jobs/${encodeURIComponent(job.id)}`, { method: 'DELETE' });
+    await cleanupApiArtifacts({ automationJobIds: [job.id] });
   });
 
   it('returns 404 when patching a nonexistent job', async () => {
@@ -1268,7 +1421,9 @@ describe('web server API validation', () => {
 
   it('runs full automation lifecycle: create job, grant, execute, verify history and output', async () => {
     // Create a job that is already due (created in the past)
-    await createAutomationJob(process.cwd(), { name: 'smoke-lifecycle', prompt: 'Run version check', schedule: '1 minutes', scriptCommand: 'node --version' }, new Date('2026-04-30T00:00:00.000Z'));
+    const createdAutomationJobIds: string[] = [];
+    const job = await createAutomationJob(process.cwd(), { name: 'smoke-lifecycle', prompt: 'Run version check', schedule: '1 minutes', scriptCommand: 'node --version' }, new Date('2026-04-30T00:00:00.000Z'));
+    createdAutomationJobIds.push(job.id);
 
     // Grant required capabilities
     const shellGrant = await request('/api/capabilities/grants', {
@@ -1308,6 +1463,7 @@ describe('web server API validation', () => {
       // Clean up grants regardless of assertion outcome so later tests start clean.
       if (shellGrantId) await request(`/api/capabilities/grants/${encodeURIComponent(shellGrantId)}`, { method: 'DELETE' });
       if (bgGrantId) await request(`/api/capabilities/grants/${encodeURIComponent(bgGrantId)}`, { method: 'DELETE' });
+      await cleanupApiArtifacts({ automationJobIds: createdAutomationJobIds });
     }
   });
 
