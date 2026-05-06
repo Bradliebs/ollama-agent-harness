@@ -38,4 +38,22 @@ describe('grep tool bounds and path safety', () => {
 
     expect(result).toMatchObject({ success: true, output: 'No matches found for "unique-large-pattern"' });
   });
+
+  it('skips agent-outputs/ by default but searches it when include_scratch is true', async () => {
+    // Build a fixture with a top-level file plus a scratch subdir that
+    // would otherwise dominate searches.
+    await fs.mkdir(path.join(fixtureDir, 'agent-outputs'), { recursive: true });
+    await fs.writeFile(path.join(fixtureDir, 'real.md'), 'matched-token here\n', 'utf-8');
+    await fs.writeFile(path.join(fixtureDir, 'agent-outputs', 'scratch.md'), 'matched-token in scratch\n', 'utf-8');
+
+    const defaultRun = await GrepTool.execute({ path: fixtureDir, pattern: 'matched-token' });
+    expect(defaultRun.success).toBe(true);
+    expect(defaultRun.output).toContain('real.md');
+    expect(defaultRun.output).not.toContain('scratch.md');
+
+    const optInRun = await GrepTool.execute({ path: fixtureDir, pattern: 'matched-token', include_scratch: true });
+    expect(optInRun.success).toBe(true);
+    expect(optInRun.output).toContain('real.md');
+    expect(optInRun.output).toContain('scratch.md');
+  });
 });

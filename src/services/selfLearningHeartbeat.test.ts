@@ -1,7 +1,7 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { SelfLearningHeartbeat, createReflectAndLearnAction, createSkillEvolutionAction, createWorkAssignedTasksAction, readHeartbeatHistory, type HeartbeatAction } from './selfLearningHeartbeat';
+import { SelfLearningHeartbeat, createCleanupAgentOutputsAction, createReflectAndLearnAction, createSkillEvolutionAction, createWorkAssignedTasksAction, readHeartbeatHistory, type HeartbeatAction } from './selfLearningHeartbeat';
 import { createTask, recordCheckIn, getTask } from './taskStore';
 
 describe('SelfLearningHeartbeat', () => {
@@ -209,6 +209,56 @@ describe('createSkillEvolutionAction', () => {
     expect(details.safetyHits.find((hit) => hit.skill === 'leaky')).toBeTruthy();
     expect(details.blockingSafetyHits).toBeGreaterThanOrEqual(1);
     expect(result.summary).toMatch(/Safety: \d+ hit/);
+  });
+});
+
+describe('createCleanupAgentOutputsAction', () => {
+  let projectDir: string;
+  beforeEach(async () => { projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-cleanup-')); });
+  afterEach(async () => { await fs.rm(projectDir, { recursive: true, force: true }); });
+
+  it('returns ok with zero scanned when the agent-outputs dir is missing', async () => {
+    const action = createCleanupAgentOutputsAction({ maxAgeDays: 14 });
+    const result = await action.run(projectDir);
+    expect(result.ok).toBe(true);
+    expect((result.details as { scanned: number }).scanned).toBe(0);
+  });
+
+  it('removes files older than the cutoff and keeps fresh ones', async () => {
+    const dir = path.join(projectDir, 'agent-outputs');
+    await fs.mkdir(dir, { recursive: true });
+    const oldFile = path.join(dir, 'old-report.md');
+    const newFile = path.join(dir, 'fresh-report.md');
+    await fs.writeFile(oldFile, 'old');
+    await fs.writeFile(newFile, 'new');
+    // Backdate the old file by 30 days.
+    const oldTime = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    await fs.utimes(oldFile, oldTime, oldTime);
+
+    const action = createCleanupAgentOutputsAction({ maxAgeDays: 14 });
+    const result = await action.run(projectDir);
+    expect(result.ok).toBe(true);
+    const details = result.details as { scanned: number; removed: number };
+    expect(details.scanned).toBe(2);
+    expect(details.removed).toBe(1);
+    await expect(fs.access(oldFile)).rejects.toBeDefined();
+    await expect(fs.access(newFile)).resolves.toBeUndefined();
+  });
+
+  it('never recurses into subdirectories', async () => {
+    const dir = path.join(projectDir, 'agent-outputs');
+    const sub = path.join(dir, 'curated');
+    await fs.mkdir(sub, { recursive: true });
+    const subFile = path.join(sub, 'kept.md');
+    await fs.writeFile(subFile, 'kept');
+    const oldTime = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    await fs.utimes(subFile, oldTime, oldTime);
+
+    const action = createCleanupAgentOutputsAction({ maxAgeDays: 14 });
+    const result = await action.run(projectDir);
+    expect(result.ok).toBe(true);
+    expect((result.details as { removed: number }).removed).toBe(0);
+    await expect(fs.access(subFile)).resolves.toBeUndefined();
   });
 });
 

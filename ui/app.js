@@ -9729,7 +9729,30 @@ async function loadHealth() {
       : '<div class="trace-meta">No concierge decisions recorded yet.</div>';
     const conciergePanel = '<div class="mem-section"><h5>Concierge decisions</h5>' + conciergeRows + '</div>';
     const otherPanel = '<div class="mem-section"><h5>Schedulers</h5><div class="trace-meta">Automation: ' + (data.automation && data.automation.running ? 'running' : 'stopped') + '</div><div class="trace-meta">Curator: ' + (data.curator && data.curator.running ? 'running' : 'stopped') + '</div></div>';
-    view.innerHTML = summaryLine + flagsPanel + heartbeatPanel + conciergePanel + otherPanel;
+    // Inline diagnostic banners. Surface stale context-cap configs and
+    // missing/installed vision models so users can spot misconfigurations
+    // without digging through logs.
+    function buildDiagnosticBanner(kind, message) {
+      const colours = { warn: 'var(--warning,orange)', error: 'var(--danger,#e55)', info: 'var(--accent,#6cf)' };
+      const colour = colours[kind] || colours.info;
+      return '<div class="mem-section" style="border-left:3px solid ' + colour + ';padding:6px 10px;margin-top:8px"><div class="trace-meta">' + message + '</div></div>';
+    }
+    let diagnosticsHtml = '';
+    if (data.context) {
+      if (data.context.auto_bumped && data.context.detected) {
+        diagnosticsHtml += buildDiagnosticBanner('info', '⚙️ Context auto-bumped to <strong>' + data.context.effective + '</strong> tokens for <code>' + esc(data.context.model) + '</code> (configured cap of ' + data.context.configured + ' was below the detected window of ' + data.context.detected + '). Update Settings if you want a different limit.');
+      } else if (data.context.detected && data.context.configured > data.context.detected) {
+        diagnosticsHtml += buildDiagnosticBanner('warn', '⚠️ Configured contextMaxTokens (' + data.context.configured + ') exceeds the detected window for <code>' + esc(data.context.model) + '</code> (' + data.context.detected + '). The provider may reject oversized requests.');
+      }
+    }
+    if (data.vision) {
+      const visionStatus = data.vision.ok ? 'ready' : 'broken';
+      const visionColour = data.vision.ok ? 'info' : 'error';
+      const installedNote = data.vision.installed && data.vision.installed.length > 0 ? ' Installed: ' + data.vision.installed.map(esc).join(', ') + '.' : ' No vision-capable models installed.';
+      const reasonNote = data.vision.reason ? ' ' + esc(data.vision.reason) : '';
+      diagnosticsHtml += buildDiagnosticBanner(visionColour, '🎨 Vision model: <strong>' + esc(data.vision.effective || '(none)') + '</strong> (' + visionStatus + '). Configured: <code>' + esc(data.vision.configured || '(unset)') + '</code>.' + installedNote + reasonNote);
+    }
+    view.innerHTML = summaryLine + diagnosticsHtml + flagsPanel + heartbeatPanel + conciergePanel + otherPanel;
   } catch (error) {
     view.textContent = 'Failed to load health: ' + (error && error.message ? error.message : error);
   }

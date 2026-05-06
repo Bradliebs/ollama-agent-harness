@@ -18,7 +18,7 @@ import { createToolRegistry } from '../tools/registry';
 import { WorkflowRegistry } from '../workflows/workflowRegistry';
 import { runCurator, runDeterministicPhase, readCuratorLog, readCuratorProposals, restoreSkill, parseMergeProposals, applyMergeProposal, clearCuratorProposals, type CuratorConfig } from '../curator/curator';
 import { CuratorScheduler } from '../curator/scheduler';
-import { SelfLearningHeartbeat, createIdentityGcAction, createReflectAndLearnAction, createSkillEvolutionAction, createWorkAssignedTasksAction, defaultHeartbeatActions, readHeartbeatHistory } from '../services/selfLearningHeartbeat';
+import { SelfLearningHeartbeat, createCleanupAgentOutputsAction, createIdentityGcAction, createReflectAndLearnAction, createSkillEvolutionAction, createWorkAssignedTasksAction, defaultHeartbeatActions, readHeartbeatHistory } from '../services/selfLearningHeartbeat';
 import { TriggerScheduler, loadTriggers, saveTriggers, type TriggerDefinition } from '../services/triggerScheduler';
 import { listArtifacts, readArtifact, type ArtifactCategory } from '../services/artifactCatalog';
 import { cancelSubagent, listActiveSubagents, subscribeSubagentRegistry } from '../services/subagentRegistry';
@@ -3010,6 +3010,8 @@ app.get('/api/system/health', async (_req, res) => {
       },
       tasks: taskSummary,
       events: { recent_count: recentEvents.length },
+      context: await buildContextHealth(),
+      vision: await buildVisionHealth(),
       observability: {
         otel_export_enabled: otelExportEnabled(),
         otel_endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? '',
@@ -3021,6 +3023,75 @@ app.get('/api/system/health', async (_req, res) => {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });
+
+// ─── Context + vision health helpers ────────────────────────────────
+// Extracted so the System Health endpoint can surface (a) whether the
+// configured contextMaxTokens looks stale relative to the active
+// model's actual window, and (b) whether the configured vision model
+// is actually installed. Both diagnoses are surfaced as small banners
+// in the UI so users can spot misconfigurations without reading logs.
+// Context caps the harness has shipped as defaults at various points.
+// Auto-bump only when the configured value matches one of these — that
+// way an explicit user choice (1024 in tests, or 16k for a deliberate
+// throttle) is respected while a stale default (8192 / 4096) gets
+// rescued when the model exposes a larger window.
+const LEGACY_CONTEXT_DEFAULTS = new Set<number>([8192, 4096]);
+
+async function buildContextHealth(): Promise<{
+  configured: number;
+  detected: number | null;
+  effective: number;
+  auto_bumped: boolean;
+  model: string;
+}> {
+  const model = currentModel || '';
+  const configured = Number.isFinite(contextMaxTokens) ? contextMaxTokens : DEFAULT_CONTEXT_MAX_TOKENS;
+  const detected = model ? await webRuntime.getModelContextWindow(model, ollamaHost).catch(() => null) : null;
+  const autoBumped = detected !== null && detected > configured && LEGACY_CONTEXT_DEFAULTS.has(configured);
+  const effective = autoBumped && detected !== null ? Math.min(detected, 200_000) : configured;
+  return { configured, detected, effective, auto_bumped: autoBumped, model };
+}
+
+async function buildVisionHealth(): Promise<{
+  configured: string;
+  effective: string;
+  installed: string[];
+  ok: boolean;
+  reason?: string;
+}> {
+  const configured = (mediaTools.visionModel || process.env.HARNESS_VISION_MODEL || '').trim();
+  const installed = await webRuntime.listModels(ollamaHost).catch((): string[] => []);
+  const isInstalled = (name: string): boolean => {
+    if (!name) return false;
+    if (installed.includes(name)) return true;
+    const bare = name.split(':')[0];
+    return installed.some((entry) => entry === bare || entry.startsWith(`${bare}:`));
+  };
+  const visionInstalled = installed.filter((name) => isVisionCapableModelName(name));
+  if (!configured) {
+    const fallback = visionInstalled[0];
+    return {
+      configured: '',
+      effective: fallback ?? '',
+      installed: visionInstalled,
+      ok: Boolean(fallback),
+      reason: fallback ? undefined : 'No vision model is configured and no vision-capable model is installed.',
+    };
+  }
+  if (isInstalled(configured)) {
+    return { configured, effective: configured, installed: visionInstalled, ok: true };
+  }
+  const fallback = visionInstalled[0];
+  return {
+    configured,
+    effective: fallback ?? '',
+    installed: visionInstalled,
+    ok: Boolean(fallback),
+    reason: fallback
+      ? `Configured vision model "${configured}" is not installed; the harness will fall back to "${fallback}".`
+      : `Configured vision model "${configured}" is not installed and no vision-capable fallback is available. Run \`ollama pull llava\`.`,
+  };
+}
 
 app.patch('/api/system/feature-flags', (req, res) => {
   try {
@@ -6849,6 +6920,15 @@ function configureSelfLearningHeartbeat(): void {
   // consistent with interactive runs.
   const actions = defaultHeartbeatActions();
   actions.push(createIdentityGcAction({}));
+  // Prune stale agent-outputs/ scratch files. On by default with a
+  // 14-day cutoff because old reports otherwise pollute later grep
+  // searches with off-topic results (the VW report leaking into a
+  // trading session, for example). Set HARNESS_HEARTBEAT_CLEANUP_OUTPUTS=0
+  // to disable. HARNESS_AGENT_OUTPUT_MAX_AGE_DAYS overrides the cutoff.
+  if (process.env.HARNESS_HEARTBEAT_CLEANUP_OUTPUTS !== '0') {
+    const maxAgeDays = Number(process.env.HARNESS_AGENT_OUTPUT_MAX_AGE_DAYS ?? '14') || 14;
+    actions.push(createCleanupAgentOutputsAction({ maxAgeDays }));
+  }
   // Optional learning-flavoured actions, off by default. Both are
   // deterministic / read-only — no LLM calls — so they are safe to enable.
   if (process.env.HARNESS_HEARTBEAT_REFLECT_ENABLED === '1') {
@@ -7337,13 +7417,11 @@ async function resolveContextMaxTokens(model: string): Promise<number> {
   const detected = await webRuntime.getModelContextWindow(model, ollamaHost);
   detectedContextMaxTokens = detected;
   // When the model exposes a context window larger than the user's
-  // configured cap, AND the configured cap is at the bottom of the
-  // allowed range (≤ DEFAULT_CONTEXT_MAX_TOKENS), prefer the detected
-  // value. This stops cloud models like glm-5.1:cloud (128k window)
-  // being artificially throttled to 4096 tokens just because the
-  // setting was last edited for a tiny local model. Anything the user
-  // explicitly set above the default is left intact.
-  if (detected && detected > configured && configured <= DEFAULT_CONTEXT_MAX_TOKENS) {
+  // configured cap, AND the configured cap matches a known legacy
+  // default (the 8192 we ship today or the 4096 from older builds),
+  // prefer the detected value. Anything else — including the explicit
+  // 1024 used in tests — is treated as a deliberate user choice.
+  if (detected && detected > configured && LEGACY_CONTEXT_DEFAULTS.has(configured)) {
     return Math.min(detected, 200_000);
   }
   return configured;

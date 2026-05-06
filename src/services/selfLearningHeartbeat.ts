@@ -369,6 +369,62 @@ async function cleanupTmpFiles(projectDir: string, now = Date.now(), maxAgeMs = 
   return removed;
 }
 
+export interface CleanupAgentOutputsActionOptions {
+  /** Files older than this age are removed. Defaults to 14 days. */
+  maxAgeDays?: number;
+  /** Override the directory name (relative to projectDir). Defaults to `agent-outputs`. */
+  dirName?: string;
+}
+
+/**
+ * Heartbeat action: prune scratch files the agent has written into
+ * `agent-outputs/` past the configured age. The folder is the corral
+ * for new bare-filename writes from `file_write` (see
+ * `src/tools/pathResolution.ts`), so without this prune old reports
+ * (e.g. a 2-day-old VW comparison) keep showing up in `grep` searches
+ * and pollute later, unrelated tasks.
+ *
+ * Skips the corral root itself; only files (not subdirectories) are
+ * removed so any deliberately curated subfolder under `agent-outputs/`
+ * is preserved.
+ */
+export function createCleanupAgentOutputsAction(options: CleanupAgentOutputsActionOptions = {}): HeartbeatAction {
+  const maxAgeDays = Math.max(0, options.maxAgeDays ?? 14);
+  const dirName = (options.dirName ?? 'agent-outputs').replace(/[\\/]+$/, '');
+  return {
+    name: 'cleanup_agent_outputs',
+    async run(projectDir) {
+      const dir = path.join(projectDir, dirName);
+      const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
+      const now = Date.now();
+      let removed = 0;
+      let scanned = 0;
+      try {
+        const entries = await fs.readdir(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isFile()) continue; // never recurse / never touch user-curated subfolders
+          scanned += 1;
+          const fp = path.join(dir, entry.name);
+          try {
+            const stat = await fs.stat(fp);
+            if (now - stat.mtimeMs > maxAgeMs) {
+              await fs.rm(fp, { force: true });
+              removed += 1;
+            }
+          } catch { /* best-effort */ }
+        }
+      } catch {
+        return { ok: true, summary: `agent-outputs dir not found at ${dir} — nothing to do.`, details: { scanned: 0, removed: 0 } };
+      }
+      return {
+        ok: true,
+        summary: `Pruned ${removed} stale file(s) older than ${maxAgeDays}d from ${dirName}/ (scanned ${scanned}).`,
+        details: { scanned, removed, maxAgeDays },
+      };
+    },
+  };
+}
+
 // ─── History ────────────────────────────────────────────────────────
 
 export interface HeartbeatRunRecord {

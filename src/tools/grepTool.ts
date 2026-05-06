@@ -5,15 +5,26 @@ import type { Tool, ToolResult } from '../types';
 const MAX_SEARCH_FILE_BYTES = 1_000_000;
 const MAX_MATCHES = 200;
 
+// Directories grep skips by default. Scratch surfaces (`agent-outputs/`,
+// `.harness/uploads/`) accumulate stale model output and uploaded
+// attachments that nearly always pollute later searches with off-topic
+// matches — observed on a HybridTurtle session where a 2-day-old VW
+// car-finder report was returned for a "trading" query. Callers can
+// opt back in with `include_scratch: true`.
+const ALWAYS_EXCLUDED_DIRS = new Set(['node_modules', 'dist']);
+const SCRATCH_DIRS = new Set(['agent-outputs']);
+const SCRATCH_PATH_FRAGMENTS = ['.harness/uploads', '.harness\\uploads'];
+
 export const GrepTool: Tool = {
   name: 'grep',
-  description: 'Search for a pattern in files. Returns matching lines with file paths and line numbers.',
+  description: 'Search for a pattern in files. Returns matching lines with file paths and line numbers. Skips agent-outputs/ and .harness/uploads/ unless include_scratch is true.',
   parameters: {
     type: 'object',
     properties: {
       pattern: { type: 'string', description: 'Text or regex pattern to search for' },
       path: { type: 'string', description: 'File or directory to search in' },
       include: { type: 'string', description: 'Glob pattern for files to include (e.g. "*.ts")' },
+      include_scratch: { type: 'boolean', description: 'When true, do NOT skip agent-outputs/ and .harness/uploads/' },
     },
     required: ['pattern', 'path'],
   },
@@ -22,6 +33,7 @@ export const GrepTool: Tool = {
     const pattern = input.pattern as string;
     const searchPath = resolveProjectPath(input.path);
     const include = input.include as string | undefined;
+    const includeScratch = input.include_scratch === true;
 
     if (!searchPath) {
       return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
@@ -29,7 +41,7 @@ export const GrepTool: Tool = {
 
     try {
       const results: string[] = [];
-      await searchDir(searchPath, pattern, include, results, 0);
+      await searchDir(searchPath, pattern, include, results, 0, includeScratch);
 
       if (results.length === 0) {
         return { success: true, output: `No matches found for "${pattern}"` };
@@ -51,8 +63,17 @@ async function searchDir(
   include: string | undefined,
   results: string[],
   depth: number,
+  includeScratch: boolean,
 ): Promise<void> {
   if (depth > 10 || results.length > MAX_MATCHES) return;
+
+  if (!includeScratch) {
+    const normalized = dirPath.replace(/\\/g, '/');
+    for (const fragment of SCRATCH_PATH_FRAGMENTS) {
+      const fragNormal = fragment.replace(/\\/g, '/');
+      if (normalized.includes(fragNormal)) return;
+    }
+  }
 
   const stat = await fs.stat(dirPath);
   if (stat.isFile()) {
@@ -62,11 +83,12 @@ async function searchDir(
 
   const entries = await fs.readdir(dirPath, { withFileTypes: true });
   for (const entry of entries) {
-    if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'dist') continue;
+    if (entry.name.startsWith('.') || ALWAYS_EXCLUDED_DIRS.has(entry.name)) continue;
+    if (!includeScratch && SCRATCH_DIRS.has(entry.name)) continue;
 
     const fullPath = path.join(dirPath, entry.name);
     if (entry.isDirectory()) {
-      await searchDir(fullPath, pattern, include, results, depth + 1);
+      await searchDir(fullPath, pattern, include, results, depth + 1, includeScratch);
     } else if (entry.isFile()) {
       if (include && !matchGlob(entry.name, include)) continue;
       await searchFile(fullPath, pattern, results);
