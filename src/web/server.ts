@@ -3559,6 +3559,26 @@ app.post('/api/permissions/:id/resolve', (req, res) => {
   }
 });
 
+const PERMISSION_RECOVERY_SMOKE_MESSAGE = 'trigger permission recovery smoke';
+
+function writePermissionRecoverySmokeChat(res: express.Response): void {
+  const deniedOutput = "Permission denied for 'file_write': Nervous System requires verification";
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'close');
+  res.flushHeaders();
+  const events: LoopEvent[] = [
+    { type: 'tool_call', call: { id: 'smoke-denied-write', name: 'file_write', input: { path: 'agent-outputs/blocked.txt', content: 'blocked' } } },
+    { type: 'tool_result', call: { id: 'smoke-denied-write', name: 'file_write', input: { path: 'agent-outputs/blocked.txt' } }, result: { success: false, output: deniedOutput } },
+    { type: 'done', reason: 'completed', turns: 1 },
+  ];
+  for (const event of events) {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  }
+  res.write('data: [DONE]\n\n');
+  res.end();
+}
+
 // Chat endpoint — runs the agent loop and streams events as SSE
 app.post('/api/chat', async (req, res) => {
   await ensureSettingsLoaded();
@@ -3571,6 +3591,10 @@ app.post('/api/chat', async (req, res) => {
   // installed skill, record a use event for that skill so the curator can
   // see real-world relevance, not just explicit `skill` tool calls.
   const messageText = typeof message === 'string' ? message : (typeof (message as { content?: unknown })?.content === 'string' ? (message as { content: string }).content : '');
+  if (process.env.HARNESS_UI_SMOKE_CHAT === '1' && messageText === PERMISSION_RECOVERY_SMOKE_MESSAGE) {
+    writePermissionRecoverySmokeChat(res);
+    return;
+  }
   if (messageText) {
     loadSkillsDir(SKILLS_DIR)
       .then((skills) => {

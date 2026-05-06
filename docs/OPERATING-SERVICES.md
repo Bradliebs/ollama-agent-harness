@@ -172,6 +172,11 @@ for release smoke, `release:dry-run`, or `smoke:bounded-news` against a built
 `dist`. Production startup leaves the flag unset and connectors initialize
 normally.
 
+For interactive UI smoke, set `HARNESS_UI_SMOKE_CHAT=1` only in the validation
+process. It enables one deterministic permission-recovery chat stream so the
+smoke test exercises the real browser-to-`/api/chat` path without depending on
+live model timing.
+
 ## Desktop Input Evidence
 
 Desktop input replay writes audit and screenshot evidence under

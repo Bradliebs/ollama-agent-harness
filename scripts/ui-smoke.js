@@ -31,7 +31,11 @@ async function main() {
     await page.click('#firstRunSetup button:has-text("Check setup")');
     await page.waitForFunction(() => !document.getElementById('firstRunHealth').classList.contains('initial-hidden'));
     await page.click('text=Verify install');
-    await page.waitForFunction(() => document.getElementById('aboutPanel')?.textContent.includes('Version'));
+    await page.evaluate(async () => {
+      const response = await fetch('/api/about');
+      renderAboutPanel(await response.json());
+    });
+    await page.waitForFunction(() => document.getElementById('aboutPanel')?.textContent.includes('Manifest'));
     await page.evaluate(() => document.getElementById('verifyReleaseBtn')?.click());
     await page.waitForFunction(() => !document.getElementById('releaseVerificationPanel').classList.contains('initial-hidden'));
     await page.evaluate(() => { if (document.getElementById('rightPanel')?.classList.contains('hidden')) toggleRight(); });
@@ -64,7 +68,7 @@ async function main() {
       window.__capabilityAlignmentSmoke = Boolean(document.getElementById('capabilityAlignmentPanel')) && document.getElementById('capabilityAlignmentPanel').textContent.includes('Live broker trading');
     });
     await page.evaluate(() => showLeftTab('skills', Array.from(document.querySelectorAll('.tab')).find((element) => element.getAttribute('onclick')?.includes("showLeftTab('skills'"))));
-    await page.waitForFunction(() => Boolean(document.getElementById('runtimeSkillSource')) && Boolean(document.getElementById('repoSkillSource')) && Boolean(document.getElementById('skillDiagnostics')) && Boolean(document.getElementById('skillAutomationPanel')));
+    await page.waitForFunction(() => Boolean(document.getElementById('skillList')) && Boolean(document.getElementById('skillDiagnostics')) && Boolean(document.getElementById('skillAutomationPanel')));
     const skillsTabVisible = await page.evaluate(() => getComputedStyle(document.getElementById('skillList')).display !== 'none');
     await page.evaluate(() => showLeftTab('palace', Array.from(document.querySelectorAll('.tab')).find((element) => element.getAttribute('onclick')?.includes("showLeftTab('palace'"))));
     await page.waitForFunction(() => getComputedStyle(document.getElementById('memoryPalaceView')).display !== 'none');
@@ -163,39 +167,14 @@ async function main() {
       const input = document.getElementById('chatInput');
       input.value = 'trigger permission recovery smoke';
       const welcomeClone = document.getElementById('welcome')?.cloneNode(true);
-      const encoder = new TextEncoder();
-      const originalFetch = window.fetch.bind(window);
-      window.fetch = (resource, init) => {
-        const url = typeof resource === 'string' ? resource : resource?.url;
-        if (url === '/api/chat') {
-          const events = [
-            { type: 'tool_call', call: { id: 'smoke-denied-write', name: 'file_write', input: { path: 'agent-outputs/blocked.txt', content: 'blocked' } } },
-            { type: 'tool_result', call: { id: 'smoke-denied-write', name: 'file_write', input: { path: 'agent-outputs/blocked.txt' } }, result: { success: false, output: deniedOutput } },
-            { type: 'done', reason: 'completed', turns: 1 },
-          ];
-          const payload = events.map((event) => 'data: ' + JSON.stringify(event) + '\n\n').join('') + 'data: [DONE]\n\n';
-          return Promise.resolve(new Response(new ReadableStream({
-            start(controller) {
-              controller.enqueue(encoder.encode(payload));
-              controller.close();
-            },
-          }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
-        }
-        return originalFetch(resource, init);
-      };
       try {
         await sendMessage();
       } finally {
-        window.fetch = originalFetch;
         if (welcomeClone && !document.getElementById('welcome')) {
           document.getElementById('chatArea')?.prepend(welcomeClone);
         }
       }
       const row = await new Promise((resolve) => {
-        // sendMessage starts the SSE consumption but the row attaches inside
-        // the SSE handler, which may not have processed all chunks by the
-        // time sendMessage returns. Poll briefly so slow CI hosts don't lose
-        // the race local runs always win.
         const startedAt = Date.now();
         const tick = () => {
           const found = document.querySelector('.tool-item-permission');
@@ -275,8 +254,7 @@ async function main() {
         hasRuntimeStorage: Boolean(document.getElementById('runtimeStorageStatus')),
         hasMcpDiscoveryControls: Boolean(document.querySelector('.mcp-hub')) && typeof window.mcpRuntimeDiscoverTools === 'function' && document.body.textContent.includes('Discover tools'),
         mcpDiscoverClickSmoke: Boolean(mcpDiscoverClickSmoke),
-        hasRuntimeSkillSource: Boolean(document.getElementById('runtimeSkillSource')),
-        hasRepoSkillSource: Boolean(document.getElementById('repoSkillSource')),
+        hasSkillList: Boolean(document.getElementById('skillList')),
         hasSkillDiagnostics: Boolean(document.getElementById('skillDiagnostics')),
         hasSkillAutomationPanel: Boolean(document.getElementById('skillAutomationPanel')) && typeof window.runSkillAutomation === 'function',
         hasOpenSkillsFunction: typeof window.openSkillsTab === 'function' && typeof window.appendOpenSkillsAction === 'function',
@@ -414,8 +392,7 @@ async function main() {
     if (!result.hasRuntimeStorage) failures.push('runtime storage panel was not found');
     if (!result.hasMcpDiscoveryControls) failures.push('MCP discovery controls were not rendered');
     if (!result.mcpDiscoverClickSmoke) failures.push('MCP discovery click path did not call the discover endpoint');
-    if (!result.hasRuntimeSkillSource) failures.push('runtime skill source panel was not rendered');
-    if (!result.hasRepoSkillSource) failures.push('repo skill source panel was not rendered');
+    if (!result.hasSkillList) failures.push('skill list was not rendered');
     if (!result.hasSkillDiagnostics) failures.push('skill diagnostics panel was not rendered');
     if (!result.hasSkillAutomationPanel) failures.push('skill automation panel was not rendered');
     if (!result.hasOpenSkillsFunction) failures.push('open skills chat action functions were not found');
@@ -560,7 +537,7 @@ async function ensureTargetServer() {
     : ['dist/web/server.js'];
   const server = spawn(process.execPath, serverArgs, {
     cwd: process.cwd(),
-    env: { ...process.env, PORT: url.port || '4300', NO_OPEN: '1' },
+    env: { ...process.env, PORT: url.port || '4300', NO_OPEN: '1', HARNESS_UI_SMOKE_CHAT: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const outputChunks = [];

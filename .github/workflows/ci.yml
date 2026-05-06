@@ -45,7 +45,7 @@ jobs:
 
       - name: Start UI
         run: |
-          PORT=4310 NO_OPEN=1 npm run ui > ui.log 2>&1 &
+          PORT=4310 NO_OPEN=1 HARNESS_UI_SMOKE_CHAT=1 npm run ui > ui.log 2>&1 &
           for attempt in {1..30}; do
             if curl --fail --silent http://127.0.0.1:4310/ > /dev/null; then
               exit 0
@@ -56,13 +56,6 @@ jobs:
           exit 1
 
       - name: Smoke UI
-        # Marked non-blocking: a CI-only Playwright timing flake on
-        # `.tool-item-permission` lets local runs win the SSE-stream
-        # consumption race that CI sometimes loses. The in-page poll fix
-        # in scripts/ui-smoke.js helps but does not fully eliminate the
-        # race on slow runners. Tracked as a follow-up so the
-        # release-workflow CI-status gate is not permanently blocked.
-        continue-on-error: true
         run: npm run smoke:ui -- http://127.0.0.1:4310/
 
       - name: Verify CHANGELOG version section

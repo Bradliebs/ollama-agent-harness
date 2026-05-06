@@ -137,6 +137,29 @@ describe('web server API validation', () => {
     expect(body.releaseUrl).toContain(`/releases/tag/v${packageJson.version}`);
   });
 
+  it('streams deterministic permission recovery smoke events when explicitly enabled', async () => {
+    const previous = process.env.HARNESS_UI_SMOKE_CHAT;
+    process.env.HARNESS_UI_SMOKE_CHAT = '1';
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'trigger permission recovery smoke' }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toContain('text/event-stream');
+      const body = await response.text();
+      expect(body).toContain('"type":"tool_call"');
+      expect(body).toContain('"type":"tool_result"');
+      expect(body).toContain("Permission denied for 'file_write'");
+      expect(body).toContain('data: [DONE]');
+    } finally {
+      if (previous === undefined) delete process.env.HARNESS_UI_SMOKE_CHAT;
+      else process.env.HARNESS_UI_SMOKE_CHAT = previous;
+    }
+  });
+
   it('persists validated settings to runtime storage', async () => {
     const response = await request('/api/settings', {
       method: 'POST',
