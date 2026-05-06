@@ -14,6 +14,7 @@ async function main() {
   try {
     extractZip(zipPath, workDir);
     assertFile(workDir, 'package.json');
+    assertPackageFiles(workDir);
     assertFile(workDir, 'package-lock.json');
     assertFile(workDir, 'dist/cli/index.js');
     assertFile(workDir, 'dist/web/server.js');
@@ -24,8 +25,10 @@ async function main() {
     assertFile(workDir, 'scripts/bounded-news-smoke.js');
     assertFile(workDir, 'ui/index.html');
     assertFile(workDir, 'start.bat');
+    assertFile(workDir, 'start.sh');
     assertFile(workDir, 'release-provenance.json');
     assertFileContains(workDir, 'start.bat', 'npm ci');
+    assertFileContains(workDir, 'start.sh', 'npm ci');
     assertReleaseProvenance(workDir);
     if (manifestPath) assertReleaseManifest(manifestPath, zipPath);
 
@@ -58,6 +61,16 @@ function assertReleaseManifest(filePath, assetPath) {
   const actualSha = cryptoHash(assetPath);
   if (!/^[a-f0-9]{64}$/i.test(String(manifest.assetSha256 || ''))) throw new Error('Release manifest assetSha256 is missing or invalid.');
   if (manifest.assetSha256 !== actualSha) throw new Error('Release manifest SHA-256 does not match the release archive.');
+}
+
+function assertPackageFiles(root) {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf-8'));
+  const packageFiles = Array.isArray(packageJson.files) ? packageJson.files : [];
+  for (const entry of packageFiles) {
+    const relativePath = String(entry || '').replace(/\\/g, '/').replace(/\/$/, '');
+    if (!relativePath || relativePath.includes('*')) continue;
+    assertFile(root, relativePath);
+  }
 }
 
 function cryptoHash(filePath) {

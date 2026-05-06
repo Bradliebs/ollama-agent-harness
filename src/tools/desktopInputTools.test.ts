@@ -136,7 +136,7 @@ describe('DesktopInputReplayTool', () => {
       id: 'desktop-test-grant',
       capabilityId: 'desktop-control',
       controls: ['explicit-grant', 'time-limit', 'audit-log', 'kill-switch', 'human-confirmation'],
-      now: new Date('2026-05-05T00:00:00.000Z'),
+      now: new Date(),
       expiresInMinutes: 24 * 60,
     });
     if (!result.grant) throw new Error('failed to create desktop grant');

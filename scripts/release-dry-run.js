@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { createZip, stageReleaseContents } = require('./release-package');
 
 const root = path.resolve(__dirname, '..');
 
@@ -19,7 +20,7 @@ function main() {
   const repository = inferRepository();
 
   runNpm(['run', 'build']);
-  stageReleaseContents(stagingDir, version, commit, repository);
+  stageReleaseContents({ stagingDir, version, commit, repository, generatedAt: new Date().toISOString() });
   createZip(stagingDir, assetPath);
   fs.copyFileSync(path.join(stagingDir, 'release-provenance.json'), provenancePath);
   runNpm(['run', 'verify:versions']);
@@ -43,40 +44,16 @@ function inferRepository() {
   return 'Bradliebs/ollama-agent-harness';
 }
 
-function stageReleaseContents(stagingDir, version, commit, repository) {
-  fs.mkdirSync(stagingDir, { recursive: true });
-  for (const directory of ['dist', 'ui', 'scripts']) {
-    copyRequired(path.join(root, directory), path.join(stagingDir, directory));
-  }
-  for (const file of ['package.json', 'package-lock.json', 'README.md', 'start.bat']) {
-    copyRequired(path.join(root, file), path.join(stagingDir, file));
-  }
-  fs.writeFileSync(path.join(stagingDir, 'release-provenance.json'), JSON.stringify({
-    version: version.replace(/^v/, ''),
-    commit,
-    assetName: `ollama-agent-harness-${version}.zip`,
-    releaseUrl: `https://github.com/${repository}/releases/tag/${version}`,
-    generatedAt: new Date().toISOString(),
-  }, null, 2) + '\n', 'utf-8');
-}
-
-function copyRequired(source, destination) {
-  if (!fs.existsSync(source)) throw new Error(`Release dry-run missing required input: ${path.relative(root, source)}`);
-  fs.cpSync(source, destination, { recursive: true });
-}
-
-function createZip(stagingDir, assetPath) {
-  fs.mkdirSync(path.dirname(assetPath), { recursive: true });
-  if (process.platform === 'win32') {
-    run('powershell', ['-NoProfile', '-Command', `Compress-Archive -Path ${quotePowerShell(path.join(stagingDir, '*'))} -DestinationPath ${quotePowerShell(assetPath)} -Force`], root);
-    return;
-  }
-  run('zip', ['-r', assetPath, '.'], stagingDir);
-}
-
 function gitCommit() {
-  const result = run('git', ['rev-parse', 'HEAD'], root);
-  return result.stdout.trim();
+  const result = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf-8' });
+  if (result.status === 0 && /^[a-f0-9]{40}$/i.test(result.stdout.trim())) return result.stdout.trim();
+
+  const provenancePath = path.join(root, 'release-provenance.json');
+  if (fs.existsSync(provenancePath)) {
+    const provenance = JSON.parse(fs.readFileSync(provenancePath, 'utf-8'));
+    if (/^[a-f0-9]{40}$/i.test(String(provenance.commit || ''))) return provenance.commit;
+  }
+  throw new Error('Unable to determine release commit from git or release-provenance.json.');
 }
 
 function runNode(args) {
@@ -109,10 +86,6 @@ function listOutputs(outputDir) {
 function quoteCmdArg(value) {
   const text = String(value);
   return /[\s"]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
-
-function quotePowerShell(value) {
-  return `'${String(value).replace(/'/g, "''")}'`;
 }
 
 try {
