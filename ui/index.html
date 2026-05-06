@@ -121,6 +121,15 @@
     .no-model-hint{font-size:12px;color:var(--text-dim);margin-top:6px;line-height:1.4}
     .no-model-hint code{background:var(--surface2);padding:1px 5px;border-radius:3px;font-family:'Cascadia Code','Fira Code',monospace;font-size:11px}
     .topbar{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+    /* On narrow viewports, hide the logo text and the New-chat icon so the
+       topbar stays single-line with the model selector + status pill. */
+    @media(max-width:1100px){
+      .logo{font-size:0;gap:0}.logo::before{content:'\1F916';font-size:18px}
+      .topbar-btns .btn-icon[onclick*="newChat"]{display:none}
+    }
+    /* Files-tab filter input — small inline filter above the tree. */
+    .file-search-input{width:calc(100% - 12px);margin:4px 6px 8px;padding:5px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;outline:none}
+    .file-search-input:focus{border-color:var(--accent)}
     .logo{font-size:18px;font-weight:700;color:var(--accent);display:flex;align-items:center;gap:6px;white-space:nowrap}
     .model-wrap{position:relative;flex:1;max-width:350px}
     .model-wrap::after{content:'▾';position:absolute;right:10px;top:50%;transform:translateY(-50%);color:var(--text-dim);pointer-events:none;font-size:12px}
@@ -822,16 +831,6 @@
           <div class="welcome-eyebrow">Local-first AI agent · Ollama</div>
           <h2>What can I help you with?</h2>
           <p>Type a message below and press Enter. I can read files, write code, search the web, and remember things across sessions.</p>
-        </div>
-
-        <div class="welcome-flow">
-          <div class="flow-step flow-s1"><div class="flow-icon">💬</div><div class="flow-label">You type</div></div>
-          <div class="flow-arrow">→</div>
-          <div class="flow-step flow-s2"><div class="flow-icon">🤖</div><div class="flow-label">AI thinks</div></div>
-          <div class="flow-arrow">→</div>
-          <div class="flow-step flow-s3"><div class="flow-icon">🔧</div><div class="flow-label">Tools run</div></div>
-          <div class="flow-arrow">→</div>
-          <div class="flow-step flow-s4"><div class="flow-icon">✨</div><div class="flow-label">You get answers</div></div>
         </div>
 
         <details class="welcome-disclosure" id="welcomeFirstRun">
@@ -1609,6 +1608,6 @@
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="./chatHistory.js?v=3"></script>
 <script src="./toolActivity.js?v=1"></script>
-<script src="./app.js?v=14"></script>
+<script src="./app.js?v=15"></script>
 </body>
 </html>

@@ -4033,15 +4033,6 @@ function welcomeMarkup() {
     + '<h2>' + esc(greeting.headline) + '</h2>'
     + '<p>' + esc(greeting.subtitle) + '</p>'
     + '</div>'
-    + '<div class="welcome-flow">'
-    + '<div class="flow-step flow-s1"><div class="flow-icon">💬</div><div class="flow-label">You type</div></div>'
-    + '<div class="flow-arrow">→</div>'
-    + '<div class="flow-step flow-s2"><div class="flow-icon">🤖</div><div class="flow-label">AI thinks</div></div>'
-    + '<div class="flow-arrow">→</div>'
-    + '<div class="flow-step flow-s3"><div class="flow-icon">🔧</div><div class="flow-label">Tools run</div></div>'
-    + '<div class="flow-arrow">→</div>'
-    + '<div class="flow-step flow-s4"><div class="flow-icon">✨</div><div class="flow-label">You get answers</div></div>'
-    + '</div>'
     + '<div class="quick-suggestions">'
     + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">📂</div><div class="qc-body"><div class="qc-title">List files in this project</div><div class="qc-desc">Tour what\'s here. I\'ll group by folder.</div></div></div>'
     + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">🔍</div><div class="qc-body"><div class="qc-title">Search for TODO in my code</div><div class="qc-desc">Find loose ends across the whole tree.</div></div></div>'
@@ -4103,8 +4094,22 @@ async function loadFiles(dir) {
     const d = await r.json();
     const tree = document.getElementById('fileTree');
     tree.innerHTML = '';
-    if (dir) { const up = document.createElement('div'); up.className = 'file-item'; up.innerHTML = '<span class="file-icon">⬆</span> ..'; up.onclick = () => loadFiles(d.cwd.split(/[\\/]/).slice(0, -1).join('/')); tree.appendChild(up); }
-    for (const item of d.items || []) { const el = document.createElement('div'); el.className = 'file-item'; el.innerHTML = '<span class="file-icon">' + (item.type === 'dir' ? '📁' : '📄') + '</span>' + esc(item.name); el.onclick = () => { if (item.type === 'dir') loadFiles(item.path); else { document.getElementById('chatInput').value = 'Read the file ' + item.name; sendMessage(); } }; tree.appendChild(el); }
+    // Filter input — type to hide non-matching file rows. Persists no state;
+    // re-typing on directory change is fine for the small panel use case.
+    const search = document.createElement('input');
+    search.type = 'text';
+    search.className = 'file-search-input';
+    search.placeholder = '🔍 Filter files...';
+    search.oninput = () => {
+      const q = search.value.toLowerCase();
+      tree.querySelectorAll('.file-item').forEach((el) => {
+        const name = (el.dataset.name || '').toLowerCase();
+        el.style.display = !q || name.includes(q) ? '' : 'none';
+      });
+    };
+    tree.appendChild(search);
+    if (dir) { const up = document.createElement('div'); up.className = 'file-item'; up.dataset.name = '..'; up.innerHTML = '<span class="file-icon">⬆</span> ..'; up.onclick = () => loadFiles(d.cwd.split(/[\\/]/).slice(0, -1).join('/')); tree.appendChild(up); }
+    for (const item of d.items || []) { const el = document.createElement('div'); el.className = 'file-item'; el.dataset.name = item.name; el.innerHTML = '<span class="file-icon">' + (item.type === 'dir' ? '📁' : '📄') + '</span>' + esc(item.name); el.onclick = () => { if (item.type === 'dir') loadFiles(item.path); else { document.getElementById('chatInput').value = 'Read the file ' + item.name; sendMessage(); } }; tree.appendChild(el); }
   } catch {}
 }
 
