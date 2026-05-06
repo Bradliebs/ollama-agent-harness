@@ -58,15 +58,35 @@ export const ImageAnalyzeTool: Tool = {
 
 async function resolveVisionModel(input: Record<string, unknown>, client: Ollama): Promise<string> {
   const configuredModel = sanitizeString(input.model) || process.env.HARNESS_VISION_MODEL || '';
-  if (configuredModel) return configuredModel;
-  const selectedModel = sanitizeString(process.env.OLLAMA_MODEL);
-  if (selectedModel && isVisionCapableModelName(selectedModel)) return selectedModel;
+  // List installed models once — used both as a validity check on the
+  // configured/selected model AND as a fallback source when nothing
+  // explicit is set. Without this validation, a configured model that
+  // isn't actually installed (e.g. settings carries `qwen2-vl` but only
+  // `llava` is pulled) sends every image_analyze call to its death.
+  let installed: string[] = [];
   try {
     const response = await client.list();
-    return findInstalledVisionModel(response.models.map((model) => model.name)) ?? '';
+    installed = response.models.map((model) => model.name);
   } catch {
+    // If we can't list, fall back to the configured value as a best-effort.
+    if (configuredModel) return configuredModel;
     return '';
   }
+  const isInstalled = (name: string): boolean => {
+    if (!name) return false;
+    if (installed.includes(name)) return true;
+    // Ollama tags models as "name:tag"; accept a configured bare name
+    // when any installed model shares the same prefix.
+    const bare = name.split(':')[0];
+    return installed.some((entry) => entry === bare || entry.startsWith(`${bare}:`));
+  };
+  if (configuredModel && isInstalled(configuredModel)) return configuredModel;
+  const selectedModel = sanitizeString(process.env.OLLAMA_MODEL);
+  if (selectedModel && isVisionCapableModelName(selectedModel) && isInstalled(selectedModel)) return selectedModel;
+  // Configured/selected model wasn't installed. Auto-fall-back to whichever
+  // vision-capable model IS installed so the call succeeds instead of
+  // looping with `model not found`.
+  return findInstalledVisionModel(installed) ?? '';
 }
 
 export const AudioTranscribeTool: Tool = {

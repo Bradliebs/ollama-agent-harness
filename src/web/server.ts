@@ -7336,7 +7336,17 @@ async function resolveContextMaxTokens(model: string): Promise<number> {
   const configured = Number.isFinite(contextMaxTokens) ? contextMaxTokens : DEFAULT_CONTEXT_MAX_TOKENS;
   const detected = await webRuntime.getModelContextWindow(model, ollamaHost);
   detectedContextMaxTokens = detected;
-  return contextMaxTokens;
+  // When the model exposes a context window larger than the user's
+  // configured cap, AND the configured cap is at the bottom of the
+  // allowed range (≤ DEFAULT_CONTEXT_MAX_TOKENS), prefer the detected
+  // value. This stops cloud models like glm-5.1:cloud (128k window)
+  // being artificially throttled to 4096 tokens just because the
+  // setting was last edited for a tiny local model. Anything the user
+  // explicitly set above the default is left intact.
+  if (detected && detected > configured && configured <= DEFAULT_CONTEXT_MAX_TOKENS) {
+    return Math.min(detected, 200_000);
+  }
+  return configured;
 }
 
 async function ensureSettingsLoaded(): Promise<void> {
