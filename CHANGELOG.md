@@ -11,6 +11,53 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Ollama Agent Harness v0.4.1
+
+Patch: auto-detect context window by default + cleanup_agent_outputs
+heartbeat + System Health context/vision banners + grep scratch-dir
+exclusion. All driven by failure modes observed in real chat sessions
+on cloud models with images.
+
+### Context auto-detect (semantics change — backward compatible)
+
+`contextMaxTokens` is now treated as a **cap**, not a target. The
+harness uses the model's detected window automatically, and falls back
+to the configured value only when the user has deliberately set a
+non-default throttle.
+
+| Configured value | New behaviour |
+|---|---|
+| `0` / undefined / legacy default (8192, 4096) | Use detected window (auto). 200k absolute ceiling. |
+| Explicit value (e.g. 1024, 16k) | Use detected window capped at the configured value. |
+
+Net effect: switching to `glm-5.1:cloud` (128k window) or any other
+cloud model "just works" without editing settings. Throttles for
+cost/speed are still honoured.
+
+### Other fixes from this cycle
+
+* **Vision-model fallback** — `image_analyze` now lists installed
+  models, validates the configured/selected name against the list, and
+  auto-falls-back to whichever vision-capable model IS installed instead
+  of looping with `model not found`.
+* **`cleanup_agent_outputs` heartbeat action** — prunes files in
+  `agent-outputs/` older than 14 days. On by default
+  (`HARNESS_HEARTBEAT_CLEANUP_OUTPUTS=0` to disable;
+  `HARNESS_AGENT_OUTPUT_MAX_AGE_DAYS` overrides cutoff). Stops stale
+  reports polluting later searches with off-topic matches.
+* **System Health diagnostic banners** — context auto-detect
+  banner (`/api/system/health` returns `context: { configured, detected,
+  effective, mode, auto_bumped }`) and a vision-model row showing
+  configured/effective/installed plus an actionable reason string when
+  the configured model isn't installed.
+* **Grep scratch-dir exclusion** — `agent-outputs/` and
+  `.harness/uploads/` are now skipped by default. Pass
+  `include_scratch: true` to opt back in.
+
+### Tests
+
+1443/1443 across 129 suites; typecheck clean.
+
 ## Ollama Agent Harness v0.4.0
 
 Major: 100% CLAW-list alignment + trustworthy self-improvement stack +

@@ -3042,14 +3042,24 @@ async function buildContextHealth(): Promise<{
   detected: number | null;
   effective: number;
   auto_bumped: boolean;
+  mode: 'auto' | 'capped';
   model: string;
 }> {
   const model = currentModel || '';
   const configured = Number.isFinite(contextMaxTokens) ? contextMaxTokens : DEFAULT_CONTEXT_MAX_TOKENS;
   const detected = model ? await webRuntime.getModelContextWindow(model, ollamaHost).catch(() => null) : null;
-  const autoBumped = detected !== null && detected > configured && LEGACY_CONTEXT_DEFAULTS.has(configured);
-  const effective = autoBumped && detected !== null ? Math.min(detected, 200_000) : configured;
-  return { configured, detected, effective, auto_bumped: autoBumped, model };
+  const isLegacyDefault = LEGACY_CONTEXT_DEFAULTS.has(configured);
+  const autoMode = !configured || configured <= 0 || isLegacyDefault;
+  let effective: number;
+  if (autoMode) {
+    effective = detected && detected > 0 ? Math.min(detected, 200_000) : DEFAULT_CONTEXT_MAX_TOKENS;
+  } else if (detected && detected > 0) {
+    effective = Math.min(configured, detected);
+  } else {
+    effective = configured;
+  }
+  const autoBumped = autoMode && detected !== null && detected > configured;
+  return { configured, detected, effective, auto_bumped: autoBumped, mode: autoMode ? 'auto' : 'capped', model };
 }
 
 async function buildVisionHealth(): Promise<{
@@ -7416,14 +7426,29 @@ async function resolveContextMaxTokens(model: string): Promise<number> {
   const configured = Number.isFinite(contextMaxTokens) ? contextMaxTokens : DEFAULT_CONTEXT_MAX_TOKENS;
   const detected = await webRuntime.getModelContextWindow(model, ollamaHost);
   detectedContextMaxTokens = detected;
-  // When the model exposes a context window larger than the user's
-  // configured cap, AND the configured cap matches a known legacy
-  // default (the 8192 we ship today or the 4096 from older builds),
-  // prefer the detected value. Anything else — including the explicit
-  // 1024 used in tests — is treated as a deliberate user choice.
-  if (detected && detected > configured && LEGACY_CONTEXT_DEFAULTS.has(configured)) {
-    return Math.min(detected, 200_000);
+
+  // Auto-detect by default. The configured value is now treated as a
+  // user-set CAP (max), not a target:
+  //
+  //   * configured ≤ 0 OR a known legacy default (8192, 4096)  → use detected
+  //                                                             (or 8192 fallback when undetectable)
+  //   * configured > 0 AND deliberate                          → cap detected at configured
+  //
+  // Net effect: users on a cloud model with a 128k window get 128k
+  // automatically without having to touch settings, while explicit
+  // throttles ("never exceed 1024 tokens for cost reasons") are honoured.
+  const isLegacyDefault = LEGACY_CONTEXT_DEFAULTS.has(configured);
+  const autoMode = !configured || configured <= 0 || isLegacyDefault;
+
+  if (autoMode) {
+    if (detected && detected > 0) return Math.min(detected, 200_000);
+    return DEFAULT_CONTEXT_MAX_TOKENS;
   }
+
+  // Deliberate user cap: respect it, but never let it exceed the
+  // detected window when one is known (avoids the harness sending
+  // requests the model will refuse).
+  if (detected && detected > 0) return Math.min(configured, detected);
   return configured;
 }
 

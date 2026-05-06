@@ -9739,10 +9739,12 @@ async function loadHealth() {
     }
     let diagnosticsHtml = '';
     if (data.context) {
-      if (data.context.auto_bumped && data.context.detected) {
-        diagnosticsHtml += buildDiagnosticBanner('info', '⚙️ Context auto-bumped to <strong>' + data.context.effective + '</strong> tokens for <code>' + esc(data.context.model) + '</code> (configured cap of ' + data.context.configured + ' was below the detected window of ' + data.context.detected + '). Update Settings if you want a different limit.');
-      } else if (data.context.detected && data.context.configured > data.context.detected) {
-        diagnosticsHtml += buildDiagnosticBanner('warn', '⚠️ Configured contextMaxTokens (' + data.context.configured + ') exceeds the detected window for <code>' + esc(data.context.model) + '</code> (' + data.context.detected + '). The provider may reject oversized requests.');
+      if (data.context.mode === 'auto' && data.context.auto_bumped && data.context.detected) {
+        diagnosticsHtml += buildDiagnosticBanner('info', '⚙️ Context auto-detected as <strong>' + data.context.effective + '</strong> tokens for <code>' + esc(data.context.model) + '</code> (model exposes a ' + data.context.detected + '-token window). Set <em>Context max tokens</em> in Settings to a non-default value if you want to throttle.');
+      } else if (data.context.mode === 'capped' && data.context.detected && data.context.configured > data.context.detected) {
+        diagnosticsHtml += buildDiagnosticBanner('warn', '⚠️ Configured context cap (' + data.context.configured + ') exceeds the detected window for <code>' + esc(data.context.model) + '</code> (' + data.context.detected + '). Effective limit clamped to ' + data.context.effective + ' to avoid request rejection.');
+      } else if (data.context.mode === 'capped' && data.context.detected) {
+        diagnosticsHtml += buildDiagnosticBanner('info', '⚙️ Context capped at <strong>' + data.context.effective + '</strong> tokens by your settings. Model <code>' + esc(data.context.model) + '</code> can take up to ' + data.context.detected + '.');
       }
     }
     if (data.vision) {
