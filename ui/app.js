@@ -4266,6 +4266,11 @@ function renderSkillsGallery() {
     return (s.name || '').toLowerCase().includes(search) || (s.description || '').toLowerCase().includes(search);
   };
   const sortFn = (a, b) => {
+    // Disabled skills always sink to the bottom regardless of primary sort —
+    // an enabled skill is always more relevant than a disabled one.
+    const aDisabled = a.enabled === false;
+    const bDisabled = b.enabled === false;
+    if (aDisabled !== bDisabled) return aDisabled ? 1 : -1;
     const ua = skillsState.usageMap.get(a.name) || {};
     const ub = skillsState.usageMap.get(b.name) || {};
     if (sort === 'name') return (a.name || '').localeCompare(b.name || '');
