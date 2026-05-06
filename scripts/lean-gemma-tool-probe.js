@@ -6,6 +6,7 @@ const DEFAULT_HOST = 'http://127.0.0.1:11434';
 const model = argValue('--model') || process.env.HARNESS_GEMMA_PROBE_MODEL || DEFAULT_MODEL;
 const host = (argValue('--host') || process.env.OLLAMA_HOST || DEFAULT_HOST).replace(/\/$/, '');
 const timeoutMs = Number(argValue('--timeout-ms') || process.env.HARNESS_GEMMA_PROBE_TIMEOUT_MS || 180000);
+const requireExactFinal = process.argv.includes('--require-exact-final') || process.env.HARNESS_GEMMA_PROBE_REQUIRE_EXACT_FINAL === '1';
 
 const tool = {
   type: 'function',
@@ -62,9 +63,12 @@ async function main() {
     secondToolCallCount: null,
     secondPromptTokens: null,
     secondCompletionTokens: null,
+    toolCallOk: false,
+    exactFinalOk: false,
   };
 
   if (toolCalls.length > 0) {
+    summary.toolCallOk = true;
     messages.push(firstMessage);
     messages.push({ role: 'tool', content: 'The fixed diagnostic time is 2026-05-05T17:00:00+01:00.' });
     const second = await chat(messages);
@@ -73,7 +77,8 @@ async function main() {
     summary.secondToolCallCount = Array.isArray(secondMessage.tool_calls) ? secondMessage.tool_calls.length : 0;
     summary.secondPromptTokens = second.prompt_eval_count || 0;
     summary.secondCompletionTokens = second.eval_count || 0;
-    summary.ok = summary.secondContent.includes('2026-05-05T17:00:00+01:00');
+    summary.exactFinalOk = summary.secondContent.includes('2026-05-05T17:00:00+01:00');
+    summary.ok = requireExactFinal ? summary.exactFinalOk : summary.toolCallOk;
   }
 
   console.log(JSON.stringify(summary, null, 2));

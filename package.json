@@ -35,6 +35,7 @@
     "smoke:remote-backends": "node scripts/remote-backend-smoke.js",
     "diagnose:mistral": "node scripts/mistral-roundtrip.js",
     "diagnose:gemma-tool": "node scripts/lean-gemma-tool-probe.js",
+    "validate:routing": "node scripts/validate-routing.js",
     "debug:payloads": "node scripts/debug-payload-summary.js",
     "release:provenance": "node scripts/generate-release-provenance.js --write",
     "release:dry-run": "node scripts/release-dry-run.js",

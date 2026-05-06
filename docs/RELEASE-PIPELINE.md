@@ -18,6 +18,7 @@ npm run typecheck
 npm test -- --runInBand
 npm run verify:changelog
 npm run release:dry-run
+npm run validate:routing
 
 # 4. One-shot pre-flight (working tree clean + upstream sync + changelog +
 #    versions match + typecheck + tag does not exist)
@@ -44,6 +45,14 @@ step. If any fail, fix the underlying issue rather than skipping the gate.
 | `verify:changelog` | CI workflow | Tagged version has no `## ... v<version>` section in CHANGELOG.md |
 | `release:dry-run` | CI workflow | Archive shape, provenance, sha manifest, and notes generation regress |
 | Require successful CI on tagged commit | Release workflow | Tag was pushed but CI for the same commit did not conclude successfully |
+
+## UI smoke test hook
+
+CI starts the web UI with `HARNESS_UI_SMOKE_CHAT=1` before running
+`npm run smoke:ui`. That flag enables one deterministic `/api/chat` SSE
+response for the permission-recovery smoke prompt, while leaving normal chat
+traffic on the regular model-backed path. Keep the flag scoped to validation
+runs.
 
 ## Failure modes seen in practice
 
@@ -86,6 +95,17 @@ step. If any fail, fix the underlying issue rather than skipping the gate.
   for any release-validation flow. Production startup leaves the flag unset
   and connectors initialise normally. See
   [docs/OPERATING-SERVICES.md](OPERATING-SERVICES.md) §Release Smoke Override.
+
+### 5. Cloud routing drift
+
+* **Symptom:** a cloud model that previously handled native tool calls starts
+  returning text-only or JSON-in-content tool requests.
+* **Cause:** provider-side model or template behavior can change independently
+  of Harness releases.
+* **Fix:** run `npm run validate:routing` when Ollama is available. The script
+  probes installed `:cloud` models and treats first-turn native tool calls as
+  the routing pass condition. Exact final answer formatting is reported
+  separately because some models rephrase tool output.
 
 ## Optional pre-push hook
 
