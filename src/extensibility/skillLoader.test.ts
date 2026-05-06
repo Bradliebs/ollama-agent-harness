@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { loadSkillsDir, scanSkillsDir } from './skillLoader';
+import { loadSkillsDir, matchSkillTrigger, scanSkillsDir } from './skillLoader';
 
 describe('skillLoader', () => {
   it('loads valid skills and reports skipped skill folders', async () => {
@@ -91,5 +91,15 @@ describe('skillLoader', () => {
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true });
     }
+  });
+
+  it('matchSkillTrigger skips disabled skills even when triggers match', () => {
+    const enabled = { name: 'enabled-skill', triggers: ['lottery'], enabled: true } as Parameters<typeof matchSkillTrigger>[0][0];
+    const disabled = { name: 'disabled-skill', triggers: ['lottery'], enabled: false } as Parameters<typeof matchSkillTrigger>[0][0];
+    // Disabled skill listed first; matchSkillTrigger should still find the
+    // enabled one because it skips entries with enabled === false.
+    expect(matchSkillTrigger([disabled, enabled], 'run lottery analysis')?.name).toBe('enabled-skill');
+    // With only a disabled skill in the list, no match.
+    expect(matchSkillTrigger([disabled], 'run lottery analysis')).toBeNull();
   });
 });

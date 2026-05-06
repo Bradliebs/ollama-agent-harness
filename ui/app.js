@@ -134,7 +134,11 @@ async function loadModels() {
       const settings = await fetch('/api/settings').then((r) => r.json());
       const saved = settings && typeof settings.model === 'string' ? settings.model : '';
       if (saved && models.some((m) => m.name === saved)) defaultModel = saved;
-    } catch { /* ignore — fall through to first model */ }
+      else if (saved) console.warn('[loadModels] saved model "' + saved + '" not in installed list — falling back to first model');
+    } catch (error) {
+      // Settings endpoint failed — let users know why their saved model didn't stick.
+      console.warn('[loadModels] /api/settings failed (' + (error && error.message ? error.message : error) + ') — falling back to first model');
+    }
     if (!defaultModel && models.length > 0) defaultModel = models[0].name;
     if (defaultModel) {
       sel.value = defaultModel;
@@ -5412,21 +5416,23 @@ function groupAdvancedSettings(panel) {
   if (panel.dataset.advancedGrouped === '1') return;
   panel.dataset.advancedGrouped = '1';
   const sections = Array.from(panel.querySelectorAll('.settings-section'));
-  const advanced = sections.filter((section) => {
+  const titleOf = (section) => {
     const h4 = section.querySelector('h4');
-    if (!h4) return false;
-    // Match against the leading text of the heading (skip the trailing reset button).
+    if (!h4) return '';
     const titleNode = Array.from(h4.childNodes).find((n) => n.nodeType === Node.TEXT_NODE);
-    const title = (titleNode ? titleNode.textContent : h4.textContent).trim();
-    return !ALWAYS_VISIBLE_SETTINGS.has(title);
-  });
+    return (titleNode ? titleNode.textContent : h4.textContent).trim();
+  };
+  const visible = sections.filter((s) => ALWAYS_VISIBLE_SETTINGS.has(titleOf(s)));
+  const advanced = sections.filter((s) => !ALWAYS_VISIBLE_SETTINGS.has(titleOf(s)));
   if (advanced.length === 0) return;
+  // Re-stack always-visible sections at the top so the Advanced fold can sit
+  // cleanly at the bottom. Without this, sections like 'Safety Mode' that are
+  // declared after an advanced section in markup get stranded under the fold.
+  for (const section of visible) panel.appendChild(section);
   const wrap = document.createElement('details');
   wrap.className = 'settings-advanced-fold';
   wrap.innerHTML = '<summary>Advanced (' + advanced.length + ' more sections)</summary>';
-  // Insert the wrap at the position of the first advanced section, then move
-  // every advanced section into it preserving their order.
-  advanced[0].parentNode.insertBefore(wrap, advanced[0]);
+  panel.appendChild(wrap);
   for (const section of advanced) wrap.appendChild(section);
 }
 
