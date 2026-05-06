@@ -3234,6 +3234,10 @@ describe('web server API validation', () => {
       expect(prompt).toContain(`name="${uploadName}"`);
       expect(prompt).toContain(`path=".harness/uploads/${uploadName}"`);
       expect(prompt).toContain('size=12');
+      // Inline head preview lets the model answer simple questions
+      // without a file_read round-trip (cycle 18).
+      expect(prompt).toMatch(/preview \(first \d+ chars\):/);
+      expect(prompt).toContain('one,two');
       // Missing files must be filtered out so the block stays trustworthy.
       expect(prompt).not.toContain('never-existed.txt');
     } finally {

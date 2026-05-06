@@ -9746,6 +9746,23 @@ async function loadHealth() {
       } else if (data.context.mode === 'capped' && data.context.detected) {
         diagnosticsHtml += buildDiagnosticBanner('info', '⚙️ Context capped at <strong>' + data.context.effective + '</strong> tokens by your settings. Model <code>' + esc(data.context.model) + '</code> can take up to ' + data.context.detected + '.');
       }
+      // Per-model profile editor: lets the user set a model-specific
+      // contextMaxTokens override without leaving System Health.
+      if (data.context.model) {
+        const profileCap = typeof data.context.profile_cap === 'number' ? data.context.profile_cap : '';
+        const profileNote = data.context.profile_cap !== undefined
+          ? '<span class="trace-meta">Per-model profile cap is set to <strong>' + data.context.profile_cap + '</strong> (overrides global).</span>'
+          : '<span class="trace-meta">No per-model profile set; using global cap.</span>';
+        diagnosticsHtml += '<div class="mem-section" style="border-left:3px solid var(--accent,#6cf);padding:6px 10px;margin-top:8px">'
+          + '<div class="trace-meta">🎛 Per-model profile for <code>' + esc(data.context.model) + '</code></div>'
+          + '<div class="settings-collapse-actions" style="gap:8px;margin-top:6px;align-items:center">'
+          + '<input type="number" id="modelProfileCapInput" min="0" placeholder="0 = auto" value="' + esc(String(profileCap)) + '" style="width:120px">'
+          + '<button class="btn-sm" onclick="saveModelProfileCap()">save cap</button>'
+          + '<button class="btn-sm" onclick="clearModelProfileCap()">clear</button>'
+          + '</div>'
+          + '<div style="margin-top:6px">' + profileNote + '</div>'
+          + '</div>';
+      }
     }
     if (data.vision) {
       const visionStatus = data.vision.ok ? 'ready' : 'broken';
@@ -9770,6 +9787,51 @@ async function setHealthFlag(key, enabled) {
     await loadHealth();
   } catch (error) {
     alert('Update failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function saveModelProfileCap() {
+  const input = document.getElementById('modelProfileCapInput');
+  if (!input) return;
+  const raw = (input.value || '').trim();
+  const value = raw === '' ? 0 : Number(raw);
+  if (!Number.isFinite(value) || value < 0) { alert('Cap must be a non-negative number (0 = auto-detect).'); return; }
+  // Resolve the active model from the latest health payload via the
+  // input's data attribute fallback or by hitting /api/system/health.
+  try {
+    const healthResp = await fetch('/api/system/health');
+    const health = await healthResp.json();
+    const model = health && health.context && health.context.model;
+    if (!model) { alert('No active model — cannot save profile.'); return; }
+    const response = await fetch('/api/system/model-profiles/' + encodeURIComponent(model), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contextMaxTokens: value }),
+    });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    await loadHealth();
+  } catch (error) {
+    alert('Save failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function clearModelProfileCap() {
+  try {
+    const healthResp = await fetch('/api/system/health');
+    const health = await healthResp.json();
+    const model = health && health.context && health.context.model;
+    if (!model) { alert('No active model — cannot clear profile.'); return; }
+    const response = await fetch('/api/system/model-profiles/' + encodeURIComponent(model), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contextMaxTokens: null }),
+    });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    await loadHealth();
+  } catch (error) {
+    alert('Clear failed: ' + (error && error.message ? error.message : error));
   }
 }
 

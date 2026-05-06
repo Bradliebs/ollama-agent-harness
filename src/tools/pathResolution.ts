@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { logger } from '../core/logger';
 
@@ -20,14 +21,22 @@ export function getAllowedExternalPaths(): string[] {
 }
 
 /**
- * Resolve the uploads directory. Honors the HARNESS_UPLOADS_DIR env override
- * (absolute or project-relative) and falls back to .harness/uploads. The
- * directory is not auto-created here; the upload route does that on demand.
+ * Resolve the uploads directory. Resolution order:
+ *   1. `HARNESS_UPLOADS_DIR` (explicit override; absolute or project-relative)
+ *   2. `HARNESS_GLOBAL_UPLOADS=1` → `~/.harness/uploads` (cycle 18)
+ *      Useful when the daemon serves multiple workspaces and uploads
+ *      should not get scattered into whichever cwd happened to start it.
+ *   3. `<cwd>/.harness/uploads` (legacy default)
+ *
+ * The directory is not auto-created here; the upload route does that on demand.
  */
 export function getUploadsDir(): string {
   const override = process.env.HARNESS_UPLOADS_DIR?.trim();
   if (override) {
     return path.isAbsolute(override) ? override : path.resolve(process.cwd(), override);
+  }
+  if (process.env.HARNESS_GLOBAL_UPLOADS === '1') {
+    return path.join(os.homedir(), '.harness', 'uploads');
   }
   return path.join(process.cwd(), DEFAULT_UPLOADS_DIRNAME);
 }

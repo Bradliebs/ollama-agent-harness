@@ -11,6 +11,75 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Ollama Agent Harness v0.4.2
+
+Operational hardening: `harness doctor --fix` auto-remediation,
+attachment head previews in the chat system prompt, per-model context
+profiles with a UI editor, and a global uploads directory option for
+daemons that serve multiple workspaces.
+
+### `harness doctor --fix` (new)
+
+Diagnoses *and* remediates the failure modes that doctor already
+surfaces. Three independent fixers run in parallel; failure in one
+does not skip the others.
+
+| Fixer | What it does | Trigger |
+|---|---|---|
+| Vision | Pulls a vision-capable model when none is installed | Requires `--yes` (or interactive `y` on a TTY) |
+| Context | Rewrites `contextMaxTokens` from a legacy default (8192/4096) to `0` so auto-detect kicks in | Always when a legacy default is detected |
+| Prune | Deletes `agent-outputs/*` files older than 14 days | Always (delegates to the cleanup heartbeat action) |
+
+Usage: `harness doctor --fix [--yes]`. Without `--yes` the vision pull
+prompts on a TTY (Y/n) and skips with a hint on a non-TTY.
+
+### Attachment previews (chat system prompt)
+
+`buildAttachmentsContextBlock` appends a 400-char head preview inline
+for ~40 text-like extensions (`.csv`, `.json`, `.md`, `.ts`, `.py`,
+`.log`, `.jsonl`, …). For `.log`, `.csv`, `.tsv`, and `.jsonl` files
+larger than ~4KB, an additional 200-char tail preview is included so
+the model sees both the schema/header and the latest entries without a
+file_read round-trip. Binary formats (image/audio/video) and PDFs are
+skipped.
+
+### Per-model context profiles
+
+New `.harness/model-profiles.json` store keyed by model name. Each
+profile may override `contextMaxTokens`, `validationProfile`, and
+`pairedVisionModel` so switching from a 4k tiny local model to a 128k
+cloud model does not drag the small cap (or wrong validation strictness)
+along.
+
+REST surface:
+* `GET /api/system/model-profiles` — full store
+* `PUT /api/system/model-profiles/:model` — accepts `contextMaxTokens`,
+  `validationProfile`, `pairedVisionModel` (any subset; `null`/empty
+  clears that field)
+
+`resolveContextMaxTokens(model)` and `buildContextHealth()` consult
+the per-model profile first; the global `contextMaxTokens` is the
+fallback. The System Health context block exposes `profile_cap` when
+one is set, and the System Health UI now has an inline editor for the
+active model's cap (set / clear).
+
+### Global uploads dir option
+
+`HARNESS_GLOBAL_UPLOADS=1` routes uploads to `~/.harness/uploads`
+instead of `<cwd>/.harness/uploads`. Useful when one daemon serves
+multiple workspaces and uploads should not get scattered into whichever
+cwd happened to start the server. Resolution order:
+
+1. `HARNESS_UPLOADS_DIR` (explicit override)
+2. `HARNESS_GLOBAL_UPLOADS=1` → `~/.harness/uploads`
+3. `<cwd>/.harness/uploads` (legacy default)
+
+### Settings clamp relaxation
+
+`contextMaxTokens` accepts `0` via PATCH and via on-disk settings
+(previously clamped to a 1024 lower bound). This is what `doctor --fix`
+writes when it rescues a legacy default.
+
 ## Ollama Agent Harness v0.4.1
 
 Patch: auto-detect context window by default + cleanup_agent_outputs

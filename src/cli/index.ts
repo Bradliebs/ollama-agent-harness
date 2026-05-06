@@ -10,6 +10,7 @@ import { PermissionEngine } from '../permissions/engine';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { assembleSystemContext } from '../context/assembly';
 import { checkSetupHealth, type SetupHealthResult } from '../setup/health';
+import { runDoctorFix, formatDoctorFixSummary } from '../setup/doctorFix';
 import { summarizeEventStore } from '../persistence/eventStore';
 import { checkObligations } from '../services/promiseLedger';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
@@ -50,6 +51,10 @@ interface CliOptions {
   compactRemoteSmoke?: boolean;
   /** When set, doctor re-runs every `watchIntervalMs` instead of exiting. */
   watchIntervalMs?: number;
+  /** Auto-remediate the things doctor diagnoses (vision pull, context auto, agent-outputs prune). */
+  doctorFix?: boolean;
+  /** Confirm destructive fixes (e.g. `ollama pull` of a vision model). */
+  doctorYes?: boolean;
 }
 
 export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
@@ -139,6 +144,13 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
         options.watchIntervalMs = seconds * 1000;
         break;
       }
+      case '--fix':
+        options.doctorFix = true;
+        break;
+      case '--yes':
+      case '-y':
+        options.doctorYes = true;
+        break;
       case '--helper-confidence-threshold':
         options.modelRouting.confidenceEscalationThreshold = parseFloat(args[++i]);
         break;
@@ -180,6 +192,25 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
 
 function printHelp(): void {
   console.log(formatCliHelp(OUTPUT_VALIDATION_PROFILES.map((profile) => profile.profile)));
+}
+
+/**
+ * Interactive Y/n prompt for `harness doctor --fix` so users on a TTY
+ * can approve a vision-model pull without a second invocation. Returns
+ * `false` immediately when stdin is not a TTY so CI/scripts stay
+ * deterministic — they should pass `--yes` instead.
+ */
+async function promptForVisionPull(model: string): Promise<boolean> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await new Promise<string>((resolve) => {
+      rl.question(`Pull vision model "${model}" (~4GB)? [y/N] `, (a) => resolve(a));
+    });
+    return /^y(es)?$/i.test(answer.trim());
+  } finally {
+    rl.close();
+  }
 }
 
 export async function main(): Promise<void> {
@@ -239,6 +270,23 @@ export async function main(): Promise<void> {
     }
 
     const failedRequired = await runOnce();
+    if (options.doctorFix) {
+      try {
+        const fixResult = await runDoctorFix({
+          projectDir: process.cwd(),
+          ollamaHost: options.host,
+          visionModel: options.visionModel,
+          contextMaxTokens: 0, // doctorFix reads .harness/settings.json directly; this arg is reserved for future overrides.
+          yes: Boolean(options.doctorYes),
+          confirmVisionPull: options.doctorYes ? undefined : promptForVisionPull,
+        });
+        console.log('');
+        console.log(formatDoctorFixSummary(fixResult));
+      } catch (error) {
+        console.error(`doctor --fix failed: ${error instanceof Error ? error.message : String(error)}`);
+        process.exitCode = 1;
+      }
+    }
     if (failedRequired) process.exitCode = 1;
     return;
   }

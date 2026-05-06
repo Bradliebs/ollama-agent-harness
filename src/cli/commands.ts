@@ -50,6 +50,8 @@ export const CLI_COMMAND_REGISTRY: CliCommandDef[] = [
       { flags: ['--audio-command'], valueName: '<cmd>', description: 'Audio transcription command with {input}' },
       { flags: ['--audio-sample'], valueName: '<path>', description: 'Optional audio sample for transcription verification' },
       { flags: ['--watch'], valueName: '[seconds]', description: 'Re-run every N seconds (default 5). Press Ctrl+C to stop.' },
+      { flags: ['--fix'], description: 'Auto-remediate diagnosed issues (vision pull, contextMaxTokens auto, prune agent-outputs)' },
+      { flags: ['-y', '--yes'], description: 'Approve destructive fixes (e.g. ollama pull) without an interactive confirm' },
     ],
   },
   {

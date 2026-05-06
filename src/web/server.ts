@@ -59,6 +59,7 @@ import { appendLearningCandidate, evaluatePromotionGateForCandidate, extractLear
 import { createSubagentTool, listSubagentRoutingMetrics } from '../agents/subagent';
 import { BUILTIN_AGENT_ROLES, loadAgentDefinitions } from '../agents/agentLoader';
 import { classifyIntent, logConciergeDecision, readConciergeLog } from '../services/concierge';
+import { getModelProfile, loadModelProfiles, setModelProfileField, type ModelProfileStore } from '../services/modelProfiles';
 import { createSquad, deleteSquad, getSquad, listSquads, routeMessage, updateSquad } from '../services/squad';
 import { resolveSessionSquad } from '../services/squadSessions';
 import { deleteStructuredEntry, exportIdentity, importIdentity, queryStructured, readIdentityFile, readIdentitySnapshot, renderIdentityForPrompt, upsertStructuredEntry, writeIdentityFile, type IdentityFileName } from '../services/identity';
@@ -1466,7 +1467,7 @@ app.post('/api/settings', async (req, res) => {
     automationSchedulerSettings = sanitizeAutomationSchedulerSettings(req.body.automationScheduler);
   }
   configureAutomationScheduler();
-  if (req.body.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(req.body.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
+  if (req.body.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(req.body.contextMaxTokens, 0, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (req.body.webReadMaxChars !== undefined) {
     webReadMaxChars = sanitizeWebReadMaxChars(req.body.webReadMaxChars, DEFAULT_WEB_READ_MAX_CHARS);
     configureWebReadTool({ maxChars: webReadMaxChars });
@@ -3044,9 +3045,13 @@ async function buildContextHealth(): Promise<{
   auto_bumped: boolean;
   mode: 'auto' | 'capped';
   model: string;
+  profile_cap?: number;
 }> {
   const model = currentModel || '';
-  const configured = Number.isFinite(contextMaxTokens) ? contextMaxTokens : DEFAULT_CONTEXT_MAX_TOKENS;
+  const profile = model ? await getModelProfile(PROJECT_DIR, model).catch(() => undefined) : undefined;
+  const profileCap = typeof profile?.contextMaxTokens === 'number' ? profile.contextMaxTokens : undefined;
+  const globalCap = Number.isFinite(contextMaxTokens) ? contextMaxTokens : DEFAULT_CONTEXT_MAX_TOKENS;
+  const configured = profileCap ?? globalCap;
   const detected = model ? await webRuntime.getModelContextWindow(model, ollamaHost).catch(() => null) : null;
   const isLegacyDefault = LEGACY_CONTEXT_DEFAULTS.has(configured);
   const autoMode = !configured || configured <= 0 || isLegacyDefault;
@@ -3059,7 +3064,9 @@ async function buildContextHealth(): Promise<{
     effective = configured;
   }
   const autoBumped = autoMode && detected !== null && detected > configured;
-  return { configured, detected, effective, auto_bumped: autoBumped, mode: autoMode ? 'auto' : 'capped', model };
+  const result: Awaited<ReturnType<typeof buildContextHealth>> = { configured, detected, effective, auto_bumped: autoBumped, mode: autoMode ? 'auto' : 'capped', model };
+  if (profileCap !== undefined) result.profile_cap = profileCap;
+  return result;
 }
 
 async function buildVisionHealth(): Promise<{
@@ -3122,6 +3129,56 @@ app.patch('/api/system/feature-flags', (req, res) => {
     try { configureTriggerScheduler(); } catch { /* best-effort */ }
     try { configureOtlpExporter(); } catch { /* best-effort */ }
     res.json({ feature_flags: systemFeatureFlags });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Per-Model Context Profiles ─────────────────────────────────────
+// Persistent per-model settings (today: contextMaxTokens) so switching
+// from a tiny local model to a big cloud model does not drag a small
+// global cap along. Storage: .harness/model-profiles.json.
+
+app.get('/api/system/model-profiles', async (_req, res) => {
+  try {
+    const store: ModelProfileStore = await loadModelProfiles(PROJECT_DIR);
+    res.json(store);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.put('/api/system/model-profiles/:model', async (req, res) => {
+  try {
+    const model = String(req.params.model || '').trim();
+    if (!model) { res.status(400).json({ error: 'model is required' }); return; }
+    const body = (req.body ?? {}) as { contextMaxTokens?: unknown; validationProfile?: unknown; pairedVisionModel?: unknown };
+    let store = await loadModelProfiles(PROJECT_DIR);
+    if ('contextMaxTokens' in body) {
+      const raw = body.contextMaxTokens;
+      let nextValue: number | undefined;
+      if (raw === null) nextValue = undefined;
+      else if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) nextValue = raw;
+      else { res.status(400).json({ error: 'contextMaxTokens must be a non-negative number or null' }); return; }
+      store = await setModelProfileField(PROJECT_DIR, model, 'contextMaxTokens', nextValue);
+    }
+    if ('validationProfile' in body) {
+      const raw = body.validationProfile;
+      let nextValue: string | undefined;
+      if (raw === null || raw === '') nextValue = undefined;
+      else if (typeof raw === 'string') nextValue = raw.trim().slice(0, 80) || undefined;
+      else { res.status(400).json({ error: 'validationProfile must be a string or null' }); return; }
+      store = await setModelProfileField(PROJECT_DIR, model, 'validationProfile', nextValue);
+    }
+    if ('pairedVisionModel' in body) {
+      const raw = body.pairedVisionModel;
+      let nextValue: string | undefined;
+      if (raw === null || raw === '') nextValue = undefined;
+      else if (typeof raw === 'string') nextValue = raw.trim().slice(0, 120) || undefined;
+      else { res.status(400).json({ error: 'pairedVisionModel must be a string or null' }); return; }
+      store = await setModelProfileField(PROJECT_DIR, model, 'pairedVisionModel', nextValue);
+    }
+    res.json({ model, profile: store.profiles[model] ?? null, store });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
@@ -7423,7 +7480,12 @@ function formatMyceliumContextText(contextText: string, maxChars: number): strin
 }
 
 async function resolveContextMaxTokens(model: string): Promise<number> {
-  const configured = Number.isFinite(contextMaxTokens) ? contextMaxTokens : DEFAULT_CONTEXT_MAX_TOKENS;
+  // Per-model profile wins over the global cap when set, so switching
+  // models in the UI never drags a wrong global setting along (cycle 18).
+  const profile = await getModelProfile(PROJECT_DIR, model).catch(() => undefined);
+  const profileCap = typeof profile?.contextMaxTokens === 'number' ? profile.contextMaxTokens : undefined;
+  const globalCap = Number.isFinite(contextMaxTokens) ? contextMaxTokens : DEFAULT_CONTEXT_MAX_TOKENS;
+  const configured = profileCap ?? globalCap;
   const detected = await webRuntime.getModelContextWindow(model, ollamaHost);
   detectedContextMaxTokens = detected;
 
@@ -7635,7 +7697,7 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
       : '';
   }
   if (settings.capabilityGrants !== undefined) capabilityGrants = sanitizeCapabilityGrants(settings.capabilityGrants);
-  if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 1024, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
+  if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 0, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (settings.webReadMaxChars !== undefined) {
     webReadMaxChars = sanitizeWebReadMaxChars(settings.webReadMaxChars, DEFAULT_WEB_READ_MAX_CHARS);
     configureWebReadTool({ maxChars: webReadMaxChars });
@@ -8033,6 +8095,16 @@ async function buildAttachmentsContextBlock(raw: unknown): Promise<string | null
     const rel = display.split(path.sep).join('/');
     const kind = typeof (entry as { mediaKind?: unknown }).mediaKind === 'string' ? (entry as { mediaKind: string }).mediaKind : 'file';
     lines.push(`- ${kind}: name="${safeName}" path="${rel}" size=${size}`);
+    // Append a head preview for text-like extensions so the model can
+    // answer "what's in attachment X?" without spending a tool call on
+    // file_read. Cap at ATTACHMENT_PREVIEW_MAX_CHARS so even a list of
+    // 20 attachments stays inside the prompt budget.
+    const preview = await readAttachmentPreview(absolute, safeName);
+    if (preview) {
+      const indented = preview.split('\n').map((p) => `    ${p}`).join('\n');
+      lines.push(`  preview (first ${preview.length} chars):`);
+      lines.push(indented);
+    }
   }
   if (lines.length === 0) return null;
   return [
@@ -8040,8 +8112,84 @@ async function buildAttachmentsContextBlock(raw: unknown): Promise<string | null
     'The user attached the following files via the Harness UI. These paths are exact and verified by the harness.',
     'Always pass the exact "path" string to file_read, pdf_read, image_analyze, or audio_transcribe — never strip the .harness/uploads/ prefix and never pass only the bare filename.',
     'You may also call list_uploads at any time to re-list every available attachment.',
+    'A short head preview is included inline for text-like attachments so you can often answer without reading the whole file.',
     ...lines,
   ].join('\n');
+}
+
+// Extensions whose first few hundred bytes are useful inline. Binary
+// formats (image/audio/video) and PDF are deliberately excluded because
+// their head bytes are not human-readable. PDF still needs `pdf_read`.
+const ATTACHMENT_PREVIEW_EXTENSIONS = new Set<string>([
+  '.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.yaml', '.yml', '.log',
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py', '.rs', '.go', '.java',
+  '.c', '.cc', '.cpp', '.h', '.hpp', '.rb', '.php', '.cs', '.sh', '.bat',
+  '.ps1', '.sql', '.html', '.htm', '.css', '.scss', '.xml', '.toml', '.ini',
+  '.env', '.diff', '.patch', '.jsonl',
+]);
+// Extensions where the *tail* is usually as informative as the head
+// (logs grow at the end; CSV/JSONL summaries often sit at the bottom).
+// When a file in this set exceeds ATTACHMENT_PREVIEW_MAX_CHARS we
+// emit a head+tail preview instead of plain head.
+const ATTACHMENT_TAIL_PREVIEW_EXTENSIONS = new Set<string>([
+  '.log', '.csv', '.tsv', '.jsonl',
+]);
+const ATTACHMENT_PREVIEW_MAX_CHARS = 400;
+const ATTACHMENT_TAIL_PREVIEW_MAX_CHARS = 200;
+
+async function readAttachmentPreview(absolute: string, filename: string): Promise<string | null> {
+  const ext = path.extname(filename).toLowerCase();
+  if (!ATTACHMENT_PREVIEW_EXTENSIONS.has(ext)) return null;
+  const useHeadTail = ATTACHMENT_TAIL_PREVIEW_EXTENSIONS.has(ext);
+  let stat: Awaited<ReturnType<typeof fs.stat>>;
+  try {
+    stat = await fs.stat(absolute);
+  } catch {
+    return null;
+  }
+  // Head read: up to ~4KB so we can trim cleanly on a line boundary;
+  // cheap because uploads are local files.
+  let head: string;
+  let tail = '';
+  try {
+    const handle = await fs.open(absolute, 'r');
+    try {
+      const headBuf = Buffer.alloc(4096);
+      const { bytesRead } = await handle.read(headBuf, 0, headBuf.length, 0);
+      head = headBuf.subarray(0, bytesRead).toString('utf-8');
+      // Tail read only when the file is genuinely large enough that the
+      // head won't already cover it.
+      if (useHeadTail && stat.size > 4096 + ATTACHMENT_TAIL_PREVIEW_MAX_CHARS) {
+        const tailBufSize = Math.min(2048, stat.size);
+        const tailBuf = Buffer.alloc(tailBufSize);
+        const { bytesRead: tailBytes } = await handle.read(tailBuf, 0, tailBufSize, Math.max(0, stat.size - tailBufSize));
+        tail = tailBuf.subarray(0, tailBytes).toString('utf-8');
+      }
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return null;
+  }
+  if (!head.trim()) return null;
+  // Trim head to budget on a line boundary when possible so the preview
+  // never ends mid-word.
+  let headPreview = head.slice(0, ATTACHMENT_PREVIEW_MAX_CHARS);
+  if (headPreview.length === ATTACHMENT_PREVIEW_MAX_CHARS) {
+    const lastNewline = headPreview.lastIndexOf('\n');
+    if (lastNewline > ATTACHMENT_PREVIEW_MAX_CHARS / 2) headPreview = headPreview.slice(0, lastNewline);
+    headPreview = headPreview.trimEnd() + '\n…(truncated)';
+  }
+  if (!tail) return headPreview;
+  // Tail trim: keep the last ATTACHMENT_TAIL_PREVIEW_MAX_CHARS, snapped
+  // to a leading newline so we don't start mid-line.
+  let tailPreview = tail.slice(-ATTACHMENT_TAIL_PREVIEW_MAX_CHARS);
+  const firstNewline = tailPreview.indexOf('\n');
+  if (firstNewline > 0 && firstNewline < ATTACHMENT_TAIL_PREVIEW_MAX_CHARS / 2) {
+    tailPreview = tailPreview.slice(firstNewline + 1);
+  }
+  tailPreview = tailPreview.trimEnd();
+  return headPreview + '\n…(file tail)\n' + tailPreview;
 }
 
 async function persistSessionLearning(session: SessionStorage, projectDir: string): Promise<void> {
