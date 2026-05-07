@@ -7450,7 +7450,24 @@ function renderCapabilityAlignmentPanel(capabilities, auditEvents) {
         + (grantButton ? '<div class="inline-actions trace-block-spaced">' + grantButton + '</div>' : '')
       + '</div>';
   }).join('');
-      const grantRows = grants.length ? grants.map((grant) => '<div class="trace-row"><strong>' + esc(grant.capabilityId) + '</strong> <span class="capability-pill">expires ' + esc(new Date(grant.expiresAt).toLocaleString()) + '</span><div class="trace-meta">' + esc(grant.reason || '') + '</div><div class="inline-actions trace-block-spaced"><button class="btn-sm danger" onclick="revokeCapabilityGrant(\'' + escAttr(grant.id) + '\')">Revoke</button></div></div>').join('') : '<div class="trace-meta">No active grants.</div>';
+      const grantRows = grants.length ? grants.map((grant) => {
+        const expiry = new Date(grant.expiresAt).getTime() - Date.now();
+        const isLongLived = expiry > 30 * 24 * 60 * 60 * 1000;
+        const longLivedPill = isLongLived ? '<span class="capability-pill warning-pill" title="Lifted from the 24h cap because this grant carries a commandAllowlist (regex is the bound).">🛡 long-lived</span>' : '';
+        const patterns = Array.isArray(grant.commandAllowlist) && grant.commandAllowlist.length > 0
+          ? '<details class="details-mt8"><summary class="trace-meta clickable-summary">Command allowlist (' + grant.commandAllowlist.length + ' pattern' + (grant.commandAllowlist.length > 1 ? 's' : '') + ')</summary>'
+            + grant.commandAllowlist.map((pattern) => '<div class="trace-meta trace-meta-sm"><code>' + esc(pattern) + '</code></div>').join('')
+            + '</details>'
+          : '';
+        return '<div class="trace-row">'
+          + '<strong>' + esc(grant.capabilityId) + '</strong> '
+          + '<span class="capability-pill">expires ' + esc(new Date(grant.expiresAt).toLocaleString()) + '</span>'
+          + longLivedPill
+          + '<div class="trace-meta">' + esc(grant.reason || '') + '</div>'
+          + patterns
+          + '<div class="inline-actions trace-block-spaced"><button class="btn-sm danger" onclick="revokeCapabilityGrant(\'' + escAttr(grant.id) + '\')">Revoke</button></div>'
+          + '</div>';
+      }).join('') : '<div class="trace-meta">No active grants.</div>';
       const presetRows = presets.length ? '<details class="details-mt8"><summary class="trace-meta clickable-summary">Shell command allowlist presets (' + presets.length + ')</summary>' + presets.map((preset) => '<div class="trace-meta trace-meta-sm"><strong>' + esc(preset.label || preset.id) + '</strong>: ' + esc((preset.examples || []).join(', ')) + '</div>').join('') + '</details>' : '';
   const hasMore = events.length > auditPageSize;
   const grantEventCount = events.filter((ev) => AUDIT_FILTER_MAP.grant.includes(ev.type)).length;
@@ -7520,15 +7537,42 @@ function filterAuditEvents() {
 async function grantCapability(capabilityId) {
   const reason = prompt('Reason for this capability grant?', 'Manual grant from Tools dashboard.');
   if (reason === null) return;
-  const expiresRaw = prompt('Expire after how many minutes? (1-1440)', '60');
+  // For shell-style capabilities, offer to attach a per-grant
+  // commandAllowlist of regex sources. When ANY pattern is supplied the
+  // server lifts the 24h ceiling to up to 1 year (the regex is itself
+  // the security bound), so prompt for a longer expiry too. Behaviour
+  // for other capabilities is unchanged.
+  const isShellCapability = capabilityId === 'arbitrary-shell' || capabilityId === 'background-autonomous-jobs';
+  let commandAllowlist = [];
+  let maxExpiry = 1440;
+  if (isShellCapability) {
+    const patternsRaw = prompt(
+      'OPTIONAL: command allowlist (one regex per line). '
+      + 'Leave blank for the default 24h preset-only grant. '
+      + 'Each pattern is anchored at run time and matched against the trimmed command. '
+      + 'Example: ^cmd /c "cd /d C:\\\\AI\\\\Project && python script\\.py.*"$',
+      ''
+    );
+    if (patternsRaw === null) return;
+    commandAllowlist = patternsRaw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (commandAllowlist.length > 0) maxExpiry = 525_600; // 1 year
+  }
+  const expiresRaw = prompt('Expire after how many minutes? (1-' + maxExpiry + ')', commandAllowlist.length > 0 ? '525600' : '60');
   if (expiresRaw === null) return;
   const capabilities = await fetch('/api/capabilities').then((r) => r.json());
   const item = (capabilities.capabilities || []).find((cap) => cap.id === capabilityId);
   if (!item || item.posture !== 'gated') { alert('Only gated capabilities can be granted.'); return; }
+  const body = {
+    capabilityId,
+    controls: item.requiredControls || [],
+    reason,
+    expiresInMinutes: Number(expiresRaw) || 60,
+  };
+  if (commandAllowlist.length > 0) body.commandAllowlist = commandAllowlist;
   const response = await fetch('/api/capabilities/grants', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ capabilityId, controls: item.requiredControls || [], reason, expiresInMinutes: Number(expiresRaw) || 60 }),
+    body: JSON.stringify(body),
   });
   const data = await response.json();
   if (data.error) { alert('Grant failed: ' + data.error); return; }
