@@ -91,6 +91,10 @@ function snapshotsDir(projectDir: string): string {
 // ─── Write ──────────────────────────────────────────────────────────
 
 const MAX_EVENT_LINES = 10_000;
+const WRITE_LOCK_TIMEOUT_MS = 5_000;
+const WRITE_LOCK_RETRY_MS = 25;
+const WRITE_LOCK_STALE_MS = 30_000;
+const WRITE_RENAME_RETRY_DELAYS_MS = [20, 60, 120];
 let knownEventLineCount = -1;
 let appendSeq = 0;
 // Serialize background pruning + appends so concurrent emissions can't race
@@ -99,6 +103,99 @@ let appendSeq = 0;
 // syscall level on every supported OS, but the in-memory invariants
 // (knownEventLineCount, appendSeq) only stay correct if we serialize.
 let writeChain: Promise<unknown> = Promise.resolve();
+
+function eventsLockPath(projectDir: string): string {
+  return path.join(projectDir, '.harness', 'events', 'events.lock');
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientRenameError(error: unknown): boolean {
+  if (process.platform !== 'win32') return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
+}
+
+function isTransientLockAcquireError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === 'EEXIST') return true;
+  if (process.platform !== 'win32') return false;
+  return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY';
+}
+
+async function renameFileWithRetry(tmpPath: string, targetPath: string): Promise<void> {
+  for (let attempt = 0; attempt <= WRITE_RENAME_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      await fs.rename(tmpPath, targetPath);
+      return;
+    } catch (error) {
+      if (!isTransientRenameError(error) || attempt === WRITE_RENAME_RETRY_DELAYS_MS.length) throw error;
+      await sleep(WRITE_RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+async function writeFileAtomically(targetPath: string, content: string): Promise<void> {
+  const tmpPath = `${targetPath}.tmp-${process.pid}-${Date.now()}`;
+  await fs.writeFile(tmpPath, content, 'utf-8');
+  try {
+    await renameFileWithRetry(tmpPath, targetPath);
+  } finally {
+    await fs.rm(tmpPath, { force: true }).catch(() => {});
+  }
+}
+
+async function acquireWriteLock(projectDir: string): Promise<() => Promise<void>> {
+  const lockPath = eventsLockPath(projectDir);
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+  const owner = `${process.pid}:${Date.now()}:${crypto.randomUUID()}`;
+  const deadline = Date.now() + WRITE_LOCK_TIMEOUT_MS;
+
+  while (true) {
+    try {
+      await fs.writeFile(lockPath, owner, { encoding: 'utf-8', flag: 'wx' });
+      return async () => {
+        try {
+          const currentOwner = await fs.readFile(lockPath, 'utf-8');
+          if (currentOwner === owner) await fs.rm(lockPath, { force: true });
+        } catch {
+          // Lock already released or missing.
+        }
+      };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!isTransientLockAcquireError(error)) throw error;
+
+      if (code === 'EEXIST') {
+        try {
+          const stats = await fs.stat(lockPath);
+          if ((Date.now() - stats.mtimeMs) > WRITE_LOCK_STALE_MS) {
+            await fs.rm(lockPath, { force: true });
+            continue;
+          }
+        } catch {
+          // Lock file may have been removed by another writer; retry.
+        }
+      }
+
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out acquiring event store write lock after ${WRITE_LOCK_TIMEOUT_MS}ms.`);
+      }
+      await sleep(WRITE_LOCK_RETRY_MS);
+    }
+  }
+}
+
+async function withWriteLock<T>(projectDir: string, action: () => Promise<T>): Promise<T> {
+  const release = await acquireWriteLock(projectDir);
+  try {
+    return await action();
+  } finally {
+    await release();
+  }
+}
 
 /** SSE subscribers for live event streaming. */
 const eventStreamListeners = new Set<(event: HarnessEvent) => void>();
@@ -109,7 +206,7 @@ export function subscribeEventStream(listener: (event: HarnessEvent) => void): (
 }
 
 export async function appendEvent(projectDir: string, event: Omit<HarnessEvent, 'event_id' | 'timestamp' | 'seq'>): Promise<HarnessEvent> {
-  const next = writeChain.then(async () => {
+  const next = writeChain.then(() => withWriteLock(projectDir, async () => {
     const full: HarnessEvent = {
       event_id: crypto.randomUUID(),
       timestamp: new Date().toISOString(),
@@ -127,10 +224,10 @@ export async function appendEvent(projectDir: string, event: Omit<HarnessEvent, 
     // the next chained append/query observes the post-prune state.
     knownEventLineCount = knownEventLineCount < 0 ? MAX_EVENT_LINES : knownEventLineCount + 1;
     if (knownEventLineCount > MAX_EVENT_LINES) {
-      try { await pruneEventStore(projectDir, MAX_EVENT_LINES); } catch { /* best-effort */ }
+      try { await pruneEventStoreInternal(projectDir, MAX_EVENT_LINES); } catch { /* best-effort */ }
     }
     return full;
-  });
+  }));
   // Keep the chain alive even if this append rejects.
   writeChain = next.catch(() => {});
   return next;
@@ -338,7 +435,7 @@ export async function generatePostmortem(
 // ─── Pruning ────────────────────────────────────────────────────────
 
 /** Keep only the most recent `maxEntries` events. */
-export async function pruneEventStore(projectDir: string, maxEntries = MAX_EVENT_LINES): Promise<number> {
+async function pruneEventStoreInternal(projectDir: string, maxEntries = MAX_EVENT_LINES): Promise<number> {
   const fp = eventsFilePath(projectDir);
   try { await fs.access(fp); } catch { return 0; }
 
@@ -354,14 +451,19 @@ export async function pruneEventStore(projectDir: string, maxEntries = MAX_EVENT
   }
 
   const kept = entries.slice(-maxEntries);
-  await fs.writeFile(fp, kept.join('\n') + '\n', 'utf-8');
+  await writeFileAtomically(fp, kept.join('\n') + '\n');
   const pruned = entries.length - kept.length;
   knownEventLineCount = kept.length;
   return pruned;
 }
 
+/** Keep only the most recent `maxEntries` events. */
+export async function pruneEventStore(projectDir: string, maxEntries = MAX_EVENT_LINES): Promise<number> {
+  return withWriteLock(projectDir, () => pruneEventStoreInternal(projectDir, maxEntries));
+}
+
 /** Remove events older than `retentionDays`. */
-export async function pruneEventsByAge(projectDir: string, retentionDays = 30): Promise<number> {
+async function pruneEventsByAgeInternal(projectDir: string, retentionDays = 30): Promise<number> {
   const fp = eventsFilePath(projectDir);
   try { await fs.access(fp); } catch { return 0; }
 
@@ -383,8 +485,13 @@ export async function pruneEventsByAge(projectDir: string, retentionDays = 30): 
     }
   }
   if (pruned > 0) {
-    await fs.writeFile(fp, kept.join('\n') + '\n', 'utf-8');
+    await writeFileAtomically(fp, kept.join('\n') + '\n');
     knownEventLineCount = kept.length;
   }
   return pruned;
+}
+
+/** Remove events older than `retentionDays`. */
+export async function pruneEventsByAge(projectDir: string, retentionDays = 30): Promise<number> {
+  return withWriteLock(projectDir, () => pruneEventsByAgeInternal(projectDir, retentionDays));
 }

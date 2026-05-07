@@ -10,6 +10,8 @@ import {
   getSnapshot,
   listSnapshots,
   getUndoEvents,
+  pruneEventStore,
+  pruneEventsByAge,
   summarizeEventStore,
   generatePostmortem,
 } from './eventStore';
@@ -140,4 +142,52 @@ describe('eventStore', () => {
     const pm = await generatePostmortem(tmpDir, 'svc1');
     expect(pm).toContain('No failure events');
   });
+
+  it('recovers from a stale event-store lock during append', async () => {
+    const lockPath = path.join(tmpDir, '.harness', 'events', 'events.lock');
+    await fs.mkdir(path.dirname(lockPath), { recursive: true });
+    await fs.writeFile(lockPath, 'stale-owner', 'utf-8');
+
+    const staleTime = new Date(Date.now() - 120_000);
+    await fs.utimes(lockPath, staleTime, staleTime);
+
+    await appendEvent(tmpDir, { category: 'service', type: 'service_created', data: { name: 'stale-lock' }, actor: 'user' });
+
+    const events = await queryEvents(tmpDir, { category: 'service' });
+    expect(events).toHaveLength(1);
+    await expect(fs.access(lockPath)).rejects.toBeDefined();
+  });
+
+  it('keeps events.jsonl parseable during concurrent append and prune bursts', async () => {
+    const totalAppends = 240;
+    const appendBurst = Array.from({ length: totalAppends }, (_, i) => appendEvent(tmpDir, {
+      category: 'system',
+      type: `burst_${i}`,
+      data: { index: i },
+      actor: 'system',
+    }));
+
+    const pruneBurst = (async () => {
+      for (let i = 0; i < 18; i += 1) {
+        await pruneEventStore(tmpDir, 120);
+        await pruneEventsByAge(tmpDir, 3650);
+      }
+    })();
+
+    await Promise.all([...appendBurst, pruneBurst]);
+    await pruneEventStore(tmpDir, 120);
+
+    const eventsPath = path.join(tmpDir, '.harness', 'events', 'events.jsonl');
+    const raw = await fs.readFile(eventsPath, 'utf-8');
+    const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0);
+
+    const parsed = lines.map((line) => JSON.parse(line) as { event_id: string });
+    expect(parsed).toHaveLength(lines.length);
+
+    const eventIds = new Set(parsed.map((entry) => entry.event_id));
+    expect(eventIds.size).toBe(parsed.length);
+
+    const results = await queryEvents(tmpDir);
+    expect(results.length).toBeLessThanOrEqual(120);
+  }, 20_000);
 });
