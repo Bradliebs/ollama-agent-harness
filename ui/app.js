@@ -745,6 +745,9 @@ async function addPlanTask() {
     const response = await fetch('/api/autonomy/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, description: title }) });
     await readApiJson(response, 'Add task API');
     input.value = '';
+    // Reset the textarea height so it shrinks back to one line after a
+    // long task is added. Mirrors the chat composer's behavior.
+    if (input.tagName === 'TEXTAREA') input.style.height = 'auto';
     if (status) status.textContent = 'Task added.';
     loadAutonomyPlanPreview();
     loadReadiness();
@@ -2473,6 +2476,14 @@ function autoSize(el) {
   // Re-evaluate slash palette every keystroke so it appears as soon as the
   // user types `/` and disappears the moment the prefix becomes invalid.
   maybeShowSlashPalette(el.value);
+}
+
+// Same auto-grow pattern as the chat composer, but for the Autonomy
+// task input. No slash-palette hook (autonomy tasks are plain prose,
+// not commands). 240px ceiling matches the CSS max-height.
+function autoSizeTaskInput(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 240) + 'px';
 }
 function sendTip(el) { document.getElementById('chatInput').value = el.textContent; sendMessage(); }
 
@@ -5416,11 +5427,76 @@ async function rebuildSessionSearchIndex() { const view = document.getElementByI
 
 async function loadPalaceEntry(id) { const detail = document.getElementById('palaceDetail'); if (!detail) return; detail.classList.remove('initial-hidden'); detail.textContent = 'Loading memory entry...'; try { const entryResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id)); const entryData = await entryResponse.json(); if (entryData.error) { detail.textContent = entryData.error; return; } const contextResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id) + '/context?window=3'); const contextData = await contextResponse.json(); const entry = entryData.entry; const transcriptRows = (contextData.events || []).map((event) => '<div class="transcript-row' + (event.isAnchor ? ' anchor' : '') + '"><div><strong>' + esc(event.kind) + '</strong> · ' + esc(event.timestamp) + '</div><div class="prewrap-text">' + esc(event.text || '[empty]') + '</div></div>').join(''); detail.innerHTML = '<div><strong>Session</strong> ' + esc(entry.sessionId) + '</div><div><strong>Event</strong> ' + esc(entry.id) + '</div><div><strong>Kind</strong> ' + esc(entry.kind) + '</div><div><strong>Time</strong> ' + esc(entry.timestamp) + '</div><div class="prewrap-text trace-block-spaced">' + esc(entry.text) + '</div><div class="trace-block-spaced-large"><strong>Transcript Context</strong>' + (transcriptRows || '<div class="transcript-row">No transcript context found.</div>') + '</div>'; } catch (error) { detail.textContent = error.message; } }
 
-function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); if (el) el.classList.add('active'); if (!MORE_MENU_TABS.includes(tab)) { const moreBtn = document.getElementById('tabMoreBtn'); if (moreBtn) moreBtn.classList.remove('has-active'); document.querySelectorAll('.more-menu-item').forEach((item) => item.classList.remove('active')); } document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; const rn = document.getElementById('runsView'); if (rn) rn.style.display = tab === 'runs' ? 'block' : 'none'; const wf = document.getElementById('workflowsView'); if (wf) wf.style.display = tab === 'workflows' ? 'block' : 'none'; const my = document.getElementById('myceliumView'); if (my) my.style.display = tab === 'mycelium' ? 'block' : 'none'; const pr = document.getElementById('promisesView'); if (pr) pr.style.display = tab === 'promises' ? 'block' : 'none'; const ev = document.getElementById('eventsView'); if (ev) ev.style.display = tab === 'events' ? 'block' : 'none'; const ci = document.getElementById('codeintelView'); if (ci) ci.style.display = tab === 'codeintel' ? 'block' : 'none'; const tk = document.getElementById('tasksView'); if (tk) tk.style.display = tab === 'tasks' ? 'block' : 'none'; const au = document.getElementById('auditView'); if (au) au.style.display = tab === 'audit' ? 'block' : 'none'; const tg = document.getElementById('triggersView'); if (tg) tg.style.display = tab === 'triggers' ? 'block' : 'none'; const ag = document.getElementById('agentsView'); if (ag) ag.style.display = tab === 'agents' ? 'block' : 'none'; const sq = document.getElementById('squadsView'); if (sq) sq.style.display = tab === 'squads' ? 'block' : 'none'; const idn = document.getElementById('identityView'); if (idn) idn.style.display = tab === 'identity' ? 'block' : 'none'; const arf = document.getElementById('artifactsView'); if (arf) arf.style.display = tab === 'artifacts' ? 'block' : 'none'; const hl = document.getElementById('healthView'); if (hl) hl.style.display = tab === 'health' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); if (tab === 'runs') loadRuns(); if (tab === 'workflows') loadWorkflows(); if (tab === 'mycelium') loadMycelium(); if (tab === 'promises') loadPromises(); if (tab === 'events') loadEvents(); if (tab === 'codeintel') loadCodeIntel(); if (tab === 'tasks') loadTasks(); if (tab === 'audit') loadAudit(); if (tab === 'triggers') loadTriggers(); if (tab === 'agents') loadAgents(); if (tab === 'squads') loadSquads(); if (tab === 'identity') loadIdentity(); if (tab === 'artifacts') loadArtifacts(); if (tab === 'health') loadHealth(); }
+function showLeftTab(tab, el) { document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); if (el) el.classList.add('active'); if (!MORE_MENU_TABS.includes(tab)) { const moreBtn = document.getElementById('tabMoreBtn'); if (moreBtn) moreBtn.classList.remove('has-active'); document.querySelectorAll('.more-menu-item').forEach((item) => item.classList.remove('active')); } document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; const rn = document.getElementById('runsView'); if (rn) rn.style.display = tab === 'runs' ? 'block' : 'none'; const at = document.getElementById('autonomyView'); if (at) at.style.display = tab === 'autonomy' ? 'block' : 'none'; const wf = document.getElementById('workflowsView'); if (wf) wf.style.display = tab === 'workflows' ? 'block' : 'none'; const my = document.getElementById('myceliumView'); if (my) my.style.display = tab === 'mycelium' ? 'block' : 'none'; const pr = document.getElementById('promisesView'); if (pr) pr.style.display = tab === 'promises' ? 'block' : 'none'; const ev = document.getElementById('eventsView'); if (ev) ev.style.display = tab === 'events' ? 'block' : 'none'; const ci = document.getElementById('codeintelView'); if (ci) ci.style.display = tab === 'codeintel' ? 'block' : 'none'; const tk = document.getElementById('tasksView'); if (tk) tk.style.display = tab === 'tasks' ? 'block' : 'none'; const au = document.getElementById('auditView'); if (au) au.style.display = tab === 'audit' ? 'block' : 'none'; const tg = document.getElementById('triggersView'); if (tg) tg.style.display = tab === 'triggers' ? 'block' : 'none'; const ag = document.getElementById('agentsView'); if (ag) ag.style.display = tab === 'agents' ? 'block' : 'none'; const sq = document.getElementById('squadsView'); if (sq) sq.style.display = tab === 'squads' ? 'block' : 'none'; const idn = document.getElementById('identityView'); if (idn) idn.style.display = tab === 'identity' ? 'block' : 'none'; const arf = document.getElementById('artifactsView'); if (arf) arf.style.display = tab === 'artifacts' ? 'block' : 'none'; const hl = document.getElementById('healthView'); if (hl) hl.style.display = tab === 'health' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); if (tab === 'runs') loadRuns(); if (tab === 'autonomy') loadAutonomyTab(); if (tab === 'workflows') loadWorkflows(); if (tab === 'mycelium') loadMycelium(); if (tab === 'promises') loadPromises(); if (tab === 'events') loadEvents(); if (tab === 'codeintel') loadCodeIntel(); if (tab === 'tasks') loadTasks(); if (tab === 'audit') loadAudit(); if (tab === 'triggers') loadTriggers(); if (tab === 'agents') loadAgents(); if (tab === 'squads') loadSquads(); if (tab === 'identity') loadIdentity(); if (tab === 'artifacts') loadArtifacts(); if (tab === 'health') loadHealth(); }
 function toggleLeft() { document.getElementById('leftPanel').classList.toggle('hidden'); }
 
+// ─── Autonomy tab ──────────────────────────────────────────────────
+// One-click entry point for the Autonomy Run Builder. The panel itself
+// is rendered into #autonomyBuilderPanel by the existing
+// loadAutonomyPlanPreview function (used in Mission Control too), so
+// this loader just supplies the wrapper div and reuses the data fetch.
+async function loadAutonomyTab() {
+  const view = document.getElementById('autonomyView');
+  if (!view) return;
+  view.innerHTML = '<div class="autonomy-tab-header" style="padding:12px 14px;border-bottom:1px solid var(--border)"><h3 style="margin:0">\ud83d\ude80 Autonomy</h3><p style="margin:4px 0 0;font-size:12px;color:var(--text-dim)">Add tasks, click Start. The page title gets a \ud83d\udd14 prefix when the run finishes; if you allowed browser notifications, you also get a desktop ping.</p></div>'
+    + '<div class="autonomy-builder" id="autonomyBuilderPanel" style="padding:14px"><div class="readiness-empty">Loading autonomy plan...</div></div>';
+  loadAutonomyPlanPreview();
+}
+
+// ─── Left panel resize ─────────────────────────────────────────────
+// Drag the right edge of the left panel to widen it. Width persists in
+// localStorage so it survives reloads. Min 220, max 800px. Skipped on
+// narrow viewports where the panel is a fixed off-canvas drawer.
+function setupLeftPanelResizer() {
+  const panel = document.getElementById('leftPanel');
+  const handle = document.getElementById('leftPanelResizer');
+  if (!panel || !handle) return;
+  // Restore saved width.
+  try {
+    const saved = parseInt(localStorage.getItem('leftPanelWidth') || '', 10);
+    if (Number.isFinite(saved) && saved >= 220 && saved <= 800) {
+      panel.style.width = saved + 'px';
+    }
+  } catch { /* private mode */ }
+  let startX = 0;
+  let startWidth = 0;
+  let dragging = false;
+  function onMove(e) {
+    if (!dragging) return;
+    const dx = e.clientX - startX;
+    const next = Math.min(800, Math.max(220, startWidth + dx));
+    panel.style.width = next + 'px';
+  }
+  function onUp() {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    try { localStorage.setItem('leftPanelWidth', String(parseInt(panel.style.width, 10))); } catch {}
+  }
+  handle.addEventListener('mousedown', (e) => {
+    if (window.innerWidth <= 900) return; // Mobile: panel is off-canvas, no resize.
+    e.preventDefault();
+    dragging = true;
+    startX = e.clientX;
+    startWidth = panel.getBoundingClientRect().width;
+    handle.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+document.addEventListener('DOMContentLoaded', setupLeftPanelResizer);
+// Also run immediately in case DOMContentLoaded already fired (this
+// script is loaded after the body in some build outputs).
+if (document.readyState === 'interactive' || document.readyState === 'complete') {
+  setupLeftPanelResizer();
+}
+
 // Tabs we don't show in the main bar — selected via the More overflow menu.
-const MORE_MENU_TABS = ['palace', 'discovery', 'learning', 'snapshots', 'rag', 'tools', 'runs', 'mycelium', 'promises', 'events', 'codeintel', 'tasks', 'audit', 'triggers', 'agents', 'squads', 'identity', 'artifacts', 'health'];
+const MORE_MENU_TABS = ['palace', 'discovery', 'learning', 'snapshots', 'rag', 'tools', 'runs', 'autonomy', 'mycelium', 'promises', 'events', 'codeintel', 'tasks', 'audit', 'triggers', 'agents', 'squads', 'identity', 'artifacts', 'health'];
 
 function toggleMoreMenu(event) {
   if (event && event.stopPropagation) event.stopPropagation();

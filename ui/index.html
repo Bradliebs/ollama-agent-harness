@@ -10,7 +10,9 @@
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;overflow:hidden}
     .layout{display:flex;width:100%;height:100%}
-    .left-panel{width:300px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;transition:margin-left .3s}
+    .left-panel{width:300px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;transition:margin-left .3s;position:relative}
+    .left-panel-resizer{position:absolute;top:0;right:-3px;width:6px;height:100%;cursor:ew-resize;z-index:50;background:transparent;transition:background .15s}
+    .left-panel-resizer:hover,.left-panel-resizer.dragging{background:var(--accent)}
     .left-panel.hidden{margin-left:-300px}
     .main-panel{flex:1;display:flex;flex-direction:column;min-width:380px;position:relative}
     .right-panel{width:440px;background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto;transition:margin-right .3s}
@@ -760,6 +762,7 @@
         <div class="more-menu-item" data-tab="rag" onclick="selectFromMore('rag')"><span class="more-menu-icon">🔎</span> RAG</div>
         <div class="more-menu-item" data-tab="tools" onclick="selectFromMore('tools')"><span class="more-menu-icon">🛠</span> Tools</div>
         <div class="more-menu-item" data-tab="runs" onclick="selectFromMore('runs')"><span class="more-menu-icon">📜</span> Runs</div>
+        <div class="more-menu-item" data-tab="autonomy" onclick="selectFromMore('autonomy')"><span class="more-menu-icon">🚀</span> Autonomy</div>
         <div class="more-menu-item" data-tab="mycelium" onclick="selectFromMore('mycelium')"><span class="more-menu-icon">🍄</span> Mycelium</div>
         <div class="more-menu-item" data-tab="promises" onclick="selectFromMore('promises')"><span class="more-menu-icon">🤝</span> Promises</div>
         <div class="more-menu-item" data-tab="events" onclick="selectFromMore('events')"><span class="more-menu-icon">📋</span> Events</div>
@@ -785,6 +788,7 @@
     <div class="memory-view initial-hidden" id="ragView"></div>
     <div class="memory-view initial-hidden" id="toolsDashboardView"></div>
     <div class="memory-view initial-hidden" id="runsView"></div>
+    <div class="memory-view initial-hidden" id="autonomyView"></div>
     <div class="memory-view initial-hidden" id="workflowsView"></div>
     <div class="memory-view initial-hidden" id="myceliumView"></div>
     <div class="memory-view initial-hidden" id="promisesView"></div>
@@ -798,6 +802,7 @@
     <div class="memory-view initial-hidden" id="identityView"></div>
     <div class="memory-view initial-hidden" id="artifactsView"></div>
     <div class="memory-view initial-hidden" id="healthView"></div>
+    <div class="left-panel-resizer" id="leftPanelResizer" title="Drag to resize the panel"></div>
   </div>
 
   <div class="main-panel">
