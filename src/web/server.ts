@@ -931,10 +931,21 @@ app.post('/api/autonomy/tasks', async (req, res) => {
     if (!title) { res.status(400).json({ error: 'Task title is required.' }); return; }
     const description = String(req.body?.description ?? title).trim();
     const id = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || `task-${Date.now()}`;
+    // Optional anchors (files the model should read for context) and target
+    // (the file the model should edit). Mirror the markdown sub-bullet
+    // format that parsePlan in cookbook/task-loop.ts already consumes,
+    // so the loop reads them with no extra plumbing.
+    const rawAnchors = Array.isArray(req.body?.anchors) ? req.body.anchors as unknown[] : [];
+    const anchors = rawAnchors.map((a) => String(a ?? '').trim()).filter(Boolean).slice(0, 10);
+    const target = typeof req.body?.target === 'string' ? req.body.target.trim() : '';
     const planPath = path.join(PROJECT_DIR, 'IMPLEMENTATION_PLAN.md');
     let existing = '';
     try { existing = await fs.readFile(planPath, 'utf-8'); } catch { existing = '# Implementation Plan\n'; }
-    const entry = `\n- [ ] ${id} — ${description}\n`;
+    const subBullets = [
+      ...anchors.map((a) => `  - anchor: ${a}`),
+      ...(target ? [`  - target: ${target}`] : []),
+    ].join('\n');
+    const entry = `\n- [ ] ${id} — ${description}` + (subBullets ? `\n${subBullets}` : '') + '\n';
     await fs.writeFile(planPath, existing.replace(/\n*$/, '') + entry, 'utf-8');
     const preview = await readAutonomyPlanPreview();
     res.json({ ok: true, id, title: description, ...preview });
@@ -1014,9 +1025,18 @@ app.post('/api/autonomy/start', async (req, res) => {
     setEnv('HARNESS_TIME_BUDGET_MS', req.body?.timeBudgetMs);
     setEnv('HARNESS_UNPRODUCTIVE_TURN_LIMIT', req.body?.unproductiveTurnLimit ?? 6);
     await fs.rm(path.join(PROJECT_DIR, '.forge-stop'), { force: true }).catch(() => {});
-    const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
     autonomyStartedAt = new Date().toISOString();
-    autonomyChild = spawn(npmCommand, ['run', 'autonomy'], { cwd: PROJECT_DIR, env });
+    // Windows: Node 20.12+/18.20.2+ refuses to spawn .bat/.cmd directly
+    // (CVE-2024-27980). npm on Windows is npm.cmd, so the previous
+    // spawn(npmCommand, ['run', 'autonomy']) died with EINVAL on every
+    // Start click. Use cmd.exe /d /s /c instead — Node 22 deprecates
+    // shell:true with array args (DEP0190), so explicit cmd.exe is the
+    // forward-compatible choice. Pinned by manual smoke 2026-05-07.
+    if (process.platform === 'win32') {
+      autonomyChild = spawn('cmd.exe', ['/d', '/s', '/c', 'npm run autonomy'], { cwd: PROJECT_DIR, env });
+    } else {
+      autonomyChild = spawn('npm', ['run', 'autonomy'], { cwd: PROJECT_DIR, env });
+    }
     const evidence = createRunEvidence({ id: `autonomy:${autonomyStartedAt}`, kind: 'autonomy', request: preview.tasks.find((task) => task.status === 'pending')?.title || 'Run next pending implementation task', runName: 'Ralph autonomy loop', command: 'npm run autonomy', success: true, summary: `Started with ${preview.pending} pending task(s).` });
     await appendRunEvidence(PROJECT_DIR, evidence);
     autonomyChild.on('exit', () => { autonomyChild = null; autonomyStartedAt = undefined; });
