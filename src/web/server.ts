@@ -4180,6 +4180,7 @@ app.post('/api/capabilities/grants', async (req, res) => {
       controls,
       reason: typeof req.body?.reason === 'string' ? req.body.reason : undefined,
       expiresInMinutes: req.body?.expiresInMinutes,
+      commandAllowlist: Array.isArray(req.body?.commandAllowlist) ? req.body.commandAllowlist : undefined,
     });
     if (!result.grant) {
       const status = result.evaluation.decision === 'deny' ? 403 : 400;

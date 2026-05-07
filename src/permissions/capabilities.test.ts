@@ -1,4 +1,4 @@
-import { CAPABILITY_POLICIES, createCapabilityGrant, evaluateCapabilityGrant, evaluateCapabilityPolicy, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, summarizeCapabilityAlignment } from './capabilities';
+import { CAPABILITY_POLICIES, commandMatchesGrantAllowlist, createCapabilityGrant, evaluateCapabilityGrant, evaluateCapabilityPolicy, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, summarizeCapabilityAlignment } from './capabilities';
 
 describe('capability policies', () => {
   it('covers every requested high-level capability surface', () => {
@@ -125,5 +125,153 @@ describe('capability policies', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe('g2');
+  });
+
+  describe('commandAllowlist on capability grants', () => {
+    const baseGrant = {
+      capabilityId: 'arbitrary-shell',
+      controls: ['explicit-grant', 'audit-log', 'allowlist', 'kill-switch'] as any[],
+      reason: 'Operator-approved daily brief script.',
+      now: new Date('2026-05-06T00:00:00.000Z'),
+    };
+
+    it('persists a sanitized commandAllowlist when valid regex sources are provided', () => {
+      const { grant } = createCapabilityGrant({
+        ...baseGrant,
+        id: 'g-allowlist',
+        expiresInMinutes: 60,
+        commandAllowlist: [
+          '^cmd /c "cd /d C:\\\\AI\\\\Oracle\\\\Trading && python.*daily_advisor\\.py.*"$',
+          '^echo hello$',
+          '   ',
+          'duplicate',
+          'duplicate',
+          '(unbalanced',
+        ],
+      });
+      expect(grant?.commandAllowlist).toEqual([
+        '^cmd /c "cd /d C:\\\\AI\\\\Oracle\\\\Trading && python.*daily_advisor\\.py.*"$',
+        '^echo hello$',
+        'duplicate',
+      ]);
+    });
+
+    it('round-trips commandAllowlist through sanitizeCapabilityGrants', () => {
+      const stored = [{
+        id: 'g-rt',
+        capabilityId: 'arbitrary-shell',
+        controls: ['explicit-grant'],
+        reason: '',
+        grantedAt: '2026-05-01T00:00:00.000Z',
+        expiresAt: '2026-05-01T01:00:00.000Z',
+        commandAllowlist: ['^echo hi$', '(broken', 42, ''],
+      }];
+      const [sanitized] = sanitizeCapabilityGrants(stored);
+      expect(sanitized.commandAllowlist).toEqual(['^echo hi$']);
+    });
+
+    it('omits commandAllowlist field entirely when no valid entries remain', () => {
+      const stored = [{
+        id: 'g-empty',
+        capabilityId: 'arbitrary-shell',
+        controls: ['explicit-grant'],
+        reason: '',
+        grantedAt: '2026-05-01T00:00:00.000Z',
+        expiresAt: '2026-05-01T01:00:00.000Z',
+        commandAllowlist: ['(broken', 42, ''],
+      }];
+      const [sanitized] = sanitizeCapabilityGrants(stored);
+      expect(sanitized.commandAllowlist).toBeUndefined();
+    });
+
+    it('matches a command against an active grant allowlist and surfaces the matching grant', () => {
+      const { grant } = createCapabilityGrant({
+        ...baseGrant,
+        id: 'g-match',
+        expiresInMinutes: 120,
+        commandAllowlist: ['^python\\s+daily_advisor\\.py\\s+--mode\\s+(morning|midday|evening)$'],
+      });
+      const result = commandMatchesGrantAllowlist(
+        'arbitrary-shell',
+        [grant!],
+        'python daily_advisor.py --mode morning',
+        new Date('2026-05-06T00:30:00.000Z'),
+      );
+      expect(result.matched).toBe(true);
+      expect(result.grantId).toBe('g-match');
+    });
+
+    it('does not match when the grant is expired', () => {
+      const { grant } = createCapabilityGrant({
+        ...baseGrant,
+        id: 'g-expired',
+        expiresInMinutes: 1,
+        commandAllowlist: ['^python anything$'],
+      });
+      const result = commandMatchesGrantAllowlist(
+        'arbitrary-shell',
+        [grant!],
+        'python anything',
+        new Date('2026-05-06T01:00:00.000Z'), // 1 hour later, definitely expired
+      );
+      expect(result.matched).toBe(false);
+    });
+
+    it('does not match when the grant is for a different capability', () => {
+      const { grant } = createCapabilityGrant({
+        capabilityId: 'background-autonomous-jobs',
+        controls: ['explicit-grant', 'audit-log', 'kill-switch'],
+        reason: 'unrelated',
+        now: baseGrant.now,
+        id: 'g-wrong-cap',
+        expiresInMinutes: 60,
+        commandAllowlist: ['^python anything$'],
+      });
+      // Even when the grant carries a commandAllowlist, it must be tied
+      // to the arbitrary-shell capability for the runner to admit shell
+      // commands. Cross-capability leakage would be a privilege bypass.
+      const result = commandMatchesGrantAllowlist('arbitrary-shell', grant ? [grant] : [], 'python anything', baseGrant.now);
+      expect(result.matched).toBe(false);
+    });
+
+    it('returns no-match for an empty command', () => {
+      const { grant } = createCapabilityGrant({
+        ...baseGrant,
+        id: 'g-empty-cmd',
+        expiresInMinutes: 60,
+        commandAllowlist: ['.*'],
+      });
+      const result = commandMatchesGrantAllowlist('arbitrary-shell', [grant!], '   ', baseGrant.now);
+      expect(result.matched).toBe(false);
+    });
+
+    it('honours requested expiry beyond 24h when the grant carries a commandAllowlist', () => {
+      const oneWeekMinutes = 7 * 24 * 60;
+      const { grant } = createCapabilityGrant({
+        ...baseGrant,
+        id: 'g-long',
+        expiresInMinutes: oneWeekMinutes,
+        commandAllowlist: ['^echo hi$'],
+      });
+      const elapsed = Date.parse(grant!.expiresAt) - Date.parse(grant!.grantedAt);
+      // Grants WITHOUT a commandAllowlist are still capped at 24h. A
+      // grant with an allowlist may live up to 1 year (525,600 minutes)
+      // because the allowlist itself is the security bound.
+      expect(elapsed).toBe(oneWeekMinutes * 60_000);
+    });
+
+    it('still caps grants without commandAllowlist at 24h', () => {
+      const oneWeekMinutes = 7 * 24 * 60;
+      const { grant } = createCapabilityGrant({
+        capabilityId: 'arbitrary-shell',
+        controls: ['explicit-grant', 'audit-log', 'allowlist', 'kill-switch'],
+        reason: 'open-ended',
+        now: baseGrant.now,
+        id: 'g-no-allowlist',
+        expiresInMinutes: oneWeekMinutes,
+      });
+      const elapsed = Date.parse(grant!.expiresAt) - Date.parse(grant!.grantedAt);
+      expect(elapsed).toBe(24 * 60 * 60_000);
+    });
   });
 });

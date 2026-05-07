@@ -1,7 +1,8 @@
 import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
-import { executeDueJobs, type DueJobResult } from './jobs';
+import { listDueAutomationJobs, markAutomationJobRun, type DueJobResult } from './jobs';
 import type { AutomationPolicyContext } from './runner';
+import { prepareAutomationRun } from './runner';
 import { checkObligations } from '../services/promiseLedger';
 import { listPromises, updatePromise, fulfilPromise } from '../services/promiseLedger';
 import { emitEvent } from '../persistence/eventStore';
@@ -61,29 +62,63 @@ export class AutomationScheduler {
     }
     this.lastCheckMs = nowMs;
 
-    const idleMs = nowMs - (this.opts.getLastUserActivityMs() || nowMs);
-    const idleThresholdMs = this.opts.idleThresholdMinutes * 60_000;
-    if (idleMs < idleThresholdMs) {
-      return { executed: 0, reason: 'system not idle' };
-    }
-
+    // Cron jobs are user-explicit "run at this time" instructions and
+    // must fire regardless of user activity. The idle gate only applies
+    // to opportunistic interval/once jobs that the agent might run as
+    // background work. Splitting the due list into two cohorts lets us
+    // honour both contracts in a single tick without a second scheduler.
     this.running = true;
     try {
       const policy = this.opts.getPolicyContext();
-      const results = await executeDueJobs(this.opts.projectDir, policy, now);
+      const due = await listDueAutomationJobs(this.opts.projectDir, now);
+      const cronDue = due.filter((job) => job.schedule.kind === 'cron');
+      const opportunisticDue = due.filter((job) => job.schedule.kind !== 'cron');
+
+      const results: DueJobResult[] = [];
+
+      // Always-fire cohort: cron.
+      for (const job of cronDue) {
+        try {
+          const run = await prepareAutomationRun(this.opts.projectDir, job, now, policy);
+          const markedJob = await markAutomationJobRun(this.opts.projectDir, job.id, { success: true, outputPath: run.outputPath }, now);
+          results.push({ jobId: job.id, name: job.name, run, markedJob });
+        } catch (error) {
+          logger.warn('Automation', 'Cron job execution failed', { jobId: job.id, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      // Opportunistic cohort: only when the system has been idle long enough.
+      const idleMs = nowMs - (this.opts.getLastUserActivityMs() || nowMs);
+      const idleThresholdMs = this.opts.idleThresholdMinutes * 60_000;
+      const idleEnough = idleMs >= idleThresholdMs;
+      if (idleEnough) {
+        for (const job of opportunisticDue) {
+          try {
+            const run = await prepareAutomationRun(this.opts.projectDir, job, now, policy);
+            const markedJob = await markAutomationJobRun(this.opts.projectDir, job.id, { success: true, outputPath: run.outputPath }, now);
+            results.push({ jobId: job.id, name: job.name, run, markedJob });
+          } catch (error) {
+            logger.warn('Automation', 'Opportunistic job execution failed', { jobId: job.id, error: error instanceof Error ? error.message : String(error) });
+          }
+        }
+      } else if (opportunisticDue.length > 0) {
+        logger.info('Automation', 'Skipped opportunistic jobs (system not idle)', { skipped: opportunisticDue.length, idleMs, idleThresholdMs });
+      }
+
       if (results.length > 0) {
         runtimeTracer.recordEvent('automation.scheduled_run', { executed: results.length, jobIds: results.map((r) => r.jobId) });
-        logger.info('Automation', 'Scheduled execution completed', { executed: results.length });
-        // Post-execution: emit events for each completed job.
+        logger.info('Automation', 'Scheduled execution completed', { executed: results.length, cron: cronDue.length, opportunistic: idleEnough ? opportunisticDue.length : 0 });
         for (const r of results) {
           emitEvent(this.opts.projectDir, 'schedule', 'job_executed', { job_id: r.jobId, name: r.name }, 'scheduler', r.jobId).catch(() => {});
         }
-        // Auto-fulfil promises linked to executed jobs.
         this.autoFulfilLinkedPromises(results.map((r) => r.jobId)).catch(() => {});
       }
-      // Post-execution: check obligations and service health (non-blocking).
       this.runPostExecutionChecks().catch(() => {});
-      return { executed: results.length, results };
+      return {
+        executed: results.length,
+        ...(opportunisticDue.length > 0 && !idleEnough ? { reason: `system not idle (${opportunisticDue.length} opportunistic skipped, cron still ran)` } : {}),
+        results,
+      };
     } finally {
       this.running = false;
     }

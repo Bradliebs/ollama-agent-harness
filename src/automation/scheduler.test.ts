@@ -34,12 +34,30 @@ describe('AutomationScheduler.tick', () => {
     expect(result).toMatchObject({ executed: 0, reason: 'kill switch' });
   });
 
-  it('skips when system is not idle', async () => {
+  it('skips opportunistic jobs when system is not idle but cron jobs still fire', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-auto-sched-'));
+    const t0 = new Date('2026-05-01T00:00:00.000Z');
+    // Two due jobs at t1: one interval (opportunistic), one cron (always-fire).
+    await createAutomationJob(dir, { name: 'Opportunistic', prompt: 'p', schedule: 'every 1h' }, t0);
+    await createAutomationJob(dir, { name: 'Cron job', prompt: 'p', schedule: '0 1 * * *' }, t0);
+    const t1 = new Date('2026-05-01T01:00:30.000Z');
+    const scheduler = makeScheduler(dir, {
+      getLastUserActivityMs: () => t1.getTime(), // active right now → not idle
+      idleThresholdMinutes: 10,
+    });
+    const result = await scheduler.tick(t1);
+    // Cron must fire even when not idle. Opportunistic must be skipped.
+    expect(result.results?.map((r) => r.name)).toEqual(['Cron job']);
+    expect(result.reason).toMatch(/system not idle/);
+  });
+
+  it('returns zero executed and no reason when nothing is due even if not idle', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-auto-sched-'));
     const fakeNow = Date.now() + CHECK_INTERVAL_MS + 1;
     const scheduler = makeScheduler(dir, { getLastUserActivityMs: () => fakeNow, idleThresholdMinutes: 10 });
     const result = await scheduler.tick(new Date(fakeNow));
-    expect(result).toMatchObject({ executed: 0, reason: 'system not idle' });
+    expect(result.executed).toBe(0);
+    expect(result.reason).toBeUndefined();
   });
 
   it('skips repeated ticks within the check interval', async () => {

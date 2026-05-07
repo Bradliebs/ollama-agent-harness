@@ -94,6 +94,43 @@ describe('automation jobs', () => {
     await expect(readCapabilityAuditEvents(projectDir)).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ type: 'automation_script.denied', jobId: job.id, command: expect.stringContaining('node -e') })]));
   });
 
+  it('admits a script when an arbitrary-shell grant carries a matching commandAllowlist regex', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-run-grant-allowlist-'));
+    const cmd = 'node -e "console.log(\'SCRIPT OK\')"';
+    const job = await createAutomationJob(projectDir, { name: 'Grant-allowlisted', prompt: 'Analyze', schedule: '30m', scriptCommand: cmd }, new Date('2026-05-01T00:00:00.000Z'));
+    const grants = [
+      createCapabilityGrant({
+        id: 'grant-shell-allowlist',
+        capabilityId: 'arbitrary-shell',
+        controls: ['explicit-grant', 'audit-log', 'allowlist', 'kill-switch'],
+        now: new Date('2026-05-01T00:00:00.000Z'),
+        // Operator deliberately approves THIS exact command shape via
+        // the persistent grant-allowlist surface (not the static preset
+        // list). The runner must admit it AND the audit trail must record
+        // which grant + pattern matched so a later forensics pass can see
+        // exactly what authorized the execution.
+        commandAllowlist: ['^node\\s+-e\\s+".*SCRIPT OK.*"$'],
+      }).grant,
+      createCapabilityGrant({ id: 'grant-background', capabilityId: 'background-autonomous-jobs', controls: ['explicit-grant', 'time-limit', 'audit-log', 'allowlist', 'kill-switch'], now: new Date('2026-05-01T00:00:00.000Z') }).grant,
+    ].filter((grant): grant is CapabilityGrant => grant !== undefined);
+
+    const run = await prepareAutomationRun(projectDir, job, new Date('2026-05-01T00:01:00.000Z'), { grants });
+
+    expect(run.scriptOutput).toContain('SCRIPT OK');
+    const events = await readCapabilityAuditEvents(projectDir);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'automation_script.allowed',
+        jobId: job.id,
+        command: cmd,
+        // The presetId is set to the synthetic grant-id marker so audit
+        // logs distinguish preset-admitted commands from grant-admitted
+        // commands without ambiguity.
+        presetId: expect.stringMatching(/^grant:grant-shell-allowlist:/),
+      }),
+    ]));
+  });
+
   it('describes shell command allowlist presets without exposing regex internals', () => {
     expect(listShellCommandAllowlistPresets()).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'tool-version', examples: expect.arrayContaining(['node --version']) })]));
     expect(matchShellCommandPreset('node --version')).toMatchObject({ id: 'tool-version' });

@@ -2,7 +2,7 @@ import { exec } from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { AutomationJob } from './jobs';
-import { evaluateCapabilityGrant, type CapabilityGrant } from '../permissions/capabilities';
+import { commandMatchesGrantAllowlist, evaluateCapabilityGrant, type CapabilityGrant } from '../permissions/capabilities';
 import { appendCapabilityAuditEvent } from '../permissions/capabilityAudit';
 
 export interface AutomationRunResult {
@@ -75,14 +75,26 @@ async function runAutomationScriptWithPolicy(command: string, cwd: string, jobId
     await appendCapabilityAuditEvent(cwd, { type: 'automation_script.denied', jobId, command, reason }, policy.now);
     return denied.map((evaluation) => `Script blocked by ${evaluation.capabilityId}: ${evaluation.reason}`).join('\n');
   }
+  // Two-stage allowlist: built-in preset OR an operator-approved entry on
+  // an active arbitrary-shell grant. Both paths are equally audited so a
+  // forensics pass can tell which gate admitted the command.
   const preset = matchShellCommandPreset(command);
-  if (!preset) {
-    const reason = 'Command does not match an allowlist preset.';
-    await appendCapabilityAuditEvent(cwd, { type: 'automation_script.denied', jobId, command, reason }, policy.now);
-    return `Script blocked by command allowlist: ${reason}`;
+  if (preset) {
+    await appendCapabilityAuditEvent(cwd, { type: 'automation_script.allowed', jobId, command, presetId: preset.id }, policy.now);
+    return runAutomationScript(command, cwd);
   }
-  await appendCapabilityAuditEvent(cwd, { type: 'automation_script.allowed', jobId, command, presetId: preset.id }, policy.now);
-  return runAutomationScript(command, cwd);
+  const grantMatch = commandMatchesGrantAllowlist('arbitrary-shell', grants, command, policy.now);
+  if (grantMatch.matched) {
+    await appendCapabilityAuditEvent(
+      cwd,
+      { type: 'automation_script.allowed', jobId, command, presetId: `grant:${grantMatch.grantId ?? 'unknown'}:${grantMatch.pattern ?? ''}` },
+      policy.now,
+    );
+    return runAutomationScript(command, cwd);
+  }
+  const reason = 'Command does not match an allowlist preset or any grant-defined pattern.';
+  await appendCapabilityAuditEvent(cwd, { type: 'automation_script.denied', jobId, command, reason }, policy.now);
+  return `Script blocked by command allowlist: ${reason}`;
 }
 
 export function listShellCommandAllowlistPresets(): Array<Omit<ShellCommandPreset, 'pattern'>> {
