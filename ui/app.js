@@ -800,7 +800,7 @@ async function loadNervousStatus() {
     const reflexes = summary.activeReflexes || [];
     const risk = summary.riskLevel || 'low';
     const riskClass = risk === 'critical' ? 'risk-critical' : risk === 'high' ? 'risk-high' : risk === 'medium' ? 'risk-medium' : 'risk-low';
-    const bypassNote = data.verificationBypassActive ? '<div class="trace-meta trace-meta-sm-top trace-meta-success">Auto-approve all is active: verifier/recovery gates will not block writes.</div>' : '';
+    const bypassNote = data.verificationBypassActive ? '<div class="trace-meta trace-meta-sm-top trace-meta-success">Keep going is active: verifier/recovery gates will not block writes.</div>' : '';
     panel.innerHTML = '<div class="autonomy-head"><div><strong>🧠 Nervous System</strong>'
       + '<span class="' + riskClass + '">' + esc(risk) + ' risk · ' + esc(signals.length) + ' signals · ' + esc(reflexes.length) + ' reflexes</span></div>'
       + '<button class="btn-sm" onclick="loadNervousStatus()">Refresh</button></div>'
@@ -2687,6 +2687,86 @@ async function enableTimedAutonomy() {
   showToast('Timed autonomy enabled for ' + hours.trim() + '. Tools + permission mode auto-revert on expiry.', 4000, 'warning');
 }
 
+async function enableUnattendedRunway(minutes = 120) {
+  const duration = Math.max(1, Math.min(1440, Number(minutes) || 120));
+  const button = document.getElementById('unattendedRunwayBtn');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Enabling...';
+  }
+  try {
+    await fetch('/api/permissions/timed-autonomy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expiresInMinutes: duration, reason: 'One-click unattended runway from chat window' }),
+    });
+
+    document.querySelectorAll('.permission-mode-option').forEach((option) => option.classList.remove('active'));
+    const dontAskOption = document.querySelectorAll('.permission-mode-option')[0];
+    if (dontAskOption) dontAskOption.classList.add('active');
+
+    try {
+      const toolsData = await fetch('/api/tools').then((response) => response.json());
+      const disabled = toolsData.disabled || [];
+      if (disabled.length > 0) {
+        await fetch('/api/tools/bulk-toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ names: disabled, enabled: true, expiresInMinutes: duration }),
+        });
+      }
+    } catch {}
+
+    await grantUnattendedCapabilities(duration);
+
+    if (typeof loadToolsDashboard === 'function') loadToolsDashboard();
+    if (typeof loadReadiness === 'function') await loadReadiness();
+    if (typeof loadNervousStatus === 'function') loadNervousStatus();
+    refreshAutonomyBanner();
+    setUnattendedRunwayButton(duration);
+    const label = duration >= 60 ? Math.floor(duration / 60) + 'h' + (duration % 60 ? ' ' + (duration % 60) + 'm' : '') : duration + 'm';
+    showToast('Keep going is on for ' + label + '. Retry the request from this window.', 4500, 'success');
+  } catch (error) {
+    showToast('Could not enable unattended runway: ' + (error.message || error), 5000, 'error');
+    setUnattendedRunwayButton(0);
+  }
+}
+
+async function grantUnattendedCapabilities(minutes) {
+  const commonCapabilityIds = ['arbitrary-shell', 'background-autonomous-jobs', 'self-modifying-code'];
+  const capabilities = await fetch('/api/capabilities').then((response) => response.json()).catch(() => null);
+  const items = capabilities?.capabilities || [];
+  for (const capabilityId of commonCapabilityIds) {
+    const item = items.find((capability) => capability.id === capabilityId);
+    if (!item || item.posture !== 'gated') continue;
+    await fetch('/api/capabilities/grants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        capabilityId,
+        controls: item.requiredControls || [],
+        reason: 'One-click unattended runway from chat window',
+        expiresInMinutes: minutes,
+      }),
+    }).catch(() => {});
+  }
+}
+
+function setUnattendedRunwayButton(minutes) {
+  const button = document.getElementById('unattendedRunwayBtn');
+  if (!button) return;
+  button.disabled = false;
+  if (minutes > 0) {
+    button.classList.add('active');
+    button.textContent = 'Keep going ' + (minutes >= 60 ? Math.floor(minutes / 60) + 'h' : minutes + 'm');
+    button.title = 'Harness can keep working for a limited time.';
+    return;
+  }
+  button.classList.remove('active');
+  button.textContent = 'Keep going';
+  button.title = 'Let Harness keep working for 2 hours';
+}
+
 async function handleFileAttach(fileList) {
   for (const file of fileList) {
     try {
@@ -3473,15 +3553,10 @@ function isPermissionOrRecoveryFailure(output) {
 function appendPermissionRecoveryItem(toolBox, output) {
   const item = document.createElement('div');
   item.className = 'tool-item tool-item-permission';
-  item.innerHTML = '<span>⚠️</span><span class="tool-name">Action blocked</span><span class="tool-detail">' + esc(String(output || '').slice(0, 180)) + '</span><button class="btn-sm primary" type="button">Auto-approve all</button>';
+  item.innerHTML = '<span>⚠️</span><span class="tool-name">Action blocked</span><span class="tool-detail">' + esc(String(output || '').slice(0, 180)) + '</span><button class="btn-sm primary" type="button">Keep going 2h</button>';
   const button = item.querySelector('button');
   if (button) button.addEventListener('click', async () => {
-    await updateSetting('permissionMode', 'dontAsk', { reason: 'Permission recovery auto-approve from tool activity panel' });
-    document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
-    const dontAskOption = document.querySelectorAll('.permission-mode-option')[0];
-    if (dontAskOption) dontAskOption.classList.add('active');
-    showToast('Auto-approve all enabled. Retry the request when ready.', 3500, 'success');
-    loadNervousStatus();
+    await enableUnattendedRunway(120);
   });
   toolBox.appendChild(item);
   HarnessToolActivity.updateToolActivitySummary(toolBox, true);

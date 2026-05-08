@@ -125,6 +125,8 @@
     .no-model-hint{font-size:12px;color:var(--text-dim);margin-top:6px;line-height:1.4}
     .no-model-hint code{background:var(--surface2);padding:1px 5px;border-radius:3px;font-family:'Cascadia Code','Fira Code',monospace;font-size:11px}
     .topbar{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+    .unattended-btn{white-space:nowrap;border-color:rgba(255,176,80,.45);background:rgba(255,176,80,.08)}
+    .unattended-btn.active{border-color:rgba(80,200,120,.65);background:rgba(80,200,120,.12);color:#8ff0a4}
     /* On narrow viewports, hide the 'Harness' word in the logo so the topbar
        stays single-line. We use a child span so we don't double up the emoji. */
     .logo .logo-word{transition:max-width .15s,opacity .15s}
@@ -857,6 +859,7 @@
         </div>
         <button class="btn-sm" id="statusCenterAction" onclick="runStatusCenterAction()">Open</button>
       </div>
+      <button class="btn-sm unattended-btn" id="unattendedRunwayBtn" onclick="enableUnattendedRunway(120)" title="Let Harness keep working for 2 hours">Keep going</button>
       <div class="status-pill loading" id="statusPill" title="Connecting..."><span class="status-dot"></span><span id="statusLabel">Connecting</span></div>
       <div class="topbar-btns">
         <button class="btn-icon" id="themeToggle" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>

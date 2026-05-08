@@ -214,14 +214,14 @@ async function main() {
         && typeof isPermissionOrRecoveryFailure === 'function'
         && isPermissionOrRecoveryFailure(deniedOutput)
         && row.textContent.includes('Action blocked')
-        && row.textContent.includes('Auto-approve all');
+        && row.textContent.includes('Keep going 2h');
     });
     // Final outer wait for the row's locator to be visible before measuring.
     const recoveryRow = page.locator('.tool-item-permission').first();
     await recoveryRow.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
     const recoveryBox = await recoveryRow.boundingBox().catch(() => null);
     const recoveryButtonBox = recoveryBox
-      ? await recoveryRow.locator('button:has-text("Auto-approve all")').boundingBox().catch(() => null)
+      ? await recoveryRow.locator('button:has-text("Keep going 2h")').boundingBox().catch(() => null)
       : null;
     const recoveryScreenshotPath = path.join(os.tmpdir(), `harness-permission-recovery-${Date.now()}.png`);
     if (recoveryBox) await recoveryRow.screenshot({ path: recoveryScreenshotPath });
@@ -233,6 +233,81 @@ async function main() {
       && recoveryButtonBox.height >= 24
       && fs.existsSync(recoveryScreenshotPath)
       && fs.statSync(recoveryScreenshotPath).size > 100;
+    await page.evaluate(() => {
+      window.__unattendedRunwayRequests = [];
+      window.__unattendedRunwayOriginals = {
+        fetch: window.fetch.bind(window),
+        loadToolsDashboard: window.loadToolsDashboard,
+        loadReadiness: window.loadReadiness,
+        loadNervousStatus: window.loadNervousStatus,
+        refreshAutonomyBanner: window.refreshAutonomyBanner,
+      };
+      window.fetch = (resource, init = {}) => {
+        const url = typeof resource === 'string' ? resource : resource?.url;
+        const method = init?.method || 'GET';
+        const body = init?.body ? JSON.parse(init.body) : null;
+        if (url === '/api/permissions/timed-autonomy' && method === 'POST') {
+          window.__unattendedRunwayRequests.push({ url, method, body });
+          return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        if (url === '/api/tools' && method === 'GET') {
+          window.__unattendedRunwayRequests.push({ url, method, body });
+          return Promise.resolve(new Response(JSON.stringify({ disabled: ['bash', 'file_edit'] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        if (url === '/api/tools/bulk-toggle' && method === 'POST') {
+          window.__unattendedRunwayRequests.push({ url, method, body });
+          return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        if (url === '/api/capabilities' && method === 'GET') {
+          window.__unattendedRunwayRequests.push({ url, method, body });
+          return Promise.resolve(new Response(JSON.stringify({ capabilities: [
+            { id: 'arbitrary-shell', posture: 'gated', requiredControls: ['permission-mode'] },
+            { id: 'background-autonomous-jobs', posture: 'gated', requiredControls: ['permission-mode'] },
+            { id: 'self-modifying-code', posture: 'gated', requiredControls: ['permission-mode'] },
+          ] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        if (url === '/api/capabilities/grants' && method === 'POST') {
+          window.__unattendedRunwayRequests.push({ url, method, body });
+          return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        return window.__unattendedRunwayOriginals.fetch(resource, init);
+      };
+      window.loadToolsDashboard = () => {};
+      window.loadReadiness = async () => {};
+      window.loadNervousStatus = () => {};
+      window.refreshAutonomyBanner = () => {};
+    });
+    await recoveryRow.locator('button:has-text("Keep going 2h")').click();
+    await page.waitForFunction(() => {
+      const requests = window.__unattendedRunwayRequests || [];
+      return requests.some((request) => request.url === '/api/permissions/timed-autonomy')
+        && requests.some((request) => request.url === '/api/tools/bulk-toggle')
+        && requests.filter((request) => request.url === '/api/capabilities/grants').length === 3;
+    }, null, { timeout: 5000 });
+    const unattendedRunwayClickSmoke = await page.evaluate(() => {
+      const requests = window.__unattendedRunwayRequests || [];
+      const timed = requests.find((request) => request.url === '/api/permissions/timed-autonomy');
+      const tools = requests.find((request) => request.url === '/api/tools/bulk-toggle');
+      const grants = requests.filter((request) => request.url === '/api/capabilities/grants');
+      const button = document.getElementById('unattendedRunwayBtn');
+      const ok = timed?.body?.expiresInMinutes === 120
+        && timed?.body?.reason === 'One-click unattended runway from chat window'
+        && Array.isArray(tools?.body?.names)
+        && tools.body.names.includes('bash')
+        && tools.body.enabled === true
+        && tools.body.expiresInMinutes === 120
+        && grants.length === 3
+        && grants.every((request) => request.body?.expiresInMinutes === 120 && request.body?.reason === 'One-click unattended runway from chat window')
+        && button?.textContent === 'Keep going 2h'
+        && button.classList.contains('active');
+      const originals = window.__unattendedRunwayOriginals || {};
+      if (originals.fetch) window.fetch = originals.fetch;
+      if (originals.loadToolsDashboard !== undefined) window.loadToolsDashboard = originals.loadToolsDashboard;
+      if (originals.loadReadiness !== undefined) window.loadReadiness = originals.loadReadiness;
+      if (originals.loadNervousStatus !== undefined) window.loadNervousStatus = originals.loadNervousStatus;
+      if (originals.refreshAutonomyBanner !== undefined) window.refreshAutonomyBanner = originals.refreshAutonomyBanner;
+      return { ok, requestCount: requests.length, grantCount: grants.length, buttonText: button?.textContent || '' };
+    });
     const mcpDiscoverClickSmoke = await page.evaluate(async () => {
       if (typeof renderMcpRuntimeList !== 'function' || typeof mcpRuntimeDiscoverTools !== 'function') return false;
       const host = document.createElement('div');
@@ -263,7 +338,7 @@ async function main() {
         host.remove();
       }
     });
-    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, mcpDiscoverClickSmoke }) => {
+    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke }) => {
       const ids = Array.from(document.querySelectorAll('[id]')).map((element) => element.id);
       // Dynamically-rendered panels may legitimately re-render with the same ID
       const dynamicPanelIds = new Set(['permissionPanel', 'capabilityAlignmentPanel', 'toolRegistryPanel', 'automationRunsSection', 'curatorRunsSection']);
@@ -276,6 +351,8 @@ async function main() {
         hasPermissionPanel: Boolean(document.getElementById('permissionPanel')),
         hasPermissionRecoveryActionRow: Boolean(window.__permissionRecoverySmoke),
         hasPermissionRecoveryLayout: Boolean(recoveryLayoutSmoke),
+        hasUnattendedRunwayClick: Boolean(unattendedRunwayClickSmoke.ok),
+        unattendedRunwayClickSmoke,
         permissionRecoveryScreenshotPath: recoveryScreenshotPath,
         hasCapabilityAlignmentPanel: Boolean(window.__capabilityAlignmentSmoke),
         hasChatInput: Boolean(document.getElementById('chatInput')),
@@ -409,7 +486,7 @@ async function main() {
         hasApplyCalibrationFunction: typeof window.applyRoutingCalibration === 'function',
         duplicateIds,
       };
-    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible: learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, mcpDiscoverClickSmoke });
+    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible: learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke });
 
     const failures = [];
     if (!result.title.endsWith('Ollama Agent Harness')) failures.push(`Unexpected title: ${result.title}`);
@@ -418,6 +495,7 @@ async function main() {
     if (!result.hasPermissionPanel) failures.push('permission panel was not created');
     if (!result.hasPermissionRecoveryActionRow) failures.push('permission recovery action row did not render');
     if (!result.hasPermissionRecoveryLayout) failures.push('permission recovery action row layout/screenshot check failed');
+    if (!result.hasUnattendedRunwayClick) failures.push(`Keep going recovery click did not issue the expected timed runway calls: ${JSON.stringify(result.unattendedRunwayClickSmoke)}`);
     if (!result.hasCapabilityAlignmentPanel) failures.push('capability alignment panel was not rendered');
     if (!result.hasChatInput) failures.push('chat input was not found');
     if (!result.hasTraceExports) failures.push('trace export panel was not found');
