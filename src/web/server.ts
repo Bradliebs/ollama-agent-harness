@@ -126,6 +126,7 @@ app.use(express.static(path.join(__dirname, '..', '..', 'ui'), {
 
 const PROJECT_DIR = process.cwd();
 const LOCAL_HOST = process.env.HOST ?? '127.0.0.1';
+const API_AUTH_TOKEN = (process.env.HARNESS_API_AUTH_TOKEN ?? '').trim();
 const HISTORY_DIR = path.join(PROJECT_DIR, '.harness', 'chat-history');
 const SKILLS_DIR = path.join(PROJECT_DIR, '.harness', 'skills');
 const REPO_SKILLS_DIR = path.join(PROJECT_DIR, '.github', 'skills');
@@ -144,6 +145,71 @@ const SAFE_ID_PATTERN = /^[a-zA-Z0-9._-]+$/;
 let autonomyChild: ChildProcessWithoutNullStreams | null = null;
 let autonomyStartedAt: string | undefined;
 const globalNervousSystem = new NervousSystemController();
+
+function parseOptionalBoolean(raw: string | undefined): boolean | null {
+  if (!raw) return null;
+  const normalized = raw.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return null;
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return normalized === '127.0.0.1' || normalized === 'localhost' || normalized === '::1';
+}
+
+const API_AUTH_REQUIRED_OVERRIDE = parseOptionalBoolean(process.env.HARNESS_API_AUTH_REQUIRED);
+
+const API_AUTH_REQUIRED = (() => {
+  if (API_AUTH_REQUIRED_OVERRIDE !== null) return API_AUTH_REQUIRED_OVERRIDE;
+  // If a token is configured, default to requiring auth even on loopback.
+  // Operators can still force-disable this with HARNESS_API_AUTH_REQUIRED=0.
+  if (API_AUTH_TOKEN) return true;
+  // Require API auth by default when serving on non-loopback interfaces.
+  return !isLoopbackHost(LOCAL_HOST);
+})();
+
+const API_AUTH_INSECURE_OVERRIDE = Boolean(API_AUTH_TOKEN) && API_AUTH_REQUIRED_OVERRIDE === false;
+
+const API_AUTH_BYPASS_PATHS = new Set<string>([
+  '/api/auth/config',
+]);
+
+function hasValidApiAuth(request: express.Request): boolean {
+  if (!API_AUTH_TOKEN) return false;
+  const authHeader = request.headers.authorization;
+  const bearerToken = typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
+    ? authHeader.slice('Bearer '.length).trim()
+    : '';
+  const altHeader = typeof request.headers['x-harness-api-token'] === 'string'
+    ? request.headers['x-harness-api-token'].trim()
+    : '';
+  return bearerToken === API_AUTH_TOKEN || altHeader === API_AUTH_TOKEN;
+}
+
+function requireEscalationAuth(req: express.Request, res: express.Response, actionLabel: string): boolean {
+  if (!API_AUTH_TOKEN) return true;
+  if (hasValidApiAuth(req)) return true;
+  res.setHeader('WWW-Authenticate', 'Bearer realm="HarnessApiToken"');
+  res.status(401).json({ error: `Unauthorized ${actionLabel}. Provide a valid API token.` });
+  return false;
+}
+
+function parseAuditReason(value: unknown): string {
+  return typeof value === 'string' ? value.trim().slice(0, 500) : '';
+}
+
+function requireAuditReason(
+  value: unknown,
+  res: express.Response,
+  actionLabel: string,
+): string | null {
+  const reason = parseAuditReason(value);
+  if (reason.length >= 8) return reason;
+  res.status(400).json({ error: `${actionLabel} requires a reason of at least 8 characters.` });
+  return null;
+}
 
 type QueryLoopRunner = (config: LoopConfig, deps: QueryLoopDeps, initialMessages: Message[]) => AsyncGenerator<LoopEvent>;
 
@@ -717,6 +783,34 @@ setCuratorToolRuntime({
 
 // --- API Routes ---
 
+app.get('/api/auth/config', (_req, res) => {
+  res.json({
+    required: API_AUTH_REQUIRED,
+    configured: Boolean(API_AUTH_TOKEN),
+    insecureOverride: API_AUTH_INSECURE_OVERRIDE,
+    header: 'Authorization: Bearer <token>',
+    altHeader: 'x-harness-api-token: <token>',
+  });
+});
+
+app.use('/api', (req, res, next) => {
+  const fullPath = `${req.baseUrl}${req.path}`;
+  if (!API_AUTH_REQUIRED || API_AUTH_BYPASS_PATHS.has(fullPath)) {
+    next();
+    return;
+  }
+  if (!API_AUTH_TOKEN) {
+    res.status(503).json({ error: 'API auth is required but HARNESS_API_AUTH_TOKEN is not configured.' });
+    return;
+  }
+  if (!hasValidApiAuth(req)) {
+    res.setHeader('WWW-Authenticate', 'Bearer realm="HarnessApiToken"');
+    res.status(401).json({ error: 'Unauthorized API request. Provide a valid API token.' });
+    return;
+  }
+  next();
+});
+
 app.get('/api/about', async (_req, res) => {
   try {
     res.json(await getAboutInfo());
@@ -883,6 +977,40 @@ interface PlanPreviewTask {
   target?: string;
 }
 
+function sanitizeSpawnEnv(baseEnv: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
+  const safeEnv: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (!key || key.includes('\u0000')) continue;
+    if (platform === 'win32' && (key.startsWith('=') || key.includes('='))) continue;
+    if (typeof value !== 'string' || value.includes('\u0000')) continue;
+    safeEnv[key] = value;
+  }
+  return safeEnv;
+}
+
+function buildMinimalWindowsSpawnEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const minimal: NodeJS.ProcessEnv = {};
+  const coreKeys = [
+    'PATH', 'Path',
+    'PATHEXT',
+    'SystemRoot', 'SYSTEMROOT',
+    'WINDIR',
+    'ComSpec', 'COMSPEC',
+    'TEMP', 'TMP',
+    'USERPROFILE', 'HOME',
+  ];
+  for (const key of coreKeys) {
+    const value = env[key];
+    if (typeof value === 'string' && value && !value.includes('\u0000')) minimal[key] = value;
+  }
+  for (const [key, value] of Object.entries(env)) {
+    if (!/^HARNESS_|^FORGE_/.test(key)) continue;
+    if (typeof value !== 'string' || !value || value.includes('\u0000')) continue;
+    minimal[key] = value;
+  }
+  return minimal;
+}
+
 async function readAutonomyPlanPreview(planPath = path.join(PROJECT_DIR, 'IMPLEMENTATION_PLAN.md')): Promise<{ tasks: PlanPreviewTask[]; total: number; pending: number; done: number; failed: number }> {
   const raw = await fs.readFile(planPath, 'utf-8');
   const tasks: PlanPreviewTask[] = [];
@@ -914,6 +1042,18 @@ async function readAutonomyPlanPreview(planPath = path.join(PROJECT_DIR, 'IMPLEM
     done: tasks.filter((task) => task.status === 'done').length,
     failed: tasks.filter((task) => task.status === 'failed').length,
   };
+}
+
+async function readAutonomyCheckpointIteration(statePath = path.join(PROJECT_DIR, '.forge-state.json')): Promise<number> {
+  try {
+    const raw = await fs.readFile(statePath, 'utf-8');
+    const parsed = JSON.parse(raw) as { iteration?: unknown };
+    const iteration = typeof parsed.iteration === 'number' ? parsed.iteration : Number(parsed.iteration);
+    if (!Number.isFinite(iteration) || iteration < 0) return 0;
+    return Math.floor(iteration);
+  } catch {
+    return 0;
+  }
 }
 
 app.get('/api/autonomy/plan-preview', async (_req, res) => {
@@ -1013,7 +1153,10 @@ app.post('/api/autonomy/start', async (req, res) => {
     if (preview.pending === 0) { res.status(400).json({ error: 'No pending tasks in IMPLEMENTATION_PLAN.md.' }); return; }
     const preflight = await buildAutonomyPreflight(preview);
     if (preflight.blocked.length > 0) { res.status(409).json({ error: 'Autonomy preflight failed.', preflight }); return; }
-    const env = { ...process.env };
+    const requestedMaxIterations = Math.max(1, Math.floor(Number(req.body?.maxIterations ?? 1) || 1));
+    const checkpointIteration = await readAutonomyCheckpointIteration();
+    const effectiveMaxIterations = checkpointIteration + requestedMaxIterations;
+    const env = sanitizeSpawnEnv(process.env);
     const setEnv = (key: string, value: unknown): void => {
       if (value === undefined || value === null || value === '') return;
       env[key] = String(value);
@@ -1021,7 +1164,7 @@ app.post('/api/autonomy/start', async (req, res) => {
     setEnv('HARNESS_MODEL', req.body?.model ?? currentModel);
     setEnv('HARNESS_BACKEND', req.body?.backend);
     setEnv('HARNESS_PERMISSION_MODE', req.body?.permissionMode ?? permissionMode);
-    setEnv('FORGE_MAX_ITERATIONS', req.body?.maxIterations ?? 1);
+    setEnv('FORGE_MAX_ITERATIONS', effectiveMaxIterations);
     setEnv('HARNESS_TIME_BUDGET_MS', req.body?.timeBudgetMs);
     setEnv('HARNESS_UNPRODUCTIVE_TURN_LIMIT', req.body?.unproductiveTurnLimit ?? 6);
     await fs.rm(path.join(PROJECT_DIR, '.forge-stop'), { force: true }).catch(() => {});
@@ -1033,14 +1176,23 @@ app.post('/api/autonomy/start', async (req, res) => {
     // shell:true with array args (DEP0190), so explicit cmd.exe is the
     // forward-compatible choice. Pinned by manual smoke 2026-05-07.
     if (process.platform === 'win32') {
-      autonomyChild = spawn('cmd.exe', ['/d', '/s', '/c', 'npm run autonomy'], { cwd: PROJECT_DIR, env });
+      const comSpec = env.ComSpec || env.COMSPEC || process.env.ComSpec || process.env.COMSPEC || 'cmd.exe';
+      try {
+        autonomyChild = spawn(comSpec, ['/d', '/s', '/c', 'npm run autonomy'], { cwd: PROJECT_DIR, env });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'EINVAL') throw error;
+        logger.warn('Autonomy', 'Primary Windows spawn failed with EINVAL; retrying with minimal env', { code });
+        const minimalEnv = buildMinimalWindowsSpawnEnv(env);
+        autonomyChild = spawn(comSpec, ['/d', '/s', '/c', 'npm run autonomy'], { cwd: PROJECT_DIR, env: minimalEnv });
+      }
     } else {
       autonomyChild = spawn('npm', ['run', 'autonomy'], { cwd: PROJECT_DIR, env });
     }
     const evidence = createRunEvidence({ id: `autonomy:${autonomyStartedAt}`, kind: 'autonomy', request: preview.tasks.find((task) => task.status === 'pending')?.title || 'Run next pending implementation task', runName: 'Ralph autonomy loop', command: 'npm run autonomy', success: true, summary: `Started with ${preview.pending} pending task(s).` });
     await appendRunEvidence(PROJECT_DIR, evidence);
     autonomyChild.on('exit', () => { autonomyChild = null; autonomyStartedAt = undefined; });
-    res.json({ ok: true, startedAt: autonomyStartedAt, pid: autonomyChild.pid, pending: preview.pending, evidence });
+    res.json({ ok: true, startedAt: autonomyStartedAt, pid: autonomyChild.pid, pending: preview.pending, requestedMaxIterations, effectiveMaxIterations, checkpointIteration, evidence });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -1054,6 +1206,41 @@ app.post('/api/autonomy/stop', async (_req, res) => {
     const evidence = createRunEvidence({ id: `autonomy-stop:${new Date().toISOString()}`, kind: 'autonomy', request: 'Stop active autonomy run', runName: 'Ralph autonomy loop', command: 'write .forge-stop', success: true, summary: 'Stop signal written.' });
     await appendRunEvidence(PROJECT_DIR, evidence);
     res.json({ ok: true, stopped: true, evidence });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+app.post('/api/autonomy/reset', async (_req, res) => {
+  try {
+    const cleared: string[] = [];
+    const toClear = ['.forge-stop', '.forge-state.json'];
+    for (const file of toClear) {
+      const fullPath = path.join(PROJECT_DIR, file);
+      try {
+        await fs.access(fullPath);
+        await fs.rm(fullPath, { force: true });
+        cleared.push(file);
+      } catch {
+        // Missing files are fine for idempotent reset.
+      }
+    }
+    const wasRunning = Boolean(autonomyChild && !autonomyChild.killed);
+    if (wasRunning) autonomyChild?.kill();
+    autonomyChild = null;
+    autonomyStartedAt = undefined;
+    const evidence = createRunEvidence({
+      id: `autonomy-reset:${new Date().toISOString()}`,
+      kind: 'autonomy',
+      request: 'Reset autonomy run state',
+      runName: 'Ralph autonomy loop',
+      command: 'clear .forge-stop/.forge-state.json',
+      success: true,
+      summary: `Cleared ${cleared.length} file(s).${wasRunning ? ' Active run stopped.' : ''}`,
+    });
+    await appendRunEvidence(PROJECT_DIR, evidence);
+    res.json({ ok: true, cleared, stopped: wasRunning, evidence });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -1248,6 +1435,7 @@ app.get('/api/api-keys', async (_req, res) => {
 // requests see them without a server restart.
 app.post('/api/api-keys', async (req, res) => {
   try {
+    if (!requireEscalationAuth(req, res, 'API key update')) return;
     const incoming = req.body && typeof req.body === 'object' ? req.body : {};
     const stored = await readStoredApiKeysFile();
     let changed = false;
@@ -1400,7 +1588,7 @@ app.get('/api/settings', async (_req, res) => {
   try {
     await ensureSettingsLoaded();
     checkAutonomyExpiry();
-    res.json(getPublicSettings());
+    res.json(await getPublicSettings());
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -1445,11 +1633,22 @@ app.delete('/api/synthesis-stats', async (req, res) => {
 
 app.post('/api/settings', async (req, res) => {
   await ensureSettingsLoaded();
+  let permissionModeAuditNote = '';
   if (req.body.model !== undefined) currentModel = sanitizeModelName(req.body.model);
   if (req.body.permissionMode !== undefined) {
     if (!ALLOWED_PERMISSION_MODES.includes(req.body.permissionMode)) {
       res.status(400).json({ error: 'Invalid permission mode.' });
       return;
+    }
+    if (req.body.permissionMode !== permissionMode) {
+      if (!requireEscalationAuth(req, res, 'permission mode change')) return;
+      if (req.body.permissionMode === 'dontAsk') {
+        const reason = requireAuditReason(req.body?.reason, res, 'Escalating permission mode to dontAsk');
+        if (!reason) return;
+        permissionModeAuditNote = reason;
+      } else {
+        permissionModeAuditNote = parseAuditReason(req.body?.reason);
+      }
     }
     permissionMode = req.body.permissionMode;
   }
@@ -1528,8 +1727,14 @@ app.post('/api/settings', async (req, res) => {
     else delete process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS;
   }
   await saveSettingsToDisk();
-  logger.info('Settings', 'Updated', { model: currentModel, permissionMode, temperature, topP });
-  res.json(getPublicSettings());
+  logger.info('Settings', 'Updated', {
+    model: currentModel,
+    permissionMode,
+    temperature,
+    topP,
+    permissionModeReason: permissionModeAuditNote || undefined,
+  });
+  res.json(await getPublicSettings());
 });
 
 app.get('/api/output-validation/profiles', async (_req, res) => {
@@ -2973,8 +3178,18 @@ app.get('/api/identity/export', async (_req, res) => {
 
 app.post('/api/identity/import', async (req, res) => {
   try {
+    if (!requireEscalationAuth(req, res, 'identity import')) return;
     const mergeStructured = req.body?.mergeStructured !== false;
     const overwriteFiles = req.body?.overwriteFiles !== false;
+    const hasOverwriteContent = overwriteFiles && (
+      (typeof req.body?.snapshot?.soul === 'string' && req.body.snapshot.soul.trim().length > 0)
+      || (typeof req.body?.snapshot?.user === 'string' && req.body.snapshot.user.trim().length > 0)
+    );
+    if (hasOverwriteContent) {
+      const reason = requireAuditReason(req.body?.reason, res, 'Identity import with SOUL/USER overwrite');
+      if (!reason) return;
+      logger.info('Identity', 'Import requested with file overwrite', { reason, mergeStructured });
+    }
     const summary = await importIdentity(PROJECT_DIR, req.body, { mergeStructured, overwriteFiles });
     res.json({ summary });
   } catch (error) {
@@ -3058,6 +3273,17 @@ app.get('/api/system/health', async (_req, res) => {
 // rescued when the model exposes a larger window.
 const LEGACY_CONTEXT_DEFAULTS = new Set<number>([8192, 4096]);
 
+function isAutoContextMode(configured: number): boolean {
+  return !configured || configured <= 0 || LEGACY_CONTEXT_DEFAULTS.has(configured);
+}
+
+function resolveEffectiveContextMaxTokensFromKnown(configured: number, detected: number | null): number {
+  if (isAutoContextMode(configured)) {
+    return detected && detected > 0 ? Math.min(detected, 200_000) : DEFAULT_CONTEXT_MAX_TOKENS;
+  }
+  return detected && detected > 0 ? Math.min(configured, detected) : configured;
+}
+
 async function buildContextHealth(): Promise<{
   configured: number;
   detected: number | null;
@@ -3073,16 +3299,9 @@ async function buildContextHealth(): Promise<{
   const globalCap = Number.isFinite(contextMaxTokens) ? contextMaxTokens : DEFAULT_CONTEXT_MAX_TOKENS;
   const configured = profileCap ?? globalCap;
   const detected = model ? await webRuntime.getModelContextWindow(model, ollamaHost).catch(() => null) : null;
-  const isLegacyDefault = LEGACY_CONTEXT_DEFAULTS.has(configured);
-  const autoMode = !configured || configured <= 0 || isLegacyDefault;
-  let effective: number;
-  if (autoMode) {
-    effective = detected && detected > 0 ? Math.min(detected, 200_000) : DEFAULT_CONTEXT_MAX_TOKENS;
-  } else if (detected && detected > 0) {
-    effective = Math.min(configured, detected);
-  } else {
-    effective = configured;
-  }
+  if (detected !== null) detectedContextMaxTokens = detected;
+  const autoMode = isAutoContextMode(configured);
+  const effective = resolveEffectiveContextMaxTokensFromKnown(configured, detected);
   const autoBumped = autoMode && detected !== null && detected > configured;
   const result: Awaited<ReturnType<typeof buildContextHealth>> = { configured, detected, effective, auto_bumped: autoBumped, mode: autoMode ? 'auto' : 'capped', model };
   if (profileCap !== undefined) result.profile_cap = profileCap;
@@ -4049,14 +4268,17 @@ app.get('/api/permissions/state', (_req, res) => {
 // and will auto-revert to the previous mode when the timer expires.
 app.post('/api/permissions/timed-autonomy', (req, res) => {
   try {
+    if (!requireEscalationAuth(req, res, 'timed autonomy change')) return;
     const expiresInMinutes = typeof req.body?.expiresInMinutes === 'number' && req.body.expiresInMinutes > 0
       ? Math.min(req.body.expiresInMinutes, 1440) : undefined;
     if (expiresInMinutes) {
+      const reason = requireAuditReason(req.body?.reason, res, 'Timed autonomy engagement');
+      if (!reason) return;
       autonomyPreviousMode = permissionMode !== 'dontAsk' ? permissionMode : autonomyPreviousMode || 'default';
       permissionMode = 'dontAsk';
       autonomyExpiresAt = Date.now() + expiresInMinutes * 60_000;
       logger.info('Permissions', 'Timed autonomy engaged', { expiresInMinutes, previousMode: autonomyPreviousMode });
-      appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.engaged', reason: `Engaged for ${expiresInMinutes}m, reverts to ${autonomyPreviousMode}` }).catch(() => {});
+      appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.engaged', reason: `${reason} (engaged for ${expiresInMinutes}m, reverts to ${autonomyPreviousMode})` }).catch(() => {});
     } else {
       // Clear timed autonomy (revert now)
       const clearTools = Boolean(req.body?.clearTimedTools);
@@ -4191,14 +4413,17 @@ app.get('/api/capabilities', async (_req, res) => {
 
 app.post('/api/capabilities/grants', async (req, res) => {
   try {
+    if (!requireEscalationAuth(req, res, 'capability grant creation')) return;
     await ensureSettingsLoaded();
     const capabilityId = String(req.body?.capabilityId ?? '').trim();
+    const reason = requireAuditReason(req.body?.reason, res, 'Capability grant creation');
+    if (!reason) return;
     const controls = Array.isArray(req.body?.controls) ? req.body.controls : [];
     const result = createCapabilityGrant({
       id: crypto.randomUUID(),
       capabilityId,
       controls,
-      reason: typeof req.body?.reason === 'string' ? req.body.reason : undefined,
+      reason,
       expiresInMinutes: req.body?.expiresInMinutes,
       commandAllowlist: Array.isArray(req.body?.commandAllowlist) ? req.body.commandAllowlist : undefined,
     });
@@ -6816,6 +7041,12 @@ app.post('/api/upload', express.raw({ type: '*/*', limit: '10mb' }), async (req,
   // Sanitize filename — strip path traversal
   const safe = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
   if (!safe) { res.status(400).json({ error: 'Invalid filename' }); return; }
+  const mimeType = req.headers['content-type']?.toString() || 'application/octet-stream';
+  const mediaKind = inferMediaKind(safe, mimeType);
+  if (mediaKind === 'other') {
+    res.status(415).json({ error: 'Unsupported upload type. Allowed kinds: image, audio, pdf, text, data.' });
+    return;
+  }
 
   try {
     const uploadsDir = getUploadsDir();
@@ -6823,8 +7054,7 @@ app.post('/api/upload', express.raw({ type: '*/*', limit: '10mb' }), async (req,
     const dest = path.join(uploadsDir, safe);
     await fs.writeFile(dest, req.body);
     logger.info('Upload', `File saved: ${safe} (${req.body.length} bytes)`);
-    const mimeType = req.headers['content-type']?.toString() || 'application/octet-stream';
-    res.json({ path: dest, name: safe, size: req.body.length, mimeType, mediaKind: inferMediaKind(safe, mimeType) });
+    res.json({ path: dest, name: safe, size: req.body.length, mimeType, mediaKind });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -7475,7 +7705,7 @@ function getCurrentSettings(): WebSettings {
     context: {
       configuredMaxTokens: contextMaxTokens,
       detectedMaxTokens: detectedContextMaxTokens,
-      effectiveMaxTokens: contextMaxTokens,
+      effectiveMaxTokens: resolveEffectiveContextMaxTokensFromKnown(contextMaxTokens, detectedContextMaxTokens),
     },
     temperature,
     topP,
@@ -7508,7 +7738,8 @@ function getCurrentSettings(): WebSettings {
   };
 }
 
-function getPublicSettings(): PublicWebSettings {
+async function getPublicSettings(): Promise<PublicWebSettings> {
+  await buildContextHealth().catch(() => undefined);
   const settings = getCurrentSettings();
   return {
     ...settings,
@@ -7566,19 +7797,7 @@ async function resolveContextMaxTokens(model: string): Promise<number> {
   // Net effect: users on a cloud model with a 128k window get 128k
   // automatically without having to touch settings, while explicit
   // throttles ("never exceed 1024 tokens for cost reasons") are honoured.
-  const isLegacyDefault = LEGACY_CONTEXT_DEFAULTS.has(configured);
-  const autoMode = !configured || configured <= 0 || isLegacyDefault;
-
-  if (autoMode) {
-    if (detected && detected > 0) return Math.min(detected, 200_000);
-    return DEFAULT_CONTEXT_MAX_TOKENS;
-  }
-
-  // Deliberate user cap: respect it, but never let it exceed the
-  // detected window when one is known (avoids the harness sending
-  // requests the model will refuse).
-  if (detected && detected > 0) return Math.min(configured, detected);
-  return configured;
+  return resolveEffectiveContextMaxTokensFromKnown(configured, detected);
 }
 
 async function ensureSettingsLoaded(): Promise<void> {
@@ -8476,6 +8695,14 @@ export async function startServer(): Promise<void> {
     console.log(`  Open in your browser:  ${url}`);
     console.log(`  Ollama host:           ${ollamaHost}`);
     console.log(`  WebSocket:             ws://${LOCAL_HOST}:${port}/ws`);
+    console.log(`  API auth:              ${API_AUTH_REQUIRED ? (API_AUTH_TOKEN ? 'required' : 'required (token missing)') : 'disabled'}`);
+    if (API_AUTH_INSECURE_OVERRIDE) {
+      console.log('  Security warning:      HARNESS_API_AUTH_REQUIRED=0 while HARNESS_API_AUTH_TOKEN is set');
+      logger.warn('Security', 'API auth explicitly disabled despite configured token', {
+        envOverride: 'HARNESS_API_AUTH_REQUIRED=0',
+        tokenConfigured: true,
+      });
+    }
 
     if (startupConnectorsEnabled()) {
       // Start Telegram bot if token is configured.

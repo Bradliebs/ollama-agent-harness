@@ -5,6 +5,17 @@ import { app, stopUploadsAutoPrune } from './server';
 
 jest.setTimeout(15_000);
 
+const API_AUTH_TOKEN = (process.env.HARNESS_API_AUTH_TOKEN ?? '').trim();
+
+function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+  if (!API_AUTH_TOKEN) return fetch(url, init);
+  const headers = new Headers(init?.headers ?? {});
+  if (!headers.has('Authorization') && !headers.has('x-harness-api-token')) {
+    headers.set('Authorization', `Bearer ${API_AUTH_TOKEN}`);
+  }
+  return fetch(url, { ...(init ?? {}), headers });
+}
+
 describe('GET /api/autonomy/state', () => {
   let server: Server;
   let baseUrl: string;
@@ -37,7 +48,7 @@ describe('GET /api/autonomy/state', () => {
 
   it('returns 204 when no autonomy run has happened', async () => {
     await fs.rm(statePath, { force: true });
-    const response = await fetch(`${baseUrl}/api/autonomy/state`);
+    const response = await apiFetch(`${baseUrl}/api/autonomy/state`);
     expect(response.status).toBe(204);
   });
 
@@ -56,14 +67,14 @@ describe('GET /api/autonomy/state', () => {
     };
     await fs.writeFile(statePath, JSON.stringify(checkpoint), 'utf-8');
 
-    const response = await fetch(`${baseUrl}/api/autonomy/state`);
+    const response = await apiFetch(`${baseUrl}/api/autonomy/state`);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual(checkpoint);
   });
 
   it('returns 500 with a readable error when the file is malformed JSON', async () => {
     await fs.writeFile(statePath, '{ not json', 'utf-8');
-    const response = await fetch(`${baseUrl}/api/autonomy/state`);
+    const response = await apiFetch(`${baseUrl}/api/autonomy/state`);
     expect(response.status).toBe(500);
     const body = (await response.json()) as { error: string };
     expect(body.error).toMatch(/JSON|parse|token/i);
@@ -97,7 +108,7 @@ describe('GET /api/autonomy/log', () => {
 
   it('returns 204 when no log file exists', async () => {
     await fs.rm(logPath, { force: true });
-    const response = await fetch(`${baseUrl}/api/autonomy/log`);
+    const response = await apiFetch(`${baseUrl}/api/autonomy/log`);
     expect(response.status).toBe(204);
   });
 
@@ -105,7 +116,7 @@ describe('GET /api/autonomy/log', () => {
     const lines = Array.from({ length: 120 }, (_, i) => `line-${i + 1}`);
     await fs.writeFile(logPath, lines.join('\n') + '\n', 'utf-8');
 
-    const response = await fetch(`${baseUrl}/api/autonomy/log`);
+    const response = await apiFetch(`${baseUrl}/api/autonomy/log`);
     expect(response.status).toBe(200);
     const body = (await response.json()) as { lines: string[]; total: number };
     expect(body.total).toBe(120);
@@ -118,12 +129,12 @@ describe('GET /api/autonomy/log', () => {
     const lines = Array.from({ length: 30 }, (_, i) => `entry-${i + 1}`);
     await fs.writeFile(logPath, lines.join('\n'), 'utf-8');
 
-    const r10 = await fetch(`${baseUrl}/api/autonomy/log?lines=10`);
+    const r10 = await apiFetch(`${baseUrl}/api/autonomy/log?lines=10`);
     const b10 = (await r10.json()) as { lines: string[] };
     expect(b10.lines).toHaveLength(10);
     expect(b10.lines[0]).toBe('entry-21');
 
-    const r1000 = await fetch(`${baseUrl}/api/autonomy/log?lines=1000`);
+    const r1000 = await apiFetch(`${baseUrl}/api/autonomy/log?lines=1000`);
     const b1000 = (await r1000.json()) as { lines: string[] };
     expect(b1000.lines).toHaveLength(30);
   });
@@ -156,7 +167,7 @@ describe('GET /api/autonomy/history', () => {
 
   it('returns 204 when no history exists', async () => {
     await fs.rm(historyPath, { force: true });
-    const response = await fetch(`${baseUrl}/api/autonomy/history`);
+    const response = await apiFetch(`${baseUrl}/api/autonomy/history`);
     expect(response.status).toBe(204);
   });
 
@@ -167,7 +178,7 @@ describe('GET /api/autonomy/history', () => {
     ];
     await fs.writeFile(historyPath, entries.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf-8');
 
-    const response = await fetch(`${baseUrl}/api/autonomy/history`);
+    const response = await apiFetch(`${baseUrl}/api/autonomy/history`);
     expect(response.status).toBe(200);
     const body = (await response.json()) as { entries: typeof entries; total: number };
     expect(body.total).toBe(2);
@@ -178,12 +189,12 @@ describe('GET /api/autonomy/history', () => {
     const entries = Array.from({ length: 50 }, (_, i) => ({ taskId: `t${i}`, iteration: i }));
     await fs.writeFile(historyPath, entries.map((e) => JSON.stringify(e)).join('\n'), 'utf-8');
 
-    const r5 = await fetch(`${baseUrl}/api/autonomy/history?limit=5`);
+    const r5 = await apiFetch(`${baseUrl}/api/autonomy/history?limit=5`);
     const b5 = (await r5.json()) as { entries: Array<{ taskId: string }> };
     expect(b5.entries).toHaveLength(5);
     expect(b5.entries[0].taskId).toBe('t45');
 
-    const r5000 = await fetch(`${baseUrl}/api/autonomy/history?limit=5000`);
+    const r5000 = await apiFetch(`${baseUrl}/api/autonomy/history?limit=5000`);
     const b5000 = (await r5000.json()) as { entries: unknown[] };
     expect(b5000.entries).toHaveLength(50);
   });
@@ -197,7 +208,7 @@ describe('GET /api/autonomy/history', () => {
     ];
     await fs.writeFile(historyPath, lines.join('\n'), 'utf-8');
 
-    const response = await fetch(`${baseUrl}/api/autonomy/history`);
+    const response = await apiFetch(`${baseUrl}/api/autonomy/history`);
     expect(response.status).toBe(200);
     const body = (await response.json()) as { entries: Array<{ taskId: string }>; total: number };
     expect(body.total).toBe(2);
@@ -237,7 +248,7 @@ describe('GET /api/autonomy/state/stream (SSE)', () => {
   async function readEvents(url: string, predicate: (events: string[]) => boolean, timeoutMs = 3000): Promise<string[]> {
     const controller = new AbortController();
     const events: string[] = [];
-    const fetchPromise = fetch(url, { signal: controller.signal });
+    const fetchPromise = apiFetch(url, { signal: controller.signal });
     const response = await fetchPromise;
     if (!response.body) throw new Error('no body on SSE response');
     const reader = (response.body as unknown as ReadableStream<Uint8Array>).getReader();

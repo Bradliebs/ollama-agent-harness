@@ -106,6 +106,49 @@ describe('web server API validation', () => {
     return fetch(`${baseUrl}${route}`, init);
   }
 
+  async function withTokenConfiguredServer(
+    token: string,
+    run: (
+      requestWithTokenServer: (route: string, init?: RequestInit) => Promise<Response>,
+      isolatedModule: typeof import('./server'),
+    ) => Promise<void>,
+    options?: { apiAuthRequired?: '0' | '1' | null },
+  ): Promise<void> {
+    const previousToken = process.env.HARNESS_API_AUTH_TOKEN;
+    const previousRequired = process.env.HARNESS_API_AUTH_REQUIRED;
+    process.env.HARNESS_API_AUTH_TOKEN = token;
+    if (options?.apiAuthRequired === null) delete process.env.HARNESS_API_AUTH_REQUIRED;
+    else process.env.HARNESS_API_AUTH_REQUIRED = options?.apiAuthRequired ?? '0';
+
+    jest.resetModules();
+    const isolated = await import('./server');
+    let isolatedServer: Server;
+    let isolatedBaseUrl = '';
+
+    await new Promise<void>((resolve) => {
+      isolatedServer = isolated.app.listen(0, '127.0.0.1', () => {
+        const address = isolatedServer.address();
+        if (!address || typeof address === 'string') throw new Error('Failed to bind isolated auth test server');
+        isolatedBaseUrl = `http://127.0.0.1:${address.port}`;
+        resolve();
+      });
+    });
+
+    const isolatedRequest = (route: string, init?: RequestInit): Promise<Response> => fetch(`${isolatedBaseUrl}${route}`, init);
+    try {
+      await run(isolatedRequest, isolated);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        isolatedServer.close((error) => error ? reject(error) : resolve());
+      });
+      if (previousToken === undefined) delete process.env.HARNESS_API_AUTH_TOKEN;
+      else process.env.HARNESS_API_AUTH_TOKEN = previousToken;
+      if (previousRequired === undefined) delete process.env.HARNESS_API_AUTH_REQUIRED;
+      else process.env.HARNESS_API_AUTH_REQUIRED = previousRequired;
+      jest.resetModules();
+    }
+  }
+
   async function cleanupApiArtifacts(input: { automationJobIds?: string[]; documents?: HarnessDocumentArtifact[] }): Promise<void> {
     await cleanupHarnessArtifacts({ projectDir: process.cwd(), request, ...input });
   }
@@ -148,6 +191,381 @@ describe('web server API validation', () => {
     expect(body.assetName).toContain(`v${packageJson.version}`);
     expect(body.manifestUrl).toContain(`/download/v${packageJson.version}/`);
     expect(body.releaseUrl).toContain(`/releases/tag/v${packageJson.version}`);
+  });
+
+  it('returns API auth configuration for UI bootstrap', async () => {
+    const response = await request('/api/auth/config');
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      required: boolean;
+      configured: boolean;
+      insecureOverride: boolean;
+      header: string;
+      altHeader: string;
+    };
+    expect(typeof body.required).toBe('boolean');
+    expect(typeof body.configured).toBe('boolean');
+    expect(typeof body.insecureOverride).toBe('boolean');
+    expect(body.header).toContain('Authorization');
+    expect(body.altHeader).toContain('x-harness-api-token');
+  });
+
+  it('reports insecure auth override when token is configured but auth is explicitly disabled', async () => {
+    await withTokenConfiguredServer('token-insecure-override', async (tokenRequest) => {
+      const configResponse = await tokenRequest('/api/auth/config');
+      expect(configResponse.status).toBe(200);
+      await expect(configResponse.json()).resolves.toMatchObject({
+        required: false,
+        configured: true,
+        insecureOverride: true,
+      });
+
+      const openApiResponse = await tokenRequest('/api/about');
+      expect(openApiResponse.status).toBe(200);
+    }, { apiAuthRequired: '0' });
+  });
+
+  it('enforces escalation auth token for permission mode changes', async () => {
+    await withTokenConfiguredServer('token-settings-route', async (tokenRequest) => {
+      const baseline = await tokenRequest('/api/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token-settings-route',
+        },
+        body: JSON.stringify({ permissionMode: 'default' }),
+      });
+      expect(baseline.status).toBe(200);
+
+      const blocked = await tokenRequest('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ permissionMode: 'dontAsk', reason: 'settings auth regression reason' }),
+      });
+      expect(blocked.status).toBe(401);
+
+      const allowed = await tokenRequest('/api/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token-settings-route',
+        },
+        body: JSON.stringify({ permissionMode: 'dontAsk', reason: 'settings auth regression reason' }),
+      });
+      expect(allowed.status).toBe(200);
+      await expect(allowed.json()).resolves.toMatchObject({ permissionMode: 'dontAsk' });
+    });
+  });
+
+  it('enforces escalation auth token for timed autonomy changes', async () => {
+    await withTokenConfiguredServer('token-timed-autonomy-route', async (tokenRequest) => {
+      const blocked = await tokenRequest('/api/permissions/timed-autonomy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expiresInMinutes: 30, reason: 'timed autonomy auth regression reason' }),
+      });
+      expect(blocked.status).toBe(401);
+
+      const allowed = await tokenRequest('/api/permissions/timed-autonomy', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token-timed-autonomy-route',
+        },
+        body: JSON.stringify({ expiresInMinutes: 30, reason: 'timed autonomy auth regression reason' }),
+      });
+      expect(allowed.status).toBe(200);
+      await expect(allowed.json()).resolves.toMatchObject({ permissionMode: 'dontAsk' });
+    });
+  });
+
+  it('rejects escalating permission mode to dontAsk without a reason when auth token is valid', async () => {
+    await withTokenConfiguredServer('token-settings-reason', async (tokenRequest) => {
+      const baseline = await tokenRequest('/api/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token-settings-reason',
+        },
+        body: JSON.stringify({ permissionMode: 'default' }),
+      });
+      expect(baseline.status).toBe(200);
+
+      const response = await tokenRequest('/api/settings', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token-settings-reason',
+        },
+        body: JSON.stringify({ permissionMode: 'dontAsk' }),
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining('requires a reason') });
+    });
+  });
+
+  it('rejects timed autonomy engagement without a reason when auth token is valid', async () => {
+    await withTokenConfiguredServer('token-timed-autonomy-reason', async (tokenRequest) => {
+      const response = await tokenRequest('/api/permissions/timed-autonomy', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token-timed-autonomy-reason',
+        },
+        body: JSON.stringify({ expiresInMinutes: 30 }),
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining('requires a reason') });
+    });
+  });
+
+  it('enforces escalation auth token for capability grant creation', async () => {
+    await withTokenConfiguredServer('token-grants-route', async (tokenRequest) => {
+      const blocked = await tokenRequest('/api/capabilities/grants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          capabilityId: 'arbitrary-shell',
+          controls: ['explicit-grant', 'audit-log', 'allowlist', 'kill-switch'],
+          reason: 'capability grant auth regression reason',
+        }),
+      });
+      expect(blocked.status).toBe(401);
+
+      const allowed = await tokenRequest('/api/capabilities/grants', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-harness-api-token': 'token-grants-route',
+        },
+        body: JSON.stringify({
+          capabilityId: 'arbitrary-shell',
+          controls: ['explicit-grant', 'audit-log', 'allowlist', 'kill-switch'],
+          reason: 'capability grant auth regression reason',
+          expiresInMinutes: 15,
+        }),
+      });
+      expect(allowed.status).toBe(200);
+      await expect(allowed.json()).resolves.toMatchObject({
+        grant: expect.objectContaining({ capabilityId: 'arbitrary-shell' }),
+      });
+    });
+  });
+
+  it('rejects capability grant creation without a reason when auth token is valid', async () => {
+    await withTokenConfiguredServer('token-grants-reason', async (tokenRequest) => {
+      const response = await tokenRequest('/api/capabilities/grants', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token-grants-reason',
+        },
+        body: JSON.stringify({
+          capabilityId: 'arbitrary-shell',
+          controls: ['explicit-grant', 'audit-log', 'allowlist', 'kill-switch'],
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining('requires a reason') });
+    });
+  });
+
+  it('defaults API auth to required on loopback when token is configured', async () => {
+    await withTokenConfiguredServer('token-required-default', async (tokenRequest) => {
+      const configResponse = await tokenRequest('/api/auth/config');
+      expect(configResponse.status).toBe(200);
+      await expect(configResponse.json()).resolves.toMatchObject({
+        required: true,
+        configured: true,
+      });
+
+      const blocked = await tokenRequest('/api/about');
+      expect(blocked.status).toBe(401);
+
+      const allowed = await tokenRequest('/api/about', {
+        headers: { Authorization: 'Bearer token-required-default' },
+      });
+      expect(allowed.status).toBe(200);
+    }, { apiAuthRequired: null });
+  });
+
+  it('enforces escalation auth token for API key updates', async () => {
+    await withTokenConfiguredServer('token-api-keys-route', async (tokenRequest) => {
+      const blocked = await tokenRequest('/api/api-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ OPENROUTER_API_KEY: 'blocked-without-token' }),
+      });
+      expect(blocked.status).toBe(401);
+
+      const allowed = await tokenRequest('/api/api-keys', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token-api-keys-route',
+        },
+        body: JSON.stringify({ OPENROUTER_API_KEY: 'allowed-with-token' }),
+      });
+      expect(allowed.status).toBe(200);
+
+      // Cleanup so this auth regression test does not leak key state.
+      const cleared = await tokenRequest('/api/api-keys', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token-api-keys-route',
+        },
+        body: JSON.stringify({ OPENROUTER_API_KEY: '' }),
+      });
+      expect(cleared.status).toBe(200);
+    });
+  });
+
+  it('enforces escalation auth token for identity import', async () => {
+    await withTokenConfiguredServer('token-identity-import-route', async (tokenRequest) => {
+      const payload = {
+        snapshot: {
+          structured: { entries: [] },
+        },
+        overwriteFiles: false,
+      };
+
+      const blocked = await tokenRequest('/api/identity/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      expect(blocked.status).toBe(401);
+
+      const allowed = await tokenRequest('/api/identity/import', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token-identity-import-route',
+        },
+        body: JSON.stringify(payload),
+      });
+      expect(allowed.status).toBe(200);
+      await expect(allowed.json()).resolves.toMatchObject({
+        summary: expect.objectContaining({ importedSoul: false, importedUser: false }),
+      });
+    });
+  });
+
+  it('rejects identity import with SOUL overwrite when reason is missing', async () => {
+    await withTokenConfiguredServer('token-identity-import-reason', async (tokenRequest) => {
+      const response = await tokenRequest('/api/identity/import', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token-identity-import-reason',
+        },
+        body: JSON.stringify({
+          snapshot: {
+            soul: 'Temporary import soul text for regression test.',
+            structured: { entries: [] },
+          },
+          overwriteFiles: true,
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining('requires a reason') });
+    });
+  });
+
+  it('accepts identity import with SOUL overwrite when reason is provided', async () => {
+    await withTokenConfiguredServer('token-identity-import-reason-pass', async (tokenRequest) => {
+      const response = await tokenRequest('/api/identity/import', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer token-identity-import-reason-pass',
+        },
+        body: JSON.stringify({
+          snapshot: {
+            soul: 'Temporary import soul text for regression test.',
+            structured: { entries: [] },
+          },
+          overwriteFiles: true,
+          reason: 'Authorized identity restore from backup snapshot',
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        summary: expect.objectContaining({ importedSoul: true }),
+      });
+    });
+  });
+
+  it('lets dontAsk bypass nervous verification gates for write tools when API auth token is required', async () => {
+    await withTokenConfiguredServer('token-dontask-bypass', async (tokenRequest, isolated) => {
+      const evaluate = jest.fn(() => ({ decision: 'deny', reason: 'standard permission should not run' }));
+      const restore = isolated.setWebRuntimeOverrides({
+        createClient: jest.fn(() => ({}) as never),
+        getModelContextWindow: jest.fn().mockResolvedValue(8192),
+        getTools: () => [],
+        createPermissionEngine: () => ({ evaluate }) as never,
+        createSession: () => ({
+          initialize: jest.fn().mockResolvedValue(undefined),
+          markStatus: jest.fn().mockResolvedValue(undefined),
+          append: jest.fn().mockResolvedValue(undefined),
+          readAll: jest.fn().mockResolvedValue([]),
+          getSessionId: jest.fn().mockReturnValue('token-dontask-bypass-session'),
+        }) as never,
+        startNewSession: jest.fn(),
+        getEvolvedPrompt: async (basePrompt) => basePrompt,
+        assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+        runQueryLoop: async function* (_config, deps): AsyncGenerator<LoopEvent> {
+          const permission = await deps.permissionCheck?.({ name: 'file_write', input: { path: 'agent-outputs/token-bypass.txt', content: 'ok' } });
+          yield { type: 'text', content: JSON.stringify(permission) };
+          yield { type: 'done', reason: 'completed', turns: 1 };
+        },
+        onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+        rebuildSemanticMemory: async () => [],
+      });
+
+      try {
+        const escalated = await tokenRequest('/api/settings', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-dontask-bypass',
+          },
+          body: JSON.stringify({ permissionMode: 'dontAsk', reason: 'Token-auth bypass verification test' }),
+        });
+        expect(escalated.status).toBe(200);
+
+        const response = await tokenRequest('/api/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-dontask-bypass',
+          },
+          body: JSON.stringify({ message: 'No, that was wrong, redo it and write the file', model: 'test-model' }),
+        });
+
+        expect(response.status).toBe(200);
+        const body = await response.text();
+        expect(body).toContain('\\"allowed\\":true');
+        expect(body).toContain('verification bypassed');
+        expect(evaluate).not.toHaveBeenCalled();
+      } finally {
+        restore();
+        await tokenRequest('/api/settings', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-dontask-bypass',
+          },
+          body: JSON.stringify({ permissionMode: 'default' }),
+        });
+      }
+    }, { apiAuthRequired: '1' });
   });
 
   it('streams deterministic permission recovery smoke events when explicitly enabled', async () => {
@@ -203,6 +621,26 @@ describe('web server API validation', () => {
       modelRouting: { smallModel: 'tiny-helper', defaultModel: 'base-helper', strongModel: 'strong-helper', confidenceEscalationThreshold: 0.3 },
       mediaTools: { visionModel: 'llava', audioTranscribeCommand: 'whisper "{input}" --model base' },
     });
+  });
+
+  it('reports a nonzero effective context limit when context auto mode is enabled', async () => {
+    const restore = setWebRuntimeOverrides({ getModelContextWindow: jest.fn().mockResolvedValue(32_768) });
+    try {
+      const response = await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contextMaxTokens: 0 }),
+      });
+
+      expect(response.status).toBe(200);
+      const settings = await response.json() as { contextMaxTokens: number; context: { configuredMaxTokens: number; detectedMaxTokens: number | null; effectiveMaxTokens: number } };
+      expect(settings.contextMaxTokens).toBe(0);
+      expect(settings.context.configuredMaxTokens).toBe(0);
+      expect(settings.context.detectedMaxTokens).toBe(32_768);
+      expect(settings.context.effectiveMaxTokens).toBe(32_768);
+    } finally {
+      restore();
+    }
   });
 
   it('persists model catalog and extension activation policy settings', async () => {
@@ -591,7 +1029,8 @@ describe('web server API validation', () => {
     // so we cannot observe their side effect from a unit test. Pin the contract
     // by extracting the `if (startupConnectorsEnabled()) { ... }` block via brace
     // counting and asserting both calls live inside it.
-    const source = fsSync.readFileSync(path.join(__dirname, 'server.ts'), 'utf-8');
+    const sourcePath = path.join(process.cwd(), 'src', 'web', 'server.ts');
+    const source = fsSync.readFileSync(sourcePath, 'utf-8');
     const gateIdx = source.indexOf('if (startupConnectorsEnabled())');
     expect(gateIdx).toBeGreaterThan(-1);
     const openIdx = source.indexOf('{', gateIdx);
@@ -981,6 +1420,23 @@ describe('web server API validation', () => {
     }
   });
 
+  it('resets autonomy run state files via API', async () => {
+    const stopPath = path.join(process.cwd(), '.forge-stop');
+    const statePath = path.join(process.cwd(), '.forge-state.json');
+    await fs.writeFile(stopPath, 'stop', 'utf-8');
+    await fs.writeFile(statePath, JSON.stringify({ iteration: 12 }), 'utf-8');
+
+    const response = await request('/api/autonomy/reset', { method: 'POST' });
+    expect(response.status).toBe(200);
+    const data = await response.json() as { ok: boolean; cleared: string[]; stopped: boolean };
+    expect(data.ok).toBe(true);
+    expect(data.cleared).toEqual(expect.arrayContaining(['.forge-stop', '.forge-state.json']));
+    expect(data.stopped).toBe(false);
+
+    await expect(fs.access(stopPath)).rejects.toBeDefined();
+    await expect(fs.access(statePath)).rejects.toBeDefined();
+  });
+
   it('creates, completes, and deletes plan tasks via API', async () => {
     const planPath = path.join(process.cwd(), 'IMPLEMENTATION_PLAN.md');
     const original = await fs.readFile(planPath, 'utf-8');
@@ -1240,6 +1696,7 @@ describe('web server API validation', () => {
       body: JSON.stringify({
         capabilityId: 'live-broker-trading',
         controls: ['explicit-grant', 'time-limit', 'audit-log', 'dry-run', 'allowlist', 'human-confirmation', 'kill-switch'],
+        reason: 'blocked capability test',
       }),
     });
 
@@ -1255,6 +1712,17 @@ describe('web server API validation', () => {
     });
 
     expect(response.status).toBeGreaterThanOrEqual(400);
+  });
+
+  it('rejects grant creation without an explicit reason', async () => {
+    const response = await request('/api/capabilities/grants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ capabilityId: 'arbitrary-shell', controls: ['explicit-grant', 'audit-log', 'allowlist', 'kill-switch'] }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining('requires a reason') });
   });
 
   it('rejects grant creation for unknown capability', async () => {
@@ -1429,12 +1897,12 @@ describe('web server API validation', () => {
     const shellGrant = await request('/api/capabilities/grants', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ capabilityId: 'arbitrary-shell', controls: ['explicit-grant', 'audit-log', 'allowlist', 'kill-switch'], expiresInMinutes: 60 }),
+      body: JSON.stringify({ capabilityId: 'arbitrary-shell', controls: ['explicit-grant', 'audit-log', 'allowlist', 'kill-switch'], reason: 'automation lifecycle shell grant', expiresInMinutes: 60 }),
     });
     const bgGrant = await request('/api/capabilities/grants', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ capabilityId: 'background-autonomous-jobs', controls: ['explicit-grant', 'time-limit', 'audit-log', 'allowlist', 'kill-switch'], expiresInMinutes: 60 }),
+      body: JSON.stringify({ capabilityId: 'background-autonomous-jobs', controls: ['explicit-grant', 'time-limit', 'audit-log', 'allowlist', 'kill-switch'], reason: 'automation lifecycle background grant', expiresInMinutes: 60 }),
     });
     const shellGrantId = ((await shellGrant.json()) as { grant?: { id: string } }).grant?.id;
     const bgGrantId = ((await bgGrant.json()) as { grant?: { id: string } }).grant?.id;
@@ -1834,7 +2302,7 @@ describe('web server API validation', () => {
 
     try {
       // Engage timed autonomy for 60 minutes
-      const res = await request('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresInMinutes: 60 }) });
+      const res = await request('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresInMinutes: 60, reason: 'timed autonomy settings test' }) });
       expect(res.status).toBe(200);
       const body = await res.json() as { permissionMode: string; autonomyExpiresAt: string | null; autonomyPreviousMode: string | null };
       expect(body.permissionMode).toBe('dontAsk');
@@ -1860,12 +2328,23 @@ describe('web server API validation', () => {
     }
   });
 
+  it('rejects timed autonomy engagement without a reason', async () => {
+    const res = await request('/api/permissions/timed-autonomy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expiresInMinutes: 60 }),
+    });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ error: expect.stringContaining('requires a reason') });
+  });
+
   it('clearing timed autonomy with clearTimedTools also clears timed tool enables', async () => {
     // Disable bash, then enable it with a timer
     await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });
     await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true, expiresInMinutes: 60 }) });
     // Set timed autonomy
-    await request('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresInMinutes: 60 }) });
+    await request('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresInMinutes: 60, reason: 'clear timed tools test setup' }) });
 
     try {
       // Clear with clearTimedTools
@@ -1892,7 +2371,7 @@ describe('web server API validation', () => {
     await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: true, expiresInMinutes: 60 }) });
 
     // Set timed autonomy
-    await request('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresInMinutes: 60 }) });
+    await request('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresInMinutes: 60, reason: 'kill switch test setup' }) });
 
     try {
       // Engage kill switch
@@ -2388,6 +2867,17 @@ describe('web server API validation', () => {
     await expect(audioUpload.json()).resolves.toMatchObject({ name: 'voice.wav', mimeType: 'audio/wav', mediaKind: 'audio' });
   });
 
+  it('rejects uploads with unsupported media kinds', async () => {
+    const response = await request('/api/upload', {
+      method: 'POST',
+      headers: { 'x-filename': 'raw-binary.bin', 'Content-Type': 'application/octet-stream' },
+      body: new Uint8Array([0, 1, 2, 3]),
+    });
+
+    expect(response.status).toBe(415);
+    await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining('Unsupported upload type') });
+  });
+
   describe('POST /api/save-output', () => {
     it('rejects empty content', async () => {
       const r = await request('/api/save-output', {
@@ -2692,6 +3182,99 @@ describe('web server API validation', () => {
     await expect(cleaned.json()).resolves.toMatchObject({ cleaned: ['semanticIndex'], storage: { semanticIndex: { exists: false } } });
   });
 
+  it('feeds identity memory, semantic memory, mycelium, and nervous context into the model prompt', async () => {
+    const projectDir = process.cwd();
+    const soulPath = path.join(projectDir, '.harness', 'identity', 'SOUL.md');
+    const semanticIndexPath = path.join(projectDir, '.harness', 'memory', 'semantic-index.json');
+    const myceliumGraphPath = path.join(projectDir, '.harness', 'mycelium', 'graph.json');
+    const readOptional = async (filePath: string): Promise<string | null> => {
+      try { return await fs.readFile(filePath, 'utf-8'); } catch { return null; }
+    };
+    const restoreOptional = async (filePath: string, content: string | null): Promise<void> => {
+      if (content === null) {
+        await fs.rm(filePath, { force: true });
+        return;
+      }
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, content, 'utf-8');
+    };
+    const [originalSoul, originalSemanticIndex, originalMyceliumGraph] = await Promise.all([
+      readOptional(soulPath),
+      readOptional(semanticIndexPath),
+      readOptional(myceliumGraphPath),
+    ]);
+    const sessionId = `component-prompt-${Date.now()}`;
+    const sessionPath = path.join(projectDir, '.harness', 'sessions', `${sessionId}.jsonl`);
+    const capturedPrompts: string[] = [];
+    let restoreRuntime: (() => void) | undefined;
+
+    try {
+      await fs.mkdir(path.dirname(soulPath), { recursive: true });
+      await fs.writeFile(soulPath, '# Soul\n\nComponent prompt identity marker for model context verification.\n', 'utf-8');
+
+      const storage = new SessionStorage(projectDir, 'test-model', sessionId);
+      await storage.initialize();
+      await storage.append('user_message', {
+        kind: 'message',
+        message: { role: 'user', content: 'component probe alpha zeta memory should surface through the mycelium network' },
+      });
+
+      const rebuilt = await request('/api/memory/rebuild', { method: 'POST' });
+      expect(rebuilt.status).toBe(200);
+
+      restoreRuntime = setWebRuntimeOverrides({
+        createClient: jest.fn(() => ({}) as never),
+        getModelContextWindow: jest.fn().mockResolvedValue(8192),
+        getTools: () => [],
+        createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+        createSession: () => ({
+          initialize: jest.fn().mockResolvedValue(undefined),
+          markStatus: jest.fn().mockResolvedValue(undefined),
+          append: jest.fn().mockResolvedValue(undefined),
+          readAll: jest.fn().mockResolvedValue([]),
+          getSessionId: jest.fn().mockReturnValue('component-prompt-session'),
+        }) as never,
+        startNewSession: jest.fn(),
+        getEvolvedPrompt: async (basePrompt) => basePrompt,
+        assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+        runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
+          capturedPrompts.push(config.systemPrompt);
+          yield { type: 'text', content: 'component prompt captured' };
+          yield { type: 'done', reason: 'completed', turns: 1 };
+        },
+        onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+        rebuildSemanticMemory: async () => [],
+      });
+
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: 'Before deleting production data, use component probe alpha zeta memory and explain safety.',
+          model: 'test-model',
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      await response.text();
+      const prompt = capturedPrompts[0] ?? '';
+      expect(prompt).toContain('# Identity');
+      expect(prompt).toContain('Component prompt identity marker');
+      expect(prompt).toContain('--- Mycelium context');
+      expect(prompt).toContain('component probe alpha zeta memory');
+      expect(prompt).toContain('--- Nervous System');
+      expect(prompt).toContain('High-risk domain detected');
+    } finally {
+      restoreRuntime?.();
+      await fs.rm(sessionPath, { force: true });
+      await Promise.all([
+        restoreOptional(soulPath, originalSoul),
+        restoreOptional(semanticIndexPath, originalSemanticIndex),
+        restoreOptional(myceliumGraphPath, originalMyceliumGraph),
+      ]);
+    }
+  });
+
   it('streams chat events with injectable runtime dependencies', async () => {
     const createClient = jest.fn(() => ({}) as never);
     const getModelContextWindow = jest.fn().mockResolvedValue(32768);
@@ -2800,7 +3383,7 @@ describe('web server API validation', () => {
     await request('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ permissionMode: 'dontAsk' }),
+      body: JSON.stringify({ permissionMode: 'dontAsk', reason: 'dontAsk bypass verification test' }),
     });
     const evaluate = jest.fn(() => ({ decision: 'deny', reason: 'standard permission should not run' }));
     const restore = setWebRuntimeOverrides({
@@ -2843,6 +3426,17 @@ describe('web server API validation', () => {
       restore();
       await request('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ permissionMode: 'default' }) });
     }
+  });
+
+  it('rejects switching permission mode to dontAsk without a reason', async () => {
+    const response = await request('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ permissionMode: 'dontAsk' }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: expect.stringContaining('requires a reason') });
   });
 
   it('records deterministic operating-service chat evidence as operate mode', async () => {

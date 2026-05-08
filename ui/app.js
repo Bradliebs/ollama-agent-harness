@@ -1,5 +1,52 @@
 marked.setOptions({ breaks: true, gfm: true });
 
+const HARNESS_API_TOKEN_STORAGE_KEY = 'harness.apiToken';
+const rawFetch = window.fetch.bind(window);
+let harnessApiToken = '';
+try { harnessApiToken = localStorage.getItem(HARNESS_API_TOKEN_STORAGE_KEY) || ''; } catch {}
+
+function setHarnessApiToken(token) {
+  harnessApiToken = String(token || '').trim();
+  try {
+    if (harnessApiToken) localStorage.setItem(HARNESS_API_TOKEN_STORAGE_KEY, harnessApiToken);
+    else localStorage.removeItem(HARNESS_API_TOKEN_STORAGE_KEY);
+  } catch {}
+}
+
+function isApiRequest(input) {
+  const url = typeof input === 'string' ? input : (input && typeof input.url === 'string' ? input.url : '');
+  return url.startsWith('/api/');
+}
+
+window.fetch = async function harnessFetchWithApiAuth(input, init) {
+  if (!isApiRequest(input) || String(input).startsWith('/api/auth/config')) {
+    return rawFetch(input, init);
+  }
+  const requestInit = init ? { ...init } : {};
+  const headers = new Headers(requestInit.headers || {});
+  if (harnessApiToken && !headers.has('Authorization')) {
+    headers.set('Authorization', 'Bearer ' + harnessApiToken);
+  }
+  requestInit.headers = headers;
+  return rawFetch(input, requestInit);
+};
+
+async function ensureApiAuthReady() {
+  try {
+    const response = await rawFetch('/api/auth/config');
+    if (!response.ok) return;
+    const config = await response.json();
+    if (!config || !config.required) return;
+    if (harnessApiToken) return;
+    const entered = window.prompt('Harness API auth is required. Enter HARNESS_API_AUTH_TOKEN:');
+    if (entered && entered.trim()) {
+      setHarnessApiToken(entered.trim());
+    }
+  } catch {
+    // Best-effort check only.
+  }
+}
+
 let isSending = false;
 // Reply-to-message state. When set, the next outbound user message is
 // prefixed with a markdown blockquote of the referenced assistant reply
@@ -129,8 +176,20 @@ let lastValidationPrompt = (() => {
 let currentWalkthrough = { completed: [] };
 let availableModels = [];
 let compareEnabled = false;
+let statusCenterConnectionState = 'loading';
+let statusCenterAutonomyState = 'idle';
+let statusCenterPendingPermissions = 0;
+let statusCenterReadiness = {
+  blocked: 0,
+  warn: 0,
+  message: '',
+  actionLabel: '',
+  actionHandler: null,
+};
+let statusCenterActionHandler = null;
 
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
+  await ensureApiAuthReady();
   restoreTheme();
   ensurePermissionPanel();
   loadModels();
@@ -177,6 +236,7 @@ function setHarnessStatus(state, label, title) {
   const dot = document.getElementById('statusDot');
   const pill = document.getElementById('statusPill');
   const pillLabel = document.getElementById('statusLabel');
+  statusCenterConnectionState = state || 'loading';
   if (dot) dot.className = 'status-dot' + (state === 'ok' ? ' ok' : state === 'loading' ? ' loading' : '');
   if (pill) {
     pill.classList.remove('ok', 'loading', 'error');
@@ -184,6 +244,96 @@ function setHarnessStatus(state, label, title) {
     if (title) pill.title = title;
   }
   if (pillLabel) pillLabel.textContent = label;
+  refreshStatusCenter();
+}
+
+function runStatusCenterAction() {
+  if (typeof statusCenterActionHandler === 'function') {
+    try { statusCenterActionHandler(); } catch (error) { console.warn('status center action failed', error); }
+  }
+}
+
+function setStatusCenterReadiness(next) {
+  statusCenterReadiness = {
+    blocked: Number(next?.blocked || 0),
+    warn: Number(next?.warn || 0),
+    message: String(next?.message || ''),
+    actionLabel: String(next?.actionLabel || ''),
+    actionHandler: typeof next?.actionHandler === 'function' ? next.actionHandler : null,
+  };
+  refreshStatusCenter();
+}
+
+function resolveReadinessAction(check) {
+  if (!check) return { actionLabel: 'Refresh checks', actionHandler: () => loadReadiness() };
+  if (check.action === 'Open Settings') return { actionLabel: 'Open settings', actionHandler: () => toggleRight() };
+  if (check.action === 'Open Tools') return { actionLabel: 'Open tools', actionHandler: () => openLeftTabByName('tools') };
+  if (check.action === 'Open Promises') return { actionLabel: 'Open promises', actionHandler: () => openLeftTabByName('promises') };
+  if (check.id === 'permission.mode') return { actionLabel: 'Set safe mode', actionHandler: () => toggleRight() };
+  if (check.id && check.id.startsWith('tool.')) return { actionLabel: 'Fix blockers', actionHandler: () => fixReadinessBlockers() };
+  return { actionLabel: 'Refresh checks', actionHandler: () => loadReadiness() };
+}
+
+function refreshStatusCenter() {
+  const center = document.getElementById('statusCenter');
+  const stateEl = document.getElementById('statusCenterState');
+  const detailEl = document.getElementById('statusCenterDetail');
+  const actionBtn = document.getElementById('statusCenterAction');
+  if (!center || !stateEl || !detailEl || !actionBtn) return;
+
+  let tone = 'ready';
+  let headline = 'Ready';
+  let detail = 'Core checks are passing.';
+  let actionLabel = 'Refresh';
+  let actionHandler = () => loadReadiness();
+
+  if (statusCenterConnectionState === 'error') {
+    tone = 'error';
+    headline = 'Needs setup';
+    detail = 'Server connection is offline.';
+    actionLabel = 'Open settings';
+    actionHandler = () => toggleRight();
+  } else if (statusCenterConnectionState === 'loading') {
+    tone = 'working';
+    headline = 'Connecting';
+    detail = 'Checking model and service health…';
+    actionLabel = 'Refresh';
+    actionHandler = () => loadModels();
+  } else if (statusCenterPendingPermissions > 0) {
+    tone = 'warn';
+    headline = 'Action needed';
+    detail = statusCenterPendingPermissions + ' permission request(s) waiting.';
+    actionLabel = 'Review';
+    actionHandler = () => {
+      const panel = document.getElementById('permissionPanel');
+      if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    };
+  } else if (statusCenterAutonomyState === 'running') {
+    tone = 'working';
+    headline = 'Working';
+    detail = 'Autonomy run is active.';
+    actionLabel = 'View log';
+    actionHandler = () => toggleAutonomyLog();
+  } else if (statusCenterReadiness.blocked > 0) {
+    tone = 'warn';
+    headline = 'Needs attention';
+    detail = statusCenterReadiness.message || (statusCenterReadiness.blocked + ' blocker(s) in mission checks.');
+    actionLabel = statusCenterReadiness.actionLabel || 'Review';
+    actionHandler = statusCenterReadiness.actionHandler || (() => loadReadiness());
+  } else if (statusCenterReadiness.warn > 0) {
+    tone = 'warn';
+    headline = 'Almost ready';
+    detail = statusCenterReadiness.message || (statusCenterReadiness.warn + ' warning(s) remain.');
+    actionLabel = statusCenterReadiness.actionLabel || 'Review';
+    actionHandler = statusCenterReadiness.actionHandler || (() => loadReadiness());
+  }
+
+  center.classList.remove('hidden-by-default', 'ready', 'warn', 'error', 'working');
+  center.classList.add(tone);
+  stateEl.innerHTML = '<strong>' + esc(headline) + '</strong>';
+  detailEl.textContent = detail;
+  actionBtn.textContent = actionLabel;
+  statusCenterActionHandler = actionHandler;
 }
 
 async function loadModels() {
@@ -270,6 +420,42 @@ function updateNoModelEmptyState() {
   if (!banner) return;
   if (!sel || !sel.value) banner.classList.remove('hidden-by-default');
   else banner.classList.add('hidden-by-default');
+  updateQuickStartCtaState();
+}
+
+function updateQuickStartCtaState() {
+  const sel = document.getElementById('modelSelect');
+  const btn = document.getElementById('quickStartBtn');
+  const hint = document.getElementById('quickStartHint');
+  if (!btn || !hint) return;
+  const hasModel = Boolean(sel && sel.value);
+  btn.disabled = !hasModel;
+  btn.title = hasModel ? 'Send a starter prompt' : 'Pick a model first';
+  hint.textContent = hasModel
+    ? 'Ready. Click Start quick test to send a guided first prompt.'
+    : 'Step 1: Pick a model above to unlock quick start.';
+}
+
+function openFirstRunGuide() {
+  const guide = document.getElementById('welcomeFirstRun');
+  if (guide) {
+    guide.open = true;
+    guide.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function startQuickTest() {
+  const sel = document.getElementById('modelSelect');
+  if (!sel || !sel.value) {
+    updateNoModelEmptyState();
+    sel?.focus();
+    openFirstRunGuide();
+    return;
+  }
+  const input = document.getElementById('chatInput');
+  if (!input) return;
+  input.value = 'List files in this project and suggest the best first task for a beginner.';
+  sendMessage();
 }
 
 async function readApiJson(response, endpointLabel) {
@@ -322,6 +508,7 @@ function renderReadiness(data) {
   const sections = data.sections || [];
   const ready = sections.filter((section) => section.status === 'ready').length;
   const blocked = sections.filter((section) => section.status === 'blocked').length;
+  const warn = sections.filter((section) => section.status === 'warn').length;
   const avg = sections.length ? Math.round(sections.reduce((sum, section) => sum + (section.score || 0), 0) / sections.length) : 0;
   const summary = '<div class="readiness-kpi"><strong>' + avg + '%</strong><span>overall</span></div>'
     + '<div class="readiness-kpi"><strong>' + ready + '/' + sections.length + '</strong><span>ready modes</span></div>'
@@ -334,6 +521,16 @@ function renderReadiness(data) {
   const modeLabel = data.permissionMode || 'default';
   const allChecks = sections.flatMap((s) => s.checks || []);
   const permCheck = allChecks.find((c) => c.id === 'permission.mode');
+  const firstAttentionCheck = allChecks.find((c) => c.status === 'blocked') || allChecks.find((c) => c.status === 'warn');
+  const readinessAction = resolveReadinessAction(firstAttentionCheck);
+  const attentionMessage = firstAttentionCheck ? ((firstAttentionCheck.label || 'Check') + ': ' + (firstAttentionCheck.message || 'Needs review')) : '';
+  setStatusCenterReadiness({
+    blocked,
+    warn,
+    message: attentionMessage,
+    actionLabel: readinessAction.actionLabel,
+    actionHandler: readinessAction.actionHandler,
+  });
   const timedNote = permCheck && permCheck.message && permCheck.message.includes('timed') ? ' <span class="text-warning-xs">(' + esc(permCheck.message.replace(/^.*\(/, '').replace(/\).*$/, '')) + ')</span>' : '';
   // Identify fixable blockers for the fix-all button
   const fixableChecks = allChecks.filter((c) => c.status === 'blocked' || c.status === 'warn').filter((c) => {
@@ -494,9 +691,9 @@ async function fixReadinessBlockers(timedMinutes) {
       await fetch('/api/tools/' + encodeURIComponent(toolName) + '/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => {});
     } else if (c.id === 'permission.mode') {
       if (timedMinutes) {
-        await fetch('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresInMinutes: timedMinutes }) }).catch(() => {});
+        await fetch('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresInMinutes: timedMinutes, reason: 'Readiness fix-all escalation to dontAsk mode' }) }).catch(() => {});
       } else {
-        await updateSetting('permissionMode', 'dontAsk');
+        await updateSetting('permissionMode', 'dontAsk', { reason: 'Readiness fix-all escalation to dontAsk mode' });
       }
       document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
       const dontAskOpt = document.querySelectorAll('.permission-mode-option')[0];
@@ -535,7 +732,7 @@ async function readinessTimedFix(type, name) {
   if (type === 'tool') {
     await toggleTool(name, true, minutes);
   } else if (type === 'mode') {
-    await fetch('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresInMinutes: minutes }) }).catch(() => {});
+    await fetch('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresInMinutes: minutes, reason: 'Readiness timed fix escalation to dontAsk mode' }) }).catch(() => {});
     document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
     const dontAskOpt = document.querySelectorAll('.permission-mode-option')[0];
     if (dontAskOpt) dontAskOpt.classList.add('active');
@@ -572,7 +769,11 @@ async function undoFixAll() {
     await fetch('/api/tools/' + encodeURIComponent(name) + '/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) }).catch(() => {});
   }
   // Revert permission mode
-  await updateSetting('permissionMode', snap.permissionMode);
+  await updateSetting(
+    'permissionMode',
+    snap.permissionMode,
+    snap.permissionMode === 'dontAsk' ? { reason: 'Undo fix-all restored previous dontAsk mode' } : undefined,
+  );
   document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
   const mi = snap.permissionMode === 'dontAsk' ? 0 : snap.permissionMode === 'acceptEdits' ? 1 : 2;
   const mo = document.querySelectorAll('.permission-mode-option')[mi];
@@ -718,11 +919,94 @@ async function runCapabilityTemplateStarterAction(templateId, action) {
   }
 }
 
+const AUTONOMY_UI_SETTINGS_KEY = 'harness.autonomy.runSettings.v1';
+
+function clampInt(value, fallback, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+function clampFloat(value, fallback, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function getAutonomyRunSettings() {
+  const defaults = { maxIterations: 1, timeBudgetHours: 0, unproductiveTurnLimit: 6 };
+  try {
+    const raw = localStorage.getItem(AUTONOMY_UI_SETTINGS_KEY);
+    if (!raw) return defaults;
+    const parsed = JSON.parse(raw);
+    return {
+      maxIterations: clampInt(parsed?.maxIterations, defaults.maxIterations, 1, 5000),
+      timeBudgetHours: clampFloat(parsed?.timeBudgetHours, defaults.timeBudgetHours, 0, 48),
+      unproductiveTurnLimit: clampInt(parsed?.unproductiveTurnLimit, defaults.unproductiveTurnLimit, 1, 100),
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+function saveAutonomyRunSettings(settings) {
+  try {
+    localStorage.setItem(AUTONOMY_UI_SETTINGS_KEY, JSON.stringify(settings));
+  } catch {}
+}
+
+function readAutonomyRunSettingsFromUi() {
+  const defaults = getAutonomyRunSettings();
+  const maxIterations = clampInt(document.getElementById('autonomyMaxIterations')?.value, defaults.maxIterations, 1, 5000);
+  const timeBudgetHours = clampFloat(document.getElementById('autonomyTimeBudgetHours')?.value, defaults.timeBudgetHours, 0, 48);
+  const unproductiveTurnLimit = clampInt(document.getElementById('autonomyUnproductiveTurnLimit')?.value, defaults.unproductiveTurnLimit, 1, 100);
+  const settings = { maxIterations, timeBudgetHours, unproductiveTurnLimit };
+  saveAutonomyRunSettings(settings);
+  return {
+    ...settings,
+    timeBudgetMs: timeBudgetHours > 0 ? Math.round(timeBudgetHours * 60 * 60 * 1000) : undefined,
+  };
+}
+
+function applyAutonomyPreset(preset) {
+  const next = preset === 'overnight'
+    ? { maxIterations: 300, timeBudgetHours: 8, unproductiveTurnLimit: 10 }
+    : preset === 'work'
+      ? { maxIterations: 25, timeBudgetHours: 2, unproductiveTurnLimit: 8 }
+      : { maxIterations: 1, timeBudgetHours: 0, unproductiveTurnLimit: 6 };
+  const maxEl = document.getElementById('autonomyMaxIterations');
+  const budgetEl = document.getElementById('autonomyTimeBudgetHours');
+  const stallEl = document.getElementById('autonomyUnproductiveTurnLimit');
+  if (maxEl) maxEl.value = String(next.maxIterations);
+  if (budgetEl) budgetEl.value = String(next.timeBudgetHours);
+  if (stallEl) stallEl.value = String(next.unproductiveTurnLimit);
+  saveAutonomyRunSettings(next);
+  const status = document.getElementById('autonomyBuilderStatus');
+  if (status) {
+    status.textContent = preset === 'overnight'
+      ? 'Overnight preset loaded: 300 tasks, 8h budget, stall limit 10.'
+      : preset === 'work'
+        ? 'Work session preset loaded: 25 tasks, 2h budget, stall limit 8.'
+      : 'Single-task preset loaded.';
+  }
+}
+
+function describeAutonomyStatus(status) {
+  if (status === 'running') return 'Running';
+  if (status === 'done') return 'Completed';
+  if (status === 'failed') return 'Needs attention';
+  return 'Idle';
+}
+
 function renderAutonomyBuilder(data) {
+  const runSettings = getAutonomyRunSettings();
   const nextTasks = (data.tasks || []).filter((task) => task.status === 'pending').slice(0, 5);
   const doneTasks = (data.tasks || []).filter((task) => task.status === 'done').slice(-3);
   return '<div class="autonomy-head"><div><strong>Autonomy Run Builder</strong><span>' + esc(data.pending || 0) + ' pending · ' + esc(data.done || 0) + ' done · ' + esc(data.failed || 0) + ' failed</span></div><button class="btn-sm danger" onclick="stopAutonomyRun()">Stop</button></div>'
-    + '<div class="autonomy-actions"><button class="btn-sm" onclick="dryRunAutonomy()">Dry run next</button><button class="btn-sm" onclick="startAutonomyRun()">Start 1 task</button><button class="btn-sm" onclick="openLeftTabByName(\'runs\')">Open runs</button></div>'
+    + '<div class="autonomy-actions"><button class="btn-sm" onclick="dryRunAutonomy()">Dry run next</button><button class="btn-sm" onclick="startAutonomyRun()">Start run</button><button class="btn-sm" onclick="toggleAutonomyLog()">View live log</button><button class="btn-sm" onclick="resetAutonomyRunState()">Reset run state</button><button class="btn-sm" onclick="openLeftTabByName(\'runs\')">Open runs</button></div>'
+    + '<div class="trace-meta" style="margin-bottom:6px">1) Pick a preset or set values · 2) Start run · 3) Watch live log</div>'
+    + '<div class="autonomy-actions"><button class="btn-sm" onclick="applyAutonomyPreset(\'single\')">Quick test</button><button class="btn-sm" onclick="applyAutonomyPreset(\'work\')">Work session</button><button class="btn-sm" onclick="applyAutonomyPreset(\'overnight\')">Overnight</button></div>'
+    + '<div class="task-add-form"><input id="autonomyMaxIterations" type="number" min="1" max="5000" step="1" value="' + escAttr(String(runSettings.maxIterations)) + '" title="How many tasks to run this start" placeholder="Tasks this run"><input id="autonomyTimeBudgetHours" type="number" min="0" max="48" step="0.5" value="' + escAttr(String(runSettings.timeBudgetHours)) + '" title="Time budget in hours (0 = unlimited)" placeholder="Time budget (hours)"><input id="autonomyUnproductiveTurnLimit" type="number" min="1" max="100" step="1" value="' + escAttr(String(runSettings.unproductiveTurnLimit)) + '" title="Stop after this many unproductive turns" placeholder="Stall limit"></div>'
     + '<div class="task-add-form"><input id="newTaskInput" type="text" placeholder="Describe a task for the agent..." onkeydown="if(event.key===\'Enter\')addPlanTask()"><button class="btn-sm" onclick="addPlanTask()">+ Add task</button></div>'
     + '<div class="autonomy-task-list">' + (nextTasks.length ? nextTasks.map(renderTaskRow).join('') : '<div class="readiness-empty">No pending tasks. Add one above.</div>') + '</div>'
     + (doneTasks.length ? '<details class="details-mt4"><summary class="trace-meta trace-summary-sm">Recent completed (' + esc(data.done) + ')</summary><div class="autonomy-task-list">' + doneTasks.map((t) => '<div class="autonomy-task done"><strong>' + esc(t.id) + '</strong><span>' + esc(t.title) + '</span></div>').join('') + '</div></details>' : '')
@@ -787,17 +1071,36 @@ async function dryRunAutonomy() {
 
 async function startAutonomyRun() {
   const status = document.getElementById('autonomyBuilderStatus');
-  if (status) status.textContent = 'Starting one autonomous task...';
+  const runSettings = readAutonomyRunSettingsFromUi();
+  if (status) {
+    const budgetText = runSettings.timeBudgetHours > 0 ? ` · ${runSettings.timeBudgetHours}h budget` : '';
+    status.textContent = `Starting autonomy run: ${runSettings.maxIterations} task(s)${budgetText}...`;
+  }
   try {
     const model = document.getElementById('modelSelect')?.value || '';
-    const response = await fetch('/api/autonomy/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model, maxIterations: 1 }) });
+    const response = await fetch('/api/autonomy/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        maxIterations: runSettings.maxIterations,
+        timeBudgetMs: runSettings.timeBudgetMs,
+        unproductiveTurnLimit: runSettings.unproductiveTurnLimit,
+      }),
+    });
     const data = await readApiJson(response, 'Autonomy start API');
     if (data.error) {
       const blocked = data.preflight?.blocked || [];
       const detail = blocked.length ? ': ' + blocked.map((check) => check.label).join(', ') : '';
       throw new Error(data.error + detail);
     }
-    if (status) status.textContent = 'Started PID ' + data.pid + ' at ' + data.startedAt;
+    if (status) {
+      const requested = data.requestedMaxIterations ?? runSettings.maxIterations;
+      const budgetText = runSettings.timeBudgetHours > 0 ? ` · ${runSettings.timeBudgetHours}h budget` : '';
+      status.textContent = `Started PID ${data.pid} · requested ${requested} task(s)${budgetText} · streaming live updates`;
+    }
+    const logModal = document.getElementById('autonomyLogModal');
+    if (logModal && logModal.classList.contains('hidden-by-default')) toggleAutonomyLog();
     startAutonomyPolling();
   } catch (error) {
     if (status) status.textContent = error.message || String(error);
@@ -811,6 +1114,23 @@ async function stopAutonomyRun() {
     const response = await fetch('/api/autonomy/stop', { method: 'POST' });
     await readApiJson(response, 'Autonomy stop API');
     if (status) status.textContent = 'Stop requested.';
+  } catch (error) {
+    if (status) status.textContent = error.message || String(error);
+  }
+}
+
+async function resetAutonomyRunState() {
+  const status = document.getElementById('autonomyBuilderStatus');
+  if (!confirm('Reset autonomy checkpoint and stop files? This is useful if a run is stuck at an old iteration.')) return;
+  if (status) status.textContent = 'Resetting run state...';
+  try {
+    const response = await fetch('/api/autonomy/reset', { method: 'POST' });
+    const data = await readApiJson(response, 'Autonomy reset API');
+    const cleared = Array.isArray(data.cleared) ? data.cleared.join(', ') : '';
+    if (status) status.textContent = cleared ? 'Run state reset: ' + cleared : 'Run state reset. Nothing needed clearing.';
+    renderAutonomyState(null);
+    loadAutonomyPlanPreview();
+    loadReadiness();
   } catch (error) {
     if (status) status.textContent = error.message || String(error);
   }
@@ -1075,7 +1395,7 @@ async function loadSettings() {
     hydrateAllowedPaths(s.allowedExternalPaths || []);
     if (s.ollamaHost) document.getElementById('ollamaHost').value = s.ollamaHost;
     if (s.summarizerModel) document.getElementById('summarizerModel').value = s.summarizerModel;
-    if (s.contextMaxTokens) document.getElementById('contextMaxTokens').value = s.contextMaxTokens;
+    if (s.contextMaxTokens !== undefined) document.getElementById('contextMaxTokens').value = s.contextMaxTokens;
     if (s.webReadMaxChars) document.getElementById('webReadMaxChars').value = s.webReadMaxChars;
     renderContextDetails(s.context || { configuredMaxTokens: s.contextMaxTokens, detectedMaxTokens: null, effectiveMaxTokens: s.contextMaxTokens });
     const tbInput = document.getElementById('timeBudgetSec');
@@ -1669,10 +1989,11 @@ function optionalNumberValue(value, min, max, label) {
 function renderContextDetails(context) {
   const details = document.getElementById('contextDetails');
   if (!details) return;
-  const configured = context.configuredMaxTokens || context.effectiveMaxTokens || 0;
+  const configured = context.configuredMaxTokens ?? context.effectiveMaxTokens ?? 0;
   const detected = context.detectedMaxTokens || 0;
-  const effective = context.effectiveMaxTokens || configured;
-  details.innerHTML = '<div><strong>Configured</strong> ' + esc(configured || 'unknown') + ' tokens</div><div><strong>Detected</strong> ' + (detected ? esc(detected) + ' tokens' : 'not detected yet') + '</div><div><strong>Effective</strong> ' + esc(effective || 'unknown') + ' tokens</div>';
+  const effective = context.effectiveMaxTokens ?? configured;
+  const configuredLabel = Number(configured) === 0 ? 'auto' : esc(configured) + ' tokens';
+  details.innerHTML = '<div><strong>Configured</strong> ' + configuredLabel + '</div><div><strong>Detected</strong> ' + (detected ? esc(detected) + ' tokens' : 'not detected yet') + '</div><div><strong>Effective</strong> ' + esc(effective || 'unknown') + ' tokens</div>';
 }
 
 async function applyContextPreset(tokens) {
@@ -1685,8 +2006,9 @@ async function applyContextPreset(tokens) {
   } catch {}
 }
 
-function updateSetting(k, v) {
-  const request = fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [k]: v }) });
+function updateSetting(k, v, extraPayload) {
+  const payload = { [k]: v, ...(extraPayload && typeof extraPayload === 'object' ? extraPayload : {}) };
+  const request = fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
   if (k === 'ollamaHost') loadModels();
   return request;
 }
@@ -2291,9 +2613,19 @@ async function refreshVisionReadinessStatus() {
 }
 
 function setMode(m, el) {
+  let escalationReason;
+  if (m === 'dontAsk') {
+    const reasonInput = prompt('Enter reason for enabling dontAsk mode (minimum 8 characters):', 'Temporary escalation for supervised operation');
+    if (reasonInput === null) return;
+    escalationReason = String(reasonInput).trim();
+    if (escalationReason.length < 8) {
+      alert('Reason must be at least 8 characters.');
+      return;
+    }
+  }
   document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
   el.classList.add('active');
-  updateSetting('permissionMode', m);
+  updateSetting('permissionMode', m, escalationReason ? { reason: escalationReason } : undefined);
 }
 
 async function enableFullAutonomy() {
@@ -2301,7 +2633,7 @@ async function enableFullAutonomy() {
   document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
   const dontAskOption = document.querySelectorAll('.permission-mode-option')[0];
   if (dontAskOption) dontAskOption.classList.add('active');
-  await updateSetting('permissionMode', 'dontAsk');
+  await updateSetting('permissionMode', 'dontAsk', { reason: 'Enable full autonomy quick action from UI' });
 
   // Enable all disabled tools
   try {
@@ -2329,7 +2661,7 @@ async function enableTimedAutonomy() {
   // Set timed autonomy via dedicated endpoint (stores previous mode for revert)
   await fetch('/api/permissions/timed-autonomy', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ expiresInMinutes: minutes }),
+    body: JSON.stringify({ expiresInMinutes: minutes, reason: 'Enable timed autonomy quick action from UI' }),
   });
 
   // Update the UI to show dontAsk mode
@@ -3144,7 +3476,7 @@ function appendPermissionRecoveryItem(toolBox, output) {
   item.innerHTML = '<span>⚠️</span><span class="tool-name">Action blocked</span><span class="tool-detail">' + esc(String(output || '').slice(0, 180)) + '</span><button class="btn-sm primary" type="button">Auto-approve all</button>';
   const button = item.querySelector('button');
   if (button) button.addEventListener('click', async () => {
-    await updateSetting('permissionMode', 'dontAsk');
+    await updateSetting('permissionMode', 'dontAsk', { reason: 'Permission recovery auto-approve from tool activity panel' });
     document.querySelectorAll('.permission-mode-option').forEach((o) => o.classList.remove('active'));
     const dontAskOption = document.querySelectorAll('.permission-mode-option')[0];
     if (dontAskOption) dontAskOption.classList.add('active');
@@ -3264,12 +3596,22 @@ function startAutonomyPolling() {
 
 function renderAutonomyState(s) {
   const hud = document.getElementById('autonomyHud');
+  const builderStatus = document.getElementById('autonomyBuilderStatus');
   if (!hud) return;
-  if (!s) { hud.classList.add('hidden-by-default'); return; }
+  if (!s) {
+    statusCenterAutonomyState = 'idle';
+    refreshStatusCenter();
+    hud.classList.add('hidden-by-default');
+    if (builderStatus) builderStatus.textContent = 'No active autonomy state yet. Start 1 task to see live movement.';
+    return;
+  }
   hud.classList.remove('hidden-by-default');
   const taskEl = document.getElementById('autonomyHudTask');
   const countsEl = document.getElementById('autonomyHudCounts');
   const status = s.lastTaskStatus || 'idle';
+  statusCenterAutonomyState = status;
+  refreshStatusCenter();
+  const statusLabel = describeAutonomyStatus(status);
   const icon = status === 'running' ? '⏳' : status === 'done' ? '✅' : status === 'failed' ? '❌' : '•';
   if (taskEl) taskEl.textContent = `${icon} ${s.lastTaskId || 'idle'}`;
   if (countsEl) {
@@ -3281,6 +3623,15 @@ function renderAutonomyState(s) {
   const elapsed = s.lastTaskElapsedMs ? `${Math.round(s.lastTaskElapsedMs / 1000)}s` : '';
   const files = (s.lastTaskFilesChanged ?? null) !== null ? `${s.lastTaskFilesChanged} files` : '';
   hud.title = [s.lastTaskTitle, elapsed, files].filter(Boolean).join(' · ');
+  if (builderStatus) {
+    const parts = [
+      `Live: ${statusLabel}`,
+      s.lastTaskId || 'idle',
+      elapsed,
+      files,
+    ].filter(Boolean);
+    builderStatus.textContent = parts.join(' · ');
+  }
 }
 
 let lastAutonomyStatus = '';
@@ -3356,6 +3707,8 @@ async function pollPermissions() {
 
 function renderPermissionPrompts(prompts) {
   const panel = document.getElementById('permissionPanel');
+  statusCenterPendingPermissions = prompts.length;
+  refreshStatusCenter();
   if (!prompts.length) { panel.className = 'permission-panel hidden'; panel.innerHTML = ''; return; }
   panel.className = 'permission-panel';
   panel.innerHTML = prompts.map((prompt) => '<div class="permission-card"><div><div class="permission-title">Approve tool: ' + esc(prompt.call.name) + '</div><div class="permission-reason">' + esc(prompt.reason || 'Permission required') + '</div><code>' + esc(JSON.stringify(prompt.call.input).slice(0, 180)) + '</code></div><div class="permission-actions"><button class="btn-sm" onclick="resolvePermission(\'' + prompt.id + '\',true)">Approve</button><button class="btn-sm danger" onclick="resolvePermission(\'' + prompt.id + '\',false)">Deny</button></div></div>').join('');
@@ -4255,7 +4608,7 @@ async function loadHistory() {
 async function loadChat(id) { try { const r = await fetch('/api/history/' + id); const d = await r.json(); currentChatId = id; chatMessages = d.messages || []; document.getElementById('chatArea').innerHTML = ''; for (const m of chatMessages) addMsg(m.role, m.content); saveChatSession(); loadHistory(); } catch {} }
 async function autoSaveChat() { if (chatMessages.length < 2) return; const title = chatMessages[0].content.slice(0, 60); try { const r = await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: currentChatId, title, messages: chatMessages }) }); const d = await r.json(); if (!currentChatId) currentChatId = d.id; saveChatSession(); loadHistory(); } catch {} }
 async function deleteChat(id) { await fetch('/api/history/' + id, { method: 'DELETE' }); if (id === currentChatId) newChat(); loadHistory(); }
-function newChat() { currentChatId = null; chatMessages = []; resetSessionUsage(); saveChatSession(); document.getElementById('chatArea').innerHTML = welcomeMarkup(); renderModelCapabilityHint(); loadReadiness(); loadSettings(); loadHistory(); }
+function newChat() { currentChatId = null; chatMessages = []; resetSessionUsage(); saveChatSession(); document.getElementById('chatArea').innerHTML = welcomeMarkup(); renderModelCapabilityHint(); updateNoModelEmptyState(); loadReadiness(); loadSettings(); loadHistory(); }
 function getPersonalityGreeting(name, personalityText) {
   const p = personalityText.toLowerCase();
   if (p.includes('pirate')) return { headline: 'Ahoy! Captain ' + name + ' at yer service!', subtitle: 'Set course for yer next task, matey. I can navigate files, chart code, search the seven seas of the web, and remember every port we visit.' };
@@ -4280,6 +4633,10 @@ function welcomeMarkup() {
     + '<div class="welcome-eyebrow">Local-first AI agent · Ollama</div>'
     + '<h2>' + esc(greeting.headline) + '</h2>'
     + '<p>' + esc(greeting.subtitle) + '</p>'
+    + '</div>'
+    + '<div class="quick-start-panel">'
+    + '<div class="quick-start-body"><strong>Start here</strong><span id="quickStartHint">Step 1: Pick a model above to unlock quick start.</span></div>'
+    + '<div class="quick-start-actions"><button id="quickStartBtn" class="btn-sm primary" onclick="startQuickTest()">Start quick test</button><button class="btn-sm" onclick="openFirstRunGuide()">Open setup guide</button></div>'
     + '</div>'
     + '<div class="quick-suggestions">'
     + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">📂</div><div class="qc-body"><div class="qc-title">List files in this project</div><div class="qc-desc">Tour what\'s here. I\'ll group by folder.</div></div></div>'
@@ -5568,7 +5925,7 @@ const SETTINGS_DEFAULTS = {
   connection: { ollamaHost: 'http://localhost:11434' },
   agentFiles: { agentOutputDir: '' },
   safety: { permissionMode: 'dontAsk' },
-  modelGen: { temperature: 0.7, topP: 0.9, contextMaxTokens: 8192, timeBudgetMs: 0 },
+  modelGen: { temperature: 0.7, topP: 0.9, contextMaxTokens: 0, timeBudgetMs: 0 },
   webRead: { webReadMaxChars: 12000 },
 };
 
@@ -5599,7 +5956,7 @@ async function resetSettingsSection(section) {
     } else if (section === 'modelGen') {
       const t = document.getElementById('tempSlider'); if (t) { t.value = 0.7; document.getElementById('tempVal').textContent = '0.7'; }
       const p = document.getElementById('topPSlider'); if (p) { p.value = 0.9; document.getElementById('topPVal').textContent = '0.9'; }
-      const c = document.getElementById('contextMaxTokens'); if (c) c.value = 8192;
+      const c = document.getElementById('contextMaxTokens'); if (c) c.value = 0;
     } else if (section === 'webRead') {
       const w = document.getElementById('webReadMaxChars'); if (w) w.value = 12000;
     }
@@ -5635,7 +5992,7 @@ async function loadAbout() {
       + '<div><strong>Skills</strong>' + enabledSkillCount + ' on / ' + skillCount + ' total</div>'
       + '<div><strong>Memory entries</strong>' + memoryFiles + ' file(s)</div>'
       + '<div><strong>Permission mode</strong>' + esc(settings.permissionMode || '—') + '</div>'
-      + '<div><strong>Context cap</strong>' + esc(String(settings.contextMaxTokens || '—')) + ' tokens</div>';
+      + '<div><strong>Context cap</strong>' + (Number(settings.contextMaxTokens) === 0 ? 'auto' : esc(String(settings.contextMaxTokens || '—')) + ' tokens') + '</div>';
   } catch (error) {
     version.textContent = 'Harness';
     summary.textContent = 'Could not load about info: ' + (error.message || error);
@@ -6441,17 +6798,20 @@ function renderRoutingMetrics(data) {
 
 function renderCandidateQueue(data) {
   const candidates = data.candidates || [];
-  const rows = candidates.slice(-8).reverse().map((candidate) => {
+  const rows = candidates.slice(-8).reverse().map((candidate, index) => {
     const disabled = candidate.reviewStatus !== 'pending' || !candidate.accepted;
     const status = candidate.reviewStatus || 'pending';
-    return '<div class="trace-item"><div class="trace-title">Candidate · ' + esc(status) + '</div><div class="trace-meta">Quality ' + Math.round((candidate.qualityScore || 0) * 100) + '% · ' + esc(candidate.toolNames?.join(', ') || 'no tools') + '</div><div class="candidate-prompt-preview">' + esc((candidate.prompt || '').slice(0, 180)) + '</div><div id="gate-' + escAttr(candidate.id) + '" class="candidate-gate-status trace-meta initial-hidden"></div><div class="inline-actions trace-block-spaced"><button class="btn-sm" onclick="inspectLearningCandidate(\'' + escAttr(candidate.id) + '\')">Details</button><button class="btn-sm" onclick="checkPromotionGate(\'' + escAttr(candidate.id) + '\')">Gate</button><button class="btn-sm" ' + (disabled ? 'disabled' : '') + ' onclick="reviewLearningCandidate(\'' + escAttr(candidate.id) + '\',\'promote\')">Promote</button><button class="btn-sm danger" ' + (candidate.reviewStatus !== 'pending' ? 'disabled' : '') + ' onclick="reviewLearningCandidate(\'' + escAttr(candidate.id) + '\',\'reject\')">Reject</button></div></div>';
+    const gateSuffix = String(candidate.id || 'candidate').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'candidate';
+    const gateId = 'gate-' + gateSuffix + '-' + index;
+    return '<div class="trace-item"><div class="trace-title">Candidate · ' + esc(status) + '</div><div class="trace-meta">Quality ' + Math.round((candidate.qualityScore || 0) * 100) + '% · ' + esc(candidate.toolNames?.join(', ') || 'no tools') + '</div><div class="candidate-prompt-preview">' + esc((candidate.prompt || '').slice(0, 180)) + '</div><div id="' + escAttr(gateId) + '" data-candidate-id="' + escAttr(candidate.id) + '" class="candidate-gate-status trace-meta initial-hidden"></div><div class="inline-actions trace-block-spaced"><button class="btn-sm" onclick="inspectLearningCandidate(\'' + escAttr(candidate.id) + '\')">Details</button><button class="btn-sm" onclick="checkPromotionGate(\'' + escAttr(candidate.id) + '\',\'' + escAttr(gateId) + '\')">Gate</button><button class="btn-sm" ' + (disabled ? 'disabled' : '') + ' onclick="reviewLearningCandidate(\'' + escAttr(candidate.id) + '\',\'promote\')">Promote</button><button class="btn-sm danger" ' + (candidate.reviewStatus !== 'pending' ? 'disabled' : '') + ' onclick="reviewLearningCandidate(\'' + escAttr(candidate.id) + '\',\'reject\')">Reject</button></div></div>';
   }).join('');
   return '<div id="learningCandidateQueue" class="trace-list"><div class="trace-title">Learning Candidate Review</div>' + (rows || '<div class="trace-meta">No candidates yet</div>') + '<div id="candidateProvenanceDetail" class="trace-item initial-hidden"></div></div>';
 }
 
-async function checkPromotionGate(candidateId) {
+async function checkPromotionGate(candidateId, gateId) {
   if (!candidateId) return;
-  const host = document.getElementById('gate-' + candidateId);
+  const host = (gateId && document.getElementById(gateId))
+    || Array.from(document.querySelectorAll('.candidate-gate-status')).find((el) => el.getAttribute('data-candidate-id') === String(candidateId));
   if (!host) return;
   host.classList.remove('initial-hidden');
   host.style.display = 'block';

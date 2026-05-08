@@ -147,6 +147,17 @@
     .status-pill.loading .status-dot{background:var(--warning);animation:pulse 1s infinite}
     .status-pill.loading{border-color:rgba(255,176,80,.35);color:#ffb050}
     .status-pill.error{border-color:rgba(255,80,80,.4);color:#ff8080}
+    .status-center{display:flex;align-items:center;gap:8px;padding:4px 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface2);min-width:220px;max-width:360px}
+    .status-center-summary{display:flex;flex-direction:column;gap:1px;min-width:0}
+    .status-center-state{font-size:11px;color:var(--text)}
+    .status-center-state strong{font-weight:700}
+    .status-center-detail{font-size:10px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .status-center.ready{border-color:rgba(80,200,120,.35)}
+    .status-center.warn{border-color:rgba(255,176,80,.35)}
+    .status-center.error{border-color:rgba(255,80,80,.4)}
+    .status-center.working{border-color:rgba(78,161,255,.4)}
+    @media(max-width:1360px){.status-center-detail{display:none}.status-center{min-width:170px}}
+    @media(max-width:1200px){.status-center{display:none}}
     /* Legacy bare-dot shim — keep selectors working for any other callers. */
     .status-dot{width:8px;height:8px;border-radius:50%;background:var(--error);flex-shrink:0}
     .status-dot.ok{background:var(--success)}
@@ -324,6 +335,7 @@
     .rag-result-actions{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap}
     .btn-sm.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
     .btn-sm.primary:hover{filter:brightness(1.1)}
+    .active-subagents-bar{display:none}
     .skill-diagnostic-actions{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
     .sk-install{background:var(--surface);border:1px solid var(--border);color:var(--text-dim);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px}
     .sk-install:hover{border-color:var(--accent);color:var(--accent)}
@@ -628,7 +640,7 @@
     .evidence-pills{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
     .evidence-pills span{border:1px solid var(--border);border-radius:999px;padding:2px 6px;background:var(--surface2);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .evidence-muted{color:var(--text-dim)}
-    @media(max-width:700px){.readiness-summary,.evidence-lists,.document-form{grid-template-columns:1fr}.autonomy-task,.document-item{grid-template-columns:1fr}.welcome{padding:24px 14px}.welcome-hero h2{font-size:24px}}
+    @media(max-width:700px){.readiness-summary,.evidence-lists,.document-form{grid-template-columns:1fr}.autonomy-task,.document-item{grid-template-columns:1fr}.welcome{padding:24px 14px}.welcome-hero h2{font-size:24px}.quick-start-panel{flex-direction:column;align-items:flex-start}}
     .quick-suggestions{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:24px}
     .quick-card{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;cursor:pointer;transition:all .15s;display:flex;gap:12px;align-items:flex-start;text-align:left}
     .quick-card:hover{border-color:var(--accent);background:var(--surface3);transform:translateY(-1px)}
@@ -640,6 +652,10 @@
     .welcome-tools strong{color:var(--text);font-weight:600;margin-right:4px}
     .welcome-tool-chip{padding:3px 9px;border:1px solid var(--border);border-radius:999px;color:var(--text-dim);cursor:pointer;background:var(--surface);transition:all .15s}
     .welcome-tool-chip:hover{border-color:var(--accent);color:var(--accent)}
+    .quick-start-panel{display:flex;gap:10px;align-items:center;justify-content:space-between;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:0 0 14px}
+    .quick-start-body{display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--text-dim)}
+    .quick-start-body strong{font-size:13px;color:var(--text)}
+    .quick-start-actions{display:flex;gap:6px;flex-wrap:wrap}
     .welcome-disclosure{margin-top:8px}
     .welcome-disclosure summary{cursor:pointer;font-size:12px;color:var(--text-dim);padding:8px 0;list-style:none;display:flex;align-items:center;gap:6px;-webkit-user-select:none;user-select:none}
     .welcome-disclosure summary:hover{color:var(--accent)}
@@ -834,6 +850,13 @@
         <span class="meta-sep">·</span>
         <span class="session-hud-val" id="autonomyHudCounts">0/0</span>
       </div>
+      <div class="status-center hidden-by-default" id="statusCenter" title="Current system state and next best action">
+        <div class="status-center-summary">
+          <span class="status-center-state" id="statusCenterState"><strong>Connecting</strong></span>
+          <span class="status-center-detail" id="statusCenterDetail">Waiting for system checks…</span>
+        </div>
+        <button class="btn-sm" id="statusCenterAction" onclick="runStatusCenterAction()">Open</button>
+      </div>
       <div class="status-pill loading" id="statusPill" title="Connecting..."><span class="status-dot"></span><span id="statusLabel">Connecting</span></div>
       <div class="topbar-btns">
         <button class="btn-icon" id="themeToggle" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
@@ -855,6 +878,11 @@
           <div class="welcome-eyebrow">Local-first AI agent · Ollama</div>
           <h2>What can I help you with?</h2>
           <p>Type a message below and press Enter. I can read files, write code, search the web, and remember things across sessions.</p>
+        </div>
+
+        <div class="quick-start-panel">
+          <div class="quick-start-body"><strong>Start here</strong><span id="quickStartHint">Step 1: Pick a model above to unlock quick start.</span></div>
+          <div class="quick-start-actions"><button id="quickStartBtn" class="btn-sm primary" onclick="startQuickTest()">Start quick test</button><button class="btn-sm" onclick="openFirstRunGuide()">Open setup guide</button></div>
         </div>
 
         <div class="quick-suggestions" id="quickSuggestions">
@@ -906,7 +934,7 @@
     </div>
 
     <div class="input-area">
-      <div id="activeSubagentsBar" class="active-subagents-bar" style="display:none"></div>
+      <div id="activeSubagentsBar" class="active-subagents-bar"></div>
       <div id="attachedFiles" class="attached-files"></div>
       <div id="attachmentHint" class="attachment-hint">Attach text, data, image, or audio files. Harness will show what the selected model is likely to understand.</div>
       <div class="slash-palette hidden" id="slashPalette" role="listbox" aria-label="Slash command palette">
@@ -1108,9 +1136,10 @@
       <h4>Context Continuity<button class="settings-reset-btn" onclick="event.stopPropagation();resetSettingsSection('webRead')" title="Reset web read max chars to default">↺ Reset</button></h4>
       <div class="setting-row">
         <label>Max context tokens</label>
-        <input type="number" id="contextMaxTokens" title="Max context tokens" value="8192" min="1024" step="512" onchange="updateSetting('contextMaxTokens',this.value)" />
+        <input type="number" id="contextMaxTokens" title="Max context tokens (0 = auto)" value="0" min="0" step="512" onchange="updateSetting('contextMaxTokens',this.value)" />
       </div>
       <div class="setting-row settings-action-row">
+        <button class="btn-sm" onclick="applyContextPreset(0)">Auto</button>
         <button class="btn-sm" onclick="applyContextPreset(8192)">Local Small</button>
         <button class="btn-sm" onclick="applyContextPreset(16384)">Local Large</button>
         <button class="btn-sm" onclick="applyContextPreset(32768)">Cloud</button>
