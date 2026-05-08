@@ -47,6 +47,9 @@ async function main() {
     await page.evaluate(() => { const details = document.getElementById('welcomeFirstRun'); if (details) details.open = true; });
     await page.click('#firstRunSetup button:has-text("Check setup")');
     await page.waitForFunction(() => !document.getElementById('firstRunHealth').classList.contains('initial-hidden'));
+    const mobileBeginnerSmoke = await runMobileBeginnerSmoke(browser, targetUrl);
+    const freshStartupSmoke = await runFreshStartupSmoke(browser, targetUrl);
+    const historyRestoreSmoke = await runHistoryRestoreSmoke(browser, targetUrl);
     await page.click('text=Verify install');
     await page.evaluate(async () => {
       const response = await fetch('/api/about');
@@ -338,7 +341,7 @@ async function main() {
         host.remove();
       }
     });
-    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke }) => {
+    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke }) => {
       const ids = Array.from(document.querySelectorAll('[id]')).map((element) => element.id);
       // Dynamically-rendered panels may legitimately re-render with the same ID
       const dynamicPanelIds = new Set(['permissionPanel', 'capabilityAlignmentPanel', 'toolRegistryPanel', 'automationRunsSection', 'curatorRunsSection']);
@@ -417,6 +420,8 @@ async function main() {
         hasWalkthroughChecklist: Boolean(document.getElementById('walkthroughChecklist')),
         hasWalkthroughFunction: typeof window.openWalkthroughTarget === 'function',
         hasFirstRunSetup: Boolean(document.getElementById('firstRunSetup')),
+        hasBeginnerReadiness: Boolean(document.getElementById('beginnerReadiness')) && Boolean(document.getElementById('beginnerReadinessBadge')),
+        beginnerReadinessText: document.getElementById('beginnerReadiness')?.textContent || '',
         hasFirstRunInputs: Boolean(document.getElementById('firstRunOllamaHost')) && Boolean(document.getElementById('firstRunVisionModel')) && Boolean(document.getElementById('firstRunAudioCommand')) && Boolean(document.getElementById('firstRunAudioSamplePath')),
         hasFirstRunHealth: Boolean(document.getElementById('firstRunHealth')),
         hasModelCapabilityHint: Boolean(document.getElementById('modelCapabilityHint')),
@@ -485,8 +490,11 @@ async function main() {
         hasOutputValidationProfileRenderer: typeof window.appendOutputValidationProfileItem === 'function',
         hasApplyCalibrationFunction: typeof window.applyRoutingCalibration === 'function',
         duplicateIds,
+        mobileBeginnerSmoke,
+        freshStartupSmoke,
+        historyRestoreSmoke,
       };
-    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible: learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke });
+    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible: learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke });
 
     const failures = [];
     if (!result.title.endsWith('Ollama Agent Harness')) failures.push(`Unexpected title: ${result.title}`);
@@ -559,6 +567,7 @@ async function main() {
     if (!result.hasWalkthroughChecklist) failures.push('walkthrough checklist was not found');
     if (!result.hasWalkthroughFunction) failures.push('walkthrough action function was not found');
     if (!result.hasFirstRunSetup) failures.push('first-run setup panel was not found');
+    if (!result.hasBeginnerReadiness) failures.push('beginner readiness verdict was not found');
     if (!result.hasFirstRunInputs) failures.push('first-run setup inputs were not found');
     if (!result.hasFirstRunHealth) failures.push('first-run health panel was not found');
     if (!result.hasModelCapabilityHint) failures.push('model capability hint was not found');
@@ -624,6 +633,9 @@ async function main() {
     if (!result.hasOutputValidationGroupedRenderer) failures.push('grouped output validation renderer was not found');
     if (!result.hasOutputValidationProfileRenderer) failures.push('output validation profile renderer was not found');
     if (!result.hasApplyCalibrationFunction) failures.push('apply calibration function was not found');
+    if (!result.mobileBeginnerSmoke?.ok) failures.push(`mobile beginner smoke failed: ${JSON.stringify(result.mobileBeginnerSmoke)}`);
+    if (!result.freshStartupSmoke?.ok) failures.push(`fresh startup smoke failed: ${JSON.stringify(result.freshStartupSmoke)}`);
+    if (!result.historyRestoreSmoke?.ok) failures.push(`history restore smoke failed: ${JSON.stringify(result.historyRestoreSmoke)}`);
     if (result.duplicateIds.length > 0) failures.push(`duplicate ids found: ${result.duplicateIds.join(', ')}`);
 
     if (failures.length > 0) {
@@ -636,6 +648,117 @@ async function main() {
   } finally {
     await browser.close();
     await cleanupServer();
+  }
+}
+
+async function runMobileBeginnerSmoke(browser, targetUrl) {
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  try {
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => Boolean(document.getElementById('chatInput')) && Boolean(document.getElementById('beginnerReadiness')));
+    await page.evaluate(() => { const details = document.getElementById('welcomeFirstRun'); if (details) details.open = true; });
+    await page.click('#firstRunSetup button:has-text("Check setup")');
+    await page.waitForFunction(() => !document.getElementById('firstRunHealth').classList.contains('initial-hidden'));
+    return await page.evaluate(() => {
+      const readiness = document.getElementById('beginnerReadiness');
+      const quickStart = document.getElementById('quickStartBtn');
+      const input = document.getElementById('chatInput');
+      const firstRun = document.getElementById('firstRunSetup');
+      const readinessBox = readiness?.getBoundingClientRect();
+      const inputBox = input?.getBoundingClientRect();
+      const firstRunBox = firstRun?.getBoundingClientRect();
+      const viewportWidth = window.innerWidth;
+      const fits = [readinessBox, inputBox, firstRunBox].every((box) => box && box.width <= viewportWidth && box.left >= -1 && box.right <= viewportWidth + 1);
+      return {
+        ok: Boolean(readiness && quickStart && input && firstRun && fits && readiness.textContent?.trim()),
+        viewportWidth,
+        readinessText: readiness?.textContent || '',
+        quickStartDisabled: Boolean(quickStart?.disabled),
+        fits,
+      };
+    });
+  } finally {
+    await page.close();
+  }
+}
+
+async function runFreshStartupSmoke(browser, targetUrl) {
+  const staleText = 'stale startup chat should not render';
+  const page = await browser.newPage();
+  try {
+    await page.addInitScript((text) => {
+      localStorage.setItem('harness.chatSession', JSON.stringify({
+        version: 1,
+        currentChatId: 'stale-chat-id',
+        messages: [
+          { role: 'user', content: text },
+          { role: 'assistant', content: 'old assistant response' },
+        ],
+      }));
+    }, staleText);
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => Boolean(document.getElementById('chatInput')));
+    return await page.evaluate((text) => {
+      const chatArea = document.getElementById('chatArea');
+      const welcome = document.getElementById('welcome');
+      const renderedText = chatArea?.textContent || '';
+      const historyApiAvailable = typeof window.HarnessChatHistory?.loadPersistedChatSession === 'function';
+      return {
+        ok: Boolean(welcome && historyApiAvailable && !renderedText.includes(text)),
+        hasWelcome: Boolean(welcome),
+        renderedStaleText: renderedText.includes(text),
+        historyApiAvailable,
+      };
+    }, staleText);
+  } finally {
+    await page.close();
+  }
+}
+
+async function runHistoryRestoreSmoke(browser, targetUrl) {
+  const id = 'ui-smoke-history-restore-' + Date.now().toString(36);
+  const title = 'UI smoke history restore';
+  const userText = 'history restore smoke user message';
+  const assistantText = 'history restore smoke assistant reply';
+  const page = await browser.newPage();
+  try {
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => Boolean(document.getElementById('chatInput')) && typeof window.loadHistory === 'function');
+    return await page.evaluate(async ({ id, title, userText, assistantText }) => {
+      try {
+        await fetch('/api/history/' + id, { method: 'DELETE' });
+        const saveResponse = await fetch('/api/history', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id,
+            title,
+            messages: [
+              { role: 'user', content: userText },
+              { role: 'assistant', content: assistantText },
+            ],
+          }),
+        });
+        if (!saveResponse.ok) return { ok: false, reason: 'history save failed', status: saveResponse.status };
+        await loadHistory();
+        const historyItem = Array.from(document.querySelectorAll('#historyList .history-item')).find((item) => item.textContent?.includes(title));
+        if (!historyItem) return { ok: false, reason: 'history item missing' };
+        await loadChat(id);
+        await loadHistory();
+        const renderedText = document.getElementById('chatArea')?.textContent || '';
+        const activeItem = document.querySelector('#historyList .history-item.active');
+        return {
+          ok: renderedText.includes(userText) && renderedText.includes(assistantText) && Boolean(activeItem?.textContent?.includes(title)),
+          renderedUserText: renderedText.includes(userText),
+          renderedAssistantText: renderedText.includes(assistantText),
+          activeHistoryItem: Boolean(activeItem?.textContent?.includes(title)),
+        };
+      } finally {
+        await fetch('/api/history/' + id, { method: 'DELETE' });
+      }
+    }, { id, title, userText, assistantText });
+  } finally {
+    await page.close();
   }
 }
 
@@ -802,6 +925,7 @@ async function runStaticSmoke() {
     hasTraceEvalExamples: ids.includes('traceEvalExamples'),
     hasWeatherReplayEvalButton: ids.includes('createWeatherReplayEvalBtn'),
     hasBeginnerGuide: ids.includes('beginnerGuide'),
+    hasBeginnerReadiness: ids.includes('beginnerReadiness') && ids.includes('beginnerReadinessBadge') && appScript.includes('function setBeginnerReadiness'),
     hasCapabilityTemplatePanelSupport: appScript.includes('capabilityTemplatePanel') && appScript.includes('function loadCapabilityTemplates'),
     hasCapabilityTemplateStarterDetailFunction: appScript.includes('function loadCapabilityTemplateStarterDetail') && appScript.includes('/api/capability-templates/') && appScript.includes('/starter'),
     hasCapabilityTemplateStarterActionFunction: appScript.includes('function runCapabilityTemplateStarterAction') && appScript.includes('/actions') && appScript.includes('Preview ready'),
@@ -899,6 +1023,7 @@ async function runStaticSmoke() {
   if (!result.hasTraceEvalExamples) failures.push('trace eval example panel was not found');
   if (!result.hasWeatherReplayEvalButton) failures.push('weather replay eval button was not found');
   if (!result.hasBeginnerGuide) failures.push('beginner guide was not found');
+  if (!result.hasBeginnerReadiness) failures.push('beginner readiness verdict was not found');
   if (!result.hasCapabilityTemplatePanelSupport) failures.push('capability template panel support was not found');
   if (!result.hasCapabilityTemplateStarterDetailFunction) failures.push('capability template starter detail function was not found');
   if (!result.hasCapabilityTemplateStarterActionFunction) failures.push('capability template starter action function was not found');

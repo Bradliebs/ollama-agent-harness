@@ -126,6 +126,36 @@ describe('web UI wiring', () => {
     expect(appJs).toContain('HarnessToolActivity.updateToolActivitySummary');
   });
 
+  it('surfaces model retry events and debug log settings in the UI', () => {
+    expect(appJs).toContain("case 'model_retry'");
+    expect(appJs).toContain('toggleModelDebugLog');
+    expect(appJs).toContain("updateSetting('modelDebugLog'");
+    expect(indexHtml).toContain('modelDebugLogToggle');
+    expect(indexHtml).toContain('modelDebugLogPath');
+  });
+
+  it('keeps the beginner first-chat readiness surface wired', () => {
+    expect(indexHtml).toContain('beginnerReadiness');
+    expect(indexHtml).toContain('beginnerReadinessBadge');
+    expect(appJs).toContain('function setBeginnerReadiness');
+    expect(appJs).toContain('Start Ollama first');
+    expect(appJs).toContain('Install one model');
+  });
+
+  it('keeps tool-only final replies readable', () => {
+    expect(appJs).toContain('function summarizeToolOnlyResult');
+    expect(appJs).toContain('function buildToolOnlyFallback');
+    expect(appJs).toContain('What I could see from the tool results');
+    expect(appJs).not.toContain('Done. The model used tools, but did not return a readable final message.');
+  });
+
+  it('opens to a fresh chat instead of auto-restoring the previous one', () => {
+    expect(appJs).toContain('let chatMessages = [];');
+    expect(appJs).toContain('let currentChatId = null;');
+    expect(appJs).not.toContain('const persisted = loadPersistedChatSession();');
+    expect(appJs).not.toContain('Restore prior chat session');
+  });
+
   it('keeps inline controls connected to global app functions', () => {
     const definitions = definedFunctions(appJs);
     const missing = inlineHandlerBodies(indexHtml + '\n' + appJs)

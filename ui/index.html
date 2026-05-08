@@ -642,7 +642,7 @@
     .evidence-pills{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
     .evidence-pills span{border:1px solid var(--border);border-radius:999px;padding:2px 6px;background:var(--surface2);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .evidence-muted{color:var(--text-dim)}
-    @media(max-width:700px){.readiness-summary,.evidence-lists,.document-form{grid-template-columns:1fr}.autonomy-task,.document-item{grid-template-columns:1fr}.welcome{padding:24px 14px}.welcome-hero h2{font-size:24px}.quick-start-panel{flex-direction:column;align-items:flex-start}}
+    @media(max-width:700px){.readiness-summary,.evidence-lists,.document-form{grid-template-columns:1fr}.autonomy-task,.document-item{grid-template-columns:1fr}.welcome{padding:24px 14px}.welcome-hero h2{font-size:24px}.quick-start-panel,.beginner-readiness{flex-direction:column;align-items:flex-start}.beginner-readiness .readiness-badge{white-space:normal}}
     .quick-suggestions{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:24px}
     .quick-card{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;cursor:pointer;transition:all .15s;display:flex;gap:12px;align-items:flex-start;text-align:left}
     .quick-card:hover{border-color:var(--accent);background:var(--surface3);transform:translateY(-1px)}
@@ -658,6 +658,16 @@
     .quick-start-body{display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--text-dim)}
     .quick-start-body strong{font-size:13px;color:var(--text)}
     .quick-start-actions{display:flex;gap:6px;flex-wrap:wrap}
+    .beginner-readiness{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 12px;margin:0 0 14px;font-size:12px;color:var(--text-dim)}
+    .beginner-readiness strong{display:block;color:var(--text);font-size:13px;margin-bottom:2px}
+    .beginner-readiness span{display:block;line-height:1.45}
+    .beginner-readiness .readiness-badge{flex-shrink:0;border:1px solid var(--border);border-radius:999px;padding:3px 9px;background:var(--surface);color:var(--text-dim);font-size:11px;font-weight:600;white-space:nowrap}
+    .beginner-readiness.ready{border-color:rgba(80,200,120,.45)}
+    .beginner-readiness.ready .readiness-badge{border-color:rgba(80,200,120,.45);color:#50c878}
+    .beginner-readiness.warn{border-color:rgba(255,176,80,.45)}
+    .beginner-readiness.warn .readiness-badge{border-color:rgba(255,176,80,.45);color:#ffb050}
+    .beginner-readiness.blocked{border-color:rgba(255,80,80,.45)}
+    .beginner-readiness.blocked .readiness-badge{border-color:rgba(255,80,80,.45);color:#ff8080}
     .welcome-disclosure{margin-top:8px}
     .welcome-disclosure summary{cursor:pointer;font-size:12px;color:var(--text-dim);padding:8px 0;list-style:none;display:flex;align-items:center;gap:6px;-webkit-user-select:none;user-select:none}
     .welcome-disclosure summary:hover{color:var(--accent)}
@@ -886,6 +896,11 @@
         <div class="quick-start-panel">
           <div class="quick-start-body"><strong>Start here</strong><span id="quickStartHint">Step 1: Pick a model above to unlock quick start.</span></div>
           <div class="quick-start-actions"><button id="quickStartBtn" class="btn-sm primary" onclick="startQuickTest()">Start quick test</button><button class="btn-sm" onclick="openFirstRunGuide()">Open setup guide</button></div>
+        </div>
+
+        <div class="beginner-readiness warn" id="beginnerReadiness">
+          <div><strong id="beginnerReadinessTitle">Checking first-chat readiness</strong><span id="beginnerReadinessMessage">Harness is checking Ollama and installed models before your first message.</span></div>
+          <span class="readiness-badge" id="beginnerReadinessBadge">Checking</span>
         </div>
 
         <div class="quick-suggestions" id="quickSuggestions">
@@ -1377,6 +1392,14 @@
     </div>
     <div class="settings-section">
       <h4>Traces</h4>
+      <div class="setting-row">
+        <label>Model debug log</label>
+        <button class="btn-sm toggle-btn" id="modelDebugLogToggle" onclick="toggleModelDebugLog()">Record payload metrics</button>
+      </div>
+      <div class="setting-row">
+        <label>Debug log path</label>
+        <input type="text" id="modelDebugLogPath" placeholder=".harness/model-debug.jsonl" onchange="updateModelDebugLogSetting('path',this.value)" />
+      </div>
       <button class="btn-sm full-width-button" onclick="exportTraceSnapshot()">Export current trace</button>
       <button class="btn-sm full-width-button" onclick="exportTraceEvalExample()">Create eval example</button>
       <button id="createWeatherReplayEvalBtn" class="btn-sm full-width-button" onclick="createWeatherReplayEval()">Create weather replay eval</button>

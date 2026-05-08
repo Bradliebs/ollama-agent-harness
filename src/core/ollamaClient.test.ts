@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { OllamaClient, longLivedFetch, liftInlineToolCalls } from './ollamaClient';
+import { OllamaClient, drainOllamaChatRetryEvents, longLivedFetch, liftInlineToolCalls } from './ollamaClient';
 
 const mockChat = jest.fn();
 const mockShow = jest.fn();
@@ -17,6 +17,7 @@ describe('OllamaClient context configuration', () => {
     mockChat.mockReset();
     mockShow.mockReset();
     mockList.mockReset();
+    drainOllamaChatRetryEvents();
   });
 
   it('passes num_ctx to chat requests when configured', async () => {
@@ -99,6 +100,46 @@ describe('OllamaClient context configuration', () => {
       if (previousDebugPath === undefined) delete process.env.HARNESS_DEBUG_LOG;
       else process.env.HARNESS_DEBUG_LOG = previousDebugPath;
       rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('retries transient Ollama chat failures once before surfacing an error', async () => {
+    async function* chunks() {
+      yield {
+        message: { role: 'assistant', content: 'ok' },
+        done: true,
+        prompt_eval_count: 1,
+        eval_count: 1,
+        total_duration: 1,
+      };
+    }
+    const previousAttempts = process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS;
+    const previousDelay = process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS;
+    process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS = '2';
+    process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS = '0';
+    mockChat
+      .mockRejectedValueOnce(new Error('Internal Server Error (ref: af1a42ac-ecdc-4b98-9ae1-c93491808e1f)'))
+      .mockResolvedValueOnce(chunks());
+    const client = new OllamaClient({ model: 'deepseek-v4-pro:cloud' });
+
+    try {
+      await expect(client.chat([{ role: 'user', content: 'hello' }])).resolves.toMatchObject({
+        message: { role: 'assistant', content: 'ok' },
+      });
+      expect(mockChat).toHaveBeenCalledTimes(2);
+      expect(drainOllamaChatRetryEvents()).toEqual([expect.objectContaining({
+        type: 'model_retry',
+        model: 'deepseek-v4-pro:cloud',
+        attempt: 1,
+        maxAttempts: 2,
+        delayMs: 0,
+        reason: expect.stringContaining('af1a42ac-ecdc-4b98-9ae1-c93491808e1f'),
+      })]);
+    } finally {
+      if (previousAttempts === undefined) delete process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS;
+      else process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS = previousAttempts;
+      if (previousDelay === undefined) delete process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS;
+      else process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS = previousDelay;
     }
   });
 

@@ -32,6 +32,8 @@
     "smoke:telegram": "node scripts/telegram-smoke.js",
     "smoke:ui": "node scripts/ui-smoke.js",
     "smoke:ui:fresh": "node scripts/ui-smoke.js --fresh",
+    "smoke:beginner": "node scripts/beginner-smoke.js",
+    "smoke:retry-fault": "node scripts/retry-fault-probe.js",
     "smoke:release": "node scripts/release-smoke.js",
     "smoke:installer": "node scripts/installer-smoke.js",
     "smoke:bounded-news": "node scripts/bounded-news-smoke.js",

@@ -142,20 +142,11 @@ function startReplyTo(messageIndex) {
 function saveChatSession() {
   window.HarnessChatHistory.saveChatSession({ chatMessages, currentChatId });
 }
-function loadPersistedChatSession() {
-  return window.HarnessChatHistory.loadPersistedChatSession();
-}
 function outboundChatHistory() {
   return window.HarnessChatHistory.outboundChatHistory(chatMessages);
 }
 let chatMessages = [];
 let currentChatId = null;
-(() => {
-  const persisted = loadPersistedChatSession();
-  if (!persisted) return;
-  chatMessages = persisted.messages.filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content);
-  currentChatId = persisted.currentChatId || null;
-})();
 let lastSessionId = null;
 let pendingFiles = [];
 let permissionPollTimer = null;
@@ -169,6 +160,7 @@ let currentOutputValidationProfiles = [];
 let currentOutputValidationTemplates = [];
 let currentModelCatalog = { url: '', ttlHours: 24 };
 let currentExtensionActivation = { executablePlugins: false, allowedPluginNames: [], requirePermissionReview: true };
+let currentModelDebugLog = { enabled: false, path: '.harness/model-debug.jsonl' };
 const LAST_VALIDATION_PROMPT_KEY = 'harness.lastValidationPrompt';
 let lastValidationPrompt = (() => {
   try { return localStorage.getItem(LAST_VALIDATION_PROMPT_KEY) || ''; } catch { return ''; }
@@ -218,17 +210,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   loadTelegramStatus();
   loadConnectorStatuses();
   loadDesktopInputEvidence();
-  // Restore prior chat session if the user reloaded mid-conversation.
-  if (chatMessages.length > 0) {
-    const chatArea = document.getElementById('chatArea');
-    const welcome = document.getElementById('welcome');
-    if (welcome) welcome.remove();
-    if (chatArea) for (const m of chatMessages) addMsg(m.role, m.content);
-    // Round-trip into the server-side /api/history store so a persisted-but-unsaved
-    // session also survives clearing localStorage. Save only if we have at least one
-    // assistant turn (autoSaveChat already requires >= 2 messages).
-    if (chatMessages.length >= 2) autoSaveChat();
-  }
   document.getElementById('chatInput').focus();
 });
 
@@ -350,7 +331,11 @@ async function loadModels() {
     setStatus('ok', 'Connected', 'Connected to Ollama');
     const models = d.models || [];
     availableModels = models;
-    if (!models.length) { sel.innerHTML = '<option value="">No models installed</option>'; return; }
+    if (!models.length) {
+      sel.innerHTML = '<option value="">No models installed</option>';
+      updateNoModelEmptyState();
+      return;
+    }
     sel.innerHTML = '<option value="">— Select model —</option>' + models.map((m) => {
       const size = m.parameterSize ? ' (' + m.parameterSize + ')' : '';
       const backendBadge = m.backend && m.backend !== 'ollama' ? ' [' + m.backend + ']' : '';
@@ -409,6 +394,8 @@ async function loadModels() {
   } catch {
     setStatus('error', 'Offline', 'Server not running');
     sel.innerHTML = '<option>Server not running</option>';
+    availableModels = [];
+    updateNoModelEmptyState();
   }
 }
 
@@ -429,11 +416,36 @@ function updateQuickStartCtaState() {
   const hint = document.getElementById('quickStartHint');
   if (!btn || !hint) return;
   const hasModel = Boolean(sel && sel.value);
+  const noInstalledModels = sel && !sel.value && availableModels.length === 0 && /no models installed/i.test(sel.textContent || '');
+  const offline = sel && /server not running|offline/i.test(sel.textContent || '');
   btn.disabled = !hasModel;
   btn.title = hasModel ? 'Send a starter prompt' : 'Pick a model first';
-  hint.textContent = hasModel
-    ? 'Ready. Click Start quick test to send a guided first prompt.'
-    : 'Step 1: Pick a model above to unlock quick start.';
+  if (hasModel) {
+    hint.textContent = 'Ready. Click Start quick test to send a guided first prompt.';
+    setBeginnerReadiness('ready', 'Ready for first chat', 'A model is selected. Click Start quick test or type your own message.', 'Ready');
+  } else if (offline) {
+    hint.textContent = 'Start Ollama, then refresh this page.';
+    setBeginnerReadiness('blocked', 'Start Ollama first', 'Harness cannot reach the local Ollama service yet. Start Ollama, then refresh models.', 'Blocked');
+  } else if (noInstalledModels) {
+    hint.textContent = 'Ollama is connected, but it needs at least one model.';
+    setBeginnerReadiness('warn', 'Install one model', 'Ollama is running, but no chat model is installed. Run ollama pull llama3.2, then refresh models.', 'Needs model');
+  } else {
+    hint.textContent = 'Step 1: Pick a model above to unlock quick start.';
+    setBeginnerReadiness('warn', 'Pick a model', 'Choose a model from the dropdown. Harness will unlock the first guided prompt.', 'Needs model');
+  }
+}
+
+function setBeginnerReadiness(state, title, message, badge) {
+  const panel = document.getElementById('beginnerReadiness');
+  const titleEl = document.getElementById('beginnerReadinessTitle');
+  const messageEl = document.getElementById('beginnerReadinessMessage');
+  const badgeEl = document.getElementById('beginnerReadinessBadge');
+  if (!panel || !titleEl || !messageEl || !badgeEl) return;
+  panel.classList.remove('ready', 'warn', 'blocked');
+  panel.classList.add(state || 'warn');
+  titleEl.textContent = title || 'Check first-chat readiness';
+  messageEl.textContent = message || 'Harness is checking local setup before your first message.';
+  badgeEl.textContent = badge || 'Checking';
 }
 
 function openFirstRunGuide() {
@@ -1426,6 +1438,7 @@ async function loadSettings() {
     currentOutputValidationProfiles = s.outputValidationProfiles || [];
     currentModelCatalog = s.modelCatalog || { url: '', ttlHours: 24 };
     currentExtensionActivation = s.extensionActivation || { executablePlugins: false, allowedPluginNames: [], requirePermissionReview: true };
+    currentModelDebugLog = s.modelDebugLog || { enabled: false, path: '.harness/model-debug.jsonl' };
     currentWalkthrough = s.walkthrough || { completed: [] };
     const small = document.getElementById('smallHelperModel');
     const def = document.getElementById('defaultHelperModel');
@@ -1444,6 +1457,8 @@ async function loadSettings() {
     const extensionExecutableToggle = document.getElementById('extensionExecutableToggle');
     const extensionPermissionReviewToggle = document.getElementById('extensionPermissionReviewToggle');
     const extensionAllowedPluginNames = document.getElementById('extensionAllowedPluginNames');
+    const modelDebugToggle = document.getElementById('modelDebugLogToggle');
+    const modelDebugPath = document.getElementById('modelDebugLogPath');
     const firstRunHost = document.getElementById('firstRunOllamaHost');
     const firstRunVision = document.getElementById('firstRunVisionModel');
     const firstRunAudio = document.getElementById('firstRunAudioCommand');
@@ -1460,6 +1475,8 @@ async function loadSettings() {
     if (extensionExecutableToggle) extensionExecutableToggle.classList.toggle('active', currentExtensionActivation.executablePlugins === true);
     if (extensionPermissionReviewToggle) extensionPermissionReviewToggle.classList.toggle('active', currentExtensionActivation.requirePermissionReview !== false);
     if (extensionAllowedPluginNames) extensionAllowedPluginNames.value = (currentExtensionActivation.allowedPluginNames || []).join(', ');
+    if (modelDebugToggle) modelDebugToggle.classList.toggle('active', currentModelDebugLog.enabled === true);
+    if (modelDebugPath) modelDebugPath.value = currentModelDebugLog.path || '.harness/model-debug.jsonl';
     const uploadsDirInput = document.getElementById('uploadsDir');
     if (uploadsDirInput) uploadsDirInput.value = currentMediaTools.uploadsDir || '';
     const autoPruneInput = document.getElementById('uploadsAutoPruneDays');
@@ -2013,6 +2030,18 @@ function updateSetting(k, v, extraPayload) {
   return request;
 }
 
+function updateModelDebugLogSetting(key, value) {
+  currentModelDebugLog = { ...currentModelDebugLog, [key]: value };
+  updateSetting('modelDebugLog', currentModelDebugLog);
+}
+
+function toggleModelDebugLog() {
+  currentModelDebugLog = { ...currentModelDebugLog, enabled: !currentModelDebugLog.enabled };
+  const toggle = document.getElementById('modelDebugLogToggle');
+  if (toggle) toggle.classList.toggle('active', currentModelDebugLog.enabled);
+  updateSetting('modelDebugLog', currentModelDebugLog);
+}
+
 const PERSONALITY_PRESETS = {
   professional: 'You are a precise, formal professional. Use structured language, clear headers, and avoid casual phrasing. Present information systematically with evidence and reasoning.',
   friendly: 'You are a warm, encouraging assistant who explains things clearly with relatable examples. Use a conversational tone, celebrate wins, and gently guide through challenges.',
@@ -2562,13 +2591,23 @@ async function checkFirstRunHealth() {
       detail.classList.remove('initial-hidden');
       detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio) + (data.pdfOcr ? renderSetupHealthRow('PDF OCR', data.pdfOcr) : '');
     }
-    if (status) status.textContent = data.ollama?.ok ? 'Setup check finished.' : 'Setup check found an Ollama connection issue.';
+    if (data.ollama?.ok && Number(data.ollama.modelCount || 0) > 0) {
+      setBeginnerReadiness('ready', 'Ready for first chat', data.ollama.message || 'Ollama is connected and at least one model is installed.', 'Ready');
+      if (status) status.textContent = 'Setup check finished. You can start a chat.';
+    } else if (data.ollama?.ok) {
+      setBeginnerReadiness('warn', 'Install one model', data.ollama.message || 'Ollama is connected, but no models are installed.', 'Needs model');
+      if (status) status.textContent = 'Setup check found no installed models.';
+    } else {
+      setBeginnerReadiness('blocked', 'Start Ollama first', data.ollama?.message || 'Harness cannot connect to Ollama yet.', 'Blocked');
+      if (status) status.textContent = 'Setup check found an Ollama connection issue.';
+    }
     markWalkthroughStep('setup');
   } catch (error) {
     if (detail) {
       detail.classList.remove('initial-hidden');
       detail.innerHTML = '<div><strong>Setup</strong> ' + esc(error.message || error) + '</div>';
     }
+    setBeginnerReadiness('blocked', 'Setup check failed', String(error.message || error), 'Blocked');
     if (status) status.textContent = 'Setup check failed.';
   }
 }
@@ -3111,6 +3150,7 @@ async function sendMessage(opts) {
     let evidenceCard = null;
     let toolOnlyResultCount = 0;
     let toolOnlyFailureCount = 0;
+    let toolOnlySummaries = [];
     let doneReason = '';
     let buf = '';
     let sawModelEvent = false;
@@ -3169,6 +3209,10 @@ async function sendMessage(opts) {
           case 'tool_result':
             toolOnlyResultCount += 1;
             if (!ev.result.success) toolOnlyFailureCount += 1;
+            else {
+              const summary = summarizeToolOnlyResult(ev.call, ev.result);
+              if (summary) toolOnlySummaries.push(summary);
+            }
             if (toolBox) appendToolItem(toolBox, ev.result.success ? '✅' : '❌', '', ev.result.output.slice(0, 120), !ev.result.success);
             if (toolBox && !ev.result.success && isPermissionOrRecoveryFailure(ev.result.output)) appendPermissionRecoveryItem(toolBox, ev.result.output);
             // Capture web_read sources for citation rendering.
@@ -3183,6 +3227,11 @@ async function sendMessage(opts) {
           case 'provider_fallback':
             toolBox = ensureToolBox(toolBox);
             appendToolItem(toolBox, '⚠️', 'provider fallback', ev.fromBackend + ' → ' + ev.toBackend + (ev.cooldownSec ? ' · cooldown ' + ev.cooldownSec + 's' : '') + ' · ' + (ev.reason || 'limit reached'), false);
+            break;
+          case 'model_retry':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '🔁', 'model retry', (ev.model || 'model') + ' attempt ' + ev.attempt + '/' + ev.maxAttempts + (ev.delayMs ? ' · waited ' + Math.round(ev.delayMs / 100) / 10 + 's' : '') + ' · ' + (ev.reason || 'transient failure'), false);
+            updateThinkingStatus(thinkEl, 'Retrying model call...');
             break;
           case 'model_routed':
             toolBox = ensureToolBox(toolBox);
@@ -3359,11 +3408,9 @@ async function sendMessage(opts) {
     if (!assistantText && toolOnlyResultCount > 0) {
       if (doneReason === 'max_turns_synthesized' || doneReason === 'time_budget_synthesized' || doneReason === 'repetition_synthesized') {
         // Bonus synthesis turn fired but produced empty text — rare edge case.
-        assistantText = 'Done (the model synthesized a response but it was empty).';
+        assistantText = buildToolOnlyFallback(toolOnlyFailureCount, toolOnlySummaries, 'The model synthesized a response, but it came back empty.');
       } else {
-        assistantText = toolOnlyFailureCount > 0
-          ? 'Done, but one or more tool calls failed. Check the tool details above.'
-          : 'Done. The model used tools, but did not return a readable final message.';
+        assistantText = buildToolOnlyFallback(toolOnlyFailureCount, toolOnlySummaries);
       }
       msgEl = addMsg('assistant', assistantText);
     }
@@ -3544,6 +3591,33 @@ function appendToolItem(toolBox, icon, name, detail, isError) {
   toolBox.appendChild(item);
   HarnessToolActivity.updateToolActivitySummary(toolBox, isError);
   scrollBottom();
+}
+
+function summarizeToolOnlyResult(call, result) {
+  const output = String(result?.output || '').replace(/\s+/g, ' ').trim();
+  if (!output) return '';
+  const name = String(call?.name || 'tool');
+  const input = call?.input || {};
+  const target = typeof input.query === 'string' ? input.query
+    : typeof input.url === 'string' ? input.url
+    : typeof input.path === 'string' ? input.path
+    : '';
+  const label = target ? name + ' for "' + target.slice(0, 90) + '"' : name;
+  return label + ': ' + output.slice(0, 260);
+}
+
+function buildToolOnlyFallback(failureCount, summaries, lead) {
+  const uniqueSummaries = Array.from(new Set((summaries || []).filter(Boolean))).slice(0, 4);
+  const intro = lead || (failureCount > 0
+    ? 'I used tools, but one or more tool calls failed before the model wrote a final answer.'
+    : 'I used tools and got results, but the model did not write a final answer.');
+  if (uniqueSummaries.length === 0) {
+    return intro + '\n\nOpen Tool activity above to inspect what happened, then use Regenerate to ask for a normal answer.';
+  }
+  return intro
+    + '\n\nWhat I could see from the tool results:\n'
+    + uniqueSummaries.map((summary) => '- ' + summary).join('\n')
+    + '\n\nUse Regenerate if you want me to turn this into a normal answer.';
 }
 
 function isPermissionOrRecoveryFailure(output) {
@@ -4713,6 +4787,7 @@ function welcomeMarkup() {
     + '<div class="quick-start-body"><strong>Start here</strong><span id="quickStartHint">Step 1: Pick a model above to unlock quick start.</span></div>'
     + '<div class="quick-start-actions"><button id="quickStartBtn" class="btn-sm primary" onclick="startQuickTest()">Start quick test</button><button class="btn-sm" onclick="openFirstRunGuide()">Open setup guide</button></div>'
     + '</div>'
+    + '<div class="beginner-readiness warn" id="beginnerReadiness"><div><strong id="beginnerReadinessTitle">Checking first-chat readiness</strong><span id="beginnerReadinessMessage">Harness is checking Ollama and installed models before your first message.</span></div><span class="readiness-badge" id="beginnerReadinessBadge">Checking</span></div>'
     + '<div class="quick-suggestions">'
     + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">📂</div><div class="qc-body"><div class="qc-title">List files in this project</div><div class="qc-desc">Tour what\'s here. I\'ll group by folder.</div></div></div>'
     + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">🔍</div><div class="qc-body"><div class="qc-title">Search for TODO in my code</div><div class="qc-desc">Find loose ends across the whole tree.</div></div></div>'

@@ -14,6 +14,7 @@ import { SlackNotifyTool } from '../tools/slackTools';
 import { createAutomationJob } from '../automation/jobs';
 import { rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
 import { writeModelCatalogCache } from '../models/modelCatalog';
+import { OllamaClient, drainOllamaChatRetryEvents } from '../core/ollamaClient';
 import type { LoopEvent, SessionEvent } from '../types';
 import { cleanupHarnessArtifacts, diffHarnessRuntimeState, restoreHarnessRuntimeState, seedHarnessAutomationJobsForTest, snapshotHarnessRuntimeState, type HarnessDocumentArtifact, type HarnessRuntimeStateSnapshot } from '../testSupport/harnessCleanup.test-support';
 
@@ -105,6 +106,32 @@ describe('web server API validation', () => {
   async function request(route: string, init?: RequestInit): Promise<Response> {
     return fetch(`${baseUrl}${route}`, init);
   }
+
+  it('persists model debug log settings and mirrors HARNESS_DEBUG_LOG', async () => {
+    const previousDebugLog = process.env.HARNESS_DEBUG_LOG;
+    try {
+      const enable = await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelDebugLog: { enabled: true, path: '.harness/test-model-debug.jsonl' } }),
+      });
+      expect(enable.status).toBe(200);
+      const enabled = await enable.json() as { modelDebugLog: { enabled: boolean; path: string } };
+      expect(enabled.modelDebugLog).toEqual({ enabled: true, path: '.harness/test-model-debug.jsonl' });
+      expect(process.env.HARNESS_DEBUG_LOG).toBe('.harness/test-model-debug.jsonl');
+
+      const disable = await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelDebugLog: { enabled: false, path: '.harness/test-model-debug.jsonl' } }),
+      });
+      expect(disable.status).toBe(200);
+      expect(process.env.HARNESS_DEBUG_LOG).toBeUndefined();
+    } finally {
+      if (previousDebugLog === undefined) delete process.env.HARNESS_DEBUG_LOG;
+      else process.env.HARNESS_DEBUG_LOG = previousDebugLog;
+    }
+  });
 
   async function withTokenConfiguredServer(
     token: string,
@@ -3333,6 +3360,65 @@ describe('web server API validation', () => {
       await expect(settings.json()).resolves.toMatchObject({ context: { configuredMaxTokens: 1024, detectedMaxTokens: 32768, effectiveMaxTokens: 1024 } });
     } finally {
       restore();
+    }
+  });
+
+  it('streams queued Ollama retry events before chat output', async () => {
+    async function* chunks() {
+      yield { message: { role: 'assistant', content: 'ok' }, done: true };
+    }
+    const previousAttempts = process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS;
+    const previousDelay = process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS;
+    process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS = '2';
+    process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS = '0';
+    const retryClient = new OllamaClient({ model: 'deepseek-v4-pro:cloud' }) as unknown as { client: { chat: jest.Mock }; chat: OllamaClient['chat'] };
+    retryClient.client = {
+      chat: jest.fn()
+        .mockRejectedValueOnce(new Error('Internal Server Error (ref: af1a42ac-ecdc-4b98-9ae1-c93491808e1f)'))
+        .mockResolvedValueOnce(chunks()),
+    };
+    await retryClient.chat([{ role: 'user', content: 'hello' }]);
+
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('retry-event-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (): AsyncGenerator<LoopEvent> {
+        yield { type: 'text', content: 'after retry' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'hello', model: 'test-model' }),
+      });
+      const body = await response.text();
+      expect(body).toContain('"type":"model_retry"');
+      expect(body).toContain('af1a42ac-ecdc-4b98-9ae1-c93491808e1f');
+      expect(body.indexOf('"type":"model_retry"')).toBeLessThan(body.indexOf('"type":"text"'));
+    } finally {
+      restore();
+      drainOllamaChatRetryEvents();
+      if (previousAttempts === undefined) delete process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS;
+      else process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS = previousAttempts;
+      if (previousDelay === undefined) delete process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS;
+      else process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS = previousDelay;
     }
   });
 

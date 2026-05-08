@@ -8,7 +8,7 @@ import * as crypto from 'crypto';
 import * as os from 'os';
 import { once } from 'events';
 import { Ollama } from 'ollama';
-import { OllamaClient } from '../core/ollamaClient';
+import { OllamaClient, drainOllamaChatRetryEvents } from '../core/ollamaClient';
 import { createChatClient, OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiKey } from '../core/chatClientFactory';
 import { drainRemoteProviderFallbackEvents } from '../core/fallbackChatClient';
 import type { IChatClient } from '../core/chatClient';
@@ -124,7 +124,7 @@ app.use(express.static(path.join(__dirname, '..', '..', 'ui'), {
   },
 }));
 
-const PROJECT_DIR = process.cwd();
+const PROJECT_DIR = process.env.HARNESS_PROJECT_DIR ? path.resolve(process.env.HARNESS_PROJECT_DIR) : process.cwd();
 const LOCAL_HOST = process.env.HOST ?? '127.0.0.1';
 const API_AUTH_TOKEN = (process.env.HARNESS_API_AUTH_TOKEN ?? '').trim();
 const HISTORY_DIR = path.join(PROJECT_DIR, '.harness', 'chat-history');
@@ -239,6 +239,7 @@ interface WebSettings {
   walkthrough: WalkthroughSettings;
   curator: CuratorSettings;
   automationScheduler: AutomationSchedulerSettings;
+  modelDebugLog: ModelDebugLogSettings;
   /** Tool names disabled via the Tools tab. Restored on startup. */
   disabledTools: string[];
   /** Time-limited tool enables: tool name → ISO expiry timestamp. */
@@ -321,6 +322,11 @@ interface CuratorSettings {
 interface AutomationSchedulerSettings {
   enabled: boolean;
   idleThresholdMinutes: number;
+}
+
+interface ModelDebugLogSettings {
+  enabled: boolean;
+  path: string;
 }
 
 interface ModelCatalogSettings {
@@ -410,6 +416,11 @@ function getAutomationPolicyContext(now = new Date()): { grants: CapabilityGrant
 
 let curatorSettings: CuratorSettings = sanitizeCuratorSettings({});
 let automationSchedulerSettings: AutomationSchedulerSettings = sanitizeAutomationSchedulerSettings({});
+let modelDebugLog: ModelDebugLogSettings = sanitizeModelDebugLogSettings({
+  enabled: Boolean(process.env.HARNESS_DEBUG_LOG?.trim()),
+  path: process.env.HARNESS_DEBUG_LOG || '.harness/model-debug.jsonl',
+});
+applyModelDebugLogEnvironment(modelDebugLog);
 let lastUserActivityMs = Date.now();
 let curatorScheduler: CuratorScheduler | null = null;
 // Self-learning heartbeat. Disabled unless HARNESS_HEARTBEAT_ENABLED=1 so
@@ -1684,6 +1695,10 @@ app.post('/api/settings', async (req, res) => {
   }
   if (req.body.automationScheduler !== undefined) {
     automationSchedulerSettings = sanitizeAutomationSchedulerSettings(req.body.automationScheduler);
+  }
+  if (req.body.modelDebugLog !== undefined) {
+    modelDebugLog = sanitizeModelDebugLogSettings(req.body.modelDebugLog);
+    applyModelDebugLogEnvironment(modelDebugLog);
   }
   configureAutomationScheduler();
   if (req.body.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(req.body.contextMaxTokens, 0, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
@@ -5631,6 +5646,9 @@ TOOL FALLBACK RULES:
       for (const fallbackEvent of drainRemoteProviderFallbackEvents()) {
         res.write(`data: ${JSON.stringify(fallbackEvent)}\n\n`);
       }
+      for (const retryEvent of drainOllamaChatRetryEvents()) {
+        res.write(`data: ${JSON.stringify(retryEvent)}\n\n`);
+      }
       const data = JSON.stringify(event);
       res.write(`data: ${data}\n\n`);
       if (event.type === 'tool_result') {
@@ -5661,6 +5679,9 @@ TOOL FALLBACK RULES:
     }
     for (const fallbackEvent of drainRemoteProviderFallbackEvents()) {
       res.write(`data: ${JSON.stringify(fallbackEvent)}\n\n`);
+    }
+    for (const retryEvent of drainOllamaChatRetryEvents()) {
+      res.write(`data: ${JSON.stringify(retryEvent)}\n\n`);
     }
     if (suppressedFallbacks > 0) {
       runtimeTracer.recordEvent('uploads.fallback_summary', {
@@ -7719,6 +7740,7 @@ function getCurrentSettings(): WebSettings {
     walkthrough,
     curator: curatorSettings,
     automationScheduler: automationSchedulerSettings,
+    modelDebugLog,
     disabledTools: Array.from(disabledTools).sort(),
     timedToolEnables: Object.fromEntries(Array.from(timedToolEnables.entries()).filter(([, exp]) => Date.now() < exp).map(([name, exp]) => [name, new Date(exp).toISOString()])),
     autonomyExpiresAt: autonomyExpiresAt > Date.now() ? new Date(autonomyExpiresAt).toISOString() : '',
@@ -7946,6 +7968,10 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   }
   if (settings.automationScheduler !== undefined) {
     automationSchedulerSettings = sanitizeAutomationSchedulerSettings(settings.automationScheduler);
+  }
+  if (settings.modelDebugLog !== undefined) {
+    modelDebugLog = sanitizeModelDebugLogSettings(settings.modelDebugLog);
+    applyModelDebugLogEnvironment(modelDebugLog);
   }
   configureAutomationScheduler();
   if (Array.isArray(settings.disabledTools)) {
@@ -8279,6 +8305,20 @@ function sanitizeAutomationSchedulerSettings(value: unknown): AutomationSchedule
     enabled: source.enabled !== undefined ? Boolean(source.enabled) : true,
     idleThresholdMinutes: clampInt(source.idleThresholdMinutes, 1, 60, 2),
   };
+}
+
+function sanitizeModelDebugLogSettings(value: unknown): ModelDebugLogSettings {
+  const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+  const rawPath = typeof source.path === 'string' ? source.path.trim().slice(0, 500) : '';
+  return {
+    enabled: source.enabled === true,
+    path: rawPath || '.harness/model-debug.jsonl',
+  };
+}
+
+function applyModelDebugLogEnvironment(settings: ModelDebugLogSettings): void {
+  if (settings.enabled) process.env.HARNESS_DEBUG_LOG = settings.path;
+  else delete process.env.HARNESS_DEBUG_LOG;
 }
 
 function sanitizeAgentProfiles(value: unknown): Record<string, { name: string; avatar: string; personality: string; model: string }> {

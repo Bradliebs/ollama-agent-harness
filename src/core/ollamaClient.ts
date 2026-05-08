@@ -7,6 +7,21 @@ import type { ChatResult, IChatClient, StreamChunk, TokenUsage } from './chatCli
 
 export type { ChatResult, StreamChunk, TokenUsage } from './chatClient';
 
+export interface OllamaChatRetryEvent {
+  type: 'model_retry';
+  model: string;
+  attempt: number;
+  maxAttempts: number;
+  delayMs: number;
+  reason: string;
+}
+
+const ollamaChatRetryEvents: OllamaChatRetryEvent[] = [];
+
+export function drainOllamaChatRetryEvents(): OllamaChatRetryEvent[] {
+  return ollamaChatRetryEvents.splice(0, ollamaChatRetryEvents.length);
+}
+
 export interface OllamaClientConfig {
   host?: string;
   model: string;
@@ -32,24 +47,46 @@ export class OllamaClient implements IChatClient {
     tools?: Tool[],
     abortSignal?: AbortSignal,
   ): Promise<ChatResult> {
-    writeDebugLogRequest(this.model, messages, tools);
-    const response = await this.client.chat({
-      model: this.model,
-      messages,
-      tools,
-      stream: true as const,
-      keep_alive: this.keepAlive,
-      options: this.numCtx ? { num_ctx: this.numCtx } : undefined,
-    });
+    const maxAttempts = getOllamaChatMaxAttempts();
+    let lastError: unknown;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        writeDebugLogRequest(this.model, messages, tools);
+        const response = await this.client.chat({
+          model: this.model,
+          messages,
+          tools,
+          stream: true as const,
+          keep_alive: this.keepAlive,
+          options: this.numCtx ? { num_ctx: this.numCtx } : undefined,
+        });
 
-    let result: ChatResult;
-    if (isAsyncIterable<ChatResponse>(response)) {
-      result = await collectStreamingChatResponse(response, abortSignal);
-    } else {
-      result = chatResponseToResult(response);
+        let result: ChatResult;
+        if (isAsyncIterable<ChatResponse>(response)) {
+          result = await collectStreamingChatResponse(response, abortSignal);
+        } else {
+          result = chatResponseToResult(response);
+        }
+        writeDebugLogResponse(this.model, messages, tools, result);
+        return result;
+      } catch (error) {
+        if (abortSignal?.aborted || !isTransientOllamaChatError(error) || attempt >= maxAttempts - 1) {
+          throw error;
+        }
+        lastError = error;
+        const delayMs = getOllamaChatRetryDelayMs(attempt);
+        ollamaChatRetryEvents.push({
+          type: 'model_retry',
+          model: this.model,
+          attempt: attempt + 1,
+          maxAttempts,
+          delayMs,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        await sleep(delayMs, abortSignal);
+      }
     }
-    writeDebugLogResponse(this.model, messages, tools, result);
-    return result;
+    throw lastError instanceof Error ? lastError : new Error(String(lastError ?? 'Ollama chat failed'));
   }
 
   async chatOnce(
@@ -126,6 +163,43 @@ export class OllamaClient implements IChatClient {
   getModel(): string {
     return this.model;
   }
+}
+
+function getOllamaChatMaxAttempts(): number {
+  const parsed = Number.parseInt(process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS || '2', 10);
+  if (!Number.isFinite(parsed)) return 2;
+  return Math.min(5, Math.max(1, parsed));
+}
+
+function getOllamaChatRetryDelayMs(attempt: number): number {
+  const parsed = Number.parseInt(process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS || '500', 10);
+  const baseDelay = Number.isFinite(parsed) ? Math.max(0, parsed) : 500;
+  return Math.min(baseDelay * Math.pow(2, attempt), 5_000);
+}
+
+function isTransientOllamaChatError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Internal Server Error|HTTP\s+50[0-4]|status\s+50[0-4]|ECONNRESET|ETIMEDOUT|fetch failed|terminated/i.test(message);
+}
+
+async function sleep(ms: number, abortSignal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return;
+  if (abortSignal?.aborted) throw new Error('aborted');
+  await new Promise<void>((resolve, reject) => {
+    let timeout: NodeJS.Timeout;
+    const cleanup = (): void => abortSignal?.removeEventListener('abort', abort);
+    const abort = (): void => {
+      clearTimeout(timeout);
+      cleanup();
+      reject(new Error('aborted'));
+    };
+    timeout = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    abortSignal?.addEventListener('abort', abort, { once: true });
+    timeout.unref?.();
+  });
 }
 
 interface AbortableAsyncIterable<T> extends AsyncIterable<T> {
