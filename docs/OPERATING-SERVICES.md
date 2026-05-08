@@ -2,14 +2,14 @@
 title: Operating Services
 description: Contract for deterministic Agentic Service Mode services, persisted state, scheduler behavior, and model-agnostic routing
 author: Bradliebs
-ms.date: 2026-05-03
+ms.date: 2026-05-08
 ms.topic: concept
 keywords:
   - agentic service mode
   - operating services
   - local-first
   - scheduler
-estimated_reading_time: 4
+estimated_reading_time: 5
 ---
 
 ## Purpose
@@ -176,6 +176,28 @@ For interactive UI smoke, set `HARNESS_UI_SMOKE_CHAT=1` only in the validation
 process. It enables one deterministic permission-recovery chat stream so the
 smoke test exercises the real browser-to-`/api/chat` path without depending on
 live model timing.
+
+### Live Context Probe
+
+Use `HARNESS_DEBUG_LOG` when you need to verify a live model-backed chat turn
+without changing runtime code. The debug log records request metrics, tool
+names, the last user message, response content, and token usage as JSONL.
+
+```powershell
+$env:NO_OPEN='1'
+$env:PORT='4310'
+$env:HARNESS_DEBUG_LOG='.copilot-tracking/probes/live-chat-debug.jsonl'
+node dist/web/server.js
+```
+
+Send a short `/api/chat` request to that port and inspect the SSE response,
+server log, and debug JSONL. The server log confirms Mycelium route selection
+and nervous-system inspection. `/api/system/health` confirms context auto mode,
+including configured, detected, and effective token limits.
+
+The debug hook does not persist the full raw system prompt body. Prompt-body
+verification belongs in tests that capture `config.systemPrompt`, such as the
+integration coverage in `src/web/server.test.ts`.
 
 ## Desktop Input Evidence
 
