@@ -2,7 +2,7 @@
 title: Ollama Agent Harness Changelog
 description: Release notes generated from local RPI changes logs for Ollama Agent Harness
 author: Bradliebs
-ms.date: 2026-05-06
+ms.date: 2026-05-08
 ms.topic: reference
 keywords:
 	- ollama
@@ -79,6 +79,24 @@ cwd happened to start the server. Resolution order:
 `contextMaxTokens` accepts `0` via PATCH and via on-disk settings
 (previously clamped to a 1024 lower bound). This is what `doctor --fix`
 writes when it rescues a legacy default.
+
+### Audit closure (2026-05-08)
+
+The hardening audit closed with focused fixes and validation across the
+settings, context, permission, BashTool, autonomy, and UI surfaces.
+
+* `/api/settings` now refreshes detected context before returning public
+  settings, so auto mode reports a real effective limit on first load.
+* Global context controls accept and display `0 = auto`, including an Auto
+  preset in the UI.
+* Risky permission changes require explicit reasons, and API auth coverage now
+  includes settings, autonomy, capability grants, API keys, and identity import
+  paths.
+* BashTool behavior is pinned as a no-shell executable runner. Shell built-ins
+  and shell control operators are rejected or fail without shell routing.
+* Validation passed with typecheck, build, focused API/tool tests, UI smoke,
+  fresh UI smoke, live settings probe, and the full Jest suite: 133 suites and
+  1523 tests.
 
 ## Ollama Agent Harness v0.4.1
 
