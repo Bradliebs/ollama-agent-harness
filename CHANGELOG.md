@@ -11,6 +11,34 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Ollama Agent Harness v0.4.4
+
+Patch release for the beginner-facing Keep going runway that keeps unattended
+chat work moving without requiring users to understand permission modes, tool
+toggles, readiness blockers, or capability grants.
+
+### Keep going runway
+
+* The chat topbar now includes a `Keep going` button that starts a bounded
+  2-hour runway from the main chat window.
+* Blocked tool actions now show `Keep going 2h` in the recovery row and route
+  through the same timed runway instead of permanently changing unrestricted
+  settings.
+* The runway temporarily enables disabled tools and grants common gated
+  capabilities with the same expiration window.
+* Beginner-facing status copy now says `Keep going is active` when verifier or
+  recovery gates are bypassed by the timed runway.
+
+### Validation
+
+* Contract coverage pins the topbar control, blocked-action recovery button,
+  timed-autonomy request, timed tool bulk enablement, and capability grant calls.
+* Browser smoke now clicks `Keep going 2h` and verifies timed autonomy, bulk
+  tool enablement, three capability grants, active button state, and duplicate
+  ID safety.
+* Validation passed with focused Jest contract tests, typecheck, build, and UI
+  smoke.
+
 ## Ollama Agent Harness v0.4.3
 
 Patch release for the audit closure and release metadata repair after the
