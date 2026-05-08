@@ -10,10 +10,11 @@
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;overflow:hidden}
     .layout{display:flex;width:100%;height:100%}
-    .left-panel{width:300px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;transition:margin-left .3s;position:relative}
+    .left-panel{--left-panel-width:300px;width:var(--left-panel-width);background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;transition:margin-left .3s;position:relative}
     .left-panel-resizer{position:absolute;top:0;right:-3px;width:6px;height:100%;cursor:ew-resize;z-index:50;background:transparent;transition:background .15s}
     .left-panel-resizer:hover,.left-panel-resizer.dragging{background:var(--accent)}
-    .left-panel.hidden{margin-left:-300px}
+    .left-panel.hidden{margin-left:calc(-1 * var(--left-panel-width))}
+    .left-panel-close{display:none}
     .main-panel{flex:1;display:flex;flex-direction:column;min-width:380px;position:relative}
     .right-panel{width:440px;background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto;transition:margin-right .3s}
     .right-panel.hidden{margin-right:-440px}
@@ -503,7 +504,7 @@
        the right panel a fixed overlay starting at this breakpoint instead
        of just at the prior 900px breakpoint. */
     @media(max-width:1300px){.right-panel{position:fixed;top:0;bottom:0;right:-440px;width:min(440px,92vw);z-index:100;transition:right .25s;box-shadow:-4px 0 16px rgba(0,0,0,.4)}.right-panel.visible,.right-panel:not(.hidden){right:0}}
-    @media(max-width:900px){.left-panel{position:fixed;top:0;bottom:0;z-index:100}.left-panel{left:-300px}.left-panel.visible{left:0}}
+    @media(max-width:900px){.left-panel{position:fixed;top:0;bottom:0;left:0;width:min(var(--left-panel-width),92vw);z-index:100;transition:transform .25s;transform:translateX(-100%);margin-left:0;box-shadow:4px 0 16px rgba(0,0,0,.4)}.left-panel.visible,.left-panel:not(.hidden){transform:translateX(0)}.left-panel.hidden{margin-left:0;transform:translateX(-100%)}.left-panel-resizer{display:none}.left-panel-close{display:inline-flex}.main-panel{min-width:0;width:100%}}
     /* Per-message metadata footer (model · tokens · latency) */
     .msg-meta{margin-top:6px;font-size:11px;color:var(--text-dim);display:flex;flex-wrap:wrap;gap:6px;align-items:center;line-height:1.4}
     .msg-meta .meta-sep{opacity:.5}
@@ -761,6 +762,7 @@
       <div class="inline-actions">
         <button class="btn-sm" onclick="newChat()">+ New</button>
         <button class="btn-sm" onclick="exportChat()">Export</button>
+        <button class="btn-sm left-panel-close" onclick="toggleLeft()" title="Close history panel">✕</button>
       </div>
     </div>
     <div class="tab-bar">

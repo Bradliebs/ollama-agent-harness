@@ -156,6 +156,16 @@ describe('web UI wiring', () => {
     expect(appJs).not.toContain('Restore prior chat session');
   });
 
+  it('fully hides the resizable left panel when closed', () => {
+    expect(indexHtml).toContain('--left-panel-width:300px');
+    expect(indexHtml).toContain('margin-left:calc(-1 * var(--left-panel-width))');
+    expect(indexHtml).toContain('transform:translateX(-100%)');
+    expect(indexHtml).toContain('left-panel-close');
+    expect(appJs).toContain("panel.style.setProperty('--left-panel-width'");
+    expect(appJs).toContain("panel.classList.toggle('visible', !hidden)");
+    expect(indexHtml).not.toContain('.left-panel.hidden{margin-left:-300px}');
+  });
+
   it('keeps inline controls connected to global app functions', () => {
     const definitions = definedFunctions(appJs);
     const missing = inlineHandlerBodies(indexHtml + '\n' + appJs)

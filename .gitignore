@@ -1,5 +1,6 @@
 node_modules/
 dist/
+coverage/
 *.js
 *.js.map
 *.d.ts
