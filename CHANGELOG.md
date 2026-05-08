@@ -11,6 +11,32 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Ollama Agent Harness v0.4.3
+
+Patch release for the audit closure and release metadata repair after the
+v0.4.2 tag had already shipped.
+
+### Hardening closure
+
+* API auth and risky permission flows now require explicit audit reasons across
+  settings, autonomy, capability grants, API keys, and identity import paths.
+* `/api/settings` refreshes detected context before returning public settings,
+  so auto mode reports a real effective context limit on first load.
+* Global context controls accept and display `0 = auto`, including an Auto
+  preset in the UI.
+* BashTool behavior is pinned as a no-shell executable runner. Shell built-ins
+  and shell control operators are rejected or fail without shell routing.
+
+### Release readiness
+
+* Version-bearing metadata is synchronized for `0.4.3` across package files,
+  installer metadata, and release provenance.
+* The live context probe workflow is documented with `HARNESS_DEBUG_LOG`,
+  including the boundary that full prompt-body verification belongs in tests.
+* Validation passed with typecheck, build, focused API/tool tests, UI smoke,
+  fresh UI smoke, live settings probe, version verification, release dry-run,
+  and the full Jest suite: 133 suites and 1523 tests.
+
 ## Ollama Agent Harness v0.4.2
 
 Operational hardening: `harness doctor --fix` auto-remediation,
