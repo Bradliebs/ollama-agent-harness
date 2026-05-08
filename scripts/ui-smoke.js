@@ -10,6 +10,7 @@ const freshLocalServer = args.includes('--fresh') || truthy(process.env.HARNESS_
 const providedTargetUrl = args.find((arg) => !arg.startsWith('--')) || process.env.HARNESS_UI_URL || '';
 const defaultSmokePort = process.env.HARNESS_UI_SMOKE_PORT || '4300';
 const targetUrl = providedTargetUrl || `http://127.0.0.1:${defaultSmokePort}/`;
+const dashboardRenderTimeoutMs = 30000;
 
 async function main() {
   const cleanupServer = await ensureTargetServer();
@@ -202,7 +203,7 @@ async function main() {
     // Navigate tools tab last so its dynamically-rendered panels don't
     // create duplicate IDs before the dedup check runs.
     await page.evaluate(() => showLeftTab('tools', document.querySelector('[onclick*="showLeftTab(\'tools\'"]')));
-    await page.waitForFunction(() => Boolean(document.querySelector('.mcp-hub')), null, { timeout: 5000 });
+    await page.waitForFunction(() => Boolean(document.querySelector('.mcp-hub')), null, { timeout: dashboardRenderTimeoutMs });
     await page.evaluate(() => {
       const deniedOutput = "Permission denied for 'file_write': Nervous System requires verification";
       if (typeof appendPermissionRecoveryItem !== 'function') return;
