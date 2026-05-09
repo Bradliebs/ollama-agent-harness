@@ -5429,7 +5429,12 @@ TOOL FALLBACK RULES:
 - If web_read or web_fetch returns HTTP 403/429/500, do NOT retry the same site. Try a different URL or use browser_navigate instead (Playwright-based, handles JavaScript and anti-bot pages).
 - If a site blocks you (Cloudflare, rate limit), move on to other sources. Do not waste turns retrying blocked sites.
 - You have browser_navigate, browser_read, browser_click tools available for sites that block simple HTTP requests.
-- Prefer web_search + web_read for initial research, fall back to browser_navigate for blocked sites.`;
+- Prefer web_search + web_read for initial research, fall back to browser_navigate for blocked sites.
+
+CONTEXT HYGIENE (critical for long tasks):
+- Do NOT call file_read on a file you just successfully file_wrote in this same turn. You already have the content — re-reading wastes tokens and frequently triggers cloud-model stream failures on the next turn.
+- After a successful file_write, the immediate next step is the next real action (send the email, update the manifest, finish the task) — NOT verification.
+- If you genuinely need to confirm a write happened, trust the file_write tool result; it returns the byte count and path.`;
 
   const conciergeNote = buildConciergeNote(typeof message === 'string' ? message : '');
   const squadNote = await buildSquadRoutingNote(squadId, typeof message === 'string' ? message : '').catch(() => null);

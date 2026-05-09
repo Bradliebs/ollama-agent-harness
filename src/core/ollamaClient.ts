@@ -179,7 +179,12 @@ function getOllamaChatRetryDelayMs(attempt: number): number {
 
 function isTransientOllamaChatError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /Internal Server Error|HTTP\s+50[0-4]|status\s+50[0-4]|ECONNRESET|ETIMEDOUT|fetch failed|terminated/i.test(message);
+  // Ollama Cloud occasionally closes the SSE stream without the terminal
+  // {done:true} chunk after a long tool result is appended to history. The
+  // ollama JS client surfaces that as "Did not receive done or success
+  // response in stream." — treating it as transient lets the retry loop
+  // resend the same payload, which usually succeeds on the second try.
+  return /Internal Server Error|HTTP\s+50[0-4]|status\s+50[0-4]|ECONNRESET|ETIMEDOUT|fetch failed|terminated|Did not receive done or success/i.test(message);
 }
 
 async function sleep(ms: number, abortSignal?: AbortSignal): Promise<void> {

@@ -143,6 +143,44 @@ describe('OllamaClient context configuration', () => {
     }
   });
 
+  it('retries truncated Ollama Cloud streams that close without a done chunk', async () => {
+    async function* chunks() {
+      yield {
+        message: { role: 'assistant', content: 'recovered' },
+        done: true,
+        prompt_eval_count: 1,
+        eval_count: 1,
+        total_duration: 1,
+      };
+    }
+    const previousAttempts = process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS;
+    const previousDelay = process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS;
+    process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS = '2';
+    process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS = '0';
+    mockChat
+      .mockRejectedValueOnce(new Error('Did not receive done or success response in stream.'))
+      .mockResolvedValueOnce(chunks());
+    const client = new OllamaClient({ model: 'kimi-k2.6:cloud' });
+
+    try {
+      await expect(client.chat([{ role: 'user', content: 'hello' }])).resolves.toMatchObject({
+        message: { role: 'assistant', content: 'recovered' },
+      });
+      expect(mockChat).toHaveBeenCalledTimes(2);
+      expect(drainOllamaChatRetryEvents()).toEqual([expect.objectContaining({
+        type: 'model_retry',
+        model: 'kimi-k2.6:cloud',
+        attempt: 1,
+        reason: expect.stringContaining('Did not receive done'),
+      })]);
+    } finally {
+      if (previousAttempts === undefined) delete process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS;
+      else process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS = previousAttempts;
+      if (previousDelay === undefined) delete process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS;
+      else process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS = previousDelay;
+    }
+  });
+
   it('aborts an in-flight streamed chat response', async () => {
     let releaseStream: () => void = () => {};
     const gate = new Promise<void>((resolve) => { releaseStream = resolve; });
