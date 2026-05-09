@@ -11,6 +11,74 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Ollama Agent Harness v0.4.6
+
+UX release that closes the gap between Harness and the OpenAI Codex
+"single adaptive chat for everyday tasks" pitch. The first paint a new
+user sees is now chat + composer + a row of quick-start chips with an
+expressive avatar in the topbar — every existing tab still works, just
+not on the front door anymore.
+
+### Chat-first surface
+
+* The 12-tab left rail is now collapsed by default. The topbar `☰`
+  button and slash commands like `/skills`, `/files`, `/memory`, and
+  `/history` reveal it on demand. Collapsed state persists in
+  `localStorage` so power users keep their preferred layout.
+
+### Inline mycelium context cards
+
+* After each assistant reply, up to four router-selected nodes
+  (skills / memories / workflows / tools / services / documents) render
+  as small cards under the message. One click opens the relevant left
+  tab so users discover what the system pulled in for that turn.
+* Restraint built in: skips infrastructure nodes (query / safety /
+  verifier / agent), self-routes, low-trust nodes, and identical card
+  sets between turns. Cleared between turns alongside the follow-up
+  chips. Dismissable per turn.
+
+### Quick-start chips
+
+* The two code-only welcome chips are now six chips that span the full
+  Harness range: files, code search, web research, document generation,
+  recurring automation, agent identity. New users see "I can ask for
+  anything" instead of "this is a code editor".
+* `quickStartChipsMarkup()` is the single source of truth, used by both
+  the static landing page (populated at `DOMContentLoaded`) and
+  `welcomeMarkup()` re-renders triggered by `/new` and `/reset`.
+
+### Unified inbox strip
+
+* New `GET /api/inbox` aggregates pending permission prompts (priority
+  100), pending plan tasks (priority 60), failed automation runs
+  (priority 50), and successful automation runs (priority 30) into one
+  ranked list capped at eight items.
+* New strip lives between the topbar and the chat area. Hidden when
+  empty so it never nags. Collapse toggle persisted in localStorage;
+  cards click through to the right left-rail tab. Refreshes at
+  `DOMContentLoaded`, after every chat turn, and on a 60s poll.
+
+### Topbar pet avatar
+
+* The static topbar emoji is now an expressive avatar that reflects
+  what Harness is actually doing right now: idle, thinking, working,
+  alert (inbox has items), sleepy (>2 min idle), happy (just woke up),
+  concerned (last turn errored).
+* Reads existing UI signals only — no new backend events. 2s evaluation
+  interval, no-op when state is unchanged. Per-state CSS animations
+  are subtle by design.
+
+### Validation
+
+* Three new ui-smoke runners (`runMyceliumContextCardsSmoke`,
+  `runInboxStripSmoke`, `runTopbarPetSmoke`) plus an extended
+  `quickStartChips` assertion pin the new render paths so they cannot
+  silently regress.
+* New jest test covers the `/api/inbox` endpoint contract:
+  priority-then-timestamp ordering, max 8 items, every item has a
+  known kind.
+* Full ui-smoke + targeted jest suites green.
+
 ## Ollama Agent Harness v0.4.5
 
 Patch release that hardens the long-task surfaces (skills, autonomy gates, cloud
