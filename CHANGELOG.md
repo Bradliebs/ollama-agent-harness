@@ -2,7 +2,7 @@
 title: Ollama Agent Harness Changelog
 description: Release notes generated from local RPI changes logs for Ollama Agent Harness
 author: Bradliebs
-ms.date: 2026-05-08
+ms.date: 2026-05-09
 ms.topic: reference
 keywords:
 	- ollama
@@ -10,6 +10,69 @@ keywords:
 	- changelog
 estimated_reading_time: 14
 ---
+
+## Ollama Agent Harness v0.4.5
+
+Patch release that hardens the long-task surfaces (skills, autonomy gates, cloud
+streaming) so unattended runs survive the rough edges that surfaced in real
+Bracknell email work.
+
+### Skills
+
+* The chat composer's `/<skill-name>` slash palette now actually runs the skill.
+  `loadSkills()` is wired into `DOMContentLoaded` so the palette populates on
+  first paint, and the per-skill click handler now calls `sendMessage()` instead
+  of pasting text the user had to send manually.
+* Server-side `parseExplicitSkillInvocation` + `loadExplicitSkillContext` inject
+  the chosen skill body into the system prompt for that turn.
+* When a skill click cannot send (no model picked, network error), the failure
+  is now surfaced as a yellow chat warning instead of a silent `console.warn`.
+
+### Full Autonomy
+
+* `dontAsk` permission mode now bypasses Nervous System `REQUIRE_CONFIRMATION`
+  decisions for `email_send`, `slack_notify`, and `telegram_notify` in
+  high-risk contexts, matching the existing `REQUIRE_VERIFICATION` bypass.
+* `email_draft` always bypasses the dry-run requirement because the tool is
+  itself the dry-run version of `email_send`.
+* `BLOCK` and `INTERRUPT_AND_RECOVER` (`rm -rf`, kill switch) remain
+  non-bypassable. Each bypass writes a `nervous.{verification,confirmation,
+  dry_run}_bypassed` event to the runtime tracer for the audit trail.
+
+### Cloud streaming robustness
+
+* `isTransientOllamaChatError` now matches the
+  `"Did not receive done or success response in stream."` error from the
+  `ollama` client so kimi/glm/gpt-oss cloud truncated SSE streams retry once
+  via the existing retry loop.
+* New `CONTEXT HYGIENE` block in the system prompt tells the agent not to
+  `file_read` a file it just `file_wrote` in the same turn — that pattern was
+  the dominant trigger for cloud stream truncation in long deliverable runs.
+
+### Autonomy budget panel
+
+* The autonomy run controls now use clearly-labelled `renderAutonomyBudgetField`
+  inputs for tasks-per-run, turns-per-task, time budget, and stall limit.
+* `unproductiveTurnLimit` is now clamped 1..100 in both UI input bounds and the
+  `/api/autonomy/start` server clamp.
+* Cookbook `task-loop.ts` mirrors the same clamp so env-direct callers cannot
+  set `HARNESS_UNPRODUCTIVE_TURN_LIMIT` above 100.
+* `/api/autonomy/start` echoes `requestedUnproductiveTurnLimit` back so the UI
+  can show "Server accepted: ... stall limit N".
+
+### Timed Autonomy banner
+
+* The fixed amber banner no longer overlaps the topbar — body padding is set
+  via a `--gab-h` CSS variable equal to the banner's actual height.
+* New `▴`/`▾` toggle docks the banner as a small top-right pill; collapsed
+  state persists in localStorage.
+
+### Bracknell autonomy
+
+* `ralphLoop` now refuses to mark visual Bracknell tasks complete unless
+  `ROBYN_VISUAL_REPORT.html` was changed today.
+* `buildTaskPrompt` injects an HTML scaffold so the agent stops dropping
+  Markdown reports for visual deliverables.
 
 ## Ollama Agent Harness v0.4.4
 
