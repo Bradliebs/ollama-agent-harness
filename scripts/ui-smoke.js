@@ -48,6 +48,7 @@ async function main() {
     let dynamicSkillSlashCommandSmoke = { ok: false, reason: 'not run' };
     let myceliumContextCardsSmoke = { ok: false, reason: 'not run' };
     let inboxStripSmoke = { ok: false, reason: 'not run' };
+    let topbarPetSmoke = { ok: false, reason: 'not run' };
     await page.evaluate(() => { const details = document.getElementById('welcomeFirstRun'); if (details) details.open = true; });
     await page.click('#firstRunSetup button:has-text("Check setup")');
     await page.waitForFunction(() => !document.getElementById('firstRunHealth').classList.contains('initial-hidden'));
@@ -65,6 +66,7 @@ async function main() {
     dynamicSkillSlashCommandSmoke = await runDynamicSkillSlashCommandSmoke(browser, targetUrl);
     myceliumContextCardsSmoke = await runMyceliumContextCardsSmoke(browser, targetUrl);
     inboxStripSmoke = await runInboxStripSmoke(browser, targetUrl);
+    topbarPetSmoke = await runTopbarPetSmoke(browser, targetUrl);
     await page.evaluate(() => { if (document.getElementById('rightPanel')?.classList.contains('hidden')) toggleRight(); });
     await page.evaluate(() => Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes('Run setup doctor'))?.click());
     await page.waitForFunction(() => !document.getElementById('settingsDoctorHealth').classList.contains('initial-hidden'));
@@ -402,7 +404,7 @@ async function main() {
         window.fetch = originalFetch;
       }
     });
-    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, dynamicSkillSlashCommandSmoke, myceliumContextCardsSmoke, inboxStripSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke }) => {
+    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, dynamicSkillSlashCommandSmoke, myceliumContextCardsSmoke, inboxStripSmoke, topbarPetSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke }) => {
       const ids = Array.from(document.querySelectorAll('[id]')).map((element) => element.id);
       // Dynamically-rendered panels may legitimately re-render with the same ID
       const dynamicPanelIds = new Set(['permissionPanel', 'capabilityAlignmentPanel', 'toolRegistryPanel', 'automationRunsSection', 'curatorRunsSection']);
@@ -471,6 +473,7 @@ async function main() {
         dynamicSkillSlashCommandSmoke,
         myceliumContextCardsSmoke,
         inboxStripSmoke,
+        topbarPetSmoke,
         automationJobSafetyVisible,
         planCompleteNotBlocked: !(document.getElementById('missionControlPanel')?.querySelector('.mission-card.blocked')?.textContent?.includes('pending task')),
         hasAutonomyBuilder: Boolean(document.getElementById('autonomyBuilderPanel')),
@@ -567,7 +570,7 @@ async function main() {
         freshStartupSmoke,
         historyRestoreSmoke,
       };
-    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible: learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, dynamicSkillSlashCommandSmoke, myceliumContextCardsSmoke, inboxStripSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke });
+    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible: learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, dynamicSkillSlashCommandSmoke, myceliumContextCardsSmoke, inboxStripSmoke, topbarPetSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke });
     result.autonomyStartPayloadSmoke = autonomyStartPayloadSmoke;
 
     const failures = [];
@@ -631,6 +634,7 @@ async function main() {
     if (!result.dynamicSkillSlashCommandSmoke?.ok) failures.push(`dynamic skill slash command did not submit expected skill request: ${JSON.stringify(result.dynamicSkillSlashCommandSmoke)}`);
     if (!result.myceliumContextCardsSmoke?.ok) failures.push(`mycelium context cards did not render expected nodes: ${JSON.stringify(result.myceliumContextCardsSmoke)}`);
     if (!result.inboxStripSmoke?.ok) failures.push(`inbox strip did not render aggregated items: ${JSON.stringify(result.inboxStripSmoke)}`);
+    if (!result.topbarPetSmoke?.ok) failures.push(`topbar pet did not transition through expected states: ${JSON.stringify(result.topbarPetSmoke)}`);
     if (!result.automationJobSafetyVisible) failures.push('automation job safety panel was not rendered');
     if (!result.planCompleteNotBlocked) failures.push('plan-complete state incorrectly shows blocked card for pending tasks');
     if (!result.hasAutonomyBuilder) failures.push('autonomy builder panel was not found');
@@ -1356,6 +1360,52 @@ async function runInboxStripSmoke(browser, targetUrl) {
       } finally {
         window.fetch = originalFetch;
       }
+    });
+  } finally {
+    await page.close();
+  }
+}
+
+async function runTopbarPetSmoke(browser, targetUrl) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  try {
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => Boolean(document.getElementById('topbarPet')) && typeof window.updateTopbarPet === 'function');
+    return await page.evaluate(() => {
+      const el = document.getElementById('topbarPet');
+      const observed = {};
+      const sig = window._petSignals;
+      // Idle baseline: fresh activity, no recent error/tool call.
+      sig.lastUserActivityAt = Date.now();
+      sig.lastErrorAt = 0;
+      sig.lastToolCallAt = 0;
+      window.isSending = false;
+      // Force a state recompute by clearing the cached last-state guard.
+      window._petLastState = '';
+      window.updateTopbarPet();
+      observed.idle = { face: el.textContent, cls: el.className };
+      // Working: simulate isSending + a recent tool call.
+      window.isSending = true;
+      sig.lastToolCallAt = Date.now();
+      window.updateTopbarPet();
+      observed.working = { face: el.textContent, cls: el.className };
+      // Concerned: clear sending, mark a fresh error.
+      window.isSending = false;
+      sig.lastErrorAt = Date.now();
+      window.updateTopbarPet();
+      observed.concerned = { face: el.textContent, cls: el.className };
+      // Sleepy: idle for >2 minutes and the prior error well into the past.
+      sig.lastUserActivityAt = Date.now() - 180_000;
+      sig.lastErrorAt = Date.now() - 60_000;
+      window.updateTopbarPet();
+      observed.sleepy = { face: el.textContent, cls: el.className };
+      return {
+        ok: observed.working.cls.includes('pet-working')
+          && observed.concerned.cls.includes('pet-concerned')
+          && observed.sleepy.cls.includes('pet-sleepy')
+          && observed.idle.cls.includes('pet-idle'),
+        observed,
+      };
     });
   } finally {
     await page.close();

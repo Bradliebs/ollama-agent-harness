@@ -204,6 +204,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   startAutonomyPolling();
   loadInbox();
   setInterval(() => { loadInbox().catch(() => {}); }, 60_000);
+  startTopbarPet();
   if (Notification.permission === 'default') Notification.requestPermission();
   window.addEventListener('focus', () => { document.title = document.title.replace(/^🔔 /, ''); });
   setupSettingsCollapse();
@@ -854,6 +855,75 @@ const INBOX_KIND_META = {
   plan_task:      { icon: '📋', tone: 'med' },
   automation_run: { icon: '⚙', tone: 'med' },
 };
+
+// Topbar pet — small expressive avatar that mirrors the system's actual
+// state. Reads existing UI signals (isSending, last tool call time, the
+// inbox strip, idle time) so it stays honest and adds zero new backend
+// surface. The state machine runs on a 2s interval and only mutates the
+// avatar when the resolved state changes, so it's free in the common
+// "nothing happening" case. Signals live on a window-scoped object so
+// smoke tests can override them deterministically.
+window._petSignals = window._petSignals || { lastUserActivityAt: Date.now(), lastToolCallAt: 0, lastErrorAt: 0 };
+window._petLastState = window._petLastState || '';
+
+function noteUserActivity() { window._petSignals.lastUserActivityAt = Date.now(); }
+function notePetToolCall() { window._petSignals.lastToolCallAt = Date.now(); }
+function notePetError() { window._petSignals.lastErrorAt = Date.now(); }
+
+const PET_FACES = {
+  working:   { emoji: '🛠',  cls: 'pet-working',   title: 'Running tools…' },
+  thinking:  { emoji: '🤔', cls: 'pet-thinking',  title: 'Thinking…' },
+  concerned: { emoji: '😟', cls: 'pet-concerned', title: 'Last turn hit an error.' },
+  alert:     { emoji: '👀', cls: 'pet-alert',     title: 'Inbox has things waiting on you.' },
+  sleepy:    { emoji: '😴', cls: 'pet-sleepy',    title: 'Idle. Send a message any time.' },
+  happy:     { emoji: '😊', cls: 'pet-happy',     title: 'Welcome back!' },
+  idle:      { emoji: '🤖', cls: 'pet-idle',      title: 'Ready when you are.' },
+};
+
+function resolvePetState() {
+  const sig = window._petSignals;
+  const now = Date.now();
+  // isSending lives in module scope; mirror it onto the signal object
+  // each tick so smoke tests can also force "working" via window.
+  const sending = (typeof window.isSending === 'boolean') ? window.isSending
+    : (typeof isSending !== 'undefined' && isSending);
+  if (sending) {
+    return now - sig.lastToolCallAt < 8_000 ? 'working' : 'thinking';
+  }
+  if (now - sig.lastErrorAt < 6_000) return 'concerned';
+  const inbox = document.getElementById('inboxStrip');
+  if (inbox && !inbox.classList.contains('initial-hidden') && inbox.querySelector('.inbox-item')) {
+    return 'alert';
+  }
+  const idleMs = now - sig.lastUserActivityAt;
+  if (idleMs > 120_000) return 'sleepy';
+  if (idleMs < 1_500 && window._petLastState === 'sleepy') return 'happy';
+  return 'idle';
+}
+
+function updateTopbarPet() {
+  const el = document.getElementById('topbarPet');
+  if (!el) return;
+  const state = resolvePetState();
+  if (state === window._petLastState) return;
+  const face = PET_FACES[state] || PET_FACES.idle;
+  // Reset any prior pet-* classes without clobbering siblings.
+  el.classList.remove('pet-idle', 'pet-thinking', 'pet-working', 'pet-alert', 'pet-sleepy', 'pet-happy', 'pet-concerned');
+  el.classList.add(face.cls);
+  el.textContent = face.emoji;
+  el.title = 'Harness mood: ' + face.title;
+  window._petLastState = state;
+}
+
+function startTopbarPet() {
+  // Activity hooks: any keystroke or mouse movement counts as a sign of
+  // life so the pet wakes up promptly when the user comes back.
+  document.addEventListener('keydown', noteUserActivity, { passive: true });
+  document.addEventListener('mousemove', noteUserActivity, { passive: true });
+  document.addEventListener('click', noteUserActivity, { passive: true });
+  setInterval(updateTopbarPet, 2_000);
+  updateTopbarPet();
+}
 
 async function loadInbox() {
   const host = document.getElementById('inboxStrip');
@@ -3387,6 +3457,7 @@ async function sendMessage(opts) {
             scrollBottom();
             break;
           case 'tool_call':
+            notePetToolCall();
             toolBox = ensureToolBox(toolBox);
             if (ev.call.name === 'file_edit' && ev.call.input && typeof ev.call.input.old_string === 'string' && typeof ev.call.input.new_string === 'string') {
               appendDiffToolItem(toolBox, ev.call.name, String(ev.call.input.path || '?'), ev.call.input.old_string, ev.call.input.new_string);
@@ -3571,6 +3642,7 @@ async function sendMessage(opts) {
             appendToolItem(toolBox, '🔁', 'auto-continue #' + ev.continuationCount, ev.reason + ' — continuing autonomously', false);
             break;
           case 'error':
+            notePetError();
             thinkEl.remove();
             addMsg('assistant', '⚠️ ' + ev.message);
             break;
@@ -3641,6 +3713,7 @@ async function sendMessage(opts) {
     loadSettings();
   } catch (e) {
     if (thinkEl.parentNode) thinkEl.remove();
+    notePetError();
     if (e.name === 'AbortError') addMsg('assistant', 'Stopped.');
     else addMsg('assistant', '⚠️ ' + e.message);
   }
