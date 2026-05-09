@@ -63,6 +63,34 @@ describe('CuratorScheduler.tick', () => {
     expect(result.ranCurator).toBe(false);
     expect(result.reason).toBe('within maintenance check window');
   });
+
+  it('still skips when candidate pressure is below threshold and interval has not elapsed', async () => {
+    const scheduler = makeScheduler({
+      intervalHours: 168,
+      getLastRunMs: () => Date.now() - 60 * 60 * 1000, // 1h ago vs 168h interval
+      runWhenCandidatesAtLeast: 25,
+      getPendingCandidateCount: async () => 5,
+    });
+    const result = await scheduler.tick(new Date(Date.now() + MAINTENANCE_WINDOW_MS + 1));
+    expect(result.ranCurator).toBe(false);
+    expect(result.reason).toBe('interval not elapsed');
+  });
+
+  it('overrides the long interval when pending candidates reach the pressure threshold', async () => {
+    const callModel = jest.fn(async (_prompt: string) => '');
+    let recorded = 0;
+    const scheduler = makeScheduler({
+      intervalHours: 168,
+      getLastRunMs: () => Date.now() - 60 * 60 * 1000,
+      runWhenCandidatesAtLeast: 25,
+      getPendingCandidateCount: async () => 30,
+      callModel,
+      recordRunMs: (ts) => { recorded = ts; },
+    });
+    const result = await scheduler.tick(new Date(Date.now() + MAINTENANCE_WINDOW_MS + 1));
+    expect(result.ranCurator).toBe(true);
+    expect(recorded).toBeGreaterThan(0);
+  });
 });
 
 const MAINTENANCE_WINDOW_MS = 60 * 60 * 1000;

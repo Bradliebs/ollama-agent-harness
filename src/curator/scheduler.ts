@@ -25,6 +25,16 @@ export interface CuratorSchedulerOptions extends CuratorDeps {
   getLastRunMs(): number;
   /** Persists the last-run timestamp so the interval check survives restarts. */
   recordRunMs(timestamp: number): void;
+  /**
+   * Optional accelerator: when the pending-candidate queue grows beyond
+   * `runWhenCandidatesAtLeast`, override the long-interval gate so the
+   * curator runs the next time the system is idle. Closes the "promotion
+   * loop is too slow" gap — without this, candidates can sit unreviewed
+   * for up to a week even if the queue is full.
+   */
+  getPendingCandidateCount?(): Promise<number>;
+  /** Threshold for the candidate-pressure accelerator. Default 25. */
+  runWhenCandidatesAtLeast?: number;
 }
 
 const HEARTBEAT_MS = 60_000;
@@ -62,7 +72,20 @@ export class CuratorScheduler {
     this.lastMaintenanceCheckMs = nowMs;
     const intervalMs = this.opts.intervalHours * 60 * 60 * 1000;
     const sinceLastRun = nowMs - (this.opts.getLastRunMs() || 0);
-    if (sinceLastRun < intervalMs) {
+    // Candidate-pressure accelerator: even if the long interval has not
+    // elapsed, fire the curator when the pending queue is past threshold.
+    // Idle gate still applies so we never interrupt active work.
+    let candidatePressure = false;
+    if (this.opts.getPendingCandidateCount) {
+      const threshold = this.opts.runWhenCandidatesAtLeast ?? 25;
+      try {
+        const pending = await this.opts.getPendingCandidateCount();
+        if (pending >= threshold) candidatePressure = true;
+      } catch (error) {
+        logger.warn('Curator', 'Candidate-pressure check failed', { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (sinceLastRun < intervalMs && !candidatePressure) {
       return { ranCurator: false, reason: 'interval not elapsed' };
     }
     const idleMs = nowMs - (this.opts.getLastUserActivityMs() || nowMs);
@@ -74,8 +97,8 @@ export class CuratorScheduler {
     try {
       const summary = await runCurator(this.opts.projectDir, this.opts.config, { isKillSwitchActive: this.opts.isKillSwitchActive, callModel: this.opts.callModel });
       this.opts.recordRunMs(nowMs);
-      runtimeTracer.recordEvent('curator.scheduled_run', { archived: summary.archived.length, candidates: summary.staleCandidates.length });
-      logger.info('Curator', 'Scheduled run completed', { archived: summary.archived.length, candidates: summary.staleCandidates.length });
+      runtimeTracer.recordEvent('curator.scheduled_run', { archived: summary.archived.length, candidates: summary.staleCandidates.length, candidatePressure });
+      logger.info('Curator', 'Scheduled run completed', { archived: summary.archived.length, candidates: summary.staleCandidates.length, candidatePressure });
       return { ranCurator: true };
     } finally {
       this.running = false;

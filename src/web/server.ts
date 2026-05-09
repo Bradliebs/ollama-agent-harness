@@ -7407,6 +7407,19 @@ function configureCuratorScheduler(): void {
       saveSettingsToDisk().catch(() => {});
     },
     callModel: curatorDeps().callModel,
+    // Candidate-pressure accelerator: when ≥25 unreviewed candidates have
+    // accumulated, run the curator the next time the system is idle even
+    // if the long interval (default 168h) has not elapsed. Keeps the
+    // promotion loop from going stale on busy days. Reads listed are
+    // already cheap because the file is JSONL.
+    runWhenCandidatesAtLeast: 25,
+    getPendingCandidateCount: async () => {
+      // listReviewedLearningCandidates already merges candidates with their
+      // latest review and tags each one with reviewStatus. Anything still
+      // 'pending' counts toward candidate pressure.
+      const reviewed = await listReviewedLearningCandidates(PROJECT_DIR, 200).catch(() => []);
+      return reviewed.filter((candidate) => candidate.reviewStatus === 'pending').length;
+    },
   });
   curatorScheduler.start();
 }
