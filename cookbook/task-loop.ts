@@ -464,6 +464,12 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
   if (checkpoint) {
     console.log(`[Ralph] Resuming from checkpoint — iteration ${checkpoint.iteration}, last task: ${checkpoint.lastTaskId}`);
   }
+  const requestedIterations = parseInt(process.env.FORGE_REQUESTED_ITERATIONS ?? "", 10);
+  const remainingIterationBudget = Math.max(0, maxIterations - iteration);
+  const requestedBudgetText = Number.isFinite(requestedIterations) && requestedIterations > 0
+    ? `${requestedIterations} requested task(s)`
+    : `${remainingIterationBudget} task(s) available from current checkpoint`;
+  console.log(`[Ralph] Run budget: ${requestedBudgetText}; checkpoint iteration ${iteration}; absolute stop iteration ${maxIterations}.`);
 
   while (iteration < maxIterations) {
     iteration++;

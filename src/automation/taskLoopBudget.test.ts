@@ -23,6 +23,7 @@ import { ralphLoop } from '../../cookbook/task-loop';
 describe('cookbook/task-loop ralphLoop HARNESS_TIME_BUDGET_MS halt', () => {
   const originalCwd = process.cwd();
   const originalBudget = process.env.HARNESS_TIME_BUDGET_MS;
+  const originalRequestedIterations = process.env.FORGE_REQUESTED_ITERATIONS;
   const originalSnapshot = process.env.HARNESS_AUTONOMY_SNAPSHOT;
   let workDir: string;
   let warnSpy: jest.SpyInstance;
@@ -63,6 +64,8 @@ describe('cookbook/task-loop ralphLoop HARNESS_TIME_BUDGET_MS halt', () => {
     rmSync(workDir, { recursive: true, force: true });
     if (originalBudget === undefined) delete process.env.HARNESS_TIME_BUDGET_MS;
     else process.env.HARNESS_TIME_BUDGET_MS = originalBudget;
+    if (originalRequestedIterations === undefined) delete process.env.FORGE_REQUESTED_ITERATIONS;
+    else process.env.FORGE_REQUESTED_ITERATIONS = originalRequestedIterations;
     if (originalSnapshot === undefined) delete process.env.HARNESS_AUTONOMY_SNAPSHOT;
     else process.env.HARNESS_AUTONOMY_SNAPSHOT = originalSnapshot;
   });
@@ -90,5 +93,28 @@ describe('cookbook/task-loop ralphLoop HARNESS_TIME_BUDGET_MS halt', () => {
     expect(logged).toMatch(/Reason:\s+time budget exhausted/);
     // Loop must have stopped before all 3 plan tasks were attempted.
     expect(implementCalls.length).toBeLessThan(3);
+  });
+
+  it('logs requested task budget separately from absolute resume iteration stop', () => {
+    writeFileSync(join(workDir, 'IMPLEMENTATION_PLAN.md'), ['# Plan', '', '- [ ] task-a — first', ''].join('\n'));
+    writeFileSync(join(workDir, '.forge-state.json'), JSON.stringify({ iteration: 1, lastTaskId: 'previous-task' }));
+    process.env.HARNESS_TIME_BUDGET_MS = '0';
+    process.env.FORGE_REQUESTED_ITERATIONS = '20';
+
+    ralphLoop(
+      join(workDir, 'IMPLEMENTATION_PLAN.md'),
+      21,
+      false,
+      {
+        implementTask: () => {
+          writeFileSync(join(workDir, 'changed.txt'), 'changed');
+        },
+        validateTask: () => true,
+      },
+    );
+
+    const logged = logSpy.mock.calls.flat().join('\n');
+    expect(logged).toMatch(/Run budget: 20 requested task\(s\); checkpoint iteration 1; absolute stop iteration 21\./);
+    expect(logged).toMatch(/=== Iteration 2\/21 ===/);
   });
 });
