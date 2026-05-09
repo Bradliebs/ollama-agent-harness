@@ -1166,6 +1166,7 @@ app.post('/api/autonomy/start', async (req, res) => {
     if (preflight.blocked.length > 0) { res.status(409).json({ error: 'Autonomy preflight failed.', preflight }); return; }
     const requestedMaxIterations = Math.max(1, Math.floor(Number(req.body?.maxIterations ?? 1) || 1));
     const requestedMaxTurns = Math.max(1, Math.min(500, Math.floor(Number(req.body?.maxTurns ?? process.env.HARNESS_MAX_TURNS ?? 30) || 30)));
+    const requestedUnproductiveTurnLimit = Math.max(1, Math.min(100, Math.floor(Number(req.body?.unproductiveTurnLimit ?? 6) || 6)));
     const checkpointIteration = await readAutonomyCheckpointIteration();
     const effectiveMaxIterations = checkpointIteration + requestedMaxIterations;
     const env = sanitizeSpawnEnv(process.env);
@@ -1179,7 +1180,7 @@ app.post('/api/autonomy/start', async (req, res) => {
     setEnv('FORGE_MAX_ITERATIONS', effectiveMaxIterations);
     setEnv('HARNESS_MAX_TURNS', requestedMaxTurns);
     setEnv('HARNESS_TIME_BUDGET_MS', req.body?.timeBudgetMs);
-    setEnv('HARNESS_UNPRODUCTIVE_TURN_LIMIT', req.body?.unproductiveTurnLimit ?? 6);
+    setEnv('HARNESS_UNPRODUCTIVE_TURN_LIMIT', requestedUnproductiveTurnLimit);
     await fs.rm(path.join(PROJECT_DIR, '.forge-stop'), { force: true }).catch(() => {});
     autonomyStartedAt = new Date().toISOString();
     // Windows: Node 20.12+/18.20.2+ refuses to spawn .bat/.cmd directly
@@ -1205,7 +1206,7 @@ app.post('/api/autonomy/start', async (req, res) => {
     const evidence = createRunEvidence({ id: `autonomy:${autonomyStartedAt}`, kind: 'autonomy', request: preview.tasks.find((task) => task.status === 'pending')?.title || 'Run next pending implementation task', runName: 'Ralph autonomy loop', command: 'npm run autonomy', success: true, summary: `Started with ${preview.pending} pending task(s).` });
     await appendRunEvidence(PROJECT_DIR, evidence);
     autonomyChild.on('exit', () => { autonomyChild = null; autonomyStartedAt = undefined; });
-    res.json({ ok: true, startedAt: autonomyStartedAt, pid: autonomyChild.pid, pending: preview.pending, requestedMaxIterations, requestedMaxTurns, effectiveMaxIterations, checkpointIteration, evidence });
+    res.json({ ok: true, startedAt: autonomyStartedAt, pid: autonomyChild.pid, pending: preview.pending, requestedMaxIterations, requestedMaxTurns, requestedUnproductiveTurnLimit, effectiveMaxIterations, checkpointIteration, evidence });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -5046,6 +5047,31 @@ function writePermissionRecoverySmokeChat(res: express.Response): void {
   res.end();
 }
 
+export function parseExplicitSkillInvocation(messageText: string): { name: string; input: string } | null {
+  const match = messageText.trim().match(/^Use the skill:\s*([a-z0-9][\w-]*)(?:\s+with input:\s*([\s\S]*))?$/i);
+  if (!match) return null;
+  return { name: match[1], input: (match[2] || '').trim() };
+}
+
+async function loadExplicitSkillContext(messageText: string): Promise<{ skill?: SkillDefinition; context: string }> {
+  const invocation = parseExplicitSkillInvocation(messageText);
+  if (!invocation) return { context: '' };
+
+  const skills = await loadSkillsDir(SKILLS_DIR).catch(() => []);
+  const skill = skills.find((candidate) => candidate.name.toLowerCase() === invocation.name.toLowerCase());
+  if (!skill) return { context: '' };
+
+  recordSkillUse(PROJECT_DIR, skill.name).catch(() => {});
+  const inputBlock = invocation.input
+    ? `\n\n[User input for this skill]\n${invocation.input}`
+    : '\n\n[User input for this skill]\nNo extra input was supplied. Ask one concise question if the skill needs business, product, audience, or goal details before producing useful output.';
+
+  return {
+    skill,
+    context: `--- Explicitly Selected Skill ---\nThe user selected the runtime skill \"${skill.name}\" from the slash palette. Apply this skill now. Use the instructions below as authoritative task context for this turn.\n\n${skill.description}\n\n${skill.content}${inputBlock}`,
+  };
+}
+
 // Chat endpoint — runs the agent loop and streams events as SSE
 app.post('/api/chat', async (req, res) => {
   await ensureSettingsLoaded();
@@ -5310,6 +5336,7 @@ app.post('/api/chat', async (req, res) => {
   const evolvedPrompt = await webRuntime.getEvolvedPrompt(promptWithPersonality);
   const baseSystemPrompt = await webRuntime.assembleSystemContext({ systemPrompt: withRoutingPolicy(evolvedPrompt), projectDir, skillsDir: SKILLS_DIR });
   const attachmentsBlock = await buildAttachmentsContextBlock(req.body?.attachments);
+  const explicitSkill = messageText ? await loadExplicitSkillContext(messageText) : { context: '' };
 
   // Mycelium routing: grow adaptive context from the message
   let myceliumRouter: MycelialContextRouter | null = null;
@@ -5408,7 +5435,7 @@ TOOL FALLBACK RULES:
   const squadNote = await buildSquadRoutingNote(squadId, typeof message === 'string' ? message : '').catch(() => null);
   const identityBlock = await renderIdentityForPrompt(PROJECT_DIR, { maxChars: 4000 }).catch(() => '');
   const recentAuditBlock = await renderRecentAuditForPrompt(PROJECT_DIR).catch(() => '');
-  const systemPrompt = [baseSystemPrompt, identityBlock, attachmentsBlock, myceliumContext, codeIntelContext, nervousContext, recentAuditBlock, squadNote, conciergeNote, toolSynthesisNudge].filter(Boolean).join('\n\n');
+  const systemPrompt = [baseSystemPrompt, identityBlock, attachmentsBlock, explicitSkill.context, myceliumContext, codeIntelContext, nervousContext, recentAuditBlock, squadNote, conciergeNote, toolSynthesisNudge].filter(Boolean).join('\n\n');
 
   const synthesisStats = await loadSynthesisStats(PROJECT_DIR);
   const effectiveMaxTurns = adaptiveMaxTurns(synthesisStats, activeModel, 25);

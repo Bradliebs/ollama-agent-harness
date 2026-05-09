@@ -188,6 +188,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   loadHistory();
   loadFiles();
   loadSettings();
+  loadSkills();
   loadPromiseWidget();
   loadOutputValidationTemplates();
   loadDiscovery();
@@ -1014,6 +1015,13 @@ function describeAutonomyStatus(status) {
   return 'Idle';
 }
 
+function renderAutonomyBudgetField(id, label, value, min, max, step, title) {
+  return '<label class="autonomy-budget-field" style="display:flex;flex-direction:column;gap:4px;min-width:130px;flex:1;font-size:11px;color:var(--text-dim)">'
+    + '<span>' + esc(label) + '</span>'
+    + '<input id="' + escAttr(id) + '" type="number" min="' + escAttr(String(min)) + '" max="' + escAttr(String(max)) + '" step="' + escAttr(String(step)) + '" value="' + escAttr(String(value)) + '" title="' + escAttr(title) + '" aria-label="' + escAttr(label) + '">'
+    + '</label>';
+}
+
 function renderAutonomyBuilder(data) {
   const runSettings = getAutonomyRunSettings();
   const nextTasks = (data.tasks || []).filter((task) => task.status === 'pending').slice(0, 5);
@@ -1022,7 +1030,13 @@ function renderAutonomyBuilder(data) {
     + '<div class="autonomy-actions"><button class="btn-sm" onclick="dryRunAutonomy()">Dry run next</button><button class="btn-sm" onclick="startAutonomyRun()">Start run</button><button class="btn-sm" onclick="toggleAutonomyLog()">View live log</button><button class="btn-sm" onclick="resetAutonomyRunState()">Reset run state</button><button class="btn-sm" onclick="openLeftTabByName(\'runs\')">Open runs</button></div>'
     + '<div class="trace-meta" style="margin-bottom:6px">1) Pick a preset or set values · 2) Start run · 3) Watch live log</div>'
     + '<div class="autonomy-actions"><button class="btn-sm" onclick="applyAutonomyPreset(\'single\')">Quick test</button><button class="btn-sm" onclick="applyAutonomyPreset(\'work\')">Work session</button><button class="btn-sm" onclick="applyAutonomyPreset(\'overnight\')">Overnight</button></div>'
-    + '<div class="task-add-form"><input id="autonomyMaxIterations" type="number" min="1" max="5000" step="1" value="' + escAttr(String(runSettings.maxIterations)) + '" title="How many tasks to run this start" placeholder="Tasks this run"><input id="autonomyMaxTurns" type="number" min="1" max="500" step="1" value="' + escAttr(String(runSettings.maxTurns)) + '" title="Maximum model/tool turns allowed inside each task" placeholder="Turns per task"><input id="autonomyTimeBudgetHours" type="number" min="0" max="48" step="0.5" value="' + escAttr(String(runSettings.timeBudgetHours)) + '" title="Time budget in hours (0 = unlimited)" placeholder="Time budget (hours)"><input id="autonomyUnproductiveTurnLimit" type="number" min="1" max="100" step="1" value="' + escAttr(String(runSettings.unproductiveTurnLimit)) + '" title="Stop after this many unproductive turns" placeholder="Stall limit"></div>'
+    + '<div class="task-add-form autonomy-budget-grid">'
+    + renderAutonomyBudgetField('autonomyMaxIterations', 'Tasks this run', runSettings.maxIterations, 1, 5000, 1, 'How many plan tasks Ralph may attempt after you press Start')
+    + renderAutonomyBudgetField('autonomyMaxTurns', 'Turns per task', runSettings.maxTurns, 1, 500, 1, 'Maximum model/tool turns allowed inside each task. Put 150 here when you want 150 turns.')
+    + renderAutonomyBudgetField('autonomyTimeBudgetHours', 'Time budget (hours)', runSettings.timeBudgetHours, 0, 48, 0.5, 'Wall-clock budget in hours. 0 means unlimited.')
+    + renderAutonomyBudgetField('autonomyUnproductiveTurnLimit', 'Stall limit', runSettings.unproductiveTurnLimit, 1, 100, 1, 'Stop after this many unproductive turns. This is not the same as turns per task.')
+    + '</div>'
+    + '<div class="trace-meta" id="autonomyAcceptedSettings">Configured: ' + esc(runSettings.maxIterations) + ' task(s) this run · ' + esc(runSettings.maxTurns) + ' turns/task · stall limit ' + esc(runSettings.unproductiveTurnLimit) + '</div>'
     + '<div class="task-add-form"><input id="newTaskInput" type="text" placeholder="Describe a task for the agent..." onkeydown="if(event.key===\'Enter\')addPlanTask()"><button class="btn-sm" onclick="addPlanTask()">+ Add task</button></div>'
     + '<div class="autonomy-task-list">' + (nextTasks.length ? nextTasks.map(renderTaskRow).join('') : '<div class="readiness-empty">No pending tasks. Add one above.</div>') + '</div>'
     + (doneTasks.length ? '<details class="details-mt4"><summary class="trace-meta trace-summary-sm">Recent completed (' + esc(data.done) + ')</summary><div class="autonomy-task-list">' + doneTasks.map((t) => '<div class="autonomy-task done"><strong>' + esc(t.id) + '</strong><span>' + esc(t.title) + '</span></div>').join('') + '</div></details>' : '')
@@ -1116,6 +1130,13 @@ async function startAutonomyRun() {
       const requestedTurns = data.requestedMaxTurns ?? runSettings.maxTurns;
       const budgetText = runSettings.timeBudgetHours > 0 ? ` · ${runSettings.timeBudgetHours}h budget` : '';
       status.textContent = `Started PID ${data.pid} · requested ${requested} task(s) · ${requestedTurns} turns/task${budgetText} · streaming live updates`;
+    }
+    const accepted = document.getElementById('autonomyAcceptedSettings');
+    if (accepted) {
+      const requested = data.requestedMaxIterations ?? runSettings.maxIterations;
+      const requestedTurns = data.requestedMaxTurns ?? runSettings.maxTurns;
+      const acceptedStall = data.requestedUnproductiveTurnLimit ?? runSettings.unproductiveTurnLimit;
+      accepted.textContent = `Server accepted: ${requested} task(s) this run · ${requestedTurns} turns/task · stall limit ${acceptedStall}`;
     }
     const logModal = document.getElementById('autonomyLogModal');
     if (logModal && logModal.classList.contains('hidden-by-default')) toggleAutonomyLog();
@@ -4633,6 +4654,7 @@ function refreshSkillSlashCommands(skills) {
         input.value = 'Use the skill: ' + name;
         input.focus();
         try { autoSize(input); } catch {}
+        sendMessage().catch((error) => console.warn('skill slash command failed', error));
       })(s.name),
       fallback: '',
     }))

@@ -4,7 +4,7 @@ import * as fsSync from 'fs';
 import http from 'http';
 import * as os from 'os';
 import * as path from 'path';
-import { app, inferModelCapabilities, resetSettingsLoadedForTest, resolveChatModelForRequest, setWebRuntimeOverrides, startupConnectorsEnabled, stopUploadsAutoPrune } from './server';
+import { app, inferModelCapabilities, parseExplicitSkillInvocation, resetSettingsLoadedForTest, resolveChatModelForRequest, setWebRuntimeOverrides, startupConnectorsEnabled, stopUploadsAutoPrune } from './server';
 import { runtimeTracer } from '../core/tracing';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { appendLearningCandidate, extractLearningCandidate } from '../learning/sessionLearning';
@@ -19,6 +19,39 @@ import type { LoopEvent, SessionEvent } from '../types';
 import { cleanupHarnessArtifacts, diffHarnessRuntimeState, restoreHarnessRuntimeState, seedHarnessAutomationJobsForTest, snapshotHarnessRuntimeState, type HarnessDocumentArtifact, type HarnessRuntimeStateSnapshot } from '../testSupport/harnessCleanup.test-support';
 
 jest.setTimeout(30_000);
+
+describe('parseExplicitSkillInvocation', () => {
+  it('parses bare invocation', () => {
+    expect(parseExplicitSkillInvocation('Use the skill: zero-budget-growth-bible')).toEqual({
+      name: 'zero-budget-growth-bible',
+      input: '',
+    });
+  });
+
+  it('parses invocation with input block', () => {
+    expect(parseExplicitSkillInvocation('Use the skill: code-review with input: src/web/server.ts')).toEqual({
+      name: 'code-review',
+      input: 'src/web/server.ts',
+    });
+  });
+
+  it('is case-insensitive on the prefix', () => {
+    expect(parseExplicitSkillInvocation('use THE skill: my-skill')).toEqual({
+      name: 'my-skill',
+      input: '',
+    });
+  });
+
+  it('returns null for unrelated chat messages', () => {
+    expect(parseExplicitSkillInvocation('hello, how are you?')).toBeNull();
+    expect(parseExplicitSkillInvocation('Use the skills: code-review')).toBeNull();
+  });
+
+  it('rejects skill names that do not start with letter or digit', () => {
+    expect(parseExplicitSkillInvocation('Use the skill: -bad-name')).toBeNull();
+    expect(parseExplicitSkillInvocation('Use the skill: _underscore')).toBeNull();
+  });
+});
 
 describe('web server API validation', () => {
   let server: Server;
@@ -3360,6 +3393,69 @@ describe('web server API validation', () => {
       await expect(settings.json()).resolves.toMatchObject({ context: { configuredMaxTokens: 1024, detectedMaxTokens: 32768, effectiveMaxTokens: 1024 } });
     } finally {
       restore();
+    }
+  });
+
+  it('injects explicitly selected runtime skill instructions into chat context', async () => {
+    const skillDir = path.join(process.cwd(), '.harness', 'skills', 'explicit-skill-test');
+    const skillFile = path.join(skillDir, 'SKILL.md');
+    const capturedPrompts: string[] = [];
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('explicit-skill-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
+        capturedPrompts.push(config.systemPrompt);
+        yield { type: 'text', content: 'skill context captured' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(skillFile, [
+        '---',
+        'name: "explicit-skill-test"',
+        'description: "Test skill for explicit slash invocation"',
+        'domain: "testing"',
+        'triggers:',
+        '  - "explicit skill test"',
+        '---',
+        '',
+        '# Explicit Skill Test',
+        '',
+        'Always mention the marker EXPLICIT_SKILL_MARKER when used.',
+      ].join('\n'), 'utf-8');
+
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'Use the skill: explicit-skill-test with input: bakery launch', model: 'test-model' }),
+      });
+
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(capturedPrompts).toHaveLength(1);
+      expect(capturedPrompts[0]).toContain('--- Explicitly Selected Skill ---');
+      expect(capturedPrompts[0]).toContain('The user selected the runtime skill "explicit-skill-test"');
+      expect(capturedPrompts[0]).toContain('EXPLICIT_SKILL_MARKER');
+      expect(capturedPrompts[0]).toContain('[User input for this skill]\nbakery launch');
+    } finally {
+      restore();
+      await fs.rm(skillDir, { recursive: true, force: true });
     }
   });
 

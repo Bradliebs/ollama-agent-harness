@@ -45,6 +45,7 @@ async function main() {
       autoSize(input);
       return { ok: visible && items.length > 0 && hasHelp, visible, itemCount: items.length, hasHelp };
     });
+    let dynamicSkillSlashCommandSmoke = { ok: false, reason: 'not run' };
     await page.evaluate(() => { const details = document.getElementById('welcomeFirstRun'); if (details) details.open = true; });
     await page.click('#firstRunSetup button:has-text("Check setup")');
     await page.waitForFunction(() => !document.getElementById('firstRunHealth').classList.contains('initial-hidden'));
@@ -59,6 +60,7 @@ async function main() {
     await page.waitForFunction(() => document.getElementById('aboutPanel')?.textContent.includes('Manifest'));
     await page.evaluate(() => document.getElementById('verifyReleaseBtn')?.click());
     await page.waitForFunction(() => !document.getElementById('releaseVerificationPanel').classList.contains('initial-hidden'));
+    dynamicSkillSlashCommandSmoke = await runDynamicSkillSlashCommandSmoke(browser, targetUrl);
     await page.evaluate(() => { if (document.getElementById('rightPanel')?.classList.contains('hidden')) toggleRight(); });
     await page.evaluate(() => Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes('Run setup doctor'))?.click());
     await page.waitForFunction(() => !document.getElementById('settingsDoctorHealth').classList.contains('initial-hidden'));
@@ -342,7 +344,61 @@ async function main() {
         host.remove();
       }
     });
-    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke }) => {
+    const autonomyStartPayloadSmoke = await page.evaluate(async () => {
+      if (typeof renderAutonomyBuilder !== 'function' || typeof startAutonomyRun !== 'function') {
+        return { ok: false, reason: 'autonomy builder functions missing' };
+      }
+      const panel = document.getElementById('autonomyBuilderPanel');
+      if (!panel) return { ok: false, reason: 'autonomy builder panel missing' };
+      panel.innerHTML = renderAutonomyBuilder({
+        planPath: 'IMPLEMENTATION_PLAN.md',
+        pending: 1,
+        done: 0,
+        failed: 0,
+        tasks: [{ id: 'ui-smoke-autonomy', title: 'UI smoke autonomy start payload', status: 'pending', anchors: [] }],
+      });
+      document.getElementById('autonomyMaxIterations').value = '20';
+      document.getElementById('autonomyMaxTurns').value = '150';
+      document.getElementById('autonomyTimeBudgetHours').value = '0';
+      document.getElementById('autonomyUnproductiveTurnLimit').value = '100';
+      const originalFetch = window.fetch;
+      let startPayload = null;
+      window.fetch = (resource, init = {}) => {
+        const url = typeof resource === 'string' ? resource : resource?.url;
+        if (url === '/api/autonomy/start') {
+          startPayload = init?.body ? JSON.parse(init.body) : null;
+          return Promise.resolve(new Response(JSON.stringify({
+            ok: true,
+            pid: 12345,
+            requestedMaxIterations: 20,
+            requestedMaxTurns: 150,
+            requestedUnproductiveTurnLimit: 100,
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        return Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      };
+      try {
+        await startAutonomyRun();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const statusText = document.getElementById('autonomyBuilderStatus')?.textContent || '';
+        const acceptedText = document.getElementById('autonomyAcceptedSettings')?.textContent || '';
+        return {
+          ok: Boolean(startPayload)
+            && startPayload.maxIterations === 20
+            && startPayload.maxTurns === 150
+            && startPayload.unproductiveTurnLimit === 100
+            && acceptedText.includes('Server accepted: 20 task(s) this run')
+            && acceptedText.includes('150 turns/task')
+            && acceptedText.includes('stall limit 100'),
+          startPayload,
+          statusText,
+          acceptedText,
+        };
+      } finally {
+        window.fetch = originalFetch;
+      }
+    });
+    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, dynamicSkillSlashCommandSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke }) => {
       const ids = Array.from(document.querySelectorAll('[id]')).map((element) => element.id);
       // Dynamically-rendered panels may legitimately re-render with the same ID
       const dynamicPanelIds = new Set(['permissionPanel', 'capabilityAlignmentPanel', 'toolRegistryPanel', 'automationRunsSection', 'curatorRunsSection']);
@@ -408,6 +464,7 @@ async function main() {
         missionControlRendered: document.getElementById('missionControlPanel')?.textContent.includes('Mission Control'),
         capabilityStarterSmoke,
         slashPaletteSmoke,
+        dynamicSkillSlashCommandSmoke,
         automationJobSafetyVisible,
         planCompleteNotBlocked: !(document.getElementById('missionControlPanel')?.querySelector('.mission-card.blocked')?.textContent?.includes('pending task')),
         hasAutonomyBuilder: Boolean(document.getElementById('autonomyBuilderPanel')),
@@ -496,7 +553,8 @@ async function main() {
         freshStartupSmoke,
         historyRestoreSmoke,
       };
-    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible: learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke });
+    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible: learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, dynamicSkillSlashCommandSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke });
+    result.autonomyStartPayloadSmoke = autonomyStartPayloadSmoke;
 
     const failures = [];
     if (!result.title.endsWith('Ollama Agent Harness')) failures.push(`Unexpected title: ${result.title}`);
@@ -556,9 +614,11 @@ async function main() {
     if (!result.missionControlRendered) failures.push('mission control readiness did not render');
     if (!result.capabilityStarterSmoke?.ok) failures.push(`capability template starter panel smoke failed: ${result.capabilityStarterSmoke?.reason || result.capabilityStarterSmoke?.statusText || 'unknown'}`);
     if (!result.slashPaletteSmoke?.ok) failures.push(`slash command palette did not open for bare slash: ${result.slashPaletteSmoke?.reason || 'no visible commands'}`);
+    if (!result.dynamicSkillSlashCommandSmoke?.ok) failures.push(`dynamic skill slash command did not submit expected skill request: ${JSON.stringify(result.dynamicSkillSlashCommandSmoke)}`);
     if (!result.automationJobSafetyVisible) failures.push('automation job safety panel was not rendered');
     if (!result.planCompleteNotBlocked) failures.push('plan-complete state incorrectly shows blocked card for pending tasks');
     if (!result.hasAutonomyBuilder) failures.push('autonomy builder panel was not found');
+    if (!result.autonomyStartPayloadSmoke?.ok) failures.push(`autonomy start payload did not preserve 150 turns: ${JSON.stringify(result.autonomyStartPayloadSmoke)}`);
     if (!result.hasDocumentStudio) failures.push('document studio panel was not found');
     if (!result.hasDocumentTemplateOptions) failures.push('expanded document template options were not found');
     if (!result.hasDocumentFormatOptions) failures.push('expanded document format options were not found');
@@ -670,14 +730,103 @@ async function runMobileBeginnerSmoke(browser, targetUrl) {
       const inputBox = input?.getBoundingClientRect();
       const firstRunBox = firstRun?.getBoundingClientRect();
       const viewportWidth = window.innerWidth;
+      const serializeBox = (box) => box ? ({ left: box.left, right: box.right, width: box.width }) : null;
+      const boxes = {
+        readiness: serializeBox(readinessBox),
+        input: serializeBox(inputBox),
+        firstRun: serializeBox(firstRunBox),
+      };
       const fits = [readinessBox, inputBox, firstRunBox].every((box) => box && box.width <= viewportWidth && box.left >= -1 && box.right <= viewportWidth + 1);
       return {
         ok: Boolean(readiness && quickStart && input && firstRun && fits && readiness.textContent?.trim()),
         viewportWidth,
+        boxes,
         readinessText: readiness?.textContent || '',
         quickStartDisabled: Boolean(quickStart?.disabled),
         fits,
       };
+    });
+  } finally {
+    await page.close();
+  }
+}
+
+async function runDynamicSkillSlashCommandSmoke(browser, targetUrl) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  try {
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => Boolean(document.getElementById('chatInput')) && Boolean(window.loadReadiness));
+    return await page.evaluate(async () => {
+    if (typeof loadSkills !== 'function' || typeof maybeShowSlashPalette !== 'function' || typeof applySelectedSlashCommand !== 'function') {
+      return { ok: false, reason: 'slash command functions missing' };
+    }
+    const input = document.getElementById('chatInput');
+    const modelSelect = document.getElementById('modelSelect');
+    if (!input || !modelSelect) return { ok: false, reason: 'chat input or model select missing' };
+    if (!modelSelect.value) {
+      const option = document.createElement('option');
+      option.value = 'ui-smoke-model';
+      option.textContent = 'ui-smoke-model';
+      modelSelect.appendChild(option);
+      modelSelect.value = 'ui-smoke-model';
+    }
+    const originalFetch = window.fetch.bind(window);
+    const originalSuggest = window.maybeSuggestOutputValidationProfile;
+    let chatPayload = null;
+    window.maybeSuggestOutputValidationProfile = async () => {};
+    window.fetch = (resource, init = {}) => {
+      const url = typeof resource === 'string' ? resource : resource?.url;
+      if (url === '/api/chat') {
+        chatPayload = init?.body ? JSON.parse(init.body) : null;
+        const encoder = new TextEncoder();
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: {"type":"text","content":"skill ready"}\n\ndata: {"type":"done","reason":"completed"}\n\ndata: [DONE]\n\n'));
+            controller.close();
+          },
+        });
+        return Promise.resolve(new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+      }
+      if (url === '/api/skills') {
+        const skill = { name: 'zero-budget-growth-bible', description: 'Zero-budget growth system', domain: 'marketing', triggers: [], enabled: true };
+        return Promise.resolve(new Response(JSON.stringify({
+          skills: [skill],
+          sources: [{ source: 'runtime', skills: [skill], diagnostics: [], mutable: true }, { source: 'repo', skills: [], diagnostics: [], mutable: false }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      if (url === '/api/skills/usage') {
+        return Promise.resolve(new Response(JSON.stringify({ records: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      if (url === '/api/curator') {
+        return Promise.resolve(new Response(JSON.stringify({ proposals: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return originalFetch(resource, init);
+    };
+    try {
+      await loadSkills();
+      input.value = '/ze';
+      input.focus();
+      autoSize(input);
+      maybeShowSlashPalette(input.value);
+      const paletteText = document.getElementById('slashPaletteList')?.textContent || '';
+      applySelectedSlashCommand();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const hidden = document.getElementById('slashPalette')?.classList.contains('hidden');
+      return {
+        ok: Boolean(chatPayload)
+          && chatPayload.message === 'Use the skill: zero-budget-growth-bible'
+          && hidden
+          && input.value === ''
+          && paletteText.includes('/zero-budget-growth-bible'),
+        chatPayload,
+        hidden,
+        inputValue: input.value,
+        paletteText,
+      };
+    } finally {
+      window.fetch = originalFetch;
+      window.maybeSuggestOutputValidationProfile = originalSuggest;
+    }
     });
   } finally {
     await page.close();
