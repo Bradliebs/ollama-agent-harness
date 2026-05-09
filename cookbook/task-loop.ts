@@ -162,8 +162,19 @@ const HARNESS_MODEL = process.env.HARNESS_MODEL ?? "gemma4:e4b";
 const HARNESS_HOST = process.env.HARNESS_HOST ?? "http://localhost:11434";
 const HARNESS_BACKEND = process.env.HARNESS_BACKEND ?? "ollama";
 const HARNESS_PERMISSION_MODE = process.env.HARNESS_PERMISSION_MODE ?? "acceptEdits";
-const HARNESS_MAX_TURNS = process.env.HARNESS_MAX_TURNS ?? "30";
-const HARNESS_UNPRODUCTIVE_TURN_LIMIT = process.env.HARNESS_UNPRODUCTIVE_TURN_LIMIT ?? "6";
+const requestedMaxTurns = parseInt(process.env.HARNESS_MAX_TURNS ?? "30", 10);
+const requestedUnproductiveTurnLimit = parseInt(process.env.HARNESS_UNPRODUCTIVE_TURN_LIMIT ?? "6", 10);
+// Mirror the /api/autonomy/start clamp so env-direct users cannot accidentally
+// pass an unbounded stall limit (e.g. 100000) that would defeat the breaker.
+const clampedUnproductiveTurnLimit = Math.max(
+  1,
+  Math.min(100, Number.isFinite(requestedUnproductiveTurnLimit) ? requestedUnproductiveTurnLimit : 6),
+);
+const HARNESS_MAX_TURNS = String(Math.max(
+  Number.isFinite(requestedMaxTurns) ? requestedMaxTurns : 30,
+  clampedUnproductiveTurnLimit,
+));
+const HARNESS_UNPRODUCTIVE_TURN_LIMIT = String(clampedUnproductiveTurnLimit);
 const HARNESS_VALIDATE_CMD = process.env.HARNESS_VALIDATE_CMD ?? "npm run typecheck";
 
 /**
@@ -189,9 +200,12 @@ function buildTaskPrompt(task: Task): string {
     }
   }
 
+  const visualReportPath = join(getBracknellDir(), BRACKNELL_VISUAL_REPORT_FILE);
   const targetLine = task.target
     ? `Target file (edit this exact path): ${task.target}`
-    : `No explicit target file. Pick the most appropriate file from the anchors above.`;
+    : requiresVisualBracknellReport(task)
+      ? `Target file (edit this exact path): ${visualReportPath}`
+      : `No explicit target file. Pick the most appropriate file from the anchors above.`;
 
   const sections: string[] = [
     `IMMEDIATE TASK — start working now. Do not ask for clarification. Do not greet me. Explore only what is needed to complete the task.`,
@@ -220,6 +234,18 @@ function buildTaskPrompt(task: Task): string {
       `    additions. Never use empty old_string.`,
     );
   } else {
+    if (requiresVisualBracknellReport(task)) {
+      sections.push(
+        `This is a Bracknell visual-report task. The final report must NOT be a Markdown file.`,
+        targetLine,
+        `Required deliverable: use file_write or file_edit on that exact target file as a polished, self-contained HTML report for Robyn.`,
+        `Do not write the final report to C:\\AI\\AgentFiles. Do not create a Markdown final report.`,
+        `Start from this HTML scaffold before refining the content: ${buildVisualReportScaffoldPrompt()}`,
+        `Also update OUTPUT_MANIFEST.md and EMAIL_DRAFT.md with the visual report path and send/draft evidence.`,
+        `After no more than three read/list/search calls, write the HTML target file even if it is only a first version, then refine it afterward.`,
+        ``,
+      );
+    }
     sections.push(
       `Steps you MUST execute in this order:`,
       `  1. Inspect the relevant folder, files, or web sources named by the task.`,
@@ -248,6 +274,7 @@ function buildTaskPrompt(task: Task): string {
 /** Hard cap per anchor file. Keeps prompts under typical 32K-128K context limits. */
 const MAX_ANCHOR_BYTES = 24_000;
 const BRACKNELL_REQUIRED_FILES = ["OUTPUT_MANIFEST.md", "READ_ME_FIRST.md"];
+const BRACKNELL_VISUAL_REPORT_FILE = "ROBYN_VISUAL_REPORT.html";
 
 function getBracknellDir(): string {
   return process.env.HARNESS_BRACKNELL_DIR ?? "C:\\AI\\Oracle\\Bracknell_Food_Business";
@@ -256,6 +283,16 @@ function getBracknellDir(): string {
 function isBracknellDeliveryTask(task: Task): boolean {
   const text = `${task.id} ${task.title}`.toLowerCase();
   return text.includes("bracknell") && text.includes("food");
+}
+
+function requiresVisualBracknellReport(task: Task): boolean {
+  const text = `${task.id} ${task.title}`.toLowerCase();
+  return isBracknellDeliveryTask(task)
+    && (text.includes("visual") || text.includes("visually") || text.includes("html") || text.includes("don't use markdown") || text.includes("do not use markdown"));
+}
+
+function buildVisualReportScaffoldPrompt(): string {
+  return "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Robyn's Bracknell Food Business Launch Report</title><style>body{font-family:Segoe UI,Arial,sans-serif;margin:0;color:#1f2933;background:#fffaf1}header{padding:56px 24px;background:#24577a;color:white}main{max-width:1100px;margin:auto;padding:24px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}.card{background:white;border:1px solid #d7cfc0;border-radius:8px;padding:16px}table{width:100%;border-collapse:collapse}th,td{padding:10px;border-bottom:1px solid #d7cfc0;text-align:left}</style></head><body><header><h1>Robyn's launch report</h1><p>Plain-English decision guide for the Bracknell food business.</p></header><main><section><h2>The short answer</h2><div class=\"grid\"><article class=\"card\"><h3>Best route</h3><p>Start small, prove safety, demand, and margin.</p></article><article class=\"card\"><h3>Main risk</h3><p>Operational complexity before food safety and costing are repeatable.</p></article></div></section><section><h2>90-day plan</h2><table><tr><th>Phase</th><th>Action</th></tr><tr><td>Week 1</td><td>Registration, allergen matrix, records, insurance.</td></tr><tr><td>Weeks 2-4</td><td>Test batches and soft launch.</td></tr><tr><td>Days 31-90</td><td>Repeatable sales rhythm.</td></tr></table></section></main></body></html>";
 }
 
 function startOfToday(): number {
@@ -352,6 +389,7 @@ function validateTask(task: Task): boolean {
     const bracknellDir = getBracknellDir();
     const todayMs = startOfToday();
     const missing = BRACKNELL_REQUIRED_FILES.filter((fileName) => !fileChangedSince(join(bracknellDir, fileName), todayMs));
+    const visualReportMissing = requiresVisualBracknellReport(task) && !fileChangedSince(join(bracknellDir, BRACKNELL_VISUAL_REPORT_FILE), todayMs);
     const emailDraftChanged = fileChangedSince(join(bracknellDir, "EMAIL_DRAFT.md"), todayMs);
     const manifestPath = join(bracknellDir, "OUTPUT_MANIFEST.md");
     const manifestText = existsSync(manifestPath) ? readFileSync(manifestPath, "utf-8") : "";
@@ -360,6 +398,10 @@ function validateTask(task: Task): boolean {
     console.log(`[Ralph] Bracknell validation: ${changedToday.length} file(s) changed today in ${bracknellDir}.`);
     if (missing.length > 0) {
       console.warn(`[Ralph] Bracknell validation missing or stale: ${missing.join(", ")}.`);
+      return false;
+    }
+    if (visualReportMissing) {
+      console.warn(`[Ralph] Bracknell validation missing or stale: ${BRACKNELL_VISUAL_REPORT_FILE}.`);
       return false;
     }
     if (!emailDraftChanged && !manifestMentionsEmail) {

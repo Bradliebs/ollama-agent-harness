@@ -4651,10 +4651,25 @@ function refreshSkillSlashCommands(skills) {
         hideSlashPalette();
         const input = document.getElementById('chatInput');
         if (!input) return;
+        // Guard: if no model is picked yet, an inner sendMessage() will
+        // alert and bail silently. Surface that as a visible chat message
+        // so the user knows why their /skill click did nothing.
+        const modelEl = document.getElementById('modelSelect');
+        if (!modelEl || !modelEl.value) {
+          try { addMsg('assistant', '⚠️ Pick a model first (top of the chat) before running `/' + name + '`.'); } catch {}
+          input.value = 'Use the skill: ' + name;
+          input.focus();
+          try { autoSize(input); } catch {}
+          return;
+        }
         input.value = 'Use the skill: ' + name;
         input.focus();
         try { autoSize(input); } catch {}
-        sendMessage().catch((error) => console.warn('skill slash command failed', error));
+        sendMessage().catch((error) => {
+          const detail = (error && error.message) ? error.message : String(error);
+          try { addMsg('assistant', '⚠️ Could not run skill `' + name + '`: ' + detail); } catch {}
+          console.warn('skill slash command failed', error);
+        });
       })(s.name),
       fallback: '',
     }))
