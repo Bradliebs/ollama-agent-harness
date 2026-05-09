@@ -47,6 +47,7 @@ async function main() {
     });
     let dynamicSkillSlashCommandSmoke = { ok: false, reason: 'not run' };
     let myceliumContextCardsSmoke = { ok: false, reason: 'not run' };
+    let inboxStripSmoke = { ok: false, reason: 'not run' };
     await page.evaluate(() => { const details = document.getElementById('welcomeFirstRun'); if (details) details.open = true; });
     await page.click('#firstRunSetup button:has-text("Check setup")');
     await page.waitForFunction(() => !document.getElementById('firstRunHealth').classList.contains('initial-hidden'));
@@ -63,6 +64,7 @@ async function main() {
     await page.waitForFunction(() => !document.getElementById('releaseVerificationPanel').classList.contains('initial-hidden'));
     dynamicSkillSlashCommandSmoke = await runDynamicSkillSlashCommandSmoke(browser, targetUrl);
     myceliumContextCardsSmoke = await runMyceliumContextCardsSmoke(browser, targetUrl);
+    inboxStripSmoke = await runInboxStripSmoke(browser, targetUrl);
     await page.evaluate(() => { if (document.getElementById('rightPanel')?.classList.contains('hidden')) toggleRight(); });
     await page.evaluate(() => Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes('Run setup doctor'))?.click());
     await page.waitForFunction(() => !document.getElementById('settingsDoctorHealth').classList.contains('initial-hidden'));
@@ -400,7 +402,7 @@ async function main() {
         window.fetch = originalFetch;
       }
     });
-    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, dynamicSkillSlashCommandSmoke, myceliumContextCardsSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke }) => {
+    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, dynamicSkillSlashCommandSmoke, myceliumContextCardsSmoke, inboxStripSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke }) => {
       const ids = Array.from(document.querySelectorAll('[id]')).map((element) => element.id);
       // Dynamically-rendered panels may legitimately re-render with the same ID
       const dynamicPanelIds = new Set(['permissionPanel', 'capabilityAlignmentPanel', 'toolRegistryPanel', 'automationRunsSection', 'curatorRunsSection']);
@@ -468,6 +470,7 @@ async function main() {
         slashPaletteSmoke,
         dynamicSkillSlashCommandSmoke,
         myceliumContextCardsSmoke,
+        inboxStripSmoke,
         automationJobSafetyVisible,
         planCompleteNotBlocked: !(document.getElementById('missionControlPanel')?.querySelector('.mission-card.blocked')?.textContent?.includes('pending task')),
         hasAutonomyBuilder: Boolean(document.getElementById('autonomyBuilderPanel')),
@@ -564,7 +567,7 @@ async function main() {
         freshStartupSmoke,
         historyRestoreSmoke,
       };
-    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible: learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, dynamicSkillSlashCommandSmoke, myceliumContextCardsSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke });
+    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible: learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, dynamicSkillSlashCommandSmoke, myceliumContextCardsSmoke, inboxStripSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke });
     result.autonomyStartPayloadSmoke = autonomyStartPayloadSmoke;
 
     const failures = [];
@@ -627,6 +630,7 @@ async function main() {
     if (!result.slashPaletteSmoke?.ok) failures.push(`slash command palette did not open for bare slash: ${result.slashPaletteSmoke?.reason || 'no visible commands'}`);
     if (!result.dynamicSkillSlashCommandSmoke?.ok) failures.push(`dynamic skill slash command did not submit expected skill request: ${JSON.stringify(result.dynamicSkillSlashCommandSmoke)}`);
     if (!result.myceliumContextCardsSmoke?.ok) failures.push(`mycelium context cards did not render expected nodes: ${JSON.stringify(result.myceliumContextCardsSmoke)}`);
+    if (!result.inboxStripSmoke?.ok) failures.push(`inbox strip did not render aggregated items: ${JSON.stringify(result.inboxStripSmoke)}`);
     if (!result.automationJobSafetyVisible) failures.push('automation job safety panel was not rendered');
     if (!result.planCompleteNotBlocked) failures.push('plan-complete state incorrectly shows blocked card for pending tasks');
     if (!result.hasAutonomyBuilder) failures.push('autonomy builder panel was not found');
@@ -1301,6 +1305,53 @@ async function runMyceliumContextCardsSmoke(browser, targetUrl) {
             && !labels.includes('help me launch a bakery'),
           cardCount: cards.length,
           labels,
+        };
+      } finally {
+        window.fetch = originalFetch;
+      }
+    });
+  } finally {
+    await page.close();
+  }
+}
+
+async function runInboxStripSmoke(browser, targetUrl) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  try {
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => Boolean(document.getElementById('inboxStrip')) && typeof window.loadInbox === 'function');
+    return await page.evaluate(async () => {
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = (resource, init = {}) => {
+        const url = typeof resource === 'string' ? resource : resource?.url;
+        if (url === '/api/inbox') {
+          return Promise.resolve(new Response(JSON.stringify({
+            total: 3,
+            shown: 3,
+            items: [
+              { id: 'permission:p-1', kind: 'permission', title: 'Approve email_send', detail: 'Tool waiting on you', timestamp: new Date().toISOString(), priority: 100, action: { kind: 'open_tab', payload: 'tools' } },
+              { id: 'plan_task:bracknell', kind: 'plan_task', title: 'finish bracknell delivery', detail: 'Pending plan task', timestamp: new Date(Date.now() - 60_000).toISOString(), priority: 60, action: { kind: 'open_tab', payload: 'autonomy' } },
+              { id: 'automation_run:nightly:2026-05-09', kind: 'automation_run', title: 'nightly digest completed', detail: 'Open Runs to view output', timestamp: new Date(Date.now() - 120_000).toISOString(), priority: 30, action: { kind: 'open_tab', payload: 'runs' } },
+            ],
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        return originalFetch(resource, init);
+      };
+      try {
+        await window.loadInbox();
+        const host = document.getElementById('inboxStrip');
+        const items = host ? Array.from(host.querySelectorAll('.inbox-item')) : [];
+        const titles = items.map((item) => item.querySelector('.inbox-title')?.textContent || '');
+        const visible = host ? !host.classList.contains('initial-hidden') : false;
+        return {
+          ok: visible
+            && items.length === 3
+            && titles[0] === 'Approve email_send'
+            && titles[2] === 'nightly digest completed'
+            && Boolean(items[0].classList.contains('priority-high')),
+          visible,
+          itemCount: items.length,
+          titles,
         };
       } finally {
         window.fetch = originalFetch;

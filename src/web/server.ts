@@ -1076,6 +1076,90 @@ app.get('/api/autonomy/plan-preview', async (_req, res) => {
   }
 });
 
+// Unified inbox: aggregates the things that need the user's attention into
+// one ranked list so the chat-first surface can show "3 things need you"
+// without the user opening Permissions, Mission Control, and Runs tabs
+// individually. Read-only and lossless — every item links back to its
+// source endpoint via the `source` and `sourceUrl` fields. Failure of
+// any single source degrades gracefully (empty list for that category)
+// so the overall inbox never crashes the UI.
+app.get('/api/inbox', async (_req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    const items: Array<{
+      id: string;
+      kind: 'permission' | 'plan_task' | 'automation_run';
+      title: string;
+      detail: string;
+      timestamp: string;
+      priority: number;
+      action?: { kind: 'chat' | 'open_tab'; payload: string };
+    }> = [];
+
+    // 1. Pending permission prompts — highest priority because they block
+    //    a tool call that is waiting on the user's decision right now.
+    for (const prompt of permissionPrompts.list()) {
+      items.push({
+        id: `permission:${prompt.id}`,
+        kind: 'permission',
+        title: `Approve ${prompt.call.name}`,
+        detail: prompt.reason || 'Tool call waiting on your decision.',
+        timestamp: prompt.createdAt,
+        priority: 100,
+        action: { kind: 'open_tab', payload: 'tools' },
+      });
+    }
+
+    // 2. Pending implementation plan tasks — work the user has queued for
+    //    autonomy but has not started yet. Capped to the 5 next pending
+    //    items so the inbox does not drown in long backlogs.
+    try {
+      const preview = await readAutonomyPlanPreview();
+      const pendingTasks = (preview.tasks || []).filter((task) => task.status === 'pending').slice(0, 5);
+      for (const task of pendingTasks) {
+        items.push({
+          id: `plan_task:${task.id}`,
+          kind: 'plan_task',
+          title: task.title,
+          detail: 'Pending plan task in IMPLEMENTATION_PLAN.md',
+          timestamp: new Date().toISOString(),
+          priority: 60,
+          action: { kind: 'open_tab', payload: 'autonomy' },
+        });
+      }
+    } catch { /* no plan file yet — skip silently */ }
+
+    // 3. Recent automation runs the user has not viewed — surface the most
+    //    recent 5 so overnight work shows up the next time the user opens
+    //    the chat. Failure runs sort above successes within this category.
+    try {
+      const runs = (await readAutomationRunLog(PROJECT_DIR, 50)).slice(0, 5);
+      for (const run of runs) {
+        const success = run.success !== false;
+        items.push({
+          id: `automation_run:${run.jobId}:${run.ranAt}`,
+          kind: 'automation_run',
+          title: (run.name || run.jobId) + (success ? ' completed' : ' failed'),
+          detail: success ? 'Automation run finished — open Runs to see output.' : 'Automation run failed — open Runs to investigate.',
+          timestamp: run.ranAt,
+          priority: success ? 30 : 50,
+          action: { kind: 'open_tab', payload: 'runs' },
+        });
+      }
+    } catch { /* no run log yet — skip silently */ }
+
+    // Rank: priority desc, then timestamp desc. Hard cap at 8 so the UI
+    // strip stays glanceable; a "show all" link in the UI links to the
+    // dedicated tabs.
+    items.sort((a, b) => (b.priority - a.priority) || (b.timestamp.localeCompare(a.timestamp)));
+    const top = items.slice(0, 8);
+    res.json({ total: items.length, shown: top.length, items: top });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
 app.post('/api/autonomy/tasks', async (req, res) => {
   try {
     const title = String(req.body?.title ?? '').trim();

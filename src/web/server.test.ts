@@ -1368,6 +1368,32 @@ describe('web server API validation', () => {
     expect(Array.isArray(data.tasks)).toBe(true);
   });
 
+  it('aggregates plan tasks and automation runs into the unified inbox endpoint', async () => {
+    const response = await request('/api/inbox');
+    expect(response.status).toBe(200);
+    const body = await response.json() as { total: number; shown: number; items: Array<{ id: string; kind: string; title: string; priority: number; timestamp: string; action?: { kind: string; payload: string } }> };
+    expect(typeof body.total).toBe('number');
+    expect(typeof body.shown).toBe('number');
+    expect(Array.isArray(body.items)).toBe(true);
+    // Items are capped to 8 and sorted by priority desc + timestamp desc.
+    expect(body.items.length).toBeLessThanOrEqual(8);
+    if (body.items.length >= 2) {
+      for (let index = 1; index < body.items.length; index += 1) {
+        const prev = body.items[index - 1];
+        const curr = body.items[index];
+        const inOrder = prev.priority > curr.priority
+          || (prev.priority === curr.priority && prev.timestamp >= curr.timestamp);
+        expect(inOrder).toBe(true);
+      }
+    }
+    // Every item declares a known kind so the UI can pick an icon.
+    for (const item of body.items) {
+      expect(['permission', 'plan_task', 'automation_run']).toContain(item.kind);
+      expect(typeof item.title).toBe('string');
+      expect(typeof item.timestamp).toBe('string');
+    }
+  });
+
   it('blocks browser-started autonomy when preflight fails', async () => {
     const planPath = path.join(process.cwd(), 'IMPLEMENTATION_PLAN.md');
     const original = await fs.readFile(planPath, 'utf-8');

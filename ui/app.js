@@ -202,6 +202,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   loadDocuments();
   startPermissionPolling();
   startAutonomyPolling();
+  loadInbox();
+  setInterval(() => { loadInbox().catch(() => {}); }, 60_000);
   if (Notification.permission === 'default') Notification.requestPermission();
   window.addEventListener('focus', () => { document.title = document.title.replace(/^🔔 /, ''); });
   setupSettingsCollapse();
@@ -840,6 +842,89 @@ async function loadAutonomyPlanPreview() {
   } catch (error) {
     panel.innerHTML = '<div class="readiness-empty">Autonomy plan unavailable: ' + esc(error.message || error) + '</div>';
   }
+}
+
+// Unified inbox strip: aggregates pending permission prompts, queued plan
+// tasks, and recent automation runs into one glanceable summary above the
+// chat. Hidden when empty so it never nags. Fetches /api/inbox; failure
+// logs to console but does not surface — the inbox is enrichment, not
+// primary functionality.
+const INBOX_KIND_META = {
+  permission:     { icon: '🔔', tone: 'high' },
+  plan_task:      { icon: '📋', tone: 'med' },
+  automation_run: { icon: '⚙', tone: 'med' },
+};
+
+async function loadInbox() {
+  const host = document.getElementById('inboxStrip');
+  if (!host) return;
+  let payload;
+  try {
+    const res = await fetch('/api/inbox');
+    if (!res.ok) { hideInboxStrip(host); return; }
+    payload = await res.json();
+  } catch { hideInboxStrip(host); return; }
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  if (items.length === 0) { hideInboxStrip(host); return; }
+  renderInboxStrip(host, items, payload.total ?? items.length);
+}
+
+function hideInboxStrip(host) {
+  host.classList.add('initial-hidden');
+  host.innerHTML = '';
+}
+
+function renderInboxStrip(host, items, total) {
+  host.classList.remove('initial-hidden');
+  const collapsed = (() => {
+    try { return localStorage.getItem('inboxStripCollapsed') === '1'; } catch { return false; }
+  })();
+  const tagline = items.length === 1 ? 'thing needs you' : 'things need you';
+  const moreNote = total > items.length ? ` (showing ${items.length} of ${total})` : '';
+  const cardsHtml = items.map((item) => {
+    const meta = INBOX_KIND_META[item.kind] || { icon: '•', tone: 'med' };
+    const cls = 'inbox-item' + (meta.tone === 'high' ? ' priority-high' : '');
+    return '<button type="button" class="' + cls + '" data-id="' + escAttr(item.id) + '" title="' + escAttr(item.detail || '') + '">'
+      + '<div class="inbox-row"><span class="inbox-kind-icon">' + meta.icon + '</span><span class="inbox-title">' + esc(item.title) + '</span></div>'
+      + (item.detail ? '<div class="inbox-detail">' + esc(item.detail) + '</div>' : '')
+      + '</button>';
+  }).join('');
+  host.innerHTML = ''
+    + '<div class="inbox-strip-summary">'
+    + '<span class="inbox-icon">📥</span>'
+    + '<span><span class="inbox-count">' + items.length + '</span> ' + esc(tagline) + esc(moreNote) + '</span>'
+    + '<span class="inbox-tagline">Pending decisions, queued tasks, and recent automation runs.</span>'
+    + '<button type="button" class="inbox-toggle" id="inboxStripToggle">' + (collapsed ? 'Show' : 'Hide') + '</button>'
+    + '</div>'
+    + '<div class="inbox-strip-list' + (collapsed ? ' collapsed' : '') + '" id="inboxStripList">' + cardsHtml + '</div>';
+  const toggleBtn = document.getElementById('inboxStripToggle');
+  if (toggleBtn) toggleBtn.onclick = () => toggleInboxStrip();
+  // Wire each card to its action. Permissions → open Tools tab so the
+  // user can see what is queued; plan tasks → Autonomy; runs → Runs.
+  // Falls back to chat input population so unknown actions still help.
+  for (const btn of host.querySelectorAll('.inbox-item')) {
+    const id = btn.getAttribute('data-id');
+    const item = items.find((i) => i.id === id);
+    if (!item) continue;
+    btn.onclick = () => {
+      if (item.action?.kind === 'open_tab') {
+        try { openLeftTabByName(item.action.payload); } catch (e) { console.warn('inbox open failed', e); }
+      } else if (item.action?.kind === 'chat') {
+        const inp = document.getElementById('chatInput');
+        if (inp) { inp.value = item.action.payload; inp.focus(); try { autoSize(inp); } catch {} }
+      }
+    };
+  }
+}
+
+function toggleInboxStrip() {
+  const list = document.getElementById('inboxStripList');
+  const btn = document.getElementById('inboxStripToggle');
+  if (!list || !btn) return;
+  const willCollapse = !list.classList.contains('collapsed');
+  list.classList.toggle('collapsed', willCollapse);
+  btn.textContent = willCollapse ? 'Show' : 'Hide';
+  try { localStorage.setItem('inboxStripCollapsed', willCollapse ? '1' : '0'); } catch {}
 }
 
 async function loadSubsystemHealth() {
@@ -3547,6 +3632,10 @@ async function sendMessage(opts) {
     // mycelium router actually selected for this turn, so users do not
     // have to learn the left-rail tabs to discover them.
     renderMyceliumContextCards(text || '').catch(() => {});
+    // Inbox refresh: an automation run may have completed mid-chat, or
+    // the assistant may have queued a new plan task. Cheap poll keeps
+    // the strip honest without waiting for the 60s tick.
+    loadInbox().catch(() => {});
     saveChatSession();
     autoSaveChat();
     loadSettings();
