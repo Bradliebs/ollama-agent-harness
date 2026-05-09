@@ -3180,8 +3180,8 @@ async function sendMessage(opts) {
     inp.value = '';
     inp.style.height = 'auto';
   }
-  // Strip any prior follow-up chips so they don't pile up.
-  document.querySelectorAll('.followup-chips').forEach((n) => n.remove());
+  // Strip any prior follow-up chips and context cards so they don't pile up.
+  document.querySelectorAll('.followup-chips, .context-cards').forEach((n) => n.remove());
   isSending = true;
   // Per-turn citation collector: every successful web_read becomes a
   // numbered source under the assistant reply. Keeps the model from
@@ -3508,6 +3508,10 @@ async function sendMessage(opts) {
     if (assistantText && text) {
       renderFollowUpChips(text, assistantText);
     }
+    // Inline context cards: surface the skills / memories / workflows the
+    // mycelium router actually selected for this turn, so users do not
+    // have to learn the left-rail tabs to discover them.
+    renderMyceliumContextCards(text || '').catch(() => {});
     saveChatSession();
     autoSaveChat();
     loadSettings();
@@ -4224,7 +4228,7 @@ async function runCompareSend(text, modelA, modelB) {
   addMsg('user', text);
   chatMessages.push({ role: 'user', content: text });
   saveChatSession();
-  document.querySelectorAll('.followup-chips').forEach((n) => n.remove());
+  document.querySelectorAll('.followup-chips, .context-cards').forEach((n) => n.remove());
 
   const area = document.getElementById('chatArea');
   const row = document.createElement('div');
@@ -4584,6 +4588,79 @@ function renderFollowUpChips(userText, assistantText) {
       sendMessage();
     };
     wrap.appendChild(chip);
+  }
+  area.appendChild(wrap);
+  scrollBottom();
+}
+
+// Inline mycelium context cards. After each assistant turn, surface the
+// skills/memories/workflows the router selected so users learn what the
+// system has without having to open the left rail manually. Each card
+// reveals the panel + opens the right tab on click. Hide entirely when
+// nothing actionable was selected (the common case for trivial chat).
+const CTX_CARD_TYPE_META = {
+  skill:           { icon: '⚡', tab: 'skills',    label: 'Skill' },
+  memory:          { icon: '🧠', tab: 'memory',    label: 'Memory' },
+  workflow:        { icon: '⚙', tab: 'workflows', label: 'Workflow' },
+  prompt_template: { icon: '📝', tab: 'memory',    label: 'Prompt' },
+  service:         { icon: '🛎', tab: 'runs',      label: 'Service' },
+  tool:            { icon: '🔧', tab: 'tools',     label: 'Tool' },
+  document:        { icon: '📄', tab: 'rag',       label: 'Document' },
+};
+
+let _lastContextCardSignature = '';
+
+async function renderMyceliumContextCards(userText) {
+  const area = document.getElementById('chatArea');
+  if (!area) return;
+  let payload;
+  try {
+    const res = await fetch('/api/mycelium/last-route');
+    if (!res.ok) return;
+    payload = await res.json();
+  } catch { return; }
+  const nodes = Array.isArray(payload?.nodes) ? payload.nodes : [];
+  if (nodes.length === 0) return;
+  const queryLc = (userText || '').trim().toLowerCase();
+  const eligible = nodes
+    .filter((node) => node && CTX_CARD_TYPE_META[node.type])
+    // Don't echo nodes whose label IS the user query (self-routes).
+    .filter((node) => (node.label || '').toLowerCase() !== queryLc)
+    // Skip very low-trust nodes — likely noise.
+    .filter((node) => typeof node.trust !== 'number' || node.trust >= 0.3)
+    .slice(0, 4);
+  if (eligible.length === 0) return;
+  // Avoid repeating the exact same card set on consecutive turns.
+  const signature = eligible.map((n) => n.id).sort().join('|');
+  if (signature === _lastContextCardSignature) return;
+  _lastContextCardSignature = signature;
+  const wrap = document.createElement('div');
+  wrap.className = 'context-cards';
+  wrap.setAttribute('aria-label', 'Relevant context the system used');
+  const labelRow = document.createElement('div');
+  labelRow.className = 'context-cards-label';
+  labelRow.innerHTML = '<span>Used for this turn</span>';
+  const dismiss = document.createElement('button');
+  dismiss.className = 'ctx-dismiss';
+  dismiss.type = 'button';
+  dismiss.title = 'Dismiss';
+  dismiss.textContent = '×';
+  dismiss.onclick = () => wrap.remove();
+  labelRow.appendChild(dismiss);
+  wrap.appendChild(labelRow);
+  for (const node of eligible) {
+    const meta = CTX_CARD_TYPE_META[node.type];
+    const card = document.createElement('button');
+    card.className = 'context-card';
+    card.type = 'button';
+    card.title = (node.summary || node.label || '') + ' — open in ' + meta.label + ' tab';
+    const summary = (node.summary || '').replace(/\s+/g, ' ').trim();
+    card.innerHTML = '<div class="ctx-row"><span class="ctx-icon">' + meta.icon + '</span><span class="ctx-label">' + esc(node.label || node.id) + '</span></div>'
+      + (summary ? '<div class="ctx-summary">' + esc(summary) + '</div>' : '');
+    card.onclick = () => {
+      try { openLeftTabByName(meta.tab); } catch (e) { console.warn('context card open failed', e); }
+    };
+    wrap.appendChild(card);
   }
   area.appendChild(wrap);
   scrollBottom();

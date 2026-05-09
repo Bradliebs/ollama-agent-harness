@@ -46,6 +46,7 @@ async function main() {
       return { ok: visible && items.length > 0 && hasHelp, visible, itemCount: items.length, hasHelp };
     });
     let dynamicSkillSlashCommandSmoke = { ok: false, reason: 'not run' };
+    let myceliumContextCardsSmoke = { ok: false, reason: 'not run' };
     await page.evaluate(() => { const details = document.getElementById('welcomeFirstRun'); if (details) details.open = true; });
     await page.click('#firstRunSetup button:has-text("Check setup")');
     await page.waitForFunction(() => !document.getElementById('firstRunHealth').classList.contains('initial-hidden'));
@@ -61,6 +62,7 @@ async function main() {
     await page.evaluate(() => document.getElementById('verifyReleaseBtn')?.click());
     await page.waitForFunction(() => !document.getElementById('releaseVerificationPanel').classList.contains('initial-hidden'));
     dynamicSkillSlashCommandSmoke = await runDynamicSkillSlashCommandSmoke(browser, targetUrl);
+    myceliumContextCardsSmoke = await runMyceliumContextCardsSmoke(browser, targetUrl);
     await page.evaluate(() => { if (document.getElementById('rightPanel')?.classList.contains('hidden')) toggleRight(); });
     await page.evaluate(() => Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes('Run setup doctor'))?.click());
     await page.waitForFunction(() => !document.getElementById('settingsDoctorHealth').classList.contains('initial-hidden'));
@@ -398,7 +400,7 @@ async function main() {
         window.fetch = originalFetch;
       }
     });
-    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, dynamicSkillSlashCommandSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke }) => {
+    const result = await page.evaluate(({ palaceWasVisible, discoveryWasVisible, skillsWasVisible, learningWasVisible, myceliumWasVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, dynamicSkillSlashCommandSmoke, myceliumContextCardsSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke }) => {
       const ids = Array.from(document.querySelectorAll('[id]')).map((element) => element.id);
       // Dynamically-rendered panels may legitimately re-render with the same ID
       const dynamicPanelIds = new Set(['permissionPanel', 'capabilityAlignmentPanel', 'toolRegistryPanel', 'automationRunsSection', 'curatorRunsSection']);
@@ -465,6 +467,7 @@ async function main() {
         capabilityStarterSmoke,
         slashPaletteSmoke,
         dynamicSkillSlashCommandSmoke,
+        myceliumContextCardsSmoke,
         automationJobSafetyVisible,
         planCompleteNotBlocked: !(document.getElementById('missionControlPanel')?.querySelector('.mission-card.blocked')?.textContent?.includes('pending task')),
         hasAutonomyBuilder: Boolean(document.getElementById('autonomyBuilderPanel')),
@@ -553,7 +556,7 @@ async function main() {
         freshStartupSmoke,
         historyRestoreSmoke,
       };
-    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible: learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, dynamicSkillSlashCommandSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke });
+    }, { palaceWasVisible: palaceTabVisible, discoveryWasVisible: discoveryTabVisible, skillsWasVisible: skillsTabVisible, learningWasVisible: learningWasVisible, myceliumWasVisible: myceliumTabVisible, operateModeSmoke, operatingServiceExportImportRoundTrip, operatingServiceDetailRendered, importedOperatingServiceDetailRendered, capabilityStarterSmoke, slashPaletteSmoke, dynamicSkillSlashCommandSmoke, myceliumContextCardsSmoke, automationJobSafetyVisible, recoveryLayoutSmoke, recoveryScreenshotPath, unattendedRunwayClickSmoke, mcpDiscoverClickSmoke, mobileBeginnerSmoke, freshStartupSmoke, historyRestoreSmoke });
     result.autonomyStartPayloadSmoke = autonomyStartPayloadSmoke;
 
     const failures = [];
@@ -615,6 +618,7 @@ async function main() {
     if (!result.capabilityStarterSmoke?.ok) failures.push(`capability template starter panel smoke failed: ${result.capabilityStarterSmoke?.reason || result.capabilityStarterSmoke?.statusText || 'unknown'}`);
     if (!result.slashPaletteSmoke?.ok) failures.push(`slash command palette did not open for bare slash: ${result.slashPaletteSmoke?.reason || 'no visible commands'}`);
     if (!result.dynamicSkillSlashCommandSmoke?.ok) failures.push(`dynamic skill slash command did not submit expected skill request: ${JSON.stringify(result.dynamicSkillSlashCommandSmoke)}`);
+    if (!result.myceliumContextCardsSmoke?.ok) failures.push(`mycelium context cards did not render expected nodes: ${JSON.stringify(result.myceliumContextCardsSmoke)}`);
     if (!result.automationJobSafetyVisible) failures.push('automation job safety panel was not rendered');
     if (!result.planCompleteNotBlocked) failures.push('plan-complete state incorrectly shows blocked card for pending tasks');
     if (!result.hasAutonomyBuilder) failures.push('autonomy builder panel was not found');
@@ -1249,6 +1253,51 @@ async function runStaticSmoke() {
     return;
   }
   console.log(JSON.stringify(result, null, 2));
+}
+
+async function runMyceliumContextCardsSmoke(browser, targetUrl) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  try {
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => Boolean(document.getElementById('chatArea')) && typeof window.renderMyceliumContextCards === 'function');
+    return await page.evaluate(async () => {
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = (resource, init = {}) => {
+        const url = typeof resource === 'string' ? resource : resource?.url;
+        if (url === '/api/mycelium/last-route') {
+          return Promise.resolve(new Response(JSON.stringify({
+            episode: { id: 'ep1', query: 'help me launch a bakery', route: ['skill.zero-budget', 'memory.bakery-notes'], reward: 0.7, timestamp: new Date().toISOString() },
+            nodes: [
+              { id: 'skill.zero-budget', type: 'skill', label: 'zero-budget-growth-bible', summary: 'Zero-budget growth tactics for any business.', trust: 0.9, cost: 0.2, activation: 0.8 },
+              { id: 'memory.bakery-notes', type: 'memory', label: 'Bakery launch notes', summary: 'Earlier conversation about Robyn\'s bakery launch checklist.', trust: 0.7, cost: 0.1, activation: 0.6 },
+              { id: 'q.help-me-launch-a-bakery', type: 'query', label: 'help me launch a bakery', summary: '', trust: 1, cost: 0, activation: 1 },
+            ],
+            edges: [],
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        return originalFetch(resource, init);
+      };
+      try {
+        await window.renderMyceliumContextCards('help me launch a bakery');
+        const wrap = document.querySelector('.context-cards');
+        const cards = wrap ? Array.from(wrap.querySelectorAll('.context-card')) : [];
+        const labels = cards.map((card) => card.querySelector('.ctx-label')?.textContent || '');
+        return {
+          ok: Boolean(wrap)
+            && cards.length === 2
+            && labels.includes('zero-budget-growth-bible')
+            && labels.includes('Bakery launch notes')
+            && !labels.includes('help me launch a bakery'),
+          cardCount: cards.length,
+          labels,
+        };
+      } finally {
+        window.fetch = originalFetch;
+      }
+    });
+  } finally {
+    await page.close();
+  }
 }
 
 main().catch((error) => {
