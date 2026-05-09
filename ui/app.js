@@ -1647,11 +1647,31 @@ function refreshAutonomyBanner() {
 }
 
 let _autonomyOriginalDurationMs = 0;
+const GAB_COLLAPSED_KEY = 'globalAutonomyBannerCollapsed';
+
+function isGlobalAutonomyBannerCollapsed() {
+  try { return localStorage.getItem(GAB_COLLAPSED_KEY) === '1'; } catch { return false; }
+}
+
+function setGlobalAutonomyBannerCollapsed(collapsed) {
+  try { localStorage.setItem(GAB_COLLAPSED_KEY, collapsed ? '1' : '0'); } catch {}
+}
+
+function clearGlobalAutonomyBannerLayout() {
+  document.body.classList.remove('has-global-autonomy-banner');
+  document.body.style.removeProperty('--gab-h');
+}
+
+function toggleGlobalAutonomyBanner() {
+  setGlobalAutonomyBannerCollapsed(!isGlobalAutonomyBannerCollapsed());
+  refreshAutonomyBanner();
+}
 
 function renderGlobalAutonomyBanner(state) {
   let banner = document.getElementById('globalAutonomyBanner');
   if (!state.autonomyExpiresAt) {
     if (banner) banner.remove();
+    clearGlobalAutonomyBannerLayout();
     _autonomyOriginalDurationMs = 0;
     return;
   }
@@ -1659,6 +1679,7 @@ function renderGlobalAutonomyBanner(state) {
   const ms = expiresAtMs - Date.now();
   if (ms <= 0) {
     if (banner) banner.remove();
+    clearGlobalAutonomyBannerLayout();
     _autonomyOriginalDurationMs = 0;
     return;
   }
@@ -1676,14 +1697,38 @@ function renderGlobalAutonomyBanner(state) {
     banner.style.display = 'flex';
     document.body.appendChild(banner);
   }
-  // Always recalculate top position based on kill switch banner presence
-  const ksBanner = document.getElementById('killSwitchBanner');
-  banner.style.top = ksBanner ? (ksBanner.offsetHeight + 'px') : '0';
-  banner.innerHTML = '<div class="global-autonomy-row"><strong>⏱ Timed autonomy:</strong> ' + esc(timeStr.trim()) + ' remaining'
-    + '<span class="global-autonomy-note">All tools + dontAsk mode active</span>'
-    + '<button class="btn-sm btn-global-cancel" onclick="cancelTimedAutonomy()">Cancel</button></div>'
-    + '<div class="timed-progress-track global"><div class="timed-progress-fill" data-width-pct="' + pct.toFixed(1) + '"></div></div>';
+  const collapsed = isGlobalAutonomyBannerCollapsed();
+  banner.classList.toggle('collapsed', collapsed);
+  // When collapsed we dock to the top-right corner instead of stretching
+  // across the page, so resetting top to 0 (or kill-switch height) only
+  // matters for the expanded layout.
+  if (!collapsed) {
+    const ksBanner = document.getElementById('killSwitchBanner');
+    banner.style.top = ksBanner ? (ksBanner.offsetHeight + 'px') : '0';
+  } else {
+    banner.style.top = '';
+  }
+  const toggleIcon = collapsed ? '▾' : '▴';
+  const toggleTitle = collapsed ? 'Expand timed-autonomy banner' : 'Collapse to a small pill';
+  if (collapsed) {
+    banner.innerHTML = '<div class="global-autonomy-row"><strong>⏱</strong> ' + esc(timeStr.trim())
+      + '<button class="gab-toggle" type="button" title="' + escAttr(toggleTitle) + '" onclick="toggleGlobalAutonomyBanner()">' + toggleIcon + '</button></div>';
+  } else {
+    banner.innerHTML = '<div class="global-autonomy-row"><strong>⏱ Timed autonomy:</strong> ' + esc(timeStr.trim()) + ' remaining'
+      + '<span class="global-autonomy-note">All tools + dontAsk mode active</span>'
+      + '<button class="btn-sm btn-global-cancel" onclick="cancelTimedAutonomy()">Cancel</button>'
+      + '<button class="gab-toggle" type="button" title="' + escAttr(toggleTitle) + '" onclick="toggleGlobalAutonomyBanner()">' + toggleIcon + '</button></div>'
+      + '<div class="timed-progress-track global"><div class="timed-progress-fill" data-width-pct="' + pct.toFixed(1) + '"></div></div>';
+  }
   applyDataWidths(banner);
+  // Push the rest of the page down by the banner's actual height when it
+  // sits across the top, but not when it's docked as a corner pill.
+  if (collapsed) {
+    clearGlobalAutonomyBannerLayout();
+  } else {
+    document.body.classList.add('has-global-autonomy-banner');
+    document.body.style.setProperty('--gab-h', banner.offsetHeight + 'px');
+  }
 }
 
 async function cancelTimedAutonomy() {

@@ -259,7 +259,19 @@
     .timed-progress-track{height:2px;margin-top:4px;background:rgba(255,176,80,.2);border-radius:1px}
     .timed-progress-track.global{margin-top:0;border-radius:0}
     .timed-progress-fill{height:100%;width:0;background:#ffb050;transition:width 1s linear;border-radius:1px}
-    .global-autonomy-banner{position:fixed;left:0;right:0;z-index:9998;background:rgba(255,176,80,.12);border-bottom:1px solid #ffb050;color:#ffb050;padding:0;font-size:11px;font-family:inherit;flex-direction:column}
+    /* Push the rest of the page down so the fixed banner does not overlap
+       the topbar / model picker. JS sets --gab-h to banner.offsetHeight. */
+    body.has-global-autonomy-banner{box-sizing:border-box;padding-top:var(--gab-h,0px)}
+    .global-autonomy-banner{position:fixed;top:0;left:0;right:0;z-index:9998;background:rgba(255,176,80,.12);border-bottom:1px solid #ffb050;color:#ffb050;padding:0;font-size:11px;font-family:inherit;flex-direction:column}
+    /* Collapsed mode: dock to the top-right corner as a thin pill so the
+       topbar / chat are fully visible. Click the chevron to re-expand. */
+    .global-autonomy-banner.collapsed{left:auto;right:8px;top:6px;border-radius:14px;border:1px solid #ffb050;background:rgba(255,176,80,.18);padding:2px 10px;display:flex;align-items:center;gap:6px;font-weight:600}
+    .global-autonomy-banner.collapsed .global-autonomy-row{padding:0;background:transparent}
+    .global-autonomy-banner.collapsed .global-autonomy-note,
+    .global-autonomy-banner.collapsed .btn-global-cancel,
+    .global-autonomy-banner.collapsed .timed-progress-track{display:none}
+    .gab-toggle{background:none;border:none;color:inherit;cursor:pointer;font-size:14px;line-height:1;padding:0 4px;opacity:.8}
+    .gab-toggle:hover{opacity:1}
     .global-autonomy-row{display:flex;align-items:center;gap:8px;padding:4px 12px}
     .global-autonomy-note{margin-left:auto;opacity:.7}
     .autonomy-log-modal{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center}
