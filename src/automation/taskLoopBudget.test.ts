@@ -150,4 +150,60 @@ describe('cookbook/task-loop ralphLoop HARNESS_TIME_BUDGET_MS halt', () => {
     const plan = readFileSync(join(workDir, 'IMPLEMENTATION_PLAN.md'), 'utf-8');
     expect(plan).toContain('- [x] finish-bracknell-food-business-delivery');
   });
+
+  it('requires an HTML visual report for visual Bracknell delivery tasks', () => {
+    const bracknellDir = join(workDir, 'Bracknell_Food_Business');
+    mkdirSync(bracknellDir, { recursive: true });
+    process.env.HARNESS_BRACKNELL_DIR = bracknellDir;
+    process.env.HARNESS_TIME_BUDGET_MS = '0';
+
+    writeFileSync(join(workDir, 'IMPLEMENTATION_PLAN.md'), [
+      '# Plan',
+      '',
+      '- [ ] bracknell-visual-report — Create a visually appealing Bracknell food business final report. Do not use markdown files as the final report.',
+      '',
+    ].join('\n'));
+    rmSync(join(workDir, '.forge-state.json'), { force: true });
+
+    ralphLoop(
+      join(workDir, 'IMPLEMENTATION_PLAN.md'),
+      1,
+      false,
+      {
+        implementTask: () => {
+          writeFileSync(join(bracknellDir, 'OUTPUT_MANIFEST.md'), 'Changed today. email_draft created.');
+          writeFileSync(join(bracknellDir, 'READ_ME_FIRST.md'), 'Read this first.');
+          writeFileSync(join(bracknellDir, 'EMAIL_DRAFT.md'), 'Draft email.');
+        },
+      },
+    );
+
+    let plan = readFileSync(join(workDir, 'IMPLEMENTATION_PLAN.md'), 'utf-8');
+    expect(plan).toContain('- [!] bracknell-visual-report');
+
+    writeFileSync(join(workDir, 'IMPLEMENTATION_PLAN.md'), [
+      '# Plan',
+      '',
+      '- [ ] bracknell-visual-report — Create a visually appealing Bracknell food business final report. Do not use markdown files as the final report.',
+      '',
+    ].join('\n'));
+    rmSync(join(workDir, '.forge-state.json'), { force: true });
+
+    ralphLoop(
+      join(workDir, 'IMPLEMENTATION_PLAN.md'),
+      1,
+      false,
+      {
+        implementTask: () => {
+          writeFileSync(join(bracknellDir, 'OUTPUT_MANIFEST.md'), 'Changed today. email_draft created.');
+          writeFileSync(join(bracknellDir, 'READ_ME_FIRST.md'), 'Read this first.');
+          writeFileSync(join(bracknellDir, 'EMAIL_DRAFT.md'), 'Draft email.');
+          writeFileSync(join(bracknellDir, 'ROBYN_VISUAL_REPORT.html'), '<!doctype html><title>Report</title>');
+        },
+      },
+    );
+
+    plan = readFileSync(join(workDir, 'IMPLEMENTATION_PLAN.md'), 'utf-8');
+    expect(plan).toContain('- [x] bracknell-visual-report');
+  });
 });
