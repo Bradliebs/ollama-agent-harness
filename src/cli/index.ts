@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import * as readline from 'readline';
+import * as path from 'path';
+import { readFile } from 'fs/promises';
 import { OllamaClient } from '../core/ollamaClient';
 import { createChatClient } from '../core/chatClientFactory';
 import type { IChatClient } from '../core/chatClient';
@@ -18,6 +20,40 @@ import { OUTPUT_VALIDATION_PROFILES, parseOutputValidationProfile, type OutputVa
 import { formatCliHelp, resolveCliCommand } from './commands';
 import { runMyceliumCli } from '../mycelium/cli';
 import type { LoopConfig, PermissionMode } from '../types';
+import { configureWebReadTool, DEFAULT_WEB_READ_MAX_CHARS, sanitizeWebReadMaxChars } from '../tools/webSearchTool';
+import { getAgentOutputDir, getAllowedExternalPaths, setAllowedExternalPaths } from '../tools/pathResolution';
+
+const CLI_STORED_ENV_KEYS = new Set([
+  'OPENAI_API_KEY',
+  'CEREBRAS_API_KEY',
+  'CLOUDFLARE_ACCOUNT_ID',
+  'CLOUDFLARE_API_TOKEN',
+  'DEEPINFRA_API_KEY',
+  'FIREWORKS_API_KEY',
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+  'GROQ_API_KEY',
+  'GITHUB_TOKEN',
+  'GITHUB_MODELS_TOKEN',
+  'HF_TOKEN',
+  'HUGGINGFACE_API_KEY',
+  'MISTRAL_API_KEY',
+  'OPENROUTER_API_KEY',
+  'REPLICATE_API_TOKEN',
+  'SAMBANOVA_API_KEY',
+  'TOGETHER_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'HARNESS_SMTP_HOST',
+  'HARNESS_SMTP_PORT',
+  'HARNESS_SMTP_USER',
+  'HARNESS_SMTP_PASS',
+  'HARNESS_SMTP_FROM',
+  'HARNESS_DISCORD_BOT_TOKEN',
+  'HARNESS_SLACK_WEBHOOK_URL',
+  'HARNESS_WHATSAPP_ACCESS_TOKEN',
+  'HARNESS_WHATSAPP_PHONE_NUMBER_ID',
+  'HARNESS_WHATSAPP_ALLOWED_RECIPIENTS',
+]);
 
 interface CliOptions {
   command?: 'doctor' | 'mycelium' | 'tui' | 'simulate';
@@ -213,6 +249,50 @@ async function promptForVisionPull(model: string): Promise<boolean> {
   }
 }
 
+export async function loadHeadlessRuntimeSettings(projectDir: string): Promise<void> {
+  const settingsPath = path.join(projectDir, '.harness', 'settings.json');
+  try {
+    const raw = await readFile(settingsPath, 'utf-8');
+    const settings = JSON.parse(raw) as Record<string, unknown>;
+    let allowedExternalPaths = Array.isArray(settings.allowedExternalPaths)
+      ? settings.allowedExternalPaths.map((value) => String(value).slice(0, 500))
+      : [];
+    if (Array.isArray(settings.allowedExternalPaths)) {
+      setAllowedExternalPaths(allowedExternalPaths);
+    }
+    if (settings.agentOutputDir !== undefined) {
+      const agentOutputDir = String(settings.agentOutputDir).trim().slice(0, 500);
+      if (agentOutputDir) {
+        process.env.HARNESS_AGENT_OUTPUT_DIR = agentOutputDir;
+        if (!allowedExternalPaths.includes(agentOutputDir)) {
+          allowedExternalPaths = [...allowedExternalPaths, agentOutputDir];
+          setAllowedExternalPaths(allowedExternalPaths);
+        }
+      }
+      else delete process.env.HARNESS_AGENT_OUTPUT_DIR;
+    }
+    if (settings.webReadMaxChars !== undefined) {
+      configureWebReadTool({ maxChars: sanitizeWebReadMaxChars(settings.webReadMaxChars, DEFAULT_WEB_READ_MAX_CHARS) });
+    }
+  } catch {
+    // Headless CLI should still work when the web UI settings file is absent or malformed.
+  }
+
+  const apiKeysPath = path.join(projectDir, '.harness', 'api-keys.json');
+  try {
+    const raw = await readFile(apiKeysPath, 'utf-8');
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!CLI_STORED_ENV_KEYS.has(key)) continue;
+      if (process.env[key]?.trim()) continue;
+      if (typeof value !== 'string' || !value.trim()) continue;
+      process.env[key] = value.trim();
+    }
+  } catch {
+    // Missing credentials file is expected for local-only setups.
+  }
+}
+
 export async function main(): Promise<void> {
   const options = parseArgs();
 
@@ -330,6 +410,7 @@ export async function main(): Promise<void> {
   }
 
   const projectDir = process.cwd();
+  await loadHeadlessRuntimeSettings(projectDir);
 
   // Initialize client (Ollama by default; OpenAI-compatible providers via
   // --backend or HARNESS_BACKEND env var).
@@ -454,7 +535,12 @@ export function buildSystemPrompt(modelRouting: ModelRoutingPolicy): string {
   const routingText = routingLines.length
     ? `\n\nHelper model routing policy:\n${routingLines.join('\n')}`
     : '';
-  return 'You are a helpful coding assistant. Use the available tools to help the user with their task. Read files, write code, and execute commands as needed. When the user asks about current events, news, weather, prices, scores, or anything that changes over time, call web_search first and then summarize the results. Do not answer recent-information requests from training data alone.' + routingText;
+  const externalPaths = getAllowedExternalPaths();
+  const outputDir = getAgentOutputDir().trim();
+  const externalText = externalPaths.length > 0
+    ? ` File tools can read and write inside the project and these allowed external folders: ${externalPaths.join(', ')}.${outputDir ? ` Put new scratch artifacts and generated reports in ${outputDir} unless the user names a different destination.` : ''}`
+    : '';
+  return 'You are a helpful coding assistant. Use the available tools to help the user with their task. Read files, write code, research the web, create documents, draft or send configured email, and execute commands as needed. When the user asks about current events, news, weather, prices, scores, scientific research, market research, or anything that changes over time, call web_search first and then summarize the results. Do not answer recent-information requests from training data alone.' + externalText + routingText;
 }
 
 function summarizeConsoleToolResult(name: string, success: boolean, output: string): string | null {

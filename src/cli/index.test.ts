@@ -1,4 +1,8 @@
-import { buildConsoleToolOnlyResponse, buildSystemPrompt, formatSetupHealth, parseArgs } from './index';
+import * as os from 'os';
+import * as path from 'path';
+import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
+import { buildConsoleToolOnlyResponse, buildSystemPrompt, formatSetupHealth, loadHeadlessRuntimeSettings, parseArgs } from './index';
+import { getAllowedExternalPaths, setAllowedExternalPaths } from '../tools/pathResolution';
 
 describe('cli setup doctor', () => {
   it('parses output validation profile options', () => {
@@ -12,6 +16,41 @@ describe('cli setup doctor', () => {
 
     expect(prompt).toContain('current events');
     expect(prompt).toContain('web_search first');
+  });
+
+  it('loads persisted headless settings for external research tasks', async () => {
+    const previousOutputDir = process.env.HARNESS_AGENT_OUTPUT_DIR;
+    const previousSmtpHost = process.env.HARNESS_SMTP_HOST;
+    const projectDir = await mkdtemp(path.join(os.tmpdir(), 'harness-cli-settings-'));
+    try {
+      setAllowedExternalPaths([]);
+      delete process.env.HARNESS_AGENT_OUTPUT_DIR;
+      delete process.env.HARNESS_SMTP_HOST;
+      await mkdir(path.join(projectDir, '.harness'), { recursive: true });
+      await writeFile(path.join(projectDir, '.harness', 'settings.json'), JSON.stringify({
+        allowedExternalPaths: ['C:/AI/Oracle'],
+        agentOutputDir: 'C:/AI/AgentFiles',
+        webReadMaxChars: 2000,
+      }), 'utf-8');
+      await writeFile(path.join(projectDir, '.harness', 'api-keys.json'), JSON.stringify({
+        HARNESS_SMTP_HOST: 'smtp.example.test',
+      }), 'utf-8');
+
+      await loadHeadlessRuntimeSettings(projectDir);
+
+      expect(getAllowedExternalPaths()).toEqual(['C:\\AI\\Oracle', 'C:\\AI\\AgentFiles']);
+      expect(process.env.HARNESS_AGENT_OUTPUT_DIR).toBe('C:/AI/AgentFiles');
+      expect(process.env.HARNESS_SMTP_HOST).toBe('smtp.example.test');
+      expect(buildSystemPrompt({})).toContain('C:\\AI\\Oracle');
+      expect(buildSystemPrompt({})).toContain('research the web');
+    } finally {
+      if (previousOutputDir === undefined) delete process.env.HARNESS_AGENT_OUTPUT_DIR;
+      else process.env.HARNESS_AGENT_OUTPUT_DIR = previousOutputDir;
+      if (previousSmtpHost === undefined) delete process.env.HARNESS_SMTP_HOST;
+      else process.env.HARNESS_SMTP_HOST = previousSmtpHost;
+      setAllowedExternalPaths([]);
+      await rm(projectDir, { recursive: true, force: true });
+    }
   });
 
   it('parses doctor options', () => {
