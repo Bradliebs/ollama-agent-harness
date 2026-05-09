@@ -946,13 +946,14 @@ function clampFloat(value, fallback, min, max) {
 }
 
 function getAutonomyRunSettings() {
-  const defaults = { maxIterations: 1, timeBudgetHours: 0, unproductiveTurnLimit: 6 };
+  const defaults = { maxIterations: 1, maxTurns: 30, timeBudgetHours: 0, unproductiveTurnLimit: 6 };
   try {
     const raw = localStorage.getItem(AUTONOMY_UI_SETTINGS_KEY);
     if (!raw) return defaults;
     const parsed = JSON.parse(raw);
     return {
       maxIterations: clampInt(parsed?.maxIterations, defaults.maxIterations, 1, 5000),
+      maxTurns: clampInt(parsed?.maxTurns, defaults.maxTurns, 1, 500),
       timeBudgetHours: clampFloat(parsed?.timeBudgetHours, defaults.timeBudgetHours, 0, 48),
       unproductiveTurnLimit: clampInt(parsed?.unproductiveTurnLimit, defaults.unproductiveTurnLimit, 1, 100),
     };
@@ -970,9 +971,10 @@ function saveAutonomyRunSettings(settings) {
 function readAutonomyRunSettingsFromUi() {
   const defaults = getAutonomyRunSettings();
   const maxIterations = clampInt(document.getElementById('autonomyMaxIterations')?.value, defaults.maxIterations, 1, 5000);
+  const maxTurns = clampInt(document.getElementById('autonomyMaxTurns')?.value, defaults.maxTurns, 1, 500);
   const timeBudgetHours = clampFloat(document.getElementById('autonomyTimeBudgetHours')?.value, defaults.timeBudgetHours, 0, 48);
   const unproductiveTurnLimit = clampInt(document.getElementById('autonomyUnproductiveTurnLimit')?.value, defaults.unproductiveTurnLimit, 1, 100);
-  const settings = { maxIterations, timeBudgetHours, unproductiveTurnLimit };
+  const settings = { maxIterations, maxTurns, timeBudgetHours, unproductiveTurnLimit };
   saveAutonomyRunSettings(settings);
   return {
     ...settings,
@@ -982,23 +984,25 @@ function readAutonomyRunSettingsFromUi() {
 
 function applyAutonomyPreset(preset) {
   const next = preset === 'overnight'
-    ? { maxIterations: 300, timeBudgetHours: 8, unproductiveTurnLimit: 10 }
+    ? { maxIterations: 300, maxTurns: 100, timeBudgetHours: 8, unproductiveTurnLimit: 15 }
     : preset === 'work'
-      ? { maxIterations: 25, timeBudgetHours: 2, unproductiveTurnLimit: 8 }
-      : { maxIterations: 1, timeBudgetHours: 0, unproductiveTurnLimit: 6 };
+      ? { maxIterations: 25, maxTurns: 75, timeBudgetHours: 2, unproductiveTurnLimit: 12 }
+      : { maxIterations: 1, maxTurns: 30, timeBudgetHours: 0, unproductiveTurnLimit: 6 };
   const maxEl = document.getElementById('autonomyMaxIterations');
+  const turnsEl = document.getElementById('autonomyMaxTurns');
   const budgetEl = document.getElementById('autonomyTimeBudgetHours');
   const stallEl = document.getElementById('autonomyUnproductiveTurnLimit');
   if (maxEl) maxEl.value = String(next.maxIterations);
+  if (turnsEl) turnsEl.value = String(next.maxTurns);
   if (budgetEl) budgetEl.value = String(next.timeBudgetHours);
   if (stallEl) stallEl.value = String(next.unproductiveTurnLimit);
   saveAutonomyRunSettings(next);
   const status = document.getElementById('autonomyBuilderStatus');
   if (status) {
     status.textContent = preset === 'overnight'
-      ? 'Overnight preset loaded: 300 tasks, 8h budget, stall limit 10.'
+      ? 'Overnight preset loaded: 300 tasks, 100 turns/task, 8h budget.'
       : preset === 'work'
-        ? 'Work session preset loaded: 25 tasks, 2h budget, stall limit 8.'
+        ? 'Work session preset loaded: 25 tasks, 75 turns/task, 2h budget.'
       : 'Single-task preset loaded.';
   }
 }
@@ -1018,7 +1022,7 @@ function renderAutonomyBuilder(data) {
     + '<div class="autonomy-actions"><button class="btn-sm" onclick="dryRunAutonomy()">Dry run next</button><button class="btn-sm" onclick="startAutonomyRun()">Start run</button><button class="btn-sm" onclick="toggleAutonomyLog()">View live log</button><button class="btn-sm" onclick="resetAutonomyRunState()">Reset run state</button><button class="btn-sm" onclick="openLeftTabByName(\'runs\')">Open runs</button></div>'
     + '<div class="trace-meta" style="margin-bottom:6px">1) Pick a preset or set values · 2) Start run · 3) Watch live log</div>'
     + '<div class="autonomy-actions"><button class="btn-sm" onclick="applyAutonomyPreset(\'single\')">Quick test</button><button class="btn-sm" onclick="applyAutonomyPreset(\'work\')">Work session</button><button class="btn-sm" onclick="applyAutonomyPreset(\'overnight\')">Overnight</button></div>'
-    + '<div class="task-add-form"><input id="autonomyMaxIterations" type="number" min="1" max="5000" step="1" value="' + escAttr(String(runSettings.maxIterations)) + '" title="How many tasks to run this start" placeholder="Tasks this run"><input id="autonomyTimeBudgetHours" type="number" min="0" max="48" step="0.5" value="' + escAttr(String(runSettings.timeBudgetHours)) + '" title="Time budget in hours (0 = unlimited)" placeholder="Time budget (hours)"><input id="autonomyUnproductiveTurnLimit" type="number" min="1" max="100" step="1" value="' + escAttr(String(runSettings.unproductiveTurnLimit)) + '" title="Stop after this many unproductive turns" placeholder="Stall limit"></div>'
+    + '<div class="task-add-form"><input id="autonomyMaxIterations" type="number" min="1" max="5000" step="1" value="' + escAttr(String(runSettings.maxIterations)) + '" title="How many tasks to run this start" placeholder="Tasks this run"><input id="autonomyMaxTurns" type="number" min="1" max="500" step="1" value="' + escAttr(String(runSettings.maxTurns)) + '" title="Maximum model/tool turns allowed inside each task" placeholder="Turns per task"><input id="autonomyTimeBudgetHours" type="number" min="0" max="48" step="0.5" value="' + escAttr(String(runSettings.timeBudgetHours)) + '" title="Time budget in hours (0 = unlimited)" placeholder="Time budget (hours)"><input id="autonomyUnproductiveTurnLimit" type="number" min="1" max="100" step="1" value="' + escAttr(String(runSettings.unproductiveTurnLimit)) + '" title="Stop after this many unproductive turns" placeholder="Stall limit"></div>'
     + '<div class="task-add-form"><input id="newTaskInput" type="text" placeholder="Describe a task for the agent..." onkeydown="if(event.key===\'Enter\')addPlanTask()"><button class="btn-sm" onclick="addPlanTask()">+ Add task</button></div>'
     + '<div class="autonomy-task-list">' + (nextTasks.length ? nextTasks.map(renderTaskRow).join('') : '<div class="readiness-empty">No pending tasks. Add one above.</div>') + '</div>'
     + (doneTasks.length ? '<details class="details-mt4"><summary class="trace-meta trace-summary-sm">Recent completed (' + esc(data.done) + ')</summary><div class="autonomy-task-list">' + doneTasks.map((t) => '<div class="autonomy-task done"><strong>' + esc(t.id) + '</strong><span>' + esc(t.title) + '</span></div>').join('') + '</div></details>' : '')
@@ -1086,7 +1090,7 @@ async function startAutonomyRun() {
   const runSettings = readAutonomyRunSettingsFromUi();
   if (status) {
     const budgetText = runSettings.timeBudgetHours > 0 ? ` · ${runSettings.timeBudgetHours}h budget` : '';
-    status.textContent = `Starting autonomy run: ${runSettings.maxIterations} task(s)${budgetText}...`;
+    status.textContent = `Starting autonomy run: ${runSettings.maxIterations} task(s) · ${runSettings.maxTurns} turns/task${budgetText}...`;
   }
   try {
     const model = document.getElementById('modelSelect')?.value || '';
@@ -1096,6 +1100,7 @@ async function startAutonomyRun() {
       body: JSON.stringify({
         model,
         maxIterations: runSettings.maxIterations,
+        maxTurns: runSettings.maxTurns,
         timeBudgetMs: runSettings.timeBudgetMs,
         unproductiveTurnLimit: runSettings.unproductiveTurnLimit,
       }),
@@ -1108,8 +1113,9 @@ async function startAutonomyRun() {
     }
     if (status) {
       const requested = data.requestedMaxIterations ?? runSettings.maxIterations;
+      const requestedTurns = data.requestedMaxTurns ?? runSettings.maxTurns;
       const budgetText = runSettings.timeBudgetHours > 0 ? ` · ${runSettings.timeBudgetHours}h budget` : '';
-      status.textContent = `Started PID ${data.pid} · requested ${requested} task(s)${budgetText} · streaming live updates`;
+      status.textContent = `Started PID ${data.pid} · requested ${requested} task(s) · ${requestedTurns} turns/task${budgetText} · streaming live updates`;
     }
     const logModal = document.getElementById('autonomyLogModal');
     if (logModal && logModal.classList.contains('hidden-by-default')) toggleAutonomyLog();

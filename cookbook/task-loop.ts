@@ -55,7 +55,7 @@
  *   - Environment variables: Use $env:VAR (PowerShell) or export VAR (bash)
  */
 
-import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync, execSync } from "node:child_process";
 
@@ -194,7 +194,7 @@ function buildTaskPrompt(task: Task): string {
     : `No explicit target file. Pick the most appropriate file from the anchors above.`;
 
   const sections: string[] = [
-    `IMMEDIATE TASK — start working now. Do not ask for clarification. Do not greet me. Do not explore.`,
+    `IMMEDIATE TASK — start working now. Do not ask for clarification. Do not greet me. Explore only what is needed to complete the task.`,
     ``,
     `Task: ${task.title}`,
     `Task id: ${task.id}`,
@@ -203,15 +203,14 @@ function buildTaskPrompt(task: Task): string {
 
   if (anchorBlocks.length > 0) {
     sections.push(
-      `RELEVANT FILES (already read for you — do NOT re-read them):`,
+      `RELEVANT FILES (already read for you — do NOT re-read them unless you need current disk state):`,
       ...anchorBlocks,
       ``,
       targetLine,
       ``,
-      `Required first action: call file_edit (preferred) to add only what is needed.`,
-      `Do NOT call list_files or file_read first — you already have what you need.`,
+      `Required first action: use the most appropriate tool to make concrete progress.`,
       ``,
-      `EDIT-STYLE RULES (critical):`,
+      `EDIT-STYLE RULES FOR CODE/TEXT FILES (critical):`,
       `  * Prefer file_edit over file_write. file_write replaces the ENTIRE file.`,
       `  * If the target file already has tests/code, ADD a new it(...)/test(...)/function block.`,
       `    Do NOT remove or modify existing tests, imports, or unrelated code.`,
@@ -223,20 +222,24 @@ function buildTaskPrompt(task: Task): string {
   } else {
     sections.push(
       `Steps you MUST execute in this order:`,
-      `  1. Call file_edit or file_write to make the actual code change.`,
-      `  2. Optionally call bash to run \`npm run typecheck\` to verify.`,
-      `  3. Reply with a one-line summary and stop.`,
+      `  1. Inspect the relevant folder, files, or web sources named by the task.`,
+      `  2. After no more than three read/list/search tool calls, create or update at least one requested deliverable file.`,
+      `  3. Create, edit, export, or send the concrete deliverable requested by the task.`,
+      `  4. Create or update a short verification artifact when the task is broad, external, or deliverable-focused.`,
+      `  5. For external-folder delivery tasks, write the verification artifact inside the requested external folder.`,
+      `  6. Reply with what changed, where it changed, and any remaining blockers.`,
     );
   }
 
   sections.push(
     ``,
-    `Tool whitelist: file_read, file_write, file_edit, list_files, grep, bash.`,
-    `Forbidden: calendar_read, web_search, image_analyze, audio_transcribe, analyze_patterns, promote_pattern, reflect, consolidate, evolve, improve_skill.`,
+    `Tool guidance: use file_read, file_write, file_edit, list_files, grep, bash, web_search, web_read, document_export, email_draft, and email_send when the task calls for them and permissions allow.`,
+    `For file/folder inspection, prefer list_files, file_read, and grep. Do not use bash to run dir, ls, pwd, or shell pipelines for basic file inspection.`,
+    `Forbidden unless directly required by the task: calendar_read, image_analyze, audio_transcribe, analyze_patterns, promote_pattern, reflect, consolidate, evolve, improve_skill.`,
     ``,
-    `If your first response is text instead of a file_edit/file_write tool call, you have FAILED.`,
+    `If you cannot complete the task, create a clear blocker note or verification artifact explaining exactly what stopped you.`,
     `Do not modify IMPLEMENTATION_PLAN.md, .forge-state.json, or .copilot-tracking/.`,
-    `Make the smallest change that satisfies the task.`,
+    `Make the smallest set of changes that satisfies the task, but do not skip required deliverables.`,
   );
 
   return sections.join("\n");
@@ -244,6 +247,59 @@ function buildTaskPrompt(task: Task): string {
 
 /** Hard cap per anchor file. Keeps prompts under typical 32K-128K context limits. */
 const MAX_ANCHOR_BYTES = 24_000;
+const BRACKNELL_REQUIRED_FILES = ["OUTPUT_MANIFEST.md", "READ_ME_FIRST.md"];
+
+function getBracknellDir(): string {
+  return process.env.HARNESS_BRACKNELL_DIR ?? "C:\\AI\\Oracle\\Bracknell_Food_Business";
+}
+
+function isBracknellDeliveryTask(task: Task): boolean {
+  const text = `${task.id} ${task.title}`.toLowerCase();
+  return text.includes("bracknell") && text.includes("food");
+}
+
+function startOfToday(): number {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+}
+
+function fileChangedSince(filePath: string, sinceMs: number): boolean {
+  try {
+    return statSync(filePath).mtimeMs >= sinceMs;
+  } catch {
+    return false;
+  }
+}
+
+function collectChangedFilesSince(dir: string, sinceMs: number, maxFiles = 100): string[] {
+  const found: string[] = [];
+  const visit = (currentDir: string): void => {
+    if (found.length >= maxFiles) return;
+    let entries: string[] = [];
+    try {
+      entries = readdirSync(currentDir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (found.length >= maxFiles) return;
+      const currentPath = join(currentDir, entry);
+      let stats;
+      try {
+        stats = statSync(currentPath);
+      } catch {
+        continue;
+      }
+      if (stats.isDirectory()) {
+        visit(currentPath);
+      } else if (stats.mtimeMs >= sinceMs) {
+        found.push(currentPath);
+      }
+    }
+  };
+  visit(dir);
+  return found;
+}
 
 /**
  * Called once per task. Shells out to the harness CLI in headless mode.
@@ -292,6 +348,27 @@ function implementTask(task: Task): void {
  * Override with HARNESS_VALIDATE_CMD (e.g. "npm test" or "npm run typecheck && npm test").
  */
 function validateTask(task: Task): boolean {
+  if (isBracknellDeliveryTask(task)) {
+    const bracknellDir = getBracknellDir();
+    const todayMs = startOfToday();
+    const missing = BRACKNELL_REQUIRED_FILES.filter((fileName) => !fileChangedSince(join(bracknellDir, fileName), todayMs));
+    const emailDraftChanged = fileChangedSince(join(bracknellDir, "EMAIL_DRAFT.md"), todayMs);
+    const manifestPath = join(bracknellDir, "OUTPUT_MANIFEST.md");
+    const manifestText = existsSync(manifestPath) ? readFileSync(manifestPath, "utf-8") : "";
+    const manifestMentionsEmail = /email_(send|draft)|sent|smtp|\.eml/i.test(manifestText);
+    const changedToday = collectChangedFilesSince(bracknellDir, todayMs, 20);
+    console.log(`[Ralph] Bracknell validation: ${changedToday.length} file(s) changed today in ${bracknellDir}.`);
+    if (missing.length > 0) {
+      console.warn(`[Ralph] Bracknell validation missing or stale: ${missing.join(", ")}.`);
+      return false;
+    }
+    if (!emailDraftChanged && !manifestMentionsEmail) {
+      console.warn("[Ralph] Bracknell validation needs EMAIL_DRAFT.md changed today or manifest evidence of email_send.");
+      return false;
+    }
+    return true;
+  }
+
   console.log(`[Ralph] Validating ${task.id} via: ${HARNESS_VALIDATE_CMD}`);
   try {
     execSync(HARNESS_VALIDATE_CMD, { stdio: "inherit" });
@@ -570,7 +647,11 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
       .split("\n")
       .map((l) => l.slice(3).trim())
       .filter(Boolean);
-    const changedFiles = afterFiles.filter((f) => !beforeFiles.has(f) && !f.startsWith(".forge-"));
+    const repoChangedFiles = afterFiles.filter((f) => !beforeFiles.has(f) && !f.startsWith(".forge-"));
+    const externalChangedFiles = isBracknellDeliveryTask(pending)
+      ? collectChangedFilesSince(getBracknellDir(), taskStartedAt).map((filePath) => `external:${filePath}`)
+      : [];
+    const changedFiles = [...repoChangedFiles, ...externalChangedFiles];
 
     // Validate (skip if implement crashed; treat as failure)
     let passed = implementError ? false : doValidate(pending);
@@ -594,11 +675,13 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
     if (passed) {
       consecutiveFailures = 0;
       console.log(`[Ralph] ✅ Task ${pending.id} passed — committing ${changedFiles.length} file(s).`);
+      if (changedFiles.length > 0) console.log(`[Ralph] Changed files: ${changedFiles.join(", ")}`);
       gitCommit(`chore(autonomy): ${pending.id} — ${pending.title}`, changedFiles);
     } else {
       consecutiveFailures++;
       totalFailures++;
       console.log(`[Ralph] ❌ Task ${pending.id} failed — marked as failed, continuing.`);
+      if (changedFiles.length > 0) console.log(`[Ralph] Changed files before restore: ${changedFiles.join(", ")}`);
 
       // Restore the working tree to the pre-iteration snapshot so the next
       // iteration starts from a clean state. Without this, half-applied
@@ -617,8 +700,10 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
           const restoredTarget = restoredTasks.find((t) => t.id === pending.id);
           if (restoredTarget) {
             restoredTarget.status = "failed";
-            writePlan(planPath, restoredTasks);
+          } else {
+            restoredTasks.push({ ...pending, status: "failed" });
           }
+          writePlan(planPath, restoredTasks);
           console.log(`[Ralph] ↻ Snapshot restore: working tree reset to ${preIterationHead.slice(0, 8)}.`);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);

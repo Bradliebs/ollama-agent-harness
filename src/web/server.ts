@@ -1165,6 +1165,7 @@ app.post('/api/autonomy/start', async (req, res) => {
     const preflight = await buildAutonomyPreflight(preview);
     if (preflight.blocked.length > 0) { res.status(409).json({ error: 'Autonomy preflight failed.', preflight }); return; }
     const requestedMaxIterations = Math.max(1, Math.floor(Number(req.body?.maxIterations ?? 1) || 1));
+    const requestedMaxTurns = Math.max(1, Math.min(500, Math.floor(Number(req.body?.maxTurns ?? process.env.HARNESS_MAX_TURNS ?? 30) || 30)));
     const checkpointIteration = await readAutonomyCheckpointIteration();
     const effectiveMaxIterations = checkpointIteration + requestedMaxIterations;
     const env = sanitizeSpawnEnv(process.env);
@@ -1176,6 +1177,7 @@ app.post('/api/autonomy/start', async (req, res) => {
     setEnv('HARNESS_BACKEND', req.body?.backend);
     setEnv('HARNESS_PERMISSION_MODE', req.body?.permissionMode ?? permissionMode);
     setEnv('FORGE_MAX_ITERATIONS', effectiveMaxIterations);
+    setEnv('HARNESS_MAX_TURNS', requestedMaxTurns);
     setEnv('HARNESS_TIME_BUDGET_MS', req.body?.timeBudgetMs);
     setEnv('HARNESS_UNPRODUCTIVE_TURN_LIMIT', req.body?.unproductiveTurnLimit ?? 6);
     await fs.rm(path.join(PROJECT_DIR, '.forge-stop'), { force: true }).catch(() => {});
@@ -1203,7 +1205,7 @@ app.post('/api/autonomy/start', async (req, res) => {
     const evidence = createRunEvidence({ id: `autonomy:${autonomyStartedAt}`, kind: 'autonomy', request: preview.tasks.find((task) => task.status === 'pending')?.title || 'Run next pending implementation task', runName: 'Ralph autonomy loop', command: 'npm run autonomy', success: true, summary: `Started with ${preview.pending} pending task(s).` });
     await appendRunEvidence(PROJECT_DIR, evidence);
     autonomyChild.on('exit', () => { autonomyChild = null; autonomyStartedAt = undefined; });
-    res.json({ ok: true, startedAt: autonomyStartedAt, pid: autonomyChild.pid, pending: preview.pending, requestedMaxIterations, effectiveMaxIterations, checkpointIteration, evidence });
+    res.json({ ok: true, startedAt: autonomyStartedAt, pid: autonomyChild.pid, pending: preview.pending, requestedMaxIterations, requestedMaxTurns, effectiveMaxIterations, checkpointIteration, evidence });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });

@@ -14,7 +14,7 @@
  * deterministic and sub-second.
  */
 import { execSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -25,6 +25,7 @@ describe('cookbook/task-loop ralphLoop HARNESS_TIME_BUDGET_MS halt', () => {
   const originalBudget = process.env.HARNESS_TIME_BUDGET_MS;
   const originalRequestedIterations = process.env.FORGE_REQUESTED_ITERATIONS;
   const originalSnapshot = process.env.HARNESS_AUTONOMY_SNAPSHOT;
+  const originalBracknellDir = process.env.HARNESS_BRACKNELL_DIR;
   let workDir: string;
   let warnSpy: jest.SpyInstance;
   let logSpy: jest.SpyInstance;
@@ -68,6 +69,8 @@ describe('cookbook/task-loop ralphLoop HARNESS_TIME_BUDGET_MS halt', () => {
     else process.env.FORGE_REQUESTED_ITERATIONS = originalRequestedIterations;
     if (originalSnapshot === undefined) delete process.env.HARNESS_AUTONOMY_SNAPSHOT;
     else process.env.HARNESS_AUTONOMY_SNAPSHOT = originalSnapshot;
+    if (originalBracknellDir === undefined) delete process.env.HARNESS_BRACKNELL_DIR;
+    else process.env.HARNESS_BRACKNELL_DIR = originalBracknellDir;
   });
 
   it('halts with "time budget exhausted" reason when HARNESS_TIME_BUDGET_MS is exceeded', () => {
@@ -116,5 +119,35 @@ describe('cookbook/task-loop ralphLoop HARNESS_TIME_BUDGET_MS halt', () => {
     const logged = logSpy.mock.calls.flat().join('\n');
     expect(logged).toMatch(/Run budget: 20 requested task\(s\); checkpoint iteration 1; absolute stop iteration 21\./);
     expect(logged).toMatch(/=== Iteration 2\/21 ===/);
+  });
+
+  it('allows Bracknell delivery tasks to validate through external output files', () => {
+    const bracknellDir = join(workDir, 'Bracknell_Food_Business');
+    mkdirSync(bracknellDir, { recursive: true });
+    process.env.HARNESS_BRACKNELL_DIR = bracknellDir;
+    process.env.HARNESS_TIME_BUDGET_MS = '0';
+
+    writeFileSync(join(workDir, 'IMPLEMENTATION_PLAN.md'), [
+      '# Plan',
+      '',
+      '- [ ] finish-bracknell-food-business-delivery — Finish the Bracknell food business delivery.',
+      '',
+    ].join('\n'));
+
+    ralphLoop(
+      join(workDir, 'IMPLEMENTATION_PLAN.md'),
+      1,
+      false,
+      {
+        implementTask: () => {
+          writeFileSync(join(bracknellDir, 'OUTPUT_MANIFEST.md'), 'Changed today. email_draft created.');
+          writeFileSync(join(bracknellDir, 'READ_ME_FIRST.md'), 'Read this first.');
+          writeFileSync(join(bracknellDir, 'EMAIL_DRAFT.md'), 'Draft email.');
+        },
+      },
+    );
+
+    const plan = readFileSync(join(workDir, 'IMPLEMENTATION_PLAN.md'), 'utf-8');
+    expect(plan).toContain('- [x] finish-bracknell-food-business-delivery');
   });
 });

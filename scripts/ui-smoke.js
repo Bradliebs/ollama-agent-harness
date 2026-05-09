@@ -411,6 +411,7 @@ async function main() {
         automationJobSafetyVisible,
         planCompleteNotBlocked: !(document.getElementById('missionControlPanel')?.querySelector('.mission-card.blocked')?.textContent?.includes('pending task')),
         hasAutonomyBuilder: Boolean(document.getElementById('autonomyBuilderPanel')),
+        hasAutonomyMaxTurnsInput: Boolean(document.getElementById('autonomyMaxTurns')),
         hasDocumentStudio: Boolean(document.getElementById('documentStudioPanel')) && Boolean(document.getElementById('documentTitle')) && Boolean(document.getElementById('documentList')),
         hasDocumentTemplateOptions: ['adr', 'release-notes', 'handoff'].every((value) => Boolean(document.querySelector(`#documentTemplate option[value="${value}"]`))),
         hasDocumentFormatOptions: ['markdown', 'html', 'pdf', 'docx'].every((value) => Boolean(document.querySelector(`#documentFormat option[value="${value}"]`))),

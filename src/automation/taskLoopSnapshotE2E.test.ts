@@ -98,4 +98,34 @@ describe('cookbook/task-loop ralphLoop snapshot restore E2E', () => {
     const finalPlan = readFileSync(join(workDir, 'IMPLEMENTATION_PLAN.md'), 'utf-8');
     expect(finalPlan).toMatch(/^- \[!\] task-fail/m);
   });
+
+  it('keeps a failed task visible when snapshot restore removes an uncommitted plan entry', () => {
+    writeFileSync(
+      join(workDir, 'IMPLEMENTATION_PLAN.md'),
+      ['# Plan', '', '- [x] already-done — committed task', ''].join('\n'),
+    );
+    execSync('git add IMPLEMENTATION_PLAN.md', { stdio: 'pipe' });
+    execSync('git commit -q -m baseline-plan', { stdio: 'pipe' });
+    writeFileSync(
+      join(workDir, 'IMPLEMENTATION_PLAN.md'),
+      ['# Plan', '', '- [x] already-done — committed task', '- [ ] uncommitted-task — fails after being added later', ''].join('\n'),
+    );
+
+    ralphLoop(
+      join(workDir, 'IMPLEMENTATION_PLAN.md'),
+      1,
+      false,
+      {
+        implementTask: () => {
+          writeFileSync(join(workDir, 'stray-from-uncommitted-task.txt'), 'should be cleaned');
+        },
+        validateTask: () => false,
+      },
+    );
+
+    expect(existsSync(join(workDir, 'stray-from-uncommitted-task.txt'))).toBe(false);
+    const finalPlan = readFileSync(join(workDir, 'IMPLEMENTATION_PLAN.md'), 'utf-8');
+    expect(finalPlan).toMatch(/^- \[x\] already-done/m);
+    expect(finalPlan).toMatch(/^- \[!\] uncommitted-task/m);
+  });
 });
