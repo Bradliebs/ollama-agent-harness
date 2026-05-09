@@ -930,14 +930,10 @@
         </div>
 
         <div class="quick-suggestions" id="quickSuggestions">
-          <div class="quick-card" onclick="sendTip(this.querySelector('.qc-title'))">
-            <div class="qc-icon">📂</div>
-            <div class="qc-body"><div class="qc-title">List files in this project</div><div class="qc-desc">Tour what's here. I'll group by folder.</div></div>
-          </div>
-          <div class="quick-card" onclick="sendTip(this.querySelector('.qc-title'))">
-            <div class="qc-icon">🔍</div>
-            <div class="qc-body"><div class="qc-title">Search for TODO in my code</div><div class="qc-desc">Find loose ends across the whole tree.</div></div>
-          </div>
+          <!-- Populated by quickStartChipsMarkup() at DOMContentLoaded so
+               the chip set lives in one place (ui/app.js) and stays in
+               sync between the static landing page and welcomeMarkup()
+               re-renders triggered by /new and /reset. -->
         </div>
 
         <div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div>

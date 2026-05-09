@@ -482,6 +482,14 @@ async function main() {
         hasWalkthroughChecklist: Boolean(document.getElementById('walkthroughChecklist')),
         hasWalkthroughFunction: typeof window.openWalkthroughTarget === 'function',
         hasFirstRunSetup: Boolean(document.getElementById('firstRunSetup')),
+        // Quick-start chips are populated by quickStartChipsMarkup() at
+        // DOMContentLoaded. Guard against the helper regressing to empty.
+        quickStartChips: (() => {
+          const host = document.getElementById('quickSuggestions');
+          const cards = host ? Array.from(host.querySelectorAll('.quick-card')) : [];
+          const titles = cards.map((card) => card.querySelector('.qc-title')?.textContent?.trim() || '');
+          return { count: cards.length, titles, populated: host?.dataset?.populated === '1' };
+        })(),
         hasBeginnerReadiness: Boolean(document.getElementById('beginnerReadiness')) && Boolean(document.getElementById('beginnerReadinessBadge')),
         beginnerReadinessText: document.getElementById('beginnerReadiness')?.textContent || '',
         hasFirstRunInputs: Boolean(document.getElementById('firstRunOllamaHost')) && Boolean(document.getElementById('firstRunVisionModel')) && Boolean(document.getElementById('firstRunAudioCommand')) && Boolean(document.getElementById('firstRunAudioSamplePath')),
@@ -633,6 +641,9 @@ async function main() {
     if (!result.hasWalkthroughChecklist) failures.push('walkthrough checklist was not found');
     if (!result.hasWalkthroughFunction) failures.push('walkthrough action function was not found');
     if (!result.hasFirstRunSetup) failures.push('first-run setup panel was not found');
+    if (!result.quickStartChips?.populated || (result.quickStartChips?.count ?? 0) < 4) {
+      failures.push(`quick-start chips did not populate from quickStartChipsMarkup(): ${JSON.stringify(result.quickStartChips)}`);
+    }
     if (!result.hasBeginnerReadiness) failures.push('beginner readiness verdict was not found');
     if (!result.hasFirstRunInputs) failures.push('first-run setup inputs were not found');
     if (!result.hasFirstRunHealth) failures.push('first-run health panel was not found');

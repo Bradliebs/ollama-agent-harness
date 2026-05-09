@@ -184,6 +184,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   await ensureApiAuthReady();
   restoreTheme();
   ensurePermissionPanel();
+  refreshQuickStartChips();
   loadModels();
   loadHistory();
   loadFiles();
@@ -1894,6 +1895,40 @@ function markWalkthroughStep(step) {
 function refreshWalkthroughChecklist() {
   const checklist = document.getElementById('walkthroughChecklist');
   if (checklist) checklist.innerHTML = walkthroughChecklistMarkup();
+}
+
+// Single source of truth for the quick-start chips on the welcome card.
+// Used by index.html (populated at DOMContentLoaded) and by welcomeMarkup
+// (called after /new and /reset). Each entry mirrors what the chip will
+// send when clicked: prompt text + a short "what this does" line. The
+// onclick handler invokes sendTip() which sets chatInput to the title
+// text and sends. Keep prompts beginner-friendly and span the full
+// Harness range — files/code, web research, documents, automation,
+// telegram, and agent personality — so the first impression is "I can
+// just ask for anything", not "this is a code editor".
+function quickStartChipsMarkup() {
+  const chips = [
+    ['📂', 'List files in this project', 'Tour what\'s here. I\'ll group by folder.'],
+    ['🔍', 'Search for TODO in my code', 'Find loose ends across the whole tree.'],
+    ['🌐', 'Find the latest news on Anthropic', 'Search the web and summarise what changed today.'],
+    ['📊', 'Make me a one-page PDF business plan template', 'Generate a polished document I can edit.'],
+    ['⏰', 'Every 24h send me a summary of what changed in this folder', 'Schedule a recurring automation job.'],
+    ['🎭', 'Give yourself a name and a personality', 'Open Settings → Agent Identity to make it yours.'],
+  ];
+  return chips.map(([icon, title, desc]) =>
+    '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))">'
+    + '<div class="qc-icon">' + icon + '</div>'
+    + '<div class="qc-body"><div class="qc-title">' + esc(title) + '</div><div class="qc-desc">' + esc(desc) + '</div></div>'
+    + '</div>'
+  ).join('');
+}
+
+function refreshQuickStartChips() {
+  const host = document.getElementById('quickSuggestions');
+  if (host && !host.dataset.populated) {
+    host.innerHTML = quickStartChipsMarkup();
+    host.dataset.populated = '1';
+  }
 }
 
 function walkthroughChecklistMarkup() {
@@ -4955,9 +4990,8 @@ function welcomeMarkup() {
     + '<div class="quick-start-actions"><button id="quickStartBtn" class="btn-sm primary" onclick="startQuickTest()">Start quick test</button><button class="btn-sm" onclick="openFirstRunGuide()">Open setup guide</button></div>'
     + '</div>'
     + '<div class="beginner-readiness warn" id="beginnerReadiness"><div><strong id="beginnerReadinessTitle">Checking first-chat readiness</strong><span id="beginnerReadinessMessage">Harness is checking Ollama and installed models before your first message.</span></div><span class="readiness-badge" id="beginnerReadinessBadge">Checking</span></div>'
-    + '<div class="quick-suggestions">'
-    + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">📂</div><div class="qc-body"><div class="qc-title">List files in this project</div><div class="qc-desc">Tour what\'s here. I\'ll group by folder.</div></div></div>'
-    + '<div class="quick-card" onclick="sendTip(this.querySelector(\'.qc-title\'))"><div class="qc-icon">🔍</div><div class="qc-body"><div class="qc-title">Search for TODO in my code</div><div class="qc-desc">Find loose ends across the whole tree.</div></div></div>'
+    + '<div class="quick-suggestions" id="quickSuggestions" data-populated="1">'
+    + quickStartChipsMarkup()
     + '</div>'
     + '<details class="welcome-disclosure"><summary>What can I do? — full capability list</summary>'
     + '<div class="welcome-capabilities">'
