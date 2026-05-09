@@ -5495,6 +5495,14 @@ TOOL FALLBACK RULES:
         return { allowed: false, reason: `Nervous System ${motor.decision}: ${motor.reason}` };
       }
       if (motor.decision === 'ALLOW_DRY_RUN_ONLY' && !hasDryRunIntent(call.input)) {
+        // email_draft is itself the dry-run version of email_send (it writes a
+        // .eml file rather than sending) so the dry-run requirement is a no-op.
+        // In Full Autonomy (dontAsk) the user has explicitly asked us to stop
+        // gating; record the bypass so the audit trail still shows it happened.
+        if (call.name === 'email_draft' || shouldBypassNervousVerification()) {
+          runtimeTracer.recordEvent('nervous.dry_run_bypassed', { tool: call.name, reason: motor.reason, permissionMode });
+          return { allowed: true, reason: `Nervous System dry-run requirement bypassed for '${call.name}' in auto-approve mode: ${motor.reason}` };
+        }
         return { allowed: false, reason: `Nervous System requires dry-run for '${call.name}': ${motor.reason}` };
       }
       if (motor.decision === 'REQUIRE_VERIFICATION') {
@@ -5506,6 +5514,10 @@ TOOL FALLBACK RULES:
         return permissionPrompts.request(call, `Nervous System requires verification: ${motor.reason}`);
       }
       if (motor.decision === 'REQUIRE_CONFIRMATION') {
+        if (shouldBypassNervousVerification()) {
+          runtimeTracer.recordEvent('nervous.confirmation_bypassed', { tool: call.name, reason: motor.reason, permissionMode });
+          return { allowed: true, reason: `Nervous System confirmation bypassed for '${call.name}' in auto-approve mode: ${motor.reason}` };
+        }
         if (permissionMode === 'dontAsk') {
           return { allowed: false, reason: `Nervous System requires confirmation for '${call.name}' while permission mode is dontAsk: ${motor.reason}` };
         }

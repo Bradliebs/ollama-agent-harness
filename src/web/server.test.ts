@@ -3610,6 +3610,96 @@ describe('web server API validation', () => {
     }
   });
 
+  it('lets dontAsk bypass nervous confirmation gates for high-risk notification tools', async () => {
+    await request('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ permissionMode: 'dontAsk', reason: 'dontAsk bypass confirmation test' }),
+    });
+    const evaluate = jest.fn(() => ({ decision: 'allow', reason: 'standard permission allows' }));
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('nervous-confirmation-bypass-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (_config, deps): AsyncGenerator<LoopEvent> {
+        const permission = await deps.permissionCheck?.({ name: 'email_send', input: { to: 'a@b.com', subject: 's', body: 'b' } });
+        yield { type: 'text', content: JSON.stringify(permission) };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'send the launch email to both addresses now', model: 'test-model' }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain('\\"allowed\\":true');
+      expect(body).toContain('confirmation bypassed');
+    } finally {
+      restore();
+      await request('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ permissionMode: 'default' }) });
+    }
+  });
+
+  it('always bypasses dry-run requirement for email_draft because the tool is itself a dry-run', async () => {
+    const evaluate = jest.fn(() => ({ decision: 'allow', reason: 'standard permission allows' }));
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('email-draft-dry-run-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (_config, deps): AsyncGenerator<LoopEvent> {
+        const permission = await deps.permissionCheck?.({ name: 'email_draft', input: { to: 'a@b.com', subject: 's', body: 'b' } });
+        yield { type: 'text', content: JSON.stringify(permission) };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'draft the email to robyn but do not send', model: 'test-model' }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain('\\"allowed\\":true');
+      expect(body).toContain('dry-run requirement bypassed');
+    } finally {
+      restore();
+    }
+  });
+
   it('rejects switching permission mode to dontAsk without a reason', async () => {
     const response = await request('/api/settings', {
       method: 'POST',
