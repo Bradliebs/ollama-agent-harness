@@ -671,7 +671,22 @@ async function refreshJarvisRuntime() {
         : ' <button class="btn-sm" onclick="jarvisRuntimeRegister(\'' + f.key + '\')">Mark installed</button>';
       return '<tr><td style="padding:2px 8px">' + esc(f.label) + '</td><td style="padding:2px 8px">' + state + action + '</td></tr>';
     }).join('');
-    host.innerHTML = '<div style="font-weight:600;margin-bottom:4px">Voice / inbound runtime</div><table style="font-size:12px;border-collapse:collapse">' + rows + '</table>';
+    // Whisper transcribe path is a separate signal from the SDK adapter
+    // bookkeeping in `runtime.voice.*` — it reflects the actual server
+    // env vars. Surface it inline so users can self-diagnose without
+    // opening DevTools (the silent-failure mode that ate 2026-05-12).
+    const whisper = (data.voice && data.voice.whisper) || null;
+    let whisperRow = '';
+    if (whisper) {
+      const state = whisper.ok
+        ? '<span style="color:var(--success,#0a0)">ready</span> (' + esc(whisper.mode) + ')'
+        : '<span style="color:var(--danger,#e55)">not configured</span>';
+      whisperRow = '<tr><td style="padding:2px 8px">Whisper transcribe</td>'
+        + '<td style="padding:2px 8px">' + state
+        + (whisper.hint ? ' <span style="color:var(--muted);font-size:11px">' + esc(whisper.hint) + '</span>' : '')
+        + '</td></tr>';
+    }
+    host.innerHTML = '<div style="font-weight:600;margin-bottom:4px">Voice / inbound runtime</div><table style="font-size:12px;border-collapse:collapse">' + rows + whisperRow + '</table>';
   } catch (error) {
     host.innerHTML = '<div class="readiness-empty">Runtime status unavailable: ' + esc(error.message || error) + '</div>';
   }
@@ -10962,6 +10977,12 @@ voiceLevelShow = function (text) {
 
 let jarvisAlwaysListen = false;
 let jarvisSpeakReplies = false;
+// Tracks whether a TTS utterance is currently playing. Used by
+// (a) the barge-in detector in jarvisLocalSttStart to cancel TTS the
+//     moment the user starts talking, and
+// (b) the hands-free re-arm path so it can wait for `tts-ended` instead
+//     of using a hard-coded delay.
+let jarvisTtsPlaying = false;
 
 function jarvisToggleAlwaysListen() {
   jarvisAlwaysListen = !jarvisAlwaysListen;
@@ -10984,9 +11005,31 @@ function jarvisSpeak(text) {
     utter.lang = navigator.language || 'en-US';
     utter.rate = 1.0;
     utter.pitch = 1.0;
+    // Track playback state so the re-arm path can wait for actual end
+    // (instead of a fixed 1.8s timer) and so barge-in can cancel cleanly.
+    const settle = () => {
+      jarvisTtsPlaying = false;
+      try { document.dispatchEvent(new CustomEvent('jarvis-tts-ended')); } catch { /* noop */ }
+    };
+    utter.onend = settle;
+    utter.onerror = settle;
     window.speechSynthesis.cancel();
+    jarvisTtsPlaying = true;
     window.speechSynthesis.speak(utter);
-  } catch { /* speechSynthesis is best-effort */ }
+  } catch { /* speechSynthesis is best-effort */ jarvisTtsPlaying = false; }
+}
+
+// Cancel any in-flight TTS the moment the user starts talking. Called
+// from the VAD path in jarvisLocalSttStart whenever we detect a fresh
+// speech burst while jarvisTtsPlaying is true. Also dispatches the
+// `jarvis-tts-ended` event so anyone waiting on natural completion
+// resolves immediately.
+function jarvisBargeInCancelTts() {
+  if (!jarvisTtsPlaying) return;
+  try { window.speechSynthesis.cancel(); } catch { /* noop */ }
+  jarvisTtsPlaying = false;
+  try { document.dispatchEvent(new CustomEvent('jarvis-tts-ended')); } catch { /* noop */ }
+  voiceShowStatus('🎙️ barge-in — cancelling TTS');
 }
 
 // Hook: when an assistant reply finalizes, optionally speak it. Other code
@@ -11145,8 +11188,8 @@ async function jarvisLocalSttToggle() {
 // Hands-free mode: re-arm the mic automatically after each assistant reply
 // so a conversation flows without touching the keyboard. Click the same
 // button that toggles always-listening for browser STT — but for offline
-// whisper. Persisted per-tab via a flag.
-let jarvisHandsFree = false;
+// whisper. Persisted in localStorage so the toggle survives reloads.
+let jarvisHandsFree = (() => { try { return localStorage.getItem('jarvisHandsFree') === '1'; } catch { return false; } })();
 
 // VAD tunables — exposed via the ⚙️ voice settings panel. Persisted in
 // localStorage so user adjustments survive reloads. Defaults match the
@@ -11257,6 +11300,7 @@ if (document.readyState === 'loading') {
 
 function jarvisToggleHandsFree() {
   jarvisHandsFree = !jarvisHandsFree;
+  try { localStorage.setItem('jarvisHandsFree', jarvisHandsFree ? '1' : '0'); } catch { /* noop */ }
   const btn = document.getElementById('jarvisHandsFreeBtn');
   if (btn) btn.textContent = jarvisHandsFree ? '🎤 hands-free on' : '🎤 hands-free off';
   if (jarvisHandsFree && !localSttRecording) {
@@ -11265,16 +11309,44 @@ function jarvisToggleHandsFree() {
   }
 }
 
+// Restore the hands-free button label on first paint to match the
+// persisted toggle state. Without this the button always shows "off"
+// after a refresh even though the mode is active.
+function jarvisHandsFreeRestoreLabel() {
+  const btn = document.getElementById('jarvisHandsFreeBtn');
+  if (btn && !btn.disabled) {
+    btn.textContent = jarvisHandsFree ? '🎤 hands-free on' : '🎤 hands-free off';
+  }
+  if (jarvisHandsFree && !localSttRecording) {
+    // Auto-arm after reload so a persisted ON state actually keeps
+    // listening. Health probe will already have disabled the button if
+    // whisper is misconfigured, in which case we skip.
+    if (!btn || !btn.disabled) void jarvisLocalSttStart();
+  }
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', jarvisHandsFreeRestoreLabel);
+} else {
+  jarvisHandsFreeRestoreLabel();
+}
+
 // When the assistant finishes speaking (TTS) or finalizes a reply (TTS off),
-// re-arm the mic. Wait a tick so any TTS audio has stopped — otherwise the
-// silence detector will fire mid-reply.
+// re-arm the mic. Waits for the actual `jarvis-tts-ended` event when TTS
+// is playing instead of a fixed delay — short replies don't waste time,
+// long replies don't get clipped. When TTS is off (or unavailable), uses
+// a short fixed delay because there's no audio that could feed back in.
 document.addEventListener('jarvis-assistant-message', () => {
   if (!jarvisHandsFree) return;
-  setTimeout(() => {
-    if (jarvisHandsFree && !localSttRecording) {
-      void jarvisLocalSttStart();
-    }
-  }, 1800);
+  const rearm = () => {
+    if (jarvisHandsFree && !localSttRecording) void jarvisLocalSttStart();
+  };
+  if (jarvisTtsPlaying) {
+    // Wait for natural TTS end (or barge-in cancel). 200ms grace after
+    // the event so the audio output settles before we open the mic.
+    document.addEventListener('jarvis-tts-ended', () => setTimeout(rearm, 200), { once: true });
+  } else {
+    setTimeout(rearm, 400);
+  }
 });
 
 async function jarvisLocalSttStart() {
@@ -11320,6 +11392,11 @@ async function jarvisLocalSttStart() {
       const now = performance.now();
       const chunkMs = (channel.length / (localSttCtx ? localSttCtx.sampleRate : 48000)) * 1000;
       if (peak > SILENCE_THRESHOLD) {
+        // Barge-in: if Jarvis is mid-reply when fresh user speech starts,
+        // cancel TTS instantly so the user isn't talking over a fading
+        // assistant voice (and so the silence detector doesn't time the
+        // pause from end-of-TTS instead of end-of-user).
+        if (jarvisTtsPlaying) jarvisBargeInCancelTts();
         lastSpeechAt = now;
         speechMs += chunkMs;
       }

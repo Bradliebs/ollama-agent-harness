@@ -2491,7 +2491,7 @@ app.get('/api/jarvis/status', async (_req, res) => {
         updatedAt: trust.updatedAt,
       },
       knowledgeGraph: knowledge,
-      voice: getVoiceStatus(),
+      voice: { ...getVoiceStatus(), whisper: getWhisperHealthSnapshot() },
       inbound: getInboundTriageStatus(),
       runtime: getRuntimeRegistryStatus(),
       mcpServer: mcp,
@@ -2686,28 +2686,29 @@ app.post('/api/jarvis/runtime/clear', (_req, res) => {
 //      optional HARNESS_WHISPER_MODEL_NAME (default base.en)
 // Returns 503 when neither is configured so the UI can fall back gracefully.
 
-// Lightweight probe so the UI can disable the hands-free button up front
-// instead of letting users click it and watch the mic die silently when
-// the backend returns 503. Returns the same shape regardless of mode so
-// the frontend can branch on `ok` alone.
-app.get('/api/jarvis/voice/health', (_req, res) => {
+// Probe whisper config without touching the request/response cycle. Used
+// both by GET /api/jarvis/voice/health and by /api/jarvis/status so the
+// runtime panel can surface mode + hint without a second round-trip.
+function getWhisperHealthSnapshot(): { ok: boolean; mode: 'binary' | 'python' | 'none'; hint: string } {
   const binary = process.env.HARNESS_WHISPER_BINARY;
   const model = process.env.HARNESS_WHISPER_MODEL;
   const pythonExe = process.env.HARNESS_WHISPER_PYTHON;
   if (binary && model) {
-    res.json({ ok: true, mode: 'binary', hint: `whisper.cpp binary at ${binary}` });
-    return;
+    return { ok: true, mode: 'binary', hint: `whisper.cpp binary at ${binary}` };
   }
   if (pythonExe) {
     const modelName = process.env.HARNESS_WHISPER_MODEL_NAME || 'base.en (default)';
-    res.json({ ok: true, mode: 'python', hint: `pywhispercpp via ${pythonExe} · model ${modelName}` });
-    return;
+    return { ok: true, mode: 'python', hint: `pywhispercpp via ${pythonExe} · model ${modelName}` };
   }
-  res.json({
+  return {
     ok: false,
     mode: 'none',
     hint: 'Set HARNESS_WHISPER_BINARY+HARNESS_WHISPER_MODEL or HARNESS_WHISPER_PYTHON (+ optional HARNESS_WHISPER_MODEL_NAME).',
-  });
+  };
+}
+
+app.get('/api/jarvis/voice/health', (_req, res) => {
+  res.json(getWhisperHealthSnapshot());
 });
 
 app.post('/api/jarvis/voice/transcribe', express.raw({ type: '*/*', limit: '50mb' }), async (req, res) => {
@@ -9483,6 +9484,28 @@ export async function startServer(): Promise<void> {
   startupProfile.record('stale-session-cleanup');
   await checkSourceDistFreshness();
   startupProfile.record('source-freshness');
+  // Sweep stale whisper-tmp WAVs from prior crashes/timeouts. The transcribe
+  // route unlinks on success but leaks on hard failure; a 30-day-old 50MB
+  // WAV pile slowly fills the harness data dir if we never sweep.
+  try {
+    const tmpDir = path.join(PROJECT_DIR, '.harness', 'jarvis', 'whisper-tmp');
+    const entries = await fs.readdir(tmpDir).catch(() => [] as string[]);
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000; // 24h
+    let removed = 0;
+    for (const name of entries) {
+      if (!name.startsWith('stt-') || !name.endsWith('.wav')) continue;
+      const full = path.join(tmpDir, name);
+      try {
+        const stat = await fs.stat(full);
+        if (stat.mtimeMs < cutoff) {
+          await fs.unlink(full);
+          removed += 1;
+        }
+      } catch { /* file may have been removed by another sweep */ }
+    }
+    if (removed > 0) logger.info('Startup', `Swept ${removed} stale whisper-tmp WAV(s) older than 24h`);
+  } catch { /* best-effort, never block startup */ }
+  startupProfile.record('whisper-tmp-sweep');
   const preferred = parseInt(process.env.PORT ?? '3000', 10);
   const port = await findAvailablePort(preferred);
   startupProfile.record('port-selection');
