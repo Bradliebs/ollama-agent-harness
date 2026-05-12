@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Require successful CI on tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Belt-and-braces: refuse to publish if the most recent CI run for
+          # this exact commit did not conclude successfully. The Release
+          # workflow re-runs validation below, but a green CI on the same SHA
+          # is the supported pre-condition for a public release.
+          for attempt in 1 2 3 4 5; do
+            status=$(gh run list --workflow CI --commit "${GITHUB_SHA}" --limit 1 --json status,conclusion --jq '.[0] | (.status + ":" + (.conclusion // ""))' 2>/dev/null || true)
+            case "${status}" in
+              completed:success)
+                echo "CI on ${GITHUB_SHA} concluded successfully."
+                exit 0
+                ;;
+              completed:*)
+                echo "CI on ${GITHUB_SHA} concluded with: ${status#completed:}" >&2
+                exit 1
+                ;;
+              "")
+                echo "No CI run yet for ${GITHUB_SHA}; waiting (attempt ${attempt})..."
+                ;;
+              *)
+                echo "CI on ${GITHUB_SHA} status: ${status} (attempt ${attempt})"
+                ;;
+            esac
+            sleep 30
+          done
+          echo "Timed out waiting for CI on ${GITHUB_SHA}." >&2
+          exit 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate
+        run: |
+          npm run typecheck
+          npm test -- --runInBand
+          npm run build
+
+      - name: Package release asset
+        run: |
+          mkdir -p release
+          node scripts/release-package.js --version "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" --repository "${GITHUB_REPOSITORY}" --built-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --asset "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip"
+
+      - name: Generate release SHA manifest
+        run: npm run release:manifest -- --version "${GITHUB_REF_NAME}" --asset "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip" --commit "${GITHUB_SHA}" --repository "${GITHUB_REPOSITORY}" --output "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip.sha256.json"
+
+      - name: Smoke release archive and manifest
+        run: node scripts/release-smoke.js "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip" "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip.sha256.json"
+
+      - name: Generate release notes
+        run: npm run release:notes -- --version "${GITHUB_REF_NAME}" --asset "release/ollama-agent-harness-${GITHUB_REF_NAME}.zip" --commit "${GITHUB_SHA}" --output release/release-notes.md
+
+      - name: Publish release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/ollama-agent-harness-${{ github.ref_name }}.zip
+            release/ollama-agent-harness-${{ github.ref_name }}.zip.sha256.json
+          name: Ollama Agent Harness ${{ github.ref_name }}
+          body_path: release/release-notes.md
+
+      - name: Verify published release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rm -rf published-release
+          mkdir -p published-release
+          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --pattern "ollama-agent-harness-${GITHUB_REF_NAME}.zip*" --dir published-release --clobber
+          node scripts/release-smoke.js "published-release/ollama-agent-harness-${GITHUB_REF_NAME}.zip" "published-release/ollama-agent-harness-${GITHUB_REF_NAME}.zip.sha256.json"

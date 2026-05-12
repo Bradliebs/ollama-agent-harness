@@ -1,0 +1,1874 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- CSP: keep all script/style/img/connect requests on the local origin.
+       'unsafe-inline' is required for the 167 inline onclick handlers and
+       the inline <style> block; refactoring those is out of scope. The
+       previous marked.js CDN dependency has been removed (now bundled).
+       Note: frame-ancestors is omitted because browsers ignore it when
+       delivered via <meta>; it must be set as an HTTP header instead. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws: wss:; base-uri 'self'; form-action 'self'">
+  <title>Ollama Agent Harness</title>
+  <style>
+    :root{--bg:#0f0f0f;--surface:#1a1a1a;--surface2:#242424;--surface3:#2a2a2a;--border:#333;--text:#e0e0e0;--text-dim:#888;--accent:#7c5cff;--accent-hover:#9b80ff;--accent-bg:rgba(124,92,255,.1);--success:#4caf50;--error:#ef5350;--warning:#ff9800;--tool-bg:#1e2a1e;--tool-border:#2e4a2e;--r:12px;--rs:8px}
+    .light{--bg:#f5f5f5;--surface:#ffffff;--surface2:#f0f0f0;--surface3:#e8e8e8;--border:#d0d0d0;--text:#1a1a1a;--text-dim:#666;--accent:#5b3fd4;--accent-hover:#7c5cff;--accent-bg:rgba(91,63,212,.08);--tool-bg:#e8f5e9;--tool-border:#a5d6a7}
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;overflow:hidden}
+    .layout{display:flex;width:100%;height:100%}
+    .left-panel{--left-panel-width:300px;width:var(--left-panel-width);background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;transition:margin-left .3s;position:relative}
+    .left-panel-resizer{position:absolute;top:0;right:-3px;width:6px;height:100%;cursor:ew-resize;z-index:50;background:transparent;transition:background .15s}
+    .left-panel-resizer:hover,.left-panel-resizer.dragging{background:var(--accent)}
+    .left-panel.hidden{margin-left:calc(-1 * var(--left-panel-width))}
+    .left-panel-close{display:none}
+    .main-panel{flex:1;display:flex;flex-direction:column;min-width:380px;position:relative}
+    .right-panel{width:440px;background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto;transition:margin-right .3s}
+    .right-panel.hidden{margin-right:-440px}
+    .panel-header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:5}
+    .panel-header h3{font-size:14px;font-weight:600}
+    .panel-search{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:48px;z-index:4}
+    .panel-search input{width:100%;padding:7px 10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px;outline:none}
+    .panel-search input:focus{border-color:var(--accent)}
+    .settings-collapse-actions{display:flex;gap:6px;margin-top:6px;justify-content:flex-end}
+    /* "Advanced" disclosure that wraps less-common settings sections. */
+    .settings-advanced-fold{border-top:1px solid var(--border);padding:0}
+    .settings-advanced-fold > summary{cursor:pointer;padding:14px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);-webkit-user-select:none;user-select:none;background:var(--surface);transition:background .15s}
+    .settings-advanced-fold > summary:hover{background:var(--surface2);color:var(--text)}
+    .settings-advanced-fold[open] > summary{color:var(--text)}
+    .settings-advanced-fold .settings-section{border-top:1px dashed var(--border)}
+    /* Skills "Manage" disclosure groups curator/automation/diagnostics. */
+    .skills-manage-fold{margin-top:14px;border-top:1px solid var(--border);padding-top:8px}
+    .skills-manage-fold > summary{cursor:pointer;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);padding:6px 4px;-webkit-user-select:none;user-select:none}
+    .skills-manage-fold > summary:hover{color:var(--text)}
+    .skills-manage-fold[open] > summary{color:var(--text)}
+    .skills-manage-body{margin-top:8px;display:flex;flex-direction:column;gap:6px}
+    /* One-line summary at the top of the Tools dashboard. */
+    .tools-summary-line{padding:8px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--rs);margin:8px 4px;font-size:12px;color:var(--text-dim)}
+    .tools-summary-line strong{color:var(--text);font-weight:600}
+    .btn-sm{background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);padding:4px 10px;border-radius:6px;cursor:pointer;font-size:12px;transition:all .2s}
+    .btn-sm:hover{border-color:var(--accent);color:var(--text)}
+    .btn-sm:disabled{opacity:.55;cursor:default;border-color:var(--border);color:var(--text-dim)}
+    .history-list,.file-tree,.skill-list,.memory-view{flex:1;overflow-y:auto;padding:8px}
+    .history-item{padding:10px 12px;border-radius:var(--rs);cursor:pointer;margin-bottom:2px;transition:background .15s;display:flex;justify-content:space-between;align-items:center}
+    .history-item:hover{background:var(--surface2)}
+    .history-item.active{background:var(--accent-bg);border:1px solid var(--accent)}
+    .history-title{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+    .history-date{font-size:11px;color:var(--text-dim)}
+    .history-del{opacity:0;background:none;border:none;color:var(--error);cursor:pointer;font-size:14px;padding:0 4px}
+    .history-item:hover .history-del{opacity:.6}
+    .file-item{padding:6px 10px;border-radius:6px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:6px;transition:background .15s}
+    .file-item:hover{background:var(--surface2)}
+    .file-icon{font-size:14px;width:18px;text-align:center;flex-shrink:0}
+    .skill-item{padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--rs);margin-bottom:6px;cursor:pointer;transition:all .15s}
+    .skill-item:hover{border-color:var(--accent)}
+    .skill-item .sk-name{font-size:13px;font-weight:600;color:var(--accent);margin-bottom:2px}
+    .skill-item .sk-desc{font-size:11px;color:var(--text-dim);line-height:1.4}
+    .skill-item .sk-meta{font-size:10px;color:var(--text-dim);margin-top:4px;display:flex;justify-content:space-between;align-items:center}
+    .sk-del{background:none;border:none;color:var(--error);cursor:pointer;font-size:12px;opacity:0;transition:opacity .15s}
+    .skill-item:hover .sk-del{opacity:.6}
+    /* Skills gallery: card grid layout for the runtime skill library. */
+    .skills-gallery-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 4px 10px;border-bottom:1px solid var(--border);margin-bottom:10px}
+    .skills-gallery-header h4{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);margin:0}
+    .skills-gallery-count{font-size:11px;color:var(--text-dim)}
+    .skills-gallery{display:grid;grid-template-columns:1fr;gap:8px;margin-bottom:14px}
+    .skill-card{background:var(--surface2);border:1px solid var(--border);border-radius:var(--rs);padding:10px 12px;display:flex;flex-direction:column;gap:6px;transition:border-color .15s,opacity .15s}
+    .skill-card:hover{border-color:var(--accent)}
+    .skill-card.disabled{opacity:.55}
+    .skill-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+    .skill-card-name{font-size:13px;font-weight:600;color:var(--accent);line-height:1.2;word-break:break-word}
+    .skill-card-cmd{display:inline-block;margin-top:2px;padding:1px 6px;border:1px solid var(--border);border-radius:5px;font-family:'Cascadia Code','Fira Code',monospace;font-size:10.5px;color:var(--text-dim);background:var(--surface);cursor:pointer}
+    .skill-card-cmd:hover{color:var(--accent);border-color:var(--accent)}
+    .skill-card-desc{font-size:11.5px;color:var(--text-dim);line-height:1.4}
+    .skill-card-meta{font-size:10.5px;color:var(--text-dim);display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+    .skill-card-actions{display:flex;align-items:center;gap:6px;justify-content:space-between;margin-top:2px}
+    .skill-card-actions-left{display:flex;align-items:center;gap:6px}
+    .skill-card-actions-right{display:flex;align-items:center;gap:4px}
+    .skill-toggle{position:relative;display:inline-block;width:30px;height:16px;flex-shrink:0;cursor:pointer}
+    .skill-toggle input{opacity:0;width:0;height:0}
+    .skill-toggle-track{position:absolute;inset:0;background:var(--surface3);border:1px solid var(--border);border-radius:16px;transition:background .15s,border-color .15s}
+    .skill-toggle-thumb{position:absolute;top:1px;left:1px;width:12px;height:12px;background:var(--text-dim);border-radius:50%;transition:transform .15s,background .15s}
+    .skill-toggle input:checked + .skill-toggle-track{background:var(--accent-bg);border-color:var(--accent)}
+    .skill-toggle input:checked + .skill-toggle-track + .skill-toggle-thumb,
+    .skill-toggle input:checked ~ .skill-toggle-thumb{transform:translateX(14px);background:var(--accent)}
+    .skill-card .sk-del{opacity:.55}
+    .skill-card .sk-del:hover{opacity:1}
+    /* About section in right settings panel — quick at-a-glance summary. */
+    .about-summary{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;font-size:11.5px;color:var(--text-dim);margin-top:4px}
+    .about-summary strong{display:block;color:var(--text);font-size:11px;font-weight:600;margin-bottom:1px}
+    .about-version{font-size:13px;font-weight:600;color:var(--accent)}
+    /* Automation wizard: cleaner labeled form (replaces stacked inputs). */
+    .automation-wizard{margin-top:10px;padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--rs);display:flex;flex-direction:column;gap:10px}
+    .automation-wizard.hidden-by-default{display:none}
+    .automation-wizard-title{font-size:12px;font-weight:600;color:var(--text);text-transform:uppercase;letter-spacing:.5px}
+    .automation-field{display:flex;flex-direction:column;gap:3px}
+    .automation-field label{font-size:11px;color:var(--text-dim);font-weight:600}
+    .automation-field input,.automation-field textarea{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;font-family:inherit;outline:none}
+    .automation-field input:focus,.automation-field textarea:focus{border-color:var(--accent)}
+    .automation-field-hint{font-size:10.5px;color:var(--text-dim);font-weight:400}
+    .mem-section{margin-bottom:16px}
+    .mem-section h5{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:6px}
+    .mem-edit-btn{font-size:10px;padding:1px 6px;text-transform:none;letter-spacing:0;background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);border-radius:4px;cursor:pointer}
+    .mem-edit-btn:hover{color:var(--accent);border-color:var(--accent)}
+    .mem-section pre{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;white-space:pre-wrap;font-size:11px;font-family:'Cascadia Code','Fira Code',monospace;color:var(--text-dim)}
+    .tab-bar{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;border-bottom:1px solid var(--border);background:var(--border);position:relative}
+    .tab{padding:8px 4px;text-align:center;font-size:10.5px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;color:var(--text-dim);transition:all .15s;background:var(--surface);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;line-height:1.1;min-height:44px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .tab:hover{color:var(--text);background:var(--surface2)}
+    .tab.active{color:var(--accent);border-bottom-color:var(--accent);background:var(--surface2)}
+    .tab .tab-icon{font-size:14px;line-height:1}
+    .tab .tab-label{font-size:10px;letter-spacing:.2px}
+    .tab.tab-more.has-active{color:var(--accent);border-bottom-color:var(--accent);background:var(--surface2)}
+    /* "More" overflow menu — anchors below the tab bar, lists rarely-used tabs. */
+    .more-menu{position:absolute;top:100%;right:0;background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 var(--rs) var(--rs);box-shadow:0 6px 18px rgba(0,0,0,.35);z-index:10;min-width:160px;display:flex;flex-direction:column;padding:4px}
+    .more-menu.hidden-by-default{display:none}
+    .more-menu-item{padding:8px 10px;cursor:pointer;border-radius:4px;font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:8px}
+    .more-menu-item:hover{background:var(--surface2);color:var(--text)}
+    .more-menu-item.active{color:var(--accent);background:var(--accent-bg)}
+    .more-menu-icon{font-size:14px;width:18px;text-align:center}
+    /* No-model banner — shown in the chat area when modelSelect.value is empty. */
+    .no-model-banner{display:flex;gap:14px;align-items:flex-start;padding:14px 18px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:var(--rs);max-width:680px;margin:0 auto 18px}
+    .no-model-banner.hidden-by-default{display:none}
+    .no-model-icon{font-size:24px;color:var(--accent);line-height:1}
+    .no-model-banner strong{color:var(--text);font-size:14px}
+    /* Unified inbox strip lives between the topbar and the chat area so
+       pending decisions / queued plan tasks / overnight automation runs
+       are always glanceable without scrolling. Collapses to a one-line
+       summary; click "Show" to expand the per-item cards. */
+    .inbox-strip{padding:8px 16px;background:var(--surface);border-bottom:1px solid var(--border);font-size:12px;color:var(--text)}
+    .inbox-strip-summary{display:flex;align-items:center;gap:10px}
+    .inbox-strip-summary .inbox-icon{font-size:14px}
+    .inbox-strip-summary .inbox-count{font-weight:600;color:var(--accent)}
+    .inbox-strip-summary .inbox-tagline{color:var(--text-dim);flex:1}
+    .inbox-strip-summary .inbox-toggle{background:none;border:1px solid var(--border);color:var(--text);padding:2px 10px;border-radius:6px;cursor:pointer;font-size:11px;transition:all .15s}
+    .inbox-strip-summary .inbox-toggle:hover{background:var(--accent-bg);border-color:var(--accent)}
+    .inbox-strip-list{margin-top:8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:6px}
+    .inbox-strip-list.collapsed{display:none}
+    .inbox-item{display:flex;flex-direction:column;gap:2px;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;cursor:pointer;transition:all .15s;text-align:left;color:var(--text)}
+    .inbox-item:hover{background:var(--accent-bg);border-color:var(--accent)}
+    .inbox-item .inbox-row{display:flex;align-items:center;gap:6px}
+    .inbox-item .inbox-kind-icon{font-size:13px}
+    .inbox-item .inbox-title{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .inbox-item .inbox-detail{font-size:11px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.3;max-height:2.6em}
+    .inbox-item.priority-high{border-left:3px solid var(--warning)}
+    .no-model-hint{font-size:12px;color:var(--text-dim);margin-top:6px;line-height:1.4}
+    .no-model-hint code{background:var(--surface2);padding:1px 5px;border-radius:3px;font-family:'Cascadia Code','Fira Code',monospace;font-size:11px}
+    .topbar{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+    .unattended-btn{white-space:nowrap;border-color:rgba(255,176,80,.45);background:rgba(255,176,80,.08)}
+    .unattended-btn.active{border-color:rgba(80,200,120,.65);background:rgba(80,200,120,.12);color:#8ff0a4}
+    /* On narrow viewports, hide the 'Harness' word in the logo so the topbar
+       stays single-line. We use a child span so we don't double up the emoji. */
+    .logo .logo-word{transition:max-width .15s,opacity .15s}
+    @media(max-width:1100px){
+      .logo .logo-word{max-width:0;opacity:0;overflow:hidden}
+      .topbar-btns .btn-icon[onclick*="newChat"]{display:none}
+    }
+    /* Files-tab filter input — small inline filter above the tree. */
+    .file-search-input{width:calc(100% - 12px);margin:4px 6px 8px;padding:5px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;outline:none}
+    .file-search-input:focus{border-color:var(--accent)}
+    .logo{font-size:18px;font-weight:700;color:var(--accent);display:flex;align-items:center;gap:6px;white-space:nowrap}
+    /* Topbar pet — small expressive avatar that mirrors what Harness is
+       actually doing right now (idle, thinking, working, alert, sleepy,
+       concerned). Driven by updateTopbarPet() in ui/app.js which reads
+       isSending, recent tool calls, the inbox strip, and idle time. */
+    .pet{display:inline-block;font-size:20px;line-height:1;cursor:default;-webkit-user-select:none;user-select:none;transition:transform .2s}
+    .pet:hover{transform:scale(1.15)}
+    .pet-idle{animation:pet-bob 4s ease-in-out infinite}
+    .pet-thinking{animation:pet-bob 1.4s ease-in-out infinite}
+    .pet-working{animation:pet-bob 0.7s ease-in-out infinite}
+    .pet-alert{animation:pet-bob 2.2s ease-in-out infinite}
+    .pet-sleepy{opacity:.65;animation:pet-bob 8s ease-in-out infinite}
+    .pet-happy{animation:pet-pop 0.8s ease-out 1}
+    .pet-concerned{animation:pet-shake 0.5s ease-in-out 2}
+    @keyframes pet-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-2px)}}
+    @keyframes pet-pop{0%{transform:scale(1)}40%{transform:scale(1.3)}100%{transform:scale(1)}}
+    @keyframes pet-shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-2px)}75%{transform:translateX(2px)}}
+    .model-wrap{position:relative;flex:1;max-width:350px}
+    .model-wrap::after{content:'▾';position:absolute;right:10px;top:50%;transform:translateY(-50%);color:var(--text-dim);pointer-events:none;font-size:12px}
+    .model-select{width:100%;padding:8px 32px 8px 12px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:var(--rs);font-size:13px;appearance:none;cursor:pointer;outline:none}
+    .model-select:hover{border-color:var(--accent)}
+    .status-pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border:1px solid var(--border);border-radius:999px;background:var(--surface2);font-size:11px;color:var(--text-dim);white-space:nowrap}
+    .status-pill .status-dot{width:7px;height:7px;border-radius:50%;background:var(--error);flex-shrink:0}
+    .status-pill.ok .status-dot{background:var(--success)}
+    .status-pill.ok{border-color:rgba(80,200,120,.35);color:#50c878}
+    .status-pill.loading .status-dot{background:var(--warning);animation:pulse 1s infinite}
+    .status-pill.loading{border-color:rgba(255,176,80,.35);color:#ffb050}
+    .status-pill.error{border-color:rgba(255,80,80,.4);color:#ff8080}
+    .connector-badges{display:flex;align-items:center;gap:4px}
+    .connector-badge{display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:999px;font-size:10px;border:1px solid var(--border);background:var(--surface2);cursor:default;white-space:nowrap}
+    .connector-badge .cb-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+    .connector-badge.cb-on .cb-dot{background:var(--success)}
+    .connector-badge.cb-off .cb-dot{background:var(--text-dim);opacity:.4}
+    .status-center{display:flex;align-items:center;gap:8px;padding:4px 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface2);min-width:220px;max-width:360px}
+    .status-center-summary{display:flex;flex-direction:column;gap:1px;min-width:0}
+    .status-center-state{font-size:11px;color:var(--text)}
+    .status-center-state strong{font-weight:700}
+    .status-center-detail{font-size:10px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .status-center.ready{border-color:rgba(80,200,120,.35)}
+    .status-center.warn{border-color:rgba(255,176,80,.35)}
+    .status-center.error{border-color:rgba(255,80,80,.4)}
+    .status-center.working{border-color:rgba(78,161,255,.4)}
+    @media(max-width:1360px){.status-center-detail{display:none}.status-center{min-width:170px}}
+    @media(max-width:1200px){.status-center{display:none}}
+    /* Legacy bare-dot shim — keep selectors working for any other callers. */
+    .status-dot{width:8px;height:8px;border-radius:50%;background:var(--error);flex-shrink:0}
+    .status-dot.ok{background:var(--success)}
+    .status-dot.loading{background:var(--warning);animation:pulse 1s infinite}
+    .context-hud{display:flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid var(--border);border-radius:7px;background:var(--surface2);font-size:11px;color:var(--text-dim);white-space:nowrap}
+    .context-meter{width:54px;height:5px;border-radius:3px;background:var(--surface3);overflow:hidden}
+    .context-fill{height:100%;width:0;background:var(--success);transition:width .2s,background .2s}
+    .context-fill.warn{background:var(--warning)}
+    .context-fill.hot{background:var(--error)}
+    .recovery-banner{max-width:800px;width:100%;margin:0 auto;background:var(--surface2);border:1px solid var(--warning);border-radius:var(--rs);padding:10px 12px;font-size:13px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .recovery-banner span{color:var(--text-dim)}
+    .recovery-banner strong{color:var(--text)}
+    .permission-panel{position:absolute;left:50%;bottom:78px;transform:translateX(-50%);width:min(800px,calc(100% - 32px));z-index:50;display:flex;flex-direction:column;gap:8px}
+    .permission-panel.hidden{display:none}
+    .permission-card{background:var(--surface);border:1px solid var(--warning);border-radius:var(--rs);box-shadow:0 8px 30px rgba(0,0,0,.35);padding:10px 12px;display:flex;justify-content:space-between;gap:12px;align-items:flex-start;transition:opacity .15s,filter .15s}
+    /* Resolving state: makes the click feel responsive even when the
+       network round-trip and the next pollPermissions tick add latency. */
+    .permission-card.resolving{opacity:.5;filter:saturate(.4);pointer-events:none}
+    .permission-card.resolving .permission-actions button{cursor:progress}
+    .permission-title{font-size:13px;font-weight:700;color:var(--text);margin-bottom:3px}
+    .permission-reason{font-size:12px;color:var(--text-dim);margin-bottom:5px}
+    .permission-card code{display:block;max-width:560px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:4px 6px;font-size:11px;color:var(--text-dim)}
+    .permission-actions{display:flex;gap:6px;flex-shrink:0}
+    .btn-sm.danger{color:var(--error)}
+    .inline-actions{display:flex;gap:4px}
+    .inline-actions.top-spaced{margin-top:4px}
+    .initial-hidden{display:none}
+    .compare-select-hidden{display:none}
+    .autonomy-hud-action{cursor:pointer}
+    .hidden-by-default{display:none!important}
+    .attachment-validation-toggle{display:flex;align-items:center;gap:6px;margin-top:4px;cursor:pointer}
+    .settings-note{font-size:11px;color:var(--text-dim);margin-bottom:10px}
+    .settings-row-spaced{margin-top:10px}
+    .settings-status-inline{margin-left:8px;font-size:11px;color:var(--text-dim)}
+    .settings-action-row{display:flex;gap:6px;align-items:center;margin-bottom:6px}
+    .settings-flex-input{flex:1;min-width:0}
+    .settings-browser-panel{margin-bottom:8px;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px}
+    .settings-status-line{font-size:11px;color:var(--text-dim);min-height:14px}
+    .advanced-settings{margin-top:14px;border-top:1px solid var(--border);padding-top:10px}
+    .advanced-settings-summary{cursor:pointer;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);-webkit-user-select:none;user-select:none}
+    .advanced-settings-body{margin-top:10px}
+    .settings-action-wrap{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px}
+    .settings-preview-row{margin-top:10px;display:flex;gap:6px;align-items:center}
+    .settings-preview-result{margin-top:6px;font-size:11px;color:var(--text-dim)}
+    .settings-example-row{margin-top:6px;font-size:11px;color:var(--text-dim)}
+    .vision-status{display:inline-block;margin-left:6px;padding:1px 6px;border:1px solid var(--border);border-radius:999px;font-size:10px;color:var(--text-dim);font-weight:400;text-transform:none;letter-spacing:0}
+    .vision-status.ready{border-color:#50c878;color:#50c878;background:rgba(80,200,120,.08)}
+    .vision-status.warn{border-color:#ffb050;color:#ffb050;background:rgba(255,176,80,.08)}
+    .vision-status.error{border-color:#ff5050;color:#ff5050;background:rgba(255,80,80,.08)}
+    .picker-grid{display:flex;flex-wrap:wrap;gap:4px}
+    .accent-pick{width:24px;height:24px;border-radius:50%;border:2px solid var(--border)}
+    .accent-purple{background:#7c5cff}.accent-blue{background:#3b82f6}.accent-green{background:#10b981}.accent-amber{background:#f59e0b}.accent-red{background:#ef4444}.accent-pink{background:#ec4899}.accent-violet{background:#8b5cf6}.accent-cyan{background:#06b6d4}
+    .profile-action-row{display:flex;gap:6px;flex-wrap:wrap}
+    .profile-select-inline{flex:1;min-width:120px;padding:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px}
+    .profile-import-export-row{display:flex;gap:6px}
+    .full-autonomy-button{margin-bottom:4px;background:rgba(80,200,120,.15);border-color:#50c878;color:#50c878}
+    .timed-autonomy-button{margin-bottom:8px;background:rgba(255,176,80,.15);border-color:#ffb050;color:#ffb050}
+    .timed-autonomy-banner{margin-bottom:8px;padding:8px 10px;background:rgba(255,176,80,.1);border:1px solid #ffb050;border-radius:6px;font-size:12px;color:#ffb050}
+    .text-dim{color:var(--text-dim)}
+    .text-warning-xs{color:#ffb050;font-size:11px}
+    .accent-link{color:var(--accent)}
+    .accent-text{color:var(--accent)}
+    .accent-strong{color:var(--accent);font-weight:600}
+    .text-dim-inline{color:var(--text-dim);margin-left:8px}
+    .btn-success-soft{background:rgba(80,200,120,.15);border-color:#50c878;color:#50c878}
+    .btn-warning-soft{background:rgba(255,176,80,.15);border-color:#ffb050;color:#ffb050}
+    .btn-info-soft{background:rgba(138,180,248,.12);border-color:#8ab4f8;color:#8ab4f8}
+    .btn-xxs{font-size:9px;padding:1px 6px}
+    .btn-xxs-muted{font-size:9px;opacity:.5}
+    .btn-xxs-subtle{font-size:9px;opacity:.6}
+    .btn-xxs-warning{font-size:9px;padding:1px 6px;color:#ffb050;border-color:#ffb050}
+    .btn-inline-cancel{margin-left:8px;font-size:11px}
+    .btn-global-cancel{margin-left:8px;font-size:10px}
+    .mission-prompt-actions{text-align:right;margin-top:4px;padding:0 4px}
+    .clickable-dotted{cursor:pointer;text-decoration:underline dotted}
+    .clickable-summary{cursor:pointer}
+    .details-mt4{margin-top:4px}
+    .details-mt6{margin-top:6px}
+    .details-mt8{margin-top:8px}
+    .details-my6{margin:6px 0}
+    .details-body-mt4{margin-top:4px}
+    .trace-summary-xs{cursor:pointer;font-size:10px}
+    .trace-summary-sm{cursor:pointer;font-size:11px}
+    .trace-meta-xs-row{font-size:10px;display:flex;align-items:center;gap:4px}
+    .trace-meta-xxs{font-size:10px}
+    .trace-meta-sm{font-size:11px}
+    .trace-meta-sm-top{font-size:11px;margin-top:4px}
+    .trace-meta-warn{color:var(--warn,#c98900)}
+    .trace-meta-success{color:#50c878}
+    .trace-meta-warning{color:#ffb050}
+    .trace-meta-error{color:var(--error)}
+    .risk-critical{color:var(--error)}.risk-high{color:#ffb050}.risk-medium{color:#ffd700}.risk-low{color:var(--text-dim)}
+    .readiness-ready{color:#50c878}.readiness-none{color:#ff5050}.readiness-some{color:#ffb050}
+    .muted-pill{border-color:#888;color:#888}.success-pill{border-color:#50c878;color:#50c878}.running-pill,.info-pill{border-color:#5bb0ff;color:#5bb0ff}.warning-pill{border-color:#ffb050;color:#ffb050}.danger-pill{border-color:#ff5050;color:#ff5050}
+    .success-badge{background:rgba(80,200,120,.12);border-color:#50c878;color:#50c878}.danger-badge{background:rgba(255,80,80,.15);border-color:#ff5050;color:#ff5050}
+    .trace-item-spaced{margin-bottom:8px}.surface-trace-item{background:var(--surface)}.trace-title-padded{padding:0 4px}.panel-header-flat{border-bottom:none}
+    .panel-copy{padding:0 4px 6px}.panel-copy-loose{padding:0 8px 8px}.panel-empty{padding:8px}.trace-block-spaced{margin-top:6px}.trace-block-spaced-large{margin-top:8px}.spacer-6{height:6px}
+    .flex-fill{flex:1}.inline-row{display:flex;align-items:center;gap:6px;padding:4px 0}.metric-row{display:flex;justify-content:space-between;font-size:11px;padding:2px 0;gap:8px}.pill-row-spaced{display:flex;gap:4px;flex-wrap:wrap;margin-top:6px}
+    .prewrap-text{white-space:pre-wrap;color:var(--text)}.prewrap-muted{white-space:pre-wrap;color:var(--text-dim)}.top-spaced-small{margin-top:2px}.top-spaced{margin-top:4px}
+    .timed-progress-track{height:2px;margin-top:4px;background:rgba(255,176,80,.2);border-radius:1px}
+    .timed-progress-track.global{margin-top:0;border-radius:0}
+    .timed-progress-fill{height:100%;width:0;background:#ffb050;transition:width 1s linear;border-radius:1px}
+    /* Push the rest of the page down so the fixed banner does not overlap
+       the topbar / model picker. JS sets --gab-h to banner.offsetHeight. */
+    body.has-global-autonomy-banner{box-sizing:border-box;padding-top:var(--gab-h,0px)}
+    .global-autonomy-banner{position:fixed;top:0;left:0;right:0;z-index:9998;background:rgba(255,176,80,.12);border-bottom:1px solid #ffb050;color:#ffb050;padding:0;font-size:11px;font-family:inherit;flex-direction:column}
+    /* Collapsed mode: dock to the top-right corner as a thin pill so the
+       topbar / chat are fully visible. Click the chevron to re-expand. */
+    .global-autonomy-banner.collapsed{left:auto;right:8px;top:6px;border-radius:14px;border:1px solid #ffb050;background:rgba(255,176,80,.18);padding:2px 10px;display:flex;align-items:center;gap:6px;font-weight:600}
+    .global-autonomy-banner.collapsed .global-autonomy-row{padding:0;background:transparent}
+    .global-autonomy-banner.collapsed .global-autonomy-note,
+    .global-autonomy-banner.collapsed .btn-global-cancel,
+    .global-autonomy-banner.collapsed .timed-progress-track{display:none}
+    .gab-toggle{background:none;border:none;color:inherit;cursor:pointer;font-size:14px;line-height:1;padding:0 4px;opacity:.8}
+    .gab-toggle:hover{opacity:1}
+    .global-autonomy-row{display:flex;align-items:center;gap:8px;padding:4px 12px}
+    .global-autonomy-note{margin-left:auto;opacity:.7}
+    .autonomy-log-modal{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center}
+    .autonomy-log-dialog{background:var(--surface,#1e1e1e);color:var(--fg,#eee);width:min(900px,92vw);height:min(70vh,640px);border-radius:8px;padding:16px;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+    .autonomy-log-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+    .autonomy-log-subtitle{opacity:.6;font-weight:400;font-size:.85em}
+    .autonomy-log-body{flex:1;overflow:auto;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.4;background:#000;color:#0f0;padding:12px;border-radius:4px;margin:0;white-space:pre-wrap;word-break:break-all}
+    .autonomy-log-note{margin-top:8px;font-size:11px;opacity:.6}
+    .model-adaptive-badge,.model-profile-suggestion{margin-top:4px;font-size:11px;color:var(--text-dim)}.model-inline-link{color:var(--accent);font-size:11px}.model-personality-hint{margin-top:4px;font-size:11px;color:var(--text-dim)}
+    .empty-panel-copy{padding:16px;color:var(--text-dim);font-size:13px;text-align:center}.audit-row{margin:0}.audit-summary{font-size:11px;cursor:pointer;list-style:none}.audit-event-known{color:#50c878}.audit-event-muted{color:var(--text-dim)}.audit-json-wrap{position:relative}.audit-json-pre{font-size:9px;background:var(--surface2);padding:4px 8px;border-radius:4px;margin:2px 0 4px;white-space:pre-wrap;color:var(--text-dim)}.audit-copy-btn{position:absolute;top:4px;right:4px}
+    .attached-files{max-width:800px;margin:0 auto 6px;display:none;flex-wrap:wrap;gap:4px}
+    .attachment-hint{max-width:800px;margin:0 auto 6px;color:var(--text-dim);font-size:11px;line-height:1.4}
+    .attach-btn{width:34px;height:44px;font-size:18px}
+    .attached-file-chip{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:12px;display:flex;align-items:center;gap:4px}.attachment-icon-btn{background:none;border:none;cursor:pointer;font-size:14px;padding:0;color:var(--text-dim)}.attachment-icon-btn.accent{color:var(--accent)}.attachment-icon-btn.danger{color:var(--error)}.attachment-icon-btn.text{color:var(--text);font-size:18px}
+    .pdf-stream-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:9999}.pdf-stream-dialog{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;width:80%;max-width:800px;max-height:80vh;display:flex;flex-direction:column;gap:8px}.pdf-stream-header{display:flex;justify-content:space-between;align-items:center}.pdf-stream-log{flex:1;overflow:auto;font-family:var(--mono);font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px}.pdf-stream-status{font-size:12px;color:var(--muted)}.pdf-stream-page-title{color:var(--accent);margin-top:6px}
+    .profile-feedback-spaced{margin-left:6px}.recovery-actions{display:flex;gap:6px;flex-shrink:0}
+    .full-width-button{width:100%;margin-top:4px}
+    .pull-progress{font-size:11px;color:var(--text-dim);margin-top:6px}
+    .trace-list,.palace-grid{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+    .trace-item,.palace-room{background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:8px;font-size:12px}
+    .trace-title,.palace-title{font-weight:700;color:var(--text);margin-bottom:3px}
+    .trace-meta,.palace-meta{color:var(--text-dim);font-size:11px}
+    .mcp-hub{padding:10px}
+    .mcp-hub-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}
+    .mcp-hub-title{font-weight:700;color:var(--text);font-size:13px;margin-bottom:3px}
+    .mcp-hub-sub{color:var(--text-dim);font-size:11px;line-height:1.45}
+    .mcp-path-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:7px;margin:8px 0 10px}
+    .mcp-path{background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:8px;display:flex;flex-direction:column;gap:6px;min-width:0}
+    .mcp-path strong{display:block;color:var(--text);font-size:12px}
+    .mcp-path span{display:block;color:var(--text-dim);font-size:11px;line-height:1.35}
+    .mcp-section{border-top:1px solid var(--border);padding-top:8px;margin-top:8px}
+    .mcp-section summary{cursor:pointer;color:var(--text);font-size:12px;font-weight:600;list-style:none;-webkit-user-select:none;user-select:none}
+    .mcp-section summary::before{content:'▸';display:inline-block;margin-right:6px;color:var(--accent);font-size:10px;transition:transform .15s}
+    .mcp-section[open] summary::before{transform:rotate(90deg)}
+    .mcp-catalog-row{padding:8px 0;border-top:1px solid var(--border)}
+    .mcp-catalog-row:first-child{border-top:0}
+    .mcp-command-row{display:flex;gap:6px;align-items:center;margin-top:5px;min-width:0}
+    .mcp-command-row code{flex:1;background:var(--surface3);border:1px solid var(--border);border-radius:5px;padding:4px 6px;font-size:11px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+    .trace-detail,.palace-detail{background:var(--surface3);border:1px solid var(--border);border-radius:7px;margin-top:8px;padding:8px;font-size:11px;color:var(--text-dim);line-height:1.45;max-height:260px;overflow:auto}
+    .trace-row{padding:6px 0;border-top:1px solid var(--border)}
+    .trace-row:first-child{border-top:0}
+    .trace-row strong{color:var(--text)}
+    .trace-filter{width:100%;margin-top:8px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px}
+    .transcript-row{padding:6px;border:1px solid var(--border);border-radius:6px;margin-top:6px;background:var(--surface2)}
+    .transcript-row.anchor{border-color:var(--accent);background:var(--accent-bg)}
+    .palace-anchor{width:100%;margin-top:6px;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text-dim);font-size:11px;line-height:1.4;text-align:left;cursor:pointer}
+    .palace-anchor:hover{border-color:var(--accent);color:var(--text)}
+    .rag-picker{margin:6px 0;border:1px solid var(--border);border-radius:7px;background:var(--surface2);padding:8px}
+    .rag-picker-label{font-size:11px;color:var(--text-dim);margin-bottom:4px;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+    .rag-selected{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;min-height:24px}
+    .rag-chip{display:inline-flex;align-items:center;gap:4px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:2px 8px;font-size:11px;color:var(--text)}
+    .rag-chip button{background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:13px;padding:0;line-height:1}
+    .rag-chip button:hover{color:var(--error)}
+    .rag-tree{max-height:240px;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:6px;font-size:12px}
+    .rag-tree-row{display:flex;align-items:center;gap:6px;padding:2px 0;line-height:1.6}
+    .rag-tree-toggle{width:14px;display:inline-block;text-align:center;cursor:pointer;color:var(--text-dim);font-size:10px;-webkit-user-select:none;user-select:none}
+    .rag-tree-toggle:hover{color:var(--accent)}
+    .rag-tree-name{cursor:default;color:var(--text)}
+    .rag-tree-name.is-dir{cursor:pointer;color:var(--accent)}
+    .rag-tree-name.is-dir:hover{text-decoration:underline}
+    .rag-tree-name.is-file{color:var(--text-dim)}
+    .rag-status{font-size:12px;color:var(--text-dim);min-height:18px}
+    .rag-backend-badge{display:inline-block;background:var(--accent-bg);border:1px solid var(--accent);color:var(--accent);border-radius:4px;padding:2px 6px;font-size:11px}
+    .key-source-badge{font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px}.key-source-badge.env{color:var(--text-dim);background:var(--surface2)}.key-source-badge.stored{color:var(--accent);background:var(--accent-bg)}.key-signup-link{font-size:10px;color:var(--accent);margin-left:4px}.settings-warning-line{font-size:11px;color:var(--warning)}.folder-warning{margin-bottom:6px}
+    .trace-value-line{margin-top:2px;color:var(--text)}.full-compact-input{width:100%;margin-bottom:6px}.trace-item-subtle{background:var(--surface2)}.permission-status-row{margin:4px 0}.compact-action-row{margin-top:4px;margin-bottom:4px}.row-dimmed{opacity:.55}.btn-show-more{margin-top:4px;font-size:10px}.audit-filter-row{display:flex;gap:4px;margin-bottom:4px}.audit-filter-select{font-size:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px}.audit-search-input{font-size:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px;flex:1;min-width:80px}.audit-date-label{font-size:9px;white-space:nowrap}.audit-date-input{font-size:9px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:1px 4px}
+    .kill-switch-banner{position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(255,80,80,.18);border-bottom:1px solid #ff5050;color:#ff5050;padding:6px 12px;font-size:12px;display:flex;align-items:center;gap:10px;font-family:inherit}.kill-switch-shortcut{margin-left:auto;opacity:.8}.automation-runs-section{margin:6px 4px}.template-action-row{margin-top:4px;flex-wrap:wrap}.automation-job-form{margin-top:8px;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px}.automation-job-input{width:100%;padding:4px 6px;margin-bottom:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;font-size:12px}.automation-output-pre{background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:6px;margin:4px 0;font-size:11px;white-space:pre-wrap;max-height:200px;overflow-y:auto}
+    .workflow-runs-title{margin-top:12px;padding:0 4px}.info-text{color:#5bb0ff}.muted-text{color:#666}.shortcuts-modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:9999}.shortcuts-dialog{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:400px;width:90%}.shortcuts-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.shortcuts-header h3{margin:0}.shortcut-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)}.shortcut-key{background:var(--surface2);padding:2px 8px;border-radius:4px;font-size:12px;font-family:monospace;border:1px solid var(--border)}.shortcut-desc{color:var(--text-dim);font-size:12px}
+    .folder-preset-row{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;font-size:10px}.btn-folder-preset{font-size:10px;padding:2px 8px}.folder-current-row{display:flex;gap:6px;align-items:center;margin-bottom:6px;padding:4px 6px;background:var(--surface);border-radius:4px}.folder-current-path{font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.btn-folder-use{font-size:10px;padding:3px 8px}.folder-up-row{margin-bottom:4px}.btn-folder-up{font-size:11px}.folder-empty{font-size:11px;color:var(--text-dim);padding:6px}.folder-list{max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:4px}.folder-list-row{padding:4px 8px;cursor:pointer;font-size:11px;border-bottom:1px solid var(--border)}.folder-list-row:hover{background:var(--surface)}.folder-overflow-note{font-size:10px;color:var(--text-dim);margin-top:4px}
+    .redirect-env-warning{font-size:11px;padding:6px 8px;background:var(--surface2);border:1px solid var(--warning);border-radius:6px;margin-bottom:6px}.redirect-rule-row{display:flex;gap:6px;align-items:center;margin-bottom:4px}.redirect-match-input{flex:1;min-width:0}.redirect-target-input{flex:2;min-width:0}
+    .learning-shell{padding:4px 0}.panel-kicker{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent);margin-bottom:8px}.panel-kicker.spaced{margin:8px 0}.learning-search-row{display:flex;gap:4px;margin-bottom:8px}.learning-search-input,.compact-panel-input,.compact-panel-select{flex:1;padding:6px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;min-width:0}.learning-stat-line{font-size:12px;color:var(--text-dim);margin-bottom:8px}.learning-stat-line strong{color:var(--text)}.learning-section-block{margin-bottom:12px}.learning-pattern-card{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:4px;font-size:11px}.learning-reflection-card{font-size:11px;color:var(--text-dim);margin-bottom:6px;padding:6px;background:var(--surface2);border-radius:6px}.learning-prompt-pre{font-size:10px;background:var(--surface2);padding:6px;border-radius:6px;white-space:pre-wrap;color:var(--text-dim)}.sparkline{display:block;margin-top:4px}.candidate-prompt-preview{font-size:11px;color:var(--text);white-space:pre-wrap;margin-top:4px}
+    .rag-preview{margin-top:6px}
+    .rag-preview-body{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px}
+    .rag-diagnostic{display:flex;gap:8px;align-items:flex-start;padding:4px 0;border-top:1px solid var(--border);font-size:12px}
+    .rag-diagnostic:first-child{border-top:0}
+    .rag-diag-icon{font-size:14px;line-height:1.4}
+    .rag-result-actions{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap}
+    .btn-sm.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+    .btn-sm.primary:hover{filter:brightness(1.1)}
+    .active-subagents-bar{display:none}
+    .skill-diagnostic-actions{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+    .sk-install{background:var(--surface);border:1px solid var(--border);color:var(--text-dim);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px}
+    .sk-install:hover{border-color:var(--accent);color:var(--accent)}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+    .topbar-btns{display:flex;gap:6px;margin-left:auto}
+    .btn-icon{background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);width:34px;height:34px;border-radius:var(--rs);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;transition:all .2s}
+    .btn-icon:hover{border-color:var(--accent);color:var(--text)}
+    .chat-area{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;scroll-behavior:smooth}
+    /* Artifact panel: side preview for code blocks, HTML, SVG, markdown.
+       Slides in from the right of the main-panel, leaving chat composer
+       layout untouched. Hidden by default; toggled per artifact. */
+    .artifact-panel{position:fixed;top:55px;right:0;bottom:0;width:min(520px,92vw);background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;transform:translateX(100%);transition:transform .25s;z-index:90;box-shadow:-4px 0 24px rgba(0,0,0,.18)}
+    .artifact-panel.open{transform:translateX(0)}
+    .artifact-header{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--border);background:var(--surface2)}
+    .artifact-header h4{margin:0;font-size:13px;color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .artifact-tabs{display:flex;gap:0;border-bottom:1px solid var(--border);background:var(--surface2);overflow-x:auto;flex-shrink:0}
+    .artifact-tab{padding:6px 12px;font-size:11px;background:transparent;border:none;border-right:1px solid var(--border);color:var(--text-dim);cursor:pointer;white-space:nowrap}
+    .artifact-tab.active{background:var(--surface);color:var(--text);border-bottom:2px solid var(--accent)}
+    .artifact-tab:hover{background:var(--surface)}
+    .artifact-body{flex:1;overflow:auto;background:var(--surface)}
+    .artifact-body iframe{width:100%;height:100%;border:0;background:#fff}
+    .artifact-body pre{margin:0;padding:14px;font-family:'Cascadia Code','Fira Code',monospace;font-size:12px;line-height:1.5;background:var(--surface);color:var(--text);white-space:pre;overflow:auto}
+    .artifact-actions{display:flex;gap:6px;padding:8px 14px;border-top:1px solid var(--border);background:var(--surface2)}
+    .artifact-actions button{padding:4px 10px;font-size:11px}
+    .artifact-link{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;margin-left:6px;font-size:10px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:10px;color:var(--accent);cursor:pointer;text-decoration:none}
+    .artifact-link:hover{filter:brightness(1.15)}
+    .welcome{text-align:center;padding:50px 20px;color:var(--text-dim)}
+    .welcome h2{font-size:22px;color:var(--text);margin-bottom:6px}
+    .welcome p{font-size:14px;max-width:480px;margin:0 auto 20px;line-height:1.5}
+    .beginner-guide{max-width:640px;margin:0 auto 18px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;text-align:left}
+    .guide-item{background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:9px;font-size:12px;color:var(--text-dim);line-height:1.4}
+    .guide-item strong{display:block;color:var(--text);margin-bottom:3px}
+    .guided-tour{margin-bottom:12px}.guide-step{display:flex;gap:8px;align-items:flex-start;margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:8px;border-left:3px solid var(--accent)}.guide-step.success{border-left-color:#50c878}.guide-step-icon{font-size:18px;line-height:1}
+    .walkthrough-checklist{max-width:640px;margin:0 auto 14px;text-align:left;display:flex;flex-direction:column;gap:6px}
+    .walkthrough-step{display:grid;grid-template-columns:22px 1fr auto;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:8px;font-size:12px;color:var(--text-dim)}
+    .walkthrough-step.done{border-color:var(--success);background:rgba(76,175,80,.08)}
+    .walkthrough-step strong{display:block;color:var(--text);margin-bottom:2px}
+    .walkthrough-dot{width:18px;height:18px;border-radius:50%;border:1px solid var(--accent);color:var(--accent);display:flex;align-items:center;justify-content:center;font-size:11px}
+    .walkthrough-step.done .walkthrough-dot{border-color:var(--success);color:var(--success)}
+    .first-run-setup{max-width:640px;margin:0 auto 14px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:10px;text-align:left}
+    .first-run-setup h3{font-size:13px;margin-bottom:3px;color:var(--text)}
+    .first-run-setup p{font-size:12px;margin:0 0 8px;max-width:none;color:var(--text-dim)}
+    .first-run-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+    .first-run-grid label{display:block;font-size:11px;color:var(--text-dim);margin-bottom:3px}
+    .first-run-grid input{width:100%;padding:7px 8px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;outline:none}
+    .first-run-actions{display:flex;align-items:center;gap:8px;margin-top:8px}
+    .first-run-status{font-size:11px;color:var(--text-dim)}
+    .model-capability-hint{max-width:640px;margin:0 auto 14px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:9px;font-size:12px;color:var(--text-dim);line-height:1.45;text-align:left}
+    .model-capability-hint strong{color:var(--text)}
+    .capability-pill{display:inline-block;margin:2px 4px 0 0;padding:2px 6px;border:1px solid var(--border);border-radius:999px;font-size:11px;color:var(--text-dim)}
+    .tips{display:flex;flex-wrap:wrap;gap:6px;justify-content:center}
+    .tip{padding:7px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:18px;font-size:12px;cursor:pointer;transition:all .2s}
+    .tip:hover{border-color:var(--accent);color:var(--accent)}
+    .msg{max-width:800px;width:100%;margin:0 auto;display:flex;gap:10px}
+    .msg-avatar{width:28px;height:28px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600}
+    .msg.user .msg-avatar{background:var(--accent);color:#fff}
+    .msg.assistant .msg-avatar{background:var(--surface2);border:1px solid var(--border)}
+    .msg-body{flex:1;min-width:0}
+    .msg-role{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);margin-bottom:3px}
+    .msg-content{font-size:14px;line-height:1.65;word-break:break-word}
+    .msg-content p{margin:6px 0}
+    .msg-content code:not(pre code){background:var(--surface2);padding:1px 5px;border-radius:4px;font-size:12px;font-family:'Cascadia Code','Fira Code',monospace}
+    .msg-content pre{background:var(--surface2);border:1px solid var(--border);border-radius:var(--rs);padding:12px;margin:8px 0;overflow-x:auto;font-size:12px;font-family:'Cascadia Code','Fira Code',monospace;line-height:1.5;position:relative}
+    .copy-btn{position:absolute;top:6px;right:6px;background:var(--surface3);border:1px solid var(--border);color:var(--text-dim);padding:3px 8px;border-radius:4px;font-size:11px;cursor:pointer;opacity:0;transition:opacity .2s}
+    pre:hover .copy-btn{opacity:1}
+    .copy-btn:hover{color:var(--text);border-color:var(--accent)}
+    .msg-content ul,.msg-content ol{margin:6px 0;padding-left:20px}
+    .msg-content li{margin:3px 0}
+    .msg-content blockquote{border-left:3px solid var(--accent);padding-left:12px;margin:6px 0;color:var(--text-dim)}
+    .msg-content a{color:var(--accent)}
+    .msg-content table{border-collapse:collapse;margin:8px 0;width:100%}
+    .msg-content th,.msg-content td{border:1px solid var(--border);padding:6px 10px;text-align:left;font-size:13px}
+    .msg-content th{background:var(--surface2)}
+    .tool-activity{max-width:800px;width:100%;margin:0 auto;padding-left:38px}
+    .tool-activity summary{cursor:pointer;color:var(--text-dim);font-size:12px;list-style:none;-webkit-user-select:none;user-select:none;padding:4px 0}
+    .tool-activity summary::-webkit-details-marker{display:none}
+    .tool-activity summary::before{content:'▸';display:inline-block;margin-right:6px;color:var(--accent);transition:transform .15s ease}
+    .tool-activity[open] summary::before{transform:rotate(90deg)}
+    .tool-activity.has-error summary{color:var(--danger)}
+    .tool-activity-items{display:flex;flex-direction:column;gap:3px}
+    .tool-item{background:var(--tool-bg);border:1px solid var(--tool-border);border-radius:var(--rs);padding:6px 10px;margin-bottom:3px;font-size:12px;font-family:'Cascadia Code','Fira Code',monospace;display:flex;align-items:flex-start;gap:6px}
+    .tool-item.error{background:#2a1e1e;border-color:#4a2e2e}
+    .tool-name{color:var(--accent);font-weight:600}
+    .tool-detail{color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:550px}
+    .tool-item-permission{align-items:center;justify-content:space-between;gap:10px;background:rgba(255,176,80,.1);border-color:#ffb050}
+    .tool-item-permission .tool-detail{white-space:normal;max-width:none;flex:1}
+    .tool-item-permission .btn-sm{flex:0 0 auto}
+    .tool-item-diff{flex-direction:column;align-items:stretch;gap:4px}
+    .tool-item-diff > span:first-child,.tool-item-diff .tool-name,.tool-item-diff .tool-detail{display:inline}
+    .diff-block{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:6px 8px;margin-top:4px;font-family:'Cascadia Code','Fira Code',monospace;font-size:11px;line-height:1.4;overflow-x:auto;max-width:100%}
+    .diff-line{white-space:pre;font-family:inherit}
+    .diff-line.diff-del{color:#e57373;background:rgba(229,115,115,.07)}
+    .diff-line.diff-add{color:#81c784;background:rgba(129,199,132,.07)}
+    .diff-line.diff-overflow{color:var(--text-dim);font-style:italic}
+    .validation-groups{display:flex;flex-direction:column;gap:3px;width:100%}
+    .validation-group{color:var(--text-dim);font-size:11px;line-height:1.35}
+    /* .thinking styles moved to after .send-btn section */
+    .dots span{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--accent);animation:bounce 1.4s infinite;margin:0 2px}
+    .dots span:nth-child(2){animation-delay:.2s}
+    .dots span:nth-child(3){animation-delay:.4s}
+    @keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-6px)}}
+    .input-area{padding:12px 16px;background:var(--surface);border-top:1px solid var(--border);flex-shrink:0}
+    .input-row{max-width:800px;margin:0 auto;display:flex;gap:8px;align-items:flex-end}
+    .input-row textarea{flex:1;min-width:0;padding:10px 14px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:var(--r);font-size:14px;font-family:inherit;resize:none;outline:none;min-height:44px;max-height:180px;line-height:1.5;transition:border-color .2s}
+    .input-row textarea:focus{border-color:var(--accent)}
+    .input-row textarea::placeholder{color:var(--text-dim)}
+    .send-btn{width:44px;height:44px;border-radius:var(--r);background:var(--accent);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;transition:background .2s;flex-shrink:0}
+    .send-btn:hover{background:var(--accent-hover)}
+    .send-btn:disabled{opacity:.4;cursor:not-allowed}
+    .promise-widget{padding:6px 14px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-dim);background:var(--surface2)}
+    .promise-widget .pw-row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+    .promise-widget .pw-count{font-weight:600;font-size:12px;color:var(--text)}
+    .promise-widget .pw-breach{color:var(--danger,#e55);font-weight:600;animation:breach-flash 2s ease-in-out infinite}\n    @keyframes breach-flash{0%,100%{opacity:1}50%{opacity:.5}}
+    .settings-section{padding:0;border-bottom:1px solid var(--border)}
+    .settings-section h4{font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--text);margin:0;padding:12px 16px;cursor:pointer;-webkit-user-select:none;user-select:none;display:flex;align-items:center;gap:8px;background:var(--surface);transition:background .15s}
+    .settings-section h4:hover{background:var(--surface2)}
+    .settings-section h4::before{content:'▶';font-size:9px;transition:transform .2s;color:var(--text-dim)}
+    .settings-section.open h4::before{transform:rotate(90deg)}
+    .settings-section-body{display:none;padding:8px 16px 14px}
+    .settings-section.open .settings-section-body{display:block}
+    .setting-row{margin-bottom:10px}
+    .setting-row label{display:block;font-size:12px;color:var(--text-dim);margin-bottom:3px}
+    .setting-row input,.setting-row select,.setting-row textarea{width:100%;padding:7px 10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px;outline:none;font-family:inherit}
+    .setting-row textarea{min-height:80px;resize:vertical}
+    .setting-row input:focus,.setting-row textarea:focus{border-color:var(--accent)}
+    .uploads-cleanup-row{display:flex;align-items:center;gap:6px;margin-top:8px}
+    .uploads-cleanup-row input{width:80px}
+    .uploads-list-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}
+    .uploads-list-table th,.uploads-list-table td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--border)}
+    .uploads-list-table button{font-size:11px}
+    .profile-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .profile-form-grid .wide{grid-column:1/-1}
+    .profile-check-list{display:flex;flex-direction:column;gap:6px;margin:6px 0}
+    .profile-check-row{border:1px solid var(--border);border-radius:7px;background:var(--surface2);padding:8px;display:grid;grid-template-columns:1fr 90px;gap:6px}
+    .profile-check-row .wide{grid-column:1/-1}
+    .profile-check-row input,.profile-check-row select{width:100%;padding:6px 8px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;outline:none}
+    .profile-check-row label{font-size:10px;color:var(--text-dim);display:block;margin-bottom:2px}
+    .profile-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px}
+    .template-list{display:flex;flex-direction:column;gap:6px;margin:6px 0 10px}
+    .template-item{border:1px solid var(--border);border-radius:7px;background:var(--surface2);padding:8px;font-size:12px;color:var(--text-dim);display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
+    .template-item strong{display:block;color:var(--text);margin-bottom:2px}
+    .template-example{grid-column:1/-1;background:var(--surface3);border-radius:5px;padding:6px;color:var(--text-dim);line-height:1.4}
+    .template-example span{display:block;color:var(--text);font-weight:600;margin-top:3px}
+    .validation-preview-result{background:var(--surface3);border:1px solid var(--border);border-radius:7px;margin-top:8px;padding:8px;font-size:11px;color:var(--text-dim);line-height:1.45;max-height:220px;overflow:auto}
+    .validation-preview-result strong{color:var(--text)}
+    .validation-preview-result.fail{border-color:var(--error)}
+    .validation-preview-result.warn{border-color:var(--warning)}
+    .validation-preview-result.pass{border-color:var(--success)}
+    .about-grid{display:grid;grid-template-columns:1fr;gap:4px;font-size:11px;color:var(--text-dim)}
+    .about-grid strong{color:var(--text)}
+    .about-grid a{color:var(--accent)}
+    .slider-row{display:flex;align-items:center;gap:10px}
+    .slider-row input[type=range]{flex:1;accent-color:var(--accent)}
+    .slider-val{font-size:12px;color:var(--accent);min-width:32px;text-align:right}
+    .mode-opt{padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;cursor:pointer;transition:all .2s}
+    .mode-opt:hover{border-color:var(--accent)}
+    .mode-opt.active{border-color:var(--accent);background:var(--accent-bg)}
+    .mode-opt .mode-t{font-size:13px;font-weight:600;margin-bottom:1px}
+    .mode-opt .mode-d{font-size:11px;color:var(--text-dim)}
+    /* Below 1400px the right Settings panel + main content + (optional)
+       artifact panel together exceed typical browser viewport width and
+       cause horizontal overflow that hides close buttons offscreen. Make
+       the right panel a fixed overlay starting at this breakpoint instead
+       of just at the prior 900px breakpoint. */
+    @media(max-width:1300px){.right-panel{position:fixed;top:0;bottom:0;right:-440px;width:min(440px,92vw);z-index:100;transition:right .25s;box-shadow:-4px 0 16px rgba(0,0,0,.4)}.right-panel.visible,.right-panel:not(.hidden){right:0}}
+    .panel-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:99}
+    .panel-backdrop.active{display:block}
+    @media(max-width:900px){.left-panel{position:fixed;top:0;bottom:0;left:0;width:min(var(--left-panel-width),92vw);z-index:100;transition:transform .25s;transform:translateX(-100%);margin-left:0;box-shadow:4px 0 16px rgba(0,0,0,.4)}.left-panel.visible,.left-panel:not(.hidden){transform:translateX(0)}.left-panel.hidden{margin-left:0;transform:translateX(-100%)}.left-panel-resizer{display:none}.left-panel-close{display:inline-flex}.main-panel{min-width:0;width:100%}}
+    /* Per-message metadata footer (model · tokens · latency) */
+    .msg-meta{margin-top:6px;font-size:11px;color:var(--text-dim);display:flex;flex-wrap:wrap;gap:6px;align-items:center;line-height:1.4}
+    .msg-meta .meta-sep{opacity:.5}
+    .msg-meta .meta-pill{padding:1px 6px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;font-size:10px;letter-spacing:.2px}
+    .msg-meta .meta-pill.warn{border-color:var(--warning);color:var(--warning)}
+    .msg-actions{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+    .msg-action-btn{padding:3px 10px;font-size:11px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;color:var(--text-dim);cursor:pointer;transition:all .15s}
+    .msg-action-btn:hover{background:var(--accent-bg);border-color:var(--accent);color:var(--text)}
+    .followup-chips{margin:8px 0 16px 48px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+    .followup-chips .followup-label{font-size:11px;color:var(--text-dim);margin-right:4px}
+    .followup-chip{padding:6px 12px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:14px;color:var(--text);cursor:pointer;transition:all .15s;text-align:left}
+    .followup-chip:hover{background:var(--accent-bg);border-color:var(--accent)}
+    /* Inline mycelium context cards: surface relevant skills/files/memories
+       the router selected, so users do not have to know to open the left rail. */
+    .context-cards{margin:6px 0 12px 48px;display:flex;flex-wrap:wrap;gap:6px;align-items:stretch}
+    .context-cards-label{font-size:11px;color:var(--text-dim);width:100%;margin-bottom:2px;display:flex;align-items:center;gap:6px}
+    .context-cards-label .ctx-dismiss{margin-left:auto;background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:14px;padding:0 4px;opacity:.6}
+    .context-cards-label .ctx-dismiss:hover{opacity:1}
+    .context-card{display:flex;flex-direction:column;gap:2px;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-size:12px;min-width:140px;max-width:220px;cursor:pointer;transition:all .15s;text-align:left;color:var(--text)}
+    .context-card:hover{background:var(--accent-bg);border-color:var(--accent)}
+    .context-card .ctx-row{display:flex;align-items:center;gap:6px}
+    .context-card .ctx-icon{font-size:13px}
+    .context-card .ctx-label{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .context-card .ctx-summary{font-size:11px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.3;max-height:2.6em}
+    .citations{margin-top:10px;padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;display:flex;flex-direction:column;gap:4px}
+    .citations-label{font-size:10px;letter-spacing:.6px;color:var(--text-dim);text-transform:uppercase;margin-bottom:4px}
+    .citation-item{display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:5px;font-size:12px;color:var(--text);text-decoration:none;transition:background .15s}
+    .citation-item:hover{background:var(--surface)}
+    .citation-num{flex-shrink:0;font-weight:600;color:var(--accent);min-width:24px}
+    .citation-title{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .citation-host{flex-shrink:0;font-size:10px;color:var(--text-dim)}
+    .citation-sup{color:var(--accent);text-decoration:none;font-weight:600;padding:0 2px}
+    .citation-sup:hover{text-decoration:underline}
+    .compare-select{margin-left:6px;max-width:160px}
+    .compare-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;width:100%;max-width:1100px;margin:0 auto;align-items:start}
+    .compare-col{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px;display:flex;flex-direction:column;min-width:0}
+    .compare-col-header{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-dim);margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+    .compare-col-header .compare-pill{padding:2px 8px;background:var(--surface);border:1px solid var(--border);border-radius:10px;font-weight:600;color:var(--accent)}
+    .compare-col .msg{margin:0}
+    .compare-keep-btn{margin-left:auto;padding:3px 10px;font-size:11px;background:var(--accent);border:1px solid var(--accent);color:#fff;border-radius:12px;cursor:pointer}
+    .compare-keep-btn:hover{filter:brightness(1.1)}
+    @media(max-width:900px){.compare-row{grid-template-columns:1fr}}
+    /* Session totals HUD next to the context HUD */
+    .session-hud{display:flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid var(--border);border-radius:7px;background:var(--surface2);font-size:11px;color:var(--text-dim);white-space:nowrap}
+    .session-hud .session-hud-val{color:var(--text)}
+    .session-hud.empty{opacity:.55}
+    .streaming-badge{display:none;align-items:center;gap:4px;padding:3px 8px;border-radius:7px;background:var(--danger,#e55);color:#fff;font-size:10px;font-weight:600;animation:pulse-stream 1.5s ease-in-out infinite}
+    .streaming-badge.active{display:flex}
+    /* Slash-command quick-actions popup above the composer */
+    .slash-palette{position:absolute;left:12px;right:12px;bottom:80px;max-width:760px;margin:0 auto;background:var(--surface);border:1px solid var(--accent);border-radius:var(--r);box-shadow:0 8px 30px rgba(0,0,0,.4);overflow:hidden;z-index:60}
+    .slash-palette.hidden{display:none}
+    .slash-palette-header{padding:6px 12px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px}
+    .slash-palette-list{max-height:280px;overflow-y:auto}
+    .slash-palette-item{padding:8px 12px;cursor:pointer;display:grid;grid-template-columns:140px 1fr;gap:10px;align-items:center;border-top:1px solid var(--border)}
+    .slash-palette-item:first-child{border-top:none}
+    .slash-palette-item:hover,.slash-palette-item.active{background:var(--accent-bg)}
+    .slash-palette-item .sp-cmd{color:var(--accent);font-weight:600;font-size:13px;font-family:'Cascadia Code','Fira Code',monospace}
+    .slash-palette-item .sp-desc{color:var(--text-dim);font-size:12px}
+    /* Voice input toggle: pulse-red when actively recording. */
+    .btn-icon.recording{border-color:var(--error);color:var(--error);animation:voicePulse 1.2s infinite}
+    @keyframes voicePulse{0%,100%{box-shadow:0 0 0 0 rgba(239,83,80,.5)}50%{box-shadow:0 0 0 6px rgba(239,83,80,0)}}
+
+    /* ─── Redesigned welcome screen ────────────────────────────────
+       Goals: less density, bigger typography, real visual hierarchy.
+       Hero → quick suggestions → optional first-run setup (collapsed
+       by default). Old `.beginner-guide` / `.walkthrough-checklist`
+       are kept but now hidden behind a "Show first-run guide" link
+       so they don't cram the hero on every fresh chat. */
+    .welcome{padding:48px 24px 24px;max-width:880px;margin:0 auto;text-align:left;color:var(--text-dim)}
+    .welcome-hero{margin-bottom:24px}
+    .welcome-hero .welcome-eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:var(--accent);margin-bottom:8px;font-weight:600}
+    .welcome-hero h2{font-size:32px;color:var(--text);margin-bottom:6px;font-weight:700;letter-spacing:-.5px}
+    .welcome-hero p{font-size:14px;max-width:640px;margin:0;line-height:1.55;color:var(--text-dim)}
+    .welcome-flow{display:flex;align-items:center;justify-content:center;gap:8px;margin:20px 0 24px;flex-wrap:wrap}
+    .flow-step{display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;min-width:80px;opacity:0;animation:flowFadeIn .5s ease forwards}
+    .flow-s1{animation-delay:.1s;border-color:#50c878}
+    .flow-s2{animation-delay:.4s;border-color:#8ab4f8}
+    .flow-s3{animation-delay:.7s;border-color:#bb86fc}
+    .flow-s4{animation-delay:1s;border-color:#ffb050}
+    .flow-icon{font-size:24px;line-height:1}
+    .flow-label{font-size:11px;color:var(--text-dim);font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+    .flow-arrow{font-size:18px;color:var(--text-dim);opacity:0;animation:flowFadeIn .3s ease forwards}
+    .flow-step:nth-child(3) ~ .flow-arrow{animation-delay:.25s}
+    .flow-step:nth-child(5) ~ .flow-arrow{animation-delay:.55s}
+    .flow-step:nth-child(7) ~ .flow-arrow{animation-delay:.85s}
+    .flow-arrow:nth-child(2){animation-delay:.25s}
+    .flow-arrow:nth-child(4){animation-delay:.55s}
+    .flow-arrow:nth-child(6){animation-delay:.85s}
+    @keyframes flowFadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+    .welcome-capabilities{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;padding:12px 0}
+    .cap-group{display:flex;gap:8px;align-items:flex-start;padding:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-size:12px;line-height:1.4}
+    .cap-group strong{color:var(--text);font-size:13px}
+    .cap-icon{font-size:20px;line-height:1;flex-shrink:0;margin-top:2px}
+    .mission-control{border:1px solid var(--border);background:var(--surface2);border-radius:8px;padding:12px;margin-bottom:16px}
+    .mission-header,.autonomy-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+    .mission-header h3{font-size:15px;color:var(--text);margin:0 0 2px}
+    .mission-header p,.autonomy-head span{font-size:11px;color:var(--text-dim);margin:0}
+    .task-first-panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px;display:flex;flex-direction:column;gap:10px}
+    .task-first-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+    .task-first-title{font-size:15px;font-weight:700;color:var(--text);margin-bottom:3px}
+    .task-first-subtitle{font-size:12px;color:var(--text-dim);line-height:1.4}
+    .task-first-status{display:flex;flex-wrap:wrap;gap:5px;justify-content:flex-end;min-width:160px}
+    .task-first-pill{border:1px solid var(--border);border-radius:999px;padding:3px 8px;background:var(--surface2);font-size:10.5px;color:var(--text-dim);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .task-first-pill.ready{border-color:rgba(80,200,120,.45);color:#50c878}
+    .task-first-pill.warn{border-color:rgba(255,176,80,.45);color:#ffb050}
+    .task-first-pill.blocked{border-color:rgba(255,80,80,.45);color:#ff8080}
+    .task-first-input-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:stretch}
+    .task-first-input-row textarea{width:100%;min-height:58px;resize:vertical;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:7px;padding:9px 10px;font-family:inherit;font-size:13px;line-height:1.4;outline:none}
+    .task-first-input-row textarea:focus{border-color:var(--accent)}
+    .task-first-actions{display:flex;flex-direction:column;gap:6px;min-width:120px}
+    .task-first-presets{display:flex;flex-wrap:wrap;gap:6px}
+    .task-first-preset{background:var(--surface2);border:1px solid var(--border);border-radius:999px;color:var(--text-dim);padding:4px 9px;font-size:11px;cursor:pointer}
+    .task-first-preset:hover{border-color:var(--accent);color:var(--accent)}
+    .coding-loop-rail{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;align-items:stretch}
+    .coding-loop-step{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:7px;min-width:0}
+    .coding-loop-step strong{display:block;color:var(--text);font-size:11px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .coding-loop-step span{display:block;color:var(--text-dim);font-size:10.5px;line-height:1.3;overflow:hidden;text-overflow:ellipsis}
+    .coding-loop-action{display:flex;justify-content:flex-end}
+    .readiness-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:10px}
+    .readiness-kpi{background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:9px;min-width:0}
+    .readiness-kpi strong{display:block;color:var(--text);font-size:18px;line-height:1.1}
+    .readiness-kpi span{font-size:11px;color:var(--text-dim)}
+    .readiness-kpi.blocked{border-color:var(--error)}
+    .readiness-details{margin-top:8px;border-top:1px solid var(--border);padding-top:8px}
+    .readiness-details>summary{cursor:pointer;list-style:none;color:var(--text);font-size:12px;font-weight:600;display:flex;align-items:center;gap:8px;padding:7px 0}
+    .readiness-details>summary::before{content:'+';display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-size:11px;flex-shrink:0}
+    .readiness-details[open]>summary::before{content:'-'}
+    .readiness-details-body{margin-top:4px}
+    .mission-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
+    .mission-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:9px;display:flex;flex-direction:column;gap:7px;min-height:132px}
+    .mission-card.ready{border-color:rgba(76,175,80,.55)}
+    .mission-card.warn{border-color:rgba(255,193,7,.55)}
+    .mission-card.blocked{border-color:rgba(239,83,80,.65)}
+    .mission-card-top{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:var(--text)}
+    .mission-card-top span{color:var(--text-dim);font-size:11px}
+    .mission-meter{height:5px;background:var(--surface3);border-radius:999px;overflow:hidden}
+    .mission-meter span{display:block;height:100%;background:var(--accent)}
+    .mission-note{font-size:11px;color:var(--text-dim);line-height:1.35;min-height:30px;flex:1}
+    .readiness-empty{font-size:12px;color:var(--text-dim);padding:8px}
+    .advanced-diagnostics{margin-top:10px;border-top:1px solid var(--border);padding-top:8px}
+    .advanced-diagnostics>summary{cursor:pointer;list-style:none;color:var(--text);font-size:12px;font-weight:600;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0;min-width:0;flex-wrap:wrap}
+    .advanced-diagnostics>summary::before{content:'+';display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-size:11px;margin-right:6px;flex-shrink:0}
+    .advanced-diagnostics[open]>summary::before{content:'-'}
+    .advanced-diagnostics>summary span{font-weight:400;color:var(--text-dim);font-size:11px;margin-left:auto;text-align:right;min-width:0;white-space:normal}
+    .advanced-diagnostics-body{margin-top:4px}
+    .work-tools-details{margin-top:10px;border-top:1px solid var(--border);padding-top:8px}
+    .work-tools-details>summary{cursor:pointer;list-style:none;color:var(--text);font-size:12px;font-weight:600;display:flex;align-items:center;gap:8px;padding:7px 0}
+    .work-tools-details>summary::before{content:'+';display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-size:11px;flex-shrink:0}
+    .work-tools-details[open]>summary::before{content:'-'}
+    .work-tools-body{margin-top:4px}
+    .nervous-panel{margin-top:10px;border-top:1px solid var(--border);padding-top:10px}
+    .autonomy-builder{margin-top:10px;border-top:1px solid var(--border);padding-top:10px}
+    .autonomy-actions{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+    .autonomy-task-list{display:flex;flex-direction:column;gap:5px;max-height:180px;overflow:auto}
+    .autonomy-task{display:grid;grid-template-columns:minmax(100px,160px) 1fr auto;gap:8px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:6px;font-size:11px;color:var(--text-dim)}
+    .autonomy-task.done{opacity:.6}
+    .autonomy-task strong{color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .task-actions{display:flex;gap:3px}
+    .btn-xs{background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--text-dim);cursor:pointer;font-size:10px;padding:1px 5px;line-height:1.4}
+    .btn-xs:hover{border-color:var(--accent);color:var(--text)}
+    .btn-xs.danger:hover{border-color:var(--error);color:var(--error)}
+    .task-add-form{display:flex;gap:6px;margin-bottom:8px}
+    .task-add-form input{flex:1;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 10px;font-size:12px;font-family:inherit;outline:none}
+    .task-add-form input:focus{border-color:var(--accent)}
+    .document-studio{margin-top:10px;border-top:1px solid var(--border);padding-top:10px}
+    .document-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+    .document-head span{display:block;font-size:11px;color:var(--text-dim);margin-top:2px}
+    .document-form{display:grid;grid-template-columns:1fr 120px 110px;gap:6px;margin-bottom:6px}
+    .document-form input,.document-form select,.document-studio textarea{width:100%;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px 8px;font-size:12px;font-family:inherit;outline:none}
+    .document-studio textarea{min-height:72px;resize:vertical;margin-bottom:6px}
+    .document-actions{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+    .document-list{display:flex;flex-direction:column;gap:5px;max-height:170px;overflow:auto}
+    .document-item{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px;font-size:11px;color:var(--text-dim)}
+    .document-item strong{display:block;color:var(--text);margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .document-item span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .document-item a{text-decoration:none;color:var(--text)}
+    .evidence-card{margin-top:10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:0;font-size:11px;color:var(--text-dim)}
+    .evidence-card summary{display:flex;align-items:center;gap:8px;cursor:pointer;padding:8px 10px;color:var(--text)}
+    .evidence-card summary strong{margin-left:auto;color:var(--accent);font-size:10px;text-transform:uppercase}
+    .outcome-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:6px;padding:0 10px 10px}
+    .outcome-item{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px;min-width:0}
+    .outcome-item strong{display:block;color:var(--text);font-size:10px;text-transform:uppercase;margin-bottom:2px}
+    .outcome-item span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-dim)}
+    .outcome-item.good{border-color:rgba(80,200,120,.45)}
+    .outcome-item.warn{border-color:rgba(255,176,80,.45)}
+    .outcome-item.bad{border-color:rgba(255,80,80,.45)}
+    .evidence-next-action{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 10px 10px;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text-dim)}
+    .evidence-next-action span{min-width:0;font-size:11px;line-height:1.35}
+    .evidence-next-action button{flex-shrink:0}
+    .evidence-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px;padding:0 10px 10px}
+    .evidence-grid div,.evidence-lists>div{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px;min-width:0}
+    .evidence-grid strong,.evidence-lists strong{display:block;color:var(--text);margin-bottom:2px;font-size:10px;text-transform:uppercase}
+    .evidence-grid span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .evidence-lists{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:0 10px 10px}
+    .evidence-pills{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
+    .evidence-pills span{border:1px solid var(--border);border-radius:999px;padding:2px 6px;background:var(--surface2);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .evidence-muted{color:var(--text-dim)}
+    @media(max-width:700px){.readiness-summary,.evidence-lists,.document-form,.task-first-input-row,.coding-loop-rail{grid-template-columns:1fr}.autonomy-task,.document-item{grid-template-columns:1fr}.welcome{padding:24px 14px}.welcome-hero h2{font-size:24px}.quick-start-panel,.beginner-readiness,.task-first-top{flex-direction:column;align-items:flex-start}.beginner-readiness .readiness-badge{white-space:normal}.task-first-status{justify-content:flex-start}.task-first-actions{flex-direction:row;flex-wrap:wrap}.coding-loop-action{justify-content:flex-start}}
+    .quick-suggestions{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:24px}
+    .quick-card{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;cursor:pointer;transition:all .15s;display:flex;gap:12px;align-items:flex-start;text-align:left}
+    .quick-card:hover{border-color:var(--accent);background:var(--surface3);transform:translateY(-1px)}
+    .quick-card .qc-icon{font-size:22px;line-height:1;flex-shrink:0;width:28px;text-align:center}
+    .quick-card .qc-body{flex:1;min-width:0}
+    .quick-card .qc-title{font-size:13px;font-weight:600;color:var(--text);margin-bottom:3px}
+    .quick-card .qc-desc{font-size:12px;color:var(--text-dim);line-height:1.4}
+    .welcome-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:24px;padding:12px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;font-size:12px}
+    .welcome-tools strong{color:var(--text);font-weight:600;margin-right:4px}
+    .welcome-tool-chip{padding:3px 9px;border:1px solid var(--border);border-radius:999px;color:var(--text-dim);cursor:pointer;background:var(--surface);transition:all .15s}
+    .welcome-tool-chip:hover{border-color:var(--accent);color:var(--accent)}
+    .quick-start-panel{display:flex;gap:10px;align-items:center;justify-content:space-between;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:0 0 14px}
+    .quick-start-body{display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--text-dim)}
+    .quick-start-body strong{font-size:13px;color:var(--text)}
+    .quick-start-actions{display:flex;gap:6px;flex-wrap:wrap}
+    .beginner-readiness{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:11px 12px;margin:0 0 14px;font-size:12px;color:var(--text-dim)}
+    .beginner-readiness strong{display:block;color:var(--text);font-size:13px;margin-bottom:2px}
+    .beginner-readiness span{display:block;line-height:1.45}
+    .beginner-readiness .readiness-badge{flex-shrink:0;border:1px solid var(--border);border-radius:999px;padding:3px 9px;background:var(--surface);color:var(--text-dim);font-size:11px;font-weight:600;white-space:nowrap}
+    .beginner-readiness.ready{border-color:rgba(80,200,120,.45)}
+    .beginner-readiness.ready .readiness-badge{border-color:rgba(80,200,120,.45);color:#50c878}
+    .beginner-readiness.warn{border-color:rgba(255,176,80,.45)}
+    .beginner-readiness.warn .readiness-badge{border-color:rgba(255,176,80,.45);color:#ffb050}
+    .beginner-readiness.blocked{border-color:rgba(255,80,80,.45)}
+    .beginner-readiness.blocked .readiness-badge{border-color:rgba(255,80,80,.45);color:#ff8080}
+    .welcome-disclosure{margin-top:8px}
+    .welcome-disclosure summary{cursor:pointer;font-size:12px;color:var(--text-dim);padding:8px 0;list-style:none;display:flex;align-items:center;gap:6px;-webkit-user-select:none;user-select:none}
+    .welcome-disclosure summary:hover{color:var(--accent)}
+    .welcome-disclosure summary::before{content:'▸';display:inline-block;transition:transform .15s;font-size:10px}
+    .welcome-disclosure[open] summary::before{transform:rotate(90deg)}
+    .welcome-disclosure[open] summary{color:var(--text)}
+    .welcome-disclosure-body{margin-top:8px;padding:14px;background:var(--surface2);border:1px solid var(--border);border-radius:8px}
+    .welcome-disclosure-body .beginner-guide,
+    .welcome-disclosure-body .walkthrough-checklist,
+    .welcome-disclosure-body .first-run-setup,
+    .welcome-disclosure-body .model-capability-hint{margin:0 0 12px}
+    .welcome-disclosure-body > *:last-child{margin-bottom:0}
+    @media(max-width:700px){html,body,.app,.main-panel,.welcome{max-width:100vw;overflow-x:hidden}.welcome{width:100%;box-sizing:border-box}.quick-start-panel,.beginner-readiness{flex-direction:column;align-items:flex-start;max-width:100%;box-sizing:border-box}.beginner-readiness .readiness-badge{white-space:normal;overflow-wrap:anywhere}.welcome-disclosure-body,.first-run-setup{max-width:100%;box-sizing:border-box;overflow-wrap:anywhere}.first-run-grid{grid-template-columns:1fr}.first-run-actions{flex-wrap:wrap}}
+    /* Skill detail modal — full SKILL.md editor with cancel/save controls. */
+    .skill-modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9998}
+    .skill-modal.hidden-by-default{display:none}
+    .skill-modal-dialog{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;width:min(720px,92vw);max-height:88vh;display:flex;flex-direction:column;gap:10px;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+    .skill-modal-header{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .skill-modal-header h3{margin:0;font-size:14px;color:var(--accent)}
+    .skill-modal-meta{font-size:11px;color:var(--text-dim);font-family:'Cascadia Code','Fira Code',monospace}
+    .skill-modal-textarea{flex:1;min-height:340px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-family:'Cascadia Code','Fira Code',monospace;font-size:12px;line-height:1.5;resize:vertical;outline:none}
+    .skill-modal-textarea:focus{border-color:var(--accent)}
+    .skill-modal-status{font-size:11px;color:var(--text-dim);min-height:14px}
+    .skill-modal-actions{display:flex;gap:6px;justify-content:flex-end}
+    .skill-modal-tabs{display:flex;gap:4px;margin-bottom:4px}
+    .skill-modal-tab{padding:4px 10px;border:1px solid var(--border);border-radius:6px;font-size:11px;cursor:pointer;color:var(--text-dim);background:var(--surface2)}
+    .skill-modal-tab.active{color:var(--accent);border-color:var(--accent);background:var(--accent-bg)}
+    .skill-modal-form{display:flex;flex-direction:column;gap:8px;flex:1;overflow-y:auto;padding-right:4px}
+    .skill-modal-form .automation-field input,.skill-modal-form .automation-field select,.skill-modal-form .automation-field textarea{background:var(--surface2)}
+    .skill-modal-form-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .skill-modal-history{max-height:140px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px}
+    .skill-modal-history-row{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--text-dim);padding:3px 0;gap:8px}
+    .skill-modal-history-row code{font-family:'Cascadia Code','Fira Code',monospace;font-size:10.5px}
+    /* /help slash-commands modal — simple list of every available slash command. */
+    .help-modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9998}
+    .help-modal.hidden-by-default{display:none}
+    .help-modal-dialog{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;width:min(540px,92vw);max-height:80vh;display:flex;flex-direction:column;gap:10px}
+    .help-modal-header{display:flex;justify-content:space-between;align-items:center}
+    .help-modal-header h3{margin:0;font-size:14px;color:var(--accent)}
+    .help-modal-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px}
+    .help-modal-row{display:flex;gap:10px;padding:6px 8px;border-radius:6px;align-items:flex-start}
+    .help-modal-row:hover{background:var(--surface2)}
+    .help-modal-row code{font-family:'Cascadia Code','Fira Code',monospace;font-size:12px;color:var(--accent);min-width:120px}
+    .help-modal-row span{font-size:11.5px;color:var(--text-dim);line-height:1.4}
+    /* Snapshot diff view inside the skill modal history tab. */
+    .skill-diff-view{margin-top:6px;border:1px solid var(--border);border-radius:6px;padding:6px;font-family:'Cascadia Code','Fira Code',monospace;font-size:11px;line-height:1.5;max-height:240px;overflow:auto;background:var(--surface2)}
+    .skill-diff-view .diff-add{background:rgba(80,200,120,.16);color:var(--text)}
+    .skill-diff-view .diff-del{background:rgba(255,80,80,.16);color:var(--text);text-decoration:line-through;text-decoration-color:rgba(255,80,80,.5)}
+    .skill-diff-view .diff-ctx{color:var(--text-dim)}
+    /* Bulk-select toolbar shown when ≥1 skill card is checked. */
+    .skills-bulk-toolbar{position:sticky;top:0;z-index:1;background:var(--surface);border:1px solid var(--accent);border-radius:var(--rs);padding:6px 10px;margin-bottom:8px;display:flex;align-items:center;gap:8px;font-size:12px}
+    .skills-bulk-toolbar.hidden-by-default{display:none}
+    .skill-card-select{position:absolute;top:8px;right:48px;width:14px;height:14px;cursor:pointer}
+    .skill-card{position:relative}
+    /* Settings section reset button. */
+    .settings-reset-btn{margin-left:auto;background:none;border:none;color:var(--text-dim);font-size:11px;cursor:pointer;padding:2px 6px;border-radius:4px}
+    .settings-reset-btn:hover{color:var(--accent);background:var(--surface2)}
+    /* Workflow wizard modal — re-uses skill-modal styling for consistency. */
+    .workflow-wizard-step{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:6px;display:flex;flex-direction:column;gap:6px}
+    .workflow-wizard-step-header{display:flex;justify-content:space-between;align-items:center}
+    .workflow-wizard-step-header strong{font-size:11px;color:var(--text)}
+    .workflow-wizard-step .automation-field input,.workflow-wizard-step .automation-field textarea{background:var(--surface)}
+    .workflow-step-detail{margin-top:4px;padding:6px;background:var(--surface);border:1px solid var(--border);border-radius:4px}
+    .workflow-step-pre{margin:0;font-family:'Cascadia Code','Fira Code',monospace;font-size:11px;white-space:pre-wrap;max-height:240px;overflow:auto;color:var(--text)}
+    .help-modal-row.active{background:var(--accent-bg);outline:1px solid var(--accent)}
+    /* Workflow run-status filter chips. */
+    .run-status-filter{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0 8px}
+    .run-status-chip{padding:2px 8px;border:1px solid var(--border);border-radius:999px;font-size:11px;color:var(--text-dim);cursor:pointer;background:var(--surface2);text-transform:capitalize}
+    .run-status-chip:hover{border-color:var(--accent);color:var(--accent)}
+    .run-status-chip.active{border-color:var(--accent);background:var(--accent-bg);color:var(--accent)}
+    /* Skills gallery search/filter row above the runtime card grid. */
+    .skills-search-row{display:flex;gap:6px;align-items:center;margin:6px 4px 8px}
+    .skills-search-row input,.skills-search-row select{background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:12px;outline:none}
+    .skills-search-row input{flex:1;min-width:0}
+    .skills-search-row input:focus,.skills-search-row select:focus{border-color:var(--accent)}
+    .skills-section-divider{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-dim);margin:14px 4px 6px;display:flex;align-items:center;justify-content:space-between}
+    .skill-card.featured .skill-card-name{color:var(--text)}
+    .skill-card.featured{border-style:dashed}
+    .skill-card-install{background:var(--accent-bg);color:var(--accent);border:1px solid var(--accent);border-radius:6px;padding:3px 8px;font-size:11px;cursor:pointer}
+    .skill-card-install:hover{background:var(--accent);color:#fff}
+    /* Schedule preview hint under the wizard schedule field. */
+    .automation-schedule-preview{font-size:11px;color:var(--text-dim);min-height:14px;font-family:'Cascadia Code','Fira Code',monospace}
+    .automation-schedule-preview.error{color:var(--error)}
+    .automation-schedule-preview.ok{color:var(--success)}
+  </style>
+</head>
+<body>
+<div class="layout">
+  <div class="left-panel hidden" id="leftPanel">
+    <div class="panel-header">
+      <h3>History</h3>
+      <div class="inline-actions">
+        <button class="btn-sm" onclick="newChat()">+ New</button>
+        <button class="btn-sm" onclick="exportChat()">Export</button>
+        <button class="btn-sm left-panel-close" onclick="toggleLeft()" title="Close history panel">✕</button>
+      </div>
+    </div>
+    <div class="tab-bar">
+      <div class="tab active" onclick="showLeftTab('history',this)" title="Chat history">
+        <div class="tab-icon">💬</div><div class="tab-label">Chats</div>
+      </div>
+      <div class="tab" onclick="showLeftTab('files',this)" title="Project files">
+        <div class="tab-icon">📁</div><div class="tab-label">Files</div>
+      </div>
+      <div class="tab" onclick="showLeftTab('skills',this)" title="Installed skills">
+        <div class="tab-icon">⚡</div><div class="tab-label">Skills</div>
+      </div>
+      <div class="tab" onclick="showLeftTab('memory',this)" title="Memory entries">
+        <div class="tab-icon">🧠</div><div class="tab-label">Memory</div>
+      </div>
+      <div class="tab" onclick="showLeftTab('workflows',this)" title="Workflows: declarative tool sequences">
+        <div class="tab-icon">⚙</div><div class="tab-label">Flows</div>
+      </div>
+      <div class="tab tab-more" id="tabMoreBtn" onclick="toggleMoreMenu(event)" title="More views">
+        <div class="tab-icon">⋯</div><div class="tab-label">More</div>
+      </div>
+      <div class="more-menu hidden-by-default" id="moreMenu">
+        <div class="more-menu-item" data-tab="palace" onclick="selectFromMore('palace')"><span class="more-menu-icon">🏛</span> Palace</div>
+        <div class="more-menu-item" data-tab="discovery" onclick="selectFromMore('discovery')"><span class="more-menu-icon">🔮</span> Discover</div>
+        <div class="more-menu-item" data-tab="learning" onclick="selectFromMore('learning')"><span class="more-menu-icon">📈</span> Learning</div>
+        <div class="more-menu-item" data-tab="snapshots" onclick="selectFromMore('snapshots')"><span class="more-menu-icon">📦</span> Snapshots</div>
+        <div class="more-menu-item" data-tab="rag" onclick="selectFromMore('rag')"><span class="more-menu-icon">🔎</span> RAG</div>
+        <div class="more-menu-item" data-tab="tools" onclick="selectFromMore('tools')"><span class="more-menu-icon">🛠</span> Tools</div>
+        <div class="more-menu-item" data-tab="runs" onclick="selectFromMore('runs')"><span class="more-menu-icon">📜</span> Runs</div>
+        <div class="more-menu-item" data-tab="autonomy" onclick="selectFromMore('autonomy')"><span class="more-menu-icon">🚀</span> Autonomy</div>
+        <div class="more-menu-item" data-tab="mycelium" onclick="selectFromMore('mycelium')"><span class="more-menu-icon">🍄</span> Mycelium</div>
+        <div class="more-menu-item" data-tab="promises" onclick="selectFromMore('promises')"><span class="more-menu-icon">🤝</span> Promises</div>
+        <div class="more-menu-item" data-tab="events" onclick="selectFromMore('events')"><span class="more-menu-icon">📋</span> Events</div>
+        <div class="more-menu-item" data-tab="codeintel" onclick="selectFromMore('codeintel')"><span class="more-menu-icon">🧬</span> Code Intel</div>
+        <div class="more-menu-item" data-tab="tasks" onclick="selectFromMore('tasks')"><span class="more-menu-icon">✅</span> Tasks</div>
+        <div class="more-menu-item" data-tab="audit" onclick="selectFromMore('audit')"><span class="more-menu-icon">🛡</span> Audit</div>
+        <div class="more-menu-item" data-tab="triggers" onclick="selectFromMore('triggers')"><span class="more-menu-icon">⚡</span> Triggers</div>
+        <div class="more-menu-item" data-tab="agents" onclick="selectFromMore('agents')"><span class="more-menu-icon">🤖</span> Agents</div>
+        <div class="more-menu-item" data-tab="squads" onclick="selectFromMore('squads')"><span class="more-menu-icon">👥</span> Squads</div>
+        <div class="more-menu-item" data-tab="identity" onclick="selectFromMore('identity')"><span class="more-menu-icon">🪪</span> Identity</div>
+        <div class="more-menu-item" data-tab="artifacts" onclick="selectFromMore('artifacts')"><span class="more-menu-icon">📎</span> Artifacts</div>
+        <div class="more-menu-item" data-tab="health" onclick="selectFromMore('health')"><span class="more-menu-icon">💓</span> Health</div>
+      </div>
+    </div>
+    <div class="history-list" id="historyList"></div>
+    <div class="file-tree initial-hidden" id="fileTree"></div>
+    <div class="skill-list initial-hidden" id="skillList"></div>
+    <div class="memory-view initial-hidden" id="memoryView"></div>
+    <div class="memory-view initial-hidden" id="memoryPalaceView"></div>
+    <div class="memory-view initial-hidden" id="discoveryView"></div>
+    <div class="memory-view initial-hidden" id="learningView"></div>
+    <div class="memory-view initial-hidden" id="snapshotsView"></div>
+    <div class="memory-view initial-hidden" id="ragView"></div>
+    <div class="memory-view initial-hidden" id="toolsDashboardView"></div>
+    <div class="memory-view initial-hidden" id="runsView"></div>
+    <div class="memory-view initial-hidden" id="autonomyView"></div>
+    <div class="memory-view initial-hidden" id="workflowsView"></div>
+    <div class="memory-view initial-hidden" id="myceliumView"></div>
+    <div class="memory-view initial-hidden" id="promisesView"></div>
+    <div class="memory-view initial-hidden" id="eventsView"></div>
+    <div class="memory-view initial-hidden" id="codeintelView"></div>
+    <div class="memory-view initial-hidden" id="tasksView"></div>
+    <div class="memory-view initial-hidden" id="auditView"></div>
+    <div class="memory-view initial-hidden" id="triggersView"></div>
+    <div class="memory-view initial-hidden" id="agentsView"></div>
+    <div class="memory-view initial-hidden" id="squadsView"></div>
+    <div class="memory-view initial-hidden" id="identityView"></div>
+    <div class="memory-view initial-hidden" id="artifactsView"></div>
+    <div class="memory-view initial-hidden" id="healthView"></div>
+    <div class="left-panel-resizer" id="leftPanelResizer" title="Drag to resize the panel"></div>
+  </div>
+
+  <div class="main-panel">
+    <div class="topbar">
+      <button class="btn-icon" onclick="toggleLeft()" title="History">☰</button>
+      <div class="logo" id="topbarLogo"><span class="pet pet-idle" id="topbarPet" title="Harness mood: idle">🤖</span><span class="logo-word"> Harness</span></div>
+      <div class="model-wrap">
+        <select class="model-select" id="modelSelect" title="Model" disabled>
+          <option value="">Loading models...</option>
+        </select>
+        <button class="btn-icon hidden-by-default" id="compareBtn" onclick="toggleCompare()" title="Compare next reply with a second model side-by-side">⚖️</button>
+        <select class="model-select compare-select compare-select-hidden" id="compareModelSelect" title="Compare model">
+          <option value="">Compare with...</option>
+        </select>
+      </div>
+      <div class="context-hud hidden-by-default" id="contextHud" title="Live context pressure">
+        <span id="contextLabel">Context 0%</span>
+        <div class="context-meter"><div class="context-fill" id="contextFill"></div></div>
+      </div>
+      <div class="session-hud empty hidden-by-default" id="sessionHud" title="Session totals (this conversation)">
+        <span>Session</span>
+        <span class="session-hud-val" id="sessionHudTokens">0t</span>
+        <span class="meta-sep">·</span>
+        <span class="session-hud-val" id="sessionHudTime">0s</span>
+      </div>
+      <div class="session-hud autonomy-hud-action hidden-by-default" id="autonomyHud" title="Autonomy loop progress (.forge-state.json)" onclick="toggleAutonomyLog()">
+        <span>🤖 Autonomy</span>
+        <span class="session-hud-val" id="autonomyHudTask">idle</span>
+        <span class="meta-sep">·</span>
+        <span class="session-hud-val" id="autonomyHudCounts">0/0</span>
+      </div>
+      <div class="status-center hidden-by-default" id="statusCenter" title="Current system state and next best action">
+        <div class="status-center-summary">
+          <span class="status-center-state" id="statusCenterState"><strong>Connecting</strong></span>
+          <span class="status-center-detail" id="statusCenterDetail">Waiting for system checks…</span>
+        </div>
+        <button class="btn-sm" id="statusCenterAction" onclick="runStatusCenterAction()">Open</button>
+      </div>
+      <button class="btn-sm unattended-btn" id="unattendedRunwayBtn" onclick="enableUnattendedRunway(120)" title="Let Harness keep working for 2 hours">Keep going</button>
+      <div class="status-pill loading" id="statusPill" title="Connecting..."><span class="status-dot"></span><span id="statusLabel">Connecting</span></div>
+      <div class="connector-badges hidden-by-default" id="connectorBadges" title="Connector status"></div>
+      <div class="topbar-btns">
+        <button class="btn-icon" id="themeToggle" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
+        <button class="btn-icon" onclick="newChat()" title="New chat">✨</button>
+        <button class="btn-icon" onclick="toggleRight()" title="Settings">⚙️</button>
+      </div>
+    </div>
+
+    <!-- Unified inbox strip: aggregates pending permission prompts, plan
+         tasks, and recent automation runs into one ranked summary so the
+         chat-first surface can show "X things need you" without forcing
+         the user to know which tab to open. Hidden when empty. Populated
+         by loadInbox() from /api/inbox. -->
+    <div class="inbox-strip initial-hidden" id="inboxStrip" aria-live="polite"></div>
+
+    <div class="chat-area" id="chatArea">
+      <div class="welcome" id="welcome">
+        <div id="noModelBanner" class="no-model-banner hidden-by-default">
+          <div class="no-model-icon">↑</div>
+          <div>
+            <strong>Pick a model from the dropdown above to start.</strong>
+            <div class="no-model-hint">No models installed yet? Run <code>ollama pull llama3.2</code> in a terminal, then refresh this page.</div>
+          </div>
+        </div>
+        <div class="welcome-hero">
+          <div class="welcome-eyebrow">Local-first AI agent · Ollama</div>
+          <h2>What can I help you with?</h2>
+          <p>Type a message below and press Enter. I can read files, write code, search the web, and remember things across sessions.</p>
+        </div>
+
+        <div class="quick-start-panel">
+          <div class="quick-start-body"><strong>Start here</strong><span id="quickStartHint">Step 1: Pick a model above to unlock quick start.</span></div>
+          <div class="quick-start-actions"><button id="quickStartBtn" class="btn-sm primary" onclick="startQuickTest()">Start quick test</button><button class="btn-sm" onclick="openFirstRunGuide()">Open setup guide</button></div>
+        </div>
+
+        <div class="beginner-readiness warn" id="beginnerReadiness">
+          <div><strong id="beginnerReadinessTitle">Checking first-chat readiness</strong><span id="beginnerReadinessMessage">Harness is checking Ollama and installed models before your first message.</span></div>
+          <span class="readiness-badge" id="beginnerReadinessBadge">Checking</span>
+        </div>
+
+        <div class="quick-suggestions" id="quickSuggestions">
+          <!-- Populated by quickStartChipsMarkup() at DOMContentLoaded so
+               the chip set lives in one place (ui/app.js) and stays in
+               sync between the static landing page and welcomeMarkup()
+               re-renders triggered by /new and /reset. -->
+        </div>
+
+        <div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div>
+
+        <div class="mission-control" id="missionControlPanel">
+          <div class="readiness-empty">Loading work area...</div>
+        </div>
+
+        <details class="mission-control" id="dailyBriefPanel" style="margin-top:12px">
+          <summary style="cursor:pointer;font-weight:600">📓 Daily Brief <span id="dailyBriefStamp" style="font-weight:400;color:var(--muted);margin-left:8px"></span></summary>
+          <div class="readiness-empty" id="dailyBriefBody">Click to load.</div>
+          <div id="dailyBriefSuggestions" style="margin-top:8px"></div>
+          <div id="dailyBriefTrustLadder" style="margin-top:8px"></div>
+          <div id="dailyBriefAmbient" style="margin-top:8px"></div>
+          <div id="dailyBriefRuntime" style="margin-top:8px"></div>
+          <div id="dailyBriefGraph" style="margin-top:8px"></div>
+          <div style="margin-top:8px"><button class="btn-sm" onclick="loadDailyBrief()">Refresh brief</button> <button class="btn-sm" onclick="saveDailyBrief()">Save to documents</button> <button class="btn-sm" onclick="loadJarvisGraph()">Show graph</button></div>
+        </details>
+        <div id="jarvisGhostHint" style="margin-top:6px;color:var(--muted);font-size:12px;cursor:pointer" title="Click to insert into the chat composer"></div>
+        <div id="jarvisVoiceControls" style="margin-top:4px;font-size:12px">
+          <button class="btn-sm" id="jarvisAlwaysListenBtn" onclick="jarvisToggleAlwaysListen()" title="Keep mic on between turns">🎙️ off</button>
+          <button class="btn-sm" id="jarvisSpeakBtn" onclick="jarvisToggleSpeakReplies()" title="Speak assistant replies">🔊 off</button>
+        </div>
+
+        <div class="mission-control" id="jarvisLivePanel" style="margin-top:12px">
+          <div style="font-weight:600;margin-bottom:6px">🤖 Jarvis Live <span id="jarvisLiveStamp" style="font-weight:400;color:var(--muted);font-size:11px;margin-left:8px"></span></div>
+          <div id="jarvisLiveBody" style="font-size:12px">Loading…</div>
+          <div style="margin-top:6px">
+            <button class="btn-sm" onclick="jarvisSendBriefToTelegram()" title="Send the current daily brief to Telegram chats that have messaged the bot">📲 Send brief to Telegram</button>
+            <button class="btn-sm" onclick="jarvisPickMic()" title="Pick which microphone the browser uses for voice input">🎤 Pick mic…</button>
+            <button class="btn-sm" id="jarvisLocalSttBtn" onclick="jarvisLocalSttToggle()" title="Record audio and transcribe via whisper.cpp on the server (offline, no Google). Auto-stops after 1.5s of silence.">🎙️ local STT</button>
+            <button class="btn-sm" id="jarvisHandsFreeBtn" onclick="jarvisToggleHandsFree()" title="Hands-free mode: auto-restart the mic after each assistant reply so you can have a back-and-forth conversation without clicking">🎤 hands-free off</button>
+          </div>
+        </div>
+
+        <details class="welcome-disclosure" id="welcomeFirstRun">
+          <summary>First time here? Walk through setup &amp; tutorial</summary>
+          <div class="welcome-disclosure-body">
+            <div class="beginner-guide" id="beginnerGuide">
+              <div class="guide-item"><strong>Ask</strong>Use plain English for project questions, code changes, searches, and local tasks.</div>
+              <div class="guide-item"><strong>Attach</strong>Drop files below. Images and audio show model support hints before you send.</div>
+              <div class="guide-item"><strong>Recover</strong>Resume continues unfinished work; Fork starts a copy for a different direction.</div>
+            </div>
+            <div class="walkthrough-checklist" id="walkthroughChecklist">
+              <div class="walkthrough-step"><div class="walkthrough-dot">1</div><div><strong>Check setup</strong>Confirm Ollama, optional vision, and optional audio helpers.</div><button class="btn-sm" onclick="openWalkthroughTarget('setup')">Open</button></div>
+              <div class="walkthrough-step"><div class="walkthrough-dot">2</div><div><strong>Create a profile</strong>Use the guided form instead of hand-writing JSON.</div><button class="btn-sm" onclick="openWalkthroughTarget('validation')">Open</button></div>
+              <div class="walkthrough-step"><div class="walkthrough-dot">3</div><div><strong>Export results</strong>Download validation trends from the Learning tab.</div><button class="btn-sm" onclick="openWalkthroughTarget('learning')">Open</button></div>
+              <div class="walkthrough-step"><div class="walkthrough-dot">4</div><div><strong>Verify install</strong>Check the running version and release provenance.</div><button class="btn-sm" onclick="openWalkthroughTarget('about')">Open</button></div>
+            </div>
+            <div class="first-run-setup" id="firstRunSetup">
+              <h3>First-run setup</h3>
+              <p>Set the local Ollama host and optional media helpers before your first chat.</p>
+              <div class="first-run-grid">
+                <div><label for="firstRunOllamaHost">Ollama host</label><input id="firstRunOllamaHost" type="text" value="http://localhost:11434"></div>
+                <div><label for="firstRunVisionModel">Vision model</label><input id="firstRunVisionModel" type="text" placeholder="llava"></div>
+                <div><label for="firstRunAudioCommand">Audio command</label><input id="firstRunAudioCommand" type="text" placeholder='whisper "{input}" --model base'></div>
+                <div><label for="firstRunAudioSamplePath">Audio test file</label><input id="firstRunAudioSamplePath" type="text" placeholder=".harness/uploads/sample.wav"></div>
+              </div>
+              <div class="first-run-actions"><button class="btn-sm" onclick="applyFirstRunSetup()">Save setup</button><button class="btn-sm" onclick="checkFirstRunHealth()">Check setup</button><span class="first-run-status" id="firstRunStatus">Optional. You can change these later in Settings.</span></div>
+              <div class="trace-detail initial-hidden" id="firstRunHealth"></div>
+            </div>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div id="activeSubagentsBar" class="active-subagents-bar"></div>
+      <div id="attachedFiles" class="attached-files"></div>
+      <div id="attachmentHint" class="attachment-hint">Attach text, data, image, or audio files. Harness will show what the selected model is likely to understand.</div>
+      <div class="slash-palette hidden" id="slashPalette" role="listbox" aria-label="Slash command palette">
+        <div class="slash-palette-header">Slash commands · ↑↓ to choose, Enter to run, Esc to close</div>
+        <div class="slash-palette-list" id="slashPaletteList"></div>
+      </div>
+      <div class="input-row">
+        <button class="btn-icon attach-btn" onclick="document.getElementById('fileInput').click()" title="Attach files">📎</button>
+        <button class="btn-icon attach-btn" id="voiceBtn" onclick="toggleVoiceInput()" title="Voice input (browser STT)">🎤</button>
+        <input type="file" id="fileInput" class="initial-hidden" multiple onchange="handleFileAttach(this.files)">
+        <textarea id="chatInput" placeholder="Ask anything... drop files here or click 📎 (Shift+Enter for newline)" rows="1"
+          onkeydown="handleKey(event)" oninput="autoSize(this)"
+          ondragover="event.preventDefault();this.style.borderColor='var(--accent)'"
+          ondragleave="this.style.borderColor=''"
+          ondrop="event.preventDefault();this.style.borderColor='';handleFileAttach(event.dataTransfer.files)"
+          onpaste="handleChatPaste(event)"></textarea>
+        <button class="send-btn" id="sendBtn" onclick="sendMessage()" disabled>➤</button>
+      </div>
+      <label class="attachment-hint attachment-validation-toggle" title="Skip output validation just for the next message; the global setting is unchanged.">
+        <input type="checkbox" id="skipValidationOnce"> Skip validation for this turn
+      </label>
+    </div>
+
+    <!-- Artifact panel: side preview for code, HTML, SVG, markdown.
+         Slides in from the right edge of the main panel when an
+         assistant reply contains a substantial code block or rendered
+         content. See ui/app.js openArtifact / addArtifact. -->
+    <aside class="artifact-panel" id="artifactPanel" aria-hidden="true">
+      <div class="artifact-header">
+        <h4 id="artifactTitle">Artifact</h4>
+        <button class="btn-icon" id="artifactRefresh" title="Refresh preview" onclick="refreshArtifactPreview()">↻</button>
+        <button class="btn-icon" onclick="closeArtifact()" title="Close panel">✕</button>
+      </div>
+      <div class="artifact-tabs" id="artifactTabs"></div>
+      <div class="artifact-body" id="artifactBody"></div>
+      <div class="artifact-actions">
+        <button class="btn-sm" onclick="toggleArtifactView()" id="artifactViewToggle">Source</button>
+        <button class="btn-sm" onclick="copyArtifact()">📋 Copy</button>
+        <button class="btn-sm" onclick="downloadArtifact()">💾 Download</button>
+      </div>
+    </aside>
+  </div>
+
+  <div class="panel-backdrop" id="panelBackdrop" onclick="dismissPanelBackdrop()"></div>
+  <div class="right-panel hidden" id="rightPanel">
+    <div class="panel-header">
+      <h3>Settings</h3>
+      <button class="btn-sm" onclick="toggleRight()">✕</button>
+    </div>
+    <div id="promiseWidget" class="promise-widget initial-hidden"></div>
+    <div class="settings-section open" id="aboutSection">
+      <h4>About</h4>
+      <div class="settings-section-body">
+        <div class="about-version" id="aboutVersion">Loading…</div>
+        <div class="about-summary" id="aboutSummary"></div>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h4>Connection<button class="settings-reset-btn" onclick="event.stopPropagation();resetSettingsSection('connection')" title="Reset to defaults">↺ Reset</button></h4>
+      <div class="setting-row">
+        <label>Ollama Host</label>
+        <input type="text" id="ollamaHost" title="Ollama Host" value="http://localhost:11434" onchange="updateSetting('ollamaHost',this.value)" />
+      </div>
+    </div>
+    <div class="settings-section" id="settingsSmtp">
+      <h4>Remote API Keys &amp; Services</h4>
+      <div class="setting-row settings-note">
+        Stored locally in <code>.harness/api-keys.json</code> (chmod 600). Env-var keys take precedence. Saving an empty value clears the stored key.
+        For Gmail SMTP, use an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">App Password</a>.
+      </div>
+      <div id="apiKeysList"></div>
+      <div class="setting-row settings-row-spaced">
+        <button class="btn-sm primary" onclick="saveApiKeys()">💾 Save keys</button>
+        <button class="btn-sm" onclick="testSmtpConnection()">📧 Test SMTP</button>
+        <span id="apiKeysStatus" class="settings-status-inline"></span>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h4>📨 Email Drafts &amp; Sent</h4>
+      <div class="setting-row settings-note">
+        Drafts created by <code>email_draft</code> and sent copies from <code>email_send</code>.
+      </div>
+      <div class="setting-row" style="padding:4px 0"><input type="text" id="emailSearchInput" placeholder="🔍 Filter emails…" class="settings-flex-input" style="font-size:11px" oninput="filterEmailList()"></div>
+      <div id="emailList" style="max-height:200px;overflow-y:auto"></div>
+      <div class="setting-row settings-row-spaced">
+        <button class="btn-sm" onclick="loadEmailList()">🔄 Refresh</button>
+        <span id="emailListStatus" class="settings-status-inline"></span>
+      </div>
+      <pre id="emailPreview" style="display:none;max-height:300px;overflow-y:auto;font-size:11px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px;margin-top:8px;white-space:pre-wrap;word-break:break-word"></pre>
+      <details class="advanced-settings" style="margin-top:10px">
+        <summary class="advanced-settings-summary">✉️ Compose &amp; Send</summary>
+        <div class="setting-row" style="gap:6px">
+          <select id="composeTemplateSelect" style="font-size:11px;flex:1;padding:3px 6px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text)" title="Load a saved template">
+            <option value="">— Templates —</option>
+          </select>
+          <button class="btn-sm" onclick="loadSelectedTemplate()" title="Load template into compose fields">📄 Load</button>
+          <button class="btn-sm" onclick="saveAsTemplate()" title="Save current compose fields as a template">💾 Save</button>
+          <button class="btn-sm" onclick="deleteSelectedTemplate()" title="Delete selected template">🗑</button>
+        </div>
+        <div class="setting-row"><input type="text" id="composeToInput" placeholder="recipient@example.com" class="settings-flex-input" title="Comma-separated for multiple recipients"></div>
+        <div class="setting-row"><input type="text" id="composeSubjectInput" placeholder="Subject" class="settings-flex-input"></div>
+        <div class="setting-row"><textarea id="composeBodyInput" placeholder="Message body…" rows="4" style="width:100%;resize:vertical;font-family:inherit;font-size:12px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text)"></textarea></div>
+        <div id="composeRichWrap" style="display:none">
+          <div style="display:flex;gap:4px;margin-bottom:4px">
+            <button type="button" class="btn-sm" onclick="document.execCommand('bold')" title="Bold" style="font-weight:bold;padding:2px 6px">B</button>
+            <button type="button" class="btn-sm" onclick="document.execCommand('italic')" title="Italic" style="font-style:italic;padding:2px 6px">I</button>
+            <button type="button" class="btn-sm" onclick="document.execCommand('insertUnorderedList')" title="Bullet list" style="padding:2px 6px">•</button>
+            <button type="button" class="btn-sm" onclick="insertComposeLink()" title="Insert link" style="padding:2px 6px">🔗</button>
+          </div>
+          <div id="composeRichBody" contenteditable="true" style="width:100%;min-height:80px;resize:vertical;font-family:inherit;font-size:12px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text);overflow-y:auto"></div>
+        </div>
+        <div class="setting-row" style="gap:10px;font-size:11px;color:var(--text-dim)">
+          <label title="Send as plain text"><input type="radio" name="composeFormat" value="plain" checked onchange="toggleComposeFormat()"> Plain text</label>
+          <label title="Send as HTML with formatting toolbar"><input type="radio" name="composeFormat" value="html" onchange="toggleComposeFormat()"> HTML</label>
+        </div>
+        <div class="setting-row"><label style="font-size:11px;color:var(--text-dim)">📎 Attachments <input type="file" id="composeAttachments" multiple style="font-size:11px" onchange="renderAttachmentPreviews()"></label></div>
+        <div id="composeAttachmentPreviews" style="display:none;gap:8px;flex-wrap:wrap;padding:4px 0;max-height:120px;overflow-y:auto"></div>
+        <div class="setting-row settings-row-spaced">
+          <button class="btn-sm primary" onclick="sendComposedEmail()">📤 Send</button>
+          <span id="composeStatus" class="settings-status-inline"></span>
+        </div>
+      </details>
+    </div>
+    <div class="settings-section">
+      <h4>📁 Agent Files<button class="settings-reset-btn" onclick="event.stopPropagation();resetSettingsSection('agentFiles')" title="Reset to defaults">↺ Reset</button></h4>
+      <div class="setting-row settings-note">
+        Where the agent puts files it creates. Editing files that already exist is unaffected.
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="text" id="agentOutputDirInput" placeholder="C:/AI/Harness/agent-outputs (default)" class="settings-flex-input">
+        <button class="btn-sm" onclick="toggleAgentOutputDirBrowser()" title="Browse for a folder">🗂 Browse</button>
+        <button class="btn-sm primary" onclick="saveAgentOutputDir()">💾 Save</button>
+      </div>
+      <div id="agentOutputDirBrowser" class="settings-browser-panel hidden-by-default"></div>
+      <div id="agentOutputDirStatus" class="settings-status-line"></div>
+
+      <details class="advanced-settings">
+        <summary class="advanced-settings-summary">⚙ Advanced: pattern-based rules</summary>
+        <div class="advanced-settings-body">
+          <div class="setting-row settings-note">
+            Optional. Override the folder above for files matching a pattern. <code>*</code> matches any chars except <code>/</code>, <code>**</code> matches across separators. First matching rule wins.
+          </div>
+          <div id="fileRedirectsList"></div>
+          <div class="setting-row settings-action-wrap">
+            <button class="btn-sm" onclick="addFileRedirectRow()">+ Add rule</button>
+            <button class="btn-sm primary" onclick="saveFileRedirects()">💾 Save rules</button>
+            <span id="fileRedirectsStatus" class="settings-status-inline"></span>
+          </div>
+          <div class="setting-row settings-preview-row">
+            <input type="text" id="fileRedirectsPreviewInput" placeholder="Preview a path, e.g. lottery-foo.js" class="settings-flex-input">
+            <button class="btn-sm" onclick="previewFileRedirects()">🔍 Preview</button>
+          </div>
+          <div id="fileRedirectsPreviewResult" class="settings-preview-result"></div>
+          <div class="setting-row settings-example-row">
+            Example: <code>{ "match": "lottery-*", "redirect": "C:/AI/Lottery-Toolkit/inbox" }</code>
+          </div>
+        </div>
+      </details>
+    </div>
+    <div class="settings-section" id="settingsTelegram">
+      <h4>📱 Telegram Bot</h4>
+      <div class="setting-row settings-note">
+        Talk to Oracle from your phone via Telegram. Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> and paste the token below.
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="password" id="telegramTokenInput" placeholder="Bot token from @BotFather" class="settings-flex-input">
+        <button class="btn-sm primary" onclick="saveTelegramToken()">Connect</button>
+        <button class="btn-sm" onclick="stopTelegram()">Stop</button>
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="text" id="telegramChatIdsInput" placeholder="Allowed chat IDs (comma-separated, empty = any)" class="settings-flex-input">
+      </div>
+      <div id="telegramStatus" class="settings-status-line">Loading...</div>
+    </div>
+    <div class="settings-section" id="settingsDiscord">
+      <h4>Discord Bot</h4>
+      <div class="setting-row settings-note">
+        Status and allowlist setup for the Discord chat bridge.
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="password" id="discordTokenInput" placeholder="Discord bot token" class="settings-flex-input">
+        <button class="btn-sm primary" onclick="saveDiscordToken()">Connect</button>
+        <button class="btn-sm" onclick="stopDiscord()">Stop</button>
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="text" id="discordChannelIdsInput" placeholder="Allowed channel IDs (comma-separated)" class="settings-flex-input">
+      </div>
+      <div id="discordStatus" class="settings-status-line">Loading...</div>
+    </div>
+    <div class="settings-section" id="settingsSlack">
+      <h4>Slack Notifications</h4>
+      <div class="setting-row settings-note">
+        Notification-only Slack setup through an incoming webhook.
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="password" id="slackWebhookInput" placeholder="https://hooks.slack.com/services/..." class="settings-flex-input">
+        <button class="btn-sm primary" onclick="saveSlackWebhook()">Save</button>
+      </div>
+      <div id="slackStatus" class="settings-status-line">Loading...</div>
+    </div>
+    <div class="settings-section" id="settingsWhatsapp">
+      <h4>WhatsApp Status</h4>
+      <div class="setting-row settings-note">
+        Status-only WhatsApp Cloud API setup. Recipients are allowlisted before any future notification tool can use them.
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="password" id="whatsappAccessTokenInput" placeholder="WhatsApp access token" class="settings-flex-input">
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="text" id="whatsappPhoneNumberIdInput" placeholder="Phone number ID" class="settings-flex-input">
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="text" id="whatsappAllowedRecipientsInput" placeholder="Allowed recipients, comma-separated" class="settings-flex-input">
+        <button class="btn-sm primary" onclick="saveWhatsAppSetup()">Save</button>
+      </div>
+      <div id="whatsappStatus" class="settings-status-line">Loading...</div>
+    </div>
+    <div class="settings-section">
+      <h4>Desktop Input Evidence</h4>
+      <div class="setting-row settings-note">
+        Recent desktop input replay audit entries and before/after screenshots from .harness/desktop.
+      </div>
+      <div class="setting-row settings-action-row">
+        <button class="btn-sm" onclick="loadDesktopInputEvidence()">Refresh</button>
+      </div>
+      <div id="desktopInputEvidence" class="settings-status-line">Loading...</div>
+    </div>
+    <div class="settings-section">
+      <h4>Generation<button class="settings-reset-btn" onclick="event.stopPropagation();resetSettingsSection('modelGen')" title="Reset to defaults">↺ Reset</button></h4>
+      <div class="setting-row">
+        <label>Temperature</label>
+        <div class="slider-row">
+          <input type="range" min="0" max="2" step="0.1" value="0.7" id="tempSlider" title="Temperature"
+            oninput="document.getElementById('tempVal').textContent=this.value;updateSetting('temperature',this.value)">
+          <span class="slider-val" id="tempVal">0.7</span>
+        </div>
+      </div>
+      <div class="setting-row">
+        <label>Top P</label>
+        <div class="slider-row">
+          <input type="range" min="0" max="1" step="0.05" value="0.9" id="topPSlider" title="Top P"
+            oninput="document.getElementById('topPVal').textContent=this.value;updateSetting('topP',this.value)">
+          <span class="slider-val" id="topPVal">0.9</span>
+        </div>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h4>Context Continuity<button class="settings-reset-btn" onclick="event.stopPropagation();resetSettingsSection('webRead')" title="Reset web read max chars to default">↺ Reset</button></h4>
+      <div class="setting-row">
+        <label>Max context tokens</label>
+        <input type="number" id="contextMaxTokens" title="Max context tokens (0 = auto)" value="0" min="0" step="512" onchange="updateSetting('contextMaxTokens',this.value)" />
+      </div>
+      <div class="setting-row settings-action-row">
+        <button class="btn-sm" onclick="applyContextPreset(0)">Auto</button>
+        <button class="btn-sm" onclick="applyContextPreset(8192)">Local Small</button>
+        <button class="btn-sm" onclick="applyContextPreset(16384)">Local Large</button>
+        <button class="btn-sm" onclick="applyContextPreset(32768)">Cloud</button>
+        <button class="btn-sm" onclick="applyContextPreset(65536)">Max</button>
+      </div>
+      <div id="contextDetails" class="trace-detail">Detected context unavailable</div>
+      <div class="setting-row">
+        <label>Web read max chars</label>
+        <input type="number" id="webReadMaxChars" title="Maximum characters returned by each web_read result" value="12000" min="1000" max="50000" step="1000" onchange="updateSetting('webReadMaxChars',this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Summarizer model</label>
+        <input type="text" id="summarizerModel" placeholder="Optional smaller model" onchange="updateSetting('summarizerModel',this.value)" />
+      </div>
+      <button class="btn-sm full-width-button" onclick="rebuildSemanticMemory()">Rebuild semantic memory</button>
+    </div>
+    <div class="settings-section">
+      <h4>Agent Loop Limits</h4>
+      <div class="setting-row">
+        <label>Time budget (seconds)</label>
+        <input type="number" id="timeBudgetSec" title="Wall-clock time budget for agent loop" value="180" min="30" max="1800" step="30" onchange="updateSetting('timeBudgetMs',this.value*1000)" />
+      </div>
+      <div id="timeBudgetHint" class="trace-detail">Local models: 180s recommended · Cloud: 600s</div>
+      <div id="modelStatsPanel" class="trace-detail"></div>
+      <button class="btn-sm full-width-button trace-block-spaced" onclick="loadModelStats()">Show model stats</button>
+    </div>
+    <div class="settings-section">
+      <h4>Helper Routing</h4>
+      <div class="setting-row">
+        <label>Small helper model</label>
+        <input type="text" id="smallHelperModel" placeholder="Fast read-only helper" onchange="updateRoutingSetting('smallModel',this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Default helper model</label>
+        <input type="text" id="defaultHelperModel" placeholder="Normal helper model" onchange="updateRoutingSetting('defaultModel',this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Strong helper model</label>
+        <input type="text" id="strongHelperModel" placeholder="Escalated helper model" onchange="updateRoutingSetting('strongModel',this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Agentic fallback model</label>
+        <input type="text" id="fallbackHelperModel" placeholder="Preferred fallback for weak tool/current-info turns" onchange="updateRoutingSetting('fallbackModel',this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Confidence threshold</label>
+        <input type="number" id="helperConfidenceThreshold" title="Confidence threshold" min="0" max="1" step="0.05" value="0.45" onchange="updateRoutingSetting('confidenceEscalationThreshold',this.value)" />
+      </div>
+    </div>
+    <div class="settings-section">
+      <h4>Team Model Catalog</h4>
+      <div class="setting-row">
+        <label>Catalog URL</label>
+        <input type="text" id="modelCatalogUrl" placeholder="https://example.com/model-catalog.json" onchange="updateModelCatalogSetting('url',this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Refresh TTL hours</label>
+        <input type="number" id="modelCatalogTtlHours" title="Model catalog refresh TTL hours" placeholder="24" min="1" max="720" value="24" onchange="updateModelCatalogSetting('ttlHours',this.value)" />
+      </div>
+      <button id="refreshModelCatalogBtn" class="btn-sm full-width-button" onclick="refreshModelCatalog()">Refresh catalog</button>
+      <div id="modelCatalogSettingsStatus" class="trace-detail">Built-in catalog is used unless a team URL is configured.</div>
+    </div>
+    <div class="settings-section">
+      <h4>Extension Activation Policy</h4>
+      <div class="mode-opt" id="extensionExecutableToggle" onclick="toggleExtensionExecutablePlugins(this)">
+        <div class="mode-t">Allow executable plugins</div>
+        <div class="mode-d">Manifest discovery is always safe; executable activation stays blocked unless this policy allows it.</div>
+      </div>
+      <div class="mode-opt" id="extensionPermissionReviewToggle" onclick="toggleExtensionPermissionReview(this)">
+        <div class="mode-t">Require permission review</div>
+        <div class="mode-d">Keep executable plugin activation gated by explicit review.</div>
+      </div>
+      <div class="setting-row">
+        <label>Allowed plugin names</label>
+        <input type="text" id="extensionAllowedPluginNames" placeholder="plugin-a, plugin-b" onchange="updateExtensionAllowedPlugins(this.value)" />
+      </div>
+      <div id="extensionPolicyStatus" class="trace-detail">Executable plugin loading is not implemented in this build.</div>
+    </div>
+    <div class="settings-section">
+      <h4>Media Tools</h4>
+      <div class="setting-row">
+        <label>Vision model <span id="visionModelStatus" class="vision-status">checking</span></label>
+        <input type="text" id="visionModel" placeholder="llava or qwen2-vl" onchange="updateMediaToolSetting('visionModel',this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Audio command</label>
+        <input type="text" id="audioTranscribeCommand" placeholder="whisper &quot;{input}&quot; --model base --output_format txt --output_dir -" onchange="updateMediaToolSetting('audioTranscribeCommand',this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>PDF OCR command</label>
+        <input type="text" id="pdfOcrCommand" placeholder="tesseract &quot;{input}&quot; - -l eng" onchange="updateMediaToolSetting('pdfOcrCommand',this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Uploads directory</label>
+        <input type="text" id="uploadsDir" placeholder=".harness/uploads (default)" onchange="updateMediaToolSetting('uploadsDir',this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Audio test file</label>
+        <input type="text" id="settingsAudioSamplePath" placeholder=".harness/uploads/sample.wav" />
+      </div>
+      <button class="btn-sm full-width-button" onclick="checkSettingsHealth()">Run setup doctor</button>
+      <div class="trace-detail">Use {input} where the uploaded audio path should be placed. Uploads directory accepts an absolute path or a project-relative path; leave empty for the default.</div>
+      <div id="settingsDoctorHealth" class="trace-detail initial-hidden"></div>
+      <div class="setting-row uploads-cleanup-row">
+        <label for="uploadsPruneDays">Prune uploads older than</label>
+        <input type="number" id="uploadsPruneDays" min="0" max="3650" value="30" title="Number of days; files older than this will be deleted" placeholder="30" />
+        <span>day(s)</span>
+        <button class="btn-sm" onclick="runUploadsCleanup()">Prune now</button>
+      </div>
+      <div class="setting-row uploads-cleanup-row">
+        <label for="uploadsAutoPruneDays">Auto-prune uploads older than</label>
+        <input type="number" id="uploadsAutoPruneDays" min="0" max="3650" value="0" title="Daily background prune; 0 disables" placeholder="0" onchange="updateMediaToolSetting('uploadsAutoPruneDays', parseInt(this.value || '0', 10))" />
+        <span>day(s) · 0 disables</span>
+        <span id="uploadsLastPrunedAt" class="trace-detail"></span>
+      </div>
+      <div id="uploadsCleanupStatus" class="trace-detail initial-hidden"></div>
+      <div class="setting-row">
+        <h5>Current uploads</h5>
+        <div id="uploadsList" class="trace-detail">Loading...</div>
+        <button class="btn-sm full-width-button" onclick="loadUploadsList()">Refresh uploads</button>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h4>Output Validation</h4>
+      <div class="setting-row">
+        <label>Reasoning contract</label>
+        <select id="outputValidationProfile" title="Output validation profile" onchange="updateOutputValidationSetting()">
+          <option value="oracle-prime">Oracle Prime</option>
+          <option value="factual-answer">Factual Answer</option>
+          <option value="coding-answer">Coding Answer</option>
+          <option value="tool-result-summary">Tool Result Summary</option>
+        </select>
+      </div>
+      <div class="mode-opt" id="outputValidationToggle" onclick="toggleOutputValidation(this)">
+        <div class="mode-t">Validate final answers</div>
+        <div class="mode-d">Pairs the prompt with a selected contract, checks the final answer, and records validation trends.</div>
+      </div>
+      <div class="mode-opt" id="outputValidationAutoSelectToggle" onclick="toggleOutputValidationAutoSelect(this)">
+        <div class="mode-t">Auto-select best contract</div>
+        <div class="mode-d">Chooses factual, coding, tool-result, or Oracle Prime per prompt. Turn this off to use the selected override.</div>
+      </div>
+      <div class="mode-opt" id="outputValidationSkipLowSignalToggle" onclick="toggleOutputValidationSkipLowSignal(this)">
+        <div class="mode-t">Skip validation on low-signal prompts</div>
+        <div class="mode-d">When auto-select can't detect a strong signal (small talk, "you decide"), skip validation for that turn instead of defaulting to Oracle Prime.</div>
+      </div>
+      <div class="setting-row">
+        <label>Install templates</label>
+        <div id="outputValidationTemplates" class="template-list"></div>
+      </div>
+      <div class="setting-row">
+        <label>Preview validator</label>
+        <textarea id="outputValidationPreviewText" placeholder="Paste a draft answer here to test the selected validation profile."></textarea>
+      </div>
+      <button id="previewOutputValidationBtn" class="btn-sm full-width-button" onclick="previewOutputValidation()">Run preview</button>
+      <div id="outputValidationPreviewResult" class="validation-preview-result initial-hidden"></div>
+      <div class="setting-row">
+        <label>Build a custom profile</label>
+        <select id="customProfilePicker" title="Custom profile" onchange="loadSelectedCustomProfile()"></select>
+      </div>
+      <div class="profile-form-grid">
+        <div class="setting-row"><label>Profile id</label><input id="customProfileId" type="text" placeholder="brief-summary"></div>
+        <div class="setting-row"><label>Label</label><input id="customProfileLabel" type="text" placeholder="Brief Summary"></div>
+        <div class="setting-row wide"><label>Description</label><input id="customProfileDescription" type="text" placeholder="Requires a concise outcome summary"></div>
+        <div class="setting-row wide"><label>Instructions</label><textarea id="customProfileInstructions" placeholder="Mention the outcome and evidence in a concise answer."></textarea></div>
+        <div class="setting-row"><label>Warn below score</label><input id="customProfileWarnBelow" type="number" min="0" max="1" step="0.05" placeholder="0.8"></div>
+        <div class="setting-row"><label>Fail below score</label><input id="customProfileFailBelow" type="number" min="0" max="1" step="0.05" placeholder="0.5"></div>
+      </div>
+      <div id="customProfileChecks" class="profile-check-list"></div>
+      <div class="profile-actions">
+        <button class="btn-sm" onclick="addCustomProfileCheck()">Add check</button>
+        <button class="btn-sm" onclick="resetCustomProfileForm()">Clear form</button>
+        <button id="saveProfileFromFormBtn" class="btn-sm" onclick="saveProfileFromForm()">Save form profile</button>
+        <button class="btn-sm" onclick="loadSelectedCustomProfile()">Load selected</button>
+      </div>
+      <div class="profile-actions">
+        <button id="downloadProfilePresetBtn" class="btn-sm" onclick="downloadOutputValidationProfilesPreset()">Download presets</button>
+        <button id="importProfilePresetBtn" class="btn-sm" onclick="importOutputValidationProfilesPreset()">Import presets</button>
+      </div>
+      <input type="file" id="profilePresetFileInput" class="initial-hidden" accept="application/json,.json" onchange="handleOutputValidationProfilesPresetFile(this.files)">
+      <div class="setting-row">
+        <label>Advanced JSON</label>
+        <textarea id="outputValidationProfilesJson" placeholder='{"profiles":[{"profile":"brief-summary","instructions":"Mention outcome and evidence.","checks":[{"code":"has-outcome","severity":"fail","message":"Mention the outcome.","requiresAny":["passed","failed"]}]}]}'></textarea>
+      </div>
+      <button id="saveOutputValidationProfilesBtn" class="btn-sm full-width-button" onclick="saveOutputValidationProfiles()">Save custom profiles</button>
+      <div id="outputValidationProfilesStatus" class="trace-detail"></div>
+    </div>
+    <div class="settings-section" id="curatorSettingsSection">
+      <h4>Skill Curator</h4>
+      <div class="setting-row">
+        <label for="curatorEnabled">Enable scheduler</label>
+        <input type="checkbox" id="curatorEnabled" onchange="updateCuratorSetting('enabled', this.checked)" />
+      </div>
+      <div class="setting-row">
+        <label for="curatorIntervalHours">Interval (hours)</label>
+        <input type="number" id="curatorIntervalHours" min="1" max="8760" value="168" onchange="updateCuratorSetting('intervalHours', Number(this.value))" />
+      </div>
+      <div class="setting-row">
+        <label for="curatorIdleMinutes">Idle threshold (minutes)</label>
+        <input type="number" id="curatorIdleMinutes" min="1" max="1440" value="120" onchange="updateCuratorSetting('idleThresholdMinutes', Number(this.value))" />
+      </div>
+      <div class="setting-row">
+        <label for="curatorStaleDays">Stale after (days)</label>
+        <input type="number" id="curatorStaleDays" min="1" max="3650" value="60" onchange="updateCuratorSetting('staleDays', Number(this.value))" />
+      </div>
+      <div class="setting-row">
+        <label for="curatorMinViews">Min views before archive</label>
+        <input type="number" id="curatorMinViews" min="0" max="1000" value="1" onchange="updateCuratorSetting('minViewsBeforeArchive', Number(this.value))" />
+      </div>
+      <div class="setting-row">
+        <label for="curatorMaxArchive">Max archives per run</label>
+        <input type="number" id="curatorMaxArchive" min="1" max="100" value="5" onchange="updateCuratorSetting('maxArchivePerRun', Number(this.value))" />
+      </div>
+      <div class="setting-row">
+        <label for="curatorEnableLlm">Enable LLM merge phase</label>
+        <input type="checkbox" id="curatorEnableLlm" onchange="updateCuratorSetting('enableLlmPhase', this.checked)" />
+      </div>
+      <div class="trace-detail">Settings persist in <code>.harness/settings.json</code>. The scheduler always honors the kill switch and only runs when the system has been idle for the threshold above.</div>
+      <div id="curatorSettingsStatus" class="trace-detail initial-hidden"></div>
+    </div>
+    <div class="settings-section" id="automationSchedulerSettingsSection">
+      <h4>Automation Scheduler</h4>
+      <div class="setting-row">
+        <label for="automationSchedulerEnabled">Enable scheduler</label>
+        <input type="checkbox" id="automationSchedulerEnabled" checked onchange="updateAutomationSchedulerSetting('enabled', this.checked)" />
+      </div>
+      <div class="setting-row">
+        <label for="automationSchedulerIdleMinutes">Idle threshold (minutes)</label>
+        <input type="number" id="automationSchedulerIdleMinutes" min="1" max="60" value="2" onchange="updateAutomationSchedulerSetting('idleThresholdMinutes', Number(this.value))" />
+      </div>
+      <div class="trace-detail">Runs due automation jobs when the system has been idle. Respects the kill switch and active capability grants.</div>
+      <div id="automationSchedulerSettingsStatus" class="trace-detail initial-hidden"></div>
+    </div>
+    <div class="settings-section">
+      <h4>Traces</h4>
+      <div class="setting-row">
+        <label>Model debug log</label>
+        <button class="btn-sm toggle-btn" id="modelDebugLogToggle" onclick="toggleModelDebugLog()">Record payload metrics</button>
+      </div>
+      <div class="setting-row">
+        <label>Debug log path</label>
+        <input type="text" id="modelDebugLogPath" placeholder=".harness/model-debug.jsonl" onchange="updateModelDebugLogSetting('path',this.value)" />
+      </div>
+      <button class="btn-sm full-width-button" onclick="exportTraceSnapshot()">Export current trace</button>
+      <button class="btn-sm full-width-button" onclick="exportTraceEvalExample()">Create eval example</button>
+      <button id="createWeatherReplayEvalBtn" class="btn-sm full-width-button" onclick="createWeatherReplayEval()">Create weather replay eval</button>
+      <button class="btn-sm full-width-button" onclick="loadTraceExports()">Refresh trace exports</button>
+      <div id="traceExports" class="trace-list"></div>
+      <div id="traceEvalExamples" class="trace-list"></div>
+      <div id="traceInspector" class="trace-detail initial-hidden"></div>
+    </div>
+    <div class="settings-section">
+      <h4>Runtime Storage</h4>
+      <button class="btn-sm full-width-button" onclick="loadRuntimeStorage()">Refresh storage summary</button>
+      <button class="btn-sm full-width-button" onclick="cleanupRuntimeStorage('traces')">Clean trace exports</button>
+      <button class="btn-sm full-width-button" onclick="cleanupRuntimeStorage('semanticIndex')">Clean semantic index</button>
+      <div id="runtimeStorageStatus" class="trace-detail"></div>
+    </div>
+    <div class="settings-section">
+      <h4>Release verification</h4>
+      <button class="btn-sm full-width-button" onclick="loadAbout()">Refresh version info</button>
+      <button id="verifyReleaseBtn" class="btn-sm full-width-button" onclick="verifyReleaseAsset()">Verify release asset</button>
+      <div id="aboutPanel" class="trace-detail">Version information loading...</div>
+      <div id="releaseVerificationPanel" class="trace-detail initial-hidden"></div>
+    </div>
+    <div class="settings-section">
+      <h4>Agent Identity</h4>
+      <div class="setting-row">
+        <label for="agentNameInput">Name</label>
+        <input type="text" id="agentNameInput" placeholder="e.g. Sage, Atlas, Hermes..." onchange="updateAgentName(this.value)" />
+      </div>
+      <div class="setting-row">
+        <label>Avatar</label>
+        <div class="picker-grid" id="avatarPicker">
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🤖')">🤖</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🧠')">🧠</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('⚡')">⚡</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🔮')">🔮</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🍄')">🍄</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🦊')">🦊</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🐙')">🐙</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🦉')">🦉</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🐺')">🐺</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🏴‍☠️')">🏴‍☠️</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('🎯')">🎯</button>
+          <button class="btn-sm avatar-pick" onclick="setAgentAvatar('💎')">💎</button>
+        </div>
+      </div>
+      <div class="setting-row">
+        <label>Accent color</label>
+        <div class="picker-grid" id="accentPicker">
+          <button class="btn-sm accent-pick accent-purple" onclick="setAccentColor('#7c5cff')" title="Purple accent" aria-label="Purple accent"></button>
+          <button class="btn-sm accent-pick accent-blue" onclick="setAccentColor('#3b82f6')" title="Blue accent" aria-label="Blue accent"></button>
+          <button class="btn-sm accent-pick accent-green" onclick="setAccentColor('#10b981')" title="Green accent" aria-label="Green accent"></button>
+          <button class="btn-sm accent-pick accent-amber" onclick="setAccentColor('#f59e0b')" title="Amber accent" aria-label="Amber accent"></button>
+          <button class="btn-sm accent-pick accent-red" onclick="setAccentColor('#ef4444')" title="Red accent" aria-label="Red accent"></button>
+          <button class="btn-sm accent-pick accent-pink" onclick="setAccentColor('#ec4899')" title="Pink accent" aria-label="Pink accent"></button>
+          <button class="btn-sm accent-pick accent-violet" onclick="setAccentColor('#8b5cf6')" title="Violet accent" aria-label="Violet accent"></button>
+          <button class="btn-sm accent-pick accent-cyan" onclick="setAccentColor('#06b6d4')" title="Cyan accent" aria-label="Cyan accent"></button>
+        </div>
+      </div>
+      <div class="setting-row">
+        <label>Personality</label>
+        <select id="personalityPreset" title="Personality preset" onchange="applyPersonalityPreset(this.value)">
+          <option value="">None (default assistant)</option>
+          <option value="professional">Professional — precise, formal, structured</option>
+          <option value="friendly">Friendly — warm, encouraging, uses examples</option>
+          <option value="concise">Concise — minimal words, code-first</option>
+          <option value="mentor">Mentor — teaches as it works, explains reasoning</option>
+          <option value="creative">Creative — imaginative, explores alternatives</option>
+          <option value="pirate">Pirate — arr, does the work but with flair</option>
+          <option value="custom">Custom...</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <textarea id="personalityText" rows="3" placeholder="Describe your agent's personality, voice, and tone..." onchange="updateSetting('agentPersonality',this.value)"></textarea>
+      </div>
+      <div class="setting-row profile-action-row">
+        <button class="btn-sm" onclick="saveAgentProfile()">💾 Save profile</button>
+        <select id="profileSelect" title="Saved profile" onchange="loadAgentProfile(this.value)" class="profile-select-inline">
+          <option value="">Load saved profile...</option>
+        </select>
+        <button class="btn-sm danger" onclick="deleteAgentProfile()">🗑</button>
+      </div>
+      <div class="setting-row profile-import-export-row">
+        <button class="btn-sm" onclick="exportAgentProfiles()">📥 Export profiles</button>
+        <button class="btn-sm" onclick="document.getElementById('profileImportFile').click()">📤 Import profiles</button>
+        <input type="file" id="profileImportFile" accept=".json" class="initial-hidden" onchange="importAgentProfiles(this.files)">
+      </div>
+    </div>
+    <div class="settings-section">
+      <h4>Allowed External Paths</h4>
+      <div class="trace-detail">Directories outside the project that file_read and list_files can access. One path per line.</div>
+      <div class="setting-row">
+        <textarea id="allowedExternalPaths" rows="3" placeholder="C:\Users\Brad\Downloads&#10;C:\Users\Brad\Documents" onchange="updateAllowedPaths(this.value)"></textarea>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h4>System Prompt</h4>
+      <div class="setting-row">
+        <textarea id="sysPrompt" placeholder="Leave empty for default..." onchange="updateSetting('systemPrompt',this.value)"></textarea>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h4>Safety Mode<button class="settings-reset-btn" onclick="event.stopPropagation();resetSettingsSection('safety')" title="Reset to defaults">↺ Reset</button></h4>
+      <button class="btn-sm full-width-button full-autonomy-button" onclick="enableFullAutonomy()">⚡ Full Autonomy — unlock everything</button>
+      <button class="btn-sm full-width-button timed-autonomy-button" onclick="enableTimedAutonomy()">⏱ Timed Autonomy — unlock with time limit</button>
+      <div id="timedAutonomyBanner" class="timed-autonomy-banner hidden-by-default"></div>
+      <div class="mode-opt permission-mode-option active" onclick="setMode('dontAsk',this)">
+        <div class="mode-t">🟢 Auto-approve all</div>
+        <div class="mode-d">Tools run without asking. Verifier/recovery gates are bypassed.</div>
+      </div>
+      <div class="mode-opt permission-mode-option" onclick="setMode('acceptEdits',this)">
+        <div class="mode-t">🟡 Ask for commands</div>
+        <div class="mode-d">File ops auto-approved. Shell needs approval.</div>
+      </div>
+      <div class="mode-opt permission-mode-option" onclick="setMode('default',this)">
+        <div class="mode-t">🔴 Ask for everything</div>
+        <div class="mode-d">Only reads auto-approved.</div>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h4>Download Model</h4>
+      <div class="setting-row">
+        <label>Model name (e.g. llama3.1:8b)</label>
+        <input type="text" id="pullName" placeholder="llama3.1:8b" />
+      </div>
+      <button class="btn-sm full-width-button" onclick="pullModel()">⬇️ Download</button>
+      <div id="pullProgress" class="pull-progress"></div>
+    </div>
+  </div>
+</div>
+
+<div id="autonomyLogModal" class="autonomy-log-modal hidden-by-default" onclick="if(event.target===this)toggleAutonomyLog()">
+  <div class="autonomy-log-dialog">
+    <div class="autonomy-log-header">
+      <strong>Autonomy log <span class="autonomy-log-subtitle">(.forge-run.log)</span></strong>
+      <button class="btn-icon" onclick="toggleAutonomyLog()" title="Close">✕</button>
+    </div>
+    <pre id="autonomyLogBody" class="autonomy-log-body">Loading…</pre>
+    <div class="autonomy-log-note">Auto-refreshes while open. Click outside or press ✕ to close.</div>
+  </div>
+</div>
+
+<div id="skillModal" class="skill-modal hidden-by-default" onclick="if(event.target===this)closeSkillModal()">
+  <div class="skill-modal-dialog">
+    <div class="skill-modal-header">
+      <h3 id="skillModalTitle">Edit skill</h3>
+      <button class="btn-icon" onclick="closeSkillModal()" title="Close">✕</button>
+    </div>
+    <div class="skill-modal-meta" id="skillModalPath"></div>
+    <div class="skill-modal-tabs">
+      <div class="skill-modal-tab active" id="skillModalTabForm" onclick="switchSkillModalTab('form')">Form</div>
+      <div class="skill-modal-tab" id="skillModalTabRaw" onclick="switchSkillModalTab('raw')">Raw markdown</div>
+      <div class="skill-modal-tab" id="skillModalTabHistory" onclick="switchSkillModalTab('history')">History</div>
+    </div>
+    <div class="skill-modal-form" id="skillModalForm">
+      <div class="automation-field">
+        <label for="skillFormDescription">Description</label>
+        <input id="skillFormDescription" type="text" placeholder="One-line description">
+      </div>
+      <div class="skill-modal-form-row">
+        <div class="automation-field">
+          <label for="skillFormDomain">Domain</label>
+          <input id="skillFormDomain" type="text" placeholder="general">
+        </div>
+        <div class="automation-field">
+          <label for="skillFormRiskLevel">Risk level</label>
+          <select id="skillFormRiskLevel">
+            <option value="">— none —</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+        </div>
+      </div>
+      <div class="automation-field">
+        <label for="skillFormTriggers">Triggers (comma-separated)</label>
+        <input id="skillFormTriggers" type="text" placeholder="weekly review, hotel monitor">
+      </div>
+      <div class="automation-field">
+        <label for="skillFormWhenToUse">When to use (optional)</label>
+        <input id="skillFormWhenToUse" type="text" placeholder="Before tagging a release">
+      </div>
+      <div class="automation-field">
+        <label for="skillFormBody">Body / instructions</label>
+        <textarea id="skillFormBody" rows="10" class="skill-modal-textarea" spellcheck="false"></textarea>
+      </div>
+    </div>
+    <textarea id="skillModalContent" class="skill-modal-textarea hidden-by-default" spellcheck="false"></textarea>
+    <div id="skillModalHistoryView" class="skill-modal-history hidden-by-default"></div>
+    <div class="skill-modal-status" id="skillModalStatus"></div>
+    <div class="skill-modal-actions">
+      <button class="btn-sm" onclick="closeSkillModal()">Cancel</button>
+      <button class="btn-sm primary" onclick="saveSkillModal()">💾 Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="helpModal" class="help-modal hidden-by-default" onclick="if(event.target===this)closeHelpModal()">
+  <div class="help-modal-dialog">
+    <div class="help-modal-header">
+      <h3>Slash commands</h3>
+      <button class="btn-icon" onclick="closeHelpModal()" title="Close">✕</button>
+    </div>
+    <div class="help-modal-list" id="helpModalList"></div>
+  </div>
+</div>
+
+<div id="workflowWizard" class="skill-modal hidden-by-default" onclick="if(event.target===this)closeWorkflowWizard()">
+  <div class="skill-modal-dialog">
+    <div class="skill-modal-header">
+      <h3>New workflow</h3>
+      <button class="btn-icon" onclick="closeWorkflowWizard()" title="Close">✕</button>
+    </div>
+    <div class="skill-modal-form">
+      <div class="automation-field">
+        <label for="workflowWizardName">Name</label>
+        <input id="workflowWizardName" type="text" placeholder="my-workflow">
+        <span class="automation-field-hint">Letters, numbers, dashes only. Saved as <code>.harness/workflows/&lt;name&gt;.yaml</code>.</span>
+      </div>
+      <div class="automation-field">
+        <label for="workflowWizardDescription">Description (optional)</label>
+        <input id="workflowWizardDescription" type="text" placeholder="Short description">
+      </div>
+      <div class="automation-field">
+        <label for="workflowWizardTemplate">Start from template (optional)</label>
+        <select id="workflowWizardTemplate" onchange="applyWorkflowTemplate(this.value)">
+          <option value="">— blank —</option>
+          <option value="readSummarize">Read & summarize file</option>
+          <option value="webSearchSave">Web search → save markdown</option>
+          <option value="bashEcho">Bash: echo hello</option>
+        </select>
+      </div>
+      <div id="workflowWizardSteps"></div>
+      <button class="btn-sm" onclick="addWorkflowWizardStep()">+ Add step</button>
+    </div>
+    <div class="skill-modal-status" id="workflowWizardStatus"></div>
+    <div class="skill-modal-actions">
+      <button class="btn-sm" onclick="closeWorkflowWizard()">Cancel</button>
+      <button class="btn-sm primary" onclick="saveWorkflowWizard()">💾 Create</button>
+    </div>
+  </div>
+</div>
+
+<div id="workflowEditor" class="skill-modal hidden-by-default" onclick="if(event.target===this)closeWorkflowEditor()">
+  <div class="skill-modal-dialog">
+    <div class="skill-modal-header">
+      <h3 id="workflowEditorTitle">Edit workflow</h3>
+      <button class="btn-icon" onclick="closeWorkflowEditor()" title="Close">✕</button>
+    </div>
+    <div class="skill-modal-meta" id="workflowEditorPath"></div>
+    <textarea id="workflowEditorContent" class="skill-modal-textarea" spellcheck="false"></textarea>
+    <div class="skill-modal-status" id="workflowEditorStatus"></div>
+    <div class="skill-modal-actions">
+      <button class="btn-sm" onclick="closeWorkflowEditor()">Cancel</button>
+      <button class="btn-sm primary" onclick="saveWorkflowEditor()">💾 Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="./marked.min.js"></script>
+<script src="./chatHistory.js?v=3"></script>
+<script src="./toolActivity.js?v=1"></script>
+<script src="./app.js?v=19"></script>
+</body>
+</html>

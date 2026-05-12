@@ -1,0 +1,191 @@
+# Implementation Plan
+
+- [x] init-project — Initialize TypeScript project with tsconfig.json, package.json, and directory structure
+- [x] setup-ollama-client — Create the Ollama client abstraction layer with streaming and tool calling support
+- [x] define-types — Define core type interfaces: Tool, ToolResult, LoopEvent, Message, PermissionRule, SessionEntry
+- [x] implement-agent-loop — Build the core queryLoop async generator (while-loop, model call, tool dispatch, stop conditions)
+- [x] implement-tool-dispatch — Create StreamingToolExecutor with concurrent-read/serial-write classification
+- [x] implement-permissions — Build deny-first permission rule engine with mode support (default, acceptEdits, dontAsk)
+- [x] implement-builtin-tools — Create built-in tools: BashTool, FileReadTool, FileWriteTool, FileEditTool, WebFetchTool
+- [x] implement-context-assembly — Build context assembly pipeline: system prompt, user context, tool schemas, message history
+- [x] implement-compaction — Create multi-layer context compaction: budget reduction, snip, and auto-compact summarization
+- [x] implement-session-storage — Build append-only JSONL session transcript storage with read/write operations
+- [x] implement-session-resume — Add session resume (rebuild conversation from transcript) and fork operations
+- [x] implement-subagent — Create AgentTool for subagent delegation with isolated context and summary-only return
+- [x] implement-extensibility — Build skill loading (SKILL.md parser) and hook pipeline (PreToolUse, PostToolUse lifecycle events)
+- [x] implement-cli — Create interactive CLI entry point with streaming output and permission dialogs
+- [x] add-error-recovery — Add recovery mechanisms: retry with backoff, context overflow handling, graceful degradation
+- [x] add-tests — Write Jest test suite covering agent loop, permissions, tool dispatch, context, and persistence
+- [x] verify-doctor-clean — Run `harness doctor` and add any missing checks reported as warnings to the doctor output without changing public CLI flags
+  - anchor: src/setup/health.ts
+  - anchor: src/cli/index.ts
+  - target: src/setup/health.ts
+- [x] verify-headless-smoke — Add a `scripts/headless-smoke.js` that runs `harness -p "say hello"` against the configured model and exits non-zero on failure
+  - anchor: scripts/transport-smoke.js
+  - target: scripts/headless-smoke.js
+- [x] verify-permissions-deny-first — Add a focused jest test under `src/permissions/` proving that a deny rule overrides an allow rule for the same tool/path. Append the test to the existing `describe('PermissionEngine', ...)` block in engine.test.ts.
+  - anchor: src/permissions/engine.ts
+  - anchor: src/permissions/engine.test.ts
+  - target: src/permissions/engine.test.ts
+- [x] verify-session-resume-truncated — Add a jest test that resumes from a JSONL transcript whose last line is truncated mid-record, asserting no crash and a clean recovery
+  - anchor: src/persistence/sessionStorage.ts
+  - target: src/persistence/sessionStorage.test.ts
+- [x] verify-compaction-budget — Add a jest test asserting context compaction stays under the configured token budget across 3 sequential snip cycles
+  - anchor: src/context/compaction.ts
+  - target: src/context/compaction.test.ts
+- [x] verify-tool-dispatch-parallel-reads — Add a jest test asserting two read-only tool calls run concurrently while a write tool serializes after them
+  - anchor: src/tools/dispatcher.ts
+  - target: src/tools/dispatcher.test.ts
+- [x] verify-task-loop-dry-run — Add a `--dry-run` mode to `cookbook/task-loop.ts` that prints what each iteration would do without invoking the model or git
+- [x] verify-autonomy-stop-signal — Add a jest test for `shouldStop()` covering both the `.forge-stop` file and the `FORGE_STOP` env var paths
+- [x] verify-openai-retry-backoff-cap — Add a jest test that asserts OpenAIClient.invoke does NOT exceed `maxRetries` attempts on persistent 429 (i.e. caps at the configured limit). Append to the existing `describe('OpenAIClient retry + credential pool', ...)` block. Use the `make429` helper that already exists in the file.
+  - anchor: src/core/openaiClient.test.ts
+  - target: src/core/openaiClient.test.ts
+- [x] verify-credential-pool-rotates-on-success — Add a jest test that asserts OpenAIClient does NOT rotate keys on a successful 200 response (only on 429/5xx). Append to the same describe block. Mock 3 successful responses and assert all 3 used the same Bearer token.
+  - anchor: src/core/openaiClient.test.ts
+  - target: src/core/openaiClient.test.ts
+- [x] verify-snapshot-restore-preserves-history — Add a jest test for the autonomy snapshot/restore behavior in `cookbook/task-loop.ts` that confirms `.forge-history.jsonl` is preserved across a snapshot restore (because git clean is invoked with `-e '.forge-*'`). Use the existing `shouldStop()` test pattern as a template.
+  - anchor: cookbook/task-loop.ts
+  - anchor: src/automation/taskLoopShouldStop.test.ts
+  - target: src/automation/taskLoopSnapshot.test.ts
+- [x] verify-time-budget-halt — Add a jest test that exercises the `HARNESS_TIME_BUDGET_MS` halt path. Call `ralphLoop` (export it first if needed) with a tiny budget and a fast-failing implementTask stub, assert it exits with `time budget exhausted` reason.
+  - anchor: cookbook/task-loop.ts
+  - target: src/automation/taskLoopBudget.test.ts
+- [x] verify-doctor-renders-multi-key-pool — Add a jest test that confirms `formatSetupHealth` renders multi-key pools without leaking the keys themselves (only the env var name should appear, not the values). Append to the existing `cli/index.test.ts`.
+  - anchor: src/cli/index.ts
+  - anchor: src/cli/index.test.ts
+  - target: src/cli/index.test.ts
+- [x] design-readiness-scorecard-api — Add a `/api/readiness` endpoint that composes existing setup health, selected model health, tool enablement, capability grants, kill-switch state, validation scripts, RAG status, automation scheduler state, and Mycelium availability into mode-specific readiness scores for chat, coding, research, automation, and full autonomy.
+  - anchor: src/web/server.ts
+  - anchor: src/setup/health.ts
+  - anchor: src/tools/registry.ts
+  - anchor: src/permissions/capabilities.ts
+  - target: src/web/server.test.ts
+- [x] design-mission-control-surface — Replace the generic welcome-first experience with a Mission Control surface that shows Build, Debug, Research, Review, Automate, and Teach Harness modes, each backed by readiness state, starter prompts, and links into the existing tabs without removing power-user access.
+  - anchor: docs/TWENTY-OUT-OF-TEN-ROADMAP.md
+  - anchor: ui/index.html
+  - anchor: ui/app.js
+  - target: scripts/ui-smoke.js
+- [x] design-evidence-card-schema — Define a shared evidence-card shape for chat turns, automation jobs, and autonomy iterations covering user request, detected mode, model/backend, permission mode, grants, tools, files, commands, validation, Mycelium route, artifacts, session IDs, and recovery state.
+  - anchor: src/types/loop.ts
+  - anchor: src/core/queryLoop.ts
+  - anchor: src/automation/jobs.ts
+  - anchor: src/mycelium/contextPackage.ts
+  - target: src/types/index.ts
+- [x] render-chat-evidence-cards — Populate and render evidence cards under assistant replies using existing SSE events for usage, tool calls, tool results, output validation, context compaction, uploads fallback, and Mycelium route metadata where available.
+  - anchor: src/web/server.ts
+  - anchor: src/core/queryLoop.ts
+  - anchor: ui/app.js
+  - target: src/web/server.test.ts
+- [x] extend-evidence-to-runs — Persist evidence cards for automation and autonomy runs so the Runs tab can show files changed, validation result, command output summary, rollback state, and exportable Markdown/JSON evidence.
+  - anchor: src/automation/jobs.ts
+  - anchor: src/automation/runner.ts
+  - anchor: cookbook/task-loop.ts
+  - anchor: ui/app.js
+  - target: ui/app.js
+- [x] design-autonomy-run-builder-api — Add browser-facing endpoints to dry-run, start, stop, and inspect bounded autonomy runs using `IMPLEMENTATION_PLAN.md`, selected model/backend, max iterations, time budget, unproductive-turn limit, and preflight readiness checks.
+  - anchor: src/web/server.ts
+  - anchor: cookbook/task-loop.ts
+  - anchor: scripts/headless-smoke.js
+  - target: src/web/server.test.ts
+- [x] design-autonomy-run-builder-ui — Add a browser Autonomy Run Builder that previews pending tasks, shows anchors and targets, displays readiness failures before start, streams `.forge-*` state, and exposes dry-run/start/stop controls with the kill switch always visible.
+  - anchor: ui/index.html
+  - anchor: ui/app.js
+  - anchor: docs/TWENTY-OUT-OF-TEN-ROADMAP.md
+  - target: scripts/ui-smoke.js
+- [x] connect-learning-loop-to-evidence — Use completed evidence cards to propose reviewable promotions into memory, skills, workflow templates, model-routing policy suggestions, or Mycelium reinforcement without silently changing durable user policy.
+  - anchor: src/learning/sessionLearning.ts
+  - anchor: src/agents/modelRouting.ts
+  - anchor: src/mycelium/router.ts
+  - anchor: ui/app.js
+  - target: ui/app.js
+- [x] design-document-generation-api — Add browser-facing document generation endpoints that create Markdown and HTML from chat transcripts, pasted source, and evidence cards, then list and download generated documents from `.harness/documents`.
+  - anchor: src/web/server.ts
+  - anchor: src/types/evidence.ts
+  - target: src/web/server.test.ts
+- [x] design-document-studio-ui — Add a Mission Control Document Studio that generates briefs, reports, runbooks, and specs from current chat context or pasted source, then lists recent downloads.
+  - anchor: ui/index.html
+  - anchor: ui/app.js
+  - anchor: scripts/ui-smoke.js
+  - target: scripts/ui-smoke.js
+- [x] extend-document-generation-formats — Add optional PDF and DOCX export through local converters after Markdown and HTML provenance is stable.
+  - anchor: docs/TWENTY-OUT-OF-TEN-ROADMAP.md
+  - anchor: package.json
+  - target: ui/app.js
+- [x] verify-session-search-index — Add tests for rebuildSessionSearchIndex, searchSessions, getSessionSearchIndexStatus covering rebuild, query matching, scoring, freshness detection, and empty-state behavior.
+  - anchor: src/persistence/sessionSearchIndex.ts
+  - target: src/persistence/sessionSearchIndex.test.ts
+- [x] verify-workflow-registry — Add tests for WorkflowRegistry covering list, load, startRun, getRun, pause, resume, cancel, execute, dry-run, continueOnError, and variable substitution.
+  - anchor: src/workflows/workflowRegistry.ts
+  - target: src/workflows/workflowRegistry.test.ts
+- [x] harden-evidence-store-large-files — Cap readRunEvidence reads with a line-count scan so large JSONL files do not load entirely into memory; add test proving the cap works.
+  - anchor: src/persistence/evidenceStore.ts
+  - anchor: src/persistence/evidenceStore.test.ts
+  - target: src/persistence/evidenceStore.test.ts
+- [x] verify-plan-complete-smoke — Add ui-smoke assertion confirming Mission Control renders plan-complete state without a red blocked card when all tasks are done.
+  - anchor: scripts/ui-smoke.js
+  - target: scripts/ui-smoke.js
+- [x] verify-readiness-api-contract — Add server tests covering readiness API response shape, plan-complete warm status, and section score calculations.
+  - anchor: src/web/server.ts
+  - anchor: src/web/server.test.ts
+  - target: src/web/server.test.ts
+- [x] create-a-bullet-journal-i-get-reminders-and-can-update-add-a — Create a bullet journal , I get reminders and can update , add and close tasks
+- [x] close-gap-slack-notifications — Add a gated Slack outgoing notification tool backed by `HARNESS_SLACK_WEBHOOK_URL`, register it in the builtin communications toolset, allow storing its webhook in Settings API keys, and document usage.
+  - anchor: src/tools/telegramTools.ts
+  - anchor: src/tools/registry.ts
+  - anchor: src/web/server.ts
+  - target: README.md
+- [x] close-gap-mcp-runtime-foundation — Promote the MCP catalog from discovery-only to a local MCP runtime manager with persisted server definitions, start/stop/status APIs, configured-tool visibility, dashboard controls, shell-grant gating, and audit events.
+  - anchor: src/extensibility/mcpCatalog.ts
+  - anchor: src/tools/registry.ts
+  - anchor: src/web/server.ts
+  - target: ui/app.js
+- [x] close-gap-mcp-tool-invocation — Add protocol-level MCP tool discovery and invocation through a single gated ToolRegistry adapter after the runtime manager is stable.
+  - anchor: src/extensibility/mcpRuntime.ts
+  - anchor: src/tools/registry.ts
+  - anchor: src/tools/dispatcher.ts
+  - target: src/tools/registry.ts
+- [x] close-gap-desktop-input-sandbox — Add bounded desktop input replay only after a previewable action plan, active desktop-control grant, kill-switch checks before every input, and screenshot-before/screenshot-after evidence capture.
+  - anchor: src/tools/desktopTools.ts
+  - anchor: src/permissions/capabilities.ts
+  - anchor: docs/CAPABILITY-SANDBOX.md
+  - target: src/tools/registry.ts
+- [x] close-gap-communication-connectors — Add first-class Slack and WhatsApp status/setup surfaces beside Telegram and Discord, with connector-specific allowlists, readiness checks, and notification-only defaults before any two-way chat bridge.
+  - anchor: src/integrations/telegram.ts
+  - anchor: src/integrations/discord.ts
+  - anchor: src/web/server.ts
+  - anchor: ui/app.js
+  - target: ui/app.js
+- [!] look-in-c-ai-oracle-bracknell-food-business-there-is-a-lot-o — Look in C:\AI\Oracle\Bracknell_Food_Business , there is a lot of content , I am looking to pool this all together make sense of it , make it easy to understand for Robyn , use the latest scientific research to be the competition, do as much research as possible to prevent failure , be creative on the outputs you give think of how people consume data and understand what they are reading , email bradleyliebenberg@gmail.com and robynliebenberg@gmail.com the results
+- [x] finish-bracknell-food-business-delivery — Finish the Bracknell food business delivery in C:\AI\Oracle\Bracknell_Food_Business. Inspect the folder, identify stale or missing outputs, use current research where useful, update or create the Robyn-friendly package, create OUTPUT_MANIFEST.md and READ_ME_FIRST.md in that folder, and create EMAIL_DRAFT.md if email_send is unavailable. Do not finish unless the manifest lists files changed today and any remaining blockers.
+- [x] bracknell-visual-report-for-robyn — Look in C:\AI\Oracle\Bracknell_Food_Business, pool the content together, make it easy for Robyn to understand, use current scientific and market research to prevent failure and beat the competition, be creative, do not use markdown files as the final report, create a visually appealing self-contained HTML final report at C:\AI\Oracle\Bracknell_Food_Business\ROBYN_VISUAL_REPORT.html, update OUTPUT_MANIFEST.md and EMAIL_DRAFT.md, and email bradleyliebenberg@gmail.com and robynliebenberg@gmail.com the results.
+- [!] for-my-bullet-journal-if-i-use-start-that-triggers-the-teleg — For my bullet journal if I use \start that triggers the telegram bot not the agent
+- [x] close-usability-gap-default-workflow — Make the first-screen workflow task-first so a user can type what they want done, see the selected workspace/model/readiness, and start without understanding every Harness subsystem.
+  - anchor: ui/index.html
+  - anchor: ui/app.js
+  - target: scripts/ui-smoke.js
+- [x] close-usability-gap-outcome-framing — Reframe the main UI around outcomes such as files changed, commands run, documents created, tests passed, and approval needed instead of subsystem state.
+  - anchor: ui/app.js
+  - anchor: src/types/evidence.ts
+  - target: scripts/ui-smoke.js
+- [x] close-usability-gap-concept-overload — Collapse advanced labels and panels behind plain-language groupings so users do not need to understand Mycelium, Nervous System, RAG, grants, and learning before getting value.
+  - anchor: ui/index.html
+  - anchor: ui/app.js
+  - target: scripts/ui-smoke.js
+- [x] close-usability-gap-codex-coding-loop — Add a clean coding loop for task, plan, edit, validate, diff/evidence, and accept so code work feels as direct as Codex-style tools.
+  - anchor: ui/app.js
+  - anchor: src/web/server.ts
+  - anchor: scripts/ui-smoke.js
+  - target: scripts/ui-smoke.js
+- [x] close-usability-gap-trust-ux — Make evidence cards the primary trust surface with a compact summary of what changed, what ran, what passed, what failed, and what needs the user next.
+  - anchor: ui/app.js
+  - anchor: src/types/evidence.ts
+  - target: scripts/ui-smoke.js
+- [x] close-usability-gap-model-reliability — Add opinionated model recommendations for coding, research, local-safe work, and autonomy based on measured backend behavior and capability checks.
+  - anchor: src/models/modelCatalog.ts
+  - anchor: ui/app.js
+  - target: src/web/server.test.ts
+- [x] close-usability-gap-visual-hierarchy — Calm the UI hierarchy so chat, task progress, evidence, and next action dominate while diagnostics and power-user controls recede.
+  - anchor: ui/index.html
+  - anchor: ui/app.js
+  - target: scripts/ui-smoke.js

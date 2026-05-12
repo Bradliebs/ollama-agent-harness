@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "lib": ["ES2022"],
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "ignoreDeprecations": "5.0",
+    "paths": {
+      "@core/*": ["./src/core/*"],
+      "@tools/*": ["./src/tools/*"],
+      "@permissions/*": ["./src/permissions/*"],
+      "@context/*": ["./src/context/*"],
+      "@agents/*": ["./src/agents/*"],
+      "@persistence/*": ["./src/persistence/*"],
+      "@extensibility/*": ["./src/extensibility/*"],
+      "@types/*": ["./src/types/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.test-support.ts"]
+}

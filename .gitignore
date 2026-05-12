@@ -1,0 +1,56 @@
+node_modules/
+dist/
+coverage/
+*.js
+*.js.map
+*.d.ts
+!jest.config.js
+# All hand-written scripts in scripts/ are real source. Without this
+# blanket un-ignore, new scripts/*.js files get silently dropped from
+# `git status` (see scripts/headless-smoke.js, scripts/autonomy-docker.js
+# which both fell into this trap before the rule was added).
+!scripts/*.js
+!ui/app.js
+!ui/chatHistory.js
+!ui/toolActivity.js
+# ui/marked.min.js is intentionally NOT un-ignored — it is regenerated
+# from node_modules by the `postinstall` script in package.json.
+.env
+.env.local
+.harness/
+.copilot-tracking/
+Network.md
+
+# Non-project data directories
+Bracknell_Food_Business/
+forge-memory/
+
+# Bare-filename agent writes (file_write redirects scratch output here so
+# it does not pile up at the repo root). Force-add intentional outputs.
+agent-outputs/
+
+# Local exploration / vendored sources / large binaries
+2604.14228v1.pdf
+hermes-agent-main/
+Harness-Setup.exe
+release/*.zip
+release/*.zip.sha256.json
+release/release-notes.md
+
+# autonomy run logs
+.forge-run*.log
+.forge-debug.jsonl
+.forge-history.jsonl
+.forge-prompt.txt
+
+# Defensive: prior agent sessions dropped non-Harness lottery scripts
+# into the repo root. They have been relocated to C:\AI\Lottery-Toolkit\.
+# These patterns prevent re-creation from being silently committed.
+lottery-*.js
+lottery-*.html
+lottery-toolkit/
+lottery-*/
+*-lottery.js
+syndicate-optimizer.js
+historical-win-checker.js
+machine-bias-detector.js

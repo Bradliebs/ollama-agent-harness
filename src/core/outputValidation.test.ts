@@ -1,0 +1,221 @@
+import { OUTPUT_VALIDATION_PROFILE_TEMPLATES, describeOutputValidationProfileSuggestion, getOutputValidationInstructions, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, suggestOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, withOutputValidationInstructions } from './outputValidation';
+import { OUTPUT_VALIDATION_PROFILE_TEMPLATES as EXPORTED_TEMPLATES, suggestOutputValidationProfile as exportedSuggestOutputValidationProfile } from '../index';
+
+const validOracleOutput = `🔍 **REFRAME** — [ANALYSIS] The question is whether strict output contracts improve reasoning quality.
+
+🔧 **TRANSPARENCY LOG**
+P1: [BYPASSED: no statistic]
+P2: [TRIGGERED]
+P3: [BYPASSED: no cascade]
+P4: [TRIGGERED]
+P5: [BYPASSED: no preference]
+Steelman First: [TRIGGERED]
+Domain Boundary: [TRIGGERED]
+Confidence Discipline: [TRIGGERED]
+Underdetermination Honesty: [TRIGGERED]
+Update Without Ego: [TRIGGERED]
+
+📊 **KEY VARIABLES**
+1. Fit to task
+2. Validation cost
+3. False confidence risk
+
+🔮 **SCENARIO MAP**
+Base 55%: Optional validation is useful. Signals: adoption rises; defect reports fall.
+Bull 20%: Profiles become reusable. Signals: teams add profiles; evals improve.
+Bear 20%: Too much ceremony. Signals: users disable it; response length grows.
+Black Swan 5%: Bad validators reject good work. Signals: false fails spike; users lose trust.
+
+⚙️ **CAUSAL CHAIN**
+A profile creates explicit obligations, which makes omissions visible. A second-order effect is that users can compare failures across sessions.
+
+🔬 **COUNTERFACTUAL PIVOT**
+If validator false positives rise above 25%, the Base Case flips to Bear.
+
+⚠️ **CRITICAL UNCERTAINTIES**
+[DATA] Actual false-positive rate.
+[MODEL] Whether section checks correlate with quality.
+[RIVAL] Better prompts may produce the same improvement.
+
+✅ **CONCLUSION / ACTION**
+Use this as an optional profile, not a default mode.
+
+📌 **CONFIDENCE**
+Medium. The implementation is deterministic, but quality correlation needs measured data.
+
+**⚙️ ORACLE EVOLUTION**
+\`DRIFT\`: Added a product-fit lens.
+\`GAP\`: No measured false-positive rate yet.
+\`PATCH\`: Track validation failures by profile.
+
+SESSION STATE
+EVIDENCE REGISTER: Optional validation was requested.
+WEIGHT LOG: Base Case increased because implementation can be optional.
+ACTIVE MODE(S): RED TEAM, COUNTERFACTUAL
+STYLE NOTES: Concise, direct.
+`;
+
+describe('output validation', () => {
+  it('passes an Oracle Prime response that includes the required contract', () => {
+    const result = validateOutput(validOracleOutput, 'oracle-prime');
+
+    expect(result.status).toBe('pass');
+    expect(result.score).toBe(1);
+    expect(result.missingSections).toEqual([]);
+  });
+
+  it('fails when required Oracle Prime sections are missing', () => {
+    const result = validateOutput('Short answer with no structure.', 'oracle-prime');
+
+    expect(result.status).toBe('fail');
+    expect(result.missingSections).toEqual(expect.arrayContaining(['REFRAME', 'SCENARIO MAP', 'SESSION STATE']));
+    expect(result.findings).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'missing-section' })]));
+  });
+
+  it('warns when scenario weights do not roughly sum to 100 percent', () => {
+    const result = validateOutput(validOracleOutput.replace('Black Swan 5%', 'Black Swan 40%'), 'oracle-prime');
+
+    expect(result.status).toBe('warn');
+    expect(result.findings).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'scenario-weight-sum' })]));
+  });
+
+  it('validates factual answers with evidence and uncertainty', () => {
+    const result = validateOutput('Based on Met Office data found today, Bracknell is likely cloudy with some uncertainty around later showers.', 'factual-answer');
+
+    expect(result.status).toBe('pass');
+  });
+
+  it('warns when factual answers omit evidence and uncertainty', () => {
+    const result = validateOutput('Bracknell will be cloudy with light rain later in the day.', 'factual-answer');
+
+    expect(result.status).toBe('warn');
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'missing-evidence-basis' }),
+      expect.objectContaining({ code: 'missing-uncertainty' }),
+    ]));
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ suggestion: expect.stringContaining('source') }),
+    ]));
+  });
+
+  it('suggests built-in profiles from prompt intent', () => {
+    expect(suggestOutputValidationProfile('Fix the failing TypeScript tests in src/web/server.ts')).toBe('coding-answer');
+    expect(suggestOutputValidationProfile('What is the weather in Bracknell today?')).toBe('factual-answer');
+    expect(suggestOutputValidationProfile('Summarize this terminal output and exit code')).toBe('tool-result-summary');
+    expect(suggestOutputValidationProfile('Compare the risks and recommend an option')).toBe('oracle-prime');
+  });
+
+  it('does not misclassify vague or data-analysis prompts as coding-answer', () => {
+    // Regression: previously matched on generic words like "file", "repo", "script", "build", "lint", "output".
+    expect(suggestOutputValidationProfile('Analyze this lotto-draw-history.csv file and find frequency patterns')).toBe('oracle-prime');
+    expect(suggestOutputValidationProfile('Summarize the dataset by month and machine')).toBe('oracle-prime');
+    expect(suggestOutputValidationProfile('Which numbers appear most often in the draws?')).toBe('oracle-prime');
+  });
+
+  it('returns the neutral fallback for short or vague prompts and marks them unmatched', () => {
+    // Regression: vague prompts like "you decide" used to inherit a sticky stored coding-answer profile
+    // when callers passed the user's saved profile as the fallback. Callers (server, UI) now pass
+    // 'oracle-prime' as the neutral fallback so vague prompts always land somewhere safe.
+    expect(suggestOutputValidationProfile('you decide')).toBe('oracle-prime');
+    expect(suggestOutputValidationProfile('hello')).toBe('oracle-prime');
+    expect(suggestOutputValidationProfile('whatever')).toBe('oracle-prime');
+    expect(describeOutputValidationProfileSuggestion('you decide', 'oracle-prime')).toEqual({ profile: 'oracle-prime', matched: false });
+    expect(describeOutputValidationProfileSuggestion('hello', 'oracle-prime')).toEqual({ profile: 'oracle-prime', matched: false });
+    expect(describeOutputValidationProfileSuggestion('Refactor the typescript function in src/web/server.ts', 'oracle-prime')).toEqual({ profile: 'coding-answer', matched: true });
+  });
+
+  it('ships examples with installable validation templates', () => {
+    expect(OUTPUT_VALIDATION_PROFILE_TEMPLATES).toEqual(expect.arrayContaining([
+      expect.objectContaining({ profile: 'release-readiness', examples: { good: expect.any(String), bad: expect.any(String) } }),
+    ]));
+  });
+
+  it('exports validation guidance APIs from the package entry point', () => {
+    expect(exportedSuggestOutputValidationProfile('Summarize this terminal output')).toBe('tool-result-summary');
+    expect(EXPORTED_TEMPLATES).toEqual(expect.arrayContaining([expect.objectContaining({ profile: 'release-readiness' })]));
+  });
+
+  it('validates coding answers with files and validation', () => {
+    const result = validateOutput('Implemented validation profiles in src/core/outputValidation.ts and ran npm test plus npm run typecheck.', 'coding-answer');
+
+    expect(result.status).toBe('pass');
+  });
+
+  it('validates tool result summaries with outcome and output evidence', () => {
+    const result = validateOutput('Command completed successfully with exit code 0; output reported 24 passing test suites.', 'tool-result-summary');
+
+    expect(result.status).toBe('pass');
+  });
+
+  it('parses supported profiles and rejects unknown profiles', () => {
+    expect(parseOutputValidationProfile('coding-answer')).toBe('coding-answer');
+    expect(parseOutputValidationProfile('unknown')).toBeUndefined();
+  });
+
+  it('adds profile-specific prompt instructions once', () => {
+    const prompt = withOutputValidationInstructions('Base prompt.', 'coding-answer');
+
+    expect(prompt).toContain(getOutputValidationInstructions('coding-answer'));
+    expect(withOutputValidationInstructions(prompt, 'coding-answer')).toBe(prompt);
+  });
+
+  it('normalizes and validates custom output profiles', () => {
+    const customProfiles = normalizeCustomOutputValidationProfiles({
+      profiles: [{
+        profile: 'brief-release-note',
+        label: 'Brief Release Note',
+        description: 'Requires validation and release language.',
+        instructions: 'Mention validation and release outcome in a concise summary.',
+        checks: [
+          { code: 'missing-validation', severity: 'fail', message: 'Mention validation.', requiresAny: ['validation', 'tests'] },
+          { code: 'missing-release', severity: 'warn', message: 'Mention release outcome.', requiresAll: ['release'] },
+          { code: 'too-long', severity: 'warn', message: 'Keep it concise.', maxLength: 120 },
+        ],
+      }],
+    });
+
+    expect(parseOutputValidationProfile('brief-release-note', customProfiles)).toBe('brief-release-note');
+    expect(validateOutput('Validation passed and the release was published.', 'brief-release-note', customProfiles)).toMatchObject({ status: 'pass', score: 1 });
+    expect(validateOutput('Release was published.', 'brief-release-note', customProfiles)).toMatchObject({ status: 'fail' });
+  });
+
+  it('reports schema errors for invalid custom output profiles', () => {
+    const validation = validateCustomOutputValidationProfiles({
+      profiles: [{
+        profile: 'coding-answer',
+        checks: [{ code: 'x', severity: 'block', message: '', requiresAny: 'tests' }],
+      }],
+    });
+
+    expect(validation.profiles).toEqual([]);
+    expect(validation.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'profiles[0].profile' }),
+      expect.objectContaining({ path: 'profiles[0].checks[0].severity' }),
+      expect.objectContaining({ path: 'profiles[0].checks[0].message' }),
+      expect.objectContaining({ path: 'profiles[0].checks[0].requiresAny' }),
+    ]));
+  });
+
+  it('uses custom score penalties and profile score thresholds', () => {
+    const customProfiles = normalizeCustomOutputValidationProfiles({
+      profiles: [{
+        profile: 'release-threshold',
+        warnBelowScore: 0.9,
+        failBelowScore: 0.6,
+        checks: [
+          { code: 'missing-tests', severity: 'warn', message: 'Mention tests.', requiresAny: ['tests'], scorePenalty: 0.2 },
+          { code: 'missing-release', severity: 'warn', message: 'Mention release.', requiresAny: ['release'], scorePenalty: 0.3 },
+        ],
+      }],
+    });
+
+    expect(validateOutput('Tests passed.', 'release-threshold', customProfiles)).toMatchObject({ status: 'warn', score: 0.7 });
+    expect(validateOutput('Summary only.', 'release-threshold', customProfiles)).toMatchObject({ status: 'fail', score: 0.5 });
+  });
+
+  it('uses custom profile instructions in prompt pairing', () => {
+    const customProfiles = normalizeCustomOutputValidationProfiles([{ profile: 'brief-summary', instructions: 'Mention outcome and evidence.', checks: [{ code: 'has-outcome', message: 'Needs outcome.', requiresAny: ['passed'] }] }]);
+
+    expect(withOutputValidationInstructions('Base prompt.', 'brief-summary', customProfiles)).toContain('Mention outcome and evidence.');
+  });
+});

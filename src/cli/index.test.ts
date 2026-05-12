@@ -1,0 +1,215 @@
+import * as os from 'os';
+import * as path from 'path';
+import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
+import { buildConsoleToolOnlyResponse, buildSystemPrompt, formatSetupHealth, loadHeadlessRuntimeSettings, parseArgs } from './index';
+import { getAllowedExternalPaths, setAllowedExternalPaths } from '../tools/pathResolution';
+
+describe('cli setup doctor', () => {
+  it('parses output validation profile options', () => {
+    const options = parseArgs(['--validate-output', 'tool-result-summary']);
+
+    expect(options.outputValidation).toBe('tool-result-summary');
+  });
+
+  it('nudges current-events prompts toward web_search in headless mode', () => {
+    const prompt = buildSystemPrompt({});
+
+    expect(prompt).toContain('current events');
+    expect(prompt).toContain('web_search first');
+  });
+
+  it('loads persisted headless settings for external research tasks', async () => {
+    const previousOutputDir = process.env.HARNESS_AGENT_OUTPUT_DIR;
+    const previousSmtpHost = process.env.HARNESS_SMTP_HOST;
+    const projectDir = await mkdtemp(path.join(os.tmpdir(), 'harness-cli-settings-'));
+    try {
+      setAllowedExternalPaths([]);
+      delete process.env.HARNESS_AGENT_OUTPUT_DIR;
+      delete process.env.HARNESS_SMTP_HOST;
+      await mkdir(path.join(projectDir, '.harness'), { recursive: true });
+      await writeFile(path.join(projectDir, '.harness', 'settings.json'), JSON.stringify({
+        allowedExternalPaths: ['C:/AI/Oracle'],
+        agentOutputDir: 'C:/AI/AgentFiles',
+        webReadMaxChars: 2000,
+      }), 'utf-8');
+      await writeFile(path.join(projectDir, '.harness', 'api-keys.json'), JSON.stringify({
+        HARNESS_SMTP_HOST: 'smtp.example.test',
+      }), 'utf-8');
+
+      await loadHeadlessRuntimeSettings(projectDir);
+
+      expect(getAllowedExternalPaths()).toEqual(['C:\\AI\\Oracle', 'C:\\AI\\AgentFiles']);
+      expect(process.env.HARNESS_AGENT_OUTPUT_DIR).toBe('C:/AI/AgentFiles');
+      expect(process.env.HARNESS_SMTP_HOST).toBe('smtp.example.test');
+      expect(buildSystemPrompt({})).toContain('C:\\AI\\Oracle');
+      expect(buildSystemPrompt({})).toContain('research the web');
+    } finally {
+      if (previousOutputDir === undefined) delete process.env.HARNESS_AGENT_OUTPUT_DIR;
+      else process.env.HARNESS_AGENT_OUTPUT_DIR = previousOutputDir;
+      if (previousSmtpHost === undefined) delete process.env.HARNESS_SMTP_HOST;
+      else process.env.HARNESS_SMTP_HOST = previousSmtpHost;
+      setAllowedExternalPaths([]);
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it('parses doctor options', () => {
+    const options = parseArgs([
+      'doctor',
+      '--host', 'http://127.0.0.1:11434',
+      '--vision-model', 'llava',
+      '--audio-command', 'whisper "{input}"',
+      '--audio-sample', '.harness/uploads/sample.wav',
+    ]);
+
+    expect(options).toMatchObject({
+      command: 'doctor',
+      host: 'http://127.0.0.1:11434',
+      visionModel: 'llava',
+      audioTranscribeCommand: 'whisper "{input}"',
+      audioSamplePath: '.harness/uploads/sample.wav',
+    });
+  });
+
+  it('parses --watch with default 5s interval', () => {
+    const options = parseArgs(['doctor', '--watch']);
+    expect(options.command).toBe('doctor');
+    expect(options.watchIntervalMs).toBe(5000);
+  });
+
+  it('parses --watch with custom seconds and clamps out-of-range values', () => {
+    expect(parseArgs(['doctor', '--watch', '10']).watchIntervalMs).toBe(10000);
+    // Below 1 second is clamped to 1 second.
+    expect(parseArgs(['doctor', '--watch', '0']).watchIntervalMs).toBe(1000);
+    // Above 1 hour is clamped to 1 hour.
+    expect(parseArgs(['doctor', '--watch', '99999']).watchIntervalMs).toBe(3600000);
+  });
+
+  it('treats --watch followed by a non-numeric arg as default 5s', () => {
+    // --vision-model needs to keep its value, not be eaten by --watch.
+    const options = parseArgs(['doctor', '--watch', '--vision-model', 'llava']);
+    expect(options.watchIntervalMs).toBe(5000);
+    expect(options.visionModel).toBe('llava');
+  });
+
+  it('formats setup health for terminal output', () => {
+    const output = formatSetupHealth({
+      ollama: { ok: true, message: 'Connected to Ollama with 2 model(s).', modelCount: 2 },
+      vision: { ok: false, message: 'No vision model configured.' },
+      audio: { ok: true, message: 'Audio transcription command is configured.' },
+      local: {
+        node: { ok: true, message: 'Node 20.0.0' },
+        package: { ok: true, message: 'package has scripts.' },
+        sessions: { ok: true, message: 'Session storage is writable.' },
+        tools: { ok: true, message: '27 built-in tool(s).' },
+        automations: { ok: true, message: 'Automation storage is writable.' },
+        mycelium: { ok: true, message: 'Mycelium graph is empty.' },
+      },
+      backends: [],
+      fallback: { enabled: true, cooldownMs: 30000, order: 'default', configuredCount: 0 },
+      smtp: { ok: false, message: 'SMTP not configured. Missing: HARNESS_SMTP_HOST, HARNESS_SMTP_USER, HARNESS_SMTP_PASS.' },
+    });
+
+    expect(output).toContain('Setup doctor');
+    expect(output).toContain('OK Ollama: Connected to Ollama with 2 model(s).');
+    expect(output).toContain('WARN Vision: No vision model configured.');
+    expect(output).toContain('OK Audio: Audio transcription command is configured.');
+    expect(output).toContain('OK Automations: Automation storage is writable.');
+    expect(output).toContain('WARN Fallback: Provider fallback enabled, 0 backend(s) with keys');
+  });
+
+  it('renders the Backends section when at least one preset is reported', () => {
+    const output = formatSetupHealth({
+      ollama: { ok: true, message: 'ok', modelCount: 1 },
+      vision: { ok: false, message: 'no' },
+      audio: { ok: true, message: 'ok' },
+      local: {
+        node: { ok: true, message: 'ok' },
+        package: { ok: true, message: 'ok' },
+        sessions: { ok: true, message: 'ok' },
+        tools: { ok: true, message: 'ok' },
+        automations: { ok: true, message: 'ok' },
+        mycelium: { ok: true, message: 'ok' },
+      },
+      backends: [
+        { id: 'cerebras', label: 'Cerebras', ok: true, message: 'API key configured (via CEREBRAS_API_KEY).' },
+        { id: 'github', label: 'GitHub Models', ok: false, message: 'No API key. Set GITHUB_MODELS_TOKEN or GITHUB_TOKEN.' },
+      ],
+      fallback: { enabled: true, cooldownMs: 30000, order: 'default', configuredCount: 1 },
+      smtp: { ok: false, message: 'SMTP not configured.' },
+    });
+
+    expect(output).toContain('Backends (OpenAI-compatible):');
+    expect(output).toContain('OK Cerebras: API key configured');
+    expect(output).toContain('WARN GitHub Models: No API key.');
+  });
+
+  it('renders multi-key credential pools without leaking the keys themselves', () => {
+    // The credential pool feature lets users set CEREBRAS_API_KEY="k1,k2,k3"
+    // for round-robin on 429s. The doctor must report the COUNT but never
+    // the values — leaking keys via doctor output would be a credential
+    // exposure incident.
+    const sensitiveKeys = ['ck-secret-1', 'ck-secret-2', 'ck-secret-3'];
+    const output = formatSetupHealth({
+      ollama: { ok: true, message: 'ok', modelCount: 1 },
+      vision: { ok: false, message: 'no' },
+      audio: { ok: true, message: 'ok' },
+      local: {
+        node: { ok: true, message: 'ok' },
+        package: { ok: true, message: 'ok' },
+        sessions: { ok: true, message: 'ok' },
+        tools: { ok: true, message: 'ok' },
+        automations: { ok: true, message: 'ok' },
+        mycelium: { ok: true, message: 'ok' },
+      },
+      backends: [
+        {
+          id: 'cerebras',
+          label: 'Cerebras',
+          ok: true,
+          message: 'API key configured (via CEREBRAS_API_KEY) (pool of 3 keys).',
+          apiKeyEnvVar: 'CEREBRAS_API_KEY',
+          keyCount: 3,
+        },
+      ],
+      fallback: { enabled: true, cooldownMs: 30000, order: 'default', configuredCount: 1 },
+      smtp: { ok: false, message: 'SMTP not configured.' },
+    });
+
+    expect(output).toContain('CEREBRAS_API_KEY');
+    expect(output).toContain('pool of 3 keys');
+    for (const key of sensitiveKeys) {
+      expect(output).not.toContain(key);
+    }
+  });
+});
+
+describe('buildConsoleToolOnlyResponse', () => {
+  it('returns synthesis fallback for max_turns_synthesized reason', () => {
+    const result = buildConsoleToolOnlyResponse({ toolCalls: 5, toolSummaries: [], errors: [], doneReason: 'max_turns_synthesized' });
+
+    expect(result).toContain('Done');
+    expect(result).toContain('synthesis');
+    expect(result).not.toContain('did not return a readable final message');
+  });
+
+  it('returns generic tool-only message for max_turns without synthesis', () => {
+    const result = buildConsoleToolOnlyResponse({ toolCalls: 5, toolSummaries: [], errors: [], doneReason: 'max_turns' });
+
+    expect(result).toContain('did not return a readable final message');
+  });
+
+  it('prefers error message over tool-only fallback', () => {
+    const result = buildConsoleToolOnlyResponse({ toolCalls: 3, toolSummaries: [], errors: ['boom'], doneReason: 'error' });
+
+    expect(result).toContain('Harness reported an error');
+    expect(result).toContain('boom');
+  });
+
+  it('prefers tool summaries over generic fallback', () => {
+    const result = buildConsoleToolOnlyResponse({ toolCalls: 2, toolSummaries: ['Wrote file.ts'], errors: [] });
+
+    expect(result).toContain('Done.');
+    expect(result).toContain('Wrote file.ts');
+  });
+});
