@@ -39,6 +39,7 @@
     "smoke:bounded-news": "node scripts/bounded-news-smoke.js",
     "smoke:remote-backends": "node scripts/remote-backend-smoke.js",
     "smoke:voice": "node scripts/jarvis-voice-smoke.js",
+    "smoke:voice:bargein": "node scripts/jarvis-bargein-smoke.js",
     "diagnose:mistral": "node scripts/mistral-roundtrip.js",
     "diagnose:gemma-tool": "node scripts/lean-gemma-tool-probe.js",
     "validate:routing": "node scripts/validate-routing.js",

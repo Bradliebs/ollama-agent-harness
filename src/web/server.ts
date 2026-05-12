@@ -2689,37 +2689,106 @@ app.post('/api/jarvis/runtime/clear', (_req, res) => {
 // Probe whisper config without touching the request/response cycle. Used
 // both by GET /api/jarvis/voice/health and by /api/jarvis/status so the
 // runtime panel can surface mode + hint without a second round-trip.
-function getWhisperHealthSnapshot(): { ok: boolean; mode: 'binary' | 'python' | 'none'; hint: string } {
+//
+// Falls back to autoDetectedWhisper (populated at startup by
+// detectWhisperFallback) when no env vars are set, so out-of-the-box
+// installs work without manual configuration.
+function getWhisperHealthSnapshot(): { ok: boolean; mode: 'binary' | 'python' | 'none'; hint: string; source?: 'env' | 'auto-detect' } {
   const binary = process.env.HARNESS_WHISPER_BINARY;
   const model = process.env.HARNESS_WHISPER_MODEL;
   const pythonExe = process.env.HARNESS_WHISPER_PYTHON;
   if (binary && model) {
-    return { ok: true, mode: 'binary', hint: `whisper.cpp binary at ${binary}` };
+    return { ok: true, mode: 'binary', hint: `whisper.cpp binary at ${binary}`, source: 'env' };
   }
   if (pythonExe) {
     const modelName = process.env.HARNESS_WHISPER_MODEL_NAME || 'base.en (default)';
-    return { ok: true, mode: 'python', hint: `pywhispercpp via ${pythonExe} · model ${modelName}` };
+    return { ok: true, mode: 'python', hint: `pywhispercpp via ${pythonExe} · model ${modelName}`, source: 'env' };
+  }
+  if (autoDetectedWhisper) {
+    return {
+      ok: true,
+      mode: 'python',
+      hint: `auto-detected: pywhispercpp via ${autoDetectedWhisper.python} · model ${autoDetectedWhisper.modelName}`,
+      source: 'auto-detect',
+    };
   }
   return {
     ok: false,
     mode: 'none',
-    hint: 'Set HARNESS_WHISPER_BINARY+HARNESS_WHISPER_MODEL or HARNESS_WHISPER_PYTHON (+ optional HARNESS_WHISPER_MODEL_NAME).',
+    hint: 'Set HARNESS_WHISPER_BINARY+HARNESS_WHISPER_MODEL or HARNESS_WHISPER_PYTHON (+ optional HARNESS_WHISPER_MODEL_NAME). Auto-detect found nothing in well-known locations.',
   };
 }
+
+// Auto-detect populated at startup. Holds the first viable
+// python+model combo found in well-known locations so users get
+// hands-free voice without setting any env vars manually.
+let autoDetectedWhisper: { python: string; modelName: string } | null = null;
+
+async function detectWhisperFallback(): Promise<void> {
+  // Skip detection when env vars are explicitly set — user opt-in wins.
+  if (process.env.HARNESS_WHISPER_BINARY || process.env.HARNESS_WHISPER_PYTHON) return;
+  const home = os.homedir();
+  // Conservative scan: model files only, in well-known places. Don't walk
+  // the disk — we want startup to stay fast.
+  const modelCandidates = [
+    path.join(home, 'whisper-models'),
+    path.join(home, '.cache', 'whisper'),
+    path.join(PROJECT_DIR, 'models', 'whisper'),
+  ];
+  let modelName: string | null = null;
+  for (const dir of modelCandidates) {
+    const entries = await fs.readdir(dir).catch(() => [] as string[]);
+    // Prefer larger / English models when multiple are present.
+    const prefer = ['ggml-medium.en.bin', 'ggml-small.en.bin', 'ggml-base.en.bin', 'ggml-tiny.en.bin'];
+    for (const name of prefer) {
+      if (entries.includes(name)) { modelName = path.join(dir, name); break; }
+    }
+    if (modelName) break;
+    // Fallback: any ggml-*.bin
+    const any = entries.find((e) => e.startsWith('ggml-') && e.endsWith('.bin'));
+    if (any) { modelName = path.join(dir, any); break; }
+  }
+  if (!modelName) return;
+  // Probe `python -c 'import pywhispercpp'` once. 5s timeout so a hung
+  // python install can't wedge the whole server boot.
+  const pythonExe = process.platform === 'win32' ? 'python' : 'python3';
+  const ok = await new Promise<boolean>((resolve) => {
+    const proc = spawn(pythonExe, ['-c', 'import pywhispercpp'], { windowsHide: true });
+    const timer = setTimeout(() => { proc.kill('SIGKILL'); resolve(false); }, 5000);
+    proc.on('error', () => { clearTimeout(timer); resolve(false); });
+    proc.on('close', (code) => { clearTimeout(timer); resolve(code === 0); });
+  });
+  if (!ok) return;
+  autoDetectedWhisper = { python: pythonExe, modelName };
+  logger.info('Startup', `Whisper auto-detect: ${pythonExe} + ${modelName}`);
+}
+
+// Per-IP token bucket on the transcribe route. The route spawns a python
+// subprocess and reads up to 50MB of audio per call — a stuck hands-free
+// tab could fork-bomb whisper without this. 6 calls/min sustained, with
+// burst of 6.
+const whisperRateLimiter = new RateLimiter(6, 0.1);
 
 app.get('/api/jarvis/voice/health', (_req, res) => {
   res.json(getWhisperHealthSnapshot());
 });
 
 app.post('/api/jarvis/voice/transcribe', express.raw({ type: '*/*', limit: '50mb' }), async (req, res) => {
+  if (!whisperRateLimiter.tryConsume()) {
+    res.status(429).json({
+      error: 'Too many transcribe requests — 6/min sustained limit hit.',
+      hint: 'A stuck hands-free tab can flood this endpoint. Stop hands-free mode and retry in a minute.',
+    });
+    return;
+  }
   const binary = process.env.HARNESS_WHISPER_BINARY;
   const model = process.env.HARNESS_WHISPER_MODEL;
-  const pythonExe = process.env.HARNESS_WHISPER_PYTHON;
+  const pythonExe = process.env.HARNESS_WHISPER_PYTHON || (autoDetectedWhisper ? autoDetectedWhisper.python : undefined);
   const usePython = !binary && !!pythonExe;
   if (!usePython && (!binary || !model)) {
     res.status(503).json({
       error: 'Whisper not configured.',
-      hint: 'Either set HARNESS_WHISPER_BINARY + HARNESS_WHISPER_MODEL (native whisper.cpp), or set HARNESS_WHISPER_PYTHON=python (after pip install pywhispercpp).',
+      hint: 'Either set HARNESS_WHISPER_BINARY + HARNESS_WHISPER_MODEL (native whisper.cpp), or set HARNESS_WHISPER_PYTHON=python (after pip install pywhispercpp). Auto-detect found nothing.',
     });
     return;
   }
@@ -2743,7 +2812,14 @@ app.post('/api/jarvis/voice/transcribe', express.raw({ type: '*/*', limit: '50mb
       args = ['-m', model!, '-f', wavPath, '--no-timestamps', '--no-prints'];
     }
     const text = await new Promise<string>((resolve, reject) => {
-      const proc = spawn(cmd, args, { windowsHide: true });
+      // When auto-detect supplied the python path, also inject the model
+      // name into the spawned process env so jarvis_whisper.py picks it up
+      // without the user setting HARNESS_WHISPER_MODEL_NAME explicitly.
+      const childEnv = { ...process.env };
+      if (usePython && !process.env.HARNESS_WHISPER_MODEL_NAME && autoDetectedWhisper) {
+        childEnv.HARNESS_WHISPER_MODEL_NAME = autoDetectedWhisper.modelName;
+      }
+      const proc = spawn(cmd, args, { windowsHide: true, env: childEnv });
       let stdout = '';
       let stderr = '';
       proc.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
@@ -9506,6 +9582,11 @@ export async function startServer(): Promise<void> {
     if (removed > 0) logger.info('Startup', `Swept ${removed} stale whisper-tmp WAV(s) older than 24h`);
   } catch { /* best-effort, never block startup */ }
   startupProfile.record('whisper-tmp-sweep');
+  // Auto-detect whisper model + python so out-of-the-box installs get
+  // hands-free voice without any env-var setup. Skipped silently when the
+  // user has already set HARNESS_WHISPER_BINARY or HARNESS_WHISPER_PYTHON.
+  await detectWhisperFallback();
+  startupProfile.record('whisper-auto-detect');
   const preferred = parseInt(process.env.PORT ?? '3000', 10);
   const port = await findAvailablePort(preferred);
   startupProfile.record('port-selection');

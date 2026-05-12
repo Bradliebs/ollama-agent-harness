@@ -1076,6 +1076,7 @@
             <button class="btn-sm" onclick="jarvisPickMic()" title="Pick which microphone the browser uses for voice input">🎤 Pick mic…</button>
             <button class="btn-sm" id="jarvisLocalSttBtn" onclick="jarvisLocalSttToggle()" title="Record audio and transcribe via whisper.cpp on the server (offline, no Google). Auto-stops after 1.5s of silence.">🎙️ local STT</button>
             <button class="btn-sm" id="jarvisHandsFreeBtn" onclick="jarvisToggleHandsFree()" title="Hands-free mode: auto-restart the mic after each assistant reply so you can have a back-and-forth conversation without clicking">🎤 hands-free off</button>
+            <button class="btn-sm" id="jarvisWakeModeBtn" onclick="jarvisToggleWakeMode()" title="Wake-word mode: gate hands-free behind 'jarvis' (cheap browser recognizer); say 'stop listening' / 'thanks jarvis' to disable. Cuts mic burn time for sit-and-think workflows.">👂 wake-word off</button>
             <button class="btn-sm" id="jarvisVoiceSettingsBtn" onclick="jarvisToggleVoiceSettings()" title="Tune silence threshold, pause length, and minimum speech for hands-free mode">⚙️</button>
           </div>
         </div>

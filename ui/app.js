@@ -11258,8 +11258,89 @@ function jarvisToggleVoiceSettings() {
     + row('silenceTimeoutMs', 300, 5000, 100)
     + row('minSpeechMs', 100, 2000, 50)
     + '<button class="btn-sm" onclick="jarvisVoiceVadReset()">↺ Reset defaults</button>'
+    + ' <button class="btn-sm" id="jarvisVoiceVadTestBtn" onclick="jarvisVoiceVadToggleTest()" title="Open the mic and show live levels so you can pick a silence threshold above your noise floor">🎤 Test mic</button>'
+    + '<div id="jarvisVoiceVadLiveBar" style="display:none;margin-top:8px;font-family:monospace;font-size:11px"></div>'
     + '<div style="margin-top:6px;color:var(--muted);font-size:11px">Changes apply to the <em>next</em> recording.</div>';
   host.appendChild(panel);
+}
+
+// Live VAD bar: opens a temporary mic stream and renders peak amplitude
+// per frame next to the threshold marker so users can pick a silence
+// threshold visually instead of guessing. Runs only while the settings
+// panel's "🎤 Test mic" toggle is on.
+let jarvisVoiceVadTestStream = null;
+let jarvisVoiceVadTestCtx = null;
+let jarvisVoiceVadTestRaf = 0;
+function jarvisVoiceVadToggleTest() {
+  const bar = document.getElementById('jarvisVoiceVadLiveBar');
+  const btn = document.getElementById('jarvisVoiceVadTestBtn');
+  if (jarvisVoiceVadTestStream) {
+    jarvisVoiceVadStopTest();
+    if (bar) bar.style.display = 'none';
+    if (btn) btn.textContent = '🎤 Test mic';
+    return;
+  }
+  if (bar) { bar.style.display = 'block'; bar.textContent = 'opening mic…'; }
+  if (btn) btn.textContent = '⏹ Stop test';
+  jarvisVoiceVadStartTest();
+}
+async function jarvisVoiceVadStartTest() {
+  try {
+    const chosenDeviceId = localStorage.getItem('jarvisMicDeviceId') || undefined;
+    const constraints = chosenDeviceId
+      ? { audio: { deviceId: { exact: chosenDeviceId }, echoCancellation: false, noiseSuppression: false, autoGainControl: true } }
+      : { audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true } };
+    jarvisVoiceVadTestStream = await navigator.mediaDevices.getUserMedia(constraints);
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    jarvisVoiceVadTestCtx = new AudioCtx();
+    const source = jarvisVoiceVadTestCtx.createMediaStreamSource(jarvisVoiceVadTestStream);
+    const analyser = jarvisVoiceVadTestCtx.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    const tick = () => {
+      analyser.getByteTimeDomainData(data);
+      let peak = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = Math.abs(data[i] - 128) / 128; // 0..1
+        if (v > peak) peak = v;
+      }
+      const bar = document.getElementById('jarvisVoiceVadLiveBar');
+      if (bar) {
+        const width = 24;
+        const peakSlots = Math.min(width, Math.round(peak / 0.05 * (width / 2)));
+        const threshSlot = Math.min(width - 1, Math.round(jarvisVoiceVad.silenceThreshold / 0.05 * (width / 2)));
+        let cells = '';
+        for (let i = 0; i < width; i++) {
+          if (i === threshSlot) cells += '|';
+          else if (i < peakSlots) cells += '█';
+          else cells += '░';
+        }
+        const above = peak > jarvisVoiceVad.silenceThreshold;
+        bar.innerHTML = '<span style="color:' + (above ? 'var(--success,#0a0)' : 'var(--muted)') + '">[' + cells + ']</span>'
+          + ' peak ' + peak.toFixed(3) + ' / threshold ' + jarvisVoiceVad.silenceThreshold.toFixed(3)
+          + ' <span style="color:var(--muted)">(| = threshold marker)</span>';
+      }
+      if (jarvisVoiceVadTestStream) jarvisVoiceVadTestRaf = requestAnimationFrame(tick);
+    };
+    jarvisVoiceVadTestRaf = requestAnimationFrame(tick);
+  } catch (err) {
+    const bar = document.getElementById('jarvisVoiceVadLiveBar');
+    if (bar) bar.textContent = 'mic test failed: ' + (err && err.message ? err.message : err);
+    jarvisVoiceVadStopTest();
+  }
+}
+function jarvisVoiceVadStopTest() {
+  if (jarvisVoiceVadTestRaf) cancelAnimationFrame(jarvisVoiceVadTestRaf);
+  jarvisVoiceVadTestRaf = 0;
+  if (jarvisVoiceVadTestStream) {
+    try { jarvisVoiceVadTestStream.getTracks().forEach((t) => t.stop()); } catch { /* noop */ }
+    jarvisVoiceVadTestStream = null;
+  }
+  if (jarvisVoiceVadTestCtx) {
+    try { jarvisVoiceVadTestCtx.close(); } catch { /* noop */ }
+    jarvisVoiceVadTestCtx = null;
+  }
 }
 
 // Probes /api/jarvis/voice/health on page load and disables hands-free
@@ -11305,8 +11386,100 @@ function jarvisToggleHandsFree() {
   if (btn) btn.textContent = jarvisHandsFree ? '🎤 hands-free on' : '🎤 hands-free off';
   if (jarvisHandsFree && !localSttRecording) {
     // Start immediately so the user doesn't have to also click STT.
-    void jarvisLocalSttStart();
+    // When wake-word mode is also on, start the cheap recognizer instead
+    // so the heavy whisper pipeline only runs after "jarvis" is heard.
+    if (jarvisWakeMode) {
+      jarvisWakeStart();
+    } else {
+      void jarvisLocalSttStart();
+    }
   }
+}
+
+// Wake-word + stop-word mode: instead of the mic streaming continuously
+// in hands-free mode, use the cheap browser SpeechRecognition to listen
+// for a wake phrase ("jarvis") and only then start the heavy local-STT
+// recording. Stop phrases ("done", "stop listening", "thanks jarvis")
+// in the transcribed result disable hands-free instead of auto-sending.
+//
+// Cuts mic burn time by ~80% for sit-and-think workflows where you
+// don't want every keyboard tap and chair creak captured.
+let jarvisWakeMode = (() => { try { return localStorage.getItem('jarvisWakeMode') === '1'; } catch { return false; } })();
+let jarvisWakeRecognizer = null;
+const JARVIS_WAKE_PHRASES = ['jarvis', 'hey jarvis', 'okay jarvis'];
+const JARVIS_STOP_PHRASES = ['stop listening', 'done jarvis', 'thanks jarvis', 'goodbye jarvis'];
+
+function jarvisToggleWakeMode() {
+  jarvisWakeMode = !jarvisWakeMode;
+  try { localStorage.setItem('jarvisWakeMode', jarvisWakeMode ? '1' : '0'); } catch { /* noop */ }
+  const btn = document.getElementById('jarvisWakeModeBtn');
+  if (btn) btn.textContent = jarvisWakeMode ? '👂 wake-word on' : '👂 wake-word off';
+  if (jarvisWakeMode && jarvisHandsFree && !localSttRecording) {
+    jarvisWakeStart();
+  } else if (!jarvisWakeMode) {
+    jarvisWakeStop();
+  }
+}
+
+function jarvisWakeStart() {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Recognition) {
+    voiceShowStatus('🎙️ ❌ wake-word needs Web Speech API (Chrome/Edge)');
+    return;
+  }
+  if (jarvisWakeRecognizer) return;
+  try {
+    jarvisWakeRecognizer = new Recognition();
+    jarvisWakeRecognizer.continuous = true;
+    jarvisWakeRecognizer.interimResults = false;
+    jarvisWakeRecognizer.lang = navigator.language || 'en-US';
+    jarvisWakeRecognizer.onresult = (event) => {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const r = event.results[i];
+        if (!r.isFinal) continue;
+        const text = (r[0].transcript || '').toLowerCase().trim();
+        if (!text) continue;
+        if (JARVIS_WAKE_PHRASES.some((p) => text.includes(p))) {
+          voiceShowStatus('🎙️ wake-word "' + text.slice(0, 30) + '" — opening mic');
+          jarvisWakeStop();
+          void jarvisLocalSttStart();
+          return;
+        }
+      }
+    };
+    jarvisWakeRecognizer.onend = () => {
+      // Browser timed out the recognizer; restart if still in wake mode.
+      if (jarvisWakeMode && jarvisHandsFree && !localSttRecording) {
+        setTimeout(() => { if (jarvisWakeMode && jarvisHandsFree && !localSttRecording) jarvisWakeStart(); }, 250);
+      } else {
+        jarvisWakeRecognizer = null;
+      }
+    };
+    jarvisWakeRecognizer.onerror = (event) => {
+      console.warn('[wake] recognition error:', event.error);
+      // no-speech is normal; let onend handle the restart loop.
+    };
+    jarvisWakeRecognizer.start();
+    voiceShowStatus('👂 listening for "jarvis"…');
+  } catch (err) {
+    voiceShowStatus('🎙️ ❌ wake-word start failed: ' + (err && err.message ? err.message : err));
+    jarvisWakeRecognizer = null;
+  }
+}
+
+function jarvisWakeStop() {
+  if (!jarvisWakeRecognizer) return;
+  try { jarvisWakeRecognizer.stop(); } catch { /* noop */ }
+  jarvisWakeRecognizer = null;
+}
+
+// Inspects whisper transcripts for stop-phrases. When matched, hands-free
+// mode is disabled (so the loop stops re-arming) and the partial
+// transcript is NOT auto-sent.
+function jarvisCheckStopPhrase(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return JARVIS_STOP_PHRASES.some((p) => lower.includes(p));
 }
 
 // Restore the hands-free button label on first paint to match the
@@ -11317,11 +11490,16 @@ function jarvisHandsFreeRestoreLabel() {
   if (btn && !btn.disabled) {
     btn.textContent = jarvisHandsFree ? '🎤 hands-free on' : '🎤 hands-free off';
   }
+  const wakeBtn = document.getElementById('jarvisWakeModeBtn');
+  if (wakeBtn) wakeBtn.textContent = jarvisWakeMode ? '👂 wake-word on' : '👂 wake-word off';
   if (jarvisHandsFree && !localSttRecording) {
     // Auto-arm after reload so a persisted ON state actually keeps
     // listening. Health probe will already have disabled the button if
     // whisper is misconfigured, in which case we skip.
-    if (!btn || !btn.disabled) void jarvisLocalSttStart();
+    if (!btn || !btn.disabled) {
+      if (jarvisWakeMode) jarvisWakeStart();
+      else void jarvisLocalSttStart();
+    }
   }
 }
 if (document.readyState === 'loading') {
@@ -11338,7 +11516,12 @@ if (document.readyState === 'loading') {
 document.addEventListener('jarvis-assistant-message', () => {
   if (!jarvisHandsFree) return;
   const rearm = () => {
-    if (jarvisHandsFree && !localSttRecording) void jarvisLocalSttStart();
+    if (!jarvisHandsFree || localSttRecording) return;
+    // In wake-word mode, go back to the cheap recognizer instead of
+    // re-opening the heavy whisper pipeline. The user has to say "jarvis"
+    // again before the next utterance is captured.
+    if (jarvisWakeMode) jarvisWakeStart();
+    else void jarvisLocalSttStart();
   };
   if (jarvisTtsPlaying) {
     // Wait for natural TTS end (or barge-in cancel). 200ms grace after
@@ -11480,6 +11663,18 @@ async function jarvisLocalSttStop(options) {
       return;
     }
     const inp = document.getElementById('chatInput');
+    // Stop-phrase wins over auto-send. If the user said "stop listening"
+    // / "thanks jarvis" etc., disable hands-free so the loop stops re-arming
+    // and DON'T paste the stop phrase into the chat box.
+    if (jarvisCheckStopPhrase(text)) {
+      voiceShowStatus('👂 stop-phrase heard — disabling hands-free');
+      jarvisHandsFree = false;
+      try { localStorage.setItem('jarvisHandsFree', '0'); } catch { /* noop */ }
+      const hfBtn = document.getElementById('jarvisHandsFreeBtn');
+      if (hfBtn && !hfBtn.disabled) hfBtn.textContent = '🎤 hands-free off';
+      jarvisWakeStop();
+      return;
+    }
     if (inp) {
       const sep = inp.value && !/\s$/.test(inp.value) ? ' ' : '';
       inp.value = inp.value + sep + text;
