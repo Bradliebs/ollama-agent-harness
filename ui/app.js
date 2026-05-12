@@ -3975,11 +3975,11 @@ async function sendMessage(opts) {
       msgEl = addMsg('assistant', assistantText);
     }
     if (assistantText) chatMessages.push({ role: 'assistant', content: assistantText });
-    // Jarvis voice: dispatch the finalized assistant text so the optional
-    // TTS layer can speak it aloud and the always-listening loop can resume.
-    if (assistantText) {
-      try { document.dispatchEvent(new CustomEvent('jarvis-assistant-message', { detail: { text: assistantText } })); } catch { /* noop */ }
-    }
+    // Jarvis voice: always dispatch so the hands-free loop can re-arm the
+    // mic even when a turn ended in error or yielded no text. The TTS
+    // listener already guards on `text` being non-empty before speaking,
+    // so an empty payload is safe.
+    try { document.dispatchEvent(new CustomEvent('jarvis-assistant-message', { detail: { text: assistantText || '' } })); } catch { /* noop */ }
     if (msgEl && currentTurnUsage) {
       attachMessageMeta(msgEl, currentTurnUsage);
       currentTurnUsage = null;
@@ -10783,6 +10783,13 @@ function toggleVoiceInput() {
 // status bar; falls back to console when neither host exists. This is
 // the single feedback path so the user never has to wonder if the mic
 // is actually hearing them.
+// Sticky-error window: error messages (containing ❌) hold the status line
+// for STICKY_MS even if other status updates fire afterward. Without this,
+// a 503 from /api/jarvis/voice/transcribe flashes by in <300ms and the
+// hands-free mic appears to silently turn off — exactly the failure mode
+// that wasted hours diagnosing on 2026-05-12.
+const VOICE_STATUS_STICKY_MS = 5000;
+let voiceStatusStickyUntil = 0;
 function voiceShowStatus(text) {
   const liveBody = document.getElementById('jarvisLiveBody');
   let host = document.getElementById('jarvisVoiceStatus');
@@ -10792,7 +10799,22 @@ function voiceShowStatus(text) {
     host.style.cssText = 'margin-top:6px;font-size:12px;color:var(--accent,#0a0)';
     liveBody.parentNode.insertBefore(host, liveBody.nextSibling);
   }
-  if (host) host.textContent = text || '';
+  const now = Date.now();
+  const isError = typeof text === 'string' && text.includes('❌');
+  const isStickyHold = now < voiceStatusStickyUntil;
+  if (isStickyHold && !isError) {
+    // A non-error update arrived while a recent error is still being held.
+    // Defer it until the sticky window passes so the user actually sees
+    // the failure reason. Always log so the trace is preserved.
+    if (text) console.log('[voice deferred]', text);
+    setTimeout(() => voiceShowStatus(text), Math.max(0, voiceStatusStickyUntil - now));
+    return;
+  }
+  if (host) {
+    host.textContent = text || '';
+    host.style.color = isError ? 'var(--danger,#e55)' : 'var(--accent,#0a0)';
+  }
+  if (isError) voiceStatusStickyUntil = now + VOICE_STATUS_STICKY_MS;
   if (text) console.log('[voice]', text);
 }
 
@@ -11126,6 +11148,113 @@ async function jarvisLocalSttToggle() {
 // whisper. Persisted per-tab via a flag.
 let jarvisHandsFree = false;
 
+// VAD tunables — exposed via the ⚙️ voice settings panel. Persisted in
+// localStorage so user adjustments survive reloads. Defaults match the
+// shipped behavior so first-run users get the same experience.
+const JARVIS_VAD_DEFAULTS = { silenceThreshold: 0.012, silenceTimeoutMs: 1500, minSpeechMs: 350 };
+const jarvisVoiceVad = (() => {
+  try {
+    const raw = localStorage.getItem('jarvisVoiceVad');
+    if (!raw) return { ...JARVIS_VAD_DEFAULTS };
+    const parsed = JSON.parse(raw);
+    return {
+      silenceThreshold: typeof parsed.silenceThreshold === 'number' ? parsed.silenceThreshold : JARVIS_VAD_DEFAULTS.silenceThreshold,
+      silenceTimeoutMs: typeof parsed.silenceTimeoutMs === 'number' ? parsed.silenceTimeoutMs : JARVIS_VAD_DEFAULTS.silenceTimeoutMs,
+      minSpeechMs: typeof parsed.minSpeechMs === 'number' ? parsed.minSpeechMs : JARVIS_VAD_DEFAULTS.minSpeechMs,
+    };
+  } catch { return { ...JARVIS_VAD_DEFAULTS }; }
+})();
+function jarvisVoiceVadPersist() { try { localStorage.setItem('jarvisVoiceVad', JSON.stringify(jarvisVoiceVad)); } catch { /* noop */ } }
+
+// Bound to the slider inputs in the voice settings panel.
+function jarvisVoiceVadUpdate(key, value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return;
+  jarvisVoiceVad[key] = num;
+  jarvisVoiceVadPersist();
+  const label = document.getElementById('jarvisVoiceVadLabel-' + key);
+  if (label) label.textContent = jarvisVoiceVadFormat(key, num);
+}
+function jarvisVoiceVadFormat(key, value) {
+  if (key === 'silenceThreshold') return value.toFixed(3) + ' (peak amplitude)';
+  if (key === 'silenceTimeoutMs') return value + ' ms pause';
+  if (key === 'minSpeechMs') return value + ' ms minimum speech';
+  return String(value);
+}
+function jarvisVoiceVadReset() {
+  Object.assign(jarvisVoiceVad, JARVIS_VAD_DEFAULTS);
+  jarvisVoiceVadPersist();
+  // Re-render whatever sliders are currently in the DOM so they snap back.
+  for (const key of Object.keys(JARVIS_VAD_DEFAULTS)) {
+    const slider = document.getElementById('jarvisVoiceVadSlider-' + key);
+    const label = document.getElementById('jarvisVoiceVadLabel-' + key);
+    if (slider) slider.value = String(jarvisVoiceVad[key]);
+    if (label) label.textContent = jarvisVoiceVadFormat(key, jarvisVoiceVad[key]);
+  }
+}
+
+// Toggle the inline voice settings panel. Lazy-rendered so the page load
+// path stays cheap; subsequent toggles just flip display.
+function jarvisToggleVoiceSettings() {
+  let panel = document.getElementById('jarvisVoiceSettingsPanel');
+  if (panel) { panel.style.display = panel.style.display === 'none' ? 'block' : 'none'; return; }
+  const host = document.getElementById('jarvisVoiceControls') || document.getElementById('jarvisLivePanel');
+  if (!host) return;
+  panel = document.createElement('div');
+  panel.id = 'jarvisVoiceSettingsPanel';
+  panel.style.cssText = 'margin-top:8px;padding:8px;border:1px solid var(--surface2);border-radius:6px;font-size:12px';
+  const row = (key, min, max, step) =>
+    '<div style="margin-bottom:6px"><label style="display:block;color:var(--muted);margin-bottom:2px">'
+    + key.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase())
+    + ': <span id="jarvisVoiceVadLabel-' + key + '">' + jarvisVoiceVadFormat(key, jarvisVoiceVad[key]) + '</span></label>'
+    + '<input type="range" id="jarvisVoiceVadSlider-' + key + '" min="' + min + '" max="' + max + '" step="' + step
+    + '" value="' + jarvisVoiceVad[key] + '" oninput="jarvisVoiceVadUpdate(\'' + key + '\', this.value)" style="width:100%"></div>';
+  panel.innerHTML =
+    '<div style="font-weight:600;margin-bottom:6px">🎚️ Voice tuning</div>'
+    + row('silenceThreshold', 0.001, 0.1, 0.001)
+    + row('silenceTimeoutMs', 300, 5000, 100)
+    + row('minSpeechMs', 100, 2000, 50)
+    + '<button class="btn-sm" onclick="jarvisVoiceVadReset()">↺ Reset defaults</button>'
+    + '<div style="margin-top:6px;color:var(--muted);font-size:11px">Changes apply to the <em>next</em> recording.</div>';
+  host.appendChild(panel);
+}
+
+// Probes /api/jarvis/voice/health on page load and disables hands-free
+// up front when the backend can't transcribe. Without this the user
+// clicks 🎤 hands-free, talks, pauses … and nothing happens because the
+// transcribe POST returns 503 — exactly the silent-failure mode that
+// inspired this probe.
+async function jarvisVoiceProbeHealth() {
+  const btn = document.getElementById('jarvisHandsFreeBtn');
+  const sttBtn = document.getElementById('jarvisLocalSttBtn');
+  try {
+    const res = await fetch('/api/jarvis/voice/health');
+    const data = await res.json();
+    if (!data.ok) {
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '🎤 hands-free unavailable';
+        btn.title = 'Whisper not configured on the server. ' + (data.hint || '');
+      }
+      if (sttBtn) {
+        sttBtn.disabled = true;
+        sttBtn.title = '(server cannot transcribe) ' + (data.hint || '');
+      }
+      voiceShowStatus('🎙️ ❌ whisper not configured — ' + (data.hint || 'see server env vars'));
+    } else if (btn) {
+      btn.title = 'Hands-free mode (' + (data.mode || 'whisper') + ' — ' + (data.hint || '') + ')';
+    }
+  } catch (err) {
+    // Server might not be ready yet on first paint; don't surface as error.
+    console.warn('[voice] health probe failed:', err && err.message ? err.message : err);
+  }
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', jarvisVoiceProbeHealth);
+} else {
+  jarvisVoiceProbeHealth();
+}
+
 function jarvisToggleHandsFree() {
   jarvisHandsFree = !jarvisHandsFree;
   const btn = document.getElementById('jarvisHandsFreeBtn');
@@ -11166,9 +11295,12 @@ async function jarvisLocalSttStart() {
     // Voice-activity tracking for silence-based auto-stop. We keep a running
     // peak per audio chunk; when peak stays below the silence threshold for
     // SILENCE_TIMEOUT_MS after at least one speech burst, we stop automatically.
-    const SILENCE_THRESHOLD = 0.012;     // ~1.2% peak amplitude (RMS-equivalent)
-    const SILENCE_TIMEOUT_MS = 1500;     // hands-off pause length to send
-    const MIN_SPEECH_MS = 350;           // require at least this much speech first
+    // Tunables come from jarvisVoiceVad so the UI sliders can adjust them
+    // live without editing source. MAX_RECORD_MS stays a constant — it's a
+    // safety cap, not a tunable.
+    const SILENCE_THRESHOLD = jarvisVoiceVad.silenceThreshold;
+    const SILENCE_TIMEOUT_MS = jarvisVoiceVad.silenceTimeoutMs;
+    const MIN_SPEECH_MS = jarvisVoiceVad.minSpeechMs;
     const MAX_RECORD_MS = 30_000;        // hard cap so a stuck mic doesn't run forever
     let lastSpeechAt = 0;
     let speechMs = 0;

@@ -2685,6 +2685,31 @@ app.post('/api/jarvis/runtime/clear', (_req, res) => {
 //   2. Python pywhispercpp: HARNESS_WHISPER_PYTHON (e.g. "python") +
 //      optional HARNESS_WHISPER_MODEL_NAME (default base.en)
 // Returns 503 when neither is configured so the UI can fall back gracefully.
+
+// Lightweight probe so the UI can disable the hands-free button up front
+// instead of letting users click it and watch the mic die silently when
+// the backend returns 503. Returns the same shape regardless of mode so
+// the frontend can branch on `ok` alone.
+app.get('/api/jarvis/voice/health', (_req, res) => {
+  const binary = process.env.HARNESS_WHISPER_BINARY;
+  const model = process.env.HARNESS_WHISPER_MODEL;
+  const pythonExe = process.env.HARNESS_WHISPER_PYTHON;
+  if (binary && model) {
+    res.json({ ok: true, mode: 'binary', hint: `whisper.cpp binary at ${binary}` });
+    return;
+  }
+  if (pythonExe) {
+    const modelName = process.env.HARNESS_WHISPER_MODEL_NAME || 'base.en (default)';
+    res.json({ ok: true, mode: 'python', hint: `pywhispercpp via ${pythonExe} · model ${modelName}` });
+    return;
+  }
+  res.json({
+    ok: false,
+    mode: 'none',
+    hint: 'Set HARNESS_WHISPER_BINARY+HARNESS_WHISPER_MODEL or HARNESS_WHISPER_PYTHON (+ optional HARNESS_WHISPER_MODEL_NAME).',
+  });
+});
+
 app.post('/api/jarvis/voice/transcribe', express.raw({ type: '*/*', limit: '50mb' }), async (req, res) => {
   const binary = process.env.HARNESS_WHISPER_BINARY;
   const model = process.env.HARNESS_WHISPER_MODEL;
