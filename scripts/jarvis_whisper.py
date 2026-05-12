@@ -25,9 +25,15 @@ def main() -> int:
 
     try:
         from pywhispercpp.model import Model
-    except ImportError:
+    except ImportError as exc:
+        # Print enough context to diagnose "works in shell, fails in server"
+        # cases caused by Microsoft Store Python sandboxing or PATH ordering.
         sys.stderr.write(
-            "pywhispercpp not installed. Run: pip install pywhispercpp\n"
+            "pywhispercpp not installed for "
+            + sys.executable
+            + " (error: " + str(exc) + "). "
+            + "site-packages: " + ";".join(sys.path[:4])
+            + ". Run: " + sys.executable + " -m pip install pywhispercpp\n"
         )
         return 3
 
