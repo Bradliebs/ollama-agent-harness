@@ -137,3 +137,13 @@ export type { OutputSchema, SchemaValidationResult } from './core/structuredOutp
 // ─── Small Model Autopilot: Readiness Gate ──────────────────────────
 export { calculateReadiness, isReadyToExecute, shouldEscalate } from './core/readinessGate';
 export type { ReadinessInput, ReadinessResult, ReadinessDecision } from './core/readinessGate';
+
+// ─── Orchestration Layer ────────────────────────────────────────────
+export { OrchestrationEngine } from './orchestration/engine';
+export type { OrchestrationEngineDeps, DecompositionResult, RunGoalOptions, RunGoalResult, TaskDispatchResult, EscalationResult } from './orchestration/engine';
+export { type Adapter, type AdapterConfig, type AdapterType, type RunContext, type RunBudget, type RunResult, type RunToolCall, type AdapterDiagnostics, registerAdapter, getAdapter, listAdapters } from './orchestration/adapter';
+export { OllamaLocalAdapter, ProcessAdapter } from './orchestration/adapters';
+export { type Company, type CompanyStatus, type CompanyBudget, type CreateCompanyInput, type UpdateCompanyInput, listCompanies, getCompany, createCompany, updateCompany } from './orchestration/company';
+export { type Goal, type GoalStatus, type Issue, type IssueStatus, type IssuePriority, type CreateGoalInput, type UpdateGoalInput, type CreateIssueInput, type UpdateIssueInput, listGoals, getGoal, createGoal, updateGoal, computeGoalProgress, listIssues, getIssue, createIssue, updateIssue } from './orchestration/goal';
+export { type OrgChart, type OrgNode, type OrgRole, type CreateOrgChartInput, type UpdateOrgChartInput, listOrgCharts, getOrgChart, createOrgChart, updateOrgChart } from './orchestration/orgChart';
+export { goalProgressAction, staleTaskDetectionAction, budgetEnforcementAction, companyHealthCheckAction, orchestrationHeartbeatActions } from './orchestration/heartbeat';

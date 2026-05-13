@@ -27,6 +27,7 @@ export type EventCategory =
   | 'schedule'
   | 'notification'
   | 'permission'
+  | 'orchestration'
   | 'system';
 
 export interface HarnessEvent {
