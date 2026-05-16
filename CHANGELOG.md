@@ -11,6 +11,57 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Ollama Agent Harness v0.5.9
+
+Nervous-system audit follow-ups. Three coordinated fixes from the
+ORACLE SYSTEM extension of the prior audit, plus seven new test cases.
+No breaking changes.
+
+### Per-chat learning state (no more cross-chat bleed)
+
+`src/learning/engine.ts` now exposes a `LearningRecorder` class that
+holds per-session/per-project learning state. Free-function shims are
+preserved so existing CLI tools and tests keep working. The dispatcher
+(`src/tools/dispatcher.ts`) and query loop (`src/core/queryLoop.ts`)
+thread an optional `learningRecorder` through their option bags, and
+`src/web/server.ts` instantiates one recorder per chat. The nervous
+system also gets snapshot-on-recovery and prior-signal re-feed wired
+around `inspectQuery()`.
+
+### Silent-catch sweep (12 catches routed)
+
+`src/observability/silentFailureSink.ts`’s `recordSwallowed` now covers
+twelve previously silent failure paths, calibrated by ORACLE AUDIT A6
+(benign existence/cleanup catches left alone):
+
+- `src/automation/scheduler.ts`: breach-detected callback, age-prune
+- `src/agents/subagent.ts`: recall-context load
+- `src/services/selfLearningHeartbeat.ts`: skill safety scan
+- `src/persistence/eventStore.ts`: stream listener, auto-prune
+- `src/learning/engine.ts`: consolidated-digest write, prompt evolve,
+  pattern promote
+- `src/web/server.ts`: OTLP/heartbeat/scheduler startup configs,
+  heuristic verifier, mycelium code seed
+
+### Recall-section token budget
+
+`src/context/assembly.ts` now collects the RAG, memory-palace, and
+prior-session-search blocks into a `recallParts[]` buffer and caps
+their joined output at `RECALL_SECTIONS_COMBINED_MAX_CHARS = 4_000`
+via the existing `trimContextText` tail trim. The new auto-recall
+sections can no longer blow the system-prompt budget when several
+fire at once.
+
+### Tests
+
+`src/context/assembly.test.ts` gains seven new cases covering RAG
+auto-consult (skip + inject), memory palace summary (skip + inject),
+prior-session search (skip + inject), and the combined-budget cap
+(asserts the trim marker fires when sections exceed 4 000 chars).
+Hash-backend RAG indexes keep the suite fully offline.
+
+Suite: 1793 / 1793 passing across 163 suites.
+
 ## Ollama Agent Harness v0.5.8
 
 Closes the rest of the prior persistence/scheduler audit findings AND
