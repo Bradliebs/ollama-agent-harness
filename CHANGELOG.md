@@ -11,6 +11,81 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Ollama Agent Harness v0.5.5
+
+Closes audit item #7: workflow run state was in-memory only. A server
+restart wiped every `WorkflowRun`, leaving `/api/workflows/runs`
+silently empty and abandoning long-running workflows with no record.
+The header comment on `WorkflowRegistry` already flagged this as a
+v1 limitation.
+
+### Persistence
+
+* [src/workflows/workflowRegistry.ts](src/workflows/workflowRegistry.ts) —
+  every run state transition now persists to
+  `.harness/workflows/runs/<runId>.json` through `withFileLock` +
+  `atomicWriteFile`. The lock is keyed per run file so different runs
+  proceed in parallel without contention.
+* Persist points: `startRun`, `pause`, `resume`, `cancel`, the
+  `execute` loop (start, per-step settle, every terminal status), and
+  the demoted state on restore.
+* `flush()` exposed so the server (and tests) can drain
+  fire-and-forget persists from the synchronous mutator methods
+  before shutdown or teardown. Tracks in-flight promises in a Set so
+  drainage is bounded.
+
+### Recovery on restart
+
+* `restoreRuns()` loads every persisted run on startup. Runs found in
+  `running` (server killed mid-step) or `pending` (server killed
+  before `execute` began) are **demoted to `failed`** with the
+  recovery note `Server exited while workflow run was in progress;
+  not auto-resumed.` and re-persisted so the next restore is
+  idempotent.
+* Currently-running steps inside a demoted run also become `failed`
+  with the same note. Pending steps stay `pending` — they were never
+  in-flight, so the run-level `failed` is the honest signal.
+* **No auto-resume.** Tool side effects are not idempotent. Restored
+  runs are visible for inspection only; a future operator-driven
+  resume is out of scope for this release.
+* Malformed run files are logged and skipped, never thrown.
+* [src/web/server.ts](src/web/server.ts) — `ensureSettingsLoaded`
+  now calls `await workflowRegistry.restoreRuns()`. Best-effort:
+  failures log and never block server start.
+
+### Tests
+
+* [src/workflows/workflowRegistry.test.ts](src/workflows/workflowRegistry.test.ts) —
+  added 8 tests under a `run persistence` describe block:
+  * completed run round-trips through a fresh registry instance
+  * `running` run demoted to `failed` on restore (with idempotent
+    re-persist verified by a second restore)
+  * `pending` run demoted to `failed` with steps still `pending`
+  * malformed/wrong-shape run files skipped without throwing
+  * missing runs directory returns zeros
+  * paused run round-trips with `pauseReason`
+  * cancelled run round-trips with `cancelReason`
+  * 4 parallel runs in one registry produce 4 valid run files with
+    no orphan temp files (race coverage)
+* `afterEach` now calls `registry.flush()` for every tracked
+  registry before `fs.rm` so the fire-and-forget persists from the
+  synchronous mutators cannot race the directory removal.
+
+### Not changed by this release
+
+* The `WorkflowDefinition` schema and on-disk layout for definitions
+  are unchanged.
+* The `WorkflowRegistry` public API is additive only (`flush()` and
+  `restoreRuns()` are new; everything else is identical).
+* No retention or TTL on persisted runs — disk grows monotonically
+  until manually cleaned. Acceptable for v1; a future release can
+  add a cap.
+
+### Still pending from the audit
+
+* Item #6 — schedulers through the PermissionEngine (architectural).
+* Item #10 — health endpoint upgrade (depends on #6).
+
 ## Ollama Agent Harness v0.5.4
 
 Removes a full-suite test flake in `src/web/server.test.ts` where

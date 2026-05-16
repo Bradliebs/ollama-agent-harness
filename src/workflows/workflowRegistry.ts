@@ -3,14 +3,22 @@
 // Workflows are declarative tool-call sequences stored under
 // `.harness/workflows/<name>.{yaml,json}`. The runner executes one step at a
 // time, runs against the live tool registry + permission engine, and supports
-// dry-run, pause, resume, and cancel. Run state lives in memory only — there is
-// no background scheduler in v1, runs survive only as long as the server.
+// dry-run, pause, resume, and cancel.
+//
+// Run state is persisted to `.harness/workflows/runs/<runId>.json` on every
+// state transition (start, pause, resume, cancel, per-step settle, terminal
+// status). Writes go through `withFileLock` + `atomicWriteFile` so two
+// concurrent transitions on the same run cannot lose each other. On
+// `restoreRuns()` any run found in `running` or `pending` status is demoted
+// to `failed` with a recovery note — tool side effects are not idempotent so
+// we never auto-resume an in-flight run.
 
 import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { logger } from '../core/logger';
 import type { PermissionEngine } from '../permissions/engine';
+import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { runtimeTracer } from '../core/tracing';
 import type { Tool, ToolResult } from '../types';
 
@@ -71,8 +79,113 @@ export interface WorkflowRunDeps {
 export class WorkflowRegistry {
   private runs = new Map<string, WorkflowRun>();
   private signals = new Map<string, { paused: boolean; cancelled: boolean }>();
+  // Tracks in-flight `persistRun` promises kicked off by the synchronous
+  // mutator methods (`startRun`, `pause`, `resume`, `cancel`). Tests and the
+  // server's shutdown path call `flush()` to drain these before teardown so a
+  // late rename does not race a directory removal.
+  private pendingPersists = new Set<Promise<void>>();
 
   constructor(private workflowsDir: string) {}
+
+  // Wait for every persist-write currently in-flight to settle. Always
+  // resolves — individual write failures are handled inside `persistRun`.
+  async flush(): Promise<void> {
+    if (this.pendingPersists.size === 0) return;
+    await Promise.allSettled(Array.from(this.pendingPersists));
+  }
+
+  private trackPersist(run: WorkflowRun): void {
+    const promise = this.persistRun(run).finally(() => {
+      this.pendingPersists.delete(promise);
+    });
+    this.pendingPersists.add(promise);
+  }
+
+  private runsDir(): string {
+    return path.join(this.workflowsDir, 'runs');
+  }
+
+  private runFilePath(id: string): string {
+    return path.join(this.runsDir(), `${id}.json`);
+  }
+
+  // Persistence is best-effort: a write failure must not crash the run. The
+  // in-memory state remains authoritative for the rest of the current
+  // process; the next successful write will catch the persisted snapshot up.
+  private async persistRun(run: WorkflowRun): Promise<void> {
+    try {
+      await fs.mkdir(this.runsDir(), { recursive: true });
+      const filePath = this.runFilePath(run.id);
+      await withFileLock(filePath, async () => {
+        // Snapshot inside the lock so a concurrent in-memory mutation cannot
+        // produce a torn JSON document on disk.
+        const snapshot = JSON.stringify(run, null, 2);
+        await atomicWriteFile(filePath, snapshot, { encoding: 'utf-8' });
+      });
+    } catch (error) {
+      logger.warn('Workflow', 'Failed to persist workflow run', {
+        runId: run.id, error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  // Load every persisted run into memory. Runs found in `running` (the server
+  // exited mid-step) or `pending` (server exited before execute() began) are
+  // demoted to `failed` and re-persisted so the next restore is idempotent.
+  // Returns counts for the startup log.
+  async restoreRuns(): Promise<{ restored: number; demoted: number }> {
+    let entries: string[] = [];
+    try {
+      entries = await fs.readdir(this.runsDir());
+    } catch {
+      return { restored: 0, demoted: 0 };
+    }
+    let restored = 0;
+    let demoted = 0;
+    for (const name of entries) {
+      if (!name.endsWith('.json')) continue;
+      const filePath = path.join(this.runsDir(), name);
+      try {
+        const raw = await fs.readFile(filePath, 'utf-8');
+        const parsed = JSON.parse(raw) as WorkflowRun;
+        if (!parsed || typeof parsed !== 'object' || typeof parsed.id !== 'string' || !Array.isArray(parsed.steps)) {
+          logger.warn('Workflow', 'Skipping malformed run file', { file: name });
+          continue;
+        }
+        let wasDemoted = false;
+        if (parsed.status === 'running' || parsed.status === 'pending') {
+          const recoveryNote = 'Server exited while workflow run was in progress; not auto-resumed.';
+          for (const step of parsed.steps) {
+            if (step.status === 'running') {
+              step.status = 'failed';
+              step.error = step.error ?? recoveryNote;
+              step.finishedAt = step.finishedAt ?? new Date().toISOString();
+            }
+          }
+          parsed.status = 'failed';
+          parsed.finishedAt = parsed.finishedAt ?? new Date().toISOString();
+          demoted += 1;
+          wasDemoted = true;
+        }
+        this.runs.set(parsed.id, parsed);
+        // Restored runs are inert — no executor is bound to their signal. A
+        // future resume() call would currently fail because the signal entry
+        // is only honoured by an in-process execute(). That is correct for
+        // v1: restored runs are visible for inspection only.
+        this.signals.set(parsed.id, { paused: parsed.status === 'paused', cancelled: false });
+        restored += 1;
+        if (wasDemoted) {
+          // Re-persist the demoted state so the next restore is idempotent.
+          await this.persistRun(parsed);
+        }
+      } catch (error) {
+        logger.warn('Workflow', 'Failed to restore workflow run', {
+          file: name, error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return { restored, demoted };
+  }
 
   async list(): Promise<WorkflowDefinition[]> {
     let entries: string[] = [];
@@ -122,6 +235,11 @@ export class WorkflowRegistry {
     };
     this.runs.set(id, run);
     this.signals.set(id, { paused: false, cancelled: false });
+    // Fire-and-forget tracked persist: `flush()` will await it on shutdown.
+    // persistRun is internally try/catch so the failure mode is a warn-log,
+    // never an unhandled rejection. Awaiting here would block the synchronous
+    // startRun contract callers rely on.
+    this.trackPersist(run);
     return run;
   }
 
@@ -143,6 +261,7 @@ export class WorkflowRegistry {
     signal.paused = true;
     run.pauseReason = reason;
     if (run.status === 'pending') run.status = 'paused';
+    this.trackPersist(run);
     return true;
   }
 
@@ -153,6 +272,7 @@ export class WorkflowRegistry {
     if (run.status !== 'paused') return false;
     signal.paused = false;
     run.pauseReason = undefined;
+    this.trackPersist(run);
     return true;
   }
 
@@ -164,6 +284,7 @@ export class WorkflowRegistry {
     signal.cancelled = true;
     signal.paused = false;
     run.cancelReason = reason;
+    this.trackPersist(run);
     return true;
   }
 
@@ -175,21 +296,25 @@ export class WorkflowRegistry {
     if (signal.paused) {
       run.status = 'paused';
       runtimeTracer.recordEvent('workflow.run_paused', { runId });
+      await this.persistRun(run);
       return run;
     }
     run.status = 'running';
     runtimeTracer.recordEvent('workflow.run_started', { runId, workflow: run.workflowName, dryRun: run.dryRun });
+    await this.persistRun(run);
 
     while (run.currentStepIndex < run.steps.length) {
       if (signal.cancelled) {
         run.status = 'cancelled';
         run.finishedAt = new Date().toISOString();
         runtimeTracer.recordEvent('workflow.run_cancelled', { runId, reason: run.cancelReason });
+        await this.persistRun(run);
         return run;
       }
       if (signal.paused) {
         run.status = 'paused';
         runtimeTracer.recordEvent('workflow.run_paused', { runId });
+        await this.persistRun(run);
         return run;
       }
       const stepExecution = run.steps[run.currentStepIndex];
@@ -207,15 +332,21 @@ export class WorkflowRegistry {
           run.status = 'failed';
           run.finishedAt = new Date().toISOString();
           runtimeTracer.recordEvent('workflow.run_failed', { runId, step: stepExecution.step.id, error: stepExecution.error });
+          await this.persistRun(run);
           return run;
         }
       }
       run.currentStepIndex++;
+      // Persist after each step settles so a crash mid-loop doesn't lose the
+      // record of which step ran last. The next-step write would catch the
+      // index up otherwise, but the run-level summary should stay current.
+      await this.persistRun(run);
     }
 
     run.status = 'completed';
     run.finishedAt = new Date().toISOString();
     runtimeTracer.recordEvent('workflow.run_completed', { runId, steps: run.steps.length });
+    await this.persistRun(run);
     return run;
   }
 

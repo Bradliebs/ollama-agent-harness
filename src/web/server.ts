@@ -8692,6 +8692,14 @@ async function ensureSettingsLoaded(): Promise<void> {
   } catch {
     // Missing or malformed settings should not prevent the local UI from starting.
   }
+  // Restore persisted workflow runs so /api/workflows/runs survives a server
+  // restart. Best-effort: failures are logged inside restoreRuns and never
+  // block startup.
+  try {
+    await workflowRegistry.restoreRuns();
+  } catch (error) {
+    logger.warn('Startup', 'Failed to restore workflow runs', { error: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 export function resetSettingsLoadedForTest(): void {
