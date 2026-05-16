@@ -54,3 +54,7 @@ lottery-*/
 syndicate-optimizer.js
 historical-win-checker.js
 machine-bias-detector.js
+
+# Scratch buffers for commit messages composed via -F
+.git-commit-msg.tmp
+
