@@ -231,7 +231,26 @@ describe('web UI wiring', () => {
   it('keeps UI API calls backed by server routes', () => {
     const serverRoutes = new Set([...serverTs.matchAll(/app\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1])));
     const uiRoutes = [...new Set(extractFetchExpressions(appJs).map(normalizeUiFetchPath).filter((route): route is string => Boolean(route)))].sort();
-    const missing = uiRoutes.filter((route) => !serverRoutes.has(route));
+
+    // A UI route like '/api/foo/:param' is satisfied either by an exact match
+    // (Express `:foo` placeholder) or by any concrete sibling route under the
+    // same prefix — e.g. UI calls '/api/jarvis/ambient/' + action and the
+    // server registers '/api/jarvis/ambient/start' and '.../stop' as the only
+    // valid actions. Without this the test forces every UI string-concat
+    // fetch to be backed by an Express-level wildcard, which would weaken
+    // the server's input validation.
+    const missing = uiRoutes.filter((route) => {
+      if (serverRoutes.has(route)) return false;
+      if (route.endsWith('/:param')) {
+        const prefix = route.slice(0, -':param'.length);
+        for (const serverRoute of serverRoutes) {
+          if (serverRoute.startsWith(prefix) && serverRoute.length > prefix.length) {
+            return false;
+          }
+        }
+      }
+      return true;
+    });
 
     expect(missing).toEqual([]);
   });

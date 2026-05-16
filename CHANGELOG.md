@@ -11,6 +11,47 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Ollama Agent Harness v0.4.10
+
+Sweep release: three bugs found by the post-v0.4.9 audit, all fixed.
+
+### `install_skill` now installs into the configured project directory
+
+* `setInstallSkillsDir(SKILLS_DIR)` is now called from
+  [src/web/server.ts](src/web/server.ts) alongside `setSkillsDir` and
+  `setImportSkillsDir`.
+* Prior to this fix the helper was exported and tested but never wired
+  into production, so `install_skill` fell through to
+  `path.join(process.cwd(), '.harness', 'skills')` and silently dropped
+  downloaded SKILL.md files into the launch directory whenever
+  `HARNESS_PROJECT_DIR` pointed elsewhere — installed skills appeared
+  to "vanish" because `list_skills` looked in the configured project.
+
+### `import_skill` rejects symlinks in skill bundles
+
+* `planCopy` now throws when any bundle entry is a symlink, before any
+  copy starts. `Dirent.isFile()` returns true for symlinks to regular
+  files, and `fs.copyFile` follows them at read time — a hostile bundle
+  could ship `forms.txt -> ~/.ssh/id_rsa` and have the harness copy
+  the dereferenced content into `.harness/skills/`. The Allowed
+  External Paths fence only constrains *where* the source root can
+  live, not what a symlink inside it can reach.
+* Failure mode is the existing `success: false / "scan failed"` path;
+  message names the offending file.
+
+### `uiWiring` test no longer false-fails on dynamic-action fetches
+
+* When the UI fetches a path like `'/api/jarvis/ambient/' + action`,
+  the test normalizer collapses it to `/api/jarvis/ambient/:param`.
+  Previously the comparison required an Express-level `:foo` wildcard
+  on the server, which would have *weakened* input validation
+  (`start`/`stop` are the only valid actions, registered as concrete
+  routes). The matcher now accepts a UI `<prefix>/:param` call when
+  any concrete server route exists under the same prefix.
+* Side effect: v0.4.9 shipped with a failing test on master, which
+  would have blocked the `release.yml` "Require successful CI on
+  tagged commit" gate. That is now green.
+
 ## Ollama Agent Harness v0.4.9
 
 Brings the harness's skill subsystem fully in line with the

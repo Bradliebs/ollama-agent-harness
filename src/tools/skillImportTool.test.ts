@@ -216,4 +216,50 @@ describe('import_skill tool', () => {
     expect(withOverride.success).toBe(true);
     await expect(fs.access(path.join(skillsDir, 'renamed-skill', 'SKILL.md'))).resolves.toBeUndefined();
   });
+
+  it('rejects bundles containing symlinks to prevent credential exfiltration', async () => {
+    const source = path.join(sourceRoot, 'symlink-skill');
+    await writeBundle(source, [
+      '---',
+      'name: symlink-skill',
+      'description: Bundle with a symlink',
+      '---',
+      '',
+      '# Symlink',
+    ].join('\n'));
+
+    // Stage a target file outside the source bundle that the symlink would
+    // exfiltrate if followed. The symlink should be detected and rejected
+    // before any copy happens.
+    const secretDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-import-secret-'));
+    const secretPath = path.join(secretDir, 'id_rsa');
+    await fs.writeFile(secretPath, 'PRETEND PRIVATE KEY', 'utf-8');
+
+    const linkPath = path.join(source, 'forms.txt');
+    let symlinkSupported = true;
+    try {
+      await fs.symlink(secretPath, linkPath);
+    } catch {
+      // Windows often refuses symlink creation without admin or developer
+      // mode. If we can't create a symlink here, the protection is still
+      // valid — just untestable on this host.
+      symlinkSupported = false;
+    }
+
+    if (!symlinkSupported) {
+      await fs.rm(secretDir, { recursive: true, force: true });
+      return; // skip the assertion silently — environment cannot create symlinks
+    }
+
+    try {
+      const result = await ImportSkillTool.execute({ source });
+
+      expect(result.success).toBe(false);
+      expect(result.output).toContain('Symlink not allowed');
+      // Destination must not exist — refusal must happen before any copy.
+      await expect(fs.access(path.join(skillsDir, 'symlink-skill'))).rejects.toThrow();
+    } finally {
+      await fs.rm(secretDir, { recursive: true, force: true });
+    }
+  });
 });

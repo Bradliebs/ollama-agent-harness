@@ -220,6 +220,15 @@ async function planCopy(
   const entries = await fs.readdir(currentDir, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.name.startsWith('.')) continue; // skip dotfiles/dotdirs
+    // Reject symlinks unconditionally. Dirent.isFile() returns true for
+    // symlinks to regular files, and fs.copyFile() follows them at read
+    // time — a hostile bundle could ship `forms.txt -> ~/.ssh/id_rsa` and
+    // exfiltrate it into .harness/skills/. The Allowed External Paths
+    // fence only constrains *where* the source root can live, not what
+    // a symlink inside it can reach.
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Symlink not allowed in skill bundle: ${path.relative(rootDir, path.join(currentDir, entry.name)).split(path.sep).join('/')}`);
+    }
     if (entry.isDirectory()) {
       if (SKIP_DIR_NAMES.has(entry.name)) continue;
       await planCopy(rootDir, path.join(currentDir, entry.name), acc);
