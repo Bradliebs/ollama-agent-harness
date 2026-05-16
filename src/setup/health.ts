@@ -75,7 +75,7 @@ export interface SetupHealthResult {
 }
 
 export interface FallbackRoutingConfig {
-  /** Whether auto-fallback is enabled (HARNESS_REMOTE_AUTO_FALLBACK !== '0'). */
+  /** Whether auto-fallback is enabled (HARNESS_REMOTE_AUTO_FALLBACK === '1'). Default is opt-in. */
   enabled: boolean;
   /** Cooldown window in ms after a backend hits a limit error. */
   cooldownMs: number;
@@ -183,7 +183,8 @@ function checkBackendAuth(): BackendHealthCheck[] {
 }
 
 function checkFallbackConfig(backends: BackendHealthCheck[]): FallbackRoutingConfig {
-  const enabled = process.env.HARNESS_REMOTE_AUTO_FALLBACK !== '0';
+  // Opt-in default since v0.5.0 (was opt-out). See chatClientFactory for rationale.
+  const enabled = process.env.HARNESS_REMOTE_AUTO_FALLBACK === '1';
   const configuredOrder = (process.env.HARNESS_REMOTE_FALLBACK_ORDER || '').trim();
   return {
     enabled,

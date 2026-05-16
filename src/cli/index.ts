@@ -520,7 +520,7 @@ export function formatSetupHealth(result: SetupHealthResult): string {
     const f = result.fallback;
     const status = f.enabled
       ? `enabled, ${f.configuredCount} backend(s) with keys, cooldown ${Math.round(f.cooldownMs / 1000)}s, order: ${f.order}`
-      : 'disabled (HARNESS_REMOTE_AUTO_FALLBACK=0)';
+      : 'disabled (set HARNESS_REMOTE_AUTO_FALLBACK=1 to enable)';
     lines.push(formatHealthLine('Fallback', f.enabled && f.configuredCount > 1, `Provider fallback ${status}.`));
   }
   if (result.synthesisStats && Object.keys(result.synthesisStats).length > 0) {

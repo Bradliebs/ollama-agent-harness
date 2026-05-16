@@ -180,7 +180,12 @@ export function createChatClient(config: CreateClientConfig): IChatClient {
   }
   if (backend === 'replicate') {
     const primary = createReplicateClient(config.model);
-    const autoFallback = config.autoFallback ?? process.env.HARNESS_REMOTE_AUTO_FALLBACK !== '0';
+    // Opt-in by default (v0.5.0+). Previously enabled unless HARNESS_REMOTE_AUTO_FALLBACK=0.
+    // Flipped because silent provider fallback violates the "local-first" product promise:
+    // a transient Ollama hiccup used to route conversation contents (which include tool
+    // outputs from file_read / bash) to whichever remote provider had a key configured.
+    // Set HARNESS_REMOTE_AUTO_FALLBACK=1 to restore the old behaviour.
+    const autoFallback = config.autoFallback ?? process.env.HARNESS_REMOTE_AUTO_FALLBACK === '1';
     if (!autoFallback) return primary;
     const fallbackEntries = buildFallbackEntries(backend, config.model, config.numCtx);
     return fallbackEntries.length > 1 ? new FallbackChatClient(fallbackEntries) : primary;
@@ -197,7 +202,8 @@ export function createChatClient(config: CreateClientConfig): IChatClient {
     throw new Error(`${preset.label} backend selected but no API key found. Set ${envVarList}.${signup}`);
   }
   const primary = createOpenAIClient(preset, config.model, apiKey, config.numCtx);
-  const autoFallback = config.autoFallback ?? process.env.HARNESS_REMOTE_AUTO_FALLBACK !== '0';
+  // Opt-in by default (v0.5.0+). See note on the replicate branch above.
+  const autoFallback = config.autoFallback ?? process.env.HARNESS_REMOTE_AUTO_FALLBACK === '1';
   if (!autoFallback) return primary;
   const fallbackEntries = buildFallbackEntries(backend, config.model, config.numCtx);
   return fallbackEntries.length > 1 ? new FallbackChatClient(fallbackEntries) : primary;

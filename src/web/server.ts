@@ -24,6 +24,7 @@ import { listArtifacts, readArtifact, type ArtifactCategory } from '../services/
 import { cancelSubagent, listActiveSubagents, subscribeSubagentRegistry } from '../services/subagentRegistry';
 import { createToolFailureAlerts, type ToolFailureAlertTracker } from '../services/toolFailureAlerts';
 import { formatPrometheusMetrics, type PrometheusMetric } from '../observability/prometheus';
+import { recordSwallowed, getSwallowedFailures, getSwallowedFailureCount } from '../observability/silentFailureSink';
 import { createTask, deleteTask, getTask, listTasks, recordCheckIn, summarizeTasks, updateTask, type TaskPriority, type TaskStatus } from '../services/taskStore';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths } from '../tools/pathResolution';
@@ -480,7 +481,7 @@ function isToolEnabled(name: string): boolean {
     if (Date.now() < expiry) return true;
     // Expired — clean up
     timedToolEnables.delete(name);
-    saveSettingsToDisk().catch(() => {});
+    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
   }
   // Capability-grant gate: an active grant for `arbitrary-shell` enables the
   // docker_exec sandbox tool atomically. Granting the capability is the
@@ -499,11 +500,11 @@ function checkAutonomyExpiry(): void {
   if (autonomyExpiresAt > 0 && Date.now() >= autonomyExpiresAt) {
     const prev = autonomyPreviousMode;
     logger.info('Permissions', 'Timed autonomy expired, reverting to ' + prev);
-    appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.expired', reason: `Expired, reverted to ${prev}` }).catch(() => {});
+    appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.expired', reason: `Expired, reverted to ${prev}` }).catch((err) => recordSwallowed('appendCapabilityAuditEvent', err));
     permissionMode = prev;
     autonomyExpiresAt = 0;
     autonomyPreviousMode = 'default';
-    saveSettingsToDisk().catch(() => {});
+    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
   }
 }
 
@@ -602,7 +603,7 @@ function buildConciergeNote(userMessage: string): string | null {
     matchedKeyword: triage.matchedKeyword,
     confidence: triage.confidence,
     autoRouted: false,
-  }).catch(() => {});
+  }).catch((err) => recordSwallowed('server.ts:605', err));
   if (!triage.delegateTo) return null;
   return `Concierge triage: this turn looks like a fit for the "${triage.delegateTo}" sub-agent (reason: ${triage.reason}, confidence: ${triage.confidence.toFixed(2)}). You may delegate by calling the \`agent\` tool with { agent_id: "${triage.delegateTo}", prompt: "<task>" }, or answer directly if you prefer.`;
 }
@@ -640,7 +641,7 @@ async function maybeConciergeAutoRoute(
     reason: triage.reason,
     confidence: triage.confidence,
     messagePreview: userMessage.slice(0, 200),
-  }, 'concierge').catch(() => {});
+  }, 'concierge').catch((err) => recordSwallowed('server.ts:643', err));
   await logConciergeDecision(PROJECT_DIR, {
     messagePreview: userMessage,
     delegateTo: triage.delegateTo,
@@ -648,7 +649,7 @@ async function maybeConciergeAutoRoute(
     matchedKeyword: triage.matchedKeyword,
     confidence: triage.confidence,
     autoRouted: true,
-  }).catch(() => {});
+  }).catch((err) => recordSwallowed('server.ts:651', err));
   return { agentId: triage.delegateTo, reason: triage.reason, summary };
 }
 
@@ -702,7 +703,7 @@ async function maybeSquadAutoRoute(
     agentId: route.agentId,
     reason: route.reason,
     messagePreview: userMessage.slice(0, 200),
-  }, 'squad').catch(() => {});
+  }, 'squad').catch((err) => recordSwallowed('server.ts:705', err));
   return { agentId: route.agentId, reason: route.reason, summary, squadId: squad.id };
 }
 
@@ -758,7 +759,7 @@ const defaultWebRuntime: WebRuntimeDeps = {
     // The subagent tool needs a parent client to delegate to; create one
     // for the current model. The custom-agents cache is refreshed
     // opportunistically so on-disk changes apply within ~30s.
-    refreshCustomAgentsIfStale().catch(() => {});
+    refreshCustomAgentsIfStale().catch((err) => recordSwallowed('refreshCustomAgentsIfStale', err));
     const parentClient = webRuntime.createClient(currentModel || 'llama3.1:8b', ollamaHost);
     return buildChatTools(parentClient);
   },
@@ -1291,7 +1292,7 @@ app.post('/api/autonomy/start', async (req, res) => {
     setEnv('HARNESS_MAX_TURNS', requestedMaxTurns);
     setEnv('HARNESS_TIME_BUDGET_MS', req.body?.timeBudgetMs);
     setEnv('HARNESS_UNPRODUCTIVE_TURN_LIMIT', requestedUnproductiveTurnLimit);
-    await fs.rm(path.join(PROJECT_DIR, '.forge-stop'), { force: true }).catch(() => {});
+    await fs.rm(path.join(PROJECT_DIR, '.forge-stop'), { force: true }).catch((err) => recordSwallowed('fs.rm', err));
     autonomyStartedAt = new Date().toISOString();
     // Windows: Node 20.12+/18.20.2+ refuses to spawn .bat/.cmd directly
     // (CVE-2024-27980). npm on Windows is npm.cmd, so the previous
@@ -2390,6 +2391,18 @@ async function buildAutonomyPreflight(planPreview?: Awaited<ReturnType<typeof re
   return { blocked: checks.filter((check) => check.status === 'blocked'), warnings: checks.filter((check) => check.status === 'warn') };
 }
 
+// Silent-failure diagnostics. Returns the in-memory ring buffer of promise
+// rejections that the server's many fire-and-forget .catch() handlers
+// recorded since process start. Used to surface failures of the audit log
+// itself (emitEvent, saveSettingsToDisk, etc.) that would otherwise be
+// completely invisible. Bounded at 200 entries; oldest evicted first.
+app.get('/api/diagnostics/swallowed', (_req, res) => {
+  res.json({
+    count: getSwallowedFailureCount(),
+    failures: getSwallowedFailures(),
+  });
+});
+
 app.get('/api/readiness', async (_req, res) => {
   try {
     await ensureSettingsLoaded();
@@ -2669,7 +2682,7 @@ app.post('/api/jarvis/runtime/register', (req, res) => {
     if (!VALID_RUNTIME_FEATURES.has(feature)) { res.status(400).json({ error: `feature must be one of ${[...VALID_RUNTIME_FEATURES].join(', ')}` }); return; }
     if (!adapterName) { res.status(400).json({ error: 'adapterName is required' }); return; }
     markRuntimeInstalled(feature, adapterName);
-    void saveRuntimeRegistry(PROJECT_DIR).catch(() => {});
+    void saveRuntimeRegistry(PROJECT_DIR).catch((err) => recordSwallowed('saveRuntimeRegistry', err));
     res.json({ feature, adapterName, status: getRuntimeRegistryStatus() });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -2678,7 +2691,7 @@ app.post('/api/jarvis/runtime/register', (req, res) => {
 
 app.post('/api/jarvis/runtime/clear', (_req, res) => {
   clearRuntimeRegistry();
-  void saveRuntimeRegistry(PROJECT_DIR).catch(() => {});
+  void saveRuntimeRegistry(PROJECT_DIR).catch((err) => recordSwallowed('saveRuntimeRegistry', err));
   res.json({ status: getRuntimeRegistryStatus() });
 });
 
@@ -3359,13 +3372,13 @@ app.post('/api/services/:id/lifecycle', async (req, res) => {
     const existing = await getServiceLifecycle(PROJECT_DIR, serviceId);
     if (!existing) {
       const state = await initServiceLifecycle(PROJECT_DIR, serviceId, targetStatus);
-      await emitEvent(PROJECT_DIR, 'service', 'lifecycle_initialized', { service_id: serviceId, status: targetStatus }, 'user', serviceId).catch(() => {});
+      await emitEvent(PROJECT_DIR, 'service', 'lifecycle_initialized', { service_id: serviceId, status: targetStatus }, 'user', serviceId).catch((err) => recordSwallowed('emitEvent', err));
       res.json({ success: true, state });
       return;
     }
     const result = await transitionService(PROJECT_DIR, serviceId, targetStatus, req.body?.error_message);
     if (result.success) {
-      await emitEvent(PROJECT_DIR, 'service', 'lifecycle_transitioned', { service_id: serviceId, from: result.from, to: result.to }, 'user', serviceId).catch(() => {});
+      await emitEvent(PROJECT_DIR, 'service', 'lifecycle_transitioned', { service_id: serviceId, from: result.from, to: result.to }, 'user', serviceId).catch((err) => recordSwallowed('emitEvent', err));
     }
     res.json(result);
   } catch (error) {
@@ -3512,7 +3525,7 @@ app.post('/api/triggers', async (req, res) => {
     }
     triggers.push(definition);
     await saveTriggers(PROJECT_DIR, triggers);
-    if (triggerScheduler) await triggerScheduler.invalidate().catch(() => {});
+    if (triggerScheduler) await triggerScheduler.invalidate().catch((err) => recordSwallowed('triggerScheduler.invalidate', err));
     res.json({ trigger: definition });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -3535,7 +3548,7 @@ app.patch('/api/triggers/:id', async (req, res) => {
     };
     triggers[idx] = merged;
     await saveTriggers(PROJECT_DIR, triggers);
-    if (triggerScheduler) await triggerScheduler.invalidate().catch(() => {});
+    if (triggerScheduler) await triggerScheduler.invalidate().catch((err) => recordSwallowed('triggerScheduler.invalidate', err));
     res.json({ trigger: merged });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -3549,7 +3562,7 @@ app.delete('/api/triggers/:id', async (req, res) => {
     if (idx === -1) { res.status(404).json({ error: 'Trigger not found.' }); return; }
     triggers.splice(idx, 1);
     await saveTriggers(PROJECT_DIR, triggers);
-    if (triggerScheduler) await triggerScheduler.invalidate().catch(() => {});
+    if (triggerScheduler) await triggerScheduler.invalidate().catch((err) => recordSwallowed('triggerScheduler.invalidate', err));
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -3627,11 +3640,11 @@ function wireSubagentRegistryBridge(): void {
   if (_subagentRegistryUnsubscribe) return;
   _subagentRegistryUnsubscribe = subscribeSubagentRegistry((event) => {
     if (event.kind === 'start') {
-      emitEvent(PROJECT_DIR, 'system', 'subagent.start', { id: event.record.id, name: event.record.name, promptSnippet: event.record.promptSnippet, startedAtMs: event.record.startedAtMs }, 'subagent', event.record.id).catch(() => {});
+      emitEvent(PROJECT_DIR, 'system', 'subagent.start', { id: event.record.id, name: event.record.name, promptSnippet: event.record.promptSnippet, startedAtMs: event.record.startedAtMs }, 'subagent', event.record.id).catch((err) => recordSwallowed('emitEvent', err));
     } else if (event.kind === 'end') {
-      emitEvent(PROJECT_DIR, 'system', 'subagent.end', { id: event.id }, 'subagent', event.id).catch(() => {});
+      emitEvent(PROJECT_DIR, 'system', 'subagent.end', { id: event.id }, 'subagent', event.id).catch((err) => recordSwallowed('emitEvent', err));
     } else if (event.kind === 'cancel') {
-      emitEvent(PROJECT_DIR, 'system', 'subagent.cancel', { id: event.id }, 'subagent', event.id).catch(() => {});
+      emitEvent(PROJECT_DIR, 'system', 'subagent.cancel', { id: event.id }, 'subagent', event.id).catch((err) => recordSwallowed('emitEvent', err));
     }
   });
 }
@@ -3656,7 +3669,7 @@ toolFailureAlerts.subscribe((alert) => {
     total_count: alert.totalCount,
     threshold: alert.threshold,
     fired_at: alert.firedAt,
-  }, 'system', alert.tool).catch(() => {});
+  }, 'system', alert.tool).catch((err) => recordSwallowed('server.ts:3659', err));
 });
 
 // ─── Prometheus /metrics ───────────────────────────────────────────
@@ -4135,7 +4148,7 @@ app.patch('/api/system/feature-flags', (req, res) => {
       }
     }
     systemFeatureFlags = next;
-    saveSettingsToDisk().catch(() => {});
+    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
     // Re-apply scheduler configurations so changes take effect immediately.
     try { configureSelfLearningHeartbeat(); } catch { /* best-effort */ }
     try { configureTriggerScheduler(); } catch { /* best-effort */ }
@@ -4214,7 +4227,7 @@ app.post('/api/promises', async (req, res) => {
     const { commitment, service_id, schedule_id, capability_required, next_due_at, fallback_message, session_id } = req.body ?? {};
     if (!commitment || typeof commitment !== 'string') { res.status(400).json({ error: 'commitment is required.' }); return; }
     const promise = await createPromise(PROJECT_DIR, commitment, { service_id, schedule_id, capability_required, next_due_at, fallback_message, session_id });
-    await emitEvent(PROJECT_DIR, 'promise', 'promise_created', { promise_id: promise.promise_id, commitment }, 'user', promise.promise_id).catch(() => {});
+    await emitEvent(PROJECT_DIR, 'promise', 'promise_created', { promise_id: promise.promise_id, commitment }, 'user', promise.promise_id).catch((err) => recordSwallowed('emitEvent', err));
     res.json(promise);
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -4226,7 +4239,7 @@ app.post('/api/promises/:id/fulfil', async (req, res) => {
     const promiseId = req.params.id;
     const result = await fulfilPromise(PROJECT_DIR, promiseId);
     if (!result) { res.status(404).json({ error: 'Promise not found.' }); return; }
-    await emitEvent(PROJECT_DIR, 'promise', 'promise_fulfilled', { promise_id: promiseId }, 'system', promiseId).catch(() => {});
+    await emitEvent(PROJECT_DIR, 'promise', 'promise_fulfilled', { promise_id: promiseId }, 'system', promiseId).catch((err) => recordSwallowed('emitEvent', err));
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -4239,7 +4252,7 @@ app.post('/api/promises/:id/fail', async (req, res) => {
     const markFailed = req.body?.markFailed === true;
     const result = await failPromise(PROJECT_DIR, promiseId, markFailed);
     if (!result) { res.status(404).json({ error: 'Promise not found.' }); return; }
-    await emitEvent(PROJECT_DIR, 'promise', 'promise_failed', { promise_id: promiseId, markFailed }, 'system', promiseId).catch(() => {});
+    await emitEvent(PROJECT_DIR, 'promise', 'promise_failed', { promise_id: promiseId, markFailed }, 'system', promiseId).catch((err) => recordSwallowed('emitEvent', err));
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -4260,7 +4273,7 @@ app.post('/api/promises/:id/cancel', async (req, res) => {
     const promiseId = req.params.id;
     const result = await updatePromise(PROJECT_DIR, promiseId, { status: 'cancelled' });
     if (!result) { res.status(404).json({ error: 'Promise not found.' }); return; }
-    await emitEvent(PROJECT_DIR, 'promise', 'promise_cancelled', { promise_id: promiseId }, 'user', promiseId).catch(() => {});
+    await emitEvent(PROJECT_DIR, 'promise', 'promise_cancelled', { promise_id: promiseId }, 'user', promiseId).catch((err) => recordSwallowed('emitEvent', err));
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -4384,7 +4397,7 @@ app.post('/api/code-intelligence/build', async (_req, res) => {
     const graph = await buildRepoGraph(PROJECT_DIR);
     await saveRepoGraph(PROJECT_DIR, graph);
     const summary = summarizeRepo(graph);
-    await emitEvent(PROJECT_DIR, 'system', 'repo_graph_built', { files: summary.total_files, edges: summary.total_edges }, 'system').catch(() => {});
+    await emitEvent(PROJECT_DIR, 'system', 'repo_graph_built', { files: summary.total_files, edges: summary.total_edges }, 'system').catch((err) => recordSwallowed('emitEvent', err));
     res.json(summary);
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -5051,14 +5064,14 @@ app.post('/api/permissions/timed-autonomy', (req, res) => {
       permissionMode = 'dontAsk';
       autonomyExpiresAt = Date.now() + expiresInMinutes * 60_000;
       logger.info('Permissions', 'Timed autonomy engaged', { expiresInMinutes, previousMode: autonomyPreviousMode });
-      appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.engaged', reason: `${reason} (engaged for ${expiresInMinutes}m, reverts to ${autonomyPreviousMode})` }).catch(() => {});
+      appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.engaged', reason: `${reason} (engaged for ${expiresInMinutes}m, reverts to ${autonomyPreviousMode})` }).catch((err) => recordSwallowed('appendCapabilityAuditEvent', err));
     } else {
       // Clear timed autonomy (revert now)
       const clearTools = Boolean(req.body?.clearTimedTools);
       if (autonomyExpiresAt > 0) {
         permissionMode = autonomyPreviousMode;
         logger.info('Permissions', 'Timed autonomy cleared, reverted to ' + permissionMode);
-        appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.cleared', reason: `Manually cleared, reverted to ${permissionMode}` }).catch(() => {});
+        appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.cleared', reason: `Manually cleared, reverted to ${permissionMode}` }).catch((err) => recordSwallowed('appendCapabilityAuditEvent', err));
       }
       if (clearTools && timedToolEnables.size > 0) {
         timedToolEnables.clear();
@@ -5067,7 +5080,7 @@ app.post('/api/permissions/timed-autonomy', (req, res) => {
       autonomyExpiresAt = 0;
       autonomyPreviousMode = 'default';
     }
-    saveSettingsToDisk().catch(() => {});
+    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
     res.json({
       permissionMode,
       autonomyExpiresAt: autonomyExpiresAt > Date.now() ? new Date(autonomyExpiresAt).toISOString() : null,
@@ -5107,7 +5120,7 @@ app.post('/api/permissions/kill-switch', (req, res) => {
       logger.info('Permissions', 'Kill switch released');
       runtimeTracer.recordEvent('permission.kill_switch_released', {});
     }
-    saveSettingsToDisk().catch(() => {});
+    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
     res.json({ killSwitch: { active: killSwitchActive, reason: killSwitchReason } });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -5274,8 +5287,8 @@ app.post('/api/automations/execute-due', async (_req, res) => {
     // Notify via Telegram if bot is running.
     if (results.length > 0) {
       const summary = results.map((r) => `• ${r.name}`).join('\n');
-      sendTelegramNotification('Automation jobs completed', `${results.length} job(s) ran:\n${summary}`).catch(() => {});
-      sendWebhookNotification('automation.completed', { executed: results.length, jobs: results.map((r) => ({ id: r.jobId, name: r.name })) }).catch(() => {});
+      sendTelegramNotification('Automation jobs completed', `${results.length} job(s) ran:\n${summary}`).catch((err) => recordSwallowed('sendTelegramNotification', err));
+      sendWebhookNotification('automation.completed', { executed: results.length, jobs: results.map((r) => ({ id: r.jobId, name: r.name })) }).catch((err) => recordSwallowed('sendWebhookNotification', err));
     }
     res.json({ executed: results.length, results: results.map((r) => ({ jobId: r.jobId, name: r.name, scriptOutput: r.run.scriptOutput, outputPath: r.run.outputPath })), evidence });
   } catch (error) {
@@ -5523,7 +5536,7 @@ app.post('/api/tools/:name/toggle', async (req, res) => {
     const timedExpiry = timedToolEnables.get(toolName);
     const enabledUntil = timedExpiry !== undefined && Date.now() < timedExpiry ? new Date(timedExpiry).toISOString() : undefined;
     logger.info('Tools', 'Tool toggled', { tool: toolName, enabled: desiredEnabled, expiresInMinutes });
-    saveSettingsToDisk().catch(() => {});
+    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
     res.json({ name: toolName, enabled: desiredEnabled, enabledUntil, disabled: Array.from(disabledTools).sort() });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -5560,7 +5573,7 @@ app.post('/api/tools/bulk-toggle', async (req, res) => {
       results.push({ name: toolName, enabled: desiredEnabled, enabledUntil });
     }
     logger.info('Tools', 'Bulk toggle', { count: results.length, enabled: desiredEnabled, expiresInMinutes });
-    saveSettingsToDisk().catch(() => {});
+    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
     res.json({ toggled: results, disabled: Array.from(disabledTools).sort() });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -5638,7 +5651,7 @@ app.put('/api/workflows/:name', async (req, res) => {
           return;
         }
       } finally {
-        await fs.unlink(tempPath).catch(() => {});
+        await fs.unlink(tempPath).catch((err) => recordSwallowed('fs.unlink', err));
       }
     }
     await fs.writeFile(target, content, 'utf-8');
@@ -5791,7 +5804,7 @@ app.post('/api/permissions/:id/resolve', (req, res) => {
     runtimeTracer.recordEvent('permission.prompt_resolved', { promptId, allowed });
     // Jarvis: feed outcome into the trust ladder so it learns over time.
     if (pendingBefore?.call?.name) {
-      void recordPermissionOutcome(PROJECT_DIR, pendingBefore.call.name, allowed ? 'allowed' : 'denied').catch(() => {});
+      void recordPermissionOutcome(PROJECT_DIR, pendingBefore.call.name, allowed ? 'allowed' : 'denied').catch((err) => recordSwallowed('recordPermissionOutcome', err));
     }
     res.json({ ok: true });
   } catch (error) {
@@ -5833,7 +5846,7 @@ async function loadExplicitSkillContext(messageText: string): Promise<{ skill?: 
   const skill = skills.find((candidate) => candidate.name.toLowerCase() === invocation.name.toLowerCase());
   if (!skill) return { context: '' };
 
-  recordSkillUse(PROJECT_DIR, skill.name).catch(() => {});
+  recordSkillUse(PROJECT_DIR, skill.name).catch((err) => recordSwallowed('recordSkillUse', err));
   const inputBlock = invocation.input
     ? `\n\n[User input for this skill]\n${invocation.input}`
     : '\n\n[User input for this skill]\nNo extra input was supplied. Ask one concise question if the skill needs business, product, audience, or goal details before producing useful output.';
@@ -5864,9 +5877,9 @@ app.post('/api/chat', async (req, res) => {
     loadSkillsDir(SKILLS_DIR)
       .then((skills) => {
         const matched = matchSkillTrigger(skills, messageText);
-        if (matched) recordSkillUse(PROJECT_DIR, matched.name).catch(() => {});
+        if (matched) recordSkillUse(PROJECT_DIR, matched.name).catch((err) => recordSwallowed('recordSkillUse', err));
       })
-      .catch(() => {});
+      .catch((err) => recordSwallowed('server.ts:5869', err));
   }
 
   refreshCapabilityRegistry();
@@ -5883,7 +5896,7 @@ app.post('/api/chat', async (req, res) => {
       const response = `${answer}\n\n*${shortcut.explanation}*`;
       res.write(`data: ${JSON.stringify({ type: 'text', content: response })}\n\n`);
       res.write(`data: ${JSON.stringify({ type: 'done', reason: 'deterministic_shortcut' })}\n\n`);
-      emitEvent(PROJECT_DIR, 'system', 'deterministic_shortcut', { type: shortcut.type, input: messageText.slice(0, 100) }, 'system').catch(() => {});
+      emitEvent(PROJECT_DIR, 'system', 'deterministic_shortcut', { type: shortcut.type, input: messageText.slice(0, 100) }, 'system').catch((err) => recordSwallowed('emitEvent', err));
       res.write('data: [DONE]\n\n');
       res.end();
       return;
@@ -5986,7 +5999,7 @@ app.post('/api/chat', async (req, res) => {
       artifacts: [],
       recovery: { stopReason: 'completed' },
     };
-    await appendRunEvidence(PROJECT_DIR, evidenceCard).catch(() => {});
+    await appendRunEvidence(PROJECT_DIR, evidenceCard).catch((err) => recordSwallowed('appendRunEvidence', err));
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'close');
@@ -6424,7 +6437,7 @@ CONTEXT HYGIENE (critical for long tasks):
           input_summary: summarizeForEvidence(event.call.input)?.slice(0, 200),
           output_summary: summarizeForEvidence(event.result?.output)?.slice(0, 200),
           session_id: session.getSessionId(),
-        }, 'agent', session.getSessionId()).catch(() => {});
+        }, 'agent', session.getSessionId()).catch((err) => recordSwallowed('server.ts:6427', err));
         // Schema validation: validate tool call arguments against matching schema.
         const toolSchema = detectSchema({ toolName: event.call.name });
         if (toolSchema && event.call.input && typeof event.call.input === 'object') {
@@ -6435,7 +6448,7 @@ CONTEXT HYGIENE (critical for long tasks):
               schema: schemaResult.schema_id,
               errors: schemaResult.errors.slice(0, 5),
               score: schemaResult.score,
-            }, 'agent', session.getSessionId()).catch(() => {});
+            }, 'agent', session.getSessionId()).catch((err) => recordSwallowed('server.ts:6438', err));
           }
         }
       }
@@ -6453,10 +6466,10 @@ CONTEXT HYGIENE (critical for long tasks):
       }
       if (event.type === 'done') {
         doneReason = event.reason;
-        recordSessionCompleted(PROJECT_DIR, activeModel).catch(() => {});
+        recordSessionCompleted(PROJECT_DIR, activeModel).catch((err) => recordSwallowed('recordSessionCompleted', err));
         // Record average turn duration for adaptive time budget.
         if (turnCount > 0) {
-          recordAvgTurnDuration(PROJECT_DIR, activeModel, Math.round(totalTurnMs / turnCount)).catch(() => {});
+          recordAvgTurnDuration(PROJECT_DIR, activeModel, Math.round(totalTurnMs / turnCount)).catch((err) => recordSwallowed('recordAvgTurnDuration', err));
         }
       }
       if (event.type === 'turn_complete') {
@@ -6464,7 +6477,7 @@ CONTEXT HYGIENE (critical for long tasks):
         totalTurnMs += (event as { durationMs?: number }).durationMs ?? 0;
       }
       if (event.type === 'synthesis_fired') {
-        recordSynthesisFired(PROJECT_DIR, activeModel).catch(() => {});
+        recordSynthesisFired(PROJECT_DIR, activeModel).catch((err) => recordSwallowed('recordSynthesisFired', err));
       }
       if (event.type === 'auto_continue') {
         autoContinueCount++;
@@ -6568,7 +6581,7 @@ CONTEXT HYGIENE (critical for long tasks):
     toolCalls: toolCallCount,
     toolSuccesses: toolSuccessCount,
     finalTextResponse: assistantTextBuffer.trim().length > 0,
-  }).catch(() => {});
+  }).catch((err) => recordSwallowed('server.ts:6571', err));
 
   webRuntime.onSessionEnd().then(({ reflection, newPatterns }) => {
     if (reflection.insights.length > 0) {
@@ -6577,9 +6590,9 @@ CONTEXT HYGIENE (critical for long tasks):
     if (newPatterns.length > 0) {
       logger.info('Learning', `${newPatterns.length} patterns ready for skill promotion`);
     }
-  }).catch(() => {});
-  persistSessionLearning(session, projectDir).catch(() => {});
-  webRuntime.rebuildSemanticMemory(projectDir).catch(() => {});
+  }).catch((err) => recordSwallowed('server.ts:6580', err));
+  persistSessionLearning(session, projectDir).catch((err) => recordSwallowed('persistSessionLearning', err));
+  webRuntime.rebuildSemanticMemory(projectDir).catch((err) => recordSwallowed('webRuntime.rebuildSemanticMemory', err));
 
   // Mycelium reinforcement: strengthen or weaken routes based on outcome.
   // Run a heuristic verifier first so the reward reflects safety + tool reliability.
@@ -6670,7 +6683,7 @@ CONTEXT HYGIENE (critical for long tasks):
   }
 
   // Persist nervous system signals for historical analysis.
-  globalNervousSystem.persistSignals(PROJECT_DIR).catch(() => {});
+  globalNervousSystem.persistSignals(PROJECT_DIR).catch((err) => recordSwallowed('globalNervousSystem.persistSignals', err));
 
   const evidenceCard: EvidenceCard = {
     id: crypto.randomUUID(),
@@ -6713,10 +6726,10 @@ CONTEXT HYGIENE (critical for long tasks):
     for (const commitment of commitments) {
       createPromise(PROJECT_DIR, commitment, { session_id: session.getSessionId() })
         .then((p) => {
-          emitEvent(PROJECT_DIR, 'promise', 'promise_auto_detected', { promise_id: p.promise_id, commitment }, 'agent', p.promise_id).catch(() => {});
+          emitEvent(PROJECT_DIR, 'promise', 'promise_auto_detected', { promise_id: p.promise_id, commitment }, 'agent', p.promise_id).catch((err) => recordSwallowed('emitEvent', err));
           logger.info('Promises', `Auto-detected commitment: ${commitment.slice(0, 80)}`);
         })
-        .catch(() => {});
+        .catch((err) => recordSwallowed('server.ts:6719', err));
     }
   }
 
@@ -6732,7 +6745,7 @@ CONTEXT HYGIENE (critical for long tasks):
           errors: validation.errors.slice(0, 5),
           score: validation.score,
           session_id: session.getSessionId(),
-        }, 'agent', session.getSessionId()).catch(() => {});
+        }, 'agent', session.getSessionId()).catch((err) => recordSwallowed('server.ts:6735', err));
       }
     }
   }
@@ -6745,7 +6758,7 @@ CONTEXT HYGIENE (critical for long tasks):
     tool_success: toolSuccessCount,
     done_reason: doneReason,
     has_output: assistantTextBuffer.trim().length > 0,
-  }, 'agent', session.getSessionId()).catch(() => {});
+  }, 'agent', session.getSessionId()).catch((err) => recordSwallowed('server.ts:6748', err));
 
   // Execution Readiness Gate: compute and emit readiness score for this turn.
   const readinessInput: ReadinessInput = {
@@ -6769,7 +6782,7 @@ CONTEXT HYGIENE (critical for long tasks):
       if (strongBackends.length > 0) {
         const suggested = `${strongBackends[0]}/${OPENAI_COMPATIBLE_PRESETS[strongBackends[0]].defaultModel}`;
         res.write(`data: ${JSON.stringify({ type: 'escalation_advisory', currentModel: activeModel, suggestedModel: suggested, readinessScore: readiness.score, reason: 'Readiness score below threshold. Consider switching to a stronger model.' })}\n\n`);
-        emitEvent(PROJECT_DIR, 'model', 'escalation_suggested', { current: activeModel, suggested, readiness_score: readiness.score }, 'system').catch(() => {});
+        emitEvent(PROJECT_DIR, 'model', 'escalation_suggested', { current: activeModel, suggested, readiness_score: readiness.score }, 'system').catch((err) => recordSwallowed('emitEvent', err));
       }
     }
   }
@@ -7672,7 +7685,7 @@ app.post('/api/curator/run', async (_req, res) => {
     const summary = await runCurator(PROJECT_DIR, curatorConfigFromSettings(), curatorDeps());
     if (!summary.dryRun) {
       curatorSettings = { ...curatorSettings, lastRunAt: new Date().toISOString() };
-      await saveSettingsToDisk().catch(() => {});
+      await saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
     }
     res.json({ summary });
   } catch (error) {
@@ -8033,7 +8046,7 @@ async function pruneUploads(olderThanDays: number): Promise<{ removed: Array<{ n
   }
   const lastPrunedAt = new Date().toISOString();
   mediaTools = { ...mediaTools, uploadsLastPrunedAt: lastPrunedAt };
-  await saveSettingsToDisk().catch(() => {});
+  await saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
   logger.info('Uploads', `Pruned ${removed.length} file(s) older than ${olderThanDays} days`, { removedBytes });
   return { removed, removedBytes, olderThanDays, lastPrunedAt };
 }
@@ -8101,7 +8114,7 @@ function configureCuratorScheduler(): void {
     getLastRunMs: () => curatorSettings.lastRunAt ? Date.parse(curatorSettings.lastRunAt) || 0 : 0,
     recordRunMs: (timestamp) => {
       curatorSettings = { ...curatorSettings, lastRunAt: new Date(timestamp).toISOString() };
-      saveSettingsToDisk().catch(() => {});
+      saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
     },
     callModel: curatorDeps().callModel,
     // Candidate-pressure accelerator: when ≥25 unreviewed candidates have
@@ -8283,8 +8296,8 @@ function configureAutomationScheduler(): void {
     idleThresholdMinutes: automationSchedulerSettings.idleThresholdMinutes,
     onBreachDetected: (breaches) => {
       const msg = `⚠️ ${breaches.length} promise breach(es):\n${breaches.map((b) => `• ${b.breach_type}: ${b.detail.slice(0, 100)}`).join('\n')}`;
-      sendTelegramNotification('Promise breach', msg).catch(() => {});
-      sendWebhookNotification('promise.breach', { breaches }).catch(() => {});
+      sendTelegramNotification('Promise breach', msg).catch((err) => recordSwallowed('sendTelegramNotification', err));
+      sendWebhookNotification('promise.breach', { breaches }).catch((err) => recordSwallowed('sendWebhookNotification', err));
     },
   });
   automationScheduler.start();
@@ -9072,7 +9085,7 @@ async function snapshotSkillHistory(skillName: string, previousContent: string):
     const files = (await fs.readdir(dir)).filter((name) => name.endsWith('.md')).sort();
     while (files.length > 20) {
       const oldest = files.shift();
-      if (oldest) await fs.unlink(path.join(dir, oldest)).catch(() => {});
+      if (oldest) await fs.unlink(path.join(dir, oldest)).catch((err) => recordSwallowed('fs.unlink', err));
     }
   } catch {
     // History writes are best-effort; never block the primary save.
@@ -9557,6 +9570,25 @@ async function checkSourceDistFreshness(): Promise<void> {
 export async function startServer(): Promise<void> {
   const startupProfile = createStartupProfile();
   startupProfile.record('module-route-init', MODULE_LOAD_STARTED_AT);
+  // Project-dir self-check. The v0.4.10 install_skill bug was one instance
+  // of an entire failure class: a module-level state holder (skillsDir,
+  // agentsDir, etc.) silently falls back to process.cwd() when its
+  // setXxxDir() wiring is forgotten. We catch the visible half of that
+  // class at boot by logging the resolved absolute path for each
+  // .harness/ subdir so misconfiguration is loud, not silent.
+  logger.info('Startup', 'Project directory layout', {
+    PROJECT_DIR,
+    skills: SKILLS_DIR,
+    chatHistory: HISTORY_DIR,
+    traces: TRACES_DIR,
+    documents: DOCUMENTS_DIR,
+    workflows: WORKFLOWS_DIR,
+    settingsPath: SETTINGS_PATH,
+    apiKeysPath: API_KEYS_PATH,
+  });
+  if (!process.env.HARNESS_PROJECT_DIR) {
+    logger.info('Startup', 'HARNESS_PROJECT_DIR not set — using process.cwd()', { cwd: process.cwd() });
+  }
   await ensureSettingsLoaded();
   startupProfile.record('settings-load');
   const staleSessionCount = await SessionStorage.markStaleRunningSessions(PROJECT_DIR, MODULE_LOAD_STARTED_AT).catch(() => 0);
@@ -9623,7 +9655,7 @@ export async function startServer(): Promise<void> {
         loadPersistedChatIds(PROJECT_DIR).then(() => {
           const bot = startTelegramBot(tgToken, url, telegramAllowedChatIds ? telegramAllowedChatIds.split(',') : undefined);
           if (bot) console.log(`  Telegram bot:          connected`);
-        }).catch(() => {});
+        }).catch((err) => recordSwallowed('server.ts:9626', err));
       }
 
       // Start Discord bot if token is configured.
@@ -9765,9 +9797,9 @@ export async function startServer(): Promise<void> {
               }
             } catch { /* mycelium seeding is optional */ }
           });
-        }).catch(() => {});
+        }).catch((err) => recordSwallowed('server.ts:9768', err));
       }
-    }).catch(() => {});
+    }).catch((err) => recordSwallowed('server.ts:9770', err));
 
     if (process.env.NO_OPEN !== '1') {
       openBrowser(url);
@@ -9802,6 +9834,29 @@ export function setWebRuntimeOverrides(overrides: Partial<WebRuntimeDeps>): () =
 }
 
 if (require.main === module) {
+  // Process-level safety net. Installed only when this file is the entry
+  // point so importing server.ts from tests does not register handlers
+  // that would catch the test runner's own failures.
+  //
+  // Policy:
+  //  - unhandledRejection: log + record in the silent-failure sink, do
+  //    NOT exit. Node's default future is to exit; we keep the harness
+  //    alive because losing a long-running session to a single bad
+  //    promise is worse than a quietly logged error.
+  //  - uncaughtException: log + record + exit(1). The process state is
+  //    not trustworthy after an uncaught throw; let the OS / launcher
+  //    restart cleanly rather than serve from a half-broken state.
+  process.on('unhandledRejection', (reason) => {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    logger.error('Process', 'Unhandled promise rejection (kept process alive)', { message });
+    recordSwallowed('process.unhandledRejection', reason);
+  });
+  process.on('uncaughtException', (error) => {
+    logger.error('Process', 'Uncaught exception (exiting)', { message: error.message, stack: error.stack });
+    recordSwallowed('process.uncaughtException', error);
+    // Give the logger a tick to flush stderr before we go.
+    setTimeout(() => process.exit(1), 50);
+  });
   startServer().catch((error) => {
     console.error(error);
     process.exit(1);

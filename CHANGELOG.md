@@ -11,6 +11,81 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Ollama Agent Harness v0.5.0
+
+System-audit hardening release. Five items from the recommended hardening
+order ship together; five remain as follow-up work. Includes one
+deliberate breaking default change (auto-fallback is now opt-in).
+
+### Breaking: remote provider fallback is now opt-in
+
+* `HARNESS_REMOTE_AUTO_FALLBACK` is now **off by default**. Previously
+  it defaulted to enabled, which silently routed conversation contents
+  (including tool outputs from `file_read` and `bash`) to a remote
+  provider whenever Ollama errored — directly contradicting the
+  product's "local-first" positioning.
+* To restore the previous behaviour, set `HARNESS_REMOTE_AUTO_FALLBACK=1`.
+* Affects [src/core/chatClientFactory.ts](src/core/chatClientFactory.ts),
+  [src/setup/health.ts](src/setup/health.ts), and the
+  `harness doctor` status line in
+  [src/cli/index.ts](src/cli/index.ts).
+* Tests added for both off-by-default and on-when-opted-in paths.
+
+### Silent-failure sink — observability for swallowed promise rejections
+
+* New module [src/observability/silentFailureSink.ts](src/observability/silentFailureSink.ts)
+  exposes `recordSwallowed(label, error, meta?)`, a bounded
+  (200-entry) in-memory ring buffer that never throws and never does
+  I/O.
+* 65 `.catch(() => {})` sites in
+  [src/web/server.ts](src/web/server.ts) now route to the sink with
+  call-site-derived labels (`saveSettingsToDisk`,
+  `appendCapabilityAuditEvent`, `emitEvent`, `saveRuntimeRegistry`,
+  etc.). Fire-and-forget semantics are preserved — the caller still
+  gets a resolved promise — but the failure is now post-hoc
+  attributable.
+* New endpoint `GET /api/diagnostics/swallowed` returns the buffer
+  contents and total count. Useful for diagnosing "why didn't this
+  audit event land" without grepping stderr.
+* Tests cover the buffer cap, non-`Error` rejection values, and a
+  hostile error object whose `message` getter throws.
+
+### Process-level safety net
+
+* `unhandledRejection` and `uncaughtException` handlers installed only
+  when [src/web/server.ts](src/web/server.ts) runs as the entry point
+  (so test runs are unaffected).
+* Unhandled rejections are logged + recorded in the sink and the
+  process is kept alive. Losing a long-running session to one bad
+  promise is a worse outcome than a quietly logged error.
+* Uncaught exceptions log + record + exit(1) after a 50 ms grace
+  period for stderr flush. Process state is not trustworthy after an
+  uncaught throw; cleaner to let the launcher restart.
+
+### Startup project-directory self-check
+
+* `startServer` now logs the resolved absolute path for every
+  `.harness/*` subdirectory at boot, plus the `HARNESS_PROJECT_DIR`
+  source. Catches the visible half of the misconfiguration class that
+  silently broke `install_skill` in v0.4.9 — wiring bugs are now
+  loud at startup instead of invisible until a user notices missing
+  data.
+
+### Deferred to follow-up releases
+
+The audit's recommended order included five additional items not in
+this release:
+
+1. File-lock JSON stores (`automations.json`, `settings.json`,
+   `runtime-registry.json`, `safety-rules.json`) — needs a new
+   dependency (`proper-lockfile` or equivalent).
+2. Funnel both schedulers through `PermissionEngine` — architectural.
+3. Workflow persistence across server restart — substantial.
+4. `bashTool` Windows arg quoting on the cmd-shim path — needs careful
+   cross-platform tests.
+5. Health-endpoint upgrade incorporating sink counts + scheduler
+   liveness — depends on (2) above.
+
 ## Ollama Agent Harness v0.4.10
 
 Sweep release: three bugs found by the post-v0.4.9 audit, all fixed.

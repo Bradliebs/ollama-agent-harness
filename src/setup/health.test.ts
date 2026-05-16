@@ -213,12 +213,26 @@ describe('setup health', () => {
     it('reports fallback routing configuration', async () => {
       process.env.CEREBRAS_API_KEY = 'k';
       process.env.GROQ_API_KEY = 'k';
+      // Opt-in default since v0.5.0; explicitly enable for this assertion.
+      process.env.HARNESS_REMOTE_AUTO_FALLBACK = '1';
+      try {
+        const result = await probe();
+        expect(result.fallback).toBeDefined();
+        expect(result.fallback.enabled).toBe(true);
+        expect(result.fallback.cooldownMs).toBeGreaterThan(0);
+        expect(result.fallback.configuredCount).toBeGreaterThanOrEqual(2);
+        expect(result.fallback.order).toBe('default');
+      } finally {
+        delete process.env.HARNESS_REMOTE_AUTO_FALLBACK;
+      }
+    });
+
+    it('reports fallback as disabled by default (opt-in since v0.5.0)', async () => {
+      process.env.CEREBRAS_API_KEY = 'k';
+      process.env.GROQ_API_KEY = 'k';
+      delete process.env.HARNESS_REMOTE_AUTO_FALLBACK;
       const result = await probe();
-      expect(result.fallback).toBeDefined();
-      expect(result.fallback.enabled).toBe(true);
-      expect(result.fallback.cooldownMs).toBeGreaterThan(0);
-      expect(result.fallback.configuredCount).toBeGreaterThanOrEqual(2);
-      expect(result.fallback.order).toBe('default');
+      expect(result.fallback.enabled).toBe(false);
     });
 
     it('reports custom fallback order from env', async () => {
