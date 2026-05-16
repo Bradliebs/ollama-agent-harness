@@ -8,6 +8,7 @@ import { withFileLock } from '../persistence/atomicFile';
 import { createHelperAgentConfig, type HelperTaskType, type ModelRoutingDecision, type ModelRoutingInput, type ModelRoutingPolicy } from './modelRouting';
 import { resolveAgentDefinition, type AgentDefinition } from './agentLoader';
 import { registerSubagent, unregisterSubagent } from '../services/subagentRegistry';
+import { recordSwallowed } from '../observability/silentFailureSink';
 
 export interface SubagentConfig {
   name: string;
@@ -132,7 +133,7 @@ export function createSubagentTool(deps: SubagentToolDeps): Tool {
             if (recall && recall.trim().length > 0) {
               effectivePrompt = `${recall}\n\n${prompt}`;
             }
-          } catch { /* recall is best-effort */ }
+          } catch (err) { recordSwallowed('subagent.getRecallContext', err); }
         }
         const summary = await runner(config, effectivePrompt, deps.getParentClient(), deps.getAvailableTools());
         return { success: true, output: summary };

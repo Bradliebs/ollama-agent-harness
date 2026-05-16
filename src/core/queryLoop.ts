@@ -9,6 +9,7 @@ import { estimateTokenCount } from '../context/assembly';
 import type { SessionStorage } from '../persistence/sessionStorage';
 import { createContinuityCheckpoint } from '../persistence/continuity';
 import { ToolDispatcher } from '../tools/dispatcher';
+import type { LearningRecorder } from '../learning/engine';
 import type { RuntimeTracer } from './tracing';
 import { validateOutput, withOutputValidationInstructions } from './outputValidation';
 import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
@@ -21,6 +22,10 @@ export interface QueryLoopDeps {
   session?: SessionStorage;
   summarizerClient?: IChatClient;
   tracer?: RuntimeTracer;
+  /** Per-session, project-scoped recorder. Passed through to the dispatcher
+   * so tool usage is logged under the caller's PROJECT_DIR and sessionId
+   * instead of the legacy default recorder bound to `process.cwd()`. */
+  learningRecorder?: LearningRecorder;
 }
 
 export async function* queryLoop(
@@ -29,7 +34,7 @@ export async function* queryLoop(
   initialMessages: Message[] = [],
 ): AsyncGenerator<LoopEvent> {
   const { maxTurns, abortSignal } = config;
-  const { client, tools, permissionCheck, hooks, session, summarizerClient, tracer } = deps;
+  const { client, tools, permissionCheck, hooks, session, summarizerClient, tracer, learningRecorder } = deps;
 
   const dispatcher = new ToolDispatcher(tools);
   const ollamaTools = tools.map(toolToSchema);
@@ -357,7 +362,7 @@ export async function* queryLoop(
       }
     }
 
-    const dispatchedToolResults = await dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer });
+    const dispatchedToolResults = await dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer, learningRecorder });
     const toolResults = [...skippedToolResults, ...dispatchedToolResults];
     let producedFileChange = false;
     for (const { call, result } of toolResults) {

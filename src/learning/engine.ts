@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { logger } from '../core/logger';
+import { recordSwallowed } from '../observability/silentFailureSink';
 
 /**
  * Self-Learning Engine — the autonomous learning loop.
@@ -17,15 +18,15 @@ import { logger } from '../core/logger';
  * 3. Reflection — end-of-conversation self-assessment
  * 4. Dreaming/Consolidation — merges scattered memories into structured knowledge
  * 5. System prompt evolution — adapts the default prompt based on learned patterns
+ *
+ * State model: each chat / CLI run should construct its own LearningRecorder
+ * bound to the project's PROJECT_DIR and a sessionId, so the tool log,
+ * auto-continue counter, and active model are scoped per-session. The
+ * legacy no-arg exports (`startNewSession()`, `trackToolUsage(...)` etc.)
+ * are kept as backward-compat shims that delegate to a process-wide default
+ * recorder bound to `process.cwd()` — they remain race-prone under
+ * concurrency and should not be used from new code.
  */
-
-const BASE_DIR = path.join(process.cwd(), '.harness', 'learning');
-const TRACKER_FILE = path.join(BASE_DIR, 'tool-usage.jsonl');
-const PATTERNS_FILE = path.join(BASE_DIR, 'detected-patterns.json');
-const REFLECTIONS_FILE = path.join(BASE_DIR, 'reflections.jsonl');
-const EVOLVED_PROMPT_FILE = path.join(BASE_DIR, 'evolved-prompt.md');
-
-// --- 1. Tool Usage Tracking ---
 
 interface ToolUsageEntry {
   timestamp: string;
@@ -36,49 +37,14 @@ interface ToolUsageEntry {
   durationMs?: number;
 }
 
-let currentSessionId = Date.now().toString(36);
-let sessionToolLog: ToolUsageEntry[] = [];
-let sessionAutoContinueCount = 0;
-let sessionModel = '';
-
-export function startNewSession(): string {
-  currentSessionId = Date.now().toString(36);
-  sessionToolLog = [];
-  sessionAutoContinueCount = 0;
-  sessionModel = '';
-  return currentSessionId;
+interface Reflection {
+  timestamp: string;
+  sessionId: string;
+  toolsUsed: string[];
+  successRate: number;
+  insights: string[];
+  suggestedImprovements: string[];
 }
-
-export function recordSessionAutoContinue(model: string): void {
-  sessionAutoContinueCount++;
-  sessionModel = model;
-}
-
-export async function trackToolUsage(
-  tool: string,
-  input: Record<string, unknown>,
-  success: boolean,
-  durationMs?: number,
-): Promise<void> {
-  const entry: ToolUsageEntry = {
-    timestamp: new Date().toISOString(),
-    sessionId: currentSessionId,
-    tool,
-    input,
-    success,
-    durationMs,
-  };
-  sessionToolLog.push(entry);
-
-  try {
-    await fs.mkdir(BASE_DIR, { recursive: true });
-    await fs.appendFile(TRACKER_FILE, JSON.stringify(entry) + '\n');
-  } catch {
-    // Non-critical — don't break the agent loop
-  }
-}
-
-// --- 2. Pattern Detection ---
 
 interface DetectedPattern {
   id: string;
@@ -90,9 +56,145 @@ interface DetectedPattern {
   promoted: boolean; // true if a skill was already created from this
 }
 
+/** Project-scoped, per-session learning state. Replaces the legacy module
+ * globals (which races under concurrent chats and writes to whatever the
+ * process cwd happens to be). */
+export class LearningRecorder {
+  readonly projectDir: string;
+  readonly sessionId: string;
+  readonly baseDir: string;
+  readonly trackerFile: string;
+  readonly patternsFile: string;
+  readonly reflectionsFile: string;
+  readonly evolvedPromptFile: string;
+  readonly memoryDir: string;
+  private toolLog: ToolUsageEntry[] = [];
+  private autoContinueCount = 0;
+  private model = '';
+
+  constructor(projectDir: string, sessionId?: string) {
+    this.projectDir = projectDir;
+    this.sessionId = sessionId ?? Date.now().toString(36);
+    this.baseDir = path.join(projectDir, '.harness', 'learning');
+    this.trackerFile = path.join(this.baseDir, 'tool-usage.jsonl');
+    this.patternsFile = path.join(this.baseDir, 'detected-patterns.json');
+    this.reflectionsFile = path.join(this.baseDir, 'reflections.jsonl');
+    this.evolvedPromptFile = path.join(this.baseDir, 'evolved-prompt.md');
+    this.memoryDir = path.join(projectDir, '.harness', 'memory');
+  }
+
+  getSessionTools(): ToolUsageEntry[] { return [...this.toolLog]; }
+  getAutoContinueCount(): number { return this.autoContinueCount; }
+  getModel(): string { return this.model; }
+
+  recordAutoContinue(model: string): void {
+    this.autoContinueCount++;
+    this.model = model;
+  }
+
+  async trackToolUsage(
+    tool: string,
+    input: Record<string, unknown>,
+    success: boolean,
+    durationMs?: number,
+  ): Promise<void> {
+    const entry: ToolUsageEntry = {
+      timestamp: new Date().toISOString(),
+      sessionId: this.sessionId,
+      tool,
+      input,
+      success,
+      durationMs,
+    };
+    this.toolLog.push(entry);
+
+    try {
+      await fs.mkdir(this.baseDir, { recursive: true });
+      await fs.appendFile(this.trackerFile, JSON.stringify(entry) + '\n');
+    } catch {
+      // Non-critical — don't break the agent loop
+    }
+  }
+
+  async detectPatterns(): Promise<DetectedPattern[]> {
+    return detectPatternsImpl(this.trackerFile, this.patternsFile);
+  }
+
+  async reflectOnSession(): Promise<Reflection> {
+    return reflectOnSessionImpl(this);
+  }
+
+  async consolidateMemory(): Promise<string> {
+    return consolidateMemoryImpl(this);
+  }
+
+  async getEvolvedPrompt(basePrompt: string): Promise<string> {
+    return getEvolvedPromptImpl(this, basePrompt);
+  }
+
+  async evolvePrompt(addition: string): Promise<void> {
+    return evolvePromptImpl(this, addition);
+  }
+
+  async getUnpromotedPatterns(): Promise<DetectedPattern[]> {
+    return getUnpromotedPatternsImpl(this.patternsFile);
+  }
+
+  async markPatternPromoted(patternId: string): Promise<void> {
+    return markPatternPromotedImpl(this.patternsFile, patternId);
+  }
+
+  async onSessionEnd(): Promise<{ reflection: Reflection; newPatterns: DetectedPattern[] }> {
+    const reflection = await this.reflectOnSession();
+    const newPatterns = await this.detectPatterns();
+    const unpromoted = newPatterns.filter(p => !p.promoted);
+    if (unpromoted.length > 0) {
+      logger.info('Learning', `${unpromoted.length} patterns ready for skill promotion`);
+    }
+    return { reflection, newPatterns: unpromoted };
+  }
+}
+
+// --- Default recorder (backward compat for callers that didn't pass a recorder) ---
+
+let defaultRecorder: LearningRecorder = new LearningRecorder(process.cwd());
+
+/** Returns the current default recorder (bound to `process.cwd()` at first
+ * use, then rebound by `startNewSession()`). New code should construct its
+ * own LearningRecorder rather than relying on this. */
+export function getDefaultLearningRecorder(): LearningRecorder {
+  return defaultRecorder;
+}
+
+// --- Backward-compat free-function API (delegates to default recorder) ---
+
+export function startNewSession(): string {
+  defaultRecorder = new LearningRecorder(process.cwd());
+  return defaultRecorder.sessionId;
+}
+
+export function recordSessionAutoContinue(model: string): void {
+  defaultRecorder.recordAutoContinue(model);
+}
+
+export async function trackToolUsage(
+  tool: string,
+  input: Record<string, unknown>,
+  success: boolean,
+  durationMs?: number,
+): Promise<void> {
+  return defaultRecorder.trackToolUsage(tool, input, success, durationMs);
+}
+
+// --- 2. Pattern Detection ---
+
 export async function detectPatterns(): Promise<DetectedPattern[]> {
+  return defaultRecorder.detectPatterns();
+}
+
+async function detectPatternsImpl(trackerFile: string, patternsFile: string): Promise<DetectedPattern[]> {
   try {
-    const raw = await fs.readFile(TRACKER_FILE, 'utf-8');
+    const raw = await fs.readFile(trackerFile, 'utf-8');
     const entries = raw.trim().split('\n')
       .map(line => { try { return JSON.parse(line) as ToolUsageEntry; } catch { return null; } })
       .filter((e): e is ToolUsageEntry => e !== null);
@@ -152,7 +254,7 @@ export async function detectPatterns(): Promise<DetectedPattern[]> {
     patterns.sort((a, b) => b.occurrences - a.occurrences);
 
     // Save detected patterns
-    await fs.writeFile(PATTERNS_FILE, JSON.stringify(patterns, null, 2));
+    await fs.writeFile(patternsFile, JSON.stringify(patterns, null, 2));
     logger.info('Learning', `Detected ${patterns.length} patterns from ${sessions.size} sessions`);
 
     return patterns;
@@ -173,16 +275,15 @@ function suggestSkillName(tools: string[]): string {
 
 // --- 3. Reflection ---
 
-interface Reflection {
-  timestamp: string;
-  sessionId: string;
-  toolsUsed: string[];
-  successRate: number;
-  insights: string[];
-  suggestedImprovements: string[];
+export async function reflectOnSession(): Promise<Reflection> {
+  return defaultRecorder.reflectOnSession();
 }
 
-export async function reflectOnSession(): Promise<Reflection> {
+async function reflectOnSessionImpl(recorder: LearningRecorder): Promise<Reflection> {
+  const sessionToolLog = recorder.getSessionTools();
+  const sessionAutoContinueCount = recorder.getAutoContinueCount();
+  const sessionModel = recorder.getModel();
+  const currentSessionId = recorder.sessionId;
   const toolsUsed = sessionToolLog.map(t => t.tool);
   const successes = sessionToolLog.filter(t => t.success).length;
   const total = sessionToolLog.length;
@@ -253,8 +354,8 @@ export async function reflectOnSession(): Promise<Reflection> {
 
   // Persist reflection
   try {
-    await fs.mkdir(BASE_DIR, { recursive: true });
-    await fs.appendFile(REFLECTIONS_FILE, JSON.stringify(reflection) + '\n');
+    await fs.mkdir(recorder.baseDir, { recursive: true });
+    await fs.appendFile(recorder.reflectionsFile, JSON.stringify(reflection) + '\n');
   } catch {
     // Non-critical
   }
@@ -262,14 +363,13 @@ export async function reflectOnSession(): Promise<Reflection> {
   // Write insights to memory if there are any
   if (insights.length > 0 || improvements.length > 0) {
     try {
-      const memDir = path.join(process.cwd(), '.harness', 'memory');
-      await fs.mkdir(memDir, { recursive: true });
+      await fs.mkdir(recorder.memoryDir, { recursive: true });
       const date = new Date().toISOString().split('T')[0];
       const entry = `\n### ${date}: Session Reflection (${currentSessionId})\n` +
         (insights.length > 0 ? `**Insights:** ${insights.join('; ')}\n` : '') +
         (improvements.length > 0 ? `**Improvements:** ${improvements.join('; ')}\n` : '');
 
-      const notesPath = path.join(memDir, 'notes.md');
+      const notesPath = path.join(recorder.memoryDir, 'notes.md');
       try { await fs.access(notesPath); } catch {
         await fs.writeFile(notesPath, '# Notes\n\nGeneral observations and context.\n');
       }
@@ -286,19 +386,22 @@ export async function reflectOnSession(): Promise<Reflection> {
 // --- 4. Dreaming / Consolidation ---
 
 export async function consolidateMemory(): Promise<string> {
-  const memDir = path.join(process.cwd(), '.harness', 'memory');
+  return defaultRecorder.consolidateMemory();
+}
+
+async function consolidateMemoryImpl(recorder: LearningRecorder): Promise<string> {
   const parts: string[] = [];
 
   // Read all memory files
   for (const file of ['decisions.md', 'patterns.md', 'notes.md']) {
     try {
-      parts.push(await fs.readFile(path.join(memDir, file), 'utf-8'));
+      parts.push(await fs.readFile(path.join(recorder.memoryDir, file), 'utf-8'));
     } catch { /* not yet created */ }
   }
 
   // Read reflections
   try {
-    const raw = await fs.readFile(REFLECTIONS_FILE, 'utf-8');
+    const raw = await fs.readFile(recorder.reflectionsFile, 'utf-8');
     const reflections = raw.trim().split('\n')
       .map(line => { try { return JSON.parse(line) as Reflection; } catch { return null; } })
       .filter((r): r is Reflection => r !== null);
@@ -317,7 +420,7 @@ export async function consolidateMemory(): Promise<string> {
 
   // Read detected patterns
   try {
-    const patterns = JSON.parse(await fs.readFile(PATTERNS_FILE, 'utf-8')) as DetectedPattern[];
+    const patterns = JSON.parse(await fs.readFile(recorder.patternsFile, 'utf-8')) as DetectedPattern[];
     if (patterns.length > 0) {
       parts.push(`\n--- Detected Patterns ---\n` +
         patterns.slice(0, 5).map(p =>
@@ -335,12 +438,12 @@ export async function consolidateMemory(): Promise<string> {
 
   // Write a consolidated digest
   try {
-    const digestPath = path.join(BASE_DIR, 'consolidated-digest.md');
+    const digestPath = path.join(recorder.baseDir, 'consolidated-digest.md');
     const date = new Date().toISOString().split('T')[0];
     const digest = `# Consolidated Knowledge Digest\n\nLast updated: ${date}\n\n${consolidated}`;
     await fs.writeFile(digestPath, digest);
     logger.info('Learning', 'Memory consolidated into digest');
-  } catch { /* non-critical */ }
+  } catch (err) { recordSwallowed('learning.writeConsolidatedDigest', err); }
 
   return consolidated;
 }
@@ -348,12 +451,16 @@ export async function consolidateMemory(): Promise<string> {
 // --- 5. System Prompt Evolution ---
 
 export async function getEvolvedPrompt(basePrompt: string): Promise<string> {
+  return defaultRecorder.getEvolvedPrompt(basePrompt);
+}
+
+async function getEvolvedPromptImpl(recorder: LearningRecorder, basePrompt: string): Promise<string> {
   // Layer 1: base prompt
   let prompt = basePrompt;
 
   // Layer 2: append learned patterns from memory
   try {
-    const patternsPath = path.join(process.cwd(), '.harness', 'memory', 'patterns.md');
+    const patternsPath = path.join(recorder.memoryDir, 'patterns.md');
     const patterns = await fs.readFile(patternsPath, 'utf-8');
     if (patterns.trim().length > 50) {
       prompt += '\n\n--- Learned Patterns ---\n' + patterns.slice(0, 2000);
@@ -362,7 +469,7 @@ export async function getEvolvedPrompt(basePrompt: string): Promise<string> {
 
   // Layer 3: append consolidated improvements from reflections
   try {
-    const raw = await fs.readFile(REFLECTIONS_FILE, 'utf-8');
+    const raw = await fs.readFile(recorder.reflectionsFile, 'utf-8');
     const reflections = raw.trim().split('\n')
       .map(line => { try { return JSON.parse(line) as Reflection; } catch { return null; } })
       .filter((r): r is Reflection => r !== null);
@@ -376,7 +483,7 @@ export async function getEvolvedPrompt(basePrompt: string): Promise<string> {
 
   // Layer 4: append user-evolved prompt additions
   try {
-    const evolved = await fs.readFile(EVOLVED_PROMPT_FILE, 'utf-8');
+    const evolved = await fs.readFile(recorder.evolvedPromptFile, 'utf-8');
     if (evolved.trim().length > 0) {
       prompt += '\n\n--- Evolved Instructions ---\n' + evolved;
     }
@@ -386,19 +493,27 @@ export async function getEvolvedPrompt(basePrompt: string): Promise<string> {
 }
 
 export async function evolvePrompt(addition: string): Promise<void> {
+  return defaultRecorder.evolvePrompt(addition);
+}
+
+async function evolvePromptImpl(recorder: LearningRecorder, addition: string): Promise<void> {
   try {
-    await fs.mkdir(BASE_DIR, { recursive: true });
-    const existing = await fs.readFile(EVOLVED_PROMPT_FILE, 'utf-8').catch(() => '');
-    await fs.writeFile(EVOLVED_PROMPT_FILE, existing + '\n' + addition);
+    await fs.mkdir(recorder.baseDir, { recursive: true });
+    const existing = await fs.readFile(recorder.evolvedPromptFile, 'utf-8').catch(() => '');
+    await fs.writeFile(recorder.evolvedPromptFile, existing + '\n' + addition);
     logger.info('Learning', 'System prompt evolved with new instruction');
-  } catch { /* non-critical */ }
+  } catch (err) { recordSwallowed('learning.evolvePrompt', err); }
 }
 
 // --- 6. Pattern-to-Skill Promotion ---
 
 export async function getUnpromotedPatterns(): Promise<DetectedPattern[]> {
+  return defaultRecorder.getUnpromotedPatterns();
+}
+
+async function getUnpromotedPatternsImpl(patternsFile: string): Promise<DetectedPattern[]> {
   try {
-    const patterns = JSON.parse(await fs.readFile(PATTERNS_FILE, 'utf-8')) as DetectedPattern[];
+    const patterns = JSON.parse(await fs.readFile(patternsFile, 'utf-8')) as DetectedPattern[];
     return patterns.filter(p => !p.promoted && p.occurrences >= 3);
   } catch {
     return [];
@@ -406,14 +521,18 @@ export async function getUnpromotedPatterns(): Promise<DetectedPattern[]> {
 }
 
 export async function markPatternPromoted(patternId: string): Promise<void> {
+  return defaultRecorder.markPatternPromoted(patternId);
+}
+
+async function markPatternPromotedImpl(patternsFile: string, patternId: string): Promise<void> {
   try {
-    const patterns = JSON.parse(await fs.readFile(PATTERNS_FILE, 'utf-8')) as DetectedPattern[];
+    const patterns = JSON.parse(await fs.readFile(patternsFile, 'utf-8')) as DetectedPattern[];
     const pattern = patterns.find(p => p.id === patternId);
     if (pattern) {
       pattern.promoted = true;
-      await fs.writeFile(PATTERNS_FILE, JSON.stringify(patterns, null, 2));
+      await fs.writeFile(patternsFile, JSON.stringify(patterns, null, 2));
     }
-  } catch { /* non-critical */ }
+  } catch (err) { recordSwallowed('learning.markPatternPromoted', err); }
 }
 
 // --- Public: Session Lifecycle ---
@@ -422,13 +541,5 @@ export async function onSessionEnd(): Promise<{
   reflection: Reflection;
   newPatterns: DetectedPattern[];
 }> {
-  const reflection = await reflectOnSession();
-  const newPatterns = await detectPatterns();
-  const unpromoted = newPatterns.filter(p => !p.promoted);
-
-  if (unpromoted.length > 0) {
-    logger.info('Learning', `${unpromoted.length} patterns ready for skill promotion`);
-  }
-
-  return { reflection, newPatterns: unpromoted };
+  return defaultRecorder.onSessionEnd();
 }

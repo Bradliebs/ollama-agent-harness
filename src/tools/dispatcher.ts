@@ -1,6 +1,6 @@
 import type { Tool, ToolCall, ToolResult } from '../types';
 import type { HookPipeline } from '../extensibility/hookPipeline';
-import { trackToolUsage } from '../learning/engine';
+import { trackToolUsage, type LearningRecorder } from '../learning/engine';
 import type { RuntimeTracer } from '../core/tracing';
 
 export interface DispatchResult {
@@ -12,6 +12,11 @@ export interface DispatchOptions {
   hooks?: HookPipeline;
   trackUsage?: boolean;
   tracer?: RuntimeTracer;
+  /** Per-session, project-scoped learning recorder. When provided and
+   * `trackUsage` is true, tool calls are recorded against this recorder
+   * instead of the legacy process-wide default. Required to avoid the
+   * cross-session race on the module-level default. */
+  learningRecorder?: LearningRecorder;
 }
 
 /**
@@ -179,7 +184,9 @@ export class ToolDispatcher {
       const durationMs = Date.now() - startTime;
       toolSpan?.end(result.success ? 'ok' : 'error', { durationMs, success: result.success });
       if (options.trackUsage) {
-        trackToolUsage(call.name, call.input, result.success, durationMs).catch(() => {});
+        const recorder = options.learningRecorder;
+        const p = recorder ? recorder.trackToolUsage(call.name, call.input, result.success, durationMs) : trackToolUsage(call.name, call.input, result.success, durationMs);
+        p.catch(() => {});
       }
       if (options.hooks) {
         const postHookSpan = options.tracer?.startSpan('hook.post_tool_use', { tool: call.name });
@@ -201,7 +208,9 @@ export class ToolDispatcher {
       const msg = error instanceof Error ? error.message : String(error);
       dispatchSpan?.fail(error);
       if (options.trackUsage) {
-        trackToolUsage(call.name, call.input, false).catch(() => {});
+        const recorder = options.learningRecorder;
+        const p = recorder ? recorder.trackToolUsage(call.name, call.input, false) : trackToolUsage(call.name, call.input, false);
+        p.catch(() => {});
       }
       if (options.hooks) {
         const failureHookSpan = options.tracer?.startSpan('hook.post_tool_use_failure', { tool: call.name });

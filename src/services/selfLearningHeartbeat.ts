@@ -21,6 +21,7 @@ import { detectStaleTasks, listTasks, recordCheckIn, updateTask, type Task } fro
 import { runMemoryGc, runMemoryMaintenance } from './memoryIntelligence';
 import { runIdentityGc } from './identity';
 import { emitEvent } from '../persistence/eventStore';
+import { recordSwallowed } from '../observability/silentFailureSink';
 
 export interface HeartbeatAction {
   name: string;
@@ -330,7 +331,7 @@ export function createSkillEvolutionAction(options: SkillEvolutionActionOptions 
             safetyHits.push({ skill: skill.name, ruleId: violation.ruleId, severity: violation.severity });
           }
         }
-      } catch { /* best-effort — heartbeat must keep running */ }
+      } catch (err) { recordSwallowed('heartbeat.skillSafetyScan', err); }
       const blockingHits = safetyHits.filter((hit) => hit.severity === 'high');
 
       const summaryParts: string[] = [];

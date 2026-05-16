@@ -59,7 +59,7 @@ import { attachOtlpExporter, type OtlpExporter } from '../observability/otlpExpo
 import { mintTraceId } from '../observability/openinference';
 import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, describeOutputValidationProfileSuggestion, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
 import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, adaptiveTimeBudget, recordAvgTurnDuration, clearSynthesisStats, recordToolUseStats } from '../core/synthesisStats';
-import { startNewSession, onSessionEnd, getEvolvedPrompt, recordSessionAutoContinue } from '../learning/engine';
+import { startNewSession, onSessionEnd, getEvolvedPrompt, recordSessionAutoContinue, LearningRecorder } from '../learning/engine';
 import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
 import { appendLearningCandidate, evaluatePromotionGateForCandidate, extractLearningCandidate, getLearningCandidateProvenance, listLearningCandidates, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
 import { createSubagentTool, listSubagentRoutingMetrics } from '../agents/subagent';
@@ -372,7 +372,7 @@ interface WebRuntimeDeps {
   createSession(projectDir: string, model: string): SessionStorage;
   startNewSession(): void;
   getEvolvedPrompt(basePrompt: string): Promise<string>;
-  assembleSystemContext(input: { systemPrompt: string; projectDir: string; skillsDir: string; recallProjectDir?: string; recallQuery?: string }): Promise<string>;
+  assembleSystemContext(input: { systemPrompt: string; projectDir: string; skillsDir: string; recallProjectDir?: string; recallQuery?: string; ragProjectDir?: string; ragQuery?: string; ragOllamaHost?: string; palaceProjectDir?: string; sessionSearchProjectDir?: string; sessionSearchQuery?: string }): Promise<string>;
   runQueryLoop: QueryLoopRunner;
   onSessionEnd(): Promise<{ reflection: { insights: string[] }; newPatterns: unknown[] }>;
   rebuildSemanticMemory(projectDir: string): Promise<unknown[]>;
@@ -4233,9 +4233,9 @@ app.patch('/api/system/feature-flags', (req, res) => {
     systemFeatureFlags = next;
     saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
     // Re-apply scheduler configurations so changes take effect immediately.
-    try { configureSelfLearningHeartbeat(); } catch { /* best-effort */ }
-    try { configureTriggerScheduler(); } catch { /* best-effort */ }
-    try { configureOtlpExporter(); } catch { /* best-effort */ }
+    try { configureSelfLearningHeartbeat(); } catch (err) { recordSwallowed('configureSelfLearningHeartbeat', err); }
+    try { configureTriggerScheduler(); } catch (err) { recordSwallowed('configureTriggerScheduler', err); }
+    try { configureOtlpExporter(); } catch (err) { recordSwallowed('configureOtlpExporter', err); }
     res.json({ feature_flags: systemFeatureFlags });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -6160,8 +6160,14 @@ app.post('/api/chat', async (req, res) => {
     }
   }
 
-  // Start a new learning session for tracking
+  // Start a new learning session for tracking.
+  // Construct a per-chat recorder bound to PROJECT_DIR. The legacy
+  // webRuntime.startNewSession() resets the process-wide default recorder
+  // (still used by CLI / older callers); we use our own per-request recorder
+  // so concurrent chats don't race on shared module-level state and learning
+  // artifacts are written under PROJECT_DIR instead of process.cwd().
   webRuntime.startNewSession();
+  const chatLearningRecorder = new LearningRecorder(PROJECT_DIR);
   // Drain any stale uploads-fallback records so this turn only sees its own.
   drainUploadsFallbacks();
 
@@ -6200,11 +6206,11 @@ app.post('/api/chat', async (req, res) => {
     : basePrompt;
 
   // Use evolved prompt — layers in learned patterns and self-improvements
-  const evolvedPrompt = await webRuntime.getEvolvedPrompt(promptWithPersonality);
+  const evolvedPrompt = await chatLearningRecorder.getEvolvedPrompt(promptWithPersonality);
   // Jarvis: pass the latest user message as the recall query so the
   // knowledge graph can inject relevant entity/fact hits automatically.
   const recallQuery = typeof messageText === 'string' ? messageText.slice(0, 240) : undefined;
-  const baseSystemPrompt = await webRuntime.assembleSystemContext({ systemPrompt: withRoutingPolicy(evolvedPrompt), projectDir, skillsDir: SKILLS_DIR, recallProjectDir: PROJECT_DIR, recallQuery });
+  const baseSystemPrompt = await webRuntime.assembleSystemContext({ systemPrompt: withRoutingPolicy(evolvedPrompt), projectDir, skillsDir: SKILLS_DIR, recallProjectDir: PROJECT_DIR, recallQuery, ragProjectDir: PROJECT_DIR, ragQuery: recallQuery, ragOllamaHost: ollamaHost, palaceProjectDir: PROJECT_DIR, sessionSearchProjectDir: PROJECT_DIR, sessionSearchQuery: recallQuery });
   const attachmentsBlock = await buildAttachmentsContextBlock(req.body?.attachments);
   const explicitSkill = messageText ? await loadExplicitSkillContext(messageText) : { context: '' };
 
@@ -6228,14 +6234,14 @@ app.post('/api/chat', async (req, res) => {
       ]);
       const allSkills = [...runtimeSkills, ...repoSkills];
       myceliumRouter.seedSkillNodes(allSkills.map((s) => ({ name: s.name, description: s.description, domain: s.domain })));
-    } catch { /* skill seeding is optional */ }
+    } catch (err) { recordSwallowed('mycelium.seedSkillNodes', err); }
     // Seed semantic memory entries
     try {
       const memResults = await searchSemanticMemory(PROJECT_DIR, message.slice(0, 200));
       if (memResults.length > 0) {
         myceliumRouter.seedMemoryNodes(memResults.slice(0, 10).map((r) => ({ id: r.entry.id, text: r.entry.text, kind: r.entry.kind })));
       }
-    } catch { /* memory seeding is optional */ }
+    } catch (err) { recordSwallowed('mycelium.seedMemoryNodes', err); }
     const myceliumResult = myceliumRouter.routeQueryRich(message);
     myceliumClassification = myceliumResult.classification;
     myceliumContextPackage = myceliumResult.contextPackage;
@@ -6259,6 +6265,53 @@ app.post('/api/chat', async (req, res) => {
   const chatNervousSystem = new NervousSystemController();
   chatNervousSystem.reset();
   const nervousResult = chatNervousSystem.inspectQuery(messageText, myceliumClassification?.type ?? 'general');
+  // Re-feed: pull recent persisted signals from prior runs and raise this
+  // turn's risk level if the same taskType has shown critical/high signals
+  // recently. Without this, every chat starts from a blank nervous slate
+  // even if the prior turn just hit a critical reflex.
+  try {
+    const priorSignals = await NervousSystemController.readPersistedSignals(PROJECT_DIR, 50);
+    const taskType = myceliumClassification?.type ?? 'general';
+    const matchingConcerns = priorSignals.filter((s) =>
+      (s.taskType === taskType || s.taskType === undefined) &&
+      (s.severity === 'critical' || s.severity === 'high')
+    );
+    if (matchingConcerns.length > 0) {
+      const hasCritical = matchingConcerns.some((s) => s.severity === 'critical');
+      if (hasCritical && nervousResult.runState.riskLevel !== 'critical') {
+        nervousResult.runState.riskLevel = 'critical';
+      } else if (!hasCritical && nervousResult.runState.riskLevel === 'low') {
+        nervousResult.runState.riskLevel = 'medium';
+      }
+      const summary = `Prior runs flagged ${matchingConcerns.length} ${hasCritical ? 'critical' : 'high-severity'} signal(s) for taskType=${taskType}.`;
+      nervousResult.runState.safetyNotes.push(summary);
+      runtimeTracer.recordEvent('nervous.prior_signals_raised', {
+        taskType,
+        priorCount: matchingConcerns.length,
+        hadCritical: hasCritical,
+        newRiskLevel: nervousResult.runState.riskLevel,
+      });
+    }
+  } catch (err) {
+    recordSwallowed('nervous.readPersistedSignals', err);
+  }
+  // Snapshot-on-recovery: if the nervous system enters recovery mode (or
+  // flags this turn as high-risk), capture a pre-recovery snapshot so a
+  // restore point exists before the agent tries to repair its state.
+  // Best-effort and bounded: one snapshot per chat turn, swallowed errors
+  // routed through recordSwallowed for visibility.
+  if (nervousResult.runState.recoveryMode || nervousResult.runState.riskLevel === 'high' || nervousResult.runState.riskLevel === 'critical') {
+    snapshots
+      .take(PROJECT_DIR, `pre-recovery-${Date.now()}`)
+      .then((meta) => {
+        runtimeTracer.recordEvent('nervous.snapshot_taken', {
+          snapshotId: meta.id,
+          reason: nervousResult.runState.recoveryMode ? 'recovery_mode' : 'high_risk',
+          riskLevel: nervousResult.runState.riskLevel,
+        });
+      })
+      .catch((err) => recordSwallowed('snapshots.pre_recovery', err));
+  }
   let nervousContext = '';
 
   // Code Intelligence: inject compact repo awareness into the system prompt
@@ -6272,7 +6325,7 @@ app.post('/api/chat', async (req, res) => {
         codeIntelContext = `\n\n--- Code Intelligence ---\nRepo: ${repoSummary.total_files} files, ${repoSummary.total_edges} dependency edges, ${repoSummary.test_files} test files.\nKey files (most imported):\n${topFiles}`;
       }
     }
-  } catch { /* code intel is optional */ }
+  } catch (err) { recordSwallowed('codeIntel.loadRepoGraph', err); }
   if (nervousResult.runState.safetyNotes.length > 0) {
     nervousContext = '\n\n--- Nervous System ---\n' + nervousResult.runState.safetyNotes.map((n) => `⚠️ ${n}`).join('\n');
   }
@@ -6422,6 +6475,7 @@ CONTEXT HYGIENE (critical for long tasks):
     session,
     summarizerClient: summarizerModel ? webRuntime.createClient(summarizerModel, ollamaHost, activeContextMaxTokens) : undefined,
     tracer: runtimeTracer,
+    learningRecorder: chatLearningRecorder,
   };
 
   const messages: Message[] = [];
@@ -6566,7 +6620,7 @@ CONTEXT HYGIENE (critical for long tasks):
       }
       if (event.type === 'auto_continue') {
         autoContinueCount++;
-        recordSessionAutoContinue(activeModel);
+        chatLearningRecorder.recordAutoContinue(activeModel);
       }
       for (const fallbackEvent of drainRemoteProviderFallbackEvents()) {
         res.write(`data: ${JSON.stringify(fallbackEvent)}\n\n`);
@@ -6668,7 +6722,7 @@ CONTEXT HYGIENE (critical for long tasks):
     finalTextResponse: assistantTextBuffer.trim().length > 0,
   }).catch((err) => recordSwallowed('server.ts:6571', err));
 
-  webRuntime.onSessionEnd().then(({ reflection, newPatterns }) => {
+  chatLearningRecorder.onSessionEnd().then(({ reflection, newPatterns }) => {
     if (reflection.insights.length > 0) {
       logger.info('Learning', `Session reflection: ${reflection.insights.join('; ')}`);
     }
@@ -6723,7 +6777,7 @@ CONTEXT HYGIENE (critical for long tasks):
           verifierBlockReason = v.notes.find((n) => /fail|hard|irreversible/i.test(n)) ?? v.notes[0] ?? 'verifier_hard_check';
           logger.warn('Mycelium', 'Heuristic verifier failed hard safety check', { notes: v.notes, blockReason: verifierBlockReason });
         }
-      } catch { /* verifier is optional */ }
+      } catch (err) { recordSwallowed('chat.heuristicVerifier', err); }
     }
     // Nervous System: inspect verifier result and extract pain
     const nervousVerifier = chatNervousSystem.onVerifierResult(
@@ -9961,7 +10015,7 @@ export async function startServer(): Promise<void> {
                   console.log(`  Code → Mycelium:       ${seeded.nodesAdded} nodes, ${seeded.edgesAdded} edges seeded`);
                 }
               }
-            } catch { /* mycelium seeding is optional */ }
+            } catch (err) { recordSwallowed('startup.myceliumCodeSeed', err); }
           });
         }).catch((err) => recordSwallowed('server.ts:9768', err));
       }

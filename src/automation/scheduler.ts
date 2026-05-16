@@ -9,6 +9,7 @@ import { emitEvent } from '../persistence/eventStore';
 import { pruneEventsByAge } from '../persistence/eventStore';
 import { probeServiceHealth, transitionService } from '../services/serviceLifecycle';
 import { listAgenticServices } from '../services/agenticServiceMode';
+import { recordSwallowed } from '../observability/silentFailureSink';
 
 export interface AutomationSchedulerOptions {
   projectDir: string;
@@ -162,7 +163,7 @@ export class AutomationScheduler {
         if (this.opts.onBreachDetected) {
           try {
             this.opts.onBreachDetected(obligations.breaches.map((b) => ({ breach_type: b.breach_type, detail: b.detail })));
-          } catch { /* notification is best-effort */ }
+          } catch (err) { recordSwallowed('scheduler.onBreachDetected', err); }
         }
       }
     } catch (error) {
@@ -191,7 +192,7 @@ export class AutomationScheduler {
       const retentionDays = parseInt(process.env.HARNESS_EVENT_RETENTION_DAYS ?? '30', 10) || 30;
       const pruned = await pruneEventsByAge(this.opts.projectDir, retentionDays);
       if (pruned > 0) logger.info('Automation', `Pruned ${pruned} event(s) older than ${retentionDays} days`);
-    } catch { /* pruning is best-effort */ }
+    } catch (err) { recordSwallowed('scheduler.pruneEventsByAge', err); }
   }
 
   /** Auto-fulfil pending promises that are linked to the executed job IDs via schedule_id. */
