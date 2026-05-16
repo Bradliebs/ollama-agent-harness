@@ -17,6 +17,8 @@ import { checkMotorPermission, type MotorPermission } from './motor';
 import { extractPainSignals, aggregatePainMultiplier, isSafetyRewardSignal, type PainSignal } from './pain';
 import { buildRecoveryPlan, formatRecoveryPlan, type RecoveryPlan } from './recovery';
 import { logger } from '../core/logger';
+import { withFileLock } from '../persistence/atomicFile';
+import { recordSwallowed } from '../observability/silentFailureSink';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -203,10 +205,10 @@ export class NervousSystemController {
   /** Persist signals to disk for historical analysis. */
   async persistSignals(projectDir: string): Promise<void> {
     if (this.allSignals.length === 0) return;
+    const dir = path.join(projectDir, '.harness', 'nervous');
+    const filePath = path.join(dir, 'signals.jsonl');
     try {
-      const dir = path.join(projectDir, '.harness', 'nervous');
       await fs.mkdir(dir, { recursive: true });
-      const filePath = path.join(dir, 'signals.jsonl');
       const lines = this.allSignals.map((s) => JSON.stringify({
         id: s.id,
         type: s.type,
@@ -217,8 +219,10 @@ export class NervousSystemController {
         taskType: this.runState?.taskType,
         createdAt: s.createdAt,
       })).join('\n') + '\n';
-      await fs.appendFile(filePath, lines, 'utf-8');
-    } catch { /* best effort */ }
+      await withFileLock(filePath, () => fs.appendFile(filePath, lines, 'utf-8'));
+    } catch (error) {
+      recordSwallowed('NervousSystemController.persistSignals', error);
+    }
   }
 
   /** Read recent persisted signals. */

@@ -158,7 +158,16 @@ const ALLOWED_PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'd
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9._-]+$/;
 let autonomyChild: ChildProcessWithoutNullStreams | null = null;
 let autonomyStartedAt: string | undefined;
-const globalNervousSystem = new NervousSystemController();
+// Snapshot of the most recently completed chat's nervous-system state.
+// Filled in at chat-handler exit so /api/nervous reflects the last finished
+// run. Per-chat controllers are created locally inside the chat handler so
+// concurrent chats no longer scribble onto a shared instance.
+let lastNervousSnapshot: {
+  summary: ReturnType<NervousSystemController['getSummary']>;
+  signals: ReturnType<NervousSystemController['getSignals']>;
+  recovery: ReturnType<NervousSystemController['getRecoveryPlan']>;
+  runState: ReturnType<NervousSystemController['getRunState']>;
+} | null = null;
 
 function parseOptionalBoolean(raw: string | undefined): boolean | null {
   if (!raw) return null;
@@ -2713,6 +2722,11 @@ app.post('/api/jarvis/ambient/start', (_req, res) => {
       schedulerMs: Number(process.env.HARNESS_AMBIENT_SCHEDULER_MS ?? '0') || 0,
       projectDir: PROJECT_DIR,
     });
+    schedulerRegistry.register({
+      name: 'jarvis-ambient',
+      stop: () => { jarvisAmbientHandle?.stop(); },
+      isRunning: () => jarvisAmbientHandle?.isRunning() ?? false,
+    });
     res.json({ running: true, watchers: jarvisAmbientHandle.watchersActive() });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -2723,6 +2737,7 @@ app.post('/api/jarvis/ambient/stop', (_req, res) => {
   try {
     if (jarvisAmbientHandle?.isRunning()) jarvisAmbientHandle.stop();
     jarvisAmbientHandle = null;
+    schedulerRegistry.unregister('jarvis-ambient');
     res.json({ running: false });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
@@ -3213,10 +3228,11 @@ app.get('/api/webhooks', (_req, res) => {
 });
 
 app.get('/api/nervous', (_req, res) => {
-  const state = globalNervousSystem.getRunState();
-  const signals = globalNervousSystem.getSignals();
-  const summary = globalNervousSystem.getSummary();
-  const recovery = globalNervousSystem.getRecoveryPlan();
+  const snap = lastNervousSnapshot;
+  const state = snap?.runState ?? null;
+  const signals = snap?.signals ?? [];
+  const summary = snap?.summary ?? { totalSignals: 0, bySeverity: {}, byType: {}, runActive: false };
+  const recovery = snap?.recovery ?? null;
   res.json({
     active: state !== null,
     permissionMode,
@@ -6237,9 +6253,12 @@ app.post('/api/chat', async (req, res) => {
     logger.warn('Mycelium', 'Context routing failed', { error: error instanceof Error ? error.message : String(error) });
   }
 
-  // Nervous System: inspect query, evaluate reflexes, calculate attention
-  globalNervousSystem.reset();
-  const nervousResult = globalNervousSystem.inspectQuery(messageText, myceliumClassification?.type ?? 'general');
+  // Nervous System: inspect query, evaluate reflexes, calculate attention.
+  // One controller per chat request — prior versions shared a module-level
+  // singleton across concurrent chats, which tangled signal histories.
+  const chatNervousSystem = new NervousSystemController();
+  chatNervousSystem.reset();
+  const nervousResult = chatNervousSystem.inspectQuery(messageText, myceliumClassification?.type ?? 'general');
   let nervousContext = '';
 
   // Code Intelligence: inject compact repo awareness into the system prompt
@@ -6354,7 +6373,7 @@ CONTEXT HYGIENE (critical for long tasks):
           return { allowed: false, reason: `Browser page tools require an active browser-page-access grant. ${evaluation.reason}` };
         }
       }
-      const motor = globalNervousSystem.checkToolPermission(call.name, call.input);
+      const motor = chatNervousSystem.checkToolPermission(call.name, call.input);
       runtimeTracer.recordEvent('nervous.motor_decision', { tool: call.name, decision: motor.decision, reason: motor.reason });
       if (motor.decision === 'BLOCK' || motor.decision === 'INTERRUPT_AND_RECOVER') {
         return { allowed: false, reason: `Nervous System ${motor.decision}: ${motor.reason}` };
@@ -6475,8 +6494,8 @@ CONTEXT HYGIENE (critical for long tasks):
         toolCallCount++;
         if (event.result?.success) toolSuccessCount++;
         // Nervous System: inspect tool result
-        globalNervousSystem.onToolResult(event.call.name, Boolean(event.result?.success), String(event.result?.output ?? ''));
-        globalNervousSystem.onToolCallSequence(toolCallSequence);
+        chatNervousSystem.onToolResult(event.call.name, Boolean(event.result?.success), String(event.result?.output ?? ''));
+        chatNervousSystem.onToolCallSequence(toolCallSequence);
         evidenceTools.push({
           name: event.call.name,
           success: Boolean(event.result?.success),
@@ -6707,7 +6726,7 @@ CONTEXT HYGIENE (critical for long tasks):
       } catch { /* verifier is optional */ }
     }
     // Nervous System: inspect verifier result and extract pain
-    const nervousVerifier = globalNervousSystem.onVerifierResult(
+    const nervousVerifier = chatNervousSystem.onVerifierResult(
       verifierBlocked ? 'fail' : 'pass',
       verifierScore,
       verifierBlocked && verifierBlockReason ? [verifierBlockReason] : undefined,
@@ -6748,8 +6767,16 @@ CONTEXT HYGIENE (critical for long tasks):
     }
   }
 
-  // Persist nervous system signals for historical analysis.
-  globalNervousSystem.persistSignals(PROJECT_DIR).catch((err) => recordSwallowed('globalNervousSystem.persistSignals', err));
+  // Persist nervous system signals for historical analysis, then snapshot
+  // the run into the module-level mirror so /api/nervous shows the last
+  // completed chat’s state.
+  chatNervousSystem.persistSignals(PROJECT_DIR).catch((err) => recordSwallowed('chatNervousSystem.persistSignals', err));
+  lastNervousSnapshot = {
+    summary: chatNervousSystem.getSummary(),
+    signals: chatNervousSystem.getSignals(),
+    recovery: chatNervousSystem.getRecoveryPlan(),
+    runState: chatNervousSystem.getRunState(),
+  };
 
   const evidenceCard: EvidenceCard = {
     id: crypto.randomUUID(),
@@ -9897,6 +9924,11 @@ export async function startServer(): Promise<void> {
           }
         }, 60_000);
         if (typeof ambientActionTimer.unref === 'function') ambientActionTimer.unref();
+        schedulerRegistry.register({
+          name: 'jarvis-ambient-action',
+          stop: () => clearInterval(ambientActionTimer),
+          isRunning: () => true,
+        });
       }
     } catch (error) {
       logger.warn('Startup', 'Failed to start Jarvis ambient action subscriber', { error: error instanceof Error ? error.message : String(error) });

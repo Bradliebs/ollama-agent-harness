@@ -1,4 +1,5 @@
-import { MyceliumGraph, loadMyceliumGraph, saveMyceliumGraph, type MyceliumNode, type MyceliumNodeType } from './graph';
+import { MyceliumGraph, type MyceliumNode, type MyceliumNodeType } from './graph';
+import { getSharedMyceliumGraph, flushSharedMyceliumGraph, registerSharedMyceliumGraph } from './graphStore';
 import { spreadActivation, selectRoute, type SelectedRoute } from './activation';
 import { reinforceRoute, weakenRoute, decayUnusedEdges, pruneDeadEdges, computeReward, type RewardInput } from './reinforcement';
 import { classifyTask, type MyceliumTaskClassification } from './taskClassifier';
@@ -297,7 +298,12 @@ export class MycelialContextRouter {
   // ─── Persistence ──────────────────────────────────────────
 
   async save(): Promise<void> {
-    await saveMyceliumGraph(this.projectDir, this.graph);
+    // If this router was constructed directly (e.g. by the CLI) the
+    // shared store has no entry for this projectDir. Register our graph
+    // so the flush has something to write, and so subsequent
+    // getSharedMyceliumGraph callers see this instance.
+    registerSharedMyceliumGraph(this.projectDir, this.graph);
+    await flushSharedMyceliumGraph(this.projectDir);
   }
 
   getGraph(): MyceliumGraph {
@@ -363,7 +369,7 @@ export class MycelialContextRouter {
 // ─── Load router from disk ──────────────────────────────────────────
 
 export async function createMycelialRouter(projectDir: string, config?: MycelialRouterConfig): Promise<MycelialContextRouter> {
-  const graph = await loadMyceliumGraph(projectDir);
+  const graph = await getSharedMyceliumGraph(projectDir);
   return new MycelialContextRouter(projectDir, graph, config);
 }
 

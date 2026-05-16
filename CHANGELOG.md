@@ -11,6 +11,89 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Ollama Agent Harness v0.5.8
+
+Closes the rest of the prior persistence/scheduler audit findings AND
+the new concurrency findings from the system-audit extension into a
+single hardening release. Eight distinct fixes, three new tests, no
+breaking changes.
+
+### Persistence: lock the rest of the RMW writers
+
+Five writers in `synthesisStats` (`recordSynthesisFired`,
+`recordSessionCompleted`, `clearSynthesisStats` single-model branch,
+`recordAvgTurnDuration`, `recordToolUseStats`) and
+`promoteLearningCandidate` in `sessionLearning` were doing
+load → mutate → `fs.writeFile` without holding the file lock.
+Concurrent writers could read the same snapshot and overwrite each
+other, even though v0.5.2 had already made the byte-level write
+atomic. They are now all wrapped in `withFileLock` with the write
+going through `atomicWriteFile`.
+
+### Persistence: atomic snapshots in the curator
+
+`curator.ts` was writing the merge-proposals file and umbrella-skill
+files with raw `fs.writeFile`. Two curator runs racing each other
+could leave a torn snapshot. Both writes now use `atomicWriteFile`
+and `appendAuditLog` holds `withFileLock` while appending the audit
+JSONL.
+
+### Persistence: lock JSONL appenders for nervous signals + subagent routing
+
+`NervousSystemController.persistSignals` and
+`appendSubagentRoutingMetric` were calling `fs.appendFile` without a
+lock. Concurrent chats sharing one project directory could interleave
+bytes mid-line. Both now hold `withFileLock` for the append.
+`persistSignals` also stops swallowing failures with a comment — it
+now reports through `recordSwallowed` so the silent-failure sink
+sees it.
+
+### Persistence: atomic writes for custom agent files
+
+`writeCustomAgent` in `agentLoader` now uses `atomicWriteFile`
+instead of `fs.writeFile`.
+
+### Concurrency: per-chat NervousSystemController
+
+`server.ts` previously held one module-level
+`NervousSystemController` instance and routed every chat through it.
+Two parallel chats tangled signal histories and reflex state. Each
+chat handler now constructs its own controller; `/api/nervous` reads
+from a `lastNervousSnapshot` mirror updated at the end of each chat.
+
+### Concurrency: shared in-memory Mycelium graph
+
+Every chat used to load its own copy of the mycelium graph from disk,
+mutate it independently across the chat lifetime, and write the full
+copy back at end-of-chat. Two overlapping chats would both load the
+same baseline and the later writer silently overwrote the earlier
+writer's reinforcements. The atomic-write/lock from v0.5.2 protected
+the bytes but not the load-then-overwrite window.
+
+A new `src/mycelium/graphStore.ts` module keeps a single
+`MyceliumGraph` per `projectDir` in memory. `createMycelialRouter`
+now goes through `getSharedMyceliumGraph`, and `router.save()` flushes
+through `flushSharedMyceliumGraph`. Concurrent reinforcements now
+accumulate on the same instance instead of producing divergent
+snapshots that overwrite each other.
+
+### Schedulers: register the two Jarvis ambient timers
+
+`jarvisAmbientHandle` and the 60-second `ambientActionTimer` are now
+registered with `SchedulerRegistry` as `jarvis-ambient` and
+`jarvis-ambient-action`. `/api/shutdown` and the kill switch see and
+stop them like every other scheduler.
+
+### Tests
+
+Three new tests in `src/mycelium/graphStore.test.ts` cover:
+- Concurrent routers receive the same in-memory graph instance.
+- Three concurrent first-load callers share one disk load.
+- Concurrent seedings accumulate on the shared graph rather than
+  overwriting each other on save.
+
+The full suite now runs 163 suites / 1786 tests, all green.
+
 ## Ollama Agent Harness v0.5.7
 
 Closes audit item #10 (health endpoint upgrade). Now that v0.5.6 made

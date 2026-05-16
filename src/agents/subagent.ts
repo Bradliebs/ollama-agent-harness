@@ -4,6 +4,7 @@ import type { Tool, ToolResult } from '../types';
 import { OllamaClient } from '../core/ollamaClient';
 import type { IChatClient } from '../core/chatClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
+import { withFileLock } from '../persistence/atomicFile';
 import { createHelperAgentConfig, type HelperTaskType, type ModelRoutingDecision, type ModelRoutingInput, type ModelRoutingPolicy } from './modelRouting';
 import { resolveAgentDefinition, type AgentDefinition } from './agentLoader';
 import { registerSubagent, unregisterSubagent } from '../services/subagentRegistry';
@@ -284,7 +285,7 @@ export async function appendSubagentRoutingMetric(
 ): Promise<string> {
   const filePath = path.join(projectDir, '.harness', 'learning', 'subagent-routing.jsonl');
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.appendFile(filePath, JSON.stringify(metric) + '\n', 'utf-8');
+  await withFileLock(filePath, () => fs.appendFile(filePath, JSON.stringify(metric) + '\n', 'utf-8'));
   return filePath;
 }
 

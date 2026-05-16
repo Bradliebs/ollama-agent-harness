@@ -10,6 +10,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { atomicWriteFile } from '../persistence/atomicFile';
 import type { HelperTaskType } from './modelRouting';
 
 export type AgentRole = 'researcher' | 'developer' | 'qa' | 'writer' | 'architect' | 'security';
@@ -240,7 +241,7 @@ export async function writeCustomAgent(projectDir: string, input: CreateCustomAg
     for (const tool of input.allowedTools) lines.push(`  - ${tool}`);
   }
   lines.push('---', '', input.systemPrompt.trim(), '');
-  await fs.writeFile(filePath, lines.join('\n'), 'utf-8');
+  await atomicWriteFile(filePath, lines.join('\n'));
   return filePath;
 }
 

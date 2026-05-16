@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { SessionEvent } from '../types';
 import { SessionStorage } from '../persistence/sessionStorage';
+import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { evaluatePromotionGate, loadSafetyRules, type PromotionGateConfig, type PromotionGateResult } from './promotionGate';
 import { listEvalTraceRuns } from './evalTrace';
 
@@ -268,25 +269,27 @@ export async function promoteLearningCandidate(
   }
   const memoryPath = path.join(projectDir, '.harness', 'memory', 'patterns.md');
   await fs.mkdir(path.dirname(memoryPath), { recursive: true });
-  const existing = await fs.readFile(memoryPath, 'utf-8').catch(() => '# Learned Patterns\n');
-  const entry = [
-    '',
-    `## Session Candidate ${candidate.id}`,
-    '',
-    `* Promoted: ${new Date().toISOString()}`,
-    `* Quality: ${Math.round(candidate.qualityScore * 100)}%`,
-    `* Tools: ${candidate.toolNames.length ? candidate.toolNames.join(', ') : 'none'}`,
-    '',
-    '### Prompt',
-    '',
-    candidate.prompt || '[empty]',
-    '',
-    '### Outcome',
-    '',
-    candidate.outcome || '[empty]',
-    '',
-  ].join('\n');
-  await fs.writeFile(memoryPath, existing.trimEnd() + entry, 'utf-8');
+  await withFileLock(memoryPath, async () => {
+    const existing = await fs.readFile(memoryPath, 'utf-8').catch(() => '# Learned Patterns\n');
+    const entry = [
+      '',
+      `## Session Candidate ${candidate.id}`,
+      '',
+      `* Promoted: ${new Date().toISOString()}`,
+      `* Quality: ${Math.round(candidate.qualityScore * 100)}%`,
+      `* Tools: ${candidate.toolNames.length ? candidate.toolNames.join(', ') : 'none'}`,
+      '',
+      '### Prompt',
+      '',
+      candidate.prompt || '[empty]',
+      '',
+      '### Outcome',
+      '',
+      candidate.outcome || '[empty]',
+      '',
+    ].join('\n');
+    await atomicWriteFile(memoryPath, existing.trimEnd() + entry);
+  });
   return { id: candidate.id, promotedAt: new Date().toISOString(), memoryPath };
 }
 

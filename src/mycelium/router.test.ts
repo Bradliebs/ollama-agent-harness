@@ -5,6 +5,7 @@ import { MyceliumGraph, loadMyceliumGraph, saveMyceliumGraph } from './graph';
 import { spreadActivation, selectRoute } from './activation';
 import { reinforceRoute, weakenRoute, decayUnusedEdges, pruneDeadEdges, computeReward } from './reinforcement';
 import { MycelialContextRouter, createMycelialRouter } from './router';
+import { resetSharedMyceliumGraphForTest } from './graphStore';
 
 // ─── Graph store ────────────────────────────────────────────────────
 
@@ -278,6 +279,7 @@ describe('MycelialContextRouter', () => {
     router.seedToolNodes([{ name: 'bash', description: 'Shell' }]);
     await router.save();
 
+    resetSharedMyceliumGraphForTest();
     const loaded = await createMycelialRouter(dir);
     expect(loaded.getGraph().listNodes()).toHaveLength(1);
   });
