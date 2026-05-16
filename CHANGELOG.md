@@ -11,6 +11,50 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Ollama Agent Harness v0.5.4
+
+Removes a full-suite test flake in `src/web/server.test.ts` where
+`addedDocuments` could surface `jarvis-brief-ambient-*.md` files
+written by the Jarvis ambient action subscriber's 60s `setInterval`.
+The flake only fired under the full Jest run (test passed in
+isolation) and was unrelated to the test's own API mutations.
+
+### Fix
+
+* [src/web/server.ts](src/web/server.ts) — the ambient action
+  subscriber's `setInterval` now only registers when
+  `HARNESS_AMBIENT_ENABLED === '1'`, mirroring the gate on the daemon
+  itself. The previous code always registered the timer and then
+  early-returned inside the callback when the daemon wasn't running —
+  dead work in non-ambient runs and the source of the race window.
+* [src/testSupport/harnessCleanup.test-support.ts](src/testSupport/harnessCleanup.test-support.ts) —
+  `listHarnessDocumentFiles` now filters out
+  `jarvis-brief-ambient-*` files. They are background-timer
+  artifacts; the snapshot/diff exists to police documents created by
+  the API mutations a test made, not independent timer work. Genuine
+  test-induced documents still surface.
+
+### Tests
+
+* [src/testSupport/harnessCleanup.test-support.test.ts](src/testSupport/harnessCleanup.test-support.test.ts) —
+  added 1 test pinning the filter contract: ambient briefs are
+  excluded from both the snapshot and the diff, but a real test
+  leak (`test-leaked.md`) still appears in `addedDocuments`.
+
+### Not changed by this release
+
+* The ambient daemon and its bus behave identically when
+  `HARNESS_AMBIENT_ENABLED=1`.
+* The action subscriber's policy and per-action handlers are
+  unchanged.
+* No other snapshot/diff caller behaviour changes.
+
+### Still pending from the audit
+
+* Item #6 — schedulers through the PermissionEngine (architectural).
+* Item #7 — workflow persistence consolidation.
+* Item #10 — health endpoint upgrade (depends on #6).
+
 ## Ollama Agent Harness v0.5.3
 
 Fixes audit item #9: when the Bash tool routes a Windows `.cmd` shim

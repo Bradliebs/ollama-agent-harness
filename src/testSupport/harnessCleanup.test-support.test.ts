@@ -49,4 +49,29 @@ describe('harness runtime state test support', () => {
       removedDocuments: [],
     });
   });
+
+  it('ignores background-timer ambient brief files in snapshots and diffs', async () => {
+    // Ambient briefs are written by a 60s setInterval, not by the API
+    // calls the test made. The diff exists to police test-induced
+    // mutations, so timer artifacts must not flake the assertion when
+    // an ambient daemon happens to fire mid-test.
+    const documentsDir = path.join(projectDir, '.harness', 'documents');
+    await fs.mkdir(documentsDir, { recursive: true });
+    await fs.writeFile(path.join(documentsDir, 'real-document.md'), '# Real\n', 'utf-8');
+    // Pre-existing ambient brief: must not appear in the snapshot.
+    await fs.writeFile(path.join(documentsDir, 'jarvis-brief-ambient-1.md'), '# Pre\n', 'utf-8');
+    const snapshot = await snapshotHarnessRuntimeState(projectDir);
+    expect(snapshot.documentFiles).toEqual(['real-document.md']);
+
+    // New ambient brief between snapshot and diff: must not appear in addedDocuments.
+    await fs.writeFile(path.join(documentsDir, 'jarvis-brief-ambient-2.md'), '# New\n', 'utf-8');
+    // But a genuinely test-induced document must still surface.
+    await fs.writeFile(path.join(documentsDir, 'test-leaked.md'), '# Leaked\n', 'utf-8');
+
+    await expect(diffHarnessRuntimeState(projectDir, snapshot)).resolves.toEqual({
+      automationJobsChanged: false,
+      addedDocuments: ['test-leaked.md'],
+      removedDocuments: [],
+    });
+  });
 });

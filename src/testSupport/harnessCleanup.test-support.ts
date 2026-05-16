@@ -102,10 +102,23 @@ async function listHarnessDocumentFiles(projectDir: string): Promise<string[]> {
   try {
     const documentsDir = path.join(projectDir, '.harness', 'documents');
     const entries = await fs.readdir(documentsDir, { withFileTypes: true });
-    return entries.filter((entry) => entry.isFile()).map((entry) => entry.name).sort();
+    return entries
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .filter((name) => !isBackgroundTimerArtifact(name))
+      .sort();
   } catch {
     return [];
   }
+}
+
+// Files written by background timers (not by API calls the test made)
+// must not appear in the snapshot/diff: they are inherently racy with
+// test lifecycle and a test cannot meaningfully assert their absence.
+// The snapshot/diff exists to catch documents created by API mutations
+// the test failed to clean up — not to police independent timer work.
+function isBackgroundTimerArtifact(name: string): boolean {
+  return name.startsWith('jarvis-brief-ambient-');
 }
 
 function harnessAutomationJobsPath(projectDir: string): string {

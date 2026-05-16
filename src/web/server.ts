@@ -9747,28 +9747,35 @@ export async function startServer(): Promise<void> {
     // Ambient → action subscriber. Batches recent signals every minute and
     // applies the default policy: KG ingest for file changes, save the daily
     // brief on git transitions back to clean. No shell side effects.
+    // Gate on the same env flag as the daemon itself: if ambient isn't
+    // enabled the daemon never starts, so the subscriber would only ever
+    // early-return — registering the timer at all is dead work and made
+    // it possible for ambient brief files to appear in test runs that
+    // never opted into ambient mode.
     try {
-      const ambientActionTimer = setInterval(async () => {
-        if (!jarvisAmbientHandle?.isRunning()) return;
-        const recent = jarvisAmbientBus.recent();
-        const actions = defaultAmbientActionPolicy.evaluate(recent);
-        for (const action of actions) {
-          try {
-            if (action.kind === 'kg_ingest_file') {
-              const files = (action.payload?.files as string[] | undefined) ?? [];
-              for (const file of files) {
-                await upsertEntity(PROJECT_DIR, 'file', file, { source: 'ambient' }, 'ambient');
+      if (process.env.HARNESS_AMBIENT_ENABLED === '1') {
+        const ambientActionTimer = setInterval(async () => {
+          if (!jarvisAmbientHandle?.isRunning()) return;
+          const recent = jarvisAmbientBus.recent();
+          const actions = defaultAmbientActionPolicy.evaluate(recent);
+          for (const action of actions) {
+            try {
+              if (action.kind === 'kg_ingest_file') {
+                const files = (action.payload?.files as string[] | undefined) ?? [];
+                for (const file of files) {
+                  await upsertEntity(PROJECT_DIR, 'file', file, { source: 'ambient' }, 'ambient');
+                }
+              } else if (action.kind === 'save_brief') {
+                const snap = await snapshotDailyBrief({ projectDir: PROJECT_DIR, ambientSignals: recent, windowDescription: 'ambient trigger' });
+                const dir = path.join(PROJECT_DIR, '.harness', 'documents');
+                await fs.mkdir(dir, { recursive: true });
+                await fs.writeFile(path.join(dir, `jarvis-brief-ambient-${Date.now()}.md`), snap.markdown, 'utf-8');
               }
-            } else if (action.kind === 'save_brief') {
-              const snap = await snapshotDailyBrief({ projectDir: PROJECT_DIR, ambientSignals: recent, windowDescription: 'ambient trigger' });
-              const dir = path.join(PROJECT_DIR, '.harness', 'documents');
-              await fs.mkdir(dir, { recursive: true });
-              await fs.writeFile(path.join(dir, `jarvis-brief-ambient-${Date.now()}.md`), snap.markdown, 'utf-8');
-            }
-          } catch { /* per-action best-effort */ }
-        }
-      }, 60_000);
-      if (typeof ambientActionTimer.unref === 'function') ambientActionTimer.unref();
+            } catch { /* per-action best-effort */ }
+          }
+        }, 60_000);
+        if (typeof ambientActionTimer.unref === 'function') ambientActionTimer.unref();
+      }
     } catch (error) {
       logger.warn('Startup', 'Failed to start Jarvis ambient action subscriber', { error: error instanceof Error ? error.message : String(error) });
     }
