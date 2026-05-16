@@ -23,7 +23,7 @@ Ollama Agent Harness is a local-first agent runtime that wraps Ollama models wit
 
 You chat with a model, it can call tools (read/write files, run bash, search the web, analyze images, transcribe audio, generate documents, send emails), and the harness manages permissions, context, and history.
 
-**v0.4.7** adds a quote-aware bash safety scanner (so `python -c "a; b"` is no longer falsely blocked), a new `make_directory` tool, a configurable Allowed External Paths allowlist for reading and writing outside the project, and the `agent-outputs/` redirect with bash auto-resolve for bare script filenames. See the [CHANGELOG](CHANGELOG.md) for older releases.
+**v0.4.8** adds a quote-aware bash safety scanner (so `python -c \"a; b\"` is no longer falsely blocked), a new `make_directory` tool, a configurable Allowed External Paths allowlist for reading and writing outside the project, and the `agent-outputs/` redirect with bash auto-resolve for bare script filenames. See the [CHANGELOG](CHANGELOG.md) for older releases.
 
 ## How it works
 

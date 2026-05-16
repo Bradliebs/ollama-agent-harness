@@ -11,54 +11,14 @@ keywords:
 estimated_reading_time: 14
 ---
 
-## Ollama Agent Harness v0.4.7
+## Ollama Agent Harness v0.4.8
 
-Patch release that closes the four learn-and-remember gaps surfaced by the
-post-v0.4.6 audit. Each fix targets a place the system already collected
-data but the next chat turn could not see it.
-
-### Recent automation runs reach the next chat turn
-
-* New `--- Recent Automation ---` block in the system prompt summarises the
-  last 24h of automation job results (success / failure, name, timestamp,
-  short output preview). Closes the gap where overnight `/schedule` jobs
-  showed up in the inbox UI but were invisible to the model itself —
-  asking "what changed overnight?" the next morning now Just Works.
-* Implemented as `renderRecentAutomationForPrompt` in
-  `src/automation/jobs.ts`, mirroring the existing
-  `renderRecentAuditForPrompt` pattern so the system prompt assembly
-  stays uniform.
-
-### Lasting user preferences actually get remembered
-
-* New `REMEMBER ENDURING USER PREFERENCES` rule in the system prompt
-  nudges the agent to call the `remember` tool when the user states
-  patterns like "always X", "never Y", or "from now on Z". Previously the
-  agent rarely invoked `remember` unsolicited even though the storage
-  was there — preferences died at the end of the session.
-* Restraint built in: do not remember one-off facts or things already in
-  agent memory; one remember call per turn unless the user listed
-  multiple distinct preferences.
-
-### Inbox dismissals stick across reloads
-
-* The unified inbox strip now shows a small `×` button on each card
-  (except permission prompts, which remain non-dismissable for safety).
-* Dismissed item ids are persisted in `localStorage.inboxDismissed` with
-  a 7-day TTL — the strip GCs expired entries on read so the map never
-  grows. Dismissed items reappear after the TTL elapses in case the
-  underlying issue is still relevant.
-
-### Curator promotion loop accelerates under candidate pressure
-
-* `CuratorScheduler` now accepts an optional `getPendingCandidateCount`
-  + `runWhenCandidatesAtLeast` (default 25) accelerator. When the
-  pending learning-candidate queue grows past threshold, the curator
-  fires the next time the system is idle even if the long
-  `intervalHours` (default 168) has not elapsed.
-* `BLOCK` and `INTERRUPT_AND_RECOVER` paths still cannot bypass; the
-  idle gate still applies so the curator never interrupts active work.
-* Pinned by two new tests in `src/curator/scheduler.test.ts`.
+Patch release that hardens the tool surface against day-to-day model
+mistakes that kept tripping up autonomous runs: false bash blocks for
+quoted arguments, the agent writing a file then failing to run it,
+permission prompts timing out in the background, synthesis turns that
+swallowed everything the agent had already accomplished, and a
+Settings UI that buried the most useful escape hatch.
 
 ### Bash safety scanner is quote-aware
 
@@ -146,6 +106,55 @@ data but the next chat turn could not see it.
 * Added a cross-reference from the Agent Files panel pointing users
   down to the Allowed External Paths section so the feature is no
   longer buried.
+
+## Ollama Agent Harness v0.4.7
+
+Patch release that closes the four learn-and-remember gaps surfaced by the
+post-v0.4.6 audit. Each fix targets a place the system already collected
+data but the next chat turn could not see it.
+
+### Recent automation runs reach the next chat turn
+
+* New `--- Recent Automation ---` block in the system prompt summarises the
+  last 24h of automation job results (success / failure, name, timestamp,
+  short output preview). Closes the gap where overnight `/schedule` jobs
+  showed up in the inbox UI but were invisible to the model itself —
+  asking "what changed overnight?" the next morning now Just Works.
+* Implemented as `renderRecentAutomationForPrompt` in
+  `src/automation/jobs.ts`, mirroring the existing
+  `renderRecentAuditForPrompt` pattern so the system prompt assembly
+  stays uniform.
+
+### Lasting user preferences actually get remembered
+
+* New `REMEMBER ENDURING USER PREFERENCES` rule in the system prompt
+  nudges the agent to call the `remember` tool when the user states
+  patterns like "always X", "never Y", or "from now on Z". Previously the
+  agent rarely invoked `remember` unsolicited even though the storage
+  was there — preferences died at the end of the session.
+* Restraint built in: do not remember one-off facts or things already in
+  agent memory; one remember call per turn unless the user listed
+  multiple distinct preferences.
+
+### Inbox dismissals stick across reloads
+
+* The unified inbox strip now shows a small `×` button on each card
+  (except permission prompts, which remain non-dismissable for safety).
+* Dismissed item ids are persisted in `localStorage.inboxDismissed` with
+  a 7-day TTL — the strip GCs expired entries on read so the map never
+  grows. Dismissed items reappear after the TTL elapses in case the
+  underlying issue is still relevant.
+
+### Curator promotion loop accelerates under candidate pressure
+
+* `CuratorScheduler` now accepts an optional `getPendingCandidateCount`
+  + `runWhenCandidatesAtLeast` (default 25) accelerator. When the
+  pending learning-candidate queue grows past threshold, the curator
+  fires the next time the system is idle even if the long
+  `intervalHours` (default 168) has not elapsed.
+* `BLOCK` and `INTERRUPT_AND_RECOVER` paths still cannot bypass; the
+  idle gate still applies so the curator never interrupts active work.
+* Pinned by two new tests in `src/curator/scheduler.test.ts`.
 
 ## Ollama Agent Harness v0.4.6
 
