@@ -20,6 +20,7 @@ import { runCurator, runDeterministicPhase, readCuratorLog, readCuratorProposals
 import { CuratorScheduler } from '../curator/scheduler';
 import { SelfLearningHeartbeat, createCleanupAgentOutputsAction, createIdentityGcAction, createReflectAndLearnAction, createSkillEvolutionAction, createWorkAssignedTasksAction, defaultHeartbeatActions, readHeartbeatHistory } from '../services/selfLearningHeartbeat';
 import { TriggerScheduler, loadTriggers, saveTriggers, type TriggerDefinition } from '../services/triggerScheduler';
+import { SchedulerRegistry } from '../services/schedulerRegistry';
 import { listArtifacts, readArtifact, type ArtifactCategory } from '../services/artifactCatalog';
 import { cancelSubagent, listActiveSubagents, subscribeSubagentRegistry } from '../services/subagentRegistry';
 import { createToolFailureAlerts, type ToolFailureAlertTracker } from '../services/toolFailureAlerts';
@@ -37,6 +38,7 @@ import { setRagRuntime } from '../tools/ragTools';
 import { setCuratorToolRuntime } from '../tools/curatorTools';
 import { PermissionEngine } from '../permissions/engine';
 import { PermissionPromptBroker } from '../permissions/promptBroker';
+import { KillSwitch } from '../permissions/killSwitch';
 import { createCapabilityGrant, evaluateCapabilityGrant, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, summarizeCapabilityAlignment, autoGrantGatedCapabilities, type CapabilityGrant } from '../permissions/capabilities';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { forkSession, resumeSession } from '../persistence/resume';
@@ -412,8 +414,53 @@ let modelCatalog: ModelCatalogSettings = { url: '', ttlHours: 24 };
 let extensionActivation: ExtensionActivationSettings = { executablePlugins: false, allowedPluginNames: [], requirePermissionReview: true };
 let walkthrough: WalkthroughSettings = { completed: [] };
 let settingsLoaded = false;
+/**
+ * Shared kill-switch state. Holds the single source of truth for engaged /
+ * released and the operator reason. The server keeps the module-level
+ * `killSwitchActive` / `killSwitchReason` mirrors below in lockstep with
+ * this instance via `applyKillSwitchState()` so the dozens of existing
+ * read sites do not need to change. Mutations MUST go through
+ * `applyKillSwitchState()` so the mirror cannot drift.
+ *
+ * Per-session `PermissionEngine` instances are created with this same
+ * instance attached (see `defaultWebRuntime.createPermissionEngine`) so
+ * they always see live state instead of a construction-time snapshot.
+ */
+const killSwitch = new KillSwitch();
+/** Process-wide scheduler lifecycle registry (curator, heartbeat, etc.). */
+const schedulerRegistry = new SchedulerRegistry();
 let killSwitchActive = false;
 let killSwitchReason = '';
+
+/**
+ * Apply a kill-switch state change through the shared `KillSwitch` and keep
+ * the module-level mirrors in sync. This is the only function that should
+ * mutate `killSwitchActive` / `killSwitchReason`.
+ */
+function applyKillSwitchState(active: boolean, reason: string = ''): void {
+  if (active) {
+    killSwitch.engage(reason || 'Kill switch engaged.');
+  } else {
+    killSwitch.release();
+  }
+  const snap = killSwitch.snapshot();
+  killSwitchActive = snap.active;
+  killSwitchReason = snap.reason;
+}
+
+/**
+ * Restore the kill switch from a persisted snapshot (settings load only).
+ * Does not fire listeners — startup restoration is not a state transition.
+ */
+function restoreKillSwitchState(snapshot: { active?: unknown; reason?: unknown } | null | undefined): void {
+  killSwitch.restore({
+    active: Boolean(snapshot?.active),
+    reason: typeof snapshot?.reason === 'string' ? snapshot.reason : '',
+  });
+  const snap = killSwitch.snapshot();
+  killSwitchActive = snap.active;
+  killSwitchReason = snap.reason;
+}
 const disabledTools = new Set<string>();
 /** Time-limited tool enables: tool name → expiry timestamp (ms). */
 const timedToolEnables = new Map<string, number>();
@@ -765,8 +812,9 @@ const defaultWebRuntime: WebRuntimeDeps = {
     return buildChatTools(parentClient);
   },
   createPermissionEngine: (mode) => {
-    const engine = new PermissionEngine([], mode);
-    if (killSwitchActive) engine.engageKillSwitch(killSwitchReason);
+    // Pass the shared kill switch so per-session engines always see live
+    // state instead of a construction-time snapshot (audit #6 / v0.5.6).
+    const engine = new PermissionEngine([], mode, undefined, killSwitch);
     return engine;
   },
   createSession: (projectDir, model) => new SessionStorage(projectDir, model),
@@ -817,7 +865,7 @@ setRagRuntime({ projectDir: PROJECT_DIR, ollamaHost });
 setCuratorToolRuntime({
   projectDir: PROJECT_DIR,
   getConfig: () => curatorConfigFromSettings(),
-  isKillSwitchActive: () => killSwitchActive,
+  isKillSwitchActive: () => killSwitch.isActive(),
 });
 
 // --- API Routes ---
@@ -5101,10 +5149,10 @@ app.post('/api/permissions/kill-switch', (req, res) => {
   try {
     const desired = Boolean(req.body?.active);
     if (desired) {
-      killSwitchActive = true;
-      killSwitchReason = typeof req.body?.reason === 'string' && req.body.reason.trim()
+      const reason = typeof req.body?.reason === 'string' && req.body.reason.trim()
         ? String(req.body.reason).trim().slice(0, 500)
         : 'Kill switch engaged from dashboard.';
+      applyKillSwitchState(true, reason);
       // Clear all timed enables and timed autonomy so nothing unlocks during lockdown
       if (timedToolEnables.size > 0) {
         timedToolEnables.clear();
@@ -5119,8 +5167,7 @@ app.post('/api/permissions/kill-switch', (req, res) => {
       logger.warn('Permissions', 'Kill switch engaged', { reason: killSwitchReason });
       runtimeTracer.recordEvent('permission.kill_switch_engaged', { reason: killSwitchReason });
     } else {
-      killSwitchActive = false;
-      killSwitchReason = '';
+      applyKillSwitchState(false);
       logger.info('Permissions', 'Kill switch released');
       runtimeTracer.recordEvent('permission.kill_switch_released', {});
     }
@@ -8063,6 +8110,7 @@ function configureUploadsAutoPrune(): void {
     clearInterval(uploadsAutoPruneTimer);
     uploadsAutoPruneTimer = null;
   }
+  schedulerRegistry.unregister('uploads-auto-prune');
   if (mediaTools.uploadsAutoPruneDays <= 0) return;
   uploadsAutoPruneTimer = setInterval(() => {
     pruneUploads(mediaTools.uploadsAutoPruneDays).catch((error) => {
@@ -8070,6 +8118,11 @@ function configureUploadsAutoPrune(): void {
     });
   }, UPLOADS_AUTO_PRUNE_INTERVAL_MS);
   if (typeof uploadsAutoPruneTimer.unref === 'function') uploadsAutoPruneTimer.unref();
+  schedulerRegistry.register({
+    name: 'uploads-auto-prune',
+    stop: () => stopUploadsAutoPrune(),
+    isRunning: () => uploadsAutoPruneTimer !== null,
+  });
 }
 
 export function stopUploadsAutoPrune(): void {
@@ -8077,6 +8130,7 @@ export function stopUploadsAutoPrune(): void {
     clearInterval(uploadsAutoPruneTimer);
     uploadsAutoPruneTimer = null;
   }
+  schedulerRegistry.unregister('uploads-auto-prune');
 }
 
 function curatorConfigFromSettings(): CuratorConfig {
@@ -8090,7 +8144,7 @@ function curatorConfigFromSettings(): CuratorConfig {
 
 function curatorDeps() {
   return {
-    isKillSwitchActive: () => killSwitchActive,
+    isKillSwitchActive: () => killSwitch.isActive(),
     callModel: async (prompt: string): Promise<string> => {
       const model = summarizerModel || currentModel;
       if (!model) throw new Error('No model configured for curator LLM phase');
@@ -8106,13 +8160,14 @@ function configureCuratorScheduler(): void {
     curatorScheduler.stop();
     curatorScheduler = null;
   }
+  schedulerRegistry.unregister('curator');
   if (!curatorSettings.enabled) return;
   curatorScheduler = new CuratorScheduler({
     projectDir: PROJECT_DIR,
     config: curatorConfigFromSettings(),
     intervalHours: curatorSettings.intervalHours,
     idleThresholdMinutes: curatorSettings.idleThresholdMinutes,
-    isKillSwitchActive: () => killSwitchActive,
+    isKillSwitchActive: () => killSwitch.isActive(),
     isEnabled: () => curatorSettings.enabled,
     getLastUserActivityMs: () => lastUserActivityMs,
     getLastRunMs: () => curatorSettings.lastRunAt ? Date.parse(curatorSettings.lastRunAt) || 0 : 0,
@@ -8136,6 +8191,11 @@ function configureCuratorScheduler(): void {
     },
   });
   curatorScheduler.start();
+  schedulerRegistry.register({
+    name: 'curator',
+    stop: () => stopCuratorScheduler(),
+    isRunning: () => curatorScheduler !== null,
+  });
 }
 
 export function stopCuratorScheduler(): void {
@@ -8143,6 +8203,7 @@ export function stopCuratorScheduler(): void {
     curatorScheduler.stop();
     curatorScheduler = null;
   }
+  schedulerRegistry.unregister('curator');
 }
 
 function heartbeatEnabled(): boolean {
@@ -8204,12 +8265,17 @@ function configureSelfLearningHeartbeat(): void {
     projectDir: PROJECT_DIR,
     intervalMinutes,
     actions,
-    isKillSwitchActive: () => killSwitchActive,
-    isEnabled: () => heartbeatEnabled() && !killSwitchActive,
+    isKillSwitchActive: () => killSwitch.isActive(),
+    isEnabled: () => heartbeatEnabled() && !killSwitch.isActive(),
     getLastRunMs: () => heartbeatLastRunMs,
     recordRunMs: (timestamp) => { heartbeatLastRunMs = timestamp; },
   });
   selfLearningHeartbeat.start();
+  schedulerRegistry.register({
+    name: 'self-learning-heartbeat',
+    stop: () => stopSelfLearningHeartbeat(),
+    isRunning: () => selfLearningHeartbeat !== null,
+  });
 }
 
 export function stopSelfLearningHeartbeat(): void {
@@ -8217,6 +8283,7 @@ export function stopSelfLearningHeartbeat(): void {
     selfLearningHeartbeat.stop();
     selfLearningHeartbeat = null;
   }
+  schedulerRegistry.unregister('self-learning-heartbeat');
 }
 
 function triggersEnabled(): boolean {
@@ -8228,13 +8295,19 @@ function configureTriggerScheduler(): void {
     triggerScheduler.stop();
     triggerScheduler = null;
   }
+  schedulerRegistry.unregister('triggers');
   if (!triggersEnabled()) return;
   triggerScheduler = new TriggerScheduler({
     projectDir: PROJECT_DIR,
-    isKillSwitchActive: () => killSwitchActive,
-    isEnabled: () => triggersEnabled() && !killSwitchActive,
+    isKillSwitchActive: () => killSwitch.isActive(),
+    isEnabled: () => triggersEnabled() && !killSwitch.isActive(),
   });
   triggerScheduler.start();
+  schedulerRegistry.register({
+    name: 'triggers',
+    stop: () => stopTriggerScheduler(),
+    isRunning: () => triggerScheduler !== null,
+  });
 }
 
 export function stopTriggerScheduler(): void {
@@ -8242,6 +8315,7 @@ export function stopTriggerScheduler(): void {
     triggerScheduler.stop();
     triggerScheduler = null;
   }
+  schedulerRegistry.unregister('triggers');
 }
 
 // ─── OTLP / OpenInference trace export ─────────────────────────────
@@ -8260,6 +8334,7 @@ function configureOtlpExporter(): void {
     otlpExporterHandle.detach().catch(() => { /* best-effort */ });
     otlpExporterHandle = null;
   }
+  schedulerRegistry.unregister('otlp-exporter');
   if (!otelExportEnabled()) return;
   const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
   if (!endpoint) {
@@ -8276,9 +8351,15 @@ function configureOtlpExporter(): void {
     logger: { warn: (message, meta) => logger.warn('Observability', message, meta ?? {}) },
   });
   logger.info('Observability', 'OTLP exporter attached', { endpoint });
+  schedulerRegistry.register({
+    name: 'otlp-exporter',
+    stop: () => stopOtlpExporter(),
+    isRunning: () => otlpExporterHandle !== null,
+  });
 }
 
 export function stopOtlpExporter(): Promise<void> {
+  schedulerRegistry.unregister('otlp-exporter');
   if (!otlpExporterHandle) return Promise.resolve();
   const handle = otlpExporterHandle;
   otlpExporterHandle = null;
@@ -8290,12 +8371,13 @@ function configureAutomationScheduler(): void {
     automationScheduler.stop();
     automationScheduler = null;
   }
+  schedulerRegistry.unregister('automation');
   if (!automationSchedulerSettings.enabled) return;
   automationScheduler = new AutomationScheduler({
     projectDir: PROJECT_DIR,
     getPolicyContext: () => getAutomationPolicyContext(),
-    isKillSwitchActive: () => killSwitchActive,
-    isEnabled: () => automationSchedulerSettings.enabled && !killSwitchActive,
+    isKillSwitchActive: () => killSwitch.isActive(),
+    isEnabled: () => automationSchedulerSettings.enabled && !killSwitch.isActive(),
     getLastUserActivityMs: () => lastUserActivityMs,
     idleThresholdMinutes: automationSchedulerSettings.idleThresholdMinutes,
     onBreachDetected: (breaches) => {
@@ -8305,6 +8387,11 @@ function configureAutomationScheduler(): void {
     },
   });
   automationScheduler.start();
+  schedulerRegistry.register({
+    name: 'automation',
+    stop: () => stopAutomationScheduler(),
+    isRunning: () => automationScheduler !== null,
+  });
 }
 
 export function stopAutomationScheduler(): void {
@@ -8312,6 +8399,21 @@ export function stopAutomationScheduler(): void {
     automationScheduler.stop();
     automationScheduler = null;
   }
+  schedulerRegistry.unregister('automation');
+}
+
+/**
+ * Stop every registered scheduler in reverse-registration order. Intended
+ * for shutdown / test teardown — callers that only need to stop one
+ * subsystem should keep using the individual `stopX` exports.
+ */
+export async function stopAllSchedulers(): Promise<Array<{ name: string; ok: boolean; error?: string }>> {
+  return schedulerRegistry.stopAll();
+}
+
+/** Diagnostic snapshot of currently-registered scheduler liveness. */
+export function getSchedulerStatuses(): Array<{ name: string; running: boolean }> {
+  return schedulerRegistry.list();
 }
 
 // --- API: File Tree ---
@@ -8873,10 +8975,7 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   }
   if (settings.killSwitch !== undefined && typeof settings.killSwitch === 'object' && settings.killSwitch !== null) {
     const ks = settings.killSwitch as { active?: unknown; reason?: unknown };
-    killSwitchActive = Boolean(ks.active);
-    killSwitchReason = killSwitchActive
-      ? (typeof ks.reason === 'string' && ks.reason.trim() ? String(ks.reason).slice(0, 500) : 'Kill switch restored from saved state.')
-      : '';
+    restoreKillSwitchState(ks);
   }
   if (settings.capabilityGrants !== undefined) capabilityGrants = sanitizeCapabilityGrants(settings.capabilityGrants);
   if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 0, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);

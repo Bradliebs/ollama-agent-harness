@@ -2,6 +2,7 @@ import type { PermissionRule, PermissionMode, PermissionResult, ToolCall } from 
 import * as path from 'path';
 import { BUILTIN_TOOL_ENTRIES } from '../tools/registry';
 import { getAllowedExternalPaths } from '../tools/pathResolution';
+import { KillSwitch } from './killSwitch';
 
 /**
  * Optional trust-ladder provider. When wired, PermissionEngine consults the
@@ -59,14 +60,26 @@ const META_TOOLS = new Set([
 export class PermissionEngine {
   private rules: PermissionRule[];
   private mode: PermissionMode;
+  /**
+   * Local kill-switch state used when no shared `KillSwitch` is wired. Tests
+   * and standalone callers fall back to this; the server passes its shared
+   * `KillSwitch` so per-session engines see live state.
+   */
   private killSwitchActive = false;
   private killSwitchReason = '';
+  private killSwitch?: KillSwitch;
   private trustLadder?: TrustLadderProvider;
 
-  constructor(rules: PermissionRule[] = [], mode: PermissionMode = 'default', trustLadder?: TrustLadderProvider) {
+  constructor(
+    rules: PermissionRule[] = [],
+    mode: PermissionMode = 'default',
+    trustLadder?: TrustLadderProvider,
+    killSwitch?: KillSwitch,
+  ) {
     this.rules = rules;
     this.mode = mode;
     this.trustLadder = trustLadder;
+    this.killSwitch = killSwitch;
   }
 
   /** Replace or clear the trust-ladder provider at runtime. */
@@ -74,29 +87,45 @@ export class PermissionEngine {
     this.trustLadder = provider;
   }
 
+  /**
+   * Attach (or detach) a shared `KillSwitch` after construction. Any future
+   * kill-switch read/write goes through the shared instance.
+   */
+  setKillSwitch(killSwitch: KillSwitch | undefined): void {
+    this.killSwitch = killSwitch;
+  }
+
   /** Engage the global kill switch. While active, every tool call is denied. */
   engageKillSwitch(reason: string = 'Kill switch engaged.'): void {
+    if (this.killSwitch) {
+      this.killSwitch.engage(reason);
+      return;
+    }
     this.killSwitchActive = true;
     this.killSwitchReason = reason;
   }
 
   /** Release the kill switch and resume normal evaluation. */
   releaseKillSwitch(): void {
+    if (this.killSwitch) {
+      this.killSwitch.release();
+      return;
+    }
     this.killSwitchActive = false;
     this.killSwitchReason = '';
   }
 
   isKillSwitchActive(): boolean {
-    return this.killSwitchActive;
+    return this.killSwitch ? this.killSwitch.isActive() : this.killSwitchActive;
   }
 
   getKillSwitchReason(): string {
-    return this.killSwitchReason;
+    return this.killSwitch ? this.killSwitch.getReason() : this.killSwitchReason;
   }
 
   evaluate(call: ToolCall): PermissionResult {
-    if (this.killSwitchActive) {
-      return { decision: 'deny', reason: this.killSwitchReason || 'Kill switch active.' };
+    if (this.isKillSwitchActive()) {
+      return { decision: 'deny', reason: this.getKillSwitchReason() || 'Kill switch active.' };
     }
 
     // Trust-ladder pre-check (no-op when not provided).

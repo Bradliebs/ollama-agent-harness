@@ -11,6 +11,104 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Ollama Agent Harness v0.5.6
+
+Closes audit item #6 (kill-switch / scheduler coupling) with two
+bounded changes: a single source of truth for kill-switch state, and
+a registry that makes every long-running scheduler discoverable and
+shutdownable through one API.
+
+### Kill-switch unification
+
+Before v0.5.6 the server held a `killSwitchActive` boolean and every
+`PermissionEngine` kept a private copy snapshotted at construction
+time. A per-session engine therefore could not see kill-switch
+changes made after the session started; conversely, code that called
+`engine.engageKillSwitch()` directly never propagated back to the
+server flag the schedulers were reading. Two sources of truth, easy
+to drift, hard to audit.
+
+* New [src/permissions/killSwitch.ts](src/permissions/killSwitch.ts) —
+  `KillSwitch` class with `engage(reason)`, `release()`,
+  `isActive()`, `getReason()`, `restore(snapshot)`, `snapshot()`,
+  and `onChange(listener)`. A single instance lives in `server.ts`
+  and is passed to every `PermissionEngine` via a new constructor
+  arg, so `evaluate()` reads live state on every call instead of a
+  construction-time snapshot.
+* [src/permissions/engine.ts](src/permissions/engine.ts) — new
+  optional `killSwitch` constructor argument plus `setKillSwitch()`
+  for late binding. When attached, `engageKillSwitch`,
+  `releaseKillSwitch`, `isKillSwitchActive`, `getKillSwitchReason`
+  and `evaluate` all route through the shared instance. Standalone
+  callers (tests) that do not pass one keep the existing local-field
+  behaviour, so no public API broke.
+* [src/web/server.ts](src/web/server.ts) — single `killSwitch =
+  new KillSwitch()` at module scope. All mutations route through
+  two new helpers, `applyKillSwitchState(active, reason)` and
+  `restoreKillSwitchState(snapshot)`. The module-level
+  `killSwitchActive` / `killSwitchReason` mirrors still exist (dozens
+  of read sites unchanged) but are now written only by these
+  helpers, so they cannot drift from the source of truth.
+* Schedulers (curator, heartbeat, triggers, automation) and the
+  curator tool runtime now read `() => killSwitch.isActive()`
+  instead of the module mirror, so a kill-switch flip is observed
+  on the very next scheduler tick.
+
+### SchedulerRegistry
+
+Before v0.5.6 each scheduler had its own `configureX` / `stopX`
+pair in `server.ts` with no central inventory. There was no way to
+enumerate what was running, no shared shutdown path, and tests had
+to import each `stopX` individually.
+
+* New [src/services/schedulerRegistry.ts](src/services/schedulerRegistry.ts) —
+  `SchedulerRegistry` with `register(scheduler)`, `unregister(name)`,
+  `stop(name)`, `stopAll()`, `list()`, and a `clear()` helper. Stops
+  run in reverse-registration order, async stops are awaited, and
+  one scheduler crashing during shutdown does not block siblings.
+* Registered subsystems in `server.ts`: `uploads-auto-prune`,
+  `curator`, `self-learning-heartbeat`, `triggers`, `otlp-exporter`,
+  `automation`. Each `configureX` registers after `.start()`; each
+  `stopX` unregisters; replacing by name auto-stops the previous
+  instance.
+* New exports: `stopAllSchedulers()` and `getSchedulerStatuses()`
+  for shutdown handlers, tests, and diagnostic surfaces. The
+  existing individual `stopX` exports stay (used by tests).
+* The registry does **not** subscribe to the kill switch — current
+  semantic is preserved: schedulers stay running but their per-tick
+  guard makes them no-op while the switch is engaged, so a release
+  resumes scheduled work without reconfiguration.
+
+### Tests
+
+* New [src/permissions/killSwitch.test.ts](src/permissions/killSwitch.test.ts) —
+  12 tests covering engage/release, default reasons, snapshot
+  defensiveness, listener fan-out and crash isolation, restore
+  semantics, and the 500-char reason cap.
+* New [src/services/schedulerRegistry.test.ts](src/services/schedulerRegistry.test.ts) —
+  17 tests covering name validation, replacement (including when the
+  previous stop throws), unregister semantics, async stop awaiting,
+  reverse-order `stopAll`, failure isolation, and snapshot-stable
+  iteration when an entry unregisters siblings during stop.
+* Extended [src/permissions/engine.test.ts](src/permissions/engine.test.ts) —
+  4 new tests in `kill switch > with shared KillSwitch (v0.5.6)`
+  proving the snapshot-drift bug is fixed: engines constructed
+  before engagement still see the engagement, mutations on one engine
+  propagate to all engines sharing the switch, and `setKillSwitch()`
+  swaps the source after construction.
+* Full suite: **1741 → 1781 tests**, all green. `tsc` clean.
+
+### Audit follow-ups deferred
+
+* Item #6.B (route scheduled work that calls tools through
+  `PermissionEngine`) — left as an audit observation. The
+  schedulers themselves do not issue `ToolCall`s; only the work
+  they delegate does, and that work already goes through the
+  per-session engine.
+* Item #10 — held as follow-up.
+
+---
+
 ## Ollama Agent Harness v0.5.5
 
 Closes audit item #7: workflow run state was in-memory only. A server
