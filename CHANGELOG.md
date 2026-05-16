@@ -11,7 +11,7 @@ keywords:
 estimated_reading_time: 14
 ---
 
-## Unreleased
+## Ollama Agent Harness v0.4.9
 
 Brings the harness's skill subsystem fully in line with the
 [Anthropic Agent Skills][anthropic-skills] spec while keeping it 100% model
