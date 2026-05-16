@@ -2,7 +2,7 @@
 title: Ollama Agent Harness Changelog
 description: Release notes generated from local RPI changes logs for Ollama Agent Harness
 author: Bradliebs
-ms.date: 2026-05-09
+ms.date: 2026-05-16
 ms.topic: reference
 keywords:
 	- ollama
@@ -59,6 +59,93 @@ data but the next chat turn could not see it.
 * `BLOCK` and `INTERRUPT_AND_RECOVER` paths still cannot bypass; the
   idle gate still applies so the curator never interrupts active work.
 * Pinned by two new tests in `src/curator/scheduler.test.ts`.
+
+### Bash safety scanner is quote-aware
+
+* Legitimate invocations like `python -c "import x; print(x)"` and
+  `node -e "const x = 1; console.log(x + 2)"` are no longer falsely
+  blocked. The previous regex-only check rejected any `;`, `|`, `&&`,
+  redirect, or command substitution anywhere in the string — even
+  inside quoted arguments where they are literal bytes with no shell
+  meaning (bash spawns with `shell: false`).
+* Replacement is a small walker that tracks single/double-quote state
+  and only flags operators outside quotes. Reported operator is named
+  in the error (e.g. `';' outside quotes`) so the model can recover.
+* `unsupportedWindowsBuiltin()` and `BLOCKED_PATTERNS` (rm -rf /, mkfs,
+  fork bomb, etc.) are unchanged — the relaxation is scoped to the
+  shell-control category only.
+
+### `make_directory` tool replaces `bash mkdir`
+
+* New built-in `make_directory` tool creates a directory (with parents,
+  idempotent) under the project or any **Allowed External Path**.
+  Replaces the workaround of `bash mkdir`, which is blocked on Windows
+  because `mkdir` is a `cmd.exe` built-in.
+* Registered with `riskLevel: 'low'`, `permissionCategory: 'write'`,
+  `enabledByDefault: true`.
+
+### `file_write` redirect surface is impossible to miss
+
+* Previously the redirect note was a trailing parenthetical the model
+  often did not parse, leading to broken follow-ups like
+  `python check_yfinance.py` after a write to the agent-outputs
+  directory. The success message now leads with the absolute path on
+  its own line:
+  ```
+  ✅ Saved to: D:\Brad\Downloads\AI\check_yfinance.py
+  ℹ️ Path was redirected from bare filename to agent-outputs/. …
+  Wrote 43 chars.
+  ```
+* Existing `"redirected from bare filename"` and
+  `"redirected by user pattern rule"` substrings are preserved so
+  downstream tooling and tests keep working.
+
+### Bash auto-resolves bare script filenames against agent-outputs
+
+* Belt-and-suspenders for the case where the model writes
+  `notes.py` (which the harness redirects into `agent-outputs/`) and
+  then immediately runs `python notes.py`. Bash now rewrites bare
+  script-extension args (`.py`, `.js`, `.mjs`, `.cjs`, `.ts`, `.sh`,
+  `.ps1`, `.rb`, `.pl`, `.lua`) to the absolute path when the file
+  exists in agent-outputs but not in cwd, and surfaces the rewrite as
+  an `ℹ️ Bash auto-resolved` line above the command output.
+* Safety: skips args starting with `-`, args containing a path
+  separator, absolute paths, and files that exist in cwd (cwd wins).
+
+### Path-claim verifier guards against hallucinated file references
+
+* Opt-in via `HARNESS_VERIFY_PATH_CLAIMS=1`. New `src/core/pathClaims.ts`
+  scans assistant text for path-shaped tokens ending in known
+  extensions, checks them against disk, and appends an
+  `⚠️ Unverified file references:` footer when any are missing.
+* `verifyPathClaims()` is also wired into the synthesis fallback so the
+  warning persists when the model summarises tool work after running
+  out of turns.
+
+### Configurable permission-prompt timeout
+
+* New `HARNESS_PERMISSION_PROMPT_TIMEOUT_MS` env var (default 5 min)
+  replaces the hard-coded broker timeout. The timeout error message is
+  now actionable: it names the tool and tells the operator to either
+  add the path to **Allowed External Paths**, raise the env var, or
+  rerun with permission mode `auto`.
+
+### Query loop surfaces tool work when synthesis fails
+
+* When the synthesis turn throws (Ollama 500, model timeout, etc.) the
+  query loop now emits a `text` event with the formatted
+  `recentToolResults` summary before the `error` / `done` events. The
+  user sees what the agent actually accomplished instead of an empty
+  reply.
+
+### UI: Allowed External Paths is discoverable and accurate
+
+* Renamed the Settings section to **📂 Allowed External Paths** with a
+  rewritten description that mentions reads **and** writes, recursive
+  matching, the permission-prompt timeout bypass, and one-line precedence.
+* Added a cross-reference from the Agent Files panel pointing users
+  down to the Allowed External Paths section so the feature is no
+  longer buried.
 
 ## Ollama Agent Harness v0.4.6
 
