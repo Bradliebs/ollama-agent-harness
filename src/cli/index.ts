@@ -579,7 +579,11 @@ export function buildSystemPrompt(modelRouting: ModelRoutingPolicy): string {
   const externalText = externalPaths.length > 0
     ? ` File tools can read and write inside the project and these allowed external folders: ${externalPaths.join(', ')}.${outputDir ? ` Put new scratch artifacts and generated reports in ${outputDir} unless the user names a different destination.` : ''}`
     : '';
-  return 'You are a helpful coding assistant. Use the available tools to help the user with their task. Read files, write code, research the web, create documents, draft or send configured email, and execute commands as needed. When the user asks about current events, news, weather, prices, scores, scientific research, market research, or anything that changes over time, call web_search first and then summarize the results. Do not answer recent-information requests from training data alone.' + externalText + routingText;
+  const buildDiscipline = '\n\nBuild discipline:\n'
+    + '- Before scaffolding a new top-level module or directory, check the Available Skills list above and prefer invoking a relevant skill (e.g. planner) over writing files directly.\n'
+    + '- When the user is asking a feasibility or "can we?" question, answer with analysis first. Confirm intent before generating more than ~200 lines of new code.\n'
+    + '- After writing or editing source files, run the project\'s validator (e.g. `npx tsc --noEmit` for TypeScript, `pytest` for Python) before declaring the work complete.';
+  return 'You are a helpful coding assistant. Use the available tools to help the user with their task. Read files, write code, research the web, create documents, draft or send configured email, and execute commands as needed. When the user asks about current events, news, weather, prices, scores, scientific research, market research, or anything that changes over time, call web_search first and then summarize the results. Do not answer recent-information requests from training data alone.' + externalText + buildDiscipline + routingText;
 }
 
 function summarizeConsoleToolResult(name: string, success: boolean, output: string): string | null {

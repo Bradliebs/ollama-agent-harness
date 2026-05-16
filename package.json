@@ -92,7 +92,8 @@
     "ollama": "^0.5.0",
     "pdfjs-dist": "^5.7.284",
     "pdfkit": "^0.18.0",
-    "ws": "^8.20.0"
+    "ws": "^8.20.0",
+    "yahoo-finance2": "^3.14.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
@@ -105,5 +106,18 @@
     "ts-jest": "^29.0.0",
     "ts-node": "^10.9.0",
     "typescript": "^5.5.0"
-  }
+  },
+  "directories": {
+    "doc": "docs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Bradliebs/ollama-agent-harness.git"
+  },
+  "author": "",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Bradliebs/ollama-agent-harness/issues"
+  },
+  "homepage": "https://github.com/Bradliebs/ollama-agent-harness#readme"
 }

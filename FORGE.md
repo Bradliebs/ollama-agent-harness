@@ -54,6 +54,12 @@
 
 <!-- forge:cookbook-end -->
 
+## Experimental Branches
+
+| Branch | Status | Description |
+|---|---|---|
+| `probe/orchestration` | Quarantined | Paperclip-style orchestration layer (companies, goals, org charts, adapters, engine). 11 files, ~2.7k lines, 21 passing tests. Built by the harness as a feasibility probe — not merged to master. Check out with `git checkout probe/orchestration`. |
+
 ## Memory
 
 | File | Purpose |

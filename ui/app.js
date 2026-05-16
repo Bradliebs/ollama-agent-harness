@@ -5541,11 +5541,33 @@ function renderSlashPalette() {
     const item = document.createElement('div');
     item.className = 'slash-palette-item' + (i === slashPaletteState.index ? ' active' : '');
     item.setAttribute('role', 'option');
+    item.dataset.idx = String(i);
     item.innerHTML = '<span class="sp-cmd">' + esc(c.cmd) + '</span><span class="sp-desc">' + esc(c.desc) + '</span>';
-    item.onmouseenter = () => { slashPaletteState.index = i; renderSlashPalette(); };
-    item.onclick = () => applySelectedSlashCommand();
+    // Update active highlight without rebuilding the DOM. Rebuilding here
+    // destroys the element before mousedown/click can fire, which is why
+    // palette items used to look selectable but ignore clicks.
+    item.onmouseenter = () => {
+      slashPaletteState.index = i;
+      updateSlashPaletteHighlight();
+    };
+    // Use mousedown + preventDefault so the textarea keeps focus and the
+    // item handler fires before any focus/blur reshuffle can drop the click.
+    item.onmousedown = (ev) => {
+      ev.preventDefault();
+      slashPaletteState.index = i;
+      applySelectedSlashCommand();
+    };
     list.appendChild(item);
   });
+}
+
+function updateSlashPaletteHighlight() {
+  const list = document.getElementById('slashPaletteList');
+  if (!list) return;
+  const items = list.children;
+  for (let i = 0; i < items.length; i++) {
+    items[i].classList.toggle('active', i === slashPaletteState.index);
+  }
 }
 
 function moveSlashSelection(delta) {
@@ -5553,7 +5575,7 @@ function moveSlashSelection(delta) {
   const n = slashPaletteState.filtered.length;
   if (n === 0) return;
   slashPaletteState.index = (slashPaletteState.index + delta + n) % n;
-  renderSlashPalette();
+  updateSlashPaletteHighlight();
 }
 
 function applySelectedSlashCommand() {
