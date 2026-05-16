@@ -2,7 +2,7 @@
 title: Ollama Agent Harness
 description: Local-first Ollama agent harness with tools, documents, Telegram, email, tracing, learning, and a browser UI
 author: Bradliebs
-ms.date: 2026-05-03
+ms.date: 2026-05-16
 ms.topic: overview
 keywords:
   - ollama
@@ -23,7 +23,7 @@ Ollama Agent Harness is a local-first agent runtime that wraps Ollama models wit
 
 You chat with a model, it can call tools (read/write files, run bash, search the web, analyze images, transcribe audio, generate documents, send emails), and the harness manages permissions, context, and history.
 
-**v0.3.9** adds a beginner-friendly welcome screen, multi-backend model routing, a Windows installer, and npm global install.
+**v0.4.7** adds a quote-aware bash safety scanner (so `python -c "a; b"` is no longer falsely blocked), a new `make_directory` tool, a configurable Allowed External Paths allowlist for reading and writing outside the project, and the `agent-outputs/` redirect with bash auto-resolve for bare script filenames. See the [CHANGELOG](CHANGELOG.md) for older releases.
 
 ## How it works
 
@@ -314,9 +314,26 @@ The right side has a **Settings** panel for Ollama host, generation parameters, 
 
 ### Tools
 
-Built-in tools include `file_read`, `file_write`, `file_edit`, `bash`, `list_files`, `grep`, `web_fetch`, `web_search`, `web_read`, `image_analyze`, `audio_transcribe`, `document_export`, `email_send`, `email_draft`, `create_skill`, `install_skill`, `desktop_screenshot`, `browser_bookmarks`, `browser_navigate`, `browser_click`, `browser_fill`, `browser_read`, `browser_screenshot`, `browser_close`, `calendar_read`, `calendar_write`, `slack_notify`, `telegram_notify`, and more. Each tool has a risk level (low/medium/high) and can be individually disabled from the Tools tab.
+Built-in tools include `file_read`, `file_write`, `file_edit`, `file_move`, `file_delete`, `make_directory`, `bash`, `list_files`, `grep`, `web_fetch`, `web_search`, `web_read`, `image_analyze`, `audio_transcribe`, `document_export`, `email_send`, `email_draft`, `create_skill`, `install_skill`, `desktop_screenshot`, `browser_bookmarks`, `browser_navigate`, `browser_click`, `browser_fill`, `browser_read`, `browser_screenshot`, `browser_close`, `calendar_read`, `calendar_write`, `slack_notify`, `telegram_notify`, and more. Each tool has a risk level (low/medium/high) and can be individually disabled from the Tools tab.
 
 Browser tools (`browser_navigate`, `browser_click`, `browser_fill`) are disabled by default and require a capability grant — they interact with live websites via Playwright.
+
+The `bash` tool spawns a single executable without a shell. Shell control operators (`;`, `|`, `&&`, redirects, command substitution) outside quoted arguments are rejected — quote them and they pass through verbatim (e.g. `python -c "import x; print(x)"`). Use `make_directory` instead of `mkdir`, `file_read`/`list_files` instead of `cat`/`dir`, and pipe through a script file instead of `cmd`-style pipes.
+
+### Allowed External Paths
+
+File tools are confined to the project directory by default. To let the agent read and write under other folders (e.g. `D:\Downloads\AI`) without permission prompts, add them under **Settings → 📂 Allowed External Paths**. The allowlist matches recursively, applies to both reads and writes, and bypasses the permission-prompt timeout. Configure per folder; precedence is exact match → ancestor match → blocked.
+
+### agent-outputs redirect
+
+When the agent writes to a bare filename (e.g. `notes.md`, no directory), the harness redirects the write into the configured agent-outputs directory (default `./agent-outputs/`, override with `HARNESS_AGENT_OUTPUT_DIR`). The `file_write` response leads with the resolved absolute path so the model uses it for follow-up commands. The `bash` tool mirrors this: a bare script-extension arg (`python notes.py`, `node run.js`) is auto-resolved against the agent-outputs directory when it does not exist in the cwd, so the agent's first run-after-write Just Works.
+
+### Environment knobs
+
+* `HARNESS_AGENT_OUTPUT_DIR` — override the agent-outputs directory (absolute or project-relative).
+* `HARNESS_PERMISSION_PROMPT_TIMEOUT_MS` — change the default permission-prompt timeout (default 5 minutes). Lower it for autonomous runs; pair with **Allowed External Paths** to avoid prompts entirely.
+* `HARNESS_VERIFY_PATH_CLAIMS` — set to `1` to append an `⚠️ Unverified file references:` footer to assistant text whenever it cites a file path that does not exist on disk. Off by default.
+* `HARNESS_FILE_WRITE_REDIRECTS` — JSON of pattern → directory rules to route specific writes (e.g. `lottery-*.py` → a sibling repo). Overrides the agent-outputs redirect when matched.
 
 ### Document generation
 
