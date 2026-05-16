@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { McpStdioClient, type McpToolCallResult } from './mcpClient';
 
 export interface McpConfiguredTool {
@@ -49,11 +50,13 @@ export async function listMcpServers(projectDir: string): Promise<McpServerStatu
 
 export async function upsertMcpServer(projectDir: string, input: Record<string, unknown>): Promise<McpServerStatus> {
   const definition = sanitizeMcpServerDefinition(input);
-  const definitions = await readMcpServerDefinitions(projectDir);
-  const existingIndex = definitions.findIndex((item) => item.id === definition.id);
-  if (existingIndex >= 0) definitions[existingIndex] = definition;
-  else definitions.push(definition);
-  await writeMcpServerDefinitions(projectDir, definitions);
+  await withFileLock(path.join(projectDir, MCP_SERVERS_PATH), async () => {
+    const definitions = await readMcpServerDefinitions(projectDir);
+    const existingIndex = definitions.findIndex((item) => item.id === definition.id);
+    if (existingIndex >= 0) definitions[existingIndex] = definition;
+    else definitions.push(definition);
+    await writeMcpServerDefinitionsUnlocked(projectDir, definitions);
+  });
   return toStatus(definition);
 }
 
@@ -61,11 +64,13 @@ export async function removeMcpServer(projectDir: string, id: string): Promise<b
   const normalizedId = normalizeMcpId(id);
   if (!normalizedId) return false;
   await stopMcpServer(normalizedId);
-  const definitions = await readMcpServerDefinitions(projectDir);
-  const next = definitions.filter((item) => item.id !== normalizedId);
-  if (next.length === definitions.length) return false;
-  await writeMcpServerDefinitions(projectDir, next);
-  return true;
+  return withFileLock(path.join(projectDir, MCP_SERVERS_PATH), async () => {
+    const definitions = await readMcpServerDefinitions(projectDir);
+    const next = definitions.filter((item) => item.id !== normalizedId);
+    if (next.length === definitions.length) return false;
+    await writeMcpServerDefinitionsUnlocked(projectDir, next);
+    return true;
+  });
 }
 
 export async function startMcpServer(projectDir: string, id: string): Promise<McpServerStatus> {
@@ -107,12 +112,14 @@ export async function discoverMcpServerTools(projectDir: string, id: string): Pr
   const active = runningServers.get(definition.id);
   if (!active || active.process.killed) throw new Error('MCP server is not running.');
   const tools = await active.client.listTools();
-  const definitions = await readMcpServerDefinitions(projectDir);
-  const index = definitions.findIndex((item) => item.id === definition.id);
-  if (index >= 0) {
-    definitions[index] = { ...definitions[index], tools };
-    await writeMcpServerDefinitions(projectDir, definitions);
-  }
+  await withFileLock(path.join(projectDir, MCP_SERVERS_PATH), async () => {
+    const definitions = await readMcpServerDefinitions(projectDir);
+    const index = definitions.findIndex((item) => item.id === definition.id);
+    if (index >= 0) {
+      definitions[index] = { ...definitions[index], tools };
+      await writeMcpServerDefinitionsUnlocked(projectDir, definitions);
+    }
+  });
   return toStatus({ ...definition, tools });
 }
 
@@ -174,8 +181,14 @@ async function findMcpServerDefinition(projectDir: string, id: string): Promise<
 
 async function writeMcpServerDefinitions(projectDir: string, definitions: McpServerDefinition[]): Promise<void> {
   const filePath = path.join(projectDir, MCP_SERVERS_PATH);
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify(definitions, null, 2), 'utf-8');
+  await withFileLock(filePath, () => writeMcpServerDefinitionsUnlocked(projectDir, definitions));
+}
+
+// Internal: write without taking the lock. Callers must already hold the
+// lock for path.join(projectDir, MCP_SERVERS_PATH).
+async function writeMcpServerDefinitionsUnlocked(projectDir: string, definitions: McpServerDefinition[]): Promise<void> {
+  const filePath = path.join(projectDir, MCP_SERVERS_PATH);
+  await atomicWriteFile(filePath, JSON.stringify(definitions, null, 2));
 }
 
 function sanitizeMcpServerDefinition(input: Record<string, unknown>): McpServerDefinition {

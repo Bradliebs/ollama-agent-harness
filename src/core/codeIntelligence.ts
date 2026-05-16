@@ -12,6 +12,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -345,13 +346,12 @@ export function summarizeRepo(graph: RepoGraph): RepoSummary {
 
 export async function saveRepoGraph(projectDir: string, graph: RepoGraph): Promise<void> {
   const fp = path.join(projectDir, '.harness', 'code-intelligence', 'repo-graph.json');
-  await fs.mkdir(path.dirname(fp), { recursive: true });
   // Serialize Map to array for JSON
   const serialized = {
     ...graph,
     nodes: [...graph.nodes.entries()],
   };
-  await fs.writeFile(fp, JSON.stringify(serialized), 'utf-8');
+  await withFileLock(fp, () => atomicWriteFile(fp, JSON.stringify(serialized)));
 }
 
 export async function loadRepoGraph(projectDir: string): Promise<RepoGraph | null> {

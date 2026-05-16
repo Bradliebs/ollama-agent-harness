@@ -25,6 +25,7 @@ import { cancelSubagent, listActiveSubagents, subscribeSubagentRegistry } from '
 import { createToolFailureAlerts, type ToolFailureAlertTracker } from '../services/toolFailureAlerts';
 import { formatPrometheusMetrics, type PrometheusMetric } from '../observability/prometheus';
 import { recordSwallowed, getSwallowedFailures, getSwallowedFailureCount } from '../observability/silentFailureSink';
+import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { createTask, deleteTask, getTask, listTasks, recordCheckIn, summarizeTasks, updateTask, type TaskPriority, type TaskStatus } from '../services/taskStore';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths } from '../tools/pathResolution';
@@ -1587,8 +1588,7 @@ app.post('/api/api-keys', async (req, res) => {
       changed = true;
     }
     if (changed) {
-      await fs.mkdir(path.dirname(API_KEYS_PATH), { recursive: true });
-      await fs.writeFile(API_KEYS_PATH, JSON.stringify(stored, null, 2), { encoding: 'utf-8', mode: 0o600 });
+      await withFileLock(API_KEYS_PATH, () => atomicWriteFile(API_KEYS_PATH, JSON.stringify(stored, null, 2), { encoding: 'utf-8', mode: 0o600 }));
     }
     res.json({ ok: true });
   } catch (error) {
@@ -1792,22 +1792,26 @@ app.post('/api/email/templates', async (req, res) => {
     ...(req.body?.html ? { html: true } : {}),
     ...(typeof req.body?.category === 'string' && req.body.category.trim() ? { category: String(req.body.category).trim().slice(0, 60) } : {}),
   };
-  const templates = await readEmailTemplates();
-  const idx = templates.findIndex((t) => t.name === name);
-  if (idx >= 0) templates[idx] = template; else templates.push(template);
-  await fs.mkdir(path.dirname(EMAIL_TEMPLATES_PATH), { recursive: true });
-  await fs.writeFile(EMAIL_TEMPLATES_PATH, JSON.stringify(templates, null, 2), 'utf-8');
-  res.json({ ok: true, count: templates.length });
+  const count = await withFileLock(EMAIL_TEMPLATES_PATH, async () => {
+    const templates = await readEmailTemplates();
+    const idx = templates.findIndex((t) => t.name === name);
+    if (idx >= 0) templates[idx] = template; else templates.push(template);
+    await atomicWriteFile(EMAIL_TEMPLATES_PATH, JSON.stringify(templates, null, 2));
+    return templates.length;
+  });
+  res.json({ ok: true, count });
 });
 
 app.delete('/api/email/templates', async (req, res) => {
   const name = String(req.query.name ?? '').trim();
   if (!name) { res.status(400).json({ error: 'Template name is required.' }); return; }
-  const templates = await readEmailTemplates();
-  const filtered = templates.filter((t) => t.name !== name);
-  await fs.mkdir(path.dirname(EMAIL_TEMPLATES_PATH), { recursive: true });
-  await fs.writeFile(EMAIL_TEMPLATES_PATH, JSON.stringify(filtered, null, 2), 'utf-8');
-  res.json({ ok: true, count: filtered.length });
+  const count = await withFileLock(EMAIL_TEMPLATES_PATH, async () => {
+    const templates = await readEmailTemplates();
+    const filtered = templates.filter((t) => t.name !== name);
+    await atomicWriteFile(EMAIL_TEMPLATES_PATH, JSON.stringify(filtered, null, 2));
+    return filtered.length;
+  });
+  res.json({ ok: true, count });
 });
 
 async function readStoredApiKeysFile(): Promise<Record<string, string>> {
@@ -1821,26 +1825,27 @@ async function readStoredApiKeysFile(): Promise<Record<string, string>> {
 }
 
 async function writeStoredApiKeysFile(stored: Record<string, string>): Promise<void> {
-  await fs.mkdir(path.dirname(API_KEYS_PATH), { recursive: true });
-  await fs.writeFile(API_KEYS_PATH, JSON.stringify(stored, null, 2), { encoding: 'utf-8', mode: 0o600 });
+  await atomicWriteFile(API_KEYS_PATH, JSON.stringify(stored, null, 2), { encoding: 'utf-8', mode: 0o600 });
 }
 
 async function storeConnectorSecret(name: string, value: string): Promise<void> {
   if (!ALLOWED_API_KEY_NAMES.has(name)) return;
-  const stored = await readStoredApiKeysFile();
-  const trimmed = value.trim();
-  if (trimmed) {
-    stored[name] = trimmed;
-    if (!process.env[name] || !process.env[name]!.trim()) process.env[name] = trimmed;
-    FILE_SOURCED_KEYS.add(name);
-  } else {
-    delete stored[name];
-    if (FILE_SOURCED_KEYS.has(name)) {
-      delete process.env[name];
-      FILE_SOURCED_KEYS.delete(name);
+  await withFileLock(API_KEYS_PATH, async () => {
+    const stored = await readStoredApiKeysFile();
+    const trimmed = value.trim();
+    if (trimmed) {
+      stored[name] = trimmed;
+      if (!process.env[name] || !process.env[name]!.trim()) process.env[name] = trimmed;
+      FILE_SOURCED_KEYS.add(name);
+    } else {
+      delete stored[name];
+      if (FILE_SOURCED_KEYS.has(name)) {
+        delete process.env[name];
+        FILE_SOURCED_KEYS.delete(name);
+      }
     }
-  }
-  await writeStoredApiKeysFile(stored);
+    await writeStoredApiKeysFile(stored);
+  });
 }
 
 // File-write redirect rules. Lets the user route any agent file_write
@@ -1879,8 +1884,7 @@ app.post('/api/file-redirects', async (req, res) => {
       if (!match || !redirect) continue;
       sanitized.push({ match, redirect });
     }
-    await fs.mkdir(path.dirname(FILE_REDIRECTS_PATH), { recursive: true });
-    await fs.writeFile(FILE_REDIRECTS_PATH, JSON.stringify(sanitized, null, 2), 'utf-8');
+    await withFileLock(FILE_REDIRECTS_PATH, () => atomicWriteFile(FILE_REDIRECTS_PATH, JSON.stringify(sanitized, null, 2)));
     // Force the in-process cache to reload on the next file_write.
     clearFileWriteRedirectCache();
     res.json({ ok: true, count: sanitized.length });
@@ -9210,8 +9214,9 @@ async function loadCustomOutputValidationProfiles(): Promise<void> {
 }
 
 async function saveCustomOutputValidationProfiles(): Promise<void> {
-  await fs.mkdir(path.dirname(OUTPUT_VALIDATION_PROFILES_PATH), { recursive: true });
-  await fs.writeFile(OUTPUT_VALIDATION_PROFILES_PATH, JSON.stringify({ profiles: customOutputValidationProfiles }, null, 2), 'utf-8');
+  await withFileLock(OUTPUT_VALIDATION_PROFILES_PATH, () =>
+    atomicWriteFile(OUTPUT_VALIDATION_PROFILES_PATH, JSON.stringify({ profiles: customOutputValidationProfiles }, null, 2)),
+  );
 }
 
 function cloneTemplate(template: CustomOutputValidationProfile): CustomOutputValidationProfile {

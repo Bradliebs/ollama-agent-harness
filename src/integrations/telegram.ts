@@ -15,6 +15,7 @@
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
+import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { logger } from '../core/logger';
 
 const MAX_TELEGRAM_MESSAGE_LENGTH = 4096;
@@ -675,8 +676,7 @@ const CHAT_IDS_FILENAME = '.harness/telegram-chat-ids.json';
 async function persistChatIds(projectDir: string): Promise<void> {
   try {
     const filePath = path.join(projectDir, CHAT_IDS_FILENAME);
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, JSON.stringify(Array.from(knownChatIds)), 'utf-8');
+    await withFileLock(filePath, () => atomicWriteFile(filePath, JSON.stringify(Array.from(knownChatIds))));
   } catch { /* best effort */ }
 }
 

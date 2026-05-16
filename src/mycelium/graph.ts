@@ -1,6 +1,7 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 
 // ─── Node types ─────────────────────────────────────────────────────
 
@@ -318,8 +319,7 @@ export async function loadMyceliumGraph(projectDir: string): Promise<MyceliumGra
 
 export async function saveMyceliumGraph(projectDir: string, graph: MyceliumGraph): Promise<void> {
   const filePath = graphPath(projectDir);
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify(graph.toJSON(), null, 2), 'utf-8');
+  await withFileLock(filePath, () => atomicWriteFile(filePath, JSON.stringify(graph.toJSON(), null, 2)));
 }
 
 function graphPath(projectDir: string): string {

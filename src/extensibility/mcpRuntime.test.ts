@@ -102,4 +102,33 @@ process.stdin.on('data', (chunk) => { buffer += String(chunk); drain(); });
     const result = await invokeMcpServerTool(projectDir, 'demo', 'echo', { text: 'hello' });
     expect(result).toEqual({ content: [{ type: 'text', text: 'echo:hello' }] });
   });
+
+  it('serializes parallel upsert calls so no definition is lost', async () => {
+    // Without the lock, two read-modify-write upserts can interleave and
+    // one of the two new server definitions overwrites the other.
+    const N = 6;
+    await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        upsertMcpServer(projectDir, { id: `server-${i}`, command: 'node', args: [] }),
+      ),
+    );
+    const listed = await listMcpServers(projectDir);
+    expect(listed).toHaveLength(N);
+    const ids = new Set(listed.map((s) => s.id));
+    for (let i = 0; i < N; i += 1) {
+      expect(ids.has(`server-${i}`)).toBe(true);
+    }
+  });
+
+  it('serializes interleaved upsert + remove on overlapping ids', async () => {
+    await upsertMcpServer(projectDir, { id: 'keep', command: 'node' });
+    await upsertMcpServer(projectDir, { id: 'drop', command: 'node' });
+    await Promise.all([
+      upsertMcpServer(projectDir, { id: 'fresh', command: 'node' }),
+      removeMcpServer(projectDir, 'drop'),
+      upsertMcpServer(projectDir, { id: 'fresh2', command: 'node' }),
+    ]);
+    const listed = await listMcpServers(projectDir);
+    expect(new Set(listed.map((s) => s.id))).toEqual(new Set(['keep', 'fresh', 'fresh2']));
+  });
 });

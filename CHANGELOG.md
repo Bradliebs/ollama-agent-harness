@@ -11,6 +11,66 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Ollama Agent Harness v0.5.2
+
+Completes the file-lock retrofit pass started in v0.5.1. The remaining
+JSON writers identified in the v0.5.1 "Not changed by this release"
+section now go through `withFileLock` + `atomicWriteFile`. Closes the
+deferred portion of audit item #4.
+
+### Retrofitted RMW (read-modify-write) writers
+
+These callers do a read-modify-write on disk; the lock now covers the
+whole sequence so two concurrent paths cannot lose each other's
+mutations.
+
+* [src/extensibility/mcpRuntime.ts](src/extensibility/mcpRuntime.ts) —
+  `upsertMcpServer`, `removeMcpServer`, and `discoverMcpServerTools`
+  now run their RMW under `withFileLock(path.join(projectDir, MCP_SERVERS_PATH))`
+  and write via `atomicWriteFile`. Two race tests added in
+  [src/extensibility/mcpRuntime.test.ts](src/extensibility/mcpRuntime.test.ts)
+  exercise parallel upsert + parallel upsert/remove on overlapping ids.
+* [src/web/server.ts](src/web/server.ts) — `storeConnectorSecret` and
+  the inline `/api/api-keys` POST handler now lock `API_KEYS_PATH` for
+  the whole RMW. File mode `0o600` preserved for the
+  secret-bearing file.
+* [src/web/server.ts](src/web/server.ts) `/api/email/templates` POST
+  and DELETE handlers — wrap the read-filter-write under
+  `withFileLock(EMAIL_TEMPLATES_PATH)`.
+
+### Retrofitted snapshot writers
+
+These writers persist a snapshot of in-memory state; the lock
+prevents concurrent writes from producing a partial file and atomic
+write prevents a half-written file on crash.
+
+* [src/mycelium/graph.ts](src/mycelium/graph.ts) `saveMyceliumGraph`
+* [src/core/codeIntelligence.ts](src/core/codeIntelligence.ts)
+  `saveRepoGraph`
+* [src/integrations/telegram.ts](src/integrations/telegram.ts)
+  `persistChatIds`
+* [src/web/server.ts](src/web/server.ts)
+  `saveCustomOutputValidationProfiles` and `/api/file-redirects` POST
+  (`FILE_REDIRECTS_PATH`).
+
+### Still not changed
+
+* [src/extensibility/mcpRuntime.ts](src/extensibility/mcpRuntime.ts)
+  `readMcpServerDefinitionsSync` — synchronous reader used by code
+  paths that cannot await. Reads are crash-safe by construction (the
+  atomic-write pair guarantees a fully-formed file at the destination
+  or the previous version), so no change needed.
+* No changes to schedulers, workflow persistence, the bash arg-quoting
+  path, or the health endpoint — those remain audit items #6, #7,
+  #9, #10 and are tracked separately.
+
+### Tests
+
+* 1726 → 1728 tests pass (`+2` for this release).
+* No new dependencies. `tsc --noEmit` clean.
+
+---
+
 ## Ollama Agent Harness v0.5.1
 
 Closes item #4 from the v0.5.0 deferred-hardening list:
