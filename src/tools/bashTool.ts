@@ -125,6 +125,61 @@ function needsWindowsCmdShim(executable: string): boolean {
   return WINDOWS_CMD_SHIM_NAMES.has(executable.toLowerCase());
 }
 
+/**
+ * Quote a single argv element per Microsoft's CommandLineToArgvW parsing
+ * rules so the spawned program (the .cmd shim's downstream executable)
+ * receives the argument intact.
+ *
+ * Rules implemented:
+ *   - Empty arg → `""` (so it remains a distinct token).
+ *   - Arg with no whitespace, quote, or cmd.exe metachar → unchanged.
+ *   - Otherwise enclose in `"..."`. Inside the quotes, escape each `"` as
+ *     `\"`, and any run of backslashes immediately preceding a `"` (or
+ *     the closing quote) is doubled.
+ *
+ * Reference: https://learn.microsoft.com/en-us/cpp/c-runtime-library/parsing-cpp-command-line-arguments
+ *
+ * Known residual exposure: `%FOO%` inside double quotes still triggers
+ * cmd.exe env-var expansion (cmd.exe processes `%` even inside quoted
+ * strings). The agent's `isSafeCommand` gate runs before this code, so a
+ * deliberate `$()` or `` ` `` is already blocked; literal `%X%` is not
+ * blocked but is rare in agent-issued commands. Documented and accepted.
+ */
+export function quoteWindowsArgv(arg: string): string {
+  if (arg.length === 0) return '""';
+  if (!/[\s"%&|<>^()!,;]/.test(arg)) return arg;
+  let result = '"';
+  let backslashes = 0;
+  for (const ch of arg) {
+    if (ch === '\\') {
+      backslashes += 1;
+      continue;
+    }
+    if (ch === '"') {
+      // Each backslash before a `"` must itself be doubled (so it stays
+      // a literal backslash) plus one extra `\` to escape the quote.
+      result += '\\'.repeat(backslashes * 2 + 1) + '"';
+      backslashes = 0;
+      continue;
+    }
+    result += '\\'.repeat(backslashes) + ch;
+    backslashes = 0;
+  }
+  // Any backslashes immediately before the closing quote must be doubled.
+  result += '\\'.repeat(backslashes * 2) + '"';
+  return result;
+}
+
+/**
+ * Build the command string that `cmd.exe /d /s /c` will execute when
+ * routing a .cmd shim invocation. The result must be passed to spawn as
+ * a single array element with `windowsVerbatimArguments: true` so Node
+ * does not re-quote it.
+ */
+export function buildWindowsCmdInvocation(executable: string, args: string[]): string {
+  return [executable, ...args].map(quoteWindowsArgv).join(' ');
+}
+
 function parseCommandToArgv(command: string): string[] {
   const tokens: string[] = [];
   let current = '';
@@ -339,14 +394,20 @@ export const BashTool: Tool = {
       const useCmdShim = process.platform === 'win32' && needsWindowsCmdShim(executable);
       let spawnExecutable = executable;
       let spawnArgs = args;
+      // When the cmd-shim path fires we must opt into windowsVerbatimArguments
+      // so Node does not re-quote our already-quoted command string and
+      // produce a broken nested-quote command line.
+      let useVerbatim = false;
       if (useCmdShim) {
         spawnExecutable = process.env.ComSpec || process.env.COMSPEC || 'cmd.exe';
-        spawnArgs = ['/d', '/s', '/c', [executable, ...args].join(' ')];
+        spawnArgs = ['/d', '/s', '/c', buildWindowsCmdInvocation(executable, args)];
+        useVerbatim = true;
       }
 
       const child = spawn(spawnExecutable, spawnArgs, {
         shell: false,
         windowsHide: true,
+        windowsVerbatimArguments: useVerbatim,
       });
 
       const appendLimited = (target: 'stdout' | 'stderr', chunk: Buffer | string): void => {

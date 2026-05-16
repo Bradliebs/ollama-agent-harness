@@ -221,3 +221,80 @@ describe('BashTool bare-script auto-resolve against agent-outputs', () => {
     expect(result.output).not.toContain('Bash auto-resolved');
   });
 });
+
+import { quoteWindowsArgv, buildWindowsCmdInvocation } from './bashTool';
+
+describe('quoteWindowsArgv', () => {
+  it('leaves bare alphanumeric args unquoted', () => {
+    expect(quoteWindowsArgv('eslint')).toBe('eslint');
+    expect(quoteWindowsArgv('--version')).toBe('--version');
+    expect(quoteWindowsArgv('src/index.ts')).toBe('src/index.ts');
+  });
+
+  it('represents an empty arg as a pair of quotes so it stays distinct', () => {
+    expect(quoteWindowsArgv('')).toBe('""');
+  });
+
+  it('wraps args containing whitespace', () => {
+    expect(quoteWindowsArgv('hello world')).toBe('"hello world"');
+    expect(quoteWindowsArgv('tab\there')).toBe('"tab\there"');
+  });
+
+  it('escapes embedded double quotes as backslash-quote', () => {
+    expect(quoteWindowsArgv('say "hi"')).toBe('"say \\"hi\\""');
+  });
+
+  it('doubles backslashes that immediately precede an embedded quote', () => {
+    // Microsoft argv rule: every `\` before a `"` must be doubled, plus one
+    // more `\` to escape the quote itself.
+    expect(quoteWindowsArgv('a\\"b')).toBe('"a\\\\\\"b"');
+    expect(quoteWindowsArgv('a\\\\"b')).toBe('"a\\\\\\\\\\"b"');
+  });
+
+  it('doubles trailing backslashes before the closing quote', () => {
+    // Trailing `\` before the auto-added closing `"` would otherwise be
+    // interpreted by CommandLineToArgvW as escaping that quote.
+    expect(quoteWindowsArgv('path with space\\')).toBe('"path with space\\\\"');
+  });
+
+  it('preserves interior backslashes that are NOT next to a quote', () => {
+    // `C:\path\file.ts` has no quote-adjacent backslashes, so each is
+    // kept as a single literal backslash inside the quoted form.
+    expect(quoteWindowsArgv('C:\\path with space\\file.ts')).toBe('"C:\\path with space\\file.ts"');
+  });
+
+  it('wraps args containing cmd.exe metacharacters', () => {
+    // Each of these would be re-interpreted by cmd.exe if left unquoted.
+    for (const ch of ['&', '|', '<', '>', '^', '(', ')', '!', ';', ',']) {
+      const arg = `pre${ch}post`;
+      const quoted = quoteWindowsArgv(arg);
+      expect(quoted.startsWith('"')).toBe(true);
+      expect(quoted.endsWith('"')).toBe(true);
+      expect(quoted).toContain(ch);
+    }
+  });
+});
+
+describe('buildWindowsCmdInvocation', () => {
+  it('produces a single-token command for simple invocations', () => {
+    expect(buildWindowsCmdInvocation('npx', ['--version'])).toBe('npx --version');
+  });
+
+  it('quotes args with spaces and leaves bare flags alone', () => {
+    expect(buildWindowsCmdInvocation('npx', ['eslint', 'src/file with space.ts']))
+      .toBe('npx eslint "src/file with space.ts"');
+  });
+
+  it('escapes a double-quoted arg correctly', () => {
+    // Regression: the audit-flagged scenario was that args with internal
+    // quotes got mangled. The build function must produce a string that
+    // CommandLineToArgvW will parse back to the exact original arg.
+    expect(buildWindowsCmdInvocation('npx', ['prettier', '--write', 'a"b.ts']))
+      .toBe('npx prettier --write "a\\"b.ts"');
+  });
+
+  it('quotes args containing cmd.exe metacharacters so cmd cannot reinterpret them', () => {
+    expect(buildWindowsCmdInvocation('npm', ['run', 'build & deploy']))
+      .toBe('npm run "build & deploy"');
+  });
+});

@@ -11,6 +11,59 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Ollama Agent Harness v0.5.3
+
+Fixes audit item #9: when the Bash tool routes a Windows `.cmd` shim
+invocation through `cmd.exe /d /s /c`, args containing whitespace,
+quotes, or shell metacharacters were joined with a naive `.join(' ')`
+and re-quoted by Node, producing a broken command line. Commands like
+`npx prettier --write "a file.ts"` would be split mid-arg or dropped
+when the shim path fired. The bug was uncovered by existing tests
+because the covered path used `node` (a native `.exe`), not a shim.
+
+### Fix
+
+* [src/tools/bashTool.ts](src/tools/bashTool.ts) — added two pure
+  helpers and rerouted the shim path through them:
+  * `quoteWindowsArgv(arg)` applies the Microsoft
+    `CommandLineToArgvW` quoting rules: empty → `""`; bare → unchanged;
+    otherwise wrap in `"..."`, escape internal `"` as `\"`, and double
+    every run of backslashes that immediately precedes a `"` or the
+    closing quote.
+  * `buildWindowsCmdInvocation(executable, args)` produces the single
+    command string that `cmd.exe /d /s /c` will receive.
+  * The spawn site now passes `windowsVerbatimArguments: true` so Node
+    does not re-quote the already-quoted command and produce nested-
+    quote mangling.
+
+### Tests
+
+* [src/tools/bashTool.test.ts](src/tools/bashTool.test.ts) — added 12
+  unit tests covering empty args, bare args, whitespace wrapping,
+  embedded quotes, backslash-doubling before quotes, trailing
+  backslashes, interior backslashes that are NOT adjacent to a quote,
+  cmd metacharacters, and end-to-end build for the regression
+  scenarios (`prettier --write 'a"b.ts'`, `npm run 'build & deploy'`,
+  `eslint 'src/file with space.ts'`).
+
+### Not changed by this release
+
+* `isSafeCommand` gating is unchanged — it still blocks `$()`,
+  backticks, and unquoted shell operators before the arg builder runs.
+* The fast path for native `.exe` targets (no shim) is unchanged.
+
+### Known residual exposure
+
+`%FOO%` inside a quoted arg still triggers `cmd.exe` env-var expansion
+because `cmd.exe` processes `%` even inside `"..."`. Documented in the
+`quoteWindowsArgv` jsdoc; rare in agent-issued commands and accepted.
+
+### Still pending from the audit
+
+* Item #6 — schedulers through the PermissionEngine (architectural).
+* Item #7 — workflow persistence consolidation.
+* Item #10 — health endpoint upgrade (depends on #6).
+
 ## Ollama Agent Harness v0.5.2
 
 Completes the file-lock retrofit pass started in v0.5.1. The remaining
