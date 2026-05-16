@@ -19,6 +19,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 
 export type TrustRung = 0 | 1 | 2 | 3 | 4;
 
@@ -63,8 +64,7 @@ export async function loadTrustLadder(projectDir: string): Promise<TrustLadderSn
 
 export async function saveTrustLadder(projectDir: string, snap: TrustLadderSnapshot): Promise<void> {
   const filePath = ladderPath(projectDir);
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify(snap, null, 2), 'utf8');
+  await withFileLock(filePath, () => atomicWriteFile(filePath, JSON.stringify(snap, null, 2), { encoding: 'utf-8' }));
 }
 
 export function getRung(snap: TrustLadderSnapshot, capability: string): TrustRung {

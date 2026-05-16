@@ -11,6 +11,95 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Ollama Agent Harness v0.5.1
+
+Closes item #4 from the v0.5.0 deferred-hardening list:
+**file-lock JSON stores**.
+
+### Why
+
+Several harness JSON stores (`.harness/automations/jobs.json`,
+`.harness/jarvis/runtime.json`, `.harness/jarvis/trust-ladder.json`)
+were written via naive `fs.writeFile` with no in-process serialization
+of read-modify-write cycles. The system audit flagged this as a
+silent-data-loss path: when `AutomationScheduler.tick` calls
+`markAutomationJobRun(jobId)` in parallel with a UI route handler
+calling `createAutomationJob`, the two read-modify-write sequences can
+interleave and one writer overwrites the other's mutation. The lost
+mutation is unrecoverable — there is no audit trail of "what should
+have been saved".
+
+### New persistence primitives
+
+* [src/persistence/atomicFile.ts](src/persistence/atomicFile.ts) — pure
+  stdlib, no new dependencies.
+  * `withFileLock<T>(absolutePath, fn)` — in-process Promise-chain
+    mutex keyed by absolute path. The internal chain never rejects, so
+    one caller's failure does not poison subsequent waiters. The
+    caller's own rejection is still rethrown to that caller.
+  * `atomicWriteFile(absolutePath, data, options?)` — writes to a
+    unique sibling temp (`.<basename>.tmp.<pid>.<rand>`) then `rename`s
+    over the destination. Preserves the `mode` option for
+    secret-bearing files (e.g. `api-keys.json` at `0o600`). Includes
+    Windows-only EPERM/EBUSY/EACCES retry with exponential backoff
+    (`25ms, 75ms, 150ms, 300ms, 600ms`). Cleans up the orphan temp on
+    rename failure.
+* 13 unit tests in [src/persistence/atomicFile.test.ts](src/persistence/atomicFile.test.ts)
+  cover lock serialization across same/different paths, error
+  isolation, mode preservation, and a read-modify-write race regression.
+
+### Retrofitted stores
+
+* [src/automation/jobs.ts](src/automation/jobs.ts) —
+  `createAutomationJob`, `updateAutomationJob`, `deleteAutomationJob`,
+  `markAutomationJobRun`, and the public `saveAutomationJobs` now run
+  their read-modify-write under `withFileLock(jobsPath(projectDir))`
+  and write via `atomicWriteFile`. The append-only run log
+  (`runs.jsonl`) is left outside the jobs.json lock since
+  `fs.appendFile` is already crash-safe for a single line.
+* [src/jarvis/runtimeRegistry.ts](src/jarvis/runtimeRegistry.ts) —
+  `saveRuntimeRegistry` snapshots the in-memory map inside the lock,
+  then writes atomically.
+* [src/jarvis/trustLadder.ts](src/jarvis/trustLadder.ts) —
+  `saveTrustLadder` writes through the lock + atomic-write pair.
+* 4 race regression tests in [src/automation/jobs.race.test.ts](src/automation/jobs.race.test.ts)
+  exercise the exact scenario the audit flagged (parallel
+  `markAutomationJobRun` + `createAutomationJob`) and verify no
+  mutation is lost.
+
+### Not changed by this release
+
+* [src/web/server.ts](src/web/server.ts) `saveSettingsToDisk` already
+  had an in-process lock plus temp+rename atomic write before this
+  release; verified, no change needed.
+* `API_KEYS_PATH`, `EMAIL_TEMPLATES_PATH`, `FILE_REDIRECTS_PATH`,
+  `OUTPUT_VALIDATION_PROFILES_PATH` writers in `server.ts` — still
+  pending. They are write-only (no concurrent RMW pattern observed)
+  but should be migrated for crash-safety. Deferred to a follow-up.
+* [src/extensibility/mcpRuntime.ts](src/extensibility/mcpRuntime.ts)
+  `writeMcpServerDefinitions` — its callers do follow an RMW pattern;
+  deferred so the retrofit can be reviewed against the MCP registry's
+  ordering guarantees rather than rushed into this release.
+* [src/mycelium/graph.ts](src/mycelium/graph.ts),
+  [src/integrations/telegram.ts](src/integrations/telegram.ts), and
+  [src/core/codeIntelligence.ts](src/core/codeIntelligence.ts) JSON
+  writers — same call: deferred to a separate review pass.
+
+### Threat model note
+
+The lock is **in-process only**. The harness assumes a single Node
+server process. If the topology ever changes to multi-process (e.g. a
+PM2 cluster), swap `withFileLock` for `proper-lockfile` or an
+equivalent flock-based primitive. The current implementation is
+documented to that effect.
+
+### Tests
+
+* 1709 → 1726 tests pass (`+17` for this release).
+* No new dependencies. `tsc --noEmit` clean.
+
+---
+
 ## Ollama Agent Harness v0.5.0
 
 System-audit hardening release. Five items from the recommended hardening

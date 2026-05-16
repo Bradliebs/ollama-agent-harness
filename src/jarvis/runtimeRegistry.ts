@@ -8,6 +8,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 
 export type RuntimeFeature = 'voice_stt' | 'voice_tts' | 'voice_wake' | 'inbound_slack' | 'inbound_telegram' | 'inbound_email';
 
@@ -54,10 +55,13 @@ function registryPath(projectDir: string): string {
 
 export async function saveRuntimeRegistry(projectDir: string): Promise<void> {
   const filePath = registryPath(projectDir);
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const snapshot: Record<string, { adapterName: string; installedAt: string }> = {};
-  for (const [k, v] of installed.entries()) snapshot[k] = v;
-  await fs.writeFile(filePath, JSON.stringify(snapshot, null, 2), 'utf-8');
+  await withFileLock(filePath, async () => {
+    // Snapshot inside the lock so a concurrent markRuntimeInstalled call
+    // can't shift entries between the snapshot read and the write.
+    const snapshot: Record<string, { adapterName: string; installedAt: string }> = {};
+    for (const [k, v] of installed.entries()) snapshot[k] = v;
+    await atomicWriteFile(filePath, JSON.stringify(snapshot, null, 2));
+  });
 }
 
 export async function loadRuntimeRegistry(projectDir: string): Promise<void> {
