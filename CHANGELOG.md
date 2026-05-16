@@ -11,6 +11,73 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Ollama Agent Harness v0.5.7
+
+Closes audit item #10 (health endpoint upgrade). Now that v0.5.6 made
+the kill switch and the scheduler set first-class objects, the public
+health endpoints stop relying on dozens of hand-wired booleans and
+the mirror variables, and read from the canonical sources instead.
+The shape gains a `schedulers` field that finally surfaces every
+registered scheduler — including `uploads-auto-prune` and
+`otlp-exporter`, which had no per-key surface before.
+
+### /api/system/health
+
+* [src/web/server.ts](src/web/server.ts) — `kill_switch.active` and
+  `kill_switch.reason` now read from `killSwitch.snapshot()` directly
+  instead of the module-level mirrors. The mirrors are still kept in
+  lockstep for the ~60 internal read sites, but no public HTTP
+  surface depends on that indirection any more.
+* New top-level `schedulers: Array<{ name: string; running: boolean }>`
+  field sourced from `schedulerRegistry.list()`. Covers all six
+  schedulers (`uploads-auto-prune`, `curator`, `self-learning-heartbeat`,
+  `triggers`, `otlp-exporter`, `automation`) with a unique-name
+  contract enforced by the registry.
+* Existing per-scheduler keys (`heartbeat.*`, `triggers.*`,
+  `automation.*`, `curator.*`) are kept for backward compatibility —
+  they expose richer fields like `enabled`, `last_run_at`, and
+  `recent_runs` that the registry list deliberately does not.
+
+### /api/readiness
+
+* [src/web/server.ts](src/web/server.ts) — all three kill-switch
+  reads (top-level `killSwitch` field, automation section
+  `kill.switch` check, autonomy section `autonomy.kill.switch`
+  check) now route through `killSwitch.snapshot()`. Behaviour is
+  byte-for-byte identical to v0.5.6 because the mirrors were in
+  lockstep already; the change is about removing the indirection
+  from the public surface so a future drift cannot ever appear here.
+
+### Tests
+
+* [src/web/server.test.ts](src/web/server.test.ts) — added two
+  tests pinning the new contract:
+  * `/api/system/health` exposes a `schedulers` array of
+    `{name, running}` entries with unique names.
+  * `/api/system/health.kill_switch` reflects KillSwitch engagement
+    end-to-end (engage → assert `active: true` with reason →
+    release → assert `active: false`).
+* Suite: 1781 → 1783 (+2). All 162 suites green. `tsc --noEmit` clean.
+
+### Not changed by this release
+
+* The mirror variables `killSwitchActive` / `killSwitchReason` are
+  still maintained — removing them is a much larger internal
+  refactor (~60 read sites) that was deliberately out of scope.
+* `/api/subsystems/health` is unchanged. It's a higher-level
+  rollup that doesn't expose kill switch or schedulers.
+* No new endpoint surface. The fix is additive on existing surfaces.
+
+### Audit ledger after v0.5.7
+
+* Item #4 — closed v0.5.2 (file-lock retrofit).
+* Item #6 — closed v0.5.6 (kill-switch + SchedulerRegistry).
+* Item #6.B — deferred as audit observation (schedulers do not
+  issue ToolCalls directly).
+* Item #7 — closed v0.5.5 (workflow persistence).
+* Item #9 — closed v0.5.3 (Windows arg quoting).
+* Item #10 — **closed v0.5.7** (this release).
+
 ## Ollama Agent Harness v0.5.6
 
 Closes audit item #6 (kill-switch / scheduler coupling) with two

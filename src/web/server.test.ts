@@ -2312,6 +2312,57 @@ describe('web server API validation', () => {
     }
   });
 
+  // Audit item #10 (v0.5.7): /api/system/health surfaces the canonical
+  // KillSwitch + SchedulerRegistry objects introduced in v0.5.6. These tests
+  // pin the new shape and the read-through behaviour so a future regression
+  // of the mirror-vs-source-of-truth split is caught here.
+  it('GET /api/system/health exposes a schedulers array sourced from the registry', async () => {
+    const response = await request('/api/system/health');
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      schedulers: Array<{ name: string; running: boolean }>;
+      kill_switch: { active: boolean; reason: string };
+    };
+    expect(Array.isArray(body.schedulers)).toBe(true);
+    for (const entry of body.schedulers) {
+      expect(typeof entry.name).toBe('string');
+      expect(entry.name.length).toBeGreaterThan(0);
+      expect(typeof entry.running).toBe('boolean');
+    }
+    // Every registered scheduler must have a unique name — the registry
+    // contract is "register-by-name replaces". Duplicates leaking through
+    // would mean the registry shape itself drifted.
+    const names = body.schedulers.map((s) => s.name);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('GET /api/system/health.kill_switch reflects KillSwitch engagement directly', async () => {
+    const before = await request('/api/system/health');
+    expect(before.status).toBe(200);
+    const beforeBody = await before.json() as { kill_switch: { active: boolean; reason: string } };
+    expect(beforeBody.kill_switch.active).toBe(false);
+
+    const engaged = await request('/api/permissions/kill-switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: true, reason: 'health-endpoint regression check' }),
+    });
+    expect(engaged.status).toBe(200);
+    try {
+      const during = await request('/api/system/health');
+      expect(during.status).toBe(200);
+      const duringBody = await during.json() as { kill_switch: { active: boolean; reason: string } };
+      expect(duringBody.kill_switch).toMatchObject({ active: true, reason: 'health-endpoint regression check' });
+    } finally {
+      await request('/api/permissions/kill-switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: false }) });
+    }
+
+    const after = await request('/api/system/health');
+    expect(after.status).toBe(200);
+    const afterBody = await after.json() as { kill_switch: { active: boolean; reason: string } };
+    expect(afterBody.kill_switch.active).toBe(false);
+  });
+
   it('enables a tool with a time limit and returns enabledUntil', async () => {
     // First disable the tool
     await request('/api/tools/bash/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) });

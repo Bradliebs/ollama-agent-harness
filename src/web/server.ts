@@ -2478,6 +2478,10 @@ app.get('/api/readiness', async (_req, res) => {
     const hasShellGrant = grantIds.has('arbitrary-shell');
     const hasBackgroundGrant = grantIds.has('background-autonomous-jobs');
     const hasSelfModifyGrant = grantIds.has('self-modifying-code');
+    // v0.5.7: read kill-switch state from the canonical KillSwitch object
+    // (audit item #10). The module-level mirror is kept in lockstep but is
+    // no longer the read path for any public HTTP surface in this file.
+    const killSnapshot = killSwitch.snapshot();
     const sections = [
       readinessSection('chat', 'Chat', [
         { id: 'model.selected', label: 'Model selected', status: modelSelected ? 'ready' : 'blocked', message: modelSelected ? `Selected ${currentModel}.` : 'No model selected.', action: 'Pick a model' },
@@ -2500,7 +2504,7 @@ app.get('/api/readiness', async (_req, res) => {
         { id: 'scheduler.enabled', label: 'Scheduler enabled', status: automationSchedulerSettings.enabled ? 'ready' : 'warn', message: automationSchedulerSettings.enabled ? 'Automation scheduler is enabled.' : 'Automation scheduler is disabled.', action: 'Open Settings' },
         { id: 'automation.jobs', label: 'Automation jobs', status: automationJobs.length > 0 ? 'ready' : 'warn', message: `${automationJobs.length} automation job(s) configured.`, action: 'Open Runs' },
         { id: 'background.grant', label: 'Background grant', status: hasBackgroundGrant || permissionMode === 'dontAsk' ? 'ready' : 'warn', message: hasBackgroundGrant || permissionMode === 'dontAsk' ? 'Background jobs can run with active grant posture.' : 'Background jobs need a grant for autonomous execution.', action: 'Open Tools' },
-        { id: 'kill.switch', label: 'Kill switch clear', status: killSwitchActive ? 'blocked' : 'ready', message: killSwitchActive ? `Kill switch active: ${killSwitchReason}` : 'Kill switch is clear.' },
+        { id: 'kill.switch', label: 'Kill switch clear', status: killSnapshot.active ? 'blocked' : 'ready', message: killSnapshot.active ? `Kill switch active: ${killSnapshot.reason}` : 'Kill switch is clear.' },
       ]),
       readinessSection('services', 'Operating Services', [
         { id: 'services.configured', label: 'Services configured', status: agenticServices.length > 0 ? 'ready' : 'warn', message: `${agenticServices.length} operating service(s) configured.` },
@@ -2521,10 +2525,10 @@ app.get('/api/readiness', async (_req, res) => {
         { id: 'shell.grant', label: 'Shell grant', status: hasShellGrant || permissionMode === 'dontAsk' ? 'ready' : 'warn', message: hasShellGrant || permissionMode === 'dontAsk' ? 'Shell capability is grant-ready.' : 'Shell execution may prompt or be denied.', action: 'Open Tools' },
         { id: 'background.autonomy.grant', label: 'Background autonomy grant', status: hasBackgroundGrant || permissionMode === 'dontAsk' ? 'ready' : 'warn', message: hasBackgroundGrant || permissionMode === 'dontAsk' ? 'Background autonomy capability is grant-ready.' : 'Background jobs need an active grant.', action: 'Open Tools' },
         { id: 'blocked.capabilities', label: 'Blocked capability policy', status: summarizeCapabilityAlignment(capabilities).blocked >= 3 ? 'ready' : 'warn', message: `${summarizeCapabilityAlignment(capabilities).blocked} blocked high-risk capability surface(s).` },
-        { id: 'autonomy.kill.switch', label: 'Kill switch clear', status: killSwitchActive ? 'blocked' : 'ready', message: killSwitchActive ? `Kill switch active: ${killSwitchReason}` : 'Kill switch is clear.' },
+        { id: 'autonomy.kill.switch', label: 'Kill switch clear', status: killSnapshot.active ? 'blocked' : 'ready', message: killSnapshot.active ? `Kill switch active: ${killSnapshot.reason}` : 'Kill switch is clear.' },
       ]),
     ];
-    res.json({ generatedAt: new Date().toISOString(), workspace: PROJECT_DIR, model: currentModel, permissionMode, killSwitch: { active: killSwitchActive, reason: killSwitchReason }, grants: activeGrants.length, sections, nervousSystem: { available: true, modules: ['signals', 'sensory', 'reflexes', 'attention', 'motor', 'pain', 'recovery'] } });
+    res.json({ generatedAt: new Date().toISOString(), workspace: PROJECT_DIR, model: currentModel, permissionMode, killSwitch: { active: killSnapshot.active, reason: killSnapshot.reason }, grants: activeGrants.length, sections, nervousSystem: { available: true, modules: ['signals', 'sensory', 'reflexes', 'attention', 'motor', 'pain', 'recovery'] } });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -4050,8 +4054,19 @@ app.get('/api/system/health', async (_req, res) => {
       listSquads(PROJECT_DIR).then((squads) => squads.length).catch(() => 0),
     ]);
     const lastHeartbeat = heartbeatHistory[heartbeatHistory.length - 1] ?? null;
+    // Read kill-switch and scheduler status from their canonical sources
+    // introduced in v0.5.6. The module-level `killSwitchActive` mirror is
+    // kept in lockstep for the dozens of internal read sites, but the public
+    // HTTP surface reads through `killSwitch.snapshot()` so the source of
+    // truth is unambiguous. `schedulers` exposes every scheduler the
+    // SchedulerRegistry knows about — including `uploads-auto-prune` and
+    // `otlp-exporter`, which had no per-key surface before. The existing
+    // per-scheduler keys are kept for backward compatibility because they
+    // carry richer fields (enabled state, last_run_at, recent_runs).
+    const killSnapshot = killSwitch.snapshot();
     res.json({
-      kill_switch: { active: killSwitchActive, reason: killSwitchReason },
+      kill_switch: { active: killSnapshot.active, reason: killSnapshot.reason },
+      schedulers: schedulerRegistry.list(),
       capabilities: {
         active_grants: listActiveCapabilityGrants(capabilityGrants).length,
         total_grants: capabilityGrants.length,
