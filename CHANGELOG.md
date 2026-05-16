@@ -11,6 +11,59 @@ keywords:
 estimated_reading_time: 14
 ---
 
+## Unreleased
+
+Brings the harness's skill subsystem fully in line with the
+[Anthropic Agent Skills][anthropic-skills] spec while keeping it 100% model
+agnostic — the protocol is just markdown plus the filesystem, so any skill
+authored for Claude works here unchanged against any Ollama model.
+
+[anthropic-skills]: https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview
+
+### `skill` tool surfaces bundled resources (Level 3)
+
+* When the agent invokes `skill(name: ...)`, the tool now appends a
+  `--- Bundled resources ---` section listing every non-`SKILL.md`
+  sibling file (up to 20 entries, recursing one level deep) with sizes.
+  Closes the gap where the model knew SKILL.md existed but had to guess
+  that `FORMS.md` or `scripts/fill_form.py` were also available.
+* Skips dotfiles and `SKILL.md.backup-*` snapshots so the list stays
+  meaningful.
+
+### `import_skill` tool: bulk-import a skill bundle from a local folder
+
+* New built-in `import_skill` tool copies an entire skill folder
+  (SKILL.md + bundled files) into `.harness/skills/<name>/`. Recipe for
+  consuming Anthropic-format skills:
+  `bash git clone https://github.com/anthropics/skills.git agent-outputs/anthropic-skills`
+  then `import_skill(source: "agent-outputs/anthropic-skills/pdf")`.
+* Source must live inside the project or under an Allowed External Path —
+  the same fence used by `file_read` and `list_files`.
+* Hard caps: 200 files, 5 MB total bundle. `node_modules/`, `.git/`,
+  `.venv/`, `__pycache__/`, `dist/`, `build/`, and dotfiles are skipped
+  during copy.
+* Refuses to overwrite an existing skill unless `overwrite: true` is set.
+* Appends a `<!-- imported-from: ... -->` provenance footer to the
+  installed SKILL.md so the source is traceable later.
+* Registered with `riskLevel: 'medium'`, `permissionCategory: 'skills'`,
+  `enabledByDefault: true`.
+
+### System prompt: clean Level-1 listing for Anthropic-format skills
+
+* The "Available Skills" section no longer prints `(triggers: none)` for
+  skills whose frontmatter omits the harness-extension `triggers` field.
+  An Anthropic-spec SKILL.md (just `name` + `description`) now appears as
+  `• pdf-processing — Extract text and tables from PDF files.` with no
+  noise suffix.
+
+### Docs
+
+* New [docs/SKILLS.md](docs/SKILLS.md) explains the SKILL.md format, the
+  three-tier progressive disclosure model (Level 1 metadata / Level 2
+  body / Level 3 bundled resources), the `list_skills` / `skill` /
+  `create_skill` / `import_skill` / `install_skill` tool surface, and
+  why this implementation is model agnostic.
+
 ## Ollama Agent Harness v0.4.8
 
 Patch release that hardens the tool surface against day-to-day model

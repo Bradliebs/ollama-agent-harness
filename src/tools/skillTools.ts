@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
-import { loadSkillsDir, matchSkillTrigger, type SkillDefinition } from '../extensibility/skillLoader';
+import { loadSkillsDir, matchSkillTrigger, parseSkillFile, type SkillDefinition } from '../extensibility/skillLoader';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 
 let cachedSkills: SkillDefinition[] | null = null;
@@ -61,12 +61,83 @@ export const SkillTool: Tool = {
       recordSkillUse(projectDirForUsage, skill.name).catch(() => {});
     }
 
+    const bundled = await listBundledResources(skill.filePath);
+    const bundledSection = bundled.length > 0
+      ? `\n\n--- Bundled resources ---\nThe following files live alongside SKILL.md. Use file_read to view text/markdown or bash to execute scripts. They are NOT loaded into your context until you read them.\n${bundled.map(b => `📎 ${b.relPath} (${b.sizeLabel})`).join('\n')}`
+      : '';
+
     return {
       success: true,
-      output: `--- Skill: ${skill.name} ---\n${skill.description}\n\n${skill.content}`,
+      output: `--- Skill: ${skill.name} ---\n${skill.description}\n\n${skill.content}${bundledSection}`,
     };
   },
 };
+
+/** Maximum number of bundled resources surfaced when a skill is invoked. */
+const MAX_BUNDLED_RESOURCES = 20;
+/** Maximum directory recursion depth when scanning for bundled resources. */
+const MAX_BUNDLED_DEPTH = 2;
+
+interface BundledResource {
+  relPath: string;
+  sizeLabel: string;
+}
+
+/**
+ * Lists files in the skill directory other than SKILL.md so the model knows
+ * what Level-3 (Anthropic spec) bundled resources exist. Recurses one level
+ * deep to keep output tight; agents can always `bash ls` for deeper trees.
+ */
+async function listBundledResources(skillFilePath: string): Promise<BundledResource[]> {
+  const skillDir = path.dirname(skillFilePath);
+  const results: BundledResource[] = [];
+  await collectBundled(skillDir, skillDir, 0, results);
+  results.sort((a, b) => a.relPath.localeCompare(b.relPath));
+  return results.slice(0, MAX_BUNDLED_RESOURCES);
+}
+
+async function collectBundled(
+  rootDir: string,
+  currentDir: string,
+  depth: number,
+  acc: BundledResource[],
+): Promise<void> {
+  if (depth > MAX_BUNDLED_DEPTH) return;
+  if (acc.length >= MAX_BUNDLED_RESOURCES) return;
+  let entries: { name: string; isDirectory: () => boolean; isFile: () => boolean }[];
+  try {
+    entries = await fs.readdir(currentDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (acc.length >= MAX_BUNDLED_RESOURCES) return;
+    // Skip dotfiles, the SKILL.md itself, and provenance backups created by install_skill.
+    if (entry.name.startsWith('.')) continue;
+    if (entry.name === 'SKILL.md') continue;
+    if (entry.name.startsWith('SKILL.md.backup-')) continue;
+    const absolute = path.join(currentDir, entry.name);
+    if (entry.isDirectory()) {
+      await collectBundled(rootDir, absolute, depth + 1, acc);
+    } else if (entry.isFile()) {
+      let size = 0;
+      try {
+        const stat = await fs.stat(absolute);
+        size = stat.size;
+      } catch { /* ignore */ }
+      acc.push({
+        relPath: path.relative(rootDir, absolute).split(path.sep).join('/'),
+        sizeLabel: formatSize(size),
+      });
+    }
+  }
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 /**
  * ListSkillsTool — lists all available skills with descriptions.

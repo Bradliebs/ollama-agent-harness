@@ -52,12 +52,17 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
 
   // Inject skill descriptions so the model knows what skills are available
   // (Paper §6.3: "only frontmatter descriptions stay in the prompt" — low context cost)
+  // Mirrors the Anthropic Skill spec's Level-1 metadata stage: name + description
+  // (+ optional triggers when the harness-extended frontmatter provides them).
   const sDir = config.skillsDir ?? path.join(config.projectDir, '.harness', 'skills');
   try {
     const skills = await loadSkillsDir(sDir);
     if (skills.length > 0) {
       const listedSkills = skills.slice(0, SKILL_LIST_MAX_ITEMS);
-      const skillList = listedSkills.map(s => `• ${s.name} — ${s.description} (triggers: ${s.triggers.join(', ') || 'none'})`).join('\n');
+      const skillList = listedSkills.map(s => {
+        const triggerSuffix = s.triggers.length > 0 ? ` (triggers: ${s.triggers.join(', ')})` : '';
+        return `• ${s.name} — ${s.description}${triggerSuffix}`;
+      }).join('\n');
       const omitted = skills.length > listedSkills.length ? `\n...(${skills.length - listedSkills.length} more skill(s) omitted from prompt; use list_skills when needed)` : '';
       parts.push(`\n--- Available Skills ---\nYou can invoke these skills using the "skill" tool. Use "create_skill" to create new ones.\n${skillList}${omitted}`);
     }

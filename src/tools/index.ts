@@ -29,6 +29,7 @@ export { BashTool } from './bashTool';
 export { WebFetchTool } from './webFetchTool';
 export { GrepTool } from './grepTool';
 export { SkillTool, ListSkillsTool, CreateSkillTool } from './skillTools';
+export { ImportSkillTool, setImportSkillsDir } from './skillImportTool';
 export { MemoryWriteTool, MemoryReadTool } from './memoryTools';
 export { ReflectTool, AnalyzePatternsTool, PromotePatternTool, ConsolidateTool, EvolveTool, ImproveSkillTool } from './learningTools';
 export { WebSearchTool, WebReadTool } from './webSearchTool';

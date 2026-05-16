@@ -16,6 +16,7 @@ import { DesktopScreenshotTool } from './desktopTools';
 import { DesktopInputReplayTool } from './desktopInputTools';
 import { BrowserBookmarksTool, BrowserNavigateTool, BrowserClickTool, BrowserFillTool, BrowserReadTool, BrowserScreenshotTool, BrowserCloseTool } from './browserTools';
 import { InstallSkillTool } from './skillInstallTool';
+import { ImportSkillTool } from './skillImportTool';
 import { EmailDraftTool, EmailSendTool } from './emailTools';
 import { SlackNotifyTool } from './slackTools';
 import { TelegramNotifyTool } from './telegramTools';
@@ -129,6 +130,7 @@ export const BUILTIN_TOOL_ENTRIES: ToolRegistryEntry[] = [
   { tool: BrowserScreenshotTool, toolset: 'browser', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'browser', canDryRun: false },
   { tool: BrowserCloseTool, toolset: 'browser', source: 'builtin', enabledByDefault: false, riskLevel: 'low', permissionCategory: 'browser', canDryRun: false },
   { tool: InstallSkillTool, toolset: 'skills', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'skills', canDryRun: false },
+  { tool: ImportSkillTool, toolset: 'skills', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'skills', canDryRun: false },
   { tool: EmailDraftTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'write', canDryRun: false },
   { tool: EmailSendTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'network', canDryRun: false },
   { tool: SlackNotifyTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'network', canDryRun: false },

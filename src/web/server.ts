@@ -29,6 +29,7 @@ import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from 
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { invalidateSkillsCache, setSkillsDir } from '../tools/skillTools';
+import { setImportSkillsDir } from '../tools/skillImportTool';
 import { setRagRuntime } from '../tools/ragTools';
 import { setCuratorToolRuntime } from '../tools/curatorTools';
 import { PermissionEngine } from '../permissions/engine';
@@ -807,6 +808,7 @@ function skillSourceForApi(source: SkillApiSource, label: string, directory: str
 
 // Initialize skills directory for SkillTool
 setSkillsDir(SKILLS_DIR);
+setImportSkillsDir(SKILLS_DIR);
 setRagRuntime({ projectDir: PROJECT_DIR, ollamaHost });
 setCuratorToolRuntime({
   projectDir: PROJECT_DIR,

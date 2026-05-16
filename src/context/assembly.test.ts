@@ -44,6 +44,41 @@ describe('assembleSystemContext', () => {
     expect(context.length).toBeLessThan(32_768);
   });
 
+  it('omits the trigger suffix for Anthropic-format skills that declare no triggers', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-context-triggers-'));
+    const skillsDir = path.join(projectDir, '.harness', 'skills');
+
+    const withTriggers = path.join(skillsDir, 'with-triggers');
+    await fs.mkdir(withTriggers, { recursive: true });
+    await fs.writeFile(path.join(withTriggers, 'SKILL.md'), [
+      '---',
+      'name: with-triggers',
+      'description: Skill that declares triggers',
+      'triggers:',
+      '  - "review my code"',
+      '---',
+      '# With triggers',
+    ].join('\n'), 'utf-8');
+
+    const anthropicStyle = path.join(skillsDir, 'pdf-processing');
+    await fs.mkdir(anthropicStyle, { recursive: true });
+    await fs.writeFile(path.join(anthropicStyle, 'SKILL.md'), [
+      '---',
+      'name: pdf-processing',
+      'description: Extract text and tables from PDF files. Use when working with PDFs.',
+      '---',
+      '# PDF Processing',
+    ].join('\n'), 'utf-8');
+
+    const context = await assembleSystemContext({ systemPrompt: 'base', projectDir, skillsDir });
+
+    expect(context).toContain('• with-triggers');
+    expect(context).toContain('(triggers: review my code)');
+    expect(context).toContain('• pdf-processing');
+    // Anthropic-format skill (no triggers field) must not carry a "(triggers: none)" noise suffix.
+    expect(context).not.toMatch(/pdf-processing.*\(triggers:/);
+  });
+
   describe('knowledge-graph recall', () => {
     it('skips when recallProjectDir or recallQuery is missing', async () => {
       const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-recall-ctx-'));
