@@ -11,6 +11,7 @@ import { createContinuityCheckpoint } from '../persistence/continuity';
 import { ToolDispatcher } from '../tools/dispatcher';
 import type { RuntimeTracer } from './tracing';
 import { validateOutput, withOutputValidationInstructions } from './outputValidation';
+import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
 
 export interface QueryLoopDeps {
   client: IChatClient;
@@ -513,6 +514,20 @@ export async function* queryLoop(
       synthesisText = `The model ran out of time but here is what it found:\n\n${recentToolResults}`;
     }
 
+    // Optional path-claim verifier: when HARNESS_VERIFY_PATH_CLAIMS=1 is
+    // set, scan the synthesis for file references and append a footer
+    // listing any that don't exist. Targets the "model invents file
+    // paths in its summary" failure mode without changing the answer
+    // when claims are accurate. Off by default — purely additive.
+    if (process.env.HARNESS_VERIFY_PATH_CLAIMS === '1' && synthesisText && typeof synthesisText === 'string') {
+      const report = verifyPathClaims(synthesisText, process.cwd());
+      const footer = formatUnverifiedFooter(report);
+      if (footer) {
+        synthesisText = `${synthesisText}${footer}`;
+        tracer?.recordEvent('synthesis.unverified_paths', { count: report.unverified.length, paths: report.unverified.slice(0, 10) });
+      }
+    }
+
     yield { type: 'text', content: synthesisText || synthMessage.content };
     if (session) {
       await appendStatus(session, sessionStatus, undefined, tracer);
@@ -522,6 +537,17 @@ export async function* queryLoop(
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     synthSpan?.fail(error);
+    // Synthesis call itself failed (provider 5xx, network drop, etc.).
+    // Without this fallback the user gets only an `error` event and the
+    // run "needs review" — no visible answer at all. Emit the recent
+    // tool results as text first so they at least see what was found
+    // before the model died.
+    if (recentToolResults) {
+      yield {
+        type: 'text',
+        content: `⚠️ Synthesis call failed (${msg}). Showing the last ${Math.min(5, recentToolResults.split('\n---\n').length)} tool result(s) so the work isn't lost:\n\n${recentToolResults}`,
+      };
+    }
     yield { type: 'error', message: `Synthesis turn failed: ${msg}`, recoverable: false };
   }
 

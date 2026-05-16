@@ -12,16 +12,41 @@ interface PendingPromptState extends PendingPermissionPrompt {
   timer: NodeJS.Timeout;
 }
 
+const DEFAULT_PROMPT_TIMEOUT_MS = 300_000;
+
+function resolveDefaultTimeout(): number {
+  // Override via env so unattended/headless runs can fail fast (e.g.
+  // 30s) instead of stalling for the full 5 minutes before the model
+  // gets the denial. Invalid or non-positive values fall back to the
+  // built-in default.
+  const raw = process.env.HARNESS_PERMISSION_PROMPT_TIMEOUT_MS;
+  if (!raw) return DEFAULT_PROMPT_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_PROMPT_TIMEOUT_MS;
+  return Math.floor(parsed);
+}
+
 export class PermissionPromptBroker {
   private pending = new Map<string, PendingPromptState>();
+  private readonly timeoutMs: number;
 
-  constructor(private readonly timeoutMs = 300_000) {}
+  constructor(timeoutMs?: number) {
+    this.timeoutMs = timeoutMs ?? resolveDefaultTimeout();
+  }
 
   request(call: ToolCall, reason?: string): Promise<{ allowed: boolean; reason?: string }> {
     const id = createPromptId();
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
-        this.resolve(id, false, 'Permission prompt timed out');
+        // Embed the tool name and the original reason so the model gets
+        // an actionable error rather than the bare "Permission prompt
+        // timed out" string. Common autonomous-run remediations: add
+        // the destination to allowed-paths, lower
+        // HARNESS_PERMISSION_PROMPT_TIMEOUT_MS, or run with permission
+        // mode 'auto'. The hint is appended once per timeout.
+        const detail = reason ? ` (${reason})` : '';
+        const hint = ` Add the path to allowed-external-paths, set HARNESS_PERMISSION_PROMPT_TIMEOUT_MS, or rerun with permission mode 'auto'.`;
+        this.resolve(id, false, `Permission prompt for '${call.name}' timed out after ${this.timeoutMs}ms${detail}.${hint}`);
       }, this.timeoutMs);
       this.pending.set(id, {
         id,

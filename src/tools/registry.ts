@@ -1,6 +1,6 @@
 import type { Tool, ToolPermissionCategory, ToolRiskLevel } from '../types';
 import { BashTool } from './bashTool';
-import { FileEditTool, FileReadTool, FileWriteTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool } from './fileTools';
+import { FileEditTool, FileReadTool, FileWriteTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool, MakeDirectoryTool } from './fileTools';
 import { GrepTool } from './grepTool';
 import { AnalyzePatternsTool, ConsolidateTool, EvolveTool, ImproveSkillTool, PromotePatternTool, ReflectTool } from './learningTools';
 import { MemoryReadTool, MemoryWriteTool } from './memoryTools';
@@ -91,6 +91,7 @@ export const BUILTIN_TOOL_ENTRIES: ToolRegistryEntry[] = [
   { tool: FileEditTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'high', permissionCategory: 'write', canDryRun: false },
   { tool: FileMoveTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'high', permissionCategory: 'write', canDryRun: false },
   { tool: FileDeleteTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'high', permissionCategory: 'write', canDryRun: false },
+  { tool: MakeDirectoryTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'write', canDryRun: false },
   { tool: ListFilesTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
   { tool: ListUploadsTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
   { tool: BashTool, toolset: 'shell', source: 'builtin', enabledByDefault: true, riskLevel: 'high', permissionCategory: 'shell', canDryRun: false },

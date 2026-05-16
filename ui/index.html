@@ -1241,6 +1241,7 @@
       <h4>📁 Agent Files<button class="settings-reset-btn" onclick="event.stopPropagation();resetSettingsSection('agentFiles')" title="Reset to defaults">↺ Reset</button></h4>
       <div class="setting-row settings-note">
         Where the agent puts files it creates. Editing files that already exist is unaffected.
+        <br><em>To let the agent read or write in <strong>other</strong> folders without permission prompts, scroll down to <strong>📂 Allowed External Paths</strong>.</em>
       </div>
       <div class="setting-row settings-action-row">
         <input type="text" id="agentOutputDirInput" placeholder="C:/AI/Harness/agent-outputs (default)" class="settings-flex-input">
@@ -1698,10 +1699,15 @@
       </div>
     </div>
     <div class="settings-section">
-      <h4>Allowed External Paths</h4>
-      <div class="trace-detail">Directories outside the project that file_read and list_files can access. One path per line.</div>
+      <h4>📂 Allowed External Paths</h4>
+      <div class="trace-detail">
+        Folders outside the project that file tools (<strong>read AND write</strong>) and <code>list_files</code> can access. One path per line.
+        Without an entry here, writes to e.g. <code>D:\Brad\Downloads\AI</code> trigger a permission prompt and time out during autonomous runs.
+        Paths are matched literally and recursively (a folder entry covers all subfolders).
+        The Agent Files folder above is added automatically — only add paths the agent legitimately needs.
+      </div>
       <div class="setting-row">
-        <textarea id="allowedExternalPaths" rows="3" placeholder="C:\Users\Brad\Downloads&#10;C:\Users\Brad\Documents" onchange="updateAllowedPaths(this.value)"></textarea>
+        <textarea id="allowedExternalPaths" rows="4" placeholder="C:\Users\Brad\Downloads&#10;D:\Brad\Downloads\AI&#10;C:\Users\Brad\Documents" onchange="updateAllowedPaths(this.value)"></textarea>
       </div>
     </div>
     <div class="settings-section">

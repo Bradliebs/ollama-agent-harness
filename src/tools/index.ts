@@ -1,4 +1,4 @@
-import { FileReadTool, FileWriteTool, FileEditTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool } from './fileTools';
+import { FileReadTool, FileWriteTool, FileEditTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool, MakeDirectoryTool } from './fileTools';
 import { BashTool } from './bashTool';
 import { WebFetchTool } from './webFetchTool';
 import { GrepTool } from './grepTool';
@@ -24,7 +24,7 @@ export function getRuntimeTools(projectDir: string): Tool[] {
   return createToolRegistry(projectDir).listTools();
 }
 
-export { FileReadTool, FileWriteTool, FileEditTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool } from './fileTools';
+export { FileReadTool, FileWriteTool, FileEditTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool, MakeDirectoryTool } from './fileTools';
 export { BashTool } from './bashTool';
 export { WebFetchTool } from './webFetchTool';
 export { GrepTool } from './grepTool';

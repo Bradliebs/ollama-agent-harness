@@ -38,14 +38,19 @@ describe('PermissionPromptBroker', () => {
     expect(broker.list()).toEqual([]);
   });
 
-  it('denies prompts that time out', async () => {
+  it('denies prompts that time out with an actionable reason', async () => {
     jest.useFakeTimers();
     const broker = new PermissionPromptBroker(50);
     const result = broker.request(makeCall('bash'), 'Needs user input');
 
     jest.advanceTimersByTime(50);
 
-    await expect(result).resolves.toEqual({ allowed: false, reason: 'Permission prompt timed out' });
+    const resolved = await result;
+    expect(resolved.allowed).toBe(false);
+    expect(resolved.reason).toContain("Permission prompt for 'bash' timed out");
+    expect(resolved.reason).toContain('50ms');
+    expect(resolved.reason).toContain('Needs user input');
+    expect(resolved.reason).toContain('HARNESS_PERMISSION_PROMPT_TIMEOUT_MS');
     expect(broker.list()).toEqual([]);
   });
 });

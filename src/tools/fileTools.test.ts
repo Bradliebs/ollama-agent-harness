@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { FileReadTool, FileWriteTool, FileMoveTool, FileDeleteTool, ListUploadsTool } from './fileTools';
+import { FileReadTool, FileWriteTool, FileMoveTool, FileDeleteTool, ListUploadsTool, MakeDirectoryTool } from './fileTools';
 import { drainUploadsFallbacks, clearFileWriteRedirectCache, previewFileWriteRedirect } from './pathResolution';
 
 describe('file tools bounds and path safety', () => {
@@ -192,6 +192,26 @@ describe('file tools bounds and path safety', () => {
       // Must NOT have been written to the project root.
       const rootStray = path.resolve(process.cwd(), bareName);
       await expect(fs.access(rootStray)).rejects.toThrow();
+    });
+
+    it('surfaces the redirected absolute path on its own line so the model uses it for follow-up commands', async () => {
+      // Regression: previously the redirect note was a trailing
+      // parenthetical the model didn't parse, leading to broken
+      // follow-ups like `python check_yfinance.py` after writing to
+      // agent-outputs/. The success message must now lead with the
+      // absolute path on its own line and explicitly tell the model
+      // to use it.
+      const bareName = `redir-prominent-${Date.now()}.py`;
+      const result = await FileWriteTool.execute({ path: bareName, content: 'print(1)' });
+      expect(result.success).toBe(true);
+
+      const expected = path.join(overrideDir, bareName);
+      const lines = result.output.split(/\r?\n/);
+      // First line is the prominent "✅ Saved to: <absolute path>".
+      expect(lines[0]).toContain('Saved to:');
+      expect(lines[0]).toContain(expected);
+      // The instruction line is present.
+      expect(result.output).toContain('use the FULL path above');
     });
 
     it('does NOT redirect when the bare filename already exists at the project root', async () => {
@@ -623,5 +643,54 @@ describe('FileDeleteTool', () => {
     const result = await FileDeleteTool.execute({ path: missing });
     expect(result.success).toBe(false);
     expect(result.output).toContain('Failed to delete');
+  });
+});
+
+describe('MakeDirectoryTool', () => {
+  const scratchDir = path.join(process.cwd(), '.harness', 'test-make-directory');
+
+  beforeEach(async () => { await fs.mkdir(scratchDir, { recursive: true }); });
+  afterEach(async () => { await fs.rm(scratchDir, { recursive: true, force: true }); });
+
+  it('creates a single directory', async () => {
+    const target = path.join(scratchDir, 'fresh');
+    const result = await MakeDirectoryTool.execute({ path: target });
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('Created directory');
+    expect(result.output).toContain(target);
+    const stat = await fs.stat(target);
+    expect(stat.isDirectory()).toBe(true);
+  });
+
+  it('creates missing parent directories', async () => {
+    const target = path.join(scratchDir, 'a', 'b', 'c');
+    const result = await MakeDirectoryTool.execute({ path: target });
+    expect(result.success).toBe(true);
+    const stat = await fs.stat(target);
+    expect(stat.isDirectory()).toBe(true);
+  });
+
+  it('is idempotent when the directory already exists', async () => {
+    const target = path.join(scratchDir, 'existing');
+    await fs.mkdir(target);
+    const result = await MakeDirectoryTool.execute({ path: target });
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('already existed');
+  });
+
+  it('refuses to create a directory where a file already exists', async () => {
+    const target = path.join(scratchDir, 'conflict.txt');
+    await fs.writeFile(target, 'data', 'utf-8');
+    const result = await MakeDirectoryTool.execute({ path: target });
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('path exists as file');
+    // Original file untouched.
+    await expect(fs.readFile(target, 'utf-8')).resolves.toBe('data');
+  });
+
+  it('rejects paths outside the project root', async () => {
+    const result = await MakeDirectoryTool.execute({ path: path.resolve(process.cwd(), '..', 'outside-dir') });
+    expect(result.success).toBe(false);
+    expect(result.output).toContain('outside the project directory');
   });
 });

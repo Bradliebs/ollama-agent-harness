@@ -1,9 +1,11 @@
 import { spawn } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
+import { getAgentOutputDir } from './pathResolution';
 
 const MAX_OUTPUT_SIZE = 50_000;
 const MAX_COMMAND_LENGTH = 500;
-const SHELL_CONTROL_PATTERN = /(\|\||&&|[;|`]|\$\(|\$\{|\n|\r|>|<)/;
 
 const BLOCKED_PATTERNS = [
   /\brm\s+(-[a-zA-Z]*)?r[a-zA-Z]*f\b.*\/\s*$/,   // rm -rf /
@@ -23,14 +25,69 @@ const WINDOWS_SHELL_BUILTINS = new Set([
   'ver', 'verify', 'vol',
 ]);
 
+/**
+ * Detect shell control operators that are NOT inside a quoted string.
+ *
+ * The bash tool spawns with `shell: false`, so characters inside quoted
+ * arguments are passed verbatim to the executable and aren't shell
+ * operators at all (`node -e "a; b"` runs `node` with one arg of literal
+ * `a; b`). The previous regex-only check rejected those legitimate
+ * invocations, which is what triggered the "false positive" Block: lines
+ * the model kept hitting on `node -e "...; ..."` invocations.
+ *
+ * Outside quotes we still reject `;`, `|`, `&&`, `||`, redirects, command
+ * substitution, etc. — defense-in-depth in case the spawn is ever
+ * accidentally switched to `shell: true`.
+ *
+ * Quote handling mirrors `parseCommandToArgv`: single quotes are literal
+ * (no escaping inside), double quotes honor `\"` and `\\`, and a bare
+ * backslash escapes the next character at top level.
+ *
+ * Returns the offending operator (or `null` when the command is clean).
+ */
+function findUnquotedShellOperator(command: string): string | null {
+  let quote: 'single' | 'double' | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]!;
+    if (quote === 'single') {
+      if (ch === '\'') quote = null;
+      continue;
+    }
+    if (quote === 'double') {
+      if (ch === '\\') {
+        const next = command[i + 1];
+        if (next === '"' || next === '\\') { i++; continue; }
+        continue;
+      }
+      if (ch === '"') quote = null;
+      continue;
+    }
+    // Top level: escape sequences consume the next char.
+    if (ch === '\\') { i++; continue; }
+    if (ch === '\'') { quote = 'single'; continue; }
+    if (ch === '"') { quote = 'double'; continue; }
+    // Multi-char operators first.
+    if (ch === '|' && command[i + 1] === '|') return '||';
+    if (ch === '&' && command[i + 1] === '&') return '&&';
+    if (ch === '$' && command[i + 1] === '(') return '$(';
+    if (ch === '$' && command[i + 1] === '{') return '${';
+    // Single-char operators.
+    if (ch === ';' || ch === '|' || ch === '`' || ch === '>' || ch === '<' || ch === '\n' || ch === '\r') {
+      return ch === '\n' ? '\\n' : ch === '\r' ? '\\r' : ch;
+    }
+  }
+  return null;
+}
+
 function isSafeCommand(command: string): string | null {
   const normalized = command.trim();
   if (!normalized) return 'Blocked: command is empty.';
   if (normalized.length > MAX_COMMAND_LENGTH) {
     return `Blocked: command exceeds ${MAX_COMMAND_LENGTH} characters.`;
   }
-  if (SHELL_CONTROL_PATTERN.test(normalized)) {
-    return 'Blocked: command contains shell control operators. Only single-command invocations are allowed.';
+  const operator = findUnquotedShellOperator(normalized);
+  if (operator) {
+    return `Blocked: command contains shell control operator '${operator}' outside quotes. Only single-command invocations are allowed. (Operators INSIDE quoted arguments are fine — e.g. node -e "a; b" — so wrap shell-meaningful chars in quotes.)`;
   }
   for (const pattern of BLOCKED_PATTERNS) {
     if (pattern.test(normalized)) {
@@ -141,7 +198,7 @@ function unsupportedWindowsBuiltin(executable: string): string | null {
   if (process.platform !== 'win32') return null;
   const normalized = executable.toLowerCase();
   if (!WINDOWS_SHELL_BUILTINS.has(normalized)) return null;
-  return `Blocked: ${executable} is a Windows shell built-in, but bash runs direct executables only. Use file_read/list_files for inspection, file_write/file_edit for files, or a direct executable such as git, npm, node, or powershell.exe.`;
+  return `Blocked: ${executable} is a Windows shell built-in, but bash runs direct executables only. Use file_read/list_files for inspection, file_write/file_edit for files, make_directory to create folders, or a direct executable such as git, npm, node, or powershell.exe.`;
 }
 
 function formatOutput(stdout: string, stderr: string): string {
@@ -152,6 +209,73 @@ function formatOutput(stdout: string, stderr: string): string {
     .filter(Boolean)
     .join('\n\n');
   return output || '(no output)';
+}
+
+// Script extensions we auto-resolve against agent-outputs/ when the arg
+// looks like a bare filename (no separators). Keep this list narrow —
+// only files the agent commonly writes via file_write and then runs.
+const BARE_SCRIPT_EXTENSIONS = new Set([
+  '.py', '.js', '.mjs', '.cjs', '.ts', '.sh', '.ps1', '.rb', '.pl', '.lua',
+]);
+
+/**
+ * Rewrite bare script-filename args to the absolute path under the
+ * agent-outputs directory when the file exists there but not in cwd.
+ *
+ * Motivation: `file_write` redirects bare filenames (e.g.
+ * `check_yfinance.py`) into the agent-outputs directory. When the model
+ * immediately tries to execute it with `python check_yfinance.py`, the
+ * arg resolves against process.cwd() (the project root) and fails with
+ * "No such file or directory". The improved file_write message now tells
+ * the model to use the full path, but auto-resolving here closes the loop
+ * for the case where the model forgets — without changing semantics for
+ * scripts that genuinely live in cwd.
+ *
+ * Rules:
+ *   - Skip argv[0] (the executable).
+ *   - Skip args starting with `-` (flags).
+ *   - Skip args containing `/` or `\` (already path-qualified).
+ *   - Skip absolute paths.
+ *   - Only rewrite args ending in a known script extension.
+ *   - Only rewrite when the file does NOT exist in cwd AND DOES exist in
+ *     the agent-outputs directory.
+ */
+function rewriteBareScriptArgs(args: string[]): {
+  args: string[];
+  rewrites: Array<{ from: string; to: string }>;
+} {
+  const rewrites: Array<{ from: string; to: string }> = [];
+  const outputDir = (() => {
+    try { return getAgentOutputDir(); } catch { return null; }
+  })();
+  if (!outputDir) return { args, rewrites };
+
+  const rewritten = args.map((arg) => {
+    if (!arg || arg.startsWith('-')) return arg;
+    if (arg.includes('/') || arg.includes('\\')) return arg;
+    if (path.isAbsolute(arg)) return arg;
+    const ext = path.extname(arg).toLowerCase();
+    if (!BARE_SCRIPT_EXTENSIONS.has(ext)) return arg;
+
+    // If the bare name resolves against cwd, the agent's invocation is
+    // already correct — leave it alone.
+    try {
+      const cwdCandidate = path.resolve(process.cwd(), arg);
+      if (fs.existsSync(cwdCandidate)) return arg;
+    } catch { /* fall through */ }
+
+    // Probe the agent-outputs directory.
+    try {
+      const outputCandidate = path.join(outputDir, arg);
+      if (fs.existsSync(outputCandidate)) {
+        rewrites.push({ from: arg, to: outputCandidate });
+        return outputCandidate;
+      }
+    } catch { /* noop */ }
+    return arg;
+  });
+
+  return { args: rewritten, rewrites };
 }
 
 export const BashTool: Tool = {
@@ -193,7 +317,13 @@ export const BashTool: Tool = {
         resolve({ success: false, output: blockedBuiltin, error: blockedBuiltin });
         return;
       }
-      const args = argv.slice(1);
+      const rawArgs = argv.slice(1);
+      const { args, rewrites } = rewriteBareScriptArgs(rawArgs);
+      const preamble = rewrites.length > 0
+        ? rewrites
+            .map((r) => `ℹ️ Bash auto-resolved '${r.from}' → '${r.to}' (found in agent-outputs/, not in cwd).`)
+            .join('\n') + '\n'
+        : '';
       let settled = false;
       let timedOut = false;
       let stdout = '';
@@ -250,26 +380,33 @@ export const BashTool: Tool = {
 
       child.on('close', (code) => {
         if (timedOut) {
-          const message = `Command timed out after ${timeout}ms`;
+          const message = `Command '${executable}' timed out after ${timeout}ms`;
           const output = formatOutput(stdout, stderr);
           settle({
             success: false,
-            output: output === '(no output)' ? message : output,
+            output: preamble + (output === '(no output)' ? message : `${message}\n${output}`),
             error: message,
           });
           return;
         }
 
         if (code === 0) {
-          settle({ success: true, output: formatOutput(stdout, stderr) });
+          settle({ success: true, output: preamble + formatOutput(stdout, stderr) });
           return;
         }
 
-        const message = `Command failed with exit code ${code ?? 'unknown'}`;
+        // Include the executable name in the error so callers (and the
+        // model's failure-counter) get something more actionable than a
+        // bare exit code. When the child wrote nothing, surface a short
+        // stderr-shaped hint so the agent can decide whether to retry
+        // with different arguments or pivot to another tool.
+        const trimmedStderr = stderr.trim();
+        const hint = trimmedStderr ? trimmedStderr.split(/\r?\n/)[0]!.slice(0, 200) : '';
+        const message = `Command '${executable}' failed with exit code ${code ?? 'unknown'}${hint ? `: ${hint}` : ''}`;
         const output = formatOutput(stdout, stderr);
         settle({
           success: false,
-          output: output === '(no output)' ? message : output,
+          output: preamble + (output === '(no output)' ? message : `${message}\n${output}`),
           error: message,
         });
       });

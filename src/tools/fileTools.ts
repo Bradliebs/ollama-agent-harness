@@ -88,13 +88,33 @@ export const FileWriteTool: Tool = {
     try {
       await fs.mkdir(path.dirname(filePath), { recursive: true });
       await fs.writeFile(filePath, content, 'utf-8');
-      const note = redirectKind === 'pattern'
-        ? ` (redirected by user pattern rule to '${filePath}')`
-        : redirectKind === 'agent-outputs'
-          ? ` (redirected from bare filename to agent-outputs/)`
-          : '';
       const impactNote = await getImpactNote(filePath);
-      return { success: true, output: `Wrote ${content.length} chars to '${filePath}'${note}${impactNote}` };
+      // When a redirect happened, lead with the resolved absolute path on
+      // its own line so the model picks it up for follow-up commands
+      // (e.g. `python check_yfinance.py` previously failed because the
+      // redirect note was a trailing parenthetical the model didn't
+      // parse). Keep the "redirected by user pattern rule" /
+      // "redirected from bare filename" substrings — other tooling and
+      // tests match on them.
+      if (redirectKind === 'pattern') {
+        return {
+          success: true,
+          output:
+            `✅ Saved to: ${filePath}\n` +
+            `ℹ️ Path was redirected by user pattern rule. To run, read, or edit this file later, use the FULL path above (not the path you originally passed).\n` +
+            `Wrote ${content.length} chars.${impactNote}`,
+        };
+      }
+      if (redirectKind === 'agent-outputs') {
+        return {
+          success: true,
+          output:
+            `✅ Saved to: ${filePath}\n` +
+            `ℹ️ Path was redirected from bare filename to agent-outputs/. To run, read, or edit this file later, use the FULL path above — bash auto-resolves bare script names from agent-outputs/, but for read/edit you must pass the full path.\n` +
+            `Wrote ${content.length} chars.${impactNote}`,
+        };
+      }
+      return { success: true, output: `Wrote ${content.length} chars to '${filePath}'${impactNote}` };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return { success: false, output: `Failed to write '${filePath}': ${msg}`, error: msg };
@@ -262,6 +282,50 @@ export const FileMoveTool: Tool = {
 };
 
 /**
+ * Create a directory (and any missing parents). Exists primarily so the
+ * agent has a cross-platform alternative to `mkdir`, which the bash tool
+ * blocks on Windows because it's a cmd.exe built-in rather than a real
+ * executable. Idempotent: succeeds when the directory already exists,
+ * mirroring `fs.mkdir({ recursive: true })`. Refuses to "create" a path
+ * that already exists as a regular file so the caller doesn't silently
+ * end up with the wrong shape on disk.
+ */
+export const MakeDirectoryTool: Tool = {
+  name: 'make_directory',
+  description: 'Create a directory at the given path, including any missing parent directories. Idempotent — succeeds if the directory already exists. Use this instead of bash mkdir on Windows. Path must be inside the project or an allowed external folder.',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Directory path to create' },
+    },
+    required: ['path'],
+  },
+  isReadOnly: false,
+  async execute(input: Record<string, unknown>): Promise<ToolResult> {
+    const dirPath = resolveProjectPath(input.path);
+    if (!dirPath) {
+      return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
+    }
+    try {
+      // If the path exists already, accept it only when it's a directory.
+      // A pre-existing file at this path almost certainly means the agent
+      // confused mkdir with file_write — fail loudly rather than silently
+      // succeed.
+      const existing = await fs.stat(dirPath).catch(() => null);
+      if (existing && !existing.isDirectory()) {
+        return { success: false, output: `'${dirPath}' already exists and is not a directory`, error: 'path exists as file' };
+      }
+      await fs.mkdir(dirPath, { recursive: true });
+      const note = existing ? ' (already existed)' : '';
+      return { success: true, output: `Created directory '${dirPath}'${note}` };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return { success: false, output: `Failed to create directory '${dirPath}': ${msg}`, error: msg };
+    }
+  },
+};
+
+/**
  * Delete a single file. Refuses to delete directories (even empty ones)
  * to avoid accidental subtree wipes — directory deletion remains a
  * deliberate operation done via bash with explicit user awareness.
@@ -411,11 +475,20 @@ async function getImpactNote(filePath: string): Promise<string> {
       dir = parent;
     }
     if (!projectDir) return '';
+
+    // Hint to validate TypeScript when a .ts/.tsx file changes in a project
+    // that has a tsconfig.json. Cheap to compute and gives the model a clear
+    // next step ("run tsc") rather than declaring success on uncompiled code.
+    const ext = path.extname(filePath);
+    const tsHint = (ext === '.ts' || ext === '.tsx') && await fileExists(path.join(projectDir, 'tsconfig.json'))
+      ? ' [validate: run `npx tsc --noEmit` before declaring done]'
+      : '';
+
     const graph = await loadRepoGraph(projectDir);
-    if (!graph) return '';
+    if (!graph) return tsHint;
     const relPath = path.relative(projectDir, filePath).split(path.sep).join('/');
     const impact = analyzeImpact(graph, [relPath]);
-    if (impact.affected_tests.length === 0 && impact.direct.length === 0) return '';
+    if (impact.affected_tests.length === 0 && impact.direct.length === 0) return tsHint;
     const parts: string[] = [];
     if (impact.affected_tests.length > 0) {
       parts.push(`Tests to run: ${impact.affected_tests.slice(0, 5).join(', ')}`);
@@ -426,9 +499,18 @@ async function getImpactNote(filePath: string): Promise<string> {
     if (impact.risk_score > 0.3) {
       parts.push(`risk: ${Math.round(impact.risk_score * 100)}%`);
     }
-    return parts.length > 0 ? ` [Impact: ${parts.join(' · ')}]` : '';
+    return parts.length > 0 ? ` [Impact: ${parts.join(' · ')}]${tsHint}` : tsHint;
   } catch {
     return '';
+  }
+}
+
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
   }
 }
 

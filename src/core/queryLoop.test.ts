@@ -566,6 +566,12 @@ describe('queryLoop runtime behavior', () => {
       expect(error).toEqual(expect.objectContaining({ type: 'error', message: expect.stringContaining('Synthesis turn failed') }));
       const done = events.find((e) => e.type === 'done');
       expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'max_turns' }));
+      // When the synthesis call itself throws, the loop should still
+      // surface the recent tool output so the user sees the work that
+      // was actually done before the provider died.
+      const fallbackText = events.find((e) => e.type === 'text' && typeof (e as { content?: unknown }).content === 'string' && (e as { content: string }).content.includes('Synthesis call failed'));
+      expect(fallbackText).toBeDefined();
+      expect((fallbackText as { content: string }).content).toContain('ok');
     });
 
     it('injects a system message instructing the model to synthesize', async () => {
