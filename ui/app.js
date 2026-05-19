@@ -260,9 +260,14 @@ function showOnboardModal() {
     };
   });
 }
+function replayOnboardingTour() {
+  try { localStorage.removeItem(ONBOARD_SEEN_KEY); } catch(e){}
+  showOnboardModal();
+}
 if (typeof window !== 'undefined') {
   window.dismissOnboardModal = dismissOnboardModal;
   window.showOnboardModal = showOnboardModal;
+  window.replayOnboardingTour = replayOnboardingTour;
   document.addEventListener('DOMContentLoaded', () => {
     if (shouldShowOnboardModal()) {
       // Slight delay so the page paints first.

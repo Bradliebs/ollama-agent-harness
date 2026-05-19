@@ -861,6 +861,12 @@
     body.simple-mode .more-menu-section.more-advanced-section{display:none}
     body.simple-mode .right-panel .settings-section.essential::after{content:'';display:none}
     body.simple-mode .right-panel::after{content:'Advanced settings are hidden. Switch to Advanced (top right) to see them all.';display:block;padding:14px;color:var(--text-dim);font-size:11.5px;text-align:center;border-top:1px dashed var(--border);margin-top:8px}
+    /* Simple mode also trims the welcome screen of dense diagnostic panels
+       that aren't useful for first-time users. */
+    body.simple-mode #missionControlPanel{display:none}
+    body.simple-mode #dailyBriefPanel{display:none}
+    body.simple-mode #jarvisGhostHint{display:none}
+    body.simple-mode #jarvisVoiceControls{display:none}
     /* First-visit onboarding modal. */
     .onboard-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:9999}
     .onboard-modal.hidden-by-default{display:none}
@@ -1239,6 +1245,9 @@
       <div class="settings-section-body">
         <div class="about-version" id="aboutVersion">Loading…</div>
         <div class="about-summary" id="aboutSummary"></div>
+        <div class="setting-row settings-row-spaced" style="margin-top:10px">
+          <button class="btn-sm" onclick="replayOnboardingTour()" title="Show the welcome tour again">▶ Replay welcome tour</button>
+        </div>
       </div>
     </div>
     <div class="settings-section essential" data-essential="1">
@@ -1971,6 +1980,6 @@
 <script src="./marked.min.js"></script>
 <script src="./chatHistory.js?v=3"></script>
 <script src="./toolActivity.js?v=1"></script>
-<script src="./app.js?v=20"></script>
+<script src="./app.js?v=21"></script>
 </body>
 </html>
