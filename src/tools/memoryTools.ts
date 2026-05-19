@@ -2,6 +2,15 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
 
+// Match the resolution used by web/server.ts so the model's `remember`
+// writes land in the same .harness/memory/ that assembleSystemContext reads
+// from. Falls back to cwd when the env var is absent.
+function memoryProjectDir(): string {
+  return process.env.HARNESS_PROJECT_DIR && process.env.HARNESS_PROJECT_DIR.trim()
+    ? process.env.HARNESS_PROJECT_DIR
+    : process.cwd();
+}
+
 /**
  * MemoryTool — the agent writes observations, patterns, and decisions
  * back to memory files so they persist across sessions.
@@ -29,7 +38,7 @@ export const MemoryWriteTool: Tool = {
     const title = input.title as string;
     const content = input.content as string;
 
-    const memoryDir = path.join(process.cwd(), '.harness', 'memory');
+    const memoryDir = path.join(memoryProjectDir(), '.harness', 'memory');
     await fs.mkdir(memoryDir, { recursive: true });
 
     const date = new Date().toISOString().split('T')[0];
@@ -94,7 +103,7 @@ export const MemoryReadTool: Tool = {
   isReadOnly: true,
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
     const category = (input.category as string) ?? 'all';
-    const memoryDir = path.join(process.cwd(), '.harness', 'memory');
+    const memoryDir = path.join(memoryProjectDir(), '.harness', 'memory');
 
     const files: string[] = [];
     if (category === 'all' || category === 'decision') files.push('decisions.md');

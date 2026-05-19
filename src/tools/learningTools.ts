@@ -10,6 +10,14 @@ import {
   markPatternPromoted,
 } from '../learning/engine';
 
+// Mirror web/server.ts PROJECT_DIR resolution so learning tools write to
+// the same `.harness/` folder that context assembly reads from.
+function learningProjectDir(): string {
+  return process.env.HARNESS_PROJECT_DIR && process.env.HARNESS_PROJECT_DIR.trim()
+    ? process.env.HARNESS_PROJECT_DIR
+    : process.cwd();
+}
+
 /**
  * ReflectTool — the agent explicitly reflects on its approach and saves insights.
  * Different from auto-reflection (which happens at session end) — this is
@@ -54,7 +62,7 @@ export const ReflectTool: Tool = {
 
     const category = typeof input.category === 'string' && input.category ? input.category : 'insight';
 
-    const memDir = path.join(process.cwd(), '.harness', 'memory');
+    const memDir = path.join(learningProjectDir(), '.harness', 'memory');
     await fs.mkdir(memDir, { recursive: true });
 
     const date = new Date().toISOString().split('T')[0];
@@ -141,7 +149,7 @@ export const PromotePatternTool: Tool = {
     }
 
     const skillName = pattern.suggestedSkillName;
-    const skillDir = path.join(process.cwd(), '.harness', 'skills', skillName);
+    const skillDir = path.join(learningProjectDir(), '.harness', 'skills', skillName);
     const skillPath = path.join(skillDir, 'SKILL.md');
 
     const content = `---
@@ -233,7 +241,7 @@ export const EvolveTool: Tool = {
       await evolvePrompt(entry);
 
       // Also log this as a decision
-      const memDir = path.join(process.cwd(), '.harness', 'memory');
+      const memDir = path.join(learningProjectDir(), '.harness', 'memory');
       await fs.mkdir(memDir, { recursive: true });
       const decPath = path.join(memDir, 'decisions.md');
       try { await fs.access(decPath); } catch {
@@ -278,7 +286,7 @@ export const ImproveSkillTool: Tool = {
     const newContent = input.new_content as string;
     const reason = input.reason as string;
 
-    const skillPath = path.join(process.cwd(), '.harness', 'skills', name, 'SKILL.md');
+    const skillPath = path.join(learningProjectDir(), '.harness', 'skills', name, 'SKILL.md');
 
     try {
       // Verify skill exists
@@ -286,7 +294,7 @@ export const ImproveSkillTool: Tool = {
 
       // Back up the old version
       const old = await fs.readFile(skillPath, 'utf-8');
-      const backupPath = path.join(process.cwd(), '.harness', 'skills', name, `SKILL.${Date.now()}.bak.md`);
+      const backupPath = path.join(learningProjectDir(), '.harness', 'skills', name, `SKILL.${Date.now()}.bak.md`);
       await fs.writeFile(backupPath, old);
 
       // Write improved version

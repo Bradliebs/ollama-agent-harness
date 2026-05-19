@@ -144,14 +144,23 @@ export class LearningRecorder {
     return markPatternPromotedImpl(this.patternsFile, patternId);
   }
 
-  async onSessionEnd(): Promise<{ reflection: Reflection; newPatterns: DetectedPattern[] }> {
+  async onSessionEnd(): Promise<{ reflection: Reflection; newPatterns: DetectedPattern[]; digest?: string }> {
     const reflection = await this.reflectOnSession();
     const newPatterns = await this.detectPatterns();
     const unpromoted = newPatterns.filter(p => !p.promoted);
     if (unpromoted.length > 0) {
       logger.info('Learning', `${unpromoted.length} patterns ready for skill promotion`);
     }
-    return { reflection, newPatterns: unpromoted };
+    // Consolidate the session into a digest so .harness/memory/consolidated-digest.md
+    // actually grows over time. Best-effort: a consolidation failure must not
+    // wipe the reflection/pattern signal that already succeeded.
+    let digest: string | undefined;
+    try {
+      digest = await this.consolidateMemory();
+    } catch (err) {
+      recordSwallowed('learning.onSessionEnd.consolidateMemory', err, { sessionId: this.sessionId });
+    }
+    return { reflection, newPatterns: unpromoted, digest };
   }
 }
 
