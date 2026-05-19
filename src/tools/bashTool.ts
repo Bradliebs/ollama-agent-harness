@@ -416,16 +416,21 @@ export const BashTool: Tool = {
         else stderr = (stderr + text).slice(0, MAX_OUTPUT_SIZE + 1_000);
       };
 
+      let killEscalationId: NodeJS.Timeout | undefined;
       const settle = (result: ToolResult): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timeoutId);
+        if (killEscalationId) clearTimeout(killEscalationId);
         resolve(result);
       };
 
       const timeoutId = setTimeout(() => {
         timedOut = true;
         child.kill('SIGTERM');
+        killEscalationId = setTimeout(() => {
+          try { child.kill('SIGKILL'); } catch { /* already dead */ }
+        }, 5_000);
       }, timeout);
 
       child.stdout?.on('data', (chunk) => appendLimited('stdout', chunk));

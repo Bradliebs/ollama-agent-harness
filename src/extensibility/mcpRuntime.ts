@@ -77,7 +77,12 @@ export async function startMcpServer(projectDir: string, id: string): Promise<Mc
   const definition = await findMcpServerDefinition(projectDir, id);
   if (!definition) throw new Error('MCP server not found.');
   const active = runningServers.get(definition.id);
-  if (active && !active.process.killed) return toStatus(definition);
+  if (active) {
+    if (!active.process.killed) {
+      try { active.process.kill('SIGTERM'); } catch { /* already exiting */ }
+    }
+    runningServers.delete(definition.id);
+  }
 
   const cwd = resolveMcpCwd(projectDir, definition.cwd);
   const launch = resolveMcpLaunch(definition.command, definition.args);
