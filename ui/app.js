@@ -276,6 +276,179 @@ if (typeof window !== 'undefined') {
   });
 }
 
+// ─── Teammate mode (Daily Brief scheduler) ─────────────────────────
+// Powers the welcome-card "Your teammate" widget and the setup wizard.
+// Talks to /api/teammate/* — see src/automation/teammateScheduler.ts on
+// the server. Everything here is best-effort: a failed status fetch
+// hides the card rather than blocking the chat surface.
+const TEAMMATE_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+let _teammateState = null;
+
+function _formatTeammateSubtitle(state) {
+  const s = state && state.settings;
+  if (!s) return 'Loading…';
+  if (!s.enabled) return 'Idle — set up a Daily Brief so I work for you between sessions.';
+  const channels = (s.channels || []).join(' + ') || 'file only';
+  const next = state.nextRunAt ? new Date(state.nextRunAt) : null;
+  let when = '';
+  if (next && !isNaN(next.getTime())) {
+    const diffMin = Math.round((next.getTime() - Date.now()) / 60000);
+    if (diffMin <= 0) when = 'queued';
+    else if (diffMin < 60) when = `in ${diffMin}m`;
+    else if (diffMin < 1440) when = `in ${Math.round(diffMin / 60)}h`;
+    else when = `at ${next.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`;
+  } else {
+    when = `at ${s.scheduleTime}`;
+  }
+  return `Next brief ${when} · delivering to ${channels}`;
+}
+
+async function loadTeammateStatus() {
+  const card = document.getElementById('teammateCard');
+  if (!card) return;
+  let state;
+  try {
+    const r = await fetch('/api/teammate/status');
+    if (!r.ok) { card.classList.add('initial-hidden'); return; }
+    state = await r.json();
+  } catch (err) {
+    card.classList.add('initial-hidden');
+    return;
+  }
+  _teammateState = state;
+  card.classList.remove('initial-hidden');
+  card.classList.toggle('active', Boolean(state.settings && state.settings.enabled));
+  card.classList.toggle('paused', !(state.settings && state.settings.enabled));
+  const title = document.getElementById('teammateCardTitle');
+  const sub = document.getElementById('teammateCardSubtitle');
+  const cta = document.getElementById('teammateCardCta');
+  const runBtn = document.getElementById('teammateRunNowBtn');
+  if (title) title.textContent = state.settings && state.settings.enabled ? 'Your teammate is active' : 'Your teammate is asleep';
+  if (sub) sub.textContent = _formatTeammateSubtitle(state);
+  if (cta) cta.textContent = state.settings && state.settings.enabled ? 'Edit' : 'Set up';
+  if (runBtn) runBtn.style.display = state.settings && state.settings.enabled ? '' : 'none';
+}
+
+function _renderTeammateDays(selectedDays) {
+  const host = document.getElementById('teammateDays');
+  if (!host) return;
+  host.innerHTML = '';
+  for (const day of TEAMMATE_DAYS) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'teammate-day-chip' + (selectedDays.includes(day) ? ' active' : '');
+    chip.textContent = day;
+    chip.dataset.day = day;
+    chip.onclick = () => { chip.classList.toggle('active'); };
+    host.appendChild(chip);
+  }
+}
+
+function _renderTeammateChannels(selectedChannels, state) {
+  const host = document.getElementById('teammateChannels');
+  if (!host) return;
+  host.innerHTML = '';
+  const channels = [
+    { id: 'file', label: '📄 File (always saved)', enabled: true, disabled: true, alwaysOn: true },
+    { id: 'telegram', label: '📱 Telegram', enabled: state.telegramConfigured, disabledReason: 'Configure HARNESS_TELEGRAM_BOT_TOKEN in Settings first.' },
+    { id: 'discord', label: '💬 Discord webhook', enabled: state.discordConfigured, disabledReason: 'Configure Discord webhook in Settings first.' },
+    { id: 'slack', label: '💬 Slack webhook', enabled: state.slackConfigured, disabledReason: 'Configure Slack webhook in Settings first.' },
+  ];
+  for (const c of channels) {
+    const chip = document.createElement('label');
+    chip.className = 'teammate-channel-chip' + (selectedChannels.includes(c.id) || c.alwaysOn ? ' active' : '') + (c.enabled ? '' : ' disabled');
+    chip.title = c.enabled ? '' : (c.disabledReason || '');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = selectedChannels.includes(c.id) || c.alwaysOn === true;
+    cb.disabled = c.alwaysOn === true || !c.enabled;
+    cb.dataset.channel = c.id;
+    cb.onchange = () => { chip.classList.toggle('active', cb.checked); };
+    chip.appendChild(cb);
+    const span = document.createElement('span');
+    span.textContent = c.label;
+    chip.appendChild(span);
+    host.appendChild(chip);
+  }
+}
+
+function _readTeammateWizard() {
+  const time = document.getElementById('teammateTime').value || '08:00';
+  const days = Array.from(document.querySelectorAll('#teammateDays .teammate-day-chip.active')).map((el) => el.dataset.day);
+  const channels = Array.from(document.querySelectorAll('#teammateChannels input[type=checkbox]')).filter((el) => el.checked).map((el) => el.dataset.channel);
+  return { enabled: true, scheduleTime: time, scheduleDays: days.length > 0 ? days : TEAMMATE_DAYS, channels: channels.length > 0 ? channels : ['file'] };
+}
+
+async function openTeammateWizard() {
+  const modal = document.getElementById('teammateModal');
+  if (!modal) return;
+  // Refresh status so chip availability reflects current connector config.
+  await loadTeammateStatus();
+  const state = _teammateState || { settings: { scheduleTime: '08:00', scheduleDays: TEAMMATE_DAYS, channels: ['file'] }, telegramConfigured: false, discordConfigured: false, slackConfigured: false };
+  document.getElementById('teammateTime').value = state.settings.scheduleTime || '08:00';
+  _renderTeammateDays(Array.isArray(state.settings.scheduleDays) && state.settings.scheduleDays.length ? state.settings.scheduleDays : TEAMMATE_DAYS);
+  _renderTeammateChannels(Array.isArray(state.settings.channels) && state.settings.channels.length ? state.settings.channels : ['file'], state);
+  const hint = document.getElementById('teammateNextRunHint');
+  if (hint) hint.textContent = state.nextRunAt ? `Next run: ${new Date(state.nextRunAt).toLocaleString()}` : '';
+  modal.classList.remove('hidden-by-default');
+}
+
+function dismissTeammateWizard() {
+  const modal = document.getElementById('teammateModal');
+  if (modal) modal.classList.add('hidden-by-default');
+}
+
+async function teammateSave() {
+  const payload = _readTeammateWizard();
+  try {
+    const r = await fetch('/api/teammate/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error('HTTP ' + r.status + ' ' + t.slice(0, 160)); }
+    showToast('🤝 Teammate scheduled', 2500, 'success');
+    dismissTeammateWizard();
+    loadTeammateStatus();
+  } catch (err) {
+    showToast('⚠️ Save failed: ' + (err && err.message ? err.message : err), 4000, 'error');
+  }
+}
+
+async function teammateSaveAndRunNow() {
+  await teammateSave();
+  await teammateRunNow();
+}
+
+async function teammateRunNow() {
+  try {
+    const r = await fetch('/api/teammate/run-now', { method: 'POST' });
+    if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error('HTTP ' + r.status + ' ' + t.slice(0, 160)); }
+    const data = await r.json();
+    if (data && data.result && data.result.fired) {
+      const delivered = (data.result.channelsDelivered || []).join(', ') || 'file';
+      const failed = (data.result.channelsFailed || []).length;
+      showToast(`📓 Brief delivered to ${delivered}${failed ? ` (${failed} channel(s) failed)` : ''}`, 4000, failed ? 'warning' : 'success');
+    } else {
+      showToast('Brief did not fire: ' + (data && data.result ? data.result.reason : 'unknown'), 3500, 'warning');
+    }
+    loadTeammateStatus();
+  } catch (err) {
+    showToast('⚠️ Could not run brief: ' + (err && err.message ? err.message : err), 4000, 'error');
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.openTeammateWizard = openTeammateWizard;
+  window.dismissTeammateWizard = dismissTeammateWizard;
+  window.teammateSave = teammateSave;
+  window.teammateSaveAndRunNow = teammateSaveAndRunNow;
+  window.teammateRunNow = teammateRunNow;
+  window.loadTeammateStatus = loadTeammateStatus;
+  document.addEventListener('DOMContentLoaded', () => {
+    // Defer slightly so we don't compete with the initial model fetch.
+    setTimeout(() => { try { loadTeammateStatus(); } catch(e){} }, 600);
+    // Refresh every 5 min so the "Next brief in Xh" hint stays fresh.
+    setInterval(() => { try { loadTeammateStatus(); } catch(e){} }, 5 * 60_000);
+  });
+}
+
 
 // ─── Active sub-agents bar ────────────────────────────────────────
 // Renders a compact pill row above the chat input showing every

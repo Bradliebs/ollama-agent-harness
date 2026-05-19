@@ -883,6 +883,36 @@
     .onboard-example:hover{border-color:var(--accent);color:var(--accent)}
     .onboard-actions{display:flex;gap:8px;justify-content:flex-end;align-items:center}
     .onboard-actions label{font-size:12px;color:var(--text-dim);margin-right:auto;display:flex;align-items:center;gap:5px}
+    /* Teammate card on the welcome screen. */
+    .teammate-card{margin:0 0 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+    .teammate-card.active{border-color:rgba(80,200,120,.55)}
+    .teammate-card.paused{border-color:rgba(255,176,80,.45)}
+    .teammate-card-row{display:flex;align-items:center;gap:12px;width:100%}
+    .teammate-card-icon{font-size:22px;line-height:1;flex-shrink:0;width:28px;text-align:center}
+    .teammate-card-body{flex:1;display:flex;flex-direction:column;gap:2px;min-width:0}
+    .teammate-card-body strong{font-size:13px;color:var(--text)}
+    .teammate-card-body span{font-size:12px;color:var(--text-dim);line-height:1.4}
+    .teammate-card-actions{display:flex;gap:6px;flex-shrink:0}
+    /* Teammate setup wizard. Re-uses onboard-modal positioning. */
+    .teammate-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:9999}
+    .teammate-modal.hidden-by-default{display:none}
+    .teammate-dialog{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;width:min(540px,92vw);max-height:88vh;overflow-y:auto;box-shadow:0 18px 50px rgba(0,0,0,.55)}
+    .teammate-dialog h2{font-size:18px;margin-bottom:6px;color:var(--text)}
+    .teammate-dialog p.lead{color:var(--text-dim);font-size:12.5px;line-height:1.5;margin-bottom:14px}
+    .teammate-field{margin-bottom:14px}
+    .teammate-field label{display:block;font-size:12px;font-weight:600;color:var(--text);margin-bottom:5px}
+    .teammate-field .hint{font-size:11px;color:var(--text-dim);margin-top:4px;line-height:1.4}
+    .teammate-field input[type="time"],.teammate-field select{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:7px 9px;font-size:13px;font-family:inherit;outline:none}
+    .teammate-channels{display:flex;flex-wrap:wrap;gap:6px}
+    .teammate-channel-chip{display:flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--border);border-radius:999px;background:var(--surface2);color:var(--text-dim);font-size:12px;cursor:pointer;-webkit-user-select:none;user-select:none}
+    .teammate-channel-chip.active{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+    .teammate-channel-chip.disabled{opacity:.45;cursor:not-allowed}
+    .teammate-channel-chip input{margin:0}
+    .teammate-days{display:flex;gap:4px}
+    .teammate-day-chip{padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text-dim);font-size:11px;cursor:pointer;text-transform:uppercase;-webkit-user-select:none;user-select:none}
+    .teammate-day-chip.active{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+    .teammate-actions{display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:8px}
+    .teammate-actions .left{margin-right:auto;font-size:11.5px;color:var(--text-dim)}
     .skill-modal-form .automation-field input,.skill-modal-form .automation-field select,.skill-modal-form .automation-field textarea{background:var(--surface2)}
     .skill-modal-form-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
     .skill-modal-history{max-height:140px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px}
@@ -1103,6 +1133,24 @@
         <div class="quick-start-panel">
           <div class="quick-start-body"><strong>Start here</strong><span id="quickStartHint">Step 1: Pick a model above to unlock quick start.</span></div>
           <div class="quick-start-actions"><button id="quickStartBtn" class="btn-sm primary" onclick="startQuickTest()">Start quick test</button><button class="btn-sm" onclick="openFirstRunGuide()">Open setup guide</button></div>
+        </div>
+
+        <!-- Teammate status card: makes the "agent works for you between
+             sessions" promise visible on every page load. Populated by
+             loadTeammateStatus() in app.js. Hidden until the status fetch
+             completes so it doesn't flash an empty card. -->
+        <div class="teammate-card initial-hidden" id="teammateCard">
+          <div class="teammate-card-row">
+            <div class="teammate-card-icon" id="teammateCardIcon">🤝</div>
+            <div class="teammate-card-body">
+              <strong id="teammateCardTitle">Your teammate</strong>
+              <span id="teammateCardSubtitle">Loading…</span>
+            </div>
+            <div class="teammate-card-actions">
+              <button class="btn-sm primary" id="teammateCardCta" onclick="openTeammateWizard()">Set up</button>
+              <button class="btn-sm" id="teammateRunNowBtn" onclick="teammateRunNow()" style="display:none">Run now</button>
+            </div>
+          </div>
         </div>
 
         <div class="quick-suggestions" id="quickSuggestions">
@@ -1977,9 +2025,38 @@
     </div>
   </div>
 
+  <!-- Teammate setup wizard. -->
+  <div class="teammate-modal hidden-by-default" id="teammateModal" role="dialog" aria-modal="true" aria-labelledby="teammateTitle">
+    <div class="teammate-dialog">
+      <h2 id="teammateTitle">🤝 Set up your teammate</h2>
+      <p class="lead">Your teammate writes a Daily Brief summarising activity, runs, and pending decisions — and delivers it on the schedule you pick, even when the chat tab is closed.</p>
+      <div class="teammate-field">
+        <label for="teammateTime">When should the brief land?</label>
+        <input type="time" id="teammateTime" value="08:00">
+        <div class="hint">Your local time. The teammate fires once per scheduled minute.</div>
+      </div>
+      <div class="teammate-field">
+        <label>Which days?</label>
+        <div class="teammate-days" id="teammateDays"></div>
+        <div class="hint">Defaults to all 7 days. Click to toggle.</div>
+      </div>
+      <div class="teammate-field">
+        <label>Where should it land?</label>
+        <div class="teammate-channels" id="teammateChannels"></div>
+        <div class="hint">A copy is always saved to <code>.harness/documents/</code>. Telegram, Discord and Slack require connectors configured in Settings.</div>
+      </div>
+      <div class="teammate-actions">
+        <span class="left" id="teammateNextRunHint"></span>
+        <button type="button" class="btn-sm" onclick="dismissTeammateWizard()">Cancel</button>
+        <button type="button" class="btn-sm" onclick="teammateSaveAndRunNow()">Save & test now</button>
+        <button type="button" class="btn-sm primary" onclick="teammateSave()">Save</button>
+      </div>
+    </div>
+  </div>
+
 <script src="./marked.min.js"></script>
 <script src="./chatHistory.js?v=3"></script>
 <script src="./toolActivity.js?v=1"></script>
-<script src="./app.js?v=21"></script>
+<script src="./app.js?v=22"></script>
 </body>
 </html>

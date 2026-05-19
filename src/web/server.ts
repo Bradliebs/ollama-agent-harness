@@ -21,6 +21,7 @@ import { CuratorScheduler } from '../curator/scheduler';
 import { SelfLearningHeartbeat, createCleanupAgentOutputsAction, createIdentityGcAction, createReflectAndLearnAction, createSkillEvolutionAction, createWorkAssignedTasksAction, defaultHeartbeatActions, readHeartbeatHistory } from '../services/selfLearningHeartbeat';
 import { TriggerScheduler, loadTriggers, saveTriggers, type TriggerDefinition } from '../services/triggerScheduler';
 import { SchedulerRegistry } from '../services/schedulerRegistry';
+import { TeammateScheduler, sanitizeTeammateSettings, defaultTeammateSettings, type TeammateSettings, type TeammateChannel } from '../automation/teammateScheduler';
 import { listArtifacts, readArtifact, type ArtifactCategory } from '../services/artifactCatalog';
 import { cancelSubagent, listActiveSubagents, subscribeSubagentRegistry } from '../services/subagentRegistry';
 import { createToolFailureAlerts, type ToolFailureAlertTracker } from '../services/toolFailureAlerts';
@@ -262,6 +263,8 @@ interface WebSettings {
   walkthrough: WalkthroughSettings;
   curator: CuratorSettings;
   automationScheduler: AutomationSchedulerSettings;
+  /** Teammate mode: scheduled Daily Brief generation + delivery. */
+  teammate: import('../automation/teammateScheduler').TeammateSettings;
   modelDebugLog: ModelDebugLogSettings;
   /** Tool names disabled via the Tools tab. Restored on startup. */
   disabledTools: string[];
@@ -484,6 +487,8 @@ function getAutomationPolicyContext(now = new Date()): { grants: CapabilityGrant
 
 let curatorSettings: CuratorSettings = sanitizeCuratorSettings({});
 let automationSchedulerSettings: AutomationSchedulerSettings = sanitizeAutomationSchedulerSettings({});
+let teammateSettings: TeammateSettings = sanitizeTeammateSettings({});
+let teammateScheduler: TeammateScheduler | null = null;
 let modelDebugLog: ModelDebugLogSettings = sanitizeModelDebugLogSettings({
   enabled: Boolean(process.env.HARNESS_DEBUG_LOG?.trim()),
   path: process.env.HARNESS_DEBUG_LOG || '.harness/model-debug.jsonl',
@@ -2099,6 +2104,10 @@ app.post('/api/settings', async (req, res) => {
   }
   if (req.body.automationScheduler !== undefined) {
     automationSchedulerSettings = sanitizeAutomationSchedulerSettings(req.body.automationScheduler);
+  }
+  if (req.body.teammate !== undefined) {
+    teammateSettings = sanitizeTeammateSettings(req.body.teammate);
+    configureTeammateScheduler();
   }
   if (req.body.modelDebugLog !== undefined) {
     modelDebugLog = sanitizeModelDebugLogSettings(req.body.modelDebugLog);
@@ -8570,6 +8579,106 @@ export function stopAutomationScheduler(): void {
   schedulerRegistry.unregister('automation');
 }
 
+// ─── Teammate Scheduler ───────────────────────────────────────────────────
+// Lazily creates / restarts the Teammate scheduler so changes to the
+// dailyBrief settings block take effect without a server restart. The
+// scheduler is a no-op when settings.enabled is false; we still keep the
+// instance alive so manual `runNow` calls work from the API.
+
+function configureTeammateScheduler(): void {
+  if (teammateScheduler) {
+    teammateScheduler.stop();
+    teammateScheduler = null;
+  }
+  schedulerRegistry.unregister('teammate');
+  teammateScheduler = new TeammateScheduler({
+    projectDir: PROJECT_DIR,
+    getSettings: () => teammateSettings,
+    updateSettings: async (next) => {
+      teammateSettings = next;
+      await saveSettingsToDisk().catch((err) => recordSwallowed('teammate.saveSettings', err));
+    },
+    delivery: {
+      sendTelegram: async (markdown) => {
+        await sendTelegramNotification('Daily brief', markdown);
+      },
+      sendDiscord: async (markdown) => {
+        await sendWebhookNotification('teammate.brief', { channel: 'discord', markdown });
+      },
+      sendSlack: async (markdown) => {
+        await sendWebhookNotification('teammate.brief', { channel: 'slack', markdown });
+      },
+    },
+    isHalted: () => killSwitch.isActive(),
+  });
+  if (teammateSettings.enabled) teammateScheduler.start();
+  schedulerRegistry.register({
+    name: 'teammate',
+    stop: () => stopTeammateScheduler(),
+    isRunning: () => teammateScheduler !== null,
+  });
+  // Refresh nextRunAt so the UI's status card is accurate even before the
+  // first tick fires.
+  const nextRunAt = teammateScheduler.computeNextRunAt();
+  if (nextRunAt !== teammateSettings.nextRunAt) {
+    teammateSettings = { ...teammateSettings, nextRunAt };
+    saveSettingsToDisk().catch((err) => recordSwallowed('teammate.refreshNextRunAt', err));
+  }
+}
+
+export function stopTeammateScheduler(): void {
+  if (teammateScheduler) {
+    teammateScheduler.stop();
+    teammateScheduler = null;
+  }
+  schedulerRegistry.unregister('teammate');
+}
+
+// API: GET /api/teammate/status — what the UI shows on the welcome card.
+app.get('/api/teammate/status', async (_req, res) => {
+  res.json({
+    settings: teammateSettings,
+    nextRunAt: teammateScheduler ? teammateScheduler.computeNextRunAt() : '',
+    schedulerRunning: teammateScheduler !== null && teammateSettings.enabled,
+    telegramConfigured: Boolean((telegramBotToken || process.env.HARNESS_TELEGRAM_BOT_TOKEN || '').trim()),
+    discordConfigured: Boolean((connectorSecretValue('HARNESS_DISCORD_BOT_TOKEN') || '').trim()),
+    slackConfigured: Boolean((connectorSecretValue('HARNESS_SLACK_WEBHOOK_URL') || '').trim()),
+  });
+});
+
+// API: POST /api/teammate/config — write the dailyBrief settings block in
+// one call so the setup wizard does not have to PUT the entire settings
+// object. Validates via the same sanitizer used at boot.
+app.post('/api/teammate/config', async (req, res) => {
+  try {
+    const next = sanitizeTeammateSettings(req.body);
+    teammateSettings = next;
+    configureTeammateScheduler();
+    await saveSettingsToDisk();
+    res.json({ ok: true, settings: teammateSettings, nextRunAt: teammateScheduler ? teammateScheduler.computeNextRunAt() : '' });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// API: POST /api/teammate/run-now — fire the brief immediately for
+// preview/testing. Bypasses schedule but honours the kill switch.
+app.post('/api/teammate/run-now', async (_req, res) => {
+  try {
+    if (!teammateScheduler) configureTeammateScheduler();
+    if (killSwitch.isActive()) {
+      res.status(409).json({ error: 'Kill switch is engaged. Release it first.' });
+      return;
+    }
+    const result = await teammateScheduler!.runNow();
+    res.json({ ok: result.fired, result });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
 /**
  * Stop every registered scheduler in reverse-registration order. Intended
  * for shutdown / test teardown — callers that only need to stop one
@@ -8867,6 +8976,7 @@ function getCurrentSettings(): WebSettings {
     walkthrough,
     curator: curatorSettings,
     automationScheduler: automationSchedulerSettings,
+    teammate: teammateSettings,
     modelDebugLog,
     disabledTools: Array.from(disabledTools).sort(),
     timedToolEnables: Object.fromEntries(Array.from(timedToolEnables.entries()).filter(([, exp]) => Date.now() < exp).map(([name, exp]) => [name, new Date(exp).toISOString()])),
@@ -9108,6 +9218,9 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   }
   if (settings.automationScheduler !== undefined) {
     automationSchedulerSettings = sanitizeAutomationSchedulerSettings(settings.automationScheduler);
+  }
+  if (settings.teammate !== undefined) {
+    teammateSettings = sanitizeTeammateSettings(settings.teammate);
   }
   if (settings.modelDebugLog !== undefined) {
     modelDebugLog = sanitizeModelDebugLogSettings(settings.modelDebugLog);
@@ -9977,6 +10090,15 @@ export async function startServer(): Promise<void> {
       if (triggerScheduler) console.log(`  Triggers:              enabled`);
     } catch (error) {
       logger.warn('Startup', 'Failed to start trigger scheduler', { error: error instanceof Error ? error.message : String(error) });
+    }
+
+    // Start the teammate scheduler. Always wires up the API, but only ticks
+    // when teammate.enabled is true (controlled by the welcome card / wizard).
+    try {
+      configureTeammateScheduler();
+      if (teammateSettings.enabled) console.log(`  Teammate brief:        on at ${teammateSettings.scheduleTime}`);
+    } catch (error) {
+      logger.warn('Startup', 'Failed to start teammate scheduler', { error: error instanceof Error ? error.message : String(error) });
     }
 
     // Attach OTLP exporter (no-op unless HARNESS_OTEL_EXPORT_ENABLED + endpoint set).

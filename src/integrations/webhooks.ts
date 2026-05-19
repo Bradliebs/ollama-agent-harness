@@ -31,7 +31,8 @@ export type WebhookEventType =
   | 'task.completed'
   | 'email.sent'
   | 'health.daily'
-  | 'promise.breach';
+  | 'promise.breach'
+  | 'teammate.brief';
 
 interface WebhookPayload {
   event: WebhookEventType;
