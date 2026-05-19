@@ -202,9 +202,9 @@ export class NervousSystemController {
     };
   }
 
-  /** Persist signals to disk for historical analysis. */
-  async persistSignals(projectDir: string): Promise<void> {
-    if (this.allSignals.length === 0) return;
+  /** Persist signals to disk for historical analysis. Returns false on failure. */
+  async persistSignals(projectDir: string): Promise<boolean> {
+    if (this.allSignals.length === 0) return true;
     const dir = path.join(projectDir, '.harness', 'nervous');
     const filePath = path.join(dir, 'signals.jsonl');
     try {
@@ -220,8 +220,10 @@ export class NervousSystemController {
         createdAt: s.createdAt,
       })).join('\n') + '\n';
       await withFileLock(filePath, () => fs.appendFile(filePath, lines, 'utf-8'));
+      return true;
     } catch (error) {
       recordSwallowed('NervousSystemController.persistSignals', error);
+      return false;
     }
   }
 

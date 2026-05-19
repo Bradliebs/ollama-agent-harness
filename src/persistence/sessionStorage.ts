@@ -120,8 +120,9 @@ export class SessionStorage {
   }
 
   static async listRecoverableSessions(projectDir: string): Promise<SessionMeta[]> {
+    const recoverableStatuses: Set<SessionStatus> = new Set(['running', 'error', 'aborted']);
     const sessions = await SessionStorage.listSessions(projectDir);
-    return sessions.filter((session) => session.status === 'running' || session.status === 'error' || session.status === 'aborted');
+    return sessions.filter((session) => typeof session.status === 'string' && recoverableStatuses.has(session.status));
   }
 
   static async markStaleRunningSessions(projectDir: string, staleBeforeMs: number = Date.now()): Promise<number> {
