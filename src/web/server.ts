@@ -7525,6 +7525,44 @@ app.get('/api/history', async (_req, res) => {
   } catch { res.json({ chats: [] }); }
 });
 
+app.get('/api/history/search', async (req, res) => {
+  const q = String(req.query.q ?? '').trim().toLowerCase();
+  if (!q) { res.json({ results: [] }); return; }
+  try {
+    await fs.mkdir(HISTORY_DIR, { recursive: true });
+    const files = (await fs.readdir(HISTORY_DIR)).filter(f => f.endsWith('.json')).sort().reverse();
+    const results: Array<{ id: string; title: string; date: string; snippet: string; matchCount: number }> = [];
+    for (const f of files) {
+      try {
+        const raw = await fs.readFile(path.join(HISTORY_DIR, f), 'utf-8');
+        const data = JSON.parse(raw);
+        const title: string = data.title ?? 'Untitled';
+        const messages: Array<{ role: string; content: string }> = data.messages ?? [];
+        let snippet = '';
+        let matchCount = 0;
+        if (title.toLowerCase().includes(q)) { matchCount++; snippet = title; }
+        for (const m of messages) {
+          const text = String(m.content ?? '');
+          const idx = text.toLowerCase().indexOf(q);
+          if (idx !== -1) {
+            matchCount++;
+            if (!snippet) {
+              const start = Math.max(0, idx - 40);
+              const end = Math.min(text.length, idx + q.length + 80);
+              snippet = (start > 0 ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : '');
+            }
+          }
+        }
+        if (matchCount > 0) {
+          results.push({ id: f.replace('.json', ''), title, date: data.date ?? '', snippet, matchCount });
+        }
+      } catch { /* skip corrupt */ }
+    }
+    results.sort((a, b) => b.matchCount - a.matchCount);
+    res.json({ results: results.slice(0, 30) });
+  } catch { res.json({ results: [] }); }
+});
+
 app.get('/api/history/:id', async (req, res) => {
   try {
     const chatId = safeLocalId(req.params.id);

@@ -6161,18 +6161,54 @@ function openLeftTabByName(name) {
 }
 
 async function loadHistory() {
+  const q = (document.getElementById('historySearch')?.value || '').trim();
+  if (q) { await searchHistory(q); return; }
   try {
     const r = await fetch('/api/history');
     const d = await r.json();
-    const list = document.getElementById('historyList');
-    list.innerHTML = '';
-    for (const c of d.chats || []) {
-      const el = document.createElement('div');
-      el.className = 'history-item' + (c.id === currentChatId ? ' active' : '');
-      el.innerHTML = '<div><div class="history-title">' + esc(c.title) + '</div><div class="history-date">' + c.messageCount + ' msgs</div></div><button class="history-del" onclick="event.stopPropagation();deleteChat(\'' + c.id + '\')">🗑</button>';
-      el.onclick = () => loadChat(c.id);
-      list.appendChild(el);
-    }
+    renderHistoryList(d.chats || [], '', false);
+  } catch(e){}
+}
+
+function renderHistoryList(items, query, isSearch) {
+  const list = document.getElementById('historyList');
+  list.innerHTML = '';
+  if (items.length === 0 && query) {
+    list.innerHTML = '<div style="padding:16px 12px;font-size:12px;color:var(--text-dim)">No chats match "' + esc(query) + '"</div>';
+    return;
+  }
+  for (const c of items) {
+    const el = document.createElement('div');
+    el.className = 'history-item' + (c.id === currentChatId ? ' active' : '');
+    const titleHtml = query ? hlMatch(esc(c.title), query) : esc(c.title);
+    const snippetHtml = isSearch && c.snippet ? '<div class="history-match-snippet">' + hlMatch(esc(c.snippet), query) + '</div>' : '';
+    const meta = isSearch ? (c.matchCount + ' match' + (c.matchCount !== 1 ? 'es' : '')) : (c.messageCount + ' msgs');
+    el.innerHTML = '<div style="min-width:0;flex:1"><div class="history-title">' + titleHtml + '</div><div class="history-date">' + meta + '</div>' + snippetHtml + '</div><button class="history-del" onclick="event.stopPropagation();deleteChat(\'' + c.id + '\')">🗑</button>';
+    el.onclick = () => loadChat(c.id);
+    list.appendChild(el);
+  }
+}
+
+function hlMatch(html, query) {
+  if (!query) return html;
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return html.replace(new RegExp('(' + escaped + ')', 'gi'), '<mark class="history-hl">$1</mark>');
+}
+
+let _historySearchTimer = null;
+function onHistorySearch(val) {
+  clearTimeout(_historySearchTimer);
+  _historySearchTimer = setTimeout(() => {
+    if (val.trim()) searchHistory(val.trim());
+    else loadHistory();
+  }, 250);
+}
+
+async function searchHistory(q) {
+  try {
+    const r = await fetch('/api/history/search?q=' + encodeURIComponent(q));
+    const d = await r.json();
+    renderHistoryList(d.results || [], q, true);
   } catch(e){}
 }
 

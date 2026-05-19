@@ -57,6 +57,12 @@
     .history-date{font-size:11px;color:var(--text-dim)}
     .history-del{opacity:0;background:none;border:none;color:var(--error);cursor:pointer;font-size:14px;padding:0 4px}
     .history-item:hover .history-del{opacity:.6}
+    .history-search-wrap{padding:6px 8px 2px;position:sticky;top:0;background:var(--sidebar-bg,var(--surface));z-index:1}
+    .history-search{width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px 5px 28px;font-size:12px;outline:none}
+    .history-search:focus{border-color:var(--accent)}
+    .history-search-wrap::before{content:"🔍";position:absolute;left:15px;top:50%;transform:translateY(-50%);font-size:11px;pointer-events:none}
+    .history-match-snippet{font-size:10px;color:var(--text-dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    mark.history-hl{background:var(--accent-bg);color:var(--accent);border-radius:2px;padding:0 1px}
     .file-item{padding:6px 10px;border-radius:6px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:6px;transition:background .15s}
     .file-item:hover{background:var(--surface2)}
     .file-icon{font-size:14px;width:18px;text-align:center;flex-shrink:0}
@@ -1033,6 +1039,7 @@
         <div class="more-menu-item more-advanced" data-tab="promises" onclick="selectFromMore('promises')" title="Promises the agent has made to itself across sessions."><span class="more-menu-icon">🤝</span> Commitments</div>
       </div>
     </div>
+    <div class="history-search-wrap"><input id="historySearch" class="history-search" type="search" placeholder="Search chats…" oninput="onHistorySearch(this.value)" autocomplete="off"></div>
     <div class="history-list" id="historyList"></div>
     <div class="file-tree initial-hidden" id="fileTree"></div>
     <div class="skill-list initial-hidden" id="skillList"></div>
@@ -2058,6 +2065,6 @@
 <script src="./marked.min.js"></script>
 <script src="./chatHistory.js?v=3"></script>
 <script src="./toolActivity.js?v=1"></script>
-<script src="./app.js?v=24"></script>
+<script src="./app.js?v=25"></script>
 </body>
 </html>
