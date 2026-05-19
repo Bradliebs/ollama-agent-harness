@@ -63,9 +63,7 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
     try {
       const content = await fs.readFile(filePath, 'utf-8');
       parts.push(`\n--- ${path.basename(filePath)} ---\n${trimContextText(content, PROJECT_MEMORY_MAX_CHARS, 'middle')}`);
-    } catch {
-      // File doesn't exist — skip silently
-    }
+    } catch (err) { recordSwallowed('assembly.readMemoryFile', err); }
   }
 
   // Load agent memory (auto-memory from .harness/memory/)
@@ -74,9 +72,7 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
     try {
       const content = await fs.readFile(path.join(autoMemoryDir, file), 'utf-8');
       parts.push(`\n--- Agent Memory: ${file} ---\n${trimContextText(content, AGENT_MEMORY_MAX_CHARS, 'tail')}`);
-    } catch {
-      // Not yet created — skip
-    }
+    } catch (err) { recordSwallowed('assembly.readAgentMemory', err); }
   }
 
   // Inject skill descriptions so the model knows what skills are available
@@ -95,9 +91,7 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
       const omitted = skills.length > listedSkills.length ? `\n...(${skills.length - listedSkills.length} more skill(s) omitted from prompt; use list_skills when needed)` : '';
       parts.push(`\n--- Available Skills ---\nYou can invoke these skills using the "skill" tool. Use "create_skill" to create new ones.\n${skillList}${omitted}`);
     }
-  } catch {
-    // No skills directory — skip
-  }
+  } catch (err) { recordSwallowed('assembly.loadSkills', err); }
 
   // Inject knowledge-graph recall when caller opts in (jarvis layer).
   // Pulls the top hits matching `recallQuery` from `recallProjectDir` as a

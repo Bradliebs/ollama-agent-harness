@@ -5,6 +5,7 @@ import { SessionStorage } from '../persistence/sessionStorage';
 import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { evaluatePromotionGate, loadSafetyRules, type PromotionGateConfig, type PromotionGateResult } from './promotionGate';
 import { listEvalTraceRuns } from './evalTrace';
+import { recordSwallowed } from '../observability/silentFailureSink';
 
 export interface LearningCandidateOptions {
   minToolSuccessRate?: number;
@@ -123,7 +124,8 @@ export async function listLearningCandidates(
       .filter(Boolean)
       .map((line) => JSON.parse(line) as SessionLearningCandidate)
       .slice(-limit);
-  } catch {
+  } catch (err) {
+    recordSwallowed('sessionLearning.listCandidates', err);
     return [];
   }
 }
@@ -139,7 +141,8 @@ export async function listLearningCandidateReviews(
       .filter(Boolean)
       .map((line) => JSON.parse(line) as LearningCandidateReview)
       .slice(-limit);
-  } catch {
+  } catch (err) {
+    recordSwallowed('sessionLearning.listCandidateReviews', err);
     return [];
   }
 }
