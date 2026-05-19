@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import type { SessionEvent, SessionEventData, SessionMeta, SessionStatus } from '../types';
+import { withFileLock } from './atomicFile';
 
 export class SessionStorage {
   private transcriptPath: string;
@@ -54,10 +55,14 @@ export class SessionStorage {
   }
 
   async updateMeta(patch: Partial<SessionMeta>): Promise<SessionMeta> {
-    this.meta = { ...this.meta, ...patch, updatedAt: patch.updatedAt ?? new Date().toISOString() };
     await fs.mkdir(path.dirname(this.metaPath), { recursive: true });
-    await fs.writeFile(this.metaPath, JSON.stringify(this.meta, null, 2), 'utf-8');
-    return this.meta;
+    return withFileLock(this.metaPath, async () => {
+      // Re-read from disk inside the lock to pick up concurrent changes
+      const fresh = await this.getMeta();
+      this.meta = { ...fresh, ...patch, updatedAt: patch.updatedAt ?? new Date().toISOString() };
+      await fs.writeFile(this.metaPath, JSON.stringify(this.meta, null, 2), 'utf-8');
+      return this.meta;
+    });
   }
 
   async markStatus(status: SessionStatus, lastError?: string): Promise<void> {
