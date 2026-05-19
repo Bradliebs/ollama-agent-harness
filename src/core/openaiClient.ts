@@ -109,7 +109,7 @@ export class OpenAIClient implements IChatClient {
 
   /** Move to the next key in the pool. No-op when only one key configured. */
   private rotateKey(): void {
-    if (this.apiKeys.length > 1) this.keyIndex = (this.keyIndex + 1) % this.apiKeys.length;
+    if (this.apiKeys.length > 1) this.keyIndex++;
   }
 
   async chat(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): Promise<ChatResult> {
@@ -175,8 +175,8 @@ export class OpenAIClient implements IChatClient {
     const decoder = new TextDecoder();
     let buffer = '';
 
+    const reader = (response.body as unknown as ReadableStream<Uint8Array>).getReader();
     try {
-      const reader = (response.body as unknown as ReadableStream<Uint8Array>).getReader();
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -222,6 +222,7 @@ export class OpenAIClient implements IChatClient {
       }
     } finally {
       clearTimeout(timeoutHandle);
+      reader.releaseLock();
     }
 
     // Emit a final done chunk carrying any accumulated tool calls.
