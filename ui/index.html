@@ -848,6 +848,35 @@
     .skill-modal-tab{padding:4px 10px;border:1px solid var(--border);border-radius:6px;font-size:11px;cursor:pointer;color:var(--text-dim);background:var(--surface2)}
     .skill-modal-tab.active{color:var(--accent);border-color:var(--accent);background:var(--accent-bg)}
     .skill-modal-form{display:flex;flex-direction:column;gap:8px;flex:1;overflow-y:auto;padding-right:4px}
+    /* Topbar emergency STOP button — always visible safety net. */
+    .stop-btn{color:var(--error)!important;border:1px solid rgba(239,83,80,.35)!important;background:rgba(239,83,80,.08)!important;font-weight:700}
+    .stop-btn:hover{background:rgba(239,83,80,.18)!important;border-color:var(--error)!important}
+    /* Settings Simple/Advanced toggle. */
+    .settings-mode-toggle{display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+    .settings-mode-toggle .settings-mode-btn{border:none;border-radius:0;font-size:11px;padding:3px 8px;background:var(--surface2);color:var(--text-dim)}
+    .settings-mode-toggle .settings-mode-btn.active{background:var(--accent-bg);color:var(--accent);font-weight:600}
+    /* Simple-mode: hide non-essential settings sections + advanced More menu items. */
+    body.simple-mode .right-panel .settings-section:not(.essential){display:none}
+    body.simple-mode .more-menu-item.more-advanced{display:none}
+    body.simple-mode .more-menu-section.more-advanced-section{display:none}
+    body.simple-mode .right-panel .settings-section.essential::after{content:'';display:none}
+    body.simple-mode .right-panel::after{content:'Advanced settings are hidden. Switch to Advanced (top right) to see them all.';display:block;padding:14px;color:var(--text-dim);font-size:11.5px;text-align:center;border-top:1px dashed var(--border);margin-top:8px}
+    /* First-visit onboarding modal. */
+    .onboard-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:9999}
+    .onboard-modal.hidden-by-default{display:none}
+    .onboard-dialog{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;width:min(560px,92vw);max-height:88vh;overflow-y:auto;box-shadow:0 18px 50px rgba(0,0,0,.55)}
+    .onboard-dialog h2{font-size:20px;margin-bottom:8px;color:var(--text)}
+    .onboard-dialog p{color:var(--text-dim);font-size:13px;line-height:1.5;margin-bottom:16px}
+    .onboard-steps{display:flex;flex-direction:column;gap:10px;margin-bottom:18px}
+    .onboard-step{display:flex;gap:12px;align-items:flex-start;padding:11px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px}
+    .onboard-step-num{flex-shrink:0;width:24px;height:24px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+    .onboard-step strong{display:block;font-size:13px;color:var(--text);margin-bottom:2px}
+    .onboard-step span{font-size:12px;color:var(--text-dim);line-height:1.45}
+    .onboard-examples{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}
+    .onboard-example{text-align:left;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:9px 11px;color:var(--text);cursor:pointer;font-size:12.5px;transition:all .15s}
+    .onboard-example:hover{border-color:var(--accent);color:var(--accent)}
+    .onboard-actions{display:flex;gap:8px;justify-content:flex-end;align-items:center}
+    .onboard-actions label{font-size:12px;color:var(--text-dim);margin-right:auto;display:flex;align-items:center;gap:5px}
     .skill-modal-form .automation-field input,.skill-modal-form .automation-field select,.skill-modal-form .automation-field textarea{background:var(--surface2)}
     .skill-modal-form-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
     .skill-modal-history{max-height:140px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px}
@@ -918,22 +947,22 @@
       </div>
     </div>
     <div class="tab-bar">
-      <div class="tab active" onclick="showLeftTab('history',this)" title="Chat history">
+      <div class="tab active" onclick="showLeftTab('history',this)" title="Your past conversations">
         <div class="tab-icon">💬</div><div class="tab-label">Chats</div>
       </div>
-      <div class="tab" onclick="showLeftTab('files',this)" title="Project files">
+      <div class="tab" onclick="showLeftTab('files',this)" title="Browse files in this project">
         <div class="tab-icon">📁</div><div class="tab-label">Files</div>
       </div>
-      <div class="tab" onclick="showLeftTab('skills',this)" title="Installed skills">
-        <div class="tab-icon">⚡</div><div class="tab-label">Skills</div>
+      <div class="tab" onclick="showLeftTab('skills',this)" title="Reusable instructions the AI can follow">
+        <div class="tab-icon">⚡</div><div class="tab-label">Abilities</div>
       </div>
-      <div class="tab" onclick="showLeftTab('memory',this)" title="Memory entries">
+      <div class="tab" onclick="showLeftTab('memory',this)" title="What the AI remembers across sessions">
         <div class="tab-icon">🧠</div><div class="tab-label">Memory</div>
       </div>
-      <div class="tab" onclick="showLeftTab('workflows',this)" title="Workflows: declarative tool sequences">
-        <div class="tab-icon">⚙</div><div class="tab-label">Flows</div>
+      <div class="tab" onclick="showLeftTab('workflows',this)" title="Saved sequences of AI actions">
+        <div class="tab-icon">⚙</div><div class="tab-label">Automations</div>
       </div>
-      <div class="tab tab-more" id="tabMoreBtn" onclick="toggleMoreMenu(event)" title="More views">
+      <div class="tab tab-more" id="tabMoreBtn" onclick="toggleMoreMenu(event)" title="More tools and settings">
         <div class="tab-icon">⋯</div><div class="tab-label">More</div>
       </div>
       <div class="more-menu hidden-by-default" id="moreMenu">
@@ -945,27 +974,27 @@
         <div class="more-menu-item" data-tab="identity" onclick="selectFromMore('identity')" title="Agent name, avatar, personality — and saved profiles."><span class="more-menu-icon">🪪</span> Identity</div>
 
         <div class="more-menu-section">Search &amp; knowledge</div>
-        <div class="more-menu-item" data-tab="rag" onclick="selectFromMore('rag')" title="Build a searchable index of your project files."><span class="more-menu-icon">🔎</span> RAG</div>
-        <div class="more-menu-item" data-tab="palace" onclick="selectFromMore('palace')" title="Browse the agent's long-term semantic memory."><span class="more-menu-icon">🏛</span> Palace</div>
-        <div class="more-menu-item" data-tab="discovery" onclick="selectFromMore('discovery')" title="Patterns the agent has learned from past sessions."><span class="more-menu-icon">🔮</span> Discover</div>
-        <div class="more-menu-item" data-tab="codeintel" onclick="selectFromMore('codeintel')" title="Code intelligence: symbols, references, and structure."><span class="more-menu-icon">🧬</span> Code Intel</div>
+        <div class="more-menu-item" data-tab="rag" onclick="selectFromMore('rag')" title="Build a searchable index of your project files."><span class="more-menu-icon">🔎</span> Search Files</div>
+        <div class="more-menu-item" data-tab="palace" onclick="selectFromMore('palace')" title="The AI's long-term notes about you and your project."><span class="more-menu-icon">🏛</span> Memory Bank</div>
+        <div class="more-menu-item" data-tab="discovery" onclick="selectFromMore('discovery')" title="Patterns the AI has learned from past sessions."><span class="more-menu-icon">🔮</span> Discoveries</div>
+        <div class="more-menu-item more-advanced" data-tab="codeintel" onclick="selectFromMore('codeintel')" title="Code intelligence: symbols, references, and structure."><span class="more-menu-icon">🧬</span> Code Intel</div>
 
         <div class="more-menu-section">History &amp; diagnostics</div>
         <div class="more-menu-item" data-tab="runs" onclick="selectFromMore('runs')" title="Past session and automation runs."><span class="more-menu-icon">📜</span> Runs</div>
-        <div class="more-menu-item" data-tab="events" onclick="selectFromMore('events')" title="Live system event stream — useful for debugging."><span class="more-menu-icon">📋</span> Events</div>
-        <div class="more-menu-item" data-tab="audit" onclick="selectFromMore('audit')" title="Every tool call the agent has made, with timestamps."><span class="more-menu-icon">🛡</span> Audit</div>
-        <div class="more-menu-item" data-tab="learning" onclick="selectFromMore('learning')" title="Performance trends from validation runs."><span class="more-menu-icon">📈</span> Learning</div>
+        <div class="more-menu-item more-advanced" data-tab="events" onclick="selectFromMore('events')" title="Live system event stream — useful for debugging."><span class="more-menu-icon">📋</span> Events</div>
+        <div class="more-menu-item" data-tab="audit" onclick="selectFromMore('audit')" title="Every action the AI has taken, with timestamps."><span class="more-menu-icon">🛡</span> Activity Log</div>
+        <div class="more-menu-item more-advanced" data-tab="learning" onclick="selectFromMore('learning')" title="Performance trends from validation runs."><span class="more-menu-icon">📈</span> Learning</div>
         <div class="more-menu-item" data-tab="health" onclick="selectFromMore('health')" title="Is everything running? Service status at a glance."><span class="more-menu-icon">💓</span> Health</div>
 
         <div class="more-menu-section">Admin &amp; backup</div>
         <div class="more-menu-item" data-tab="tools" onclick="selectFromMore('tools')" title="Enabled tools and their permissions."><span class="more-menu-icon">🛠</span> Tools</div>
-        <div class="more-menu-item" data-tab="snapshots" onclick="selectFromMore('snapshots')" title="Backup and restore skills, memory, and identity."><span class="more-menu-icon">📦</span> Snapshots</div>
-        <div class="more-menu-item" data-tab="artifacts" onclick="selectFromMore('artifacts')" title="Files the agent has produced this session."><span class="more-menu-icon">📎</span> Artifacts</div>
+        <div class="more-menu-item" data-tab="snapshots" onclick="selectFromMore('snapshots')" title="Save and restore your AI's settings and memory."><span class="more-menu-icon">📦</span> Backups</div>
+        <div class="more-menu-item" data-tab="artifacts" onclick="selectFromMore('artifacts')" title="Files the AI has produced this session."><span class="more-menu-icon">📎</span> Generated Files</div>
 
-        <div class="more-menu-section">Advanced</div>
-        <div class="more-menu-item" data-tab="autonomy" onclick="selectFromMore('autonomy')" title="Long-running self-directed loops. Use with care."><span class="more-menu-icon">🚀</span> Autonomy</div>
-        <div class="more-menu-item" data-tab="mycelium" onclick="selectFromMore('mycelium')" title="Adaptive model routing network."><span class="more-menu-icon">🍄</span> Mycelium</div>
-        <div class="more-menu-item" data-tab="promises" onclick="selectFromMore('promises')" title="Promises the agent has made to itself across sessions."><span class="more-menu-icon">🤝</span> Promises</div>
+        <div class="more-menu-section more-advanced-section">Advanced</div>
+        <div class="more-menu-item more-advanced" data-tab="autonomy" onclick="selectFromMore('autonomy')" title="Long-running self-directed loops. Use with care."><span class="more-menu-icon">🚀</span> Autonomy</div>
+        <div class="more-menu-item more-advanced" data-tab="mycelium" onclick="selectFromMore('mycelium')" title="Adaptive model routing network."><span class="more-menu-icon">🍄</span> AI Router</div>
+        <div class="more-menu-item more-advanced" data-tab="promises" onclick="selectFromMore('promises')" title="Promises the agent has made to itself across sessions."><span class="more-menu-icon">🤝</span> Commitments</div>
       </div>
     </div>
     <div class="history-list" id="historyList"></div>
@@ -1036,6 +1065,7 @@
       <div class="status-pill loading" id="statusPill" title="Connecting..."><span class="status-dot"></span><span id="statusLabel">Connecting</span></div>
       <div class="connector-badges hidden-by-default" id="connectorBadges" title="Connector status"></div>
       <div class="topbar-btns">
+        <button class="btn-icon stop-btn" id="topbarStopBtn" onclick="topbarEmergencyStop()" title="Emergency stop — halt the AI and block all tool calls">⏹</button>
         <button class="btn-icon" id="themeToggle" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
         <button class="btn-icon" onclick="newChat()" title="New chat">✨</button>
         <button class="btn-icon" onclick="toggleRight()" title="Settings">⚙️</button>
@@ -1195,21 +1225,27 @@
   <div class="right-panel hidden" id="rightPanel">
     <div class="panel-header">
       <h3>Settings</h3>
-      <button class="btn-sm" onclick="toggleRight()">✕</button>
+      <div style="display:flex;align-items:center;gap:6px">
+        <div class="settings-mode-toggle" id="settingsModeToggle" title="Simple mode hides advanced settings — good for first-time use">
+          <button class="btn-sm settings-mode-btn active" id="settingsModeSimple" type="button" onclick="setSettingsMode('simple')">Simple</button>
+          <button class="btn-sm settings-mode-btn" id="settingsModeAdvanced" type="button" onclick="setSettingsMode('advanced')">Advanced</button>
+        </div>
+        <button class="btn-sm" onclick="toggleRight()">✕</button>
+      </div>
     </div>
     <div id="promiseWidget" class="promise-widget initial-hidden"></div>
-    <div class="settings-section open" id="aboutSection">
+    <div class="settings-section open essential" id="aboutSection" data-essential="1">
       <h4>About</h4>
       <div class="settings-section-body">
         <div class="about-version" id="aboutVersion">Loading…</div>
         <div class="about-summary" id="aboutSummary"></div>
       </div>
     </div>
-    <div class="settings-section">
+    <div class="settings-section essential" data-essential="1">
       <h4>Connection<button class="settings-reset-btn" onclick="event.stopPropagation();resetSettingsSection('connection')" title="Reset to defaults">↺ Reset</button></h4>
       <div class="setting-row">
         <label>Ollama Host</label>
-        <input type="text" id="ollamaHost" title="Ollama Host" value="http://localhost:11434" onchange="updateSetting('ollamaHost',this.value)" />
+        <input type="text" id="ollamaHost" title="Where Ollama is running (default localhost:11434 — leave alone unless you know you've moved it)" value="http://localhost:11434" onchange="updateSetting('ollamaHost',this.value)" />
       </div>
     </div>
     <div class="settings-section" id="settingsSmtp">
@@ -1376,12 +1412,12 @@
       </div>
       <div id="desktopInputEvidence" class="settings-status-line">Loading...</div>
     </div>
-    <div class="settings-section">
+    <div class="settings-section essential" data-essential="1">
       <h4>Generation<button class="settings-reset-btn" onclick="event.stopPropagation();resetSettingsSection('modelGen')" title="Reset to defaults">↺ Reset</button></h4>
       <div class="setting-row">
         <label>Temperature</label>
         <div class="slider-row">
-          <input type="range" min="0" max="2" step="0.1" value="0.7" id="tempSlider" title="Temperature"
+          <input type="range" min="0" max="2" step="0.1" value="0.7" id="tempSlider" title="Higher = more creative and varied; lower = more focused and predictable. Default 0.7 is a good starting point."
             oninput="document.getElementById('tempVal').textContent=this.value;updateSetting('temperature',this.value)">
           <span class="slider-val" id="tempVal">0.7</span>
         </div>
@@ -1667,7 +1703,7 @@
       <div id="aboutPanel" class="trace-detail">Version information loading...</div>
       <div id="releaseVerificationPanel" class="trace-detail initial-hidden"></div>
     </div>
-    <div class="settings-section">
+    <div class="settings-section essential" data-essential="1">
       <h4>Agent Identity</h4>
       <div class="setting-row">
         <label for="agentNameInput">Name</label>
@@ -1768,7 +1804,7 @@
         <div class="mode-d">Only reads auto-approved.</div>
       </div>
     </div>
-    <div class="settings-section">
+    <div class="settings-section essential" data-essential="1">
       <h4>Download Model</h4>
       <div class="setting-row">
         <label>Model name (e.g. llama3.1:8b)</label>
@@ -1908,9 +1944,33 @@
   </div>
 </div>
 
+  <!-- First-visit onboarding modal. Shown once, then dismissed forever via localStorage. -->
+  <div class="onboard-modal hidden-by-default" id="onboardModal" role="dialog" aria-modal="true" aria-labelledby="onboardTitle">
+    <div class="onboard-dialog">
+      <h2 id="onboardTitle">👋 Welcome to the Ollama Agent Harness</h2>
+      <p>This is a local AI assistant that can chat with you, read your files, run code, search the web, and more — all on your own computer.</p>
+      <div class="onboard-steps">
+        <div class="onboard-step"><div class="onboard-step-num">1</div><div><strong>Pick a model</strong><span>Use the dropdown at the top. If it's empty, install one by running <code>ollama pull llama3.2</code> in a terminal.</span></div></div>
+        <div class="onboard-step"><div class="onboard-step-num">2</div><div><strong>Type a question</strong><span>The chat box is at the bottom of the screen.</span></div></div>
+        <div class="onboard-step"><div class="onboard-step-num">3</div><div><strong>Approve actions</strong><span>The first time the AI tries to read a file or run a command, you'll see an Approve / Deny prompt. The default Safety Mode asks before everything.</span></div></div>
+      </div>
+      <p style="margin-bottom:8px"><strong style="color:var(--text)">Try one of these:</strong></p>
+      <div class="onboard-examples" id="onboardExamples">
+        <button type="button" class="onboard-example" data-prompt="Summarise what files are in this project and what it does.">📂 Summarise this project</button>
+        <button type="button" class="onboard-example" data-prompt="Help me write a small Python script that prints today's date.">🐍 Write a Python script</button>
+        <button type="button" class="onboard-example" data-prompt="What's the weather in London today?">🌤 Look up today's weather</button>
+      </div>
+      <div class="onboard-actions">
+        <label><input type="checkbox" id="onboardDontShow" checked> Don't show this again</label>
+        <button type="button" class="btn-sm" onclick="dismissOnboardModal(false)">Skip</button>
+        <button type="button" class="btn-sm primary" onclick="dismissOnboardModal(true)">Got it</button>
+      </div>
+    </div>
+  </div>
+
 <script src="./marked.min.js"></script>
 <script src="./chatHistory.js?v=3"></script>
 <script src="./toolActivity.js?v=1"></script>
-<script src="./app.js?v=19"></script>
+<script src="./app.js?v=20"></script>
 </body>
 </html>

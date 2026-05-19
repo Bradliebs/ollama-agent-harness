@@ -19,6 +19,7 @@
     "node": ">=18"
   },
   "scripts": {
+    "help": "node scripts/help.js",
     "build": "tsc",
     "start": "node dist/cli/index.js",
     "dev": "ts-node src/cli/index.ts",

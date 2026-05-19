@@ -173,6 +173,105 @@ if (typeof window !== 'undefined') {
   window.confirmToast = confirmToast;
   window.promptToast = promptToast;
 }
+
+// ─── Beginner UX: Simple/Advanced settings mode ───────────────────
+// Stored in localStorage. Simple mode adds body.simple-mode which hides
+// settings sections that aren't marked .essential and More-menu items
+// marked .more-advanced. Defaults to simple on first visit.
+const SETTINGS_MODE_KEY = 'harness.settingsMode';
+function getSettingsMode() {
+  try { return localStorage.getItem(SETTINGS_MODE_KEY) || 'simple'; } catch(e){ return 'simple'; }
+}
+function applySettingsMode(mode) {
+  const simple = mode !== 'advanced';
+  document.body.classList.toggle('simple-mode', simple);
+  const simpleBtn = document.getElementById('settingsModeSimple');
+  const advBtn = document.getElementById('settingsModeAdvanced');
+  if (simpleBtn) simpleBtn.classList.toggle('active', simple);
+  if (advBtn) advBtn.classList.toggle('active', !simple);
+}
+function setSettingsMode(mode) {
+  const next = mode === 'advanced' ? 'advanced' : 'simple';
+  try { localStorage.setItem(SETTINGS_MODE_KEY, next); } catch(e){ try { showToast('Could not save settings mode', 2500, 'warning'); } catch(_){} }
+  applySettingsMode(next);
+}
+if (typeof window !== 'undefined') {
+  window.setSettingsMode = setSettingsMode;
+  // Apply early (before DOMContentLoaded so the body class is set ASAP).
+  try { applySettingsMode(getSettingsMode()); } catch(e){}
+  document.addEventListener('DOMContentLoaded', () => applySettingsMode(getSettingsMode()));
+}
+
+// ─── Beginner UX: Topbar emergency STOP ───────────────────────────
+// Always-visible safety net. Confirms, then engages the kill switch via
+// the same backend endpoint as the Tools panel. Lets users abort without
+// having to find the buried button.
+async function topbarEmergencyStop() {
+  const ok = await confirmToast('Emergency STOP\n\nThis will halt the AI and block ALL tool calls (including reads) until you release it from the Tools tab. Proceed?');
+  if (!ok) return;
+  try {
+    const r = await fetch('/api/permissions/kill-switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: true, reason: 'Topbar STOP button.' }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    showToast('🛑 Kill switch engaged. The AI cannot run any tools.', 5000, 'warning');
+  } catch (err) {
+    showToast('⚠️ Could not engage kill switch: ' + (err && err.message ? err.message : err), 5000, 'error');
+  }
+}
+if (typeof window !== 'undefined') {
+  window.topbarEmergencyStop = topbarEmergencyStop;
+}
+
+// ─── Beginner UX: First-visit onboarding modal ────────────────────
+// Shown once, dismissed forever via localStorage. Example prompts wire
+// directly to the chat composer so the user can run them with one click.
+const ONBOARD_SEEN_KEY = 'harness.onboardSeen';
+function shouldShowOnboardModal() {
+  try { return !localStorage.getItem(ONBOARD_SEEN_KEY); } catch(e){ return false; }
+}
+function dismissOnboardModal(remember) {
+  const modal = document.getElementById('onboardModal');
+  if (modal) modal.classList.add('hidden-by-default');
+  const cb = document.getElementById('onboardDontShow');
+  const shouldRemember = remember !== false && (!cb || cb.checked);
+  if (shouldRemember) {
+    try { localStorage.setItem(ONBOARD_SEEN_KEY, String(Date.now())); } catch(e){}
+  }
+}
+function showOnboardModal() {
+  const modal = document.getElementById('onboardModal');
+  if (!modal) return;
+  modal.classList.remove('hidden-by-default');
+  // Wire example buttons to populate the chat composer.
+  const examples = modal.querySelectorAll('.onboard-example');
+  examples.forEach((btn) => {
+    btn.onclick = () => {
+      const prompt = btn.getAttribute('data-prompt') || '';
+      const input = document.getElementById('chatInput');
+      if (input) {
+        input.value = prompt;
+        try { autoSize(input); } catch(e){}
+        input.focus();
+      }
+      dismissOnboardModal(true);
+    };
+  });
+}
+if (typeof window !== 'undefined') {
+  window.dismissOnboardModal = dismissOnboardModal;
+  window.showOnboardModal = showOnboardModal;
+  document.addEventListener('DOMContentLoaded', () => {
+    if (shouldShowOnboardModal()) {
+      // Slight delay so the page paints first.
+      setTimeout(() => { try { showOnboardModal(); } catch(e){} }, 400);
+    }
+  });
+}
+
+
 // ─── Active sub-agents bar ────────────────────────────────────────
 // Renders a compact pill row above the chat input showing every
 // currently-running sub-agent with a cancel button. Driven by the
@@ -465,8 +564,19 @@ async function loadModels() {
     const r = await fetch('/api/models');
     const d = await r.json();
     if (d.error) {
-      setStatus('error', 'Offline', d.error);
-      sel.innerHTML = '<option>' + esc(d.error) + '</option>';
+      const friendly = String(d.error || '');
+      const isConn = /ECONNREFUSED|fetch failed|connect|refused|getaddrinfo|ENOTFOUND/i.test(friendly);
+      setStatus('error', 'Offline', isConn ? 'Ollama is not running' : friendly);
+      sel.innerHTML = '<option>' + esc(friendly) + '</option>';
+      const banner = document.getElementById('noModelBanner');
+      if (banner) {
+        banner.classList.remove('hidden-by-default');
+        if (isConn) {
+          banner.innerHTML = '<div class="no-model-icon">⚠️</div><div><strong>Can\'t reach Ollama.</strong><div class="no-model-hint">Open a terminal and run: <code>ollama serve</code><br>If Ollama isn\'t installed, get it from <a href="https://ollama.com" target="_blank" rel="noopener">ollama.com</a>. Then click Refresh.</div><div style="margin-top:8px"><button class="btn-sm primary" onclick="loadModels()">🔄 Refresh</button></div></div>';
+        } else {
+          banner.innerHTML = '<div class="no-model-icon">⚠️</div><div><strong>Could not list models.</strong><div class="no-model-hint">' + esc(friendly) + '</div><div style="margin-top:8px"><button class="btn-sm primary" onclick="loadModels()">🔄 Refresh</button></div></div>';
+        }
+      }
       return;
     }
     setStatus('ok', 'Connected', 'Connected to Ollama');
@@ -475,6 +585,12 @@ async function loadModels() {
     if (!models.length) {
       sel.innerHTML = '<option value="">No models installed</option>';
       updateNoModelEmptyState();
+      // Banner with concrete fix instructions for non-developers.
+      const banner = document.getElementById('noModelBanner');
+      if (banner) {
+        banner.classList.remove('hidden-by-default');
+        banner.innerHTML = '<div class="no-model-icon">⬇</div><div><strong>No AI models installed yet.</strong><div class="no-model-hint">Open a terminal and run: <code>ollama pull llama3.2</code> (downloads about 2 GB). When it finishes, click Refresh below.</div><div style="margin-top:8px"><button class="btn-sm primary" onclick="loadModels()">🔄 Refresh models</button></div></div>';
+      }
       return;
     }
     sel.innerHTML = '<option value="">— Select model —</option>' + models.map((m) => {
@@ -533,10 +649,15 @@ async function loadModels() {
       if (input) input.focus();
     }
   } catch(e){
-    setStatus('error', 'Offline', 'Server not running');
-    sel.innerHTML = '<option>Server not running</option>';
+    setStatus('error', 'Offline', 'Ollama is not running. Start it with `ollama serve`.');
+    sel.innerHTML = '<option>Ollama not running</option>';
     availableModels = [];
     updateNoModelEmptyState();
+    const banner = document.getElementById('noModelBanner');
+    if (banner) {
+      banner.classList.remove('hidden-by-default');
+      banner.innerHTML = '<div class="no-model-icon">⚠️</div><div><strong>Can\'t reach Ollama.</strong><div class="no-model-hint">Open a terminal and run: <code>ollama serve</code><br>If Ollama isn\'t installed, download it from <a href="https://ollama.com" target="_blank" rel="noopener">ollama.com</a>. Then click Refresh.</div><div style="margin-top:8px"><button class="btn-sm primary" onclick="loadModels()">🔄 Refresh</button></div></div>';
+    }
   }
 }
 

@@ -135,11 +135,21 @@ describe('web UI wiring', () => {
   });
 
   it('keeps the beginner first-chat readiness surface wired', () => {
-    expect(indexHtml).toContain('beginnerReadiness');
-    expect(indexHtml).toContain('beginnerReadinessBadge');
-    expect(appJs).toContain('function setBeginnerReadiness');
-    expect(appJs).toContain('Start Ollama first');
-    expect(appJs).toContain('Install one model');
+    // The legacy beginner-readiness banner + model-capability-hint were
+    // removed in the v0.5.10 welcome trim. The replacement surfaces are
+    // the no-model banner (with concrete "ollama pull" / "ollama serve"
+    // instructions and a Refresh button), the quick-start panel, and the
+    // first-visit onboarding modal. This test guards against accidental
+    // regression of that beginner-friendly first-chat experience.
+    expect(indexHtml).toContain('noModelBanner');
+    expect(indexHtml).toContain('quickStartHint');
+    expect(indexHtml).toContain('onboardModal');
+    expect(appJs).toContain('function updateNoModelEmptyState');
+    expect(appJs).toContain('shouldShowOnboardModal');
+    // Concrete remediation text must be wired so beginners see the fix,
+    // not a bare "Server not running" message.
+    expect(appJs).toContain('ollama pull llama3.2');
+    expect(appJs).toContain('ollama serve');
   });
 
   it('keeps tool-only final replies readable', () => {
