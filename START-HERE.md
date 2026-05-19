@@ -87,21 +87,31 @@ Not sure what to ask? Try these:
 
 ### Left sidebar (tabs)
 
+The sidebar has **5 primary tabs** plus a **⋯ More** button for everything else.
+
+**Primary:**
+
 | Icon | Tab | What it does |
 |------|-----|-------------|
 | 💬 | **Chats** | Your conversation history |
 | 📁 | **Files** | Browse project files |
 | ⚡ | **Skills** | Reusable AI capabilities |
 | 🧠 | **Memory** | What the AI remembers |
-| 🏛 | **Palace** | Semantic memory browser |
-| 🔮 | **Discover** | Learned patterns |
-| 📈 | **Learning** | Performance trends |
-| 📦 | **Snaps** | Backup/restore |
-| 🔎 | **RAG** | Search your files |
-| 🛠 | **Tools** | Available tools and permissions |
-| 📜 | **Runs** | Session history and automation |
-| ⚙ | **Flows** | Automated workflows |
-| 🍄 | **Mycelium** | Adaptive routing network |
+| ⚙ | **Flows** | Automated multi-step workflows |
+
+**Under ⋯ More** (grouped — hover an item for a one-line description):
+
+- *Build & use:* Agents, Squads, Triggers, Tasks, Identity
+- *Search & knowledge:* RAG, Palace, Discover, Code Intel
+- *History & diagnostics:* Runs, Events, Audit, Learning, Health
+- *Admin & backup:* Tools, Snapshots, Artifacts
+- *Advanced:* Autonomy, Mycelium, Promises
+
+If you want to know "what is the agent actually doing right now?" — open **⋯ More → 🛡 Audit** for a chronological list of every tool call.
+
+### What is "Jarvis"?
+
+Jarvis is the harness's ambient background loop. When it's running, it produces a short **daily brief** (recent activity, things to look at) and can poke you with reminders. You'll see "Jarvis live" and "Jarvis voice controls" panels on the welcome screen. It's optional — ignore those panels until you want a proactive assistant.
 
 ### Right panel (Settings)
 

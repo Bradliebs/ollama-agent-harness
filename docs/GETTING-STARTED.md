@@ -1,5 +1,9 @@
 # Getting Started with CopilotForge
 
+> **⚠ This document is NOT the Harness getting-started guide.**
+> It was scaffolded by the CopilotForge planner skill and is about a separate tool.
+> **If you're trying to use the Ollama Agent Harness, open [`../START-HERE.md`](../START-HERE.md) instead.**
+
 > Your project has been scaffolded! Here's what to do next.
 
 ## What was created

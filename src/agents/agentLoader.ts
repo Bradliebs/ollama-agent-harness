@@ -179,8 +179,19 @@ export function parseAgentFile(content: string, filePath: string, fallbackId?: s
   const enabled = enabledRaw === undefined
     ? true
     : !(enabledRaw === false || (typeof enabledRaw === 'string' && enabledRaw.toLowerCase() === 'false'));
-  const id = (frontmatter.id as string) ?? fallbackId ?? path.basename(filePath, '.md');
-  const name = (frontmatter.name as string) ?? id;
+  // Coerce id/name to strings: YAML parses unquoted all-digit values (e.g.
+  // `id: 2006`) as numbers. Downstream lookups use strict equality with the
+  // string from URL params or POST bodies, so a numeric id silently fails
+  // to match.
+  const rawId = frontmatter.id;
+  const idFromFrontmatter = typeof rawId === 'string' ? rawId
+    : (typeof rawId === 'number' || typeof rawId === 'boolean') ? String(rawId)
+    : undefined;
+  const id = idFromFrontmatter ?? fallbackId ?? path.basename(filePath, '.md');
+  const rawName = frontmatter.name;
+  const name = typeof rawName === 'string' ? rawName
+    : (typeof rawName === 'number' || typeof rawName === 'boolean') ? String(rawName)
+    : id;
   return {
     id,
     name,
