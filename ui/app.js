@@ -44,7 +44,7 @@ async function ensureApiAuthReady() {
     const config = await response.json();
     if (!config || !config.required) return;
     if (harnessApiToken) return;
-    const entered = window.prompt('Harness API auth is required. Enter HARNESS_API_AUTH_TOKEN:');
+    const entered = await promptToast('Harness API auth is required. Enter HARNESS_API_AUTH_TOKEN:');
     if (entered && entered.trim()) {
       setHarnessApiToken(entered.trim());
     }
@@ -58,6 +58,121 @@ let isSending = false;
 // prefixed with a markdown blockquote of the referenced assistant reply
 // so the model knows which earlier turn the user is responding to.
 let pendingReply = null;
+// ─── Toasts ───────────────────────────────────────────────────────
+// Non-blocking notification used in place of the browser's blocking
+// modal dialog. Stacked bottom-right above the sub-agents bar. The
+// severity tone is auto-detected from common keywords in the message
+// so call sites can stay as terse as the old one-liners they replaced.
+// Pass { type, ttl } in options to override.
+// See also confirmToast() / promptToast() below for the async drop-in
+// replacements for the browser's synchronous dialog APIs (added in
+// v0.5.10 so destructive actions no longer freeze the page).
+function showToast(message, options) {
+  try {
+    const opts = options || {};
+    const text = String(message == null ? '' : message);
+    let type = opts.type;
+    if (!type) {
+      const lower = text.toLowerCase();
+      if (/\b(fail|failed|error|invalid|denied|cannot|could not|not found|missing)\b/.test(lower)) type = 'error';
+      else if (/\b(saved|created|updated|deleted|imported|exported|restored|added|installed|cleared|registered|sent|delivered|granted|revoked|copied|forked|executed)\b/.test(lower)) type = 'success';
+      else type = 'info';
+    }
+    const ttl = opts.ttl !== undefined ? opts.ttl : (type === 'error' ? 0 : 4000);
+    let host = document.getElementById('toastHost');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'toastHost';
+      host.className = 'toast-host';
+      document.body.appendChild(host);
+    }
+    const el = document.createElement('div');
+    el.className = 'toast toast-' + type;
+    el.setAttribute('role', type === 'error' ? 'alert' : 'status');
+    el.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
+    const safeText = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+    el.innerHTML = '<div class="toast-msg">' + safeText + '</div>'
+      + '<button type="button" class="toast-close" aria-label="Dismiss">&times;</button>';
+    el.querySelector('.toast-close').onclick = () => el.remove();
+    host.appendChild(el);
+    if (ttl > 0) setTimeout(() => { if (el.parentNode) el.remove(); }, ttl);
+    return el;
+  } catch (e) {
+    // Fail-safe: if anything goes wrong building the toast, fall back to
+    // the native blocking dialog so the message is never silently lost.
+    // Accessed via bracket notation so the alert→showToast sweep cannot
+    // rewrite this line into infinite recursion.
+    try { window['alert'](String(message)); } catch { /* truly nothing we can do */ }
+    return null;
+  }
+}
+if (typeof window !== 'undefined') window.showToast = showToast;
+
+// ─── Modal toast prompts (confirm / prompt replacements) ──────────
+// Drop-in async replacements for the browser's synchronous confirm
+// and prompt dialogs, so destructive actions no longer freeze the whole page (which also
+// pauses websockets, sub-agent telemetry, and the chat stream). The
+// modal is centered, focus-trapped, dismissable with Esc, and resolves
+// to:
+//   confirmToast(message)        → Promise<boolean>
+//   promptToast(message, def)    → Promise<string | null>  (null on cancel)
+// Existing call-site idioms keep working when prefixed with `await`:
+//   if (!await confirmToast('Delete?')) return;
+//   const name = await promptToast('Name:', 'foo');
+function _harnessModal({ kind, message, defaultValue }) {
+  return new Promise((resolve) => {
+    const host = document.createElement('div');
+    host.className = 'harness-modal-host';
+    const safe = String(message == null ? '' : message)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+    const inputHtml = kind === 'prompt'
+      ? '<input class="harness-modal-input" type="text" />'
+      : '';
+    host.innerHTML = ''
+      + '<div class="harness-modal-backdrop"></div>'
+      + '<div class="harness-modal" role="dialog" aria-modal="true">'
+      +   '<div class="harness-modal-body">' + safe + '</div>'
+      +   inputHtml
+      +   '<div class="harness-modal-actions">'
+      +     (kind === 'confirm' || kind === 'prompt'
+              ? '<button type="button" class="btn-sm harness-modal-cancel">Cancel</button>'
+              : '')
+      +     '<button type="button" class="btn-sm primary harness-modal-ok">OK</button>'
+      +   '</div>'
+      + '</div>';
+    document.body.appendChild(host);
+    const input = host.querySelector('.harness-modal-input');
+    if (input) {
+      input.value = defaultValue == null ? '' : String(defaultValue);
+      setTimeout(() => { input.focus(); input.select(); }, 0);
+    } else {
+      setTimeout(() => { const ok = host.querySelector('.harness-modal-ok'); ok && ok.focus(); }, 0);
+    }
+    const cleanup = (result) => {
+      document.removeEventListener('keydown', onKey, true);
+      if (host.parentNode) host.remove();
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); cleanup(kind === 'prompt' ? null : false); }
+      else if (e.key === 'Enter' && (e.target === input || !input)) {
+        e.preventDefault();
+        cleanup(kind === 'prompt' ? (input ? input.value : '') : true);
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    host.querySelector('.harness-modal-ok').onclick = () => cleanup(kind === 'prompt' ? (input ? input.value : '') : true);
+    const cancelBtn = host.querySelector('.harness-modal-cancel');
+    if (cancelBtn) cancelBtn.onclick = () => cleanup(kind === 'prompt' ? null : false);
+    host.querySelector('.harness-modal-backdrop').onclick = () => cleanup(kind === 'prompt' ? null : false);
+  });
+}
+function confirmToast(message) { return _harnessModal({ kind: 'confirm', message }); }
+function promptToast(message, defaultValue) { return _harnessModal({ kind: 'prompt', message, defaultValue }); }
+if (typeof window !== 'undefined') {
+  window.confirmToast = confirmToast;
+  window.promptToast = promptToast;
+}
 // ─── Active sub-agents bar ────────────────────────────────────────
 // Renders a compact pill row above the chat input showing every
 // currently-running sub-agent with a cancel button. Driven by the
@@ -81,11 +196,17 @@ async function loadActiveSubagentsBar() {
       const seconds = Math.max(0, Math.round((record.durationMs || 0) / 1000));
       const snippet = safeEsc((record.promptSnippet || '').slice(0, 60));
       const idAttr = safeEsc(record.id);
+      const activity = safeEsc((record.lastActivity || '').slice(0, 60));
+      const activityAge = record.updatedAtMs ? Math.max(0, Math.round((Date.now() - record.updatedAtMs) / 1000)) : null;
+      const activityHtml = activity
+        ? '<span style="color:var(--accent);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + activity + (activityAge !== null ? ' (' + activityAge + 's ago)' : '') + '">' + activity + '</span>'
+        : '<span style="color:var(--text-dim);font-style:italic" title="No activity reported yet \u2014 the agent may still be thinking">thinking\u2026</span>';
       return '<span class="active-subagent-pill" style="display:inline-flex;align-items:center;gap:6px;padding:2px 6px;margin:2px;border-radius:10px;background:var(--surface2,rgba(120,120,120,0.15));font-size:11px">'
         + '<span style="color:var(--accent)">\u26AC</span>'
         + '<strong>' + safeEsc(record.name || 'subagent') + '</strong>'
         + '<span style="color:var(--text-dim)">' + seconds + 's</span>'
-        + (snippet ? '<span style="color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + snippet + '">' + snippet + '</span>' : '')
+        + activityHtml
+        + (snippet ? '<span style="color:var(--text-dim);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + snippet + '">' + snippet + '</span>' : '')
         + '<button type="button" class="msg-action-btn" title="Cancel sub-agent" onclick="cancelActiveSubagent(\'' + idAttr.replace(/'/g, "\\'") + '\')" style="padding:0 6px">\u2715</button>'
         + '</span>';
     }).join('');
@@ -112,11 +233,12 @@ if (typeof window !== 'undefined') {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', loadActiveSubagentsBar);
   else loadActiveSubagentsBar();
   // Periodic refresh as a safety net so the bar reflects in-flight runs
-  // even when the WS reconnects mid-flight.
+  // even when the WS reconnects mid-flight. 2s so the live activity
+  // label ("\uD83D\uDD27 read_file", etc) feels live.
   setInterval(() => {
     const host = document.getElementById('activeSubagentsBar');
     if (host) loadActiveSubagentsBar();
-  }, 5000);
+  }, 2000);
 }
 function renderPendingReplyChip() {
   const host = document.getElementById('pendingReplyChip') || (() => {
@@ -424,6 +546,28 @@ function updateNoModelEmptyState() {
   if (!sel || !sel.value) banner.classList.remove('hidden-by-default');
   else banner.classList.add('hidden-by-default');
   updateQuickStartCtaState();
+  applyModelGate();
+}
+
+// Generic "this action needs a model" gate. Any element with
+// data-requires-model="1" is disabled while the model dropdown is empty.
+// Saves the original title so we can restore it later. The hint title
+// helps a novice understand WHY the button is greyed out instead of
+// clicking and getting nothing.
+function applyModelGate() {
+  const sel = document.getElementById('modelSelect');
+  const hasModel = Boolean(sel && sel.value);
+  const nodes = document.querySelectorAll('[data-requires-model="1"]');
+  nodes.forEach((node) => {
+    if (!node.dataset.originalTitle) node.dataset.originalTitle = node.title || '';
+    if (hasModel) {
+      node.disabled = false;
+      node.title = node.dataset.originalTitle;
+    } else {
+      node.disabled = true;
+      node.title = 'Pick a model in the top bar first';
+    }
+  });
 }
 
 function updateQuickStartCtaState() {
@@ -598,7 +742,7 @@ async function jarvisLadderAction(capability, action) {
     await readApiJson(response, 'Jarvis trust-ladder ' + action);
     await renderJarvisTrustLadder();
   } catch (error) {
-    alert('Trust ladder ' + action + ' failed: ' + (error.message || error));
+    showToast('Trust ladder ' + action + ' failed: ' + (error.message || error));
   }
 }
 
@@ -606,9 +750,9 @@ async function saveDailyBrief() {
   try {
     const response = await fetch('/api/jarvis/brief/save', { method: 'POST' });
     const data = await readApiJson(response, 'Jarvis brief save');
-    alert('Saved to: ' + data.savedTo);
+    showToast('Saved to: ' + data.savedTo);
   } catch (error) {
-    alert('Save failed: ' + (error.message || error));
+    showToast('Save failed: ' + (error.message || error));
   }
 }
 
@@ -693,7 +837,7 @@ async function refreshJarvisRuntime() {
 }
 
 async function jarvisRuntimeRegister(feature) {
-  const adapterName = prompt('Adapter name for ' + feature + ' (e.g. whisper-cpp):');
+  const adapterName = await promptToast('Adapter name for ' + feature + ' (e.g. whisper-cpp):');
   if (!adapterName) return;
   try {
     await fetch('/api/jarvis/runtime/register', {
@@ -703,7 +847,7 @@ async function jarvisRuntimeRegister(feature) {
     });
     await refreshJarvisRuntime();
   } catch (error) {
-    alert('Register failed: ' + (error.message || error));
+    showToast('Register failed: ' + (error.message || error));
   }
 }
 
@@ -730,7 +874,7 @@ async function jarvisAmbientControl(action) {
     await fetch('/api/jarvis/ambient/' + action, { method: 'POST' });
     await refreshJarvisAmbientTile();
   } catch (error) {
-    alert('Ambient ' + action + ' failed: ' + (error.message || error));
+    showToast('Ambient ' + action + ' failed: ' + (error.message || error));
   }
 }
 
@@ -937,10 +1081,10 @@ function sendMissionPrompt(mode) {
   input.focus();
 }
 
-function editMissionPrompt(mode) {
+async function editMissionPrompt(mode) {
   const prompts = { ...DEFAULT_MISSION_PROMPTS, ...customMissionPrompts };
   const current = prompts[mode] || '';
-  const updated = prompt('Edit ' + mode + ' prompt:', current);
+  const updated = await promptToast('Edit ' + mode + ' prompt:', current);
   if (updated === null) return;
   if (updated.trim() === '' || updated === DEFAULT_MISSION_PROMPTS[mode]) {
     delete customMissionPrompts[mode];
@@ -961,8 +1105,8 @@ function exportMissionPrompts() {
     .catch(() => showToast('Export failed', 2000, 'error'));
 }
 
-function importMissionPrompts() {
-  const raw = prompt('Paste mission prompts JSON:');
+async function importMissionPrompts() {
+  const raw = await promptToast('Paste mission prompts JSON:');
   if (raw === null) return;
   try {
     const parsed = JSON.parse(raw);
@@ -974,7 +1118,7 @@ function importMissionPrompts() {
       }
     }
     localStorage.setItem('harness_mission_prompts', JSON.stringify(customMissionPrompts));
-    showToast('Imported ' + Object.keys(customMissionPrompts).length + ' custom prompt(s)', 2000, 'success');
+    showToast('Imported ' + Object.keys(customMissionPrompts).length + ' custom await promptToast(s)', 2000, 'success');
     loadReadiness();
   } catch (e) { showToast('Import failed: ' + (e.message || e), 3000, 'error'); }
 }
@@ -984,7 +1128,7 @@ async function fixReadinessBlockers(timedMinutes) {
   const checks = window._readinessFixableChecks || [];
   if (checks.length === 0) return;
   const label = timedMinutes ? 'Auto-fix ' + checks.length + ' blocker(s) for ' + timedMinutes + ' minutes?' : 'Auto-fix ' + checks.length + ' blocker(s)?';
-  if (!confirm(label + '\n\nThis will enable disabled tools, set dontAsk mode, and grant missing capabilities.')) return;
+  if (!await confirmToast(label + '\n\nThis will enable disabled tools, set dontAsk mode, and grant missing capabilities.')) return;
   // Snapshot pre-fix state for undo
   window._fixAllUndoSnapshot = await snapshotPreFixState();
   try { sessionStorage.setItem('harness_fixall_undo', JSON.stringify(window._fixAllUndoSnapshot)); } catch(e){}
@@ -1021,18 +1165,18 @@ async function fixReadinessBlockers(timedMinutes) {
 }
 
 async function fixReadinessBlockersTimed() {
-  const minutesRaw = prompt('Fix blockers for how many minutes? (1-1440)', '120');
+  const minutesRaw = await promptToast('Fix blockers for how many minutes? (1-1440)', '120');
   if (minutesRaw === null) return;
   const minutes = Number(minutesRaw);
-  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { alert('Enter a number between 1 and 1440.'); return; }
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { showToast('Enter a number between 1 and 1440.'); return; }
   await fixReadinessBlockers(minutes);
 }
 
 async function readinessTimedFix(type, name) {
-  const minutesRaw = prompt('Enable for how many minutes? (1-1440)', '60');
+  const minutesRaw = await promptToast('Enable for how many minutes? (1-1440)', '60');
   if (minutesRaw === null) return;
   const minutes = Number(minutesRaw);
-  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { alert('Enter a number between 1 and 1440.'); return; }
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { showToast('Enter a number between 1 and 1440.'); return; }
   if (type === 'tool') {
     await toggleTool(name, true, minutes);
   } else if (type === 'mode') {
@@ -1067,7 +1211,7 @@ async function snapshotPreFixState() {
 async function undoFixAll() {
   const snap = window._fixAllUndoSnapshot;
   if (!snap) { showToast('No fix-all to undo', 2000); return; }
-  if (!confirm('Undo last fix-all?\n\nThis will re-disable tools and revert permission mode to ' + snap.permissionMode + '.')) return;
+  if (!await confirmToast('Undo last fix-all?\n\nThis will re-disable tools and revert permission mode to ' + snap.permissionMode + '.')) return;
   // Re-disable tools
   for (const name of snap.disabledTools) {
     await fetch('/api/tools/' + encodeURIComponent(name) + '/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) }).catch(() => {});
@@ -1522,7 +1666,7 @@ async function completePlanTask(id) {
 }
 
 async function deletePlanTask(id) {
-  if (!confirm('Remove task "' + id + '" from the plan?')) return;
+  if (!await confirmToast('Remove task "' + id + '" from the plan?')) return;
   try {
     await fetch('/api/autonomy/tasks/' + encodeURIComponent(id), { method: 'DELETE' });
     loadAutonomyPlanPreview();
@@ -1603,7 +1747,7 @@ async function stopAutonomyRun() {
 
 async function resetAutonomyRunState() {
   const status = document.getElementById('autonomyBuilderStatus');
-  if (!confirm('Reset autonomy checkpoint and stop files? This is useful if a run is stuck at an old iteration.')) return;
+  if (!await confirmToast('Reset autonomy checkpoint and stop files? This is useful if a run is stuck at an old iteration.')) return;
   if (status) status.textContent = 'Resetting run state...';
   try {
     const response = await fetch('/api/autonomy/reset', { method: 'POST' });
@@ -1685,7 +1829,11 @@ function selectedModelDetails() {
 
 function renderModelCapabilityHint() {
   const hint = document.getElementById('modelCapabilityHint');
-  if (!hint) return;
+  // The hint element was removed in the v0.5.10 welcome trim. Callers
+  // still invoke this on model change for its renderAttachmentHint()
+  // side effect, so refresh that and bail before touching the missing
+  // node.
+  if (!hint) { renderAttachmentHint(); return; }
   const model = selectedModelDetails();
   if (!model) {
     hint.textContent = 'Choose a model to see whether Harness detects text, image, or audio support.';
@@ -1797,7 +1945,7 @@ function exportModelStatsCsv() {
     a.download = 'model-stats-' + new Date().toISOString().slice(0, 10) + '.csv';
     a.click();
     URL.revokeObjectURL(a.href);
-  }).catch(() => { alert('Failed to export stats.'); });
+  }).catch(() => { showToast('Failed to export stats.'); });
 }
 
 function getModelProfileSuggestion(modelName) {
@@ -2175,8 +2323,8 @@ function renderGlobalAutonomyBanner(state) {
 }
 
 async function cancelTimedAutonomy() {
-  if (!confirm('Cancel timed autonomy and revert permission mode now?')) return;
-  const clearTools = confirm('Also clear all timed tool enables?\n\nYes = revert tools to disabled too\nNo = only revert permission mode, tools keep their timers');
+  if (!await confirmToast('Cancel timed autonomy and revert permission mode now?')) return;
+  const clearTools = await confirmToast('Also clear all timed tool enables?\n\nYes = revert tools to disabled too\nNo = only revert permission mode, tools keep their timers');
   await fetch('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clearTimedTools: clearTools }) });
   refreshAutonomyBanner();
   if (typeof loadToolsDashboard === 'function') loadToolsDashboard();
@@ -2692,8 +2840,8 @@ function hydrateAgentProfiles(profiles) {
   }
 }
 
-function saveAgentProfile() {
-  const name = currentAgentName || prompt('Profile name:');
+async function saveAgentProfile() {
+  const name = currentAgentName || await promptToast('Profile name:');
   if (!name) return;
   const model = document.getElementById('modelSelect')?.value || '';
   agentProfiles[name] = {
@@ -2705,7 +2853,7 @@ function saveAgentProfile() {
   };
   updateSetting('agentProfiles', agentProfiles);
   hydrateAgentProfiles(agentProfiles);
-  alert('Profile "' + name + '" saved.');
+  showToast('Profile "' + name + '" saved.');
 }
 
 function loadAgentProfile(profileName) {
@@ -2726,18 +2874,18 @@ function loadAgentProfile(profileName) {
   if (profile.accentColor) setAccentColor(profile.accentColor);
 }
 
-function deleteAgentProfile() {
+async function deleteAgentProfile() {
   const sel = document.getElementById('profileSelect');
   const name = sel?.value;
-  if (!name) { alert('Select a profile to delete.'); return; }
-  if (!confirm('Delete profile "' + name + '"?')) return;
+  if (!name) { showToast('Select a profile to delete.'); return; }
+  if (!await confirmToast('Delete profile "' + name + '"?')) return;
   delete agentProfiles[name];
   updateSetting('agentProfiles', agentProfiles);
   hydrateAgentProfiles(agentProfiles);
 }
 
 function exportAgentProfiles() {
-  if (Object.keys(agentProfiles).length === 0) { alert('No profiles to export.'); return; }
+  if (Object.keys(agentProfiles).length === 0) { showToast('No profiles to export.'); return; }
   const blob = new Blob([JSON.stringify(agentProfiles, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -2748,17 +2896,17 @@ function exportAgentProfiles() {
 function importAgentProfiles(files) {
   if (!files || files.length === 0) return;
   const reader = new FileReader();
-  reader.onload = (e) => {
+  reader.onload = async (e) => {
     try {
       const imported = JSON.parse(e.target.result);
-      if (typeof imported !== 'object' || imported === null) { alert('Invalid profiles file.'); return; }
+      if (typeof imported !== 'object' || imported === null) { showToast('Invalid profiles file.'); return; }
       const count = Object.keys(imported).length;
-      if (!confirm('Import ' + count + ' profile(s)? Existing profiles with the same name will be overwritten.')) return;
+      if (!await confirmToast('Import ' + count + ' profile(s)? Existing profiles with the same name will be overwritten.')) return;
       Object.assign(agentProfiles, imported);
       updateSetting('agentProfiles', agentProfiles);
       hydrateAgentProfiles(agentProfiles);
-      alert('Imported ' + count + ' profile(s).');
-    } catch(e){ alert('Invalid JSON file.'); }
+      showToast('Imported ' + count + ' profile(s).');
+    } catch(e){ showToast('Invalid JSON file.'); }
   };
   reader.readAsText(files[0]);
   document.getElementById('profileImportFile').value = '';
@@ -2933,7 +3081,7 @@ async function loadUploadsList() {
 
 async function deleteUpload(name) {
   if (!name) return;
-  if (!confirm('Delete upload "' + name + '"?')) return;
+  if (!await confirmToast('Delete upload "' + name + '"?')) return;
   try {
     const response = await fetch('/api/uploads/' + encodeURIComponent(name), { method: 'DELETE' });
     if (!response.ok) {
@@ -2942,7 +3090,7 @@ async function deleteUpload(name) {
     }
     await loadUploadsList();
   } catch (error) {
-    alert('Delete failed: ' + (error.message || error));
+    showToast('Delete failed: ' + (error.message || error));
   }
 }
 
@@ -3212,14 +3360,14 @@ async function refreshVisionReadinessStatus() {
   }
 }
 
-function setMode(m, el) {
+async function setMode(m, el) {
   let escalationReason;
   if (m === 'dontAsk') {
-    const reasonInput = prompt('Enter reason for enabling dontAsk mode (minimum 8 characters):', 'Temporary escalation for supervised operation');
+    const reasonInput = await promptToast('Enter reason for enabling dontAsk mode (minimum 8 characters):', 'Temporary escalation for supervised operation');
     if (reasonInput === null) return;
     escalationReason = String(reasonInput).trim();
     if (escalationReason.length < 8) {
-      alert('Reason must be at least 8 characters.');
+      showToast('Reason must be at least 8 characters.');
       return;
     }
   }
@@ -3253,10 +3401,10 @@ async function enableFullAutonomy() {
 }
 
 async function enableTimedAutonomy() {
-  const minutesRaw = prompt('Enable full autonomy for how many minutes? (1-1440)', '120');
+  const minutesRaw = await promptToast('Enable full autonomy for how many minutes? (1-1440)', '120');
   if (minutesRaw === null) return;
   const minutes = Number(minutesRaw);
-  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { alert('Enter a number between 1 and 1440.'); return; }
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { showToast('Enter a number between 1 and 1440.'); return; }
 
   // Set timed autonomy via dedicated endpoint (stores previous mode for revert)
   await fetch('/api/permissions/timed-autonomy', {
@@ -3372,10 +3520,10 @@ async function handleFileAttach(fileList) {
     try {
       const res = await fetch('/api/upload', { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream', 'x-filename': file.name }, body: file });
       const data = await res.json();
-      if (data.error) { alert('Upload failed: ' + data.error); continue; }
+      if (data.error) { showToast('Upload failed: ' + data.error); continue; }
       pendingFiles.push(data);
       showAttached();
-    } catch (e) { alert('Upload failed: ' + e.message); }
+    } catch (e) { showToast('Upload failed: ' + e.message); }
   }
   document.getElementById('fileInput').value = '';
 }
@@ -3519,8 +3667,8 @@ async function sendMessage(opts) {
     if (!text) return;
     const modelA = document.getElementById('modelSelect').value;
     const modelB = document.getElementById('compareModelSelect').value;
-    if (!modelA || !modelB) { alert('Pick a primary model AND a compare model first.'); return; }
-    if (modelA === modelB) { alert('Pick two different models to compare.'); return; }
+    if (!modelA || !modelB) { showToast('Pick a primary model AND a compare model first.'); return; }
+    if (modelA === modelB) { showToast('Pick two different models to compare.'); return; }
     inp.value = '';
     inp.style.height = 'auto';
     runCompareSend(text, modelA, modelB);
@@ -3644,7 +3792,7 @@ async function sendMessage(opts) {
   }
 
   if (!text || isSending) return;
-  if (!model) { alert('Select a model first.'); return; }
+  if (!model) { showToast('Select a model first.'); return; }
   // If the user clicked 💬 Reply on an earlier assistant message, prefix
   // the outbound text with a markdown blockquote of that reply so the
   // model can resolve "this", "that error", etc. unambiguously. The
@@ -4522,7 +4670,7 @@ async function recoverSession(id) {
   try {
     const r = await fetch('/api/sessions/' + id);
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     lastSessionId = id;
     chatMessages = [];
     document.getElementById('chatArea').innerHTML = '';
@@ -4531,19 +4679,19 @@ async function recoverSession(id) {
       else { addMsg(m.role, m.content); chatMessages.push({ role: m.role, content: m.content }); }
     }
     loadHistory();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 async function forkSession(id) {
   const model = document.getElementById('modelSelect').value;
-  if (!model) { alert('Select a model first.'); return; }
+  if (!model) { showToast('Select a model first.'); return; }
   try {
     const r = await fetch('/api/sessions/' + id + '/fork', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }) });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     lastSessionId = d.sessionId;
-    alert('Forked session ' + d.sessionId);
-  } catch (e) { alert(e.message); }
+    showToast('Forked session ' + d.sessionId);
+  } catch (e) { showToast(e.message); }
 }
 
 function addMsg(role, text) {
@@ -5169,7 +5317,7 @@ function attachMessageActions(msgEl, messageIndex) {
   save.onclick = async () => {
     const content = (chatMessages[messageIndex] && chatMessages[messageIndex].content) || '';
     if (!content) return;
-    const suggested = window.prompt('Save reply as (filename, leave blank for auto):', '');
+    const suggested = await promptToast('Save reply as (filename, leave blank for auto):', '');
     if (suggested === null) return; // cancel
     save.innerHTML = '⏳ Saving';
     try {
@@ -5186,7 +5334,7 @@ function attachMessageActions(msgEl, messageIndex) {
     } catch (e) {
       save.innerHTML = '✗ Failed';
       setTimeout(() => { save.innerHTML = '💾 Save'; }, 2000);
-      alert('Save failed: ' + (e && e.message ? e.message : e));
+      showToast('Save failed: ' + (e && e.message ? e.message : e));
     }
   };
   row.appendChild(regen);
@@ -5670,7 +5818,6 @@ function welcomeMarkup() {
     + '<div class="quick-start-body"><strong>Start here</strong><span id="quickStartHint">Step 1: Pick a model above to unlock quick start.</span></div>'
     + '<div class="quick-start-actions"><button id="quickStartBtn" class="btn-sm primary" onclick="startQuickTest()">Start quick test</button><button class="btn-sm" onclick="openFirstRunGuide()">Open setup guide</button></div>'
     + '</div>'
-    + '<div class="beginner-readiness warn" id="beginnerReadiness"><div><strong id="beginnerReadinessTitle">Checking first-chat readiness</strong><span id="beginnerReadinessMessage">Harness is checking Ollama and installed models before your first message.</span></div><span class="readiness-badge" id="beginnerReadinessBadge">Checking</span></div>'
     + '<div class="quick-suggestions" id="quickSuggestions" data-populated="1">'
     + quickStartChipsMarkup()
     + '</div>'
@@ -5689,7 +5836,6 @@ function welcomeMarkup() {
     + '<div class="cap-group"><div class="cap-icon">⚡</div><div><strong>Skills</strong><br>Create and use reusable AI capabilities</div></div>'
     + '<div class="cap-group"><div class="cap-icon">🤖</div><div><strong>Autonomy</strong><br>Run tasks automatically from a plan, no human in the loop</div></div>'
     + '</div></details>'
-    + '<div class="model-capability-hint" id="modelCapabilityHint">Pick a model from the dropdown above to get started.</div>'
     + '<details class="welcome-disclosure" id="welcomeFirstRun"' + (localStorage.getItem('harness_tour_seen') ? '' : ' open') + '>'
     + '<summary>New here? Quick guided tour (2 minutes)</summary>'
     + '<div class="welcome-disclosure-body">'
@@ -5722,7 +5868,7 @@ function welcomeMarkup() {
     + '</details>'
     + '</div>';
 }
-function exportChat() { if (!chatMessages.length) { alert('No messages.'); return; } let md = '# Chat Export\n\n'; for (const m of chatMessages) md += '## ' + (m.role === 'user' ? 'You' : 'Assistant') + '\n\n' + m.content + '\n\n---\n\n'; const blob = new Blob([md], { type: 'text/markdown' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'chat-' + new Date().toISOString().slice(0, 10) + '.md'; a.click(); }
+function exportChat() { if (!chatMessages.length) { showToast('No messages.'); return; } let md = '# Chat Export\n\n'; for (const m of chatMessages) md += '## ' + (m.role === 'user' ? 'You' : 'Assistant') + '\n\n' + m.content + '\n\n---\n\n'; const blob = new Blob([md], { type: 'text/markdown' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'chat-' + new Date().toISOString().slice(0, 10) + '.md'; a.click(); }
 
 async function loadFiles(dir) {
   try {
@@ -5840,7 +5986,7 @@ function clearSkillsBulkSelection() {
 async function bulkSetSkillsEnabled(enabled) {
   const names = Array.from(skillsBulkSelection);
   if (names.length === 0) return;
-  if (!confirm((enabled ? 'Enable' : 'Disable') + ' ' + names.length + ' skill(s)?')) return;
+  if (!await confirmToast((enabled ? 'Enable' : 'Disable') + ' ' + names.length + ' skill(s)?')) return;
   await Promise.all(names.map((name) => fetch('/api/skills/' + encodeURIComponent(name) + '/enabled', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -5853,7 +5999,7 @@ async function bulkSetSkillsEnabled(enabled) {
 async function bulkSetSkillsPinned(pinned) {
   const names = Array.from(skillsBulkSelection);
   if (names.length === 0) return;
-  if (!confirm((pinned ? 'Pin' : 'Unpin') + ' ' + names.length + ' skill(s)?')) return;
+  if (!await confirmToast((pinned ? 'Pin' : 'Unpin') + ' ' + names.length + ' skill(s)?')) return;
   await Promise.all(names.map((name) => fetch('/api/skills/' + encodeURIComponent(name) + '/pin', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -5866,7 +6012,7 @@ async function bulkSetSkillsPinned(pinned) {
 async function bulkDeleteSkills() {
   const names = Array.from(skillsBulkSelection);
   if (names.length === 0) return;
-  if (!confirm('Permanently delete ' + names.length + ' skill(s)?\n\n' + names.join('\n'))) return;
+  if (!await confirmToast('Permanently delete ' + names.length + ' skill(s)?\n\n' + names.join('\n'))) return;
   await Promise.all(names.map((name) => fetch('/api/skills/' + encodeURIComponent(name), { method: 'DELETE' }).catch(() => {})));
   clearSkillsBulkSelection();
   await loadSkills();
@@ -5997,7 +6143,7 @@ function clearFeaturedBulkSelection() {
 async function installSelectedFeatured() {
   const entries = Array.from(featuredBulkSelection.entries());
   if (entries.length === 0) return;
-  if (!confirm('Install ' + entries.length + ' featured skill(s) into runtime?')) return;
+  if (!await confirmToast('Install ' + entries.length + ' featured skill(s) into runtime?')) return;
   await Promise.all(entries.map(([id]) => fetch('/api/skills/install', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -6089,9 +6235,9 @@ async function toggleSkillEnabled(name, enabled) {
       body: JSON.stringify({ enabled }),
     });
     const data = await response.json();
-    if (data.error) { alert('Toggle failed: ' + data.error); return; }
+    if (data.error) { showToast('Toggle failed: ' + data.error); return; }
     await loadSkills();
-  } catch (error) { alert('Toggle failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Toggle failed: ' + (error.message || error)); }
 }
 
 // --- Skill detail modal ---
@@ -6237,7 +6383,7 @@ function renderSkillDiff(oldText, newText) {
 
 async function revertSkillToHistory(ts) {
   if (!activeSkillModalName) return;
-  if (!confirm('Revert this skill to the version from ' + ts + '? The current content will be snapshotted before the revert.')) return;
+  if (!await confirmToast('Revert this skill to the version from ' + ts + '? The current content will be snapshotted before the revert.')) return;
   const status = document.getElementById('skillModalStatus');
   if (status) status.textContent = 'Reverting…';
   try {
@@ -6372,9 +6518,9 @@ async function togglePinSkill(name, pinned) {
   try {
     const r = await fetch('/api/skills/' + encodeURIComponent(name) + '/pin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned }) });
     const data = await r.json();
-    if (data.error) { alert('Pin failed: ' + data.error); return; }
+    if (data.error) { showToast('Pin failed: ' + data.error); return; }
     await loadSkills();
-  } catch (error) { alert('Pin failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Pin failed: ' + (error.message || error)); }
 }
 
 function renderCuratorPanel(curator) {
@@ -6412,13 +6558,13 @@ function renderCuratorPanel(curator) {
 }
 
 async function restoreArchivedSkill(name) {
-  if (!confirm('Restore archived skill "' + name + '" back to the runtime library?')) return;
+  if (!await confirmToast('Restore archived skill "' + name + '" back to the runtime library?')) return;
   try {
     const response = await fetch('/api/curator/restore/' + encodeURIComponent(name), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     const data = await response.json();
-    if (data.error) { alert('Restore failed: ' + data.error); return; }
+    if (data.error) { showToast('Restore failed: ' + data.error); return; }
     await loadSkills();
-  } catch (error) { alert('Restore failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Restore failed: ' + (error.message || error)); }
 }
 
 async function curatorPreview() {
@@ -6433,7 +6579,7 @@ async function curatorPreview() {
 }
 
 async function curatorRunNow() {
-  if (!confirm('Run the curator now? This may archive stale, unpinned skills.')) return;
+  if (!await confirmToast('Run the curator now? This may archive stale, unpinned skills.')) return;
   const out = document.getElementById('curatorPreviewOutput');
   if (out) out.textContent = 'Running curator…';
   try {
@@ -6449,7 +6595,7 @@ async function curatorToggle(enable) {
   try {
     await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ curator: { enabled: enable } }) });
     await loadSkills();
-  } catch (error) { alert('Toggle failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Toggle failed: ' + (error.message || error)); }
 }
 
 function renderCuratorSummary(summary) {
@@ -6504,7 +6650,7 @@ async function applyCuratorProposal(index, dryRun) {
   const proposal = (window._curatorProposals || [])[index];
   if (!proposal) return;
   const result = document.getElementById('curatorProposalResult' + index);
-  if (!dryRun && !confirm('Apply merge "' + proposal.heading + '"? This writes a new umbrella skill and archives ' + proposal.mergeSkills.length + ' source skill(s).')) return;
+  if (!dryRun && !await confirmToast('Apply merge "' + proposal.heading + '"? This writes a new umbrella skill and archives ' + proposal.mergeSkills.length + ' source skill(s).')) return;
   if (result) result.textContent = dryRun ? 'Previewing…' : 'Applying…';
   try {
     const response = await fetch('/api/curator/proposals/apply', {
@@ -6524,33 +6670,33 @@ async function applyCuratorProposal(index, dryRun) {
 }
 
 async function dismissCuratorProposals() {
-  if (!confirm('Clear all current LLM merge proposals?')) return;
+  if (!await confirmToast('Clear all current LLM merge proposals?')) return;
   try {
     await fetch('/api/curator/proposals', { method: 'DELETE' });
     await loadSkills();
-  } catch (error) { alert('Dismiss failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Dismiss failed: ' + (error.message || error)); }
 }
 function renderRepoSkillItem(s) { const id = s.id || s.name; return '<div class="skill-item"><div class="sk-name">' + esc(s.name) + '</div><div class="sk-desc">' + esc(s.description) + '</div><div class="sk-meta"><span>' + esc(s.domain || 'repo') + '</span><span>read-only</span><button class="sk-install" onclick="installRepoSkill(\'' + escAttr(id) + '\', \'' + escAttr(s.name) + '\')">Install to runtime</button></div></div>'; }
 function renderSkillDiagnostics(diagnostics) { if (!diagnostics || diagnostics.length === 0) return '<div id="skillDiagnostics" class="trace-list"><div class="trace-title">Skill Diagnostics</div><div class="trace-meta">No skipped runtime skill folders.</div></div>'; return '<div id="skillDiagnostics" class="trace-list"><div class="trace-title">Skill Diagnostics</div>' + diagnostics.map((item) => '<div class="trace-item"><div class="trace-title">' + esc(item.name) + '</div><div class="trace-meta">' + esc(item.reason) + ' · ' + esc(item.message) + '</div><div class="trace-meta">' + esc(item.filePath) + '</div>' + renderSkillDiagnosticActions(item) + '</div>').join('') + '</div>'; }
 function renderSkillDiagnosticActions(item) { const actions = ['<button class="btn-sm" onclick="copySkillDiagnosticPath(\'' + escAttr(item.filePath) + '\')">Copy path</button>']; if (item.reason === 'missing-skill-file') actions.push('<button class="btn-sm" onclick="scaffoldSkill(\'' + escAttr(item.name) + '\')">Create starter SKILL.md</button>'); return '<div class="skill-diagnostic-actions">' + actions.join(' ') + '</div>'; }
 function useSkillFromList(name) { document.getElementById('chatInput').value = 'Use the skill: ' + name; sendMessage(); }
-async function deleteSkill(name) { if (!confirm('Delete skill "' + name + '"?')) return; await fetch('/api/skills/' + name, { method: 'DELETE' }); loadSkills(); }
+async function deleteSkill(name) { if (!await confirmToast('Delete skill "' + name + '"?')) return; await fetch('/api/skills/' + name, { method: 'DELETE' }); loadSkills(); }
 async function installRepoSkill(id, displayName) {
   const label = displayName || id;
-  if (!confirm('Install repo skill "' + label + '" into runtime .harness/skills?')) return;
+  if (!await confirmToast('Install repo skill "' + label + '" into runtime .harness/skills?')) return;
   try {
     let response = await fetch('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: id }) });
     if (response.status === 409) {
-      if (!confirm('Runtime skill "' + label + '" already exists. Overwrite it?')) return;
+      if (!await confirmToast('Runtime skill "' + label + '" already exists. Overwrite it?')) return;
       response = await fetch('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: id, overwrite: true }) });
     }
     const data = await response.json();
-    if (data.error) { alert('Install failed: ' + data.error); return; }
+    if (data.error) { showToast('Install failed: ' + data.error); return; }
     await loadSkills();
-  } catch (error) { alert('Install failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Install failed: ' + (error.message || error)); }
 }
 async function runSkillAutomation() {
-  if (!confirm('Run skill automation now? It installs missing repo skills and scaffolds runtime folders missing SKILL.md. Existing skills are skipped.')) return;
+  if (!await confirmToast('Run skill automation now? It installs missing repo skills and scaffolds runtime folders missing SKILL.md. Existing skills are skipped.')) return;
   const out = document.getElementById('skillAutomationResult');
   if (out) out.textContent = 'Running skill automation...';
   try {
@@ -6565,21 +6711,31 @@ async function runSkillAutomation() {
   } catch (error) { if (out) out.textContent = 'Automation failed: ' + (error.message || error); }
 }
 async function scaffoldSkill(name) {
-  if (!confirm('Create a starter SKILL.md for "' + name + '"?')) return;
+  if (!await confirmToast('Create a starter SKILL.md for "' + name + '"?')) return;
   try {
     const response = await fetch('/api/skills/scaffold', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
     const data = await response.json();
-    if (data.error) { alert('Scaffold failed: ' + data.error); return; }
+    if (data.error) { showToast('Scaffold failed: ' + data.error); return; }
     await loadSkills();
-  } catch (error) { alert('Scaffold failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Scaffold failed: ' + (error.message || error)); }
 }
 async function createSkillFromForm() {
   const out = document.getElementById('skillAutomationResult');
-  const name = document.getElementById('newSkillName')?.value.trim() || '';
+  const nameEl = document.getElementById('newSkillName');
+  const rawName = nameEl?.value.trim() || '';
   const description = document.getElementById('newSkillDescription')?.value.trim() || 'Describe what this skill does.';
   const triggers = document.getElementById('newSkillTriggers')?.value || '';
   const content = document.getElementById('newSkillContent')?.value.trim() || '';
-  if (!name) { if (out) out.textContent = 'Enter a skill id first.'; return; }
+  if (!rawName) { if (out) out.textContent = 'Enter a skill id first.'; return; }
+  // Server requires SAFE_ID_PATTERN /^[a-zA-Z0-9._-]+$/. If the user typed
+  // spaces or other characters, auto-slug instead of bouncing them with
+  // an opaque "Invalid skill name." error.
+  let name = rawName;
+  if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
+    name = name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+    if (!name) { if (out) out.textContent = 'Could not derive a valid id from that name. Use letters, digits, dot, dash, or underscore.'; return; }
+    if (nameEl) nameEl.value = name;
+  }
   try {
     let response = await fetch('/api/skills/create', {
       method: 'POST',
@@ -6587,7 +6743,7 @@ async function createSkillFromForm() {
       body: JSON.stringify({ name, description, triggers, content }),
     });
     if (response.status === 409) {
-      if (!confirm('Runtime skill "' + name + '" already exists. Overwrite it?')) return;
+      if (!await confirmToast('Runtime skill "' + name + '" already exists. Overwrite it?')) return;
       response = await fetch('/api/skills/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -6679,7 +6835,7 @@ async function exportOperatingServices() {
     anchor.click();
     URL.revokeObjectURL(anchor.href);
   } catch (error) {
-    alert('Export failed: ' + (error.message || error));
+    showToast('Export failed: ' + (error.message || error));
   }
 }
 
@@ -6691,10 +6847,10 @@ async function importOperatingServices(files) {
     const payload = JSON.parse(text);
     const response = await fetch('/api/services/import?overwrite=false', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const data = await readApiJson(response, 'Operating services import API');
-    alert('Imported ' + (data.imported?.length || 0) + ' service(s); skipped ' + (data.skipped?.length || 0) + '.');
+    showToast('Imported ' + (data.imported?.length || 0) + ' service(s); skipped ' + (data.skipped?.length || 0) + '.');
     await loadDiscovery();
   } catch (error) {
-    alert('Import failed: ' + (error.message || error));
+    showToast('Import failed: ' + (error.message || error));
   } finally {
     if (input) input.value = '';
   }
@@ -6831,7 +6987,7 @@ function renderInlineList(label, values) {
 
 async function refreshModelCatalog() { const status = document.getElementById('modelCatalogSettingsStatus'); if (status) status.textContent = 'Refreshing catalog...'; try { const response = await fetch('/api/models/catalog/refresh', { method: 'POST' }); const data = await response.json(); if (data.error) throw new Error(data.error); if (status) status.textContent = 'Catalog refreshed: ' + Object.keys(data.manifest?.providers || {}).length + ' provider(s).'; await loadDiscovery(); } catch (error) { if (status) status.textContent = 'Catalog refresh failed: ' + (error.message || error); } }
 
-async function rebuildSessionSearchIndex() { const view = document.getElementById('sessionSearchDiscoveryPanel'); if (view) view.querySelector('.trace-meta').textContent = 'Rebuilding search index...'; try { const response = await fetch('/api/sessions/search-index/rebuild', { method: 'POST' }); const data = await response.json(); if (data.error) throw new Error(data.error); await loadDiscovery(); } catch (error) { alert('Search index rebuild failed: ' + (error.message || error)); } }
+async function rebuildSessionSearchIndex() { const view = document.getElementById('sessionSearchDiscoveryPanel'); if (view) view.querySelector('.trace-meta').textContent = 'Rebuilding search index...'; try { const response = await fetch('/api/sessions/search-index/rebuild', { method: 'POST' }); const data = await response.json(); if (data.error) throw new Error(data.error); await loadDiscovery(); } catch (error) { showToast('Search index rebuild failed: ' + (error.message || error)); } }
 
 async function loadPalaceEntry(id) { const detail = document.getElementById('palaceDetail'); if (!detail) return; detail.classList.remove('initial-hidden'); detail.textContent = 'Loading memory entry...'; try { const entryResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id)); const entryData = await entryResponse.json(); if (entryData.error) { detail.textContent = entryData.error; return; } const contextResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id) + '/context?window=3'); const contextData = await contextResponse.json(); const entry = entryData.entry; const transcriptRows = (contextData.events || []).map((event) => '<div class="transcript-row' + (event.isAnchor ? ' anchor' : '') + '"><div><strong>' + esc(event.kind) + '</strong> · ' + esc(event.timestamp) + '</div><div class="prewrap-text">' + esc(event.text || '[empty]') + '</div></div>').join(''); detail.innerHTML = '<div><strong>Session</strong> ' + esc(entry.sessionId) + '</div><div><strong>Event</strong> ' + esc(entry.id) + '</div><div><strong>Kind</strong> ' + esc(entry.kind) + '</div><div><strong>Time</strong> ' + esc(entry.timestamp) + '</div><div class="prewrap-text trace-block-spaced">' + esc(entry.text) + '</div><div class="trace-block-spaced-large"><strong>Transcript Context</strong>' + (transcriptRows || '<div class="transcript-row">No transcript context found.</div>') + '</div>'; } catch (error) { detail.textContent = error.message; } }
 
@@ -7063,7 +7219,7 @@ const SETTINGS_DEFAULTS = {
 async function resetSettingsSection(section) {
   const payload = SETTINGS_DEFAULTS[section];
   if (!payload) return;
-  if (!confirm('Reset the ' + section + ' section to defaults?')) return;
+  if (!await confirmToast('Reset the ' + section + ' section to defaults?')) return;
   try {
     const response = await fetch('/api/settings', {
       method: 'POST',
@@ -7071,7 +7227,7 @@ async function resetSettingsSection(section) {
       body: JSON.stringify(payload),
     });
     const data = await response.json();
-    if (data.error) { alert('Reset failed: ' + data.error); return; }
+    if (data.error) { showToast('Reset failed: ' + data.error); return; }
     // Reflect the new value in the UI inputs that the user can see.
     if (section === 'connection') {
       const el = document.getElementById('ollamaHost');
@@ -7092,7 +7248,7 @@ async function resetSettingsSection(section) {
       const w = document.getElementById('webReadMaxChars'); if (w) w.value = 12000;
     }
     loadAbout();
-  } catch (error) { alert('Reset failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Reset failed: ' + (error.message || error)); }
 }
 
 // Populate the About section with version, model, ollama host, permission/skill/memory counts.
@@ -7549,10 +7705,10 @@ function toggleComposeFormat() {
   }
 }
 
-function insertComposeLink() {
-  var url = prompt('URL:');
+async function insertComposeLink() {
+  var url = await promptToast('URL:');
   if (!url) return;
-  var text = prompt('Link text:', url);
+  var text = await promptToast('Link text:', url);
   document.execCommand('insertHTML', false, '<a href="' + url.replace(/"/g, '&quot;') + '">' + (text || url).replace(/</g, '&lt;') + '</a>');
 }
 
@@ -7711,9 +7867,9 @@ async function saveAsTemplate() {
   var subjectInput = document.getElementById('composeSubjectInput');
   var bodyInput = document.getElementById('composeBodyInput');
   var status = document.getElementById('composeStatus');
-  var name = prompt('Template name:');
+  var name = await promptToast('Template name:');
   if (!name || !name.trim()) return;
-  var category = prompt('Category (optional, e.g. Work, Personal):');
+  var category = await promptToast('Category (optional, e.g. Work, Personal):');
   var formatRadio = document.querySelector('input[name="composeFormat"]:checked');
   var isHtml = formatRadio && formatRadio.value === 'html';
   try {
@@ -8519,7 +8675,7 @@ function renderReplaySourceLinks(example) {
 async function applyRoutingCalibration() {
   const response = await fetch('/api/learning/routing/apply-calibration', { method: 'POST' });
   const data = await response.json();
-  if (data.error) { alert(data.error); return; }
+  if (data.error) { showToast(data.error); return; }
   currentModelRouting = data.settings?.modelRouting || currentModelRouting;
   await loadSettings();
   await loadLearning();
@@ -8539,37 +8695,37 @@ async function inspectLearningCandidate(id) {
 
 async function runEvalDataset(mode) {
   const selectedModel = document.getElementById('modelSelect')?.value;
-  if (mode === 'live' && !selectedModel) { alert('Select a model before running live replay evals.'); return; }
+  if (mode === 'live' && !selectedModel) { showToast('Select a model before running live replay evals.'); return; }
   const response = await fetch('/api/evals/trace-examples/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: mode || 'stored', model: selectedModel }) });
   const data = await response.json();
-  if (data.error) { alert(data.error); return; }
+  if (data.error) { showToast(data.error); return; }
   await loadLearning();
 }
 
 async function reviewLearningCandidate(id, action) {
-  const reason = action === 'reject' ? prompt('Reason for rejection', 'Not useful enough') : undefined;
+  const reason = action === 'reject' ? await promptToast('Reason for rejection', 'Not useful enough') : undefined;
   if (action === 'reject' && reason === null) return;
   const response = await fetch('/api/learning/candidates/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, action, reason }) });
   const data = await response.json();
-  if (data.error) { alert(data.error); return; }
+  if (data.error) { showToast(data.error); return; }
   await loadLearning();
 }
 
 async function tagEvalExample(id, currentTags) {
-  const input = prompt('Tags, comma separated', currentTags || '');
+  const input = await promptToast('Tags, comma separated', currentTags || '');
   if (input === null) return;
   const response = await fetch('/api/evals/trace-examples/' + encodeURIComponent(id) + '/tags', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tags: input.split(',') }) });
   const data = await response.json();
-  if (data.error) { alert(data.error); return; }
+  if (data.error) { showToast(data.error); return; }
   await loadLearning();
   await loadTraceEvalExamples();
 }
 
 async function deleteEvalExample(id) {
-  if (!confirm('Delete this eval example?')) return;
+  if (!await confirmToast('Delete this eval example?')) return;
   const response = await fetch('/api/evals/trace-examples/' + encodeURIComponent(id), { method: 'DELETE' });
   const data = await response.json();
-  if (data.error) { alert(data.error); return; }
+  if (data.error) { showToast(data.error); return; }
   await loadLearning();
   await loadTraceEvalExamples();
 }
@@ -8578,12 +8734,12 @@ function downloadEvalDataset() {
   window.location.href = '/api/evals/trace-examples/download';
 }
 
-async function rebuildSemanticMemory() { try { const r = await fetch('/api/memory/rebuild', { method: 'POST' }); const d = await r.json(); alert('Semantic memory entries: ' + (d.entries || 0)); } catch (e) { alert(e.message); } }
+async function rebuildSemanticMemory() { try { const r = await fetch('/api/memory/rebuild', { method: 'POST' }); const d = await r.json(); showToast('Semantic memory entries: ' + (d.entries || 0)); } catch (e) { showToast(e.message); } }
 async function searchSemanticMemory() { const q = document.getElementById('semanticQuery').value.trim(); const box = document.getElementById('semanticResults'); if (!q) return; try { const r = await fetch('/api/memory/search?q=' + encodeURIComponent(q)); const d = await r.json(); box.innerHTML = (d.results || []).map((x) => '<div class="learning-pattern-card"><div class="accent-strong">' + esc(x.entry.kind) + ' · ' + Math.round(x.score * 100) + '</div><div class="trace-meta">' + esc(x.entry.text.slice(0, 220)) + '</div></div>').join('') || '<div class="settings-note">No matches</div>'; } catch (e) { box.textContent = e.message; } }
 
-async function exportTraceSnapshot() { try { const response = await fetch('/api/traces/exports', { method: 'POST' }); const data = await response.json(); if (data.error) { alert(data.error); return; } loadTraceExports(); } catch (error) { alert(error.message); } }
-async function exportTraceEvalExample() { try { const response = await fetch('/api/evals/trace-examples', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'browser trace export', tags: ['browser', 'runtime'] }) }); const data = await response.json(); if (data.error) { alert(data.error); return; } await loadTraceEvalExamples(); } catch (error) { alert(error.message); } }
-async function createWeatherReplayEval() { try { const response = await fetch('/api/evals/replay-examples', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'Bracknell weather answer regression', prompt: 'What is the weather like in Bracknell, UK today?', expectedResponseIncludes: ['Bracknell', 'weather'], expectedTools: ['web_search', 'web_read'], tags: ['weather', 'replay'] }) }); const data = await response.json(); if (data.error) { alert(data.error); return; } await loadTraceEvalExamples(); await loadLearning(); } catch (error) { alert(error.message); } }
+async function exportTraceSnapshot() { try { const response = await fetch('/api/traces/exports', { method: 'POST' }); const data = await response.json(); if (data.error) { showToast(data.error); return; } loadTraceExports(); } catch (error) { showToast(error.message); } }
+async function exportTraceEvalExample() { try { const response = await fetch('/api/evals/trace-examples', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'browser trace export', tags: ['browser', 'runtime'] }) }); const data = await response.json(); if (data.error) { showToast(data.error); return; } await loadTraceEvalExamples(); } catch (error) { showToast(error.message); } }
+async function createWeatherReplayEval() { try { const response = await fetch('/api/evals/replay-examples', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'Bracknell weather answer regression', prompt: 'What is the weather like in Bracknell, UK today?', expectedResponseIncludes: ['Bracknell', 'weather'], expectedTools: ['web_search', 'web_read'], tags: ['weather', 'replay'] }) }); const data = await response.json(); if (data.error) { showToast(data.error); return; } await loadTraceEvalExamples(); await loadLearning(); } catch (error) { showToast(error.message); } }
 async function loadTraceEvalExamples() { const box = document.getElementById('traceEvalExamples'); if (!box) return; try { const response = await fetch('/api/evals/trace-examples'); const data = await response.json(); const examples = data.examples || []; box.innerHTML = examples.slice(-5).reverse().map((item) => '<div class="trace-item"><div class="trace-title">Eval · ' + esc(item.status) + '</div><div class="trace-meta">' + esc(item.task) + ' · ' + esc((item.tags || []).join(', ')) + '</div></div>').join('') || '<div class="trace-meta">No eval examples</div>'; } catch(e){ box.innerHTML = '<div class="trace-meta">Eval examples unavailable</div>'; } }
 async function loadTraceExports() { const box = document.getElementById('traceExports'); if (!box) return; try { const response = await fetch('/api/traces/exports'); const data = await response.json(); box.innerHTML = (data.exports || []).slice(0, 5).map((item) => '<div class="trace-item"><div class="trace-title">' + esc(item.id) + '</div><div class="trace-meta">' + Math.round((item.size || 0) / 1024) + ' KB · ' + esc(item.modifiedAt || '') + '</div><button class="btn-sm full-width-button" onclick="inspectTraceExport(\'' + escAttr(item.id) + '\')">Inspect trace</button></div>').join('') || '<div class="trace-meta">No exports</div>'; await loadTraceEvalExamples(); } catch(e){ box.innerHTML = '<div class="trace-meta">Trace exports unavailable</div>'; } }
 
@@ -8595,7 +8751,7 @@ function traceRecordText(record) { return JSON.stringify(record || {}).toLowerCa
 
 async function loadRuntimeStorage() { const box = document.getElementById('runtimeStorageStatus'); if (!box) return; try { const response = await fetch('/api/runtime/storage'); const data = await response.json(); box.innerHTML = '<div><strong>Trace exports</strong> ' + esc(data.traces.count) + ' files · ' + Math.round((data.traces.bytes || 0) / 1024) + ' KB</div><div><strong>Semantic index</strong> ' + (data.semanticIndex.exists ? Math.round((data.semanticIndex.bytes || 0) / 1024) + ' KB' : 'not built') + '</div>'; } catch (error) { box.textContent = error.message; } }
 
-async function cleanupRuntimeStorage(target) { const body = { traces: target === 'traces', semanticIndex: target === 'semanticIndex' }; try { const response = await fetch('/api/runtime/cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const data = await response.json(); if (data.error) { alert(data.error); return; } await loadRuntimeStorage(); if (target === 'traces') await loadTraceExports(); } catch (error) { alert(error.message); } }
+async function cleanupRuntimeStorage(target) { const body = { traces: target === 'traces', semanticIndex: target === 'semanticIndex' }; try { const response = await fetch('/api/runtime/cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const data = await response.json(); if (data.error) { showToast(data.error); return; } await loadRuntimeStorage(); if (target === 'traces') await loadTraceExports(); } catch (error) { showToast(error.message); } }
 
 // ─── Snapshots tab (skills + memory + config) ──────────────────────
 // Renders a list of snapshots with "Take", "Diff", "Restore", "Delete"
@@ -8630,14 +8786,14 @@ async function loadSnapshots() {
 }
 
 async function takeSnapshot() {
-  const reason = window.prompt('Snapshot label (optional):', 'manual');
+  const reason = await promptToast('Snapshot label (optional):', 'manual');
   if (reason === null) return;
   try {
     const r = await fetch('/api/snapshots', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     await loadSnapshots();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 async function diffSnapshot(id) {
@@ -8658,24 +8814,24 @@ async function diffSnapshot(id) {
 }
 
 async function restoreSnapshot(id) {
-  if (!confirm('Restore snapshot ' + id + '?\n\nA pre-restore safety snapshot will be taken first so you can undo.')) return;
+  if (!await confirmToast('Restore snapshot ' + id + '?\n\nA pre-restore safety snapshot will be taken first so you can undo.')) return;
   try {
     const r = await fetch('/api/snapshots/' + encodeURIComponent(id) + '/restore', { method: 'POST' });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
-    alert('Restored ' + d.restoredFiles + ' file(s).\nSafety snapshot: ' + d.safetySnapshotId);
+    if (d.error) { showToast(d.error); return; }
+    showToast('Restored ' + d.restoredFiles + ' file(s).\nSafety snapshot: ' + d.safetySnapshotId);
     await loadSnapshots();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 async function deleteSnapshot(id) {
-  if (!confirm('Delete snapshot ' + id + '? This cannot be undone.')) return;
+  if (!await confirmToast('Delete snapshot ' + id + '? This cannot be undone.')) return;
   try {
     const r = await fetch('/api/snapshots/' + encodeURIComponent(id), { method: 'DELETE' });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     await loadSnapshots();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 // ─── Local RAG tab ────────────────────────────────────────────────
@@ -9119,13 +9275,13 @@ function ragCopyChunk(button) {
 }
 
 async function ragDrop(name) {
-  if (!confirm('Delete index "' + name + '"?')) return;
+  if (!await confirmToast('Delete index "' + name + '"?')) return;
   try {
     const r = await fetch('/api/rag/indexes/' + encodeURIComponent(name), { method: 'DELETE' });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     await loadRagTab();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 function ragLoadPrefsIntoPicker(name) {
@@ -9145,7 +9301,7 @@ function ragLoadPrefsIntoPicker(name) {
 async function ragRebuildNow(name) {
   const idx = ragState.indexCache.get(name);
   if (!idx || !idx.prefs || !Array.isArray(idx.prefs.paths) || idx.prefs.paths.length === 0) return;
-  if (!confirm('Rebuild index "' + name + '" with the same ' + idx.prefs.paths.length + ' path(s)?')) return;
+  if (!await confirmToast('Rebuild index "' + name + '" with the same ' + idx.prefs.paths.length + ' path(s)?')) return;
   ragState.selectedPaths = new Set(idx.prefs.paths);
   const nameInput = document.getElementById('ragBuildName');
   if (nameInput) nameInput.value = name;
@@ -9363,41 +9519,41 @@ async function mcpRuntimeStart(id) {
   try {
     const r = await fetch('/api/mcp/runtime/servers/' + encodeURIComponent(id) + '/start', { method: 'POST' });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     const pid = d.server && d.server.pid ? ' (pid ' + d.server.pid + ')' : '';
     showToast('Started MCP server "' + id + '"' + pid + '. Run Discover tools to expose its tools in the registry.', 5000, 'success');
     await loadToolsDashboard();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 async function mcpRuntimeDiscoverTools(id) {
   try {
     const r = await fetch('/api/mcp/runtime/servers/' + encodeURIComponent(id) + '/discover-tools', { method: 'POST' });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     const count = Array.isArray(d.server?.tools) ? d.server.tools.length : 0;
     showToast('Discovered ' + count + ' MCP tool(s) for "' + id + '".', 5000, 'success');
     await loadToolsDashboard();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 async function mcpRuntimeStop(id) {
   try {
     const r = await fetch('/api/mcp/runtime/servers/' + encodeURIComponent(id) + '/stop', { method: 'POST' });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     await loadToolsDashboard();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 async function mcpRuntimeDelete(id) {
-  if (!confirm('Remove MCP runtime server "' + id + '"?')) return;
+  if (!await confirmToast('Remove MCP runtime server "' + id + '"?')) return;
   try {
     const r = await fetch('/api/mcp/runtime/servers/' + encodeURIComponent(id), { method: 'DELETE' });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     await loadToolsDashboard();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 async function createMcpRuntimeFromForm() {
@@ -9618,7 +9774,7 @@ function filterAuditEvents() {
 }
 
 async function grantCapability(capabilityId) {
-  const reason = prompt('Reason for this capability grant?', 'Manual grant from Tools dashboard.');
+  const reason = await promptToast('Reason for this capability grant?', 'Manual grant from Tools dashboard.');
   if (reason === null) return;
   // For shell-style capabilities, offer to attach a per-grant
   // commandAllowlist of regex sources. When ANY pattern is supplied the
@@ -9629,7 +9785,7 @@ async function grantCapability(capabilityId) {
   let commandAllowlist = [];
   let maxExpiry = 1440;
   if (isShellCapability) {
-    const patternsRaw = prompt(
+    const patternsRaw = await promptToast(
       'OPTIONAL: command allowlist (one regex per line). '
       + 'Leave blank for the default 24h preset-only grant. '
       + 'Each pattern is anchored at run time and matched against the trimmed command. '
@@ -9640,11 +9796,11 @@ async function grantCapability(capabilityId) {
     commandAllowlist = patternsRaw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     if (commandAllowlist.length > 0) maxExpiry = 525_600; // 1 year
   }
-  const expiresRaw = prompt('Expire after how many minutes? (1-' + maxExpiry + ')', commandAllowlist.length > 0 ? '525600' : '60');
+  const expiresRaw = await promptToast('Expire after how many minutes? (1-' + maxExpiry + ')', commandAllowlist.length > 0 ? '525600' : '60');
   if (expiresRaw === null) return;
   const capabilities = await fetch('/api/capabilities').then((r) => r.json());
   const item = (capabilities.capabilities || []).find((cap) => cap.id === capabilityId);
-  if (!item || item.posture !== 'gated') { alert('Only gated capabilities can be granted.'); return; }
+  if (!item || item.posture !== 'gated') { showToast('Only gated capabilities can be granted.'); return; }
   const body = {
     capabilityId,
     controls: item.requiredControls || [],
@@ -9658,15 +9814,15 @@ async function grantCapability(capabilityId) {
     body: JSON.stringify(body),
   });
   const data = await response.json();
-  if (data.error) { alert('Grant failed: ' + data.error); return; }
+  if (data.error) { showToast('Grant failed: ' + data.error); return; }
   await loadToolsDashboard();
 }
 
 async function revokeCapabilityGrant(grantId) {
-  if (!confirm('Revoke this capability grant?')) return;
+  if (!await confirmToast('Revoke this capability grant?')) return;
   const response = await fetch('/api/capabilities/grants/' + encodeURIComponent(grantId), { method: 'DELETE' });
   const data = await response.json();
-  if (data.error) { alert('Revoke failed: ' + data.error); return; }
+  if (data.error) { showToast('Revoke failed: ' + data.error); return; }
   await loadToolsDashboard();
 }
 
@@ -9743,10 +9899,10 @@ async function toggleTool(name, enable, expiresInMinutes) {
 }
 
 async function toggleToolTimed(name) {
-  const minutesRaw = prompt('Enable ' + name + ' for how many minutes? (1-1440)', '60');
+  const minutesRaw = await promptToast('Enable ' + name + ' for how many minutes? (1-1440)', '60');
   if (minutesRaw === null) return;
   const minutes = Number(minutesRaw);
-  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { alert('Enter a number between 1 and 1440.'); return; }
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { showToast('Enter a number between 1 and 1440.'); return; }
   await toggleTool(name, true, minutes);
 }
 
@@ -9760,22 +9916,22 @@ async function bulkToggleToolset(names, enable, expiresInMinutes) {
 }
 
 async function bulkToggleToolsetTimed(names) {
-  const minutesRaw = prompt('Enable all tools in this group for how many minutes? (1-1440)', '60');
+  const minutesRaw = await promptToast('Enable all tools in this group for how many minutes? (1-1440)', '60');
   if (minutesRaw === null) return;
   const minutes = Number(minutesRaw);
-  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { alert('Enter a number between 1 and 1440.'); return; }
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { showToast('Enter a number between 1 and 1440.'); return; }
   await bulkToggleToolset(names, true, minutes);
 }
 
 async function engageKillSwitch() {
-  const reason = prompt('Why are you engaging the kill switch?', 'Manual stop from dashboard.');
+  const reason = await promptToast('Why are you engaging the kill switch?', 'Manual stop from dashboard.');
   if (reason === null) return;
   await fetch('/api/permissions/kill-switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: true, reason }) });
   await loadToolsDashboard();
 }
 
 async function releaseKillSwitch() {
-  if (!confirm('Release the kill switch and resume normal tool calls?')) return;
+  if (!await confirmToast('Release the kill switch and resume normal tool calls?')) return;
   await fetch('/api/permissions/kill-switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: false }) });
   await loadToolsDashboard();
 }
@@ -10055,33 +10211,33 @@ async function viewAutomationRunOutput(outputPath, btn) {
   try {
     const response = await fetch('/api/automations/output?path=' + encodeURIComponent(outputPath));
     const data = await response.json();
-    if (data.error) { alert('Could not load output: ' + data.error); return; }
+    if (data.error) { showToast('Could not load output: ' + data.error); return; }
     if (outputDiv) {
       outputDiv.classList.remove('hidden-by-default');
       outputDiv.innerHTML = '<pre class="automation-output-pre">' + esc(data.content) + '</pre>';
       btn.textContent = 'Hide';
     }
-  } catch (error) { alert('Failed to load output: ' + (error.message || error)); }
+  } catch (error) { showToast('Failed to load output: ' + (error.message || error)); }
 }
 
 async function executeAutomationDueJobs() {
   try {
     const response = await fetch('/api/automations/execute-due', { method: 'POST' });
     const data = await response.json();
-    if (data.error) { alert('Execute failed: ' + data.error); return; }
-    alert('Executed ' + (data.executed || 0) + ' due job(s).');
+    if (data.error) { showToast('Execute failed: ' + data.error); return; }
+    showToast('Executed ' + (data.executed || 0) + ' due job(s).');
     loadRuns();
-  } catch (error) { alert('Execute failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Execute failed: ' + (error.message || error)); }
 }
 
 async function runAutomationJobNow(jobId) {
   try {
     const response = await fetch('/api/automations/' + encodeURIComponent(jobId) + '/execute', { method: 'POST' });
     const data = await response.json();
-    if (data.error) { alert('Run failed: ' + data.error); return; }
-    alert('Job "' + (data.name || jobId) + '" executed. Output: ' + (data.outputPath || 'none'));
+    if (data.error) { showToast('Run failed: ' + data.error); return; }
+    showToast('Job "' + (data.name || jobId) + '" executed. Output: ' + (data.outputPath || 'none'));
     loadRuns();
-  } catch (error) { alert('Run failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Run failed: ' + (error.message || error)); }
 }
 
 function showNewAutomationJobForm() {
@@ -10253,7 +10409,7 @@ async function saveWorkflowWizard() {
       body: JSON.stringify({ name, description, steps }),
     });
     if (response.status === 409) {
-      if (!confirm('Workflow "' + name + '" already exists. Overwrite?')) { status.textContent = 'Cancelled.'; return; }
+      if (!await confirmToast('Workflow "' + name + '" already exists. Overwrite?')) { status.textContent = 'Cancelled.'; return; }
       response = await fetch('/api/workflows', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -10290,7 +10446,7 @@ async function createAutomationJob() {
   const prompt = document.getElementById('newJobPrompt')?.value?.trim();
   const schedule = document.getElementById('newJobSchedule')?.value?.trim();
   const scriptCommand = document.getElementById('newJobScript')?.value?.trim() || undefined;
-  if (!name || !prompt || !schedule) { alert('Name, prompt, and schedule are required.'); return; }
+  if (!name || !prompt || !schedule) { showToast('Name, prompt, and schedule are required.'); return; }
   try {
     const response = await fetch('/api/automations/jobs', {
       method: 'POST',
@@ -10298,20 +10454,20 @@ async function createAutomationJob() {
       body: JSON.stringify({ name, prompt, schedule, scriptCommand }),
     });
     const data = await response.json();
-    if (data.error) { alert('Create failed: ' + data.error); return; }
+    if (data.error) { showToast('Create failed: ' + data.error); return; }
     hideNewAutomationJobForm();
     loadRuns();
-  } catch (error) { alert('Create failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Create failed: ' + (error.message || error)); }
 }
 
 async function deleteAutomationJob(jobId) {
-  if (!confirm('Delete this automation job?')) return;
+  if (!await confirmToast('Delete this automation job?')) return;
   try {
     const response = await fetch('/api/automations/jobs/' + encodeURIComponent(jobId), { method: 'DELETE' });
     const data = await response.json();
-    if (data.error) { alert('Delete failed: ' + data.error); return; }
+    if (data.error) { showToast('Delete failed: ' + data.error); return; }
     loadRuns();
-  } catch (error) { alert('Delete failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Delete failed: ' + (error.message || error)); }
 }
 
 async function toggleAutomationJob(jobId, enabled) {
@@ -10322,19 +10478,19 @@ async function toggleAutomationJob(jobId, enabled) {
       body: JSON.stringify({ enabled }),
     });
     const data = await response.json();
-    if (data.error) { alert('Toggle failed: ' + data.error); return; }
+    if (data.error) { showToast('Toggle failed: ' + data.error); return; }
     loadRuns();
-  } catch (error) { alert('Toggle failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Toggle failed: ' + (error.message || error)); }
 }
 
-function editAutomationJob(jobId, name, prompt, schedule, scriptCommand) {
-  const newName = window.prompt('Job name:', name);
+async function editAutomationJob(jobId, name, prompt, schedule, scriptCommand) {
+  const newName = await promptToast('Job name:', name);
   if (newName === null) return;
-  const newPrompt = window.prompt('Prompt:', prompt);
+  const newPrompt = await promptToast('Prompt:', prompt);
   if (newPrompt === null) return;
-  const newSchedule = window.prompt('Schedule (e.g. every 2h, 30m, 0 9 * * *):', schedule);
+  const newSchedule = await promptToast('Schedule (e.g. every 2h, 30m, 0 9 * * *):', schedule);
   if (newSchedule === null) return;
-  const newScript = window.prompt('Script command (leave empty for none):', scriptCommand);
+  const newScript = await promptToast('Script command (leave empty for none):', scriptCommand);
   if (newScript === null) return;
   const body = {};
   if (newName.trim() !== name) body.name = newName.trim();
@@ -10347,9 +10503,9 @@ function editAutomationJob(jobId, name, prompt, schedule, scriptCommand) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then((r) => r.json()).then((data) => {
-    if (data.error) { alert('Edit failed: ' + data.error); return; }
+    if (data.error) { showToast('Edit failed: ' + data.error); return; }
     loadRuns();
-  }).catch((error) => alert('Edit failed: ' + (error.message || error)));
+  }).catch((error) => showToast('Edit failed: ' + (error.message || error)));
 }
 
 function renderCuratorRunsSection(curator) {
@@ -10604,9 +10760,9 @@ async function runWorkflow(name, dryRun) {
       body: JSON.stringify({ dryRun }),
     });
     const data = await response.json();
-    if (data.error) { alert('Workflow failed to start: ' + data.error); return; }
+    if (data.error) { showToast('Workflow failed to start: ' + data.error); return; }
     setTimeout(loadWorkflows, 300);
-  } catch (error) { alert('Workflow failed to start: ' + (error.message || error)); }
+  } catch (error) { showToast('Workflow failed to start: ' + (error.message || error)); }
 }
 
 async function pauseWorkflowRun(id) {
@@ -10645,7 +10801,7 @@ async function resumeWorkflowRun(id) {
 }
 
 async function cancelWorkflowRun(id) {
-  if (!confirm('Cancel this workflow run?')) return;
+  if (!await confirmToast('Cancel this workflow run?')) return;
   await fetch('/api/workflows/runs/' + encodeURIComponent(id) + '/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   loadWorkflows();
 }
@@ -10687,18 +10843,18 @@ function renderMcpCatalogList() {
 
 async function configureMcpFromCatalog(name, overwrite) {
   try {
-    if (overwrite && !confirm('Replace the saved MCP server "' + name + '" with the catalog definition?')) return;
+    if (overwrite && !await confirmToast('Replace the saved MCP server "' + name + '" with the catalog definition?')) return;
     let response = await fetch('/api/mcp/runtime/from-catalog', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, overwrite: overwrite === true }) });
     if (response.status === 409) {
-      if (!confirm('MCP server "' + name + '" already exists. Replace it from the catalog?')) return;
+      if (!await confirmToast('MCP server "' + name + '" already exists. Replace it from the catalog?')) return;
       response = await fetch('/api/mcp/runtime/from-catalog', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, overwrite: true }) });
     }
     const data = await response.json();
-    if (data.error) { alert('Add failed: ' + data.error); return; }
+    if (data.error) { showToast('Add failed: ' + data.error); return; }
     const envNote = (data.requiresEnv || []).length ? '\nSet env vars before starting: ' + data.requiresEnv.join(', ') : '';
-    alert((overwrite ? 'Replaced' : 'Added') + ' MCP server "' + name + '".' + envNote);
+    showToast((overwrite ? 'Replaced' : 'Added') + ' MCP server "' + name + '".' + envNote);
     await loadToolsDashboard();
-  } catch (error) { alert('Add failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Add failed: ' + (error.message || error)); }
 }
 
 function copyMcpInstall(text, btn) {
@@ -10710,7 +10866,7 @@ function copyMcpInstall(text, btn) {
       setTimeout(() => { if (btn) btn.textContent = original; }, 1200);
     }
   } catch (e) {
-    alert('Copy failed: ' + e.message);
+    showToast('Copy failed: ' + e.message);
   }
 }
 
@@ -10725,7 +10881,7 @@ let voiceActive = false;
 function toggleVoiceInput() {
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Recognition) {
-    alert('Voice input requires Web Speech API support. Try Chrome or Edge.');
+    showToast('Voice input requires Web Speech API support. Try Chrome or Edge.');
     return;
   }
   const btn = document.getElementById('voiceBtn');
@@ -10770,7 +10926,7 @@ function toggleVoiceInput() {
     console.warn('voice recognition error:', code, event);
     if (code === 'not-allowed' || code === 'service-not-allowed') {
       voiceShowStatus('🎙️ ❌ mic permission denied — click 🔒 in address bar to allow');
-      alert('Microphone permission denied. Allow microphone access in your browser to use voice input.');
+      showToast('Microphone permission denied. Allow microphone access in your browser to use voice input.');
     } else if (code === 'no-speech') {
       voiceShowStatus('🎙️ ⚠️ no speech detected — speak louder or check your input device');
     } else if (code === 'audio-capture') {
@@ -10812,7 +10968,7 @@ function toggleVoiceInput() {
     voiceActive = false;
     if (btn) { btn.classList.remove('recording'); btn.title = 'Voice input (browser STT)'; }
     voiceShowStatus('🎙️ ❌ start failed: ' + e.message);
-    alert('Could not start voice input: ' + e.message);
+    showToast('Could not start voice input: ' + e.message);
   }
 }
 
@@ -11130,10 +11286,10 @@ async function jarvisSendBriefToTelegram() {
   try {
     const response = await fetch('/api/jarvis/brief/telegram', { method: 'POST' });
     const data = await response.json();
-    if (!response.ok) { alert('Telegram brief failed: ' + (data.error || response.status)); return; }
-    alert('Brief delivered to ' + data.delivered + ' Telegram chat(s).');
+    if (!response.ok) { showToast('Telegram brief failed: ' + (data.error || response.status)); return; }
+    showToast('Brief delivered to ' + data.delivered + ' Telegram chat(s).');
   } catch (error) {
-    alert('Telegram brief failed: ' + (error.message || error));
+    showToast('Telegram brief failed: ' + (error.message || error));
   }
 }
 
@@ -11148,7 +11304,7 @@ async function jarvisSendBriefToTelegram() {
 async function jarvisPickMic() {
   try {
     if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
-      alert('Browser does not expose mic device enumeration.');
+      showToast('Browser does not expose mic device enumeration.');
       return;
     }
     // Permission must already have been granted at least once for labels
@@ -11159,28 +11315,28 @@ async function jarvisPickMic() {
     if (probeStream) probeStream.getTracks().forEach((t) => t.stop());
     const inputs = devices.filter((d) => d.kind === 'audioinput');
     if (inputs.length === 0) {
-      alert('No microphones detected. Check Windows → Settings → Privacy → Microphone.');
+      showToast('No microphones detected. Check Windows → Settings → Privacy → Microphone.');
       return;
     }
     const current = localStorage.getItem('jarvisMicDeviceId') || '';
     const lines = inputs.map((d, i) => `${i + 1}. ${d.label || '(unlabeled — grant permission first)'}${d.deviceId === current ? '  ← currently selected' : ''}`).join('\n');
-    const choice = prompt('Pick microphone (number):\n\n' + lines + '\n\nLeave blank to use system default.', '');
+    const choice = await promptToast('Pick microphone (number):\n\n' + lines + '\n\nLeave blank to use system default.', '');
     if (choice === null) return;
     const trimmed = choice.trim();
     if (!trimmed) {
       localStorage.removeItem('jarvisMicDeviceId');
-      alert('Cleared mic preference. Will use system default next time.');
+      showToast('Cleared mic preference. Will use system default next time.');
       return;
     }
     const idx = parseInt(trimmed, 10) - 1;
     if (Number.isNaN(idx) || idx < 0 || idx >= inputs.length) {
-      alert('Invalid choice.');
+      showToast('Invalid choice.');
       return;
     }
     localStorage.setItem('jarvisMicDeviceId', inputs[idx].deviceId);
-    alert('Selected: ' + (inputs[idx].label || inputs[idx].deviceId) + '\n\nClick the 🎤 button again to use it.');
+    showToast('Selected: ' + (inputs[idx].label || inputs[idx].deviceId) + '\n\nClick the 🎤 button again to use it.');
   } catch (error) {
-    alert('Mic picker failed: ' + (error.message || error));
+    showToast('Mic picker failed: ' + (error.message || error));
   }
 }
 
@@ -11849,13 +12005,13 @@ function applyAccentColor(color) {
 // ─── Mycelium tab ───────────────────────────────────────────────────
 
 async function resetMyceliumGraph() {
-  if (!confirm('Reset the mycelium graph? All learned routes will be lost.')) return;
+  if (!await confirmToast('Reset the mycelium graph? All learned routes will be lost.')) return;
   try {
     const response = await fetch('/api/mycelium', { method: 'DELETE' });
     const data = await response.json();
-    if (data.error) { alert('Reset failed: ' + data.error); return; }
+    if (data.error) { showToast('Reset failed: ' + data.error); return; }
     loadMycelium();
-  } catch (error) { alert('Reset failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Reset failed: ' + (error.message || error)); }
 }
 
 async function loadMycelium() {
@@ -12268,7 +12424,7 @@ async function createTaskFromForm() {
   const assigneeEl = document.getElementById('newTaskAssignee');
   const priorityEl = document.getElementById('newTaskPriority');
   const title = titleEl ? titleEl.value.trim() : '';
-  if (!title) { alert('Title is required.'); return; }
+  if (!title) { showToast('Title is required.'); return; }
   const body = { title };
   if (assigneeEl && assigneeEl.value.trim()) body.assigneeId = assigneeEl.value.trim();
   if (priorityEl && priorityEl.value.trim()) body.priority = priorityEl.value.trim();
@@ -12279,7 +12435,7 @@ async function createTaskFromForm() {
     if (titleEl) titleEl.value = '';
     await loadTasks();
   } catch (error) {
-    alert('Create failed: ' + (error && error.message ? error.message : error));
+    showToast('Create failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12290,19 +12446,19 @@ async function updateTaskStatus(id, status) {
     if (data.error) throw new Error(data.error);
     await loadTasks();
   } catch (error) {
-    alert('Update failed: ' + (error && error.message ? error.message : error));
+    showToast('Update failed: ' + (error && error.message ? error.message : error));
   }
 }
 
 async function deleteTaskById(id) {
-  if (!confirm('Delete this task?')) return;
+  if (!await confirmToast('Delete this task?')) return;
   try {
     const response = await fetch('/api/tasks/' + encodeURIComponent(id), { method: 'DELETE' });
     const data = await response.json();
     if (data.error) throw new Error(data.error);
     await loadTasks();
   } catch (error) {
-    alert('Delete failed: ' + (error && error.message ? error.message : error));
+    showToast('Delete failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12453,7 +12609,7 @@ async function createTriggerFromForm() {
   const intervalEl = document.getElementById('newTriggerInterval');
   const id = idEl ? idEl.value.trim() : '';
   const command = commandEl ? commandEl.value.trim() : '';
-  if (!id || !command) { alert('id and command are required.'); return; }
+  if (!id || !command) { showToast('id and command are required.'); return; }
   const args = argsEl && argsEl.value.trim() ? argsEl.value.trim().split(/\s+/) : [];
   const intervalSeconds = intervalEl ? Math.max(5, Number(intervalEl.value) || 30) : 30;
   try {
@@ -12465,7 +12621,7 @@ async function createTriggerFromForm() {
     if (argsEl) argsEl.value = '';
     await loadTriggers();
   } catch (error) {
-    alert('Create failed: ' + (error && error.message ? error.message : error));
+    showToast('Create failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12476,19 +12632,19 @@ async function setTriggerEnabled(id, enabled) {
     if (data.error) throw new Error(data.error);
     await loadTriggers();
   } catch (error) {
-    alert('Update failed: ' + (error && error.message ? error.message : error));
+    showToast('Update failed: ' + (error && error.message ? error.message : error));
   }
 }
 
 async function deleteTriggerById(id) {
-  if (!confirm('Delete trigger ' + id + '?')) return;
+  if (!await confirmToast('Delete trigger ' + id + '?')) return;
   try {
     const response = await fetch('/api/triggers/' + encodeURIComponent(id), { method: 'DELETE' });
     const data = await response.json();
     if (data.error) throw new Error(data.error);
     await loadTriggers();
   } catch (error) {
-    alert('Delete failed: ' + (error && error.message ? error.message : error));
+    showToast('Delete failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12502,7 +12658,7 @@ async function loadAgents() {
     if (data.error) { view.textContent = data.error; return; }
     const agents = Array.isArray(data.agents) ? data.agents : [];
     const summary = '<div class="tools-summary-line"><strong>' + agents.length + '</strong> agents (built-in + custom under .harness/agents/)</div>';
-    const newForm = '<div class="automation-wizard"><div class="automation-wizard-title">New custom agent</div><div class="automation-field"><label for="newAgentId">Id</label><input id="newAgentId" type="text" placeholder="finance-analyst" /></div><div class="automation-field"><label for="newAgentName">Name</label><input id="newAgentName" type="text" placeholder="Finance Analyst" /></div><div class="automation-field"><label for="newAgentDescription">Description</label><input id="newAgentDescription" type="text" placeholder="Reviews ledgers and budgets." /></div><div class="automation-field"><label for="newAgentPreset">Preset (optional)</label><input id="newAgentPreset" type="text" placeholder="explore | plan | review | summarize | general" /></div><div class="automation-field"><label for="newAgentSystemPrompt">System prompt</label><textarea id="newAgentSystemPrompt" rows="4" placeholder="You are a Finance Analyst..."></textarea></div><div class="settings-collapse-actions"><button class="btn-sm" onclick="createAgentFromForm()">+ Create</button></div></div>';
+    const newForm = '<div class="automation-wizard"><div class="automation-wizard-title">New custom agent</div><div class="automation-field"><label for="newAgentId">Id <span class="automation-field-hint">(auto from name if blank)</span></label><input id="newAgentId" type="text" placeholder="finance-analyst" /></div><div class="automation-field"><label for="newAgentName">Name</label><input id="newAgentName" type="text" placeholder="Finance Analyst" /></div><div class="automation-field"><label for="newAgentDescription">Description</label><input id="newAgentDescription" type="text" placeholder="Reviews ledgers and budgets." /></div><div class="automation-field"><label for="newAgentPreset">Preset (optional)</label><input id="newAgentPreset" type="text" placeholder="explore | plan | review | summarize | general" /></div><div class="automation-field"><label for="newAgentSystemPrompt">System prompt</label><textarea id="newAgentSystemPrompt" rows="4" placeholder="You are a Finance Analyst..."></textarea></div><div class="settings-collapse-actions"><button class="btn-sm" onclick="createAgentFromForm()">+ Create</button></div></div>';
     const rows = agents.map((agent) => {
       const sourceBadge = agent.source === 'custom' ? 'custom' : 'built-in';
       const meta = [
@@ -12513,22 +12669,51 @@ async function loadAgents() {
       const allowed = Array.isArray(agent.allowedTools) && agent.allowedTools.length > 0
         ? '<div class="skill-card-meta">tools: ' + esc(agent.allowedTools.slice(0, 6).join(', ')) + (agent.allowedTools.length > 6 ? '…' : '') + '</div>' : '';
       const description = agent.description ? '<div class="skill-card-desc">' + esc(agent.description) + '</div>' : '';
-      const actions = agent.source === 'custom' ? '<button class="sk-del" onclick="deleteAgentById(\'' + esc(agent.id) + '\')" title="Delete custom agent">✕</button>' : '';
-      return '<div class="skill-card"><div class="skill-card-top"><div><div class="skill-card-name">' + esc(agent.name) + '</div><div class="skill-card-meta">' + meta + '</div></div><div class="skill-card-actions-right">' + actions + '</div></div>' + description + allowed + '</div>';
+      const safeId = esc(agent.id);
+      const runBtn = '<button class="btn-sm" data-requires-model="1" onclick="toggleAgentRunPanel(\'' + safeId + '\')" title="Run this agent">▶ Run</button>';
+      const delBtn = agent.source === 'custom' ? '<button class="sk-del" onclick="deleteAgentById(\'' + safeId + '\')" title="Delete custom agent">✕</button>' : '';
+      const actions = runBtn + delBtn;
+      const runPanel = '<div id="agentRunPanel-' + safeId + '" class="automation-wizard" style="display:none;margin-top:8px;">'
+        + '<div class="automation-field"><label for="agentRunPrompt-' + safeId + '">Prompt for ' + esc(agent.name) + '</label>'
+        + '<textarea id="agentRunPrompt-' + safeId + '" rows="3" placeholder="What should this agent do?"></textarea></div>'
+        + '<div class="settings-collapse-actions">'
+        + '<button class="btn-sm primary" onclick="runAgentFromPanel(\'' + safeId + '\')">Run</button>'
+        + '<button class="btn-sm" onclick="toggleAgentRunPanel(\'' + safeId + '\')">Close</button>'
+        + '</div>'
+        + '<div id="agentRunResult-' + safeId + '" class="trace-meta" style="margin-top:8px;"></div>'
+        + '</div>';
+      return '<div class="skill-card"><div class="skill-card-top"><div><div class="skill-card-name">' + esc(agent.name) + '</div><div class="skill-card-meta">' + meta + '</div></div><div class="skill-card-actions-right">' + actions + '</div></div>' + description + allowed + runPanel + '</div>';
     }).join('');
     view.innerHTML = summary + newForm + '<div class="skills-gallery">' + rows + '</div>';
+    applyModelGate();
   } catch (error) {
     view.textContent = 'Failed to load agents: ' + (error && error.message ? error.message : error);
   }
 }
 
+function slugifyAgentId(value) {
+  if (typeof value !== 'string') return '';
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return /^[a-z0-9]/.test(slug) ? slug : '';
+}
+
 async function createAgentFromForm() {
   const fields = ['newAgentId', 'newAgentName', 'newAgentDescription', 'newAgentPreset', 'newAgentSystemPrompt'].map((id) => document.getElementById(id));
   const [idEl, nameEl, descEl, presetEl, promptEl] = fields;
-  const id = idEl ? idEl.value.trim() : '';
+  const rawId = idEl ? idEl.value.trim() : '';
   const name = nameEl ? nameEl.value.trim() : '';
   const systemPrompt = promptEl ? promptEl.value.trim() : '';
-  if (!id || !name || !systemPrompt) { alert('id, name, and system prompt are required.'); return; }
+  if (!name || !systemPrompt) { showToast('name and system prompt are required.'); return; }
+  // Auto-derive id from the name when the user leaves Id blank or types
+  // characters the server would reject (spaces, punctuation, etc).
+  const idValidator = /^[a-z0-9][a-z0-9-_]*$/i;
+  let id = rawId;
+  if (!id || !idValidator.test(id)) id = slugifyAgentId(rawId || name);
+  if (!id) { showToast('Could not derive an id from the name. Use letters/digits.'); return; }
+  if (idEl && id !== rawId) idEl.value = id;
   const body = {
     id,
     name,
@@ -12543,19 +12728,58 @@ async function createAgentFromForm() {
     fields.forEach((field) => { if (field) field.value = ''; });
     await loadAgents();
   } catch (error) {
-    alert('Create failed: ' + (error && error.message ? error.message : error));
+    showToast('Create failed: ' + (error && error.message ? error.message : error));
   }
 }
 
 async function deleteAgentById(id) {
-  if (!confirm('Delete custom agent ' + id + '?')) return;
+  if (!await confirmToast('Delete custom agent ' + id + '?')) return;
   try {
     const response = await fetch('/api/agents/' + encodeURIComponent(id), { method: 'DELETE' });
     const data = await response.json();
     if (data.error) throw new Error(data.error);
     await loadAgents();
   } catch (error) {
-    alert('Delete failed: ' + (error && error.message ? error.message : error));
+    showToast('Delete failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+function toggleAgentRunPanel(id) {
+  const panel = document.getElementById('agentRunPanel-' + id);
+  if (!panel) return;
+  const open = panel.style.display !== 'none';
+  panel.style.display = open ? 'none' : 'block';
+  if (!open) {
+    const input = document.getElementById('agentRunPrompt-' + id);
+    if (input) input.focus();
+  }
+}
+
+async function runAgentFromPanel(id) {
+  const promptEl = document.getElementById('agentRunPrompt-' + id);
+  const resultEl = document.getElementById('agentRunResult-' + id);
+  if (!promptEl || !resultEl) return;
+  const prompt = promptEl.value.trim();
+  if (!prompt) { resultEl.textContent = 'Enter a prompt first.'; return; }
+  const sel = document.getElementById('modelSelect');
+  if (!sel || !sel.value) {
+    resultEl.textContent = 'Pick a model in the top bar before running an agent.';
+    return;
+  }
+  resultEl.textContent = 'Running ' + id + '… (cancel from the sub-agents bar at the top of Chat)';
+  try {
+    const response = await fetch('/api/agents/' + encodeURIComponent(id) + '/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    // Render the summary as preformatted text so structure survives.
+    resultEl.innerHTML = '<div style="font-weight:600;margin-bottom:4px;">Summary</div>'
+      + '<pre style="white-space:pre-wrap;margin:0;">' + esc(data.summary || '(empty summary)') + '</pre>';
+  } catch (error) {
+    resultEl.textContent = 'Run failed: ' + (error && error.message ? error.message : error);
   }
 }
 
@@ -12569,7 +12793,7 @@ async function loadSquads() {
     if (data.error) { view.textContent = data.error; return; }
     const squads = Array.isArray(data.squads) ? data.squads : [];
     const summary = '<div class="tools-summary-line"><strong>' + squads.length + '</strong> squad(s) configured</div>';
-    const newForm = '<div class="automation-wizard"><div class="automation-wizard-title">New squad</div><div class="automation-field"><label for="newSquadId">Id</label><input id="newSquadId" type="text" placeholder="eng" /></div><div class="automation-field"><label for="newSquadName">Name</label><input id="newSquadName" type="text" placeholder="Engineering" /></div><div class="automation-field"><label for="newSquadLead">Lead agent id</label><input id="newSquadLead" type="text" placeholder="architect" /></div><div class="automation-field"><label for="newSquadAutonomy">Autonomy</label><input id="newSquadAutonomy" type="text" value="supervised" placeholder="supervised | semi-autonomous | autonomous" /></div><div class="settings-collapse-actions"><button class="btn-sm" onclick="createSquadFromForm()">+ Create</button></div></div>';
+    const newForm = '<div class="automation-wizard"><div class="automation-wizard-title">New squad</div><div class="automation-field"><label for="newSquadId">Id <span class="automation-field-hint">(auto from name if blank)</span></label><input id="newSquadId" type="text" placeholder="eng" /></div><div class="automation-field"><label for="newSquadName">Name</label><input id="newSquadName" type="text" placeholder="Engineering" /></div><div class="automation-field"><label for="newSquadLead">Lead agent id</label><input id="newSquadLead" type="text" placeholder="architect" /></div><div class="automation-field"><label for="newSquadAutonomy">Autonomy</label><input id="newSquadAutonomy" type="text" value="supervised" placeholder="supervised | semi-autonomous | autonomous" /></div><div class="settings-collapse-actions"><button class="btn-sm" onclick="createSquadFromForm()">+ Create</button></div></div>';
     const rows = squads.map((squad) => {
       const meta = [
         'lead: ' + esc(squad.leadAgentId || '?'),
@@ -12594,10 +12818,17 @@ async function loadSquads() {
 async function createSquadFromForm() {
   const fields = ['newSquadId', 'newSquadName', 'newSquadLead', 'newSquadAutonomy'].map((id) => document.getElementById(id));
   const [idEl, nameEl, leadEl, autonomyEl] = fields;
-  const id = idEl ? idEl.value.trim() : '';
+  const rawId = idEl ? idEl.value.trim() : '';
   const name = nameEl ? nameEl.value.trim() : '';
   const leadAgentId = leadEl ? leadEl.value.trim() : '';
-  if (!id || !name || !leadAgentId) { alert('id, name, and lead agent id are required.'); return; }
+  if (!name || !leadAgentId) { showToast('name and lead agent id are required.'); return; }
+  // Same shape as createAgentFromForm: server requires a slug-safe id, so
+  // auto-derive one from the name when the user leaves Id blank or types
+  // characters the server would reject.
+  let id = rawId;
+  if (!id || !slugifyAgentId(id)) id = slugifyAgentId(rawId || name);
+  if (!id) { showToast('Could not derive an id from the name. Use letters/digits.'); return; }
+  if (idEl && id !== rawId) idEl.value = id;
   const body = { id, name, leadAgentId, autonomy: autonomyEl && autonomyEl.value.trim() ? autonomyEl.value.trim() : 'supervised' };
   try {
     const response = await fetch('/api/squads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -12606,19 +12837,19 @@ async function createSquadFromForm() {
     fields.forEach((field) => { if (field) field.value = field === autonomyEl ? 'supervised' : ''; });
     await loadSquads();
   } catch (error) {
-    alert('Create failed: ' + (error && error.message ? error.message : error));
+    showToast('Create failed: ' + (error && error.message ? error.message : error));
   }
 }
 
 async function deleteSquadById(id) {
-  if (!confirm('Delete squad ' + id + '?')) return;
+  if (!await confirmToast('Delete squad ' + id + '?')) return;
   try {
     const response = await fetch('/api/squads/' + encodeURIComponent(id), { method: 'DELETE' });
     const data = await response.json();
     if (data.error) throw new Error(data.error);
     await loadSquads();
   } catch (error) {
-    alert('Delete failed: ' + (error && error.message ? error.message : error));
+    showToast('Delete failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12628,9 +12859,9 @@ async function addSquadRule(squadId) {
   const priorityEl = document.getElementById('newRulePriority_' + squadId);
   const pattern = patternEl ? patternEl.value.trim() : '';
   const agentId = agentEl ? agentEl.value.trim() : '';
-  if (!pattern || !agentId) { alert('pattern and agent id are required.'); return; }
+  if (!pattern || !agentId) { showToast('pattern and agent id are required.'); return; }
   // Validate regex client-side so the user sees immediate feedback.
-  try { new RegExp(pattern); } catch (error) { alert('Invalid regex: ' + (error && error.message ? error.message : error)); return; }
+  try { new RegExp(pattern); } catch (error) { showToast('Invalid regex: ' + (error && error.message ? error.message : error)); return; }
   const priority = priorityEl ? Math.floor(Number(priorityEl.value) || 0) : 0;
   try {
     const current = await fetch('/api/squads/' + encodeURIComponent(squadId)).then((r) => r.json());
@@ -12644,7 +12875,7 @@ async function addSquadRule(squadId) {
     if (agentEl) agentEl.value = '';
     await loadSquads();
   } catch (error) {
-    alert('Add rule failed: ' + (error && error.message ? error.message : error));
+    showToast('Add rule failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12660,7 +12891,7 @@ async function deleteSquadRule(squadId, index) {
     if (data.error) throw new Error(data.error);
     await loadSquads();
   } catch (error) {
-    alert('Delete rule failed: ' + (error && error.message ? error.message : error));
+    showToast('Delete rule failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12698,7 +12929,7 @@ async function saveIdentityFile(fileName) {
     const data = await response.json();
     if (data.error) throw new Error(data.error);
   } catch (error) {
-    alert('Save failed: ' + (error && error.message ? error.message : error));
+    showToast('Save failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12707,7 +12938,7 @@ async function addIdentityEntry() {
   const summaryEl = document.getElementById('newIdentitySummary');
   const category = categoryEl ? categoryEl.value.trim() : '';
   const summary = summaryEl ? summaryEl.value.trim() : '';
-  if (!category || !summary) { alert('category and summary are required.'); return; }
+  if (!category || !summary) { showToast('category and summary are required.'); return; }
   try {
     const response = await fetch('/api/identity/structured', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ category, summary }) });
     const data = await response.json();
@@ -12716,19 +12947,19 @@ async function addIdentityEntry() {
     if (summaryEl) summaryEl.value = '';
     await loadIdentity();
   } catch (error) {
-    alert('Add failed: ' + (error && error.message ? error.message : error));
+    showToast('Add failed: ' + (error && error.message ? error.message : error));
   }
 }
 
 async function deleteIdentityEntry(id) {
-  if (!confirm('Delete entry ' + id + '?')) return;
+  if (!await confirmToast('Delete entry ' + id + '?')) return;
   try {
     const response = await fetch('/api/identity/structured/' + encodeURIComponent(id), { method: 'DELETE' });
     const data = await response.json();
     if (data.error) throw new Error(data.error);
     await loadIdentity();
   } catch (error) {
-    alert('Delete failed: ' + (error && error.message ? error.message : error));
+    showToast('Delete failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12938,7 +13169,7 @@ async function setHealthFlag(key, enabled) {
     if (data.error) throw new Error(data.error);
     await loadHealth();
   } catch (error) {
-    alert('Update failed: ' + (error && error.message ? error.message : error));
+    showToast('Update failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12947,14 +13178,14 @@ async function saveModelProfileCap() {
   if (!input) return;
   const raw = (input.value || '').trim();
   const value = raw === '' ? 0 : Number(raw);
-  if (!Number.isFinite(value) || value < 0) { alert('Cap must be a non-negative number (0 = auto-detect).'); return; }
+  if (!Number.isFinite(value) || value < 0) { showToast('Cap must be a non-negative number (0 = auto-detect).'); return; }
   // Resolve the active model from the latest health payload via the
   // input's data attribute fallback or by hitting /api/system/health.
   try {
     const healthResp = await fetch('/api/system/health');
     const health = await healthResp.json();
     const model = health && health.context && health.context.model;
-    if (!model) { alert('No active model — cannot save profile.'); return; }
+    if (!model) { showToast('No active model — cannot save profile.'); return; }
     const response = await fetch('/api/system/model-profiles/' + encodeURIComponent(model), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -12964,7 +13195,7 @@ async function saveModelProfileCap() {
     if (data.error) throw new Error(data.error);
     await loadHealth();
   } catch (error) {
-    alert('Save failed: ' + (error && error.message ? error.message : error));
+    showToast('Save failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12973,7 +13204,7 @@ async function clearModelProfileCap() {
     const healthResp = await fetch('/api/system/health');
     const health = await healthResp.json();
     const model = health && health.context && health.context.model;
-    if (!model) { alert('No active model — cannot clear profile.'); return; }
+    if (!model) { showToast('No active model — cannot clear profile.'); return; }
     const response = await fetch('/api/system/model-profiles/' + encodeURIComponent(model), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -12983,7 +13214,7 @@ async function clearModelProfileCap() {
     if (data.error) throw new Error(data.error);
     await loadHealth();
   } catch (error) {
-    alert('Clear failed: ' + (error && error.message ? error.message : error));
+    showToast('Clear failed: ' + (error && error.message ? error.message : error));
   }
 }
 

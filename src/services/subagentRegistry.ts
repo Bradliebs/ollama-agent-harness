@@ -13,7 +13,8 @@
 type RegistryEvent =
   | { kind: 'start'; record: ActiveSubagent }
   | { kind: 'end'; id: string }
-  | { kind: 'cancel'; id: string };
+  | { kind: 'cancel'; id: string }
+  | { kind: 'activity'; id: string; lastActivity: string; updatedAtMs: number };
 
 const registryListeners = new Set<(event: RegistryEvent) => void>();
 
@@ -42,6 +43,10 @@ export interface ActiveSubagent {
   /** ms since epoch when the run started. */
   startedAtMs: number;
   controller: AbortController;
+  /** Short label of what the sub-agent is currently doing, e.g. "\uD83D\uDD27 read_file". */
+  lastActivity?: string;
+  /** ms since epoch when lastActivity was last updated. */
+  updatedAtMs?: number;
 }
 
 const active = new Map<string, ActiveSubagent>();
@@ -79,6 +84,22 @@ export function listActiveSubagents(): ActiveSubagent[] {
 
 export function getActiveSubagent(id: string): ActiveSubagent | undefined {
   return active.get(id);
+}
+
+/**
+ * Record what the sub-agent is currently doing — short labels like
+ * "\uD83D\uDD27 read_file" or "thinking\u2026". Safe to call from inside the
+ * event stream; no-ops when the id is not registered (e.g. when the run
+ * had no runId).
+ */
+export function updateSubagentActivity(id: string, label: string): void {
+  const record = active.get(id);
+  if (!record) return;
+  const trimmed = (label || '').slice(0, 120);
+  const updatedAtMs = Date.now();
+  record.lastActivity = trimmed;
+  record.updatedAtMs = updatedAtMs;
+  emitRegistryEvent({ kind: 'activity', id, lastActivity: trimmed, updatedAtMs });
 }
 
 /**

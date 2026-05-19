@@ -7,7 +7,7 @@ import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { withFileLock } from '../persistence/atomicFile';
 import { createHelperAgentConfig, type HelperTaskType, type ModelRoutingDecision, type ModelRoutingInput, type ModelRoutingPolicy } from './modelRouting';
 import { resolveAgentDefinition, type AgentDefinition } from './agentLoader';
-import { registerSubagent, unregisterSubagent } from '../services/subagentRegistry';
+import { registerSubagent, unregisterSubagent, updateSubagentActivity } from '../services/subagentRegistry';
 import { recordSwallowed } from '../observability/silentFailureSink';
 
 export interface SubagentConfig {
@@ -203,6 +203,18 @@ export async function runSubagent(
     for await (const event of queryLoop(loopConfig, deps, messages)) {
       if (effectiveConfig.onEvent) {
         try { effectiveConfig.onEvent(event as unknown as { type: string; [key: string]: unknown }); } catch { /* listener errors are non-fatal */ }
+      }
+      // Surface live activity to the sub-agents bar. Best-effort — no-op
+      // when the run has no runId (registry never registered it).
+      if (runId) {
+        const ev = event as { type?: string; call?: { name?: string }; content?: string };
+        if (ev.type === 'tool_call' && ev.call && ev.call.name) {
+          updateSubagentActivity(runId, '\uD83D\uDD27 ' + String(ev.call.name));
+        } else if (ev.type === 'synthesis_fired') {
+          updateSubagentActivity(runId, 'finalising\u2026');
+        } else if (ev.type === 'text' && typeof ev.content === 'string' && ev.content.trim()) {
+          updateSubagentActivity(runId, '\u270D writing reply');
+        }
       }
       if (event.type === 'text') {
         lastText = event.content;

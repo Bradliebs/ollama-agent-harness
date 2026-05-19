@@ -80,7 +80,7 @@ import { auditAutomationJobSafety } from '../automation/jobSafety';
 import { prepareAutomationRun } from '../automation/runner';
 import { AutomationScheduler } from '../automation/scheduler';
 import { exportAgenticServices, getAgenticService, handleOperateModeRequest, importAgenticServices, listAgenticServices } from '../services/agenticServiceMode';
-import { classifyMode } from '../services/modeClassifier';
+import { classifyMode, type HarnessMode } from '../services/modeClassifier';
 import { createDefaultCapabilityRegistry, type CapabilityRegistry } from '../services/capabilityRegistry';
 import { evaluateCapabilityTemplates, type ConnectorReadinessInput } from '../services/capabilityTemplates';
 import { getCapabilityTemplateStarter, getMessageIngressPolicy, listCapabilityTemplateStarters, listConnectorContractFixtures, listConnectorReadinessContracts, validateConnectorReadinessContracts, type CapabilityTemplateStarter } from '../services/capabilityTemplateStarters';
@@ -2161,9 +2161,13 @@ app.post('/api/output-validation/suggest-profile', async (req, res) => {
   try {
     await ensureSettingsLoaded();
     const input = String(req.body?.input ?? req.body?.message ?? '').slice(0, 20_000);
-    const suggestion = describeOutputValidationProfileSuggestion(input, 'oracle-prime');
+    // Anchor the profile suggestion to the mode classifier so research/maintain
+    // prompts cannot get graded against the coding-answer rubric just because
+    // they mention a file path or language name.
+    const modeHint = input ? classifyMode(input).mode : undefined;
+    const suggestion = describeOutputValidationProfileSuggestion(input, 'oracle-prime', { modeHint });
     const metadata = OUTPUT_VALIDATION_PROFILES.find((candidate) => candidate.profile === suggestion.profile);
-    res.json({ profile: suggestion.profile, label: metadata?.label ?? suggestion.profile, reason: suggestionReason(suggestion.profile, suggestion.matched), matched: suggestion.matched });
+    res.json({ profile: suggestion.profile, label: metadata?.label ?? suggestion.profile, reason: suggestionReason(suggestion.profile, suggestion.matched, modeHint), matched: suggestion.matched });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -2491,11 +2495,26 @@ app.get('/api/readiness', async (_req, res) => {
     // (audit item #10). The module-level mirror is kept in lockstep but is
     // no longer the read path for any public HTTP surface in this file.
     const killSnapshot = killSwitch.snapshot();
+    // Resolve the *effective* context window so the readiness check
+    // never reports "0 tokens" when the user is on auto. 0 is the
+    // documented sentinel for auto-detect (see ui/index.html
+    // contextMaxTokens input title); the raw configured value would
+    // mislead, so we surface effective + mode + detected via
+    // buildContextHealth() which also honours per-model profile caps.
+    const contextHealth = await buildContextHealth().catch(() => null);
+    const effectiveCtx = contextHealth?.effective ?? contextMaxTokens;
+    const ctxMode = contextHealth?.mode ?? (isAutoContextMode(contextMaxTokens) ? 'auto' : 'capped');
+    const ctxDetected = contextHealth?.detected ?? detectedContextMaxTokens;
+    const ctxMessage = ctxMode === 'auto'
+      ? (ctxDetected
+          ? `Auto-sized to ${effectiveCtx} tokens from the model's ${ctxDetected}-token window.`
+          : `Auto (model window not yet detected; using ${effectiveCtx}-token fallback).`)
+      : `Configured cap of ${effectiveCtx} tokens${ctxDetected ? ` (model exposes ${ctxDetected}).` : '.'}`;
     const sections = [
       readinessSection('chat', 'Chat', [
         { id: 'model.selected', label: 'Model selected', status: modelSelected ? 'ready' : 'blocked', message: modelSelected ? `Selected ${currentModel}.` : 'No model selected.', action: 'Pick a model' },
         { id: 'model.health', label: 'Model backend health', status: modelHealthy ? 'ready' : 'blocked', message: modelHealthy ? `${modelBackend} backend is available.` : `${modelBackend} backend is not ready.`, action: 'Open Settings' },
-        { id: 'context.window', label: 'Context window', status: contextMaxTokens >= 4096 ? 'ready' : 'warn', message: `Configured context max is ${contextMaxTokens} tokens.` },
+        { id: 'context.window', label: 'Context window', status: effectiveCtx >= 4096 ? 'ready' : 'warn', message: ctxMessage },
       ]),
       readinessSection('coding', 'Coding', [
         checkToolEnabled('file_read'),
@@ -3686,6 +3705,8 @@ app.get('/api/subagents', async (_req, res) => {
       promptSnippet: record.promptSnippet,
       startedAtMs: record.startedAtMs,
       durationMs: Date.now() - record.startedAtMs,
+      lastActivity: record.lastActivity,
+      updatedAtMs: record.updatedAtMs,
     }));
     res.json({ count: records.length, subagents: records });
   } catch (error) {
@@ -3884,6 +3905,42 @@ app.delete('/api/agents/:id', async (req, res) => {
       throw error;
     }
     res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Run an agent directly from the More→Agents UI. Mirrors the squad/concierge
+// auto-route path: same parent client, same enabled tool set (minus the
+// recursive `agent` tool), same custom-agents snapshot. The run registers
+// in /api/subagents so the global active-subagents bar shows it and the
+// existing cancel endpoint can stop it.
+app.post('/api/agents/:id/run', async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    if (!/^[a-z0-9][a-z0-9-_]*$/i.test(id)) { res.status(400).json({ error: 'Invalid agent id.' }); return; }
+    const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
+    if (!prompt) { res.status(400).json({ error: 'prompt is required.' }); return; }
+    await refreshCustomAgentsIfStale();
+    const customAgents = getCachedCustomAgentsSnapshot();
+    const isKnown = customAgents.some((agent) => agent.id === id)
+      || BUILTIN_AGENT_ROLES.some((agent) => agent.id === id);
+    if (!isKnown) { res.status(404).json({ error: 'Agent not found.' }); return; }
+    if (!currentModel) {
+      res.status(400).json({ error: 'No model selected. Pick a model in the Chat tab before running an agent.' });
+      return;
+    }
+    const parentClient = webRuntime.createClient(currentModel, ollamaHost);
+    const baseTools = applyToolDisables(getRuntimeTools(PROJECT_DIR)).filter((tool) => tool.name !== 'agent');
+    const { runSubagent } = await import('../agents/subagent');
+    const runId = `agent-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const summary = await runSubagent(
+      { name: id, systemPrompt: '', agentId: id, customAgents, runId },
+      prompt,
+      parentClient,
+      baseTools,
+    );
+    res.json({ success: true, runId, summary });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
@@ -6139,9 +6196,10 @@ app.post('/api/chat', async (req, res) => {
   });
 
   const activeContextMaxTokens = await resolveContextMaxTokens(activeModel);
+  const stashedModeClassification = (req as any).__modeClassification as { mode: HarnessMode } | undefined;
   const activeOutputValidation = skipValidationThisTurn
     ? { ...outputValidation, enabled: false, selectionSource: 'manual-selected' as const, selectionReason: 'Validation skipped for this turn by user request.' }
-    : effectiveOutputValidationForMessage(message);
+    : effectiveOutputValidationForMessage(message, stashedModeClassification?.mode);
   const client = webRuntime.createClient(activeModel, ollamaHost, activeContextMaxTokens);
   const tools = webRuntime.getTools();
   const permissions = webRuntime.createPermissionEngine(permissionMode);
@@ -9152,20 +9210,26 @@ function sanitizeOutputValidationSettings(value: unknown): OutputValidationSetti
   return { enabled: source.enabled === true, profile, autoSelect: source.autoSelect !== false, skipOnLowSignal: source.skipOnLowSignal !== false };
 }
 
-function effectiveOutputValidationForMessage(message: string): EffectiveOutputValidationSettings {
+function effectiveOutputValidationForMessage(message: string, modeHint?: HarnessMode): EffectiveOutputValidationSettings {
   if (!outputValidation.enabled || !outputValidation.autoSelect) {
     return { ...outputValidation, selectionSource: 'manual-selected', selectionReason: 'Manual profile override is active.' };
   }
   // Use a neutral fallback so vague or short prompts do not inherit a sticky stored profile (e.g. coding-answer).
-  const suggestion = describeOutputValidationProfileSuggestion(message, 'oracle-prime');
+  // The mode hint (when supplied by the caller) lets the suggester override the
+  // keyword table when the upstream mode classifier already knows the user is
+  // researching/maintaining rather than writing code.
+  const suggestion = describeOutputValidationProfileSuggestion(message, 'oracle-prime', { modeHint });
   if (!suggestion.matched && outputValidation.skipOnLowSignal) {
     return { ...outputValidation, enabled: false, profile: suggestion.profile, selectionSource: 'auto-selected', selectionReason: 'No strong signal in the prompt; validation skipped (skip-on-low-signal is on).' };
   }
-  return { ...outputValidation, profile: suggestion.profile, selectionSource: 'auto-selected', selectionReason: suggestionReason(suggestion.profile, suggestion.matched) };
+  return { ...outputValidation, profile: suggestion.profile, selectionSource: 'auto-selected', selectionReason: suggestionReason(suggestion.profile, suggestion.matched, modeHint) };
 }
 
-function suggestionReason(profile: OutputValidationProfile, matched = true): string {
+function suggestionReason(profile: OutputValidationProfile, matched = true, modeHint?: HarnessMode): string {
   if (!matched) return `No strong signal in the prompt; defaulted to ${profile}.`;
+  if ((modeHint === 'research' || modeHint === 'maintain') && profile === 'oracle-prime') {
+    return `Mode classifier flagged this prompt as ${modeHint}; using the analytical profile so prose answers are not graded as code changes.`;
+  }
   switch (profile) {
     case 'coding-answer': return 'The prompt looks like code, tests, files, or implementation work.';
     case 'factual-answer': return 'The prompt looks like a current or factual answer that should cite evidence and uncertainty.';

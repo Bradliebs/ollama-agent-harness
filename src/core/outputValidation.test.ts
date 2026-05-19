@@ -124,6 +124,34 @@ describe('output validation', () => {
     expect(describeOutputValidationProfileSuggestion('Refactor the typescript function in src/web/server.ts', 'oracle-prime')).toEqual({ profile: 'coding-answer', matched: true });
   });
 
+  it('routes research/maintain mode prompts to the analytical profile regardless of incidental code keywords', () => {
+    // Regression: a research-mode prompt that happened to mention a file path or language keyword
+    // (e.g. SYSTEM_BREAKDOWN.md, "typescript ecosystem") used to be graded as coding-answer and
+    // would fail with missing-change-summary / missing-file-reference even though the user never
+    // asked for a code change. The mode hint now wins over the keyword table.
+    expect(describeOutputValidationProfileSuggestion(
+      'Research the typescript ecosystem for 2026 and summarise findings from src/index.ts',
+      'oracle-prime',
+      { modeHint: 'research' },
+    )).toEqual({ profile: 'oracle-prime', matched: true });
+    expect(suggestOutputValidationProfile(
+      'Look at stock_core_200.txt and the SYSTEM_BREAKDOWN.md notes',
+      'oracle-prime',
+      { modeHint: 'research' },
+    )).toBe('oracle-prime');
+    expect(suggestOutputValidationProfile(
+      'Maintain the cron pipeline health and watch for errors in service.ts',
+      'oracle-prime',
+      { modeHint: 'maintain' },
+    )).toBe('oracle-prime');
+    // Even without a modeHint, a clear research verb at the start of a clause guards against
+    // the code-keyword regex poaching the prompt.
+    expect(suggestOutputValidationProfile('Research the typescript ecosystem for 2026')).toBe('oracle-prime');
+    expect(suggestOutputValidationProfile('Investigate why npm install is slow on this repo')).toBe('oracle-prime');
+    // But a real coding ask is still classified as coding-answer when no research verb fires.
+    expect(suggestOutputValidationProfile('Implement a typescript function in src/index.ts')).toBe('coding-answer');
+  });
+
   it('ships examples with installable validation templates', () => {
     expect(OUTPUT_VALIDATION_PROFILE_TEMPLATES).toEqual(expect.arrayContaining([
       expect.objectContaining({ profile: 'release-readiness', examples: { good: expect.any(String), bad: expect.any(String) } }),

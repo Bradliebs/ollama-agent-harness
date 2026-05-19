@@ -171,7 +171,33 @@ export interface OutputValidationProfileSuggestion {
   matched: boolean;
 }
 
-export function describeOutputValidationProfileSuggestion(input: string, fallback: OutputValidationProfile = 'oracle-prime'): OutputValidationProfileSuggestion {
+/**
+ * Optional hints the caller can pass to disambiguate profile selection when
+ * upstream classifiers (e.g. the mode classifier) already know the user's
+ * intent. Keeps the suggester from re-deriving intent from a regex table that
+ * is easy to fool with stray file paths or language keywords inside an
+ * otherwise-analytical prompt.
+ */
+export interface OutputValidationProfileSuggestionOptions {
+  /**
+   * Intent hint from a higher-level classifier. When set to `'research'` or
+   * `'maintain'` the suggester routes to the analytical profile regardless of
+   * incidental code/factual keywords appearing in the prompt body.
+   */
+  modeHint?: 'chat' | 'build' | 'operate' | 'automate' | 'research' | 'maintain';
+}
+
+// Research/analysis intent. Kept narrow so it does not poach prompts that only
+// happen to use one of these words in passing — anchored verbs at the start of
+// a clause, plus the phrases the mode classifier uses for its own research
+// rule. Acts as a defensive guard for callers that do not pass a modeHint.
+const RESEARCH_INTENT_PATTERN = /(^|[.!?\n]\s*)(research|investigate|look up|find out|analyse|analyze)\b|\b(pros and cons|trade-?offs?|state of the art|literature review|what are the options|compare\s+\w+\s+(to|vs|against))\b/;
+
+export function describeOutputValidationProfileSuggestion(
+  input: string,
+  fallback: OutputValidationProfile = 'oracle-prime',
+  options: OutputValidationProfileSuggestionOptions = {},
+): OutputValidationProfileSuggestion {
   const text = input.toLowerCase();
   const trimmed = text.trim();
   const fallbackProfile: BuiltInOutputValidationProfile = isBuiltInProfile(fallback) ? fallback : 'oracle-prime';
@@ -179,6 +205,17 @@ export function describeOutputValidationProfileSuggestion(input: string, fallbac
   if (trimmed.length < 12 || /^(you decide|whatever|anything|surprise me|up to you|your choice|idk|dunno)\b/.test(trimmed)) {
     return { profile: fallbackProfile, matched: false };
   }
+  // Authoritative mode hint wins over any keyword heuristic. RESEARCH/MAINTAIN
+  // prompts produce analytical prose, not code-change summaries, so they must
+  // not be graded against the coding-answer rubric even when the prompt body
+  // mentions file paths, language names, or function/class.
+  if (options.modeHint === 'research' || options.modeHint === 'maintain') {
+    return { profile: 'oracle-prime', matched: true };
+  }
+  // Defensive guard for callers that do not pass a modeHint: if the prompt
+  // carries a clear research/analysis intent, route to the analytical profile
+  // before the code-signal regex has a chance to claim it.
+  if (RESEARCH_INTENT_PATTERN.test(text)) return { profile: 'oracle-prime', matched: true };
   if (/\b(stdout|stderr|exit code|tool result|terminal output|command output|stack trace)\b/.test(text)) return { profile: 'tool-result-summary', matched: true };
   if (/\b(code|coding|implement|implemented|implementing|refactor|debug|typecheck|unit test|pull request|commit|typescript|javascript|python|\.ts|\.tsx|\.js|\.jsx|\.py|npm|yarn|pnpm|jest|eslint|compile|compiler|stack trace|function|class|method|api endpoint)\b/.test(text)) return { profile: 'coding-answer', matched: true };
   if (/\b(weather|today|current|latest|news|price|stock|who is|what is|when is|where is|source|according to|factual)\b/.test(text)) return { profile: 'factual-answer', matched: true };
@@ -186,8 +223,12 @@ export function describeOutputValidationProfileSuggestion(input: string, fallbac
   return { profile: fallbackProfile, matched: false };
 }
 
-export function suggestOutputValidationProfile(input: string, fallback: OutputValidationProfile = 'oracle-prime'): BuiltInOutputValidationProfile {
-  return describeOutputValidationProfileSuggestion(input, fallback).profile;
+export function suggestOutputValidationProfile(
+  input: string,
+  fallback: OutputValidationProfile = 'oracle-prime',
+  options: OutputValidationProfileSuggestionOptions = {},
+): BuiltInOutputValidationProfile {
+  return describeOutputValidationProfileSuggestion(input, fallback, options).profile;
 }
 
 export function validateOutput(

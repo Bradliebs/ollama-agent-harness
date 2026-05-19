@@ -124,7 +124,33 @@
     .more-menu-item{padding:8px 10px;cursor:pointer;border-radius:4px;font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:8px}
     .more-menu-item:hover{background:var(--surface2);color:var(--text)}
     .more-menu-item.active{color:var(--accent);background:var(--accent-bg)}
+    .more-menu-section{padding:8px 10px 4px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-dim);opacity:.65;border-top:1px solid var(--border);margin-top:4px}
+    .more-menu-section:first-child{border-top:none;margin-top:0}
     .more-menu-icon{font-size:14px;width:18px;text-align:center}
+    /* Toasts — non-blocking notifications used in place of alert(). Stacked
+       bottom-right above the sub-agents bar. Errors persist; info/success
+       auto-dismiss after 4s. See showToast() in ui/app.js. */
+    .toast-host{position:fixed;right:16px;bottom:56px;z-index:99999;display:flex;flex-direction:column;gap:8px;max-width:420px;pointer-events:none}
+    .toast{background:var(--surface);border:1px solid var(--border);border-left-width:4px;border-radius:8px;padding:10px 12px 10px 12px;font-size:13px;color:var(--text);box-shadow:0 4px 14px rgba(0,0,0,.4);display:flex;align-items:flex-start;gap:8px;pointer-events:auto;animation:toast-in .15s ease-out}
+    @keyframes toast-in{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
+    .toast-info{border-left-color:var(--accent)}
+    .toast-success{border-left-color:var(--success,#4caf50)}
+    .toast-error{border-left-color:var(--error,#ef5350)}
+    .toast-warning{border-left-color:var(--warning,#ff9800)}
+    .toast-msg{flex:1;line-height:1.4;word-break:break-word}
+    .toast-close{background:none;border:0;color:var(--text-dim);cursor:pointer;font-size:16px;padding:0 4px;line-height:1}
+    .toast-close:hover{color:var(--text)}
+    /* Async confirm/prompt modal — non-blocking replacements for the
+       browser's window.confirm / window.prompt. Focus-trapped to the
+       OK button (or input for prompts); Esc cancels; Enter submits.
+       See confirmToast() / promptToast() in ui/app.js. */
+    .harness-modal-host{position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center}
+    .harness-modal-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.5);backdrop-filter:blur(2px)}
+    .harness-modal{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 20px;min-width:320px;max-width:520px;box-shadow:0 8px 32px rgba(0,0,0,.5);animation:toast-in .12s ease-out}
+    .harness-modal-body{color:var(--text);font-size:14px;line-height:1.5;margin-bottom:14px;word-break:break-word}
+    .harness-modal-input{width:100%;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;margin-bottom:14px;box-sizing:border-box}
+    .harness-modal-input:focus{outline:none;border-color:var(--accent)}
+    .harness-modal-actions{display:flex;gap:8px;justify-content:flex-end}
     /* No-model banner — shown in the chat area when modelSelect.value is empty. */
     .no-model-banner{display:flex;gap:14px;align-items:flex-start;padding:14px 18px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:var(--rs);max-width:680px;margin:0 auto 18px}
     .no-model-banner.hidden-by-default{display:none}
@@ -911,26 +937,35 @@
         <div class="tab-icon">⋯</div><div class="tab-label">More</div>
       </div>
       <div class="more-menu hidden-by-default" id="moreMenu">
-        <div class="more-menu-item" data-tab="palace" onclick="selectFromMore('palace')"><span class="more-menu-icon">🏛</span> Palace</div>
-        <div class="more-menu-item" data-tab="discovery" onclick="selectFromMore('discovery')"><span class="more-menu-icon">🔮</span> Discover</div>
-        <div class="more-menu-item" data-tab="learning" onclick="selectFromMore('learning')"><span class="more-menu-icon">📈</span> Learning</div>
-        <div class="more-menu-item" data-tab="snapshots" onclick="selectFromMore('snapshots')"><span class="more-menu-icon">📦</span> Snapshots</div>
-        <div class="more-menu-item" data-tab="rag" onclick="selectFromMore('rag')"><span class="more-menu-icon">🔎</span> RAG</div>
-        <div class="more-menu-item" data-tab="tools" onclick="selectFromMore('tools')"><span class="more-menu-icon">🛠</span> Tools</div>
-        <div class="more-menu-item" data-tab="runs" onclick="selectFromMore('runs')"><span class="more-menu-icon">📜</span> Runs</div>
-        <div class="more-menu-item" data-tab="autonomy" onclick="selectFromMore('autonomy')"><span class="more-menu-icon">🚀</span> Autonomy</div>
-        <div class="more-menu-item" data-tab="mycelium" onclick="selectFromMore('mycelium')"><span class="more-menu-icon">🍄</span> Mycelium</div>
-        <div class="more-menu-item" data-tab="promises" onclick="selectFromMore('promises')"><span class="more-menu-icon">🤝</span> Promises</div>
-        <div class="more-menu-item" data-tab="events" onclick="selectFromMore('events')"><span class="more-menu-icon">📋</span> Events</div>
-        <div class="more-menu-item" data-tab="codeintel" onclick="selectFromMore('codeintel')"><span class="more-menu-icon">🧬</span> Code Intel</div>
-        <div class="more-menu-item" data-tab="tasks" onclick="selectFromMore('tasks')"><span class="more-menu-icon">✅</span> Tasks</div>
-        <div class="more-menu-item" data-tab="audit" onclick="selectFromMore('audit')"><span class="more-menu-icon">🛡</span> Audit</div>
-        <div class="more-menu-item" data-tab="triggers" onclick="selectFromMore('triggers')"><span class="more-menu-icon">⚡</span> Triggers</div>
-        <div class="more-menu-item" data-tab="agents" onclick="selectFromMore('agents')"><span class="more-menu-icon">🤖</span> Agents</div>
-        <div class="more-menu-item" data-tab="squads" onclick="selectFromMore('squads')"><span class="more-menu-icon">👥</span> Squads</div>
-        <div class="more-menu-item" data-tab="identity" onclick="selectFromMore('identity')"><span class="more-menu-icon">🪪</span> Identity</div>
-        <div class="more-menu-item" data-tab="artifacts" onclick="selectFromMore('artifacts')"><span class="more-menu-icon">📎</span> Artifacts</div>
-        <div class="more-menu-item" data-tab="health" onclick="selectFromMore('health')"><span class="more-menu-icon">💓</span> Health</div>
+        <div class="more-menu-section">Build &amp; use</div>
+        <div class="more-menu-item" data-tab="agents" onclick="selectFromMore('agents')" title="Custom AI sub-agents. Create one and invoke it from the Chat tab or click ▶ Run on its card."><span class="more-menu-icon">🤖</span> Agents</div>
+        <div class="more-menu-item" data-tab="squads" onclick="selectFromMore('squads')" title="Group several agents into a roster with routing rules."><span class="more-menu-icon">👥</span> Squads</div>
+        <div class="more-menu-item" data-tab="triggers" onclick="selectFromMore('triggers')" title="Run things automatically on a schedule or event."><span class="more-menu-icon">⚡</span> Triggers</div>
+        <div class="more-menu-item" data-tab="tasks" onclick="selectFromMore('tasks')" title="To-do list the agent can read and update."><span class="more-menu-icon">✅</span> Tasks</div>
+        <div class="more-menu-item" data-tab="identity" onclick="selectFromMore('identity')" title="Agent name, avatar, personality — and saved profiles."><span class="more-menu-icon">🪪</span> Identity</div>
+
+        <div class="more-menu-section">Search &amp; knowledge</div>
+        <div class="more-menu-item" data-tab="rag" onclick="selectFromMore('rag')" title="Build a searchable index of your project files."><span class="more-menu-icon">🔎</span> RAG</div>
+        <div class="more-menu-item" data-tab="palace" onclick="selectFromMore('palace')" title="Browse the agent's long-term semantic memory."><span class="more-menu-icon">🏛</span> Palace</div>
+        <div class="more-menu-item" data-tab="discovery" onclick="selectFromMore('discovery')" title="Patterns the agent has learned from past sessions."><span class="more-menu-icon">🔮</span> Discover</div>
+        <div class="more-menu-item" data-tab="codeintel" onclick="selectFromMore('codeintel')" title="Code intelligence: symbols, references, and structure."><span class="more-menu-icon">🧬</span> Code Intel</div>
+
+        <div class="more-menu-section">History &amp; diagnostics</div>
+        <div class="more-menu-item" data-tab="runs" onclick="selectFromMore('runs')" title="Past session and automation runs."><span class="more-menu-icon">📜</span> Runs</div>
+        <div class="more-menu-item" data-tab="events" onclick="selectFromMore('events')" title="Live system event stream — useful for debugging."><span class="more-menu-icon">📋</span> Events</div>
+        <div class="more-menu-item" data-tab="audit" onclick="selectFromMore('audit')" title="Every tool call the agent has made, with timestamps."><span class="more-menu-icon">🛡</span> Audit</div>
+        <div class="more-menu-item" data-tab="learning" onclick="selectFromMore('learning')" title="Performance trends from validation runs."><span class="more-menu-icon">📈</span> Learning</div>
+        <div class="more-menu-item" data-tab="health" onclick="selectFromMore('health')" title="Is everything running? Service status at a glance."><span class="more-menu-icon">💓</span> Health</div>
+
+        <div class="more-menu-section">Admin &amp; backup</div>
+        <div class="more-menu-item" data-tab="tools" onclick="selectFromMore('tools')" title="Enabled tools and their permissions."><span class="more-menu-icon">🛠</span> Tools</div>
+        <div class="more-menu-item" data-tab="snapshots" onclick="selectFromMore('snapshots')" title="Backup and restore skills, memory, and identity."><span class="more-menu-icon">📦</span> Snapshots</div>
+        <div class="more-menu-item" data-tab="artifacts" onclick="selectFromMore('artifacts')" title="Files the agent has produced this session."><span class="more-menu-icon">📎</span> Artifacts</div>
+
+        <div class="more-menu-section">Advanced</div>
+        <div class="more-menu-item" data-tab="autonomy" onclick="selectFromMore('autonomy')" title="Long-running self-directed loops. Use with care."><span class="more-menu-icon">🚀</span> Autonomy</div>
+        <div class="more-menu-item" data-tab="mycelium" onclick="selectFromMore('mycelium')" title="Adaptive model routing network."><span class="more-menu-icon">🍄</span> Mycelium</div>
+        <div class="more-menu-item" data-tab="promises" onclick="selectFromMore('promises')" title="Promises the agent has made to itself across sessions."><span class="more-menu-icon">🤝</span> Promises</div>
       </div>
     </div>
     <div class="history-list" id="historyList"></div>
@@ -1034,19 +1069,18 @@
           <div class="quick-start-actions"><button id="quickStartBtn" class="btn-sm primary" onclick="startQuickTest()">Start quick test</button><button class="btn-sm" onclick="openFirstRunGuide()">Open setup guide</button></div>
         </div>
 
-        <div class="beginner-readiness warn" id="beginnerReadiness">
-          <div><strong id="beginnerReadinessTitle">Checking first-chat readiness</strong><span id="beginnerReadinessMessage">Harness is checking Ollama and installed models before your first message.</span></div>
-          <span class="readiness-badge" id="beginnerReadinessBadge">Checking</span>
-        </div>
-
         <div class="quick-suggestions" id="quickSuggestions">
           <!-- Populated by quickStartChipsMarkup() at DOMContentLoaded so
                the chip set lives in one place (ui/app.js) and stays in
                sync between the static landing page and welcomeMarkup()
-               re-renders triggered by /new and /reset. -->
+               re-renders triggered by /new and /reset.
+               Note: the previous beginner-readiness banner and
+               model-capability-hint were removed in the v0.5.10 welcome
+               trim — both duplicated information already shown in the
+               no-model banner / model dropdown UI. setBeginnerReadiness()
+               and renderModelCapabilityHint() no-op safely when their
+               target elements are absent. -->
         </div>
-
-        <div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div>
 
         <div class="mission-control" id="missionControlPanel">
           <div class="readiness-empty">Loading work area...</div>
