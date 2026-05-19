@@ -1085,11 +1085,14 @@ async function loadJarvisGraph() {
   try {
     const response = await fetch('/api/jarvis/graph/mermaid');
     const data = await readApiJson(response, 'Jarvis graph');
+    const mermaidTheme = localStorage.getItem('harness-theme') === 'light' ? 'default' : 'dark';
+    const mermaidBg = mermaidTheme === 'default' ? '#fff' : '#1e1e2e';
+    const iframeHtml = '<!doctype html><html><head><meta charset=utf-8><script src=https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js></script><style>body{margin:8px;font-family:system-ui,sans-serif;background:' + mermaidBg + ';overflow:auto}svg{max-width:100%;height:auto}</style></head><body><div class=mermaid>' + esc(data.mermaid) + '</div><script>mermaid.initialize({startOnLoad:true,theme:\'' + mermaidTheme + '\',securityLevel:"loose",fontFamily:"system-ui,sans-serif",fontSize:13,flowchart:{htmlLabels:true,curve:"basis",nodeSpacing:40,rankSpacing:60}})</script></body></html>';
+    const mmdBlob = JSON.stringify(data.mermaid);
     host.innerHTML = '<div style="font-weight:600;margin-bottom:4px">Knowledge graph</div>'
-      + '<pre class="mermaid" style="font-size:11px;background:var(--surface);padding:8px;border-radius:6px;white-space:pre">' + esc(data.mermaid) + '</pre>';
-    if (window.mermaid && typeof window.mermaid.run === 'function') {
-      try { window.mermaid.run({ querySelector: '#dailyBriefGraph .mermaid' }); } catch { /* mermaid lib optional */ }
-    }
+      + '<iframe sandbox="allow-scripts" style="width:100%;height:420px;border:1px solid var(--border,#333);border-radius:6px;background:' + mermaidBg + '" srcdoc="' + escAttr(iframeHtml) + '"></iframe>'
+      + '<div class="document-actions" style="margin-top:4px"><button class="btn-sm" onclick="downloadMmd(' + mmdBlob + ',\'knowledge-graph.mmd\')">📥 Download .mmd</button>'
+      + '<button class="btn-sm" onclick="navigator.clipboard.writeText(' + mmdBlob + ')">📋 Copy Mermaid</button></div>';
   } catch (error) {
     host.innerHTML = '<div class="readiness-empty">Graph unavailable: ' + esc(error.message || error) + '</div>';
   }
@@ -5357,7 +5360,7 @@ function refreshArtifactPreview() {
     let html;
     if (art.lang === 'svg') html = '<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;padding:12px;background:#fff}svg{max-width:100%;height:auto}</style></head><body>' + art.code + '</body></html>';
     else if (art.lang === 'markdown' || art.lang === 'md') html = '<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:system-ui,sans-serif;padding:18px;max-width:780px;margin:0 auto;line-height:1.55;color:#111}h1,h2,h3{margin-top:1.2em}pre{background:#f4f4f4;padding:10px;border-radius:6px;overflow:auto}code{background:#f4f4f4;padding:1px 4px;border-radius:3px}</style></head><body>' + (window.marked ? window.marked.parse(art.code) : ('<pre>' + esc(art.code) + '</pre>')) + '</body></html>';
-    else if (art.lang === 'mermaid') html = '<!doctype html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script></head><body><div class="mermaid">' + esc(art.code) + '</div><script>mermaid.initialize({startOnLoad:true})</script></body></html>';
+    else if (art.lang === 'mermaid') html = '<!doctype html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script><style>body{margin:12px;font-family:system-ui,sans-serif;overflow:auto}svg{max-width:100%;height:auto}</style></head><body><div class="mermaid">' + esc(art.code) + '</div><script>mermaid.initialize({startOnLoad:true,securityLevel:"loose",fontFamily:"system-ui,sans-serif",fontSize:14,flowchart:{htmlLabels:true,curve:"basis",padding:20,nodeSpacing:50,rankSpacing:80}})</script></body></html>';
     else html = art.code; // raw HTML
     iframe.srcdoc = html;
   } else {
@@ -5384,6 +5387,18 @@ function downloadArtifact() {
   const a = document.createElement('a');
   a.href = url;
   a.download = art.title.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 40) + '.' + ext;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function downloadMmd(source, filename) {
+  const blob = new Blob([source], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename || 'diagram.mmd';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -13790,11 +13805,13 @@ async function showArchDiagram() {
     if (data.error) { panel.innerHTML = '<div class="trace-meta">' + esc(data.error) + '</div>'; return; }
     const mermaidTheme = localStorage.getItem('harness-theme') === 'light' ? 'default' : 'dark';
     const mermaidBg = mermaidTheme === 'default' ? '#fff' : '#1e1e2e';
+    const mmdBlob = JSON.stringify(data.mermaid);
     panel.innerHTML = '<div class="trace-item"><div class="trace-title">Architecture Diagram</div>'
-      + '<iframe sandbox="allow-scripts" style="width:100%;height:350px;border:1px solid var(--border,#333);border-radius:4px;background:' + mermaidBg + '" srcdoc="' + escAttr('<!doctype html><html><head><meta charset=utf-8><script src=https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js></script><style>body{margin:8px;font-family:sans-serif}</style></head><body><div class=mermaid>' + esc(data.mermaid) + '</div><script>mermaid.initialize({startOnLoad:true,theme:\'' + mermaidTheme + '\'})</script></body></html>') + '"></iframe>'
+      + '<iframe sandbox="allow-scripts" style="width:100%;height:500px;border:1px solid var(--border,#333);border-radius:4px;background:' + mermaidBg + '" srcdoc="' + escAttr('<!doctype html><html><head><meta charset=utf-8><script src=https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js></script><style>body{margin:8px;font-family:system-ui,sans-serif;background:' + mermaidBg + ';overflow:auto}svg{max-width:100%;height:auto}</style></head><body><div class=mermaid>' + esc(data.mermaid) + '</div><script>mermaid.initialize({startOnLoad:true,theme:\'' + mermaidTheme + '\',securityLevel:"loose",fontFamily:"system-ui,sans-serif",fontSize:13,flowchart:{htmlLabels:true,curve:"basis",padding:20,nodeSpacing:50,rankSpacing:80}})</script></body></html>') + '"></iframe>'
       + '<details style="margin-top:4px"><summary style="cursor:pointer;font-size:0.75em;opacity:0.6">Raw Mermaid</summary>'
       + '<pre style="font-size:0.65em;overflow-x:auto;background:var(--bg-code,#1e1e2e);padding:8px;border-radius:4px;max-height:200px">' + esc(data.mermaid) + '</pre></details>'
-      + '<div class="document-actions"><button class="btn-sm" onclick="navigator.clipboard.writeText(' + JSON.stringify(JSON.stringify(data.mermaid)) + ')">📋 Copy Mermaid</button></div></div>';
+      + '<div class="document-actions"><button class="btn-sm" onclick="downloadMmd(' + mmdBlob + ',\'architecture.mmd\')">📥 Download .mmd</button>'
+      + '<button class="btn-sm" onclick="navigator.clipboard.writeText(' + mmdBlob + ')">📋 Copy Mermaid</button></div></div>';
   } catch (error) {
     panel.innerHTML = '<div class="trace-meta">Diagram failed: ' + esc(error.message || error) + '</div>';
   }
