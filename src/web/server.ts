@@ -7180,9 +7180,10 @@ app.get('/api/memory/entries/:id/context', async (req, res) => {
   }
 });
 
-app.get('/api/memory/palace', async (_req, res) => {
+app.get('/api/memory/palace', async (req, res) => {
   try {
-    const palace = await buildMemoryPalace(PROJECT_DIR);
+    const query = typeof req.query.q === 'string' ? req.query.q : '';
+    const palace = await buildMemoryPalace(PROJECT_DIR, query || undefined);
     res.json(palace);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);

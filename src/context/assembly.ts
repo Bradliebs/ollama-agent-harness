@@ -148,12 +148,15 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
     } catch (err) { recordSwallowed('assembly.ragListIndexes', err); }
   }
 
-  // Memory palace summary: surface top rooms (by entry count) with a few
-  // anchor samples each. Gives the model awareness of long-term memory
-  // organisation without dumping the whole index.
+  // Memory palace summary: surface rooms ranked by relevance to the current
+  // user query (when one is available), falling back to entry-count ordering
+  // when no query is supplied. Each room shows its highest-relevance anchor
+  // samples so the model sees prior memory tied to what's being asked, not
+  // just the largest pile of historical events.
   if (config.palaceProjectDir) {
     try {
-      const palace = await buildMemoryPalace(config.palaceProjectDir);
+      const palaceQuery = (config.recallQuery ?? config.sessionSearchQuery ?? '').trim();
+      const palace = await buildMemoryPalace(config.palaceProjectDir, palaceQuery || undefined);
       if (palace.rooms.length > 0) {
         const lines = palace.rooms.slice(0, PALACE_AUTO_MAX_ROOMS).map((room) => {
           const anchorLines = room.anchors.slice(0, PALACE_AUTO_ANCHORS_PER_ROOM).map((a) => {
