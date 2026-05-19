@@ -221,8 +221,9 @@ export function buildInitialMessages(
   userMessage: string,
   projectDir: string,
 ): Message[] {
+  const safeProjectDir = typeof projectDir === 'string' && projectDir.trim().length > 0 ? projectDir : process.cwd();
   return [
-    assembleUserContext(projectDir),
+    assembleUserContext(safeProjectDir),
     { role: 'user' as const, content: userMessage },
   ];
 }

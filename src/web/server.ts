@@ -2624,8 +2624,8 @@ app.get('/api/jarvis/brief', async (_req, res) => {
     const [trust, knowledge, candidates, runs] = await Promise.all([
       loadTrustLadder(PROJECT_DIR),
       getKnowledgeGraphStatus(PROJECT_DIR),
-      listLearningCandidates(PROJECT_DIR, 20).catch(() => []),
-      readRunEvidence(PROJECT_DIR, 50).catch(() => []),
+      listLearningCandidates(PROJECT_DIR, 20).catch((err) => { recordSwallowed('jarvis.brief.listLearningCandidates', err); return []; }),
+      readRunEvidence(PROJECT_DIR, 50).catch((err) => { recordSwallowed('jarvis.brief.readRunEvidence', err); return []; }),
     ]);
     const ambientSignals = jarvisAmbientBus.recent();
     const pendingLearningCandidates = candidates.map((c) => ({ id: c.id, prompt: c.prompt, outcome: c.outcome, createdAt: c.createdAt }));

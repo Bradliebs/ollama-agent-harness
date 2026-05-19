@@ -194,6 +194,9 @@ export class MyceliumGraph {
       reason,
       archivedAt: new Date().toISOString(),
     });
+    if (this.archivedEdges.length > 1000) {
+      this.archivedEdges = this.archivedEdges.slice(-1000);
+    }
     this.edges = this.edges.filter((e) => !(e.source === source && e.target === target));
     return true;
   }

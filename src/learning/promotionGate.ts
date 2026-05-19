@@ -14,6 +14,7 @@
 
 import type { SessionLearningCandidate } from './sessionLearning';
 import type { EvalTraceRun, EvalTraceRunResult } from './evalTrace';
+import { recordSwallowed } from '../observability/silentFailureSink';
 
 export type SafetyViolationSeverity = 'low' | 'medium' | 'high';
 
@@ -374,7 +375,8 @@ export function compileSafetyRule(serialized: SerializedSafetyRule): SafetyRule 
   let regex: RegExp;
   try {
     regex = new RegExp(serialized.pattern, serialized.flags ?? '');
-  } catch {
+  } catch (err) {
+    recordSwallowed('promotionGate.compileSafetyRule', err, { id: serialized.id, pattern: serialized.pattern });
     return null;
   }
   return {

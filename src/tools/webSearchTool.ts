@@ -86,20 +86,20 @@ function parseDuckDuckGoResults(html: string, max: number): SearchResult[] {
 
     // Extract title and URL
     const linkMatch = block.match(/class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)</);
-    if (!linkMatch) continue;
+    if (!linkMatch || !linkMatch[1] || !linkMatch[2]) continue;
 
     let url = linkMatch[1];
     const title = decodeHtmlEntities(linkMatch[2].trim());
 
     // DuckDuckGo wraps URLs in a redirect — extract the actual URL
     const uddgMatch = url.match(/uddg=([^&]*)/);
-    if (uddgMatch) {
-      url = decodeURIComponent(uddgMatch[1]);
+    if (uddgMatch && uddgMatch[1]) {
+      try { url = decodeURIComponent(uddgMatch[1]); } catch { /* keep raw redirect url */ }
     }
 
     // Extract snippet
     const snippetMatch = block.match(/class="result__snippet"[^>]*>([\s\S]*?)<\//);
-    const snippet = snippetMatch
+    const snippet = snippetMatch && snippetMatch[1]
       ? decodeHtmlEntities(snippetMatch[1].replace(/<[^>]*>/g, '').trim())
       : '';
 
@@ -277,6 +277,14 @@ function weatherSourceLabel(url: string): string {
 }
 
 function decodeHtmlEntities(text: string): string {
+  const sanitize = (code: number): string => {
+    // Strip null bytes and C0 control chars (except tab/newline) that would
+    // smuggle invisible bytes into snippets shown in the UI.
+    if (!Number.isFinite(code) || code === 0) return '';
+    if (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) return '';
+    if (code === 0x7f) return '';
+    return String.fromCharCode(code);
+  };
   return text
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
@@ -284,6 +292,6 @@ function decodeHtmlEntities(text: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&nbsp;/g, ' ')
-    .replace(/&#(\d+);/g, (_, num) => String.fromCharCode(parseInt(num)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    .replace(/&#(\d+);/g, (_, num) => sanitize(parseInt(num, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => sanitize(parseInt(hex, 16)));
 }

@@ -28,6 +28,8 @@ export interface SwallowedFailure {
 
 const MAX_ENTRIES = 200;
 const buffer: SwallowedFailure[] = [];
+let droppedCount = 0;
+let totalRecorded = 0;
 
 /**
  * Record a swallowed promise rejection. Always succeeds; never throws.
@@ -38,7 +40,12 @@ export function recordSwallowed(label: string, error: unknown, meta?: Record<str
   try {
     const message = error instanceof Error ? error.message : String(error);
     buffer.push({ label, message, at: new Date().toISOString(), meta });
-    if (buffer.length > MAX_ENTRIES) buffer.splice(0, buffer.length - MAX_ENTRIES);
+    totalRecorded++;
+    if (buffer.length > MAX_ENTRIES) {
+      const overflow = buffer.length - MAX_ENTRIES;
+      droppedCount += overflow;
+      buffer.splice(0, overflow);
+    }
   } catch {
     // sink-of-last-resort: must never throw
   }
@@ -54,7 +61,19 @@ export function getSwallowedFailureCount(): number {
   return buffer.length;
 }
 
+/** Number of swallowed failures dropped from the ring buffer due to overflow. */
+export function getSwallowedFailureDroppedCount(): number {
+  return droppedCount;
+}
+
+/** Total number of swallowed failures recorded since process start (including dropped). */
+export function getSwallowedFailureTotalCount(): number {
+  return totalRecorded;
+}
+
 /** Clear the buffer. Only intended for tests. */
 export function _resetSwallowedFailuresForTest(): void {
   buffer.length = 0;
+  droppedCount = 0;
+  totalRecorded = 0;
 }

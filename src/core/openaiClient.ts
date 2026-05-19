@@ -2,6 +2,7 @@ import type { Message, Tool, ToolCall } from 'ollama';
 import { appendFileSync } from 'fs';
 import type { ChatResult, IChatClient, StreamChunk, TokenUsage } from './chatClient';
 import { liftInlineToolCalls } from './ollamaClient';
+import { recordSwallowed } from '../observability/silentFailureSink';
 
 /**
  * OpenAI Chat Completions-compatible backend.
@@ -478,9 +479,17 @@ function fromOpenAIToolCall(tc: { id?: string; function: { name: string; argumen
       const maybe = JSON.parse(tc.function.arguments);
       if (maybe && typeof maybe === 'object' && !Array.isArray(maybe)) {
         parsedArgs = maybe as Record<string, unknown>;
+      } else {
+        recordSwallowed('openai.fromToolCall.nonObjectArgs', new Error('Tool call arguments did not parse to an object'), {
+          tool: tc.function.name,
+          raw: String(tc.function.arguments).slice(0, 200),
+        });
       }
-    } catch {
-      // OpenAI sometimes returns invalid JSON args; fall back to empty.
+    } catch (err) {
+      recordSwallowed('openai.fromToolCall.parseError', err, {
+        tool: tc.function.name,
+        raw: String(tc.function.arguments).slice(0, 200),
+      });
     }
   }
   return {

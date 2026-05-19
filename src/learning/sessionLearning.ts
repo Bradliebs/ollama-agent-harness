@@ -70,12 +70,26 @@ export function extractLearningCandidate(
 ): SessionLearningCandidate {
   const messages = events.filter((event) => event.data.kind === 'message');
   const toolResults = events.filter((event) => event.data.kind === 'tool_result');
-  const userMessage = messages.find((event) => event.data.kind === 'message' && event.data.message.role === 'user');
-  const assistantMessage = [...messages].reverse().find((event) => event.data.kind === 'message' && event.data.message.role === 'assistant');
-  const prompt = userMessage?.data.kind === 'message' ? userMessage.data.message.content ?? '' : '';
-  const outcome = assistantMessage?.data.kind === 'message' ? assistantMessage.data.message.content ?? '' : '';
-  const toolNames = Array.from(new Set(toolResults.map((event) => event.data.kind === 'tool_result' ? event.data.call.name : ''))).filter(Boolean);
-  const successfulTools = toolResults.filter((event) => event.data.kind === 'tool_result' && event.data.result.success).length;
+  const userMessage = messages.find((event) =>
+    event.data.kind === 'message' &&
+    event.data.message &&
+    typeof event.data.message === 'object' &&
+    event.data.message.role === 'user',
+  );
+  const assistantMessage = [...messages].reverse().find((event) =>
+    event.data.kind === 'message' &&
+    event.data.message &&
+    typeof event.data.message === 'object' &&
+    event.data.message.role === 'assistant',
+  );
+  const prompt = userMessage?.data.kind === 'message' && userMessage.data.message ? userMessage.data.message.content ?? '' : '';
+  const outcome = assistantMessage?.data.kind === 'message' && assistantMessage.data.message ? assistantMessage.data.message.content ?? '' : '';
+  const toolNames = Array.from(new Set(toolResults.map((event) =>
+    event.data.kind === 'tool_result' && event.data.call ? event.data.call.name ?? '' : '',
+  ))).filter(Boolean);
+  const successfulTools = toolResults.filter((event) =>
+    event.data.kind === 'tool_result' && event.data.result && event.data.result.success,
+  ).length;
   const toolSuccessRate = toolResults.length > 0 ? successfulTools / toolResults.length : 1;
   const qualityScore = scoreCandidate(prompt, outcome, toolSuccessRate, toolNames.length);
   const rejectionReasons: string[] = [];

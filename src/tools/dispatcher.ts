@@ -2,6 +2,7 @@ import type { Tool, ToolCall, ToolResult } from '../types';
 import type { HookPipeline } from '../extensibility/hookPipeline';
 import { trackToolUsage, type LearningRecorder } from '../learning/engine';
 import type { RuntimeTracer } from '../core/tracing';
+import { recordSwallowed } from '../observability/silentFailureSink';
 
 export interface DispatchResult {
   call: ToolCall;
@@ -185,8 +186,10 @@ export class ToolDispatcher {
       toolSpan?.end(result.success ? 'ok' : 'error', { durationMs, success: result.success });
       if (options.trackUsage) {
         const recorder = options.learningRecorder;
-        const p = recorder ? recorder.trackToolUsage(call.name, call.input, result.success, durationMs) : trackToolUsage(call.name, call.input, result.success, durationMs);
-        p.catch(() => {});
+        try {
+          const p = recorder ? recorder.trackToolUsage(call.name, call.input, result.success, durationMs) : trackToolUsage(call.name, call.input, result.success, durationMs);
+          Promise.resolve(p).catch((err) => recordSwallowed('dispatcher.trackToolUsage.success', err));
+        } catch (err) { recordSwallowed('dispatcher.trackToolUsage.success.sync', err); }
       }
       if (options.hooks) {
         const postHookSpan = options.tracer?.startSpan('hook.post_tool_use', { tool: call.name });
@@ -209,8 +212,10 @@ export class ToolDispatcher {
       dispatchSpan?.fail(error);
       if (options.trackUsage) {
         const recorder = options.learningRecorder;
-        const p = recorder ? recorder.trackToolUsage(call.name, call.input, false) : trackToolUsage(call.name, call.input, false);
-        p.catch(() => {});
+        try {
+          const p = recorder ? recorder.trackToolUsage(call.name, call.input, false) : trackToolUsage(call.name, call.input, false);
+          Promise.resolve(p).catch((err) => recordSwallowed('dispatcher.trackToolUsage.failure', err));
+        } catch (err) { recordSwallowed('dispatcher.trackToolUsage.failure.sync', err); }
       }
       if (options.hooks) {
         const failureHookSpan = options.tracer?.startSpan('hook.post_tool_use_failure', { tool: call.name });

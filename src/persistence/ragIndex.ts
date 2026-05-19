@@ -418,7 +418,8 @@ export async function search(
   const idx = JSON.parse(raw) as RagIndexFile;
   if (idx.chunks.length === 0) return [];
   const [qvec] = await embedBatch([query], idx.backend, options.ollamaHost);
-  const k = Math.max(1, Math.min(options.k ?? 5, 20));
+  const kRaw = options.k;
+  const k = Math.max(1, Math.min(Number.isFinite(kRaw as number) ? Number(kRaw) : 5, 20));
   const qNorm = Math.sqrt(qvec.reduce((s, v) => s + v * v, 0)) || 1;
   const scored = idx.chunks.map((chunk) => {
     let dot = 0;

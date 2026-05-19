@@ -6,6 +6,17 @@ import type { Tool, ToolResult } from '../types';
 
 const MAX_RESPONSE_SIZE = 50_000;
 const MAX_PDF_BYTES = 50_000_000;
+const PDF_EXTRACT_TIMEOUT_MS = 60_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
 
 export const WebFetchTool: Tool = {
   name: 'web_fetch',
@@ -36,7 +47,11 @@ export const WebFetchTool: Tool = {
         const tmpPath = path.join(os.tmpdir(), `harness-webfetch-${Date.now()}.pdf`);
         try {
           await fs.writeFile(tmpPath, buffer);
-          const result = await extractPdfText(buffer, { maxChars: MAX_RESPONSE_SIZE }, tmpPath);
+          const result = await withTimeout(
+            extractPdfText(buffer, { maxChars: MAX_RESPONSE_SIZE }, tmpPath),
+            PDF_EXTRACT_TIMEOUT_MS,
+            'PDF extraction',
+          );
           const header = `[PDF fetched from ${url}; pages ${result.startPage}-${result.endPage} of ${result.pageCount}]\n\n`;
           return { success: true, output: header + result.text };
         } finally {

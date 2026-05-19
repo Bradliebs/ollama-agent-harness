@@ -90,9 +90,19 @@ export class FallbackChatClient implements IChatClient {
   async healthCheck(): Promise<{ ok: boolean; error?: string }> {
     const errors: string[] = [];
     for (const entry of this.entries) {
-      const result = await entry.client.healthCheck();
-      if (result.ok) return { ok: true };
-      errors.push(`${entry.backend}: ${result.error ?? 'unavailable'}`);
+      try {
+        const result = await Promise.race([
+          entry.client.healthCheck(),
+          new Promise<{ ok: boolean; error?: string }>((_, reject) =>
+            setTimeout(() => reject(new Error('healthCheck timed out')), 5_000),
+          ),
+        ]);
+        if (result.ok) return { ok: true };
+        errors.push(`${entry.backend}: ${result.error ?? 'unavailable'}`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(`${entry.backend}: ${msg}`);
+      }
     }
     return { ok: false, error: errors.join('; ') };
   }

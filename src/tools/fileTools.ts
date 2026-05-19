@@ -438,6 +438,14 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
   return Math.min(max, Math.max(min, Math.floor(parsed)));
 }
 
+/**
+ * Slice content by 1-based, inclusive line numbers.
+ *
+ * Semantics: `startValue=1, endValue=10` returns the first 10 lines (lines 1
+ * through 10 inclusive). Both bounds are 1-based to match common editor and
+ * grep conventions. Either bound may be omitted (defaults: start=1,
+ * end=lastLine). Non-finite values are treated as missing.
+ */
 function sliceLines(content: string, startValue: unknown, endValue: unknown): string {
   const startLine = Number(startValue);
   const endLine = Number(endValue);

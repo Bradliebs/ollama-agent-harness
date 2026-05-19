@@ -245,8 +245,18 @@ function isProtectedExternalProgramPath(rawPath: string): boolean {
   const externalRoot = getAllowedExternalPaths().find((allowedPath) => isInsideOrEqualPath(target, allowedPath));
   if (!externalRoot) return false;
   const basename = path.basename(target).toLowerCase();
-  const extension = path.extname(target).toLowerCase();
-  return PROTECTED_EXTERNAL_FILENAMES.has(basename) || PROTECTED_EXTERNAL_EXTENSIONS.has(extension);
+  if (PROTECTED_EXTERNAL_FILENAMES.has(basename)) return true;
+  // Check every dotted suffix so that 'malware.bat.txt' or 'evil.tar.sh' is
+  // still treated as protected — a trailing-extension-only check (`.txt`)
+  // would let attackers chain extensions to bypass.
+  const segments = basename.split('.');
+  for (let i = 1; i < segments.length; i++) {
+    const ext = '.' + segments.slice(i).join('.');
+    const lastExt = '.' + segments[i];
+    if (PROTECTED_EXTERNAL_EXTENSIONS.has(ext)) return true;
+    if (PROTECTED_EXTERNAL_EXTENSIONS.has(lastExt)) return true;
+  }
+  return false;
 }
 
 function isInsideOrEqualPath(child: string, parent: string): boolean {

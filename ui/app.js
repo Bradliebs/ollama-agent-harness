@@ -1084,6 +1084,21 @@ function sendMissionPrompt(mode) {
   input.focus();
 }
 
+// Wrap localStorage writes so a single quota-exceeded failure surfaces a
+// user-visible toast instead of silently dropping changes.
+function safeLocalStorageSet(key, value, label) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (e) {
+    try { showToast('⚠️ Could not save ' + (label || key) + ': ' + (e && e.message ? e.message : 'storage error'), 4000, 'warning'); } catch(_){}
+    return false;
+  }
+}
+if (typeof window !== 'undefined') {
+  window.safeLocalStorageSet = safeLocalStorageSet;
+}
+
 async function editMissionPrompt(mode) {
   const prompts = { ...DEFAULT_MISSION_PROMPTS, ...customMissionPrompts };
   const current = prompts[mode] || '';
@@ -1094,7 +1109,7 @@ async function editMissionPrompt(mode) {
   } else {
     customMissionPrompts[mode] = updated;
   }
-  try { localStorage.setItem('harness_mission_prompts', JSON.stringify(customMissionPrompts)); } catch(e){}
+  try { localStorage.setItem('harness_mission_prompts', JSON.stringify(customMissionPrompts)); } catch(e){ try { showToast('⚠️ Mission prompt save failed: ' + (e && e.message ? e.message : 'storage error'), 4000, 'warning'); } catch(_){} }
   showToast('Mission prompt updated for ' + mode, 2000, 'success');
 }
 
@@ -1121,7 +1136,7 @@ async function importMissionPrompts() {
       }
     }
     localStorage.setItem('harness_mission_prompts', JSON.stringify(customMissionPrompts));
-    showToast('Imported ' + Object.keys(customMissionPrompts).length + ' custom await promptToast(s)', 2000, 'success');
+    showToast('Imported ' + Object.keys(customMissionPrompts).length + ' custom prompt(s)', 2000, 'success');
     loadReadiness();
   } catch (e) { showToast('Import failed: ' + (e.message || e), 3000, 'error'); }
 }
@@ -1204,7 +1219,7 @@ async function snapshotPreFixState() {
     return {
       disabledTools: toolsR.disabled || [],
       permissionMode: settingsR.permissionMode || 'default',
-      grantIds: ((grantsR.capabilities || []).flatMap((c) => c.id ? [] : [])),
+      grantIds: ((grantsR.capabilities || []).flatMap((c) => c.id ? [c.id] : [])),
       activeGrantIds: ((grantsR.grants || []).map((g) => g.id)),
       ts: Date.now(),
     };
@@ -1349,14 +1364,26 @@ function updateTopbarPet() {
   window._petLastState = state;
 }
 
+let _topbarPetTimer = null;
 function startTopbarPet() {
   // Activity hooks: any keystroke or mouse movement counts as a sign of
   // life so the pet wakes up promptly when the user comes back.
   document.addEventListener('keydown', noteUserActivity, { passive: true });
   document.addEventListener('mousemove', noteUserActivity, { passive: true });
   document.addEventListener('click', noteUserActivity, { passive: true });
-  setInterval(updateTopbarPet, 2_000);
+  if (_topbarPetTimer) { clearInterval(_topbarPetTimer); }
+  _topbarPetTimer = setInterval(updateTopbarPet, 2_000);
   updateTopbarPet();
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    try {
+      if (_topbarPetTimer) { clearInterval(_topbarPetTimer); _topbarPetTimer = null; }
+      document.removeEventListener('keydown', noteUserActivity);
+      document.removeEventListener('mousemove', noteUserActivity);
+      document.removeEventListener('click', noteUserActivity);
+    } catch(_) {}
+  });
 }
 
 async function loadInbox() {
@@ -1428,7 +1455,7 @@ function toggleInboxStrip() {
   const willCollapse = !list.classList.contains('collapsed');
   list.classList.toggle('collapsed', willCollapse);
   btn.textContent = willCollapse ? 'Show' : 'Hide';
-  try { localStorage.setItem('inboxStripCollapsed', willCollapse ? '1' : '0'); } catch(e){}
+  try { localStorage.setItem('inboxStripCollapsed', willCollapse ? '1' : '0'); } catch(e){ try { showToast('⚠️ Could not remember inbox state', 2500, 'warning'); } catch(_){} }
 }
 
 async function loadSubsystemHealth() {
@@ -1873,8 +1900,14 @@ function renderModelCapabilityHint() {
   }
 
   // Fetch synthesis stats and show adaptive turns badge if different from default.
-  fetch('/api/synthesis-stats').then(r => r.json()).then(data => {
-    if (!data.stats) return;
+  (async () => {
+    let data;
+    try {
+      const r = await fetch('/api/synthesis-stats');
+      if (!r.ok) return;
+      data = await r.json();
+    } catch (err) { console.warn('synthesis-stats fetch failed', err); return; }
+    if (!hint.isConnected || !data || !data.stats) return;
     const record = data.stats[model.name];
     if (!record) return;
     const adaptive = record.adaptiveMaxTurns || data.defaultMaxTurns;
@@ -1894,11 +1927,17 @@ function renderModelCapabilityHint() {
       resetBtn.href = '#';
       resetBtn.className = 'model-inline-link';
       resetBtn.textContent = '(reset)';
-      resetBtn.onclick = (e) => { e.preventDefault(); fetch('/api/synthesis-stats?model=' + encodeURIComponent(model.name), { method: 'DELETE' }).then(() => renderModelCapabilityHint()).catch(() => {}); };
+      resetBtn.onclick = async (e) => {
+        e.preventDefault();
+        try {
+          await fetch('/api/synthesis-stats?model=' + encodeURIComponent(model.name), { method: 'DELETE' });
+          renderModelCapabilityHint();
+        } catch (err) { console.warn('synthesis-stats reset failed', err); }
+      };
       badge.appendChild(resetBtn);
       hint.appendChild(badge);
     }
-  }).catch(() => {});
+  })();
   renderAttachmentHint();
 }
 
@@ -3555,6 +3594,9 @@ async function streamPdfExtract(index) {
   const status = dialog.querySelector('#pdfStreamStatus');
   const close = () => { try { source.close(); } catch(e){} dialog.remove(); };
   dialog.querySelector('#closePdfStream').onclick = close;
+  // Backdrop click should also close — otherwise the EventSource leaks
+  // when the user dismisses by clicking outside the dialog body.
+  dialog.addEventListener('click', (e) => { if (e.target === dialog) close(); });
   const source = new EventSource('/api/pdf/extract?path=' + encodeURIComponent(file.path));
   let pages = 0;
   source.addEventListener('page', (e) => {
@@ -4572,17 +4614,24 @@ function notifyUser(title, body) {
 }
 
 let autonomyLogTimer = null;
+function _clearAutonomyLogTimer() {
+  if (autonomyLogTimer) { clearInterval(autonomyLogTimer); autonomyLogTimer = null; }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', _clearAutonomyLogTimer);
+}
 function toggleAutonomyLog() {
   const modal = document.getElementById('autonomyLogModal');
-  if (!modal) return;
+  if (!modal) { _clearAutonomyLogTimer(); return; }
   const isOpen = !modal.classList.contains('hidden-by-default');
   if (isOpen) {
     modal.classList.add('hidden-by-default');
-    if (autonomyLogTimer) { clearInterval(autonomyLogTimer); autonomyLogTimer = null; }
+    _clearAutonomyLogTimer();
     return;
   }
   modal.classList.remove('hidden-by-default');
   refreshAutonomyLog();
+  _clearAutonomyLogTimer();
   autonomyLogTimer = setInterval(refreshAutonomyLog, 2000);
 }
 
@@ -4652,7 +4701,7 @@ async function resolvePermission(id, allowed) {
     showToast('⚠️ Could not ' + (allowed ? 'approve' : 'deny') + ': ' + msg, 5000, 'error');
     return;
   }
-  pollPermissions();
+  pollPermissions().catch((err) => console.warn('pollPermissions follow-up failed', err));
 }
 
 async function loadRecovery() {

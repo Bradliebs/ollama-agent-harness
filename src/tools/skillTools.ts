@@ -5,25 +5,33 @@ import { loadSkillsDir, matchSkillTrigger, parseSkillFile, type SkillDefinition 
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 
 let cachedSkills: SkillDefinition[] | null = null;
+let cachedSkillsPromise: Promise<SkillDefinition[]> | null = null;
 let skillsDir = '';
 let projectDirForUsage = '';
 
 export function setSkillsDir(dir: string): void {
   skillsDir = dir;
   cachedSkills = null;
+  cachedSkillsPromise = null;
   // Skills directory is .harness/skills, so the project dir is two levels up.
   projectDirForUsage = path.dirname(path.dirname(dir));
 }
 
 export function invalidateSkillsCache(): void {
   cachedSkills = null;
+  cachedSkillsPromise = null;
 }
 
 async function getSkills(): Promise<SkillDefinition[]> {
   if (cachedSkills) return cachedSkills;
   if (!skillsDir) return [];
-  cachedSkills = await loadSkillsDir(skillsDir);
-  return cachedSkills;
+  // Dedup concurrent loads so first-call avalanches don't all hit disk.
+  if (cachedSkillsPromise) return cachedSkillsPromise;
+  cachedSkillsPromise = loadSkillsDir(skillsDir).then(
+    (skills) => { cachedSkills = skills; cachedSkillsPromise = null; return skills; },
+    (err) => { cachedSkillsPromise = null; throw err; },
+  );
+  return cachedSkillsPromise;
 }
 
 /**

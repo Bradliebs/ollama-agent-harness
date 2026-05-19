@@ -134,6 +134,27 @@ function normalizeStringList(value: unknown): string[] {
   return [];
 }
 
+function coerceYamlScalar(raw: string): unknown {
+  const trimmed = raw.trim();
+  if (trimmed === '') return '';
+  // Preserve quoted strings as strings.
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1);
+  }
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+  if (trimmed === 'null' || trimmed === '~') return null;
+  if (/^-?\d+$/.test(trimmed)) {
+    const n = Number(trimmed);
+    if (Number.isSafeInteger(n)) return n;
+  }
+  if (/^-?\d+\.\d+$/.test(trimmed)) {
+    const n = Number(trimmed);
+    if (Number.isFinite(n)) return n;
+  }
+  return trimmed;
+}
+
 function extractFrontmatter(content: string): Record<string, unknown> | null {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return null;
@@ -146,14 +167,9 @@ function extractFrontmatter(content: string): Record<string, unknown> | null {
     if (colonIdx === -1) continue;
 
     const key = line.slice(0, colonIdx).trim();
-    let value: unknown = line.slice(colonIdx + 1).trim();
-
-    // Remove surrounding quotes
-    if (typeof value === 'string' && value.startsWith('"') && value.endsWith('"')) {
-      value = value.slice(1, -1);
-    }
-
-    result[key] = value;
+    const rawValue = line.slice(colonIdx + 1).trim();
+    if (rawValue === '') continue;
+    result[key] = coerceYamlScalar(rawValue);
   }
 
   // Parse triggers array (YAML list)
