@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
-import { applyFileWriteRedirect, getUploadsDir, maybeRedirectAgentOutput, resolveProjectPath, resolveProjectReadPath } from './pathResolution';
+import { applyFileWriteRedirect, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectPath, resolveProjectReadPath, setAllowedExternalPaths } from './pathResolution';
 import { loadRepoGraph, analyzeImpact } from '../core/codeIntelligence';
 
 const DEFAULT_MAX_READ_BYTES = 100_000;
@@ -537,3 +537,30 @@ async function invalidateRepoGraphCache(filePath: string): Promise<void> {
     dir = parent;
   }
 }
+
+export const AddWorkspacePathTool: Tool = {
+  name: 'add_workspace_path',
+  description: 'Grant the file tools (file_read, file_write, list_files) access to a folder outside the project root. Call this whenever the user mentions or pastes a path that is outside the project — e.g. "D:\\Brad\\Downloads\\my-project" — so that subsequent file operations succeed without permission errors. The folder is added to the session\'s Allowed External Paths list.',
+  parameters: {
+    type: 'object',
+    properties: {
+      folder_path: { type: 'string', description: 'Absolute path to the folder to allow, e.g. D:\\Brad\\Downloads\\update-lottery' },
+    },
+    required: ['folder_path'],
+  },
+  isReadOnly: false,
+  async execute(input: Record<string, unknown>): Promise<ToolResult> {
+    const raw = String(input.folder_path ?? '').trim();
+    if (!raw) return { success: false, output: 'folder_path is required', error: 'missing folder_path' };
+    const resolved = path.resolve(raw);
+    if (resolved.length <= 3) return { success: false, output: 'Path is too short (root-level paths are not allowed)', error: 'path too short' };
+    const existing = getAllowedExternalPaths();
+    for (const p of existing) {
+      if (path.resolve(p) === resolved) {
+        return { success: true, output: `Already allowed: ${resolved}` };
+      }
+    }
+    setAllowedExternalPaths([...existing, resolved]);
+    return { success: true, output: `Allowed: ${resolved}\nYou can now use file_read, file_write, and list_files on files inside this folder.` };
+  },
+};

@@ -2367,6 +2367,7 @@ async function loadSettings() {
     hydrateAgentAvatar(s.agentAvatar || '');
     hydrateAgentProfiles(s.agentProfiles || {});
     hydrateAllowedPaths(s.allowedExternalPaths || []);
+    window._currentAllowedPaths = s.allowedExternalPaths || [];
     if (s.ollamaHost) document.getElementById('ollamaHost').value = s.ollamaHost;
     if (s.summarizerModel) document.getElementById('summarizerModel').value = s.summarizerModel;
     if (s.contextMaxTokens !== undefined) document.getElementById('contextMaxTokens').value = s.contextMaxTokens;
@@ -3263,6 +3264,7 @@ function hydrateAllowedPaths(paths) {
 
 function updateAllowedPaths(text) {
   const paths = text.split('\n').map((p) => p.trim()).filter(Boolean);
+  window._currentAllowedPaths = paths;
   updateSetting('allowedExternalPaths', paths);
 }
 
@@ -3935,6 +3937,29 @@ function mediaIcon(file) {
   return '📄';
 }
 function removeAttached(i) { pendingFiles.splice(i, 1); showAttached(); }
+
+function promptAddWorkspaceFolder() {
+  const folder = window.prompt('Enter the full folder path to let the AI read/write:\n(e.g. D:\\Brad\\Downloads\\my-project)', '');
+  if (!folder || !folder.trim()) return;
+  const path = folder.trim();
+  fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ allowedExternalPaths: [...(window._currentAllowedPaths || []), path] }),
+  }).then((r) => r.ok ? r.json() : Promise.reject(r))
+    .then(() => {
+      window._currentAllowedPaths = [...(window._currentAllowedPaths || []), path];
+      const el = document.getElementById('allowedExternalPaths');
+      if (el) el.value = (window._currentAllowedPaths || []).join('\n');
+      const input = document.getElementById('chatInput');
+      if (input) {
+        input.value = (input.value ? input.value + '\n' : '') + 'I\'ve allowed access to ' + path + '. Please explore it and tell me what\'s there.';
+        input.dispatchEvent(new Event('input'));
+        document.getElementById('sendBtn')?.removeAttribute('disabled');
+      }
+    })
+    .catch(() => alert('Failed to add path. Check the console for details.'));
+}
 
 function handleChatPaste(event) {
   const items = event.clipboardData?.items;

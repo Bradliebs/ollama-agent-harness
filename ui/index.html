@@ -1241,6 +1241,7 @@
       <div class="input-row">
         <button class="btn-icon attach-btn" onclick="document.getElementById('fileInput').click()" title="Attach files">📎</button>
         <button class="btn-icon attach-btn" id="voiceBtn" onclick="toggleVoiceInput()" title="Voice input (browser STT)">🎤</button>
+        <button class="btn-icon attach-btn" onclick="promptAddWorkspaceFolder()" title="Point AI at a folder outside the project (adds to Allowed External Paths)">📂</button>
         <input type="file" id="fileInput" class="initial-hidden" multiple onchange="handleFileAttach(this.files)">
         <textarea id="chatInput" placeholder="Ask anything... drop files here or click 📎 (Shift+Enter for newline)" rows="1"
           onkeydown="handleKey(event)" oninput="autoSize(this)"
@@ -2057,6 +2058,6 @@
 <script src="./marked.min.js"></script>
 <script src="./chatHistory.js?v=3"></script>
 <script src="./toolActivity.js?v=1"></script>
-<script src="./app.js?v=23"></script>
+<script src="./app.js?v=24"></script>
 </body>
 </html>

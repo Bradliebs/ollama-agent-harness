@@ -5,7 +5,7 @@ import type { Tool, ToolResult } from '../types';
 import { getAgentOutputDir } from './pathResolution';
 
 const MAX_OUTPUT_SIZE = 50_000;
-const MAX_COMMAND_LENGTH = 500;
+const MAX_COMMAND_LENGTH = 2000;
 
 const BLOCKED_PATTERNS = [
   /\brm\s+(-[a-zA-Z]*)?r[a-zA-Z]*f\b.*\/\s*$/,   // rm -rf /
