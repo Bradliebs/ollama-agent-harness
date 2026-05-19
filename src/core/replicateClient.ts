@@ -67,7 +67,7 @@ export class ReplicateClient implements IChatClient {
     return this.chat(messages, tools);
   }
 
-  async *chatStream(messages: Message[], tools?: Tool[]): AsyncGenerator<StreamChunk> {
+  async *chatStream(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): AsyncGenerator<StreamChunk> {
     const result = await this.chat(messages, tools);
     yield { content: result.message.content ?? '', done: true };
   }

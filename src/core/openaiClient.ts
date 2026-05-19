@@ -128,7 +128,7 @@ export class OpenAIClient implements IChatClient {
    * accumulated by index because OpenAI streams them as fragmented JSON
    * over multiple chunks (`name` arrives once, `arguments` builds up).
    */
-  async *chatStream(messages: Message[], tools?: Tool[]): AsyncGenerator<StreamChunk> {
+  async *chatStream(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): AsyncGenerator<StreamChunk> {
     const body: Record<string, unknown> = {
       model: this.model,
       messages: toOpenAIMessages(messages),

@@ -108,6 +108,7 @@ export class OllamaClient implements IChatClient {
   async *chatStream(
     messages: Message[],
     tools?: Tool[],
+    abortSignal?: AbortSignal,
   ): AsyncGenerator<StreamChunk> {
     const stream = await this.client.chat({
       model: this.model,
@@ -119,6 +120,7 @@ export class OllamaClient implements IChatClient {
     });
 
     for await (const chunk of stream) {
+      if (abortSignal?.aborted) return;
       yield {
         content: chunk.message?.content ?? '',
         done: chunk.done ?? false,

@@ -56,7 +56,7 @@ export class FallbackChatClient implements IChatClient {
     return this.tryClients((entry) => entry.client.chatOnce(messages, tools), tools);
   }
 
-  async *chatStream(messages: Message[], tools?: Tool[]): AsyncGenerator<StreamChunk> {
+  async *chatStream(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): AsyncGenerator<StreamChunk> {
     const entries = this.availableEntries(tools);
     let lastError: unknown;
     for (let i = 0; i < entries.length; i += 1) {
@@ -64,7 +64,7 @@ export class FallbackChatClient implements IChatClient {
       let yielded = false;
       try {
         this.recordRequest(entry.backend);
-        for await (const chunk of entry.client.chatStream(messages, tools)) {
+        for await (const chunk of entry.client.chatStream(messages, tools, abortSignal)) {
           yielded = true;
           yield chunk;
         }
@@ -125,6 +125,10 @@ export class FallbackChatClient implements IChatClient {
   private availableEntries(tools?: Tool[]): FallbackChatClientEntry[] {
     const now = Date.now();
     const cooldownMs = FALLBACK_COOLDOWN_MS;
+    // Evict expired cooldowns to prevent unbounded map growth
+    for (const [backend, failedAt] of this.cooldowns) {
+      if (now - failedAt >= cooldownMs) this.cooldowns.delete(backend);
+    }
     let candidates = this.entries.filter((entry, index) => {
       // Always try the primary (first) entry regardless of cooldown.
       if (index === 0) return true;

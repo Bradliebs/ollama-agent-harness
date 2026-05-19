@@ -37,7 +37,7 @@ export interface StreamChunk {
 export interface IChatClient {
   chat(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): Promise<ChatResult>;
   chatOnce(messages: Message[], tools?: Tool[]): Promise<ChatResult>;
-  chatStream(messages: Message[], tools?: Tool[]): AsyncGenerator<StreamChunk>;
+  chatStream(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): AsyncGenerator<StreamChunk>;
   listModels(): Promise<string[]>;
   getContextWindow(): Promise<number | null>;
   healthCheck(): Promise<{ ok: boolean; error?: string }>;
