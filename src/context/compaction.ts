@@ -14,8 +14,8 @@ export interface CompactionConfig {
 export const DEFAULT_COMPACTION_CONFIG: CompactionConfig = {
   maxTokens: 8192,
   budgetPerToolResult: 4000,
-  snipThreshold: 0.7,
-  autoCompactThreshold: 0.85,
+  snipThreshold: 0.85,
+  autoCompactThreshold: 0.95,
   minSummaryQuality: 0.25,
 };
 

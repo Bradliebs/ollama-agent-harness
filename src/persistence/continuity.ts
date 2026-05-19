@@ -15,8 +15,8 @@ export function createContinuityCheckpoint(input: CheckpointInput): ContinuityCh
   const conversation = input.messages.filter((message) => message.role !== 'system');
   const latestUser = [...conversation].reverse().find((message) => message.role === 'user');
   const recentMessages = conversation
-    .slice(-6)
-    .map((message) => `${message.role}: ${(message.content ?? '').replace(/\s+/g, ' ').slice(0, 220)}`)
+    .slice(-12)
+    .map((message) => `${message.role}: ${(message.content ?? '').replace(/\s+/g, ' ').slice(0, 500)}`)
     .filter((content) => content.trim().length > 0);
   const tokenEstimate = estimateTokenCount(input.messages);
 

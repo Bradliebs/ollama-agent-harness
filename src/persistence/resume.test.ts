@@ -45,6 +45,11 @@ describe('resumeSession', () => {
       kind: 'message',
       message: { role: 'user', content: 'old request' },
     });
+    await storage.append('compact_boundary', {
+      kind: 'compact_boundary',
+      summary: 'compact summary of old request',
+      compactedCount: 1,
+    });
     await storage.append('continuity_checkpoint', {
       kind: 'continuity_checkpoint',
       checkpoint: {
@@ -64,8 +69,10 @@ describe('resumeSession', () => {
 
     const result = await resumeSession(projectDir, 'session-2', 'test-model');
 
-    expect(result.messages).toHaveLength(1);
-    expect(result.messages[0].content).toContain('Goal: finish the context system');
-    expect(result.messages[0].content).toContain('Next action: continue implementation');
+    // Both compact_boundary and continuity_checkpoint are preserved
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[0].content).toContain('compact summary of old request');
+    expect(result.messages[1].content).toContain('Goal: finish the context system');
+    expect(result.messages[1].content).toContain('Next action: continue implementation');
   });
 });

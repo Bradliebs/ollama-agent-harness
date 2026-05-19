@@ -79,7 +79,9 @@ function eventsToMessages(events: SessionEvent[]): Message[] {
         });
         break;
       case 'continuity_checkpoint':
-        messages.length = 0;
+        // Don't clear messages — the compact_boundary already reset them.
+        // Append checkpoint metadata so goal/next-action context is preserved
+        // alongside the more detailed compaction summary.
         messages.push({
           role: 'system' as const,
           content: checkpointToMessage(event.data.checkpoint),
