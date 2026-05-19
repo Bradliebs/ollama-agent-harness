@@ -14,12 +14,19 @@ import type { Tool, ToolResult } from '../types';
 
 let _pwBrowser: import('playwright').Browser | null = null;
 let _pwPage: import('playwright').Page | null = null;
+let _pwBrowserCreatedAt = 0;
+const BROWSER_MAX_LIFETIME_MS = 10 * 60 * 1000; // 10 minutes
 
 async function getPlaywrightPage(): Promise<import('playwright').Page> {
+  // Auto-close stale browsers to prevent resource leaks
+  if (_pwBrowser && Date.now() - _pwBrowserCreatedAt > BROWSER_MAX_LIFETIME_MS) {
+    await closeBrowser();
+  }
   if (_pwPage && !_pwPage.isClosed()) return _pwPage;
   const pw = await import('playwright');
   _pwBrowser = await pw.chromium.launch({ headless: true });
   _pwPage = await _pwBrowser.newPage();
+  _pwBrowserCreatedAt = Date.now();
   return _pwPage;
 }
 

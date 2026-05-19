@@ -129,6 +129,12 @@ export class FallbackChatClient implements IChatClient {
     for (const [backend, failedAt] of this.cooldowns) {
       if (now - failedAt >= cooldownMs) this.cooldowns.delete(backend);
     }
+    // Trim stale request timestamps
+    for (const [backend, timestamps] of this.requestLog) {
+      const fresh = timestamps.filter((t) => t > now - 60_000);
+      if (fresh.length === 0) this.requestLog.delete(backend);
+      else this.requestLog.set(backend, fresh);
+    }
     let candidates = this.entries.filter((entry, index) => {
       // Always try the primary (first) entry regardless of cooldown.
       if (index === 0) return true;

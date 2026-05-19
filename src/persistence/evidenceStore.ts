@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as readline from 'readline';
 import { createReadStream } from 'fs';
 import type { EvidenceCard } from '../types/evidence';
+import { recordSwallowed } from '../observability/silentFailureSink';
 
 export interface StoredRunEvidence extends EvidenceCard {
   runId?: string;
@@ -33,12 +34,12 @@ export async function appendRunEvidence(projectDir: string, evidence: StoredRunE
   const filePath = runEvidencePath(projectDir);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.appendFile(filePath, JSON.stringify(evidence) + '\n', 'utf-8');
-  await pruneRunEvidence(projectDir, MAX_STORED_RUN_EVIDENCE).catch(() => {});
+  await pruneRunEvidence(projectDir, MAX_STORED_RUN_EVIDENCE).catch((err) => recordSwallowed('evidenceStore.prune', err));
   for (const hook of evidenceAppendHooks) {
     try {
       await hook(projectDir, evidence);
-    } catch {
-      // Hooks must never block the append path.
+    } catch (err) {
+      recordSwallowed('evidenceStore.appendHook', err);
     }
   }
   return filePath;

@@ -339,7 +339,7 @@ export async function* queryLoop(
     const toolCalls: ToolCall[] = assistantMessage.tool_calls.map((tc) => ({
       id: (tc as { id?: string }).id,
       name: tc.function.name,
-      input: (tc.function.arguments ?? {}) as Record<string, unknown>,
+      input: (tc.function.arguments && typeof tc.function.arguments === 'object' && !Array.isArray(tc.function.arguments) ? tc.function.arguments : {}) as Record<string, unknown>,
     }));
     totalToolCalls += toolCalls.length;
 
