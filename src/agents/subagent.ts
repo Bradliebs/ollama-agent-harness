@@ -7,7 +7,8 @@ import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { withFileLock } from '../persistence/atomicFile';
 import { createHelperAgentConfig, type HelperTaskType, type ModelRoutingDecision, type ModelRoutingInput, type ModelRoutingPolicy } from './modelRouting';
 import { resolveAgentDefinition, type AgentDefinition } from './agentLoader';
-import { registerSubagent, unregisterSubagent, updateSubagentActivity } from '../services/subagentRegistry';
+import { registerSubagent, unregisterSubagent, updateSubagentActivity, getActiveSubagent } from '../services/subagentRegistry';
+import { appendSubagentRun } from '../services/subagentRuns';
 import { recordSwallowed } from '../observability/silentFailureSink';
 
 export interface SubagentConfig {
@@ -198,6 +199,7 @@ export async function runSubagent(
   const messages = [{ role: 'user' as const, content: prompt }];
   let lastText = '';
   let cancelled = false;
+  let runError: Error | null = null;
 
   try {
     for await (const event of queryLoop(loopConfig, deps, messages)) {
@@ -225,12 +227,18 @@ export async function runSubagent(
     if ((error as { name?: string })?.name === 'AbortError' || internalController.signal.aborted) {
       cancelled = true;
     } else {
+      runError = error instanceof Error ? error : new Error(String(error));
       throw error;
     }
   } finally {
     if (externalSignal) {
       try { externalSignal.removeEventListener('abort', onExternalAbort); } catch { /* best-effort */ }
     }
+    // Snapshot the tool history from the registry BEFORE we unregister so
+    // it can be persisted into the run record. Without this, the "what did
+    // this agent actually do?" answer is lost the moment the run ends.
+    const activeRecord = runId ? getActiveSubagent(runId) : undefined;
+    const toolHistory = activeRecord?.activityHistory?.map((entry) => entry.label) ?? [];
     if (runId) unregisterSubagent(runId);
     await appendSubagentRoutingMetric(effectiveConfig.metricsProjectDir ?? process.cwd(), {
       timestamp: new Date().toISOString(),
@@ -244,6 +252,27 @@ export async function runSubagent(
       durationMs: Date.now() - started,
       outputChars: lastText.length,
     }).catch(() => {});
+    // Persistent run record so the Agents tab can show a history view
+    // and the user can answer "what has this agent done lately?" without
+    // grepping session events.
+    const projectDir = effectiveConfig.metricsProjectDir
+      ?? process.env.HARNESS_PROJECT_DIR
+      ?? process.cwd();
+    const now = Date.now();
+    await appendSubagentRun(projectDir, {
+      runId: runId ?? `subagent-${now}-${Math.random().toString(36).slice(2, 8)}`,
+      name: effectiveConfig.name || 'subagent',
+      startedAt: new Date(started).toISOString(),
+      endedAt: new Date(now).toISOString(),
+      durationMs: now - started,
+      status: cancelled ? 'cancelled' : runError ? 'failed' : 'completed',
+      prompt: prompt.slice(0, 500),
+      output: (lastText || '').slice(0, 2000),
+      toolHistory: toolHistory.slice(-50),
+      model: effectiveConfig.model ?? client.getModel(),
+      outputDir: process.env.HARNESS_AGENT_OUTPUT_DIR || undefined,
+      error: runError ? runError.message : undefined,
+    }).catch(() => { /* best-effort — the run already happened */ });
   }
 
   if (cancelled && !lastText) {

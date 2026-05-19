@@ -3729,8 +3729,33 @@ app.get('/api/subagents', async (_req, res) => {
       durationMs: Date.now() - record.startedAtMs,
       lastActivity: record.lastActivity,
       updatedAtMs: record.updatedAtMs,
+      activityHistory: record.activityHistory ?? [],
     }));
     res.json({ count: records.length, subagents: records });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Persistent history of every sub-agent run. Powers the "what has my
+// agent done?" panel in the Agents tab.
+app.get('/api/subagent-runs', async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
+    const { listSubagentRuns } = await import('../services/subagentRuns');
+    const runs = await listSubagentRuns(PROJECT_DIR, limit);
+    res.json({ runs, outputDir: process.env.HARNESS_AGENT_OUTPUT_DIR || agentOutputDir || '' });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/subagent-runs/:runId', async (req, res) => {
+  try {
+    const { getSubagentRun } = await import('../services/subagentRuns');
+    const run = await getSubagentRun(PROJECT_DIR, String(req.params.runId));
+    if (!run) { res.status(404).json({ error: 'Run not found.' }); return; }
+    res.json({ run });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
