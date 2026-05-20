@@ -548,7 +548,7 @@ export const AddWorkspacePathTool: Tool = {
     },
     required: ['folder_path'],
   },
-  isReadOnly: false,
+  isReadOnly: true,
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
     const raw = String(input.folder_path ?? '').trim();
     if (!raw) return { success: false, output: 'folder_path is required', error: 'missing folder_path' };

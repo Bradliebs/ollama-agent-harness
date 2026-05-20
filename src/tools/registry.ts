@@ -96,7 +96,7 @@ export const BUILTIN_TOOL_ENTRIES: ToolRegistryEntry[] = [
   { tool: MakeDirectoryTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'write', canDryRun: false },
   { tool: ListFilesTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
   { tool: ListUploadsTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
-  { tool: AddWorkspacePathTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'write', canDryRun: false },
+  { tool: AddWorkspacePathTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
   { tool: BashTool, toolset: 'shell', source: 'builtin', enabledByDefault: true, riskLevel: 'high', permissionCategory: 'shell', canDryRun: false },
   { tool: WebFetchTool, toolset: 'web', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'network', canDryRun: false },
   { tool: WebSearchTool, toolset: 'web', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'network', canDryRun: false },
