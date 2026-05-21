@@ -588,6 +588,138 @@ let statusCenterReadiness = {
 };
 let statusCenterActionHandler = null;
 
+// ─── Parallel Session Tabs ──────────────────────────────────────────
+// Each session tab holds its own chat state so the user can start a prompt,
+// open a new tab, prompt again, and come back when either finishes.
+const sessionTabs = new Map(); // tabId → { title, chatMessages, currentChatId, isSending, activeChatController, sessionUsage, htmlSnapshot, status }
+let activeTabId = null;
+let _tabIdCounter = 0;
+
+function _nextTabId() { return 'tab-' + (++_tabIdCounter); }
+
+function _defaultSessionState(title) {
+  return {
+    title: title || 'New chat',
+    chatMessages: [],
+    currentChatId: null,
+    isSending: false,
+    activeChatController: null,
+    sessionUsage: { calls: 0, promptTokens: 0, completionTokens: 0, totalDurationMs: 0, totalTurnMs: 0, lastModel: null },
+    htmlSnapshot: null,
+    status: 'idle', // idle | streaming | done
+  };
+}
+
+function _snapshotActiveTab() {
+  if (!activeTabId || !sessionTabs.has(activeTabId)) return;
+  const tab = sessionTabs.get(activeTabId);
+  tab.chatMessages = chatMessages;
+  tab.currentChatId = currentChatId;
+  tab.isSending = isSending;
+  tab.activeChatController = activeChatController;
+  tab.sessionUsage = typeof sessionUsage !== 'undefined' ? { ...sessionUsage } : tab.sessionUsage;
+  tab.htmlSnapshot = document.getElementById('chatArea').innerHTML;
+  tab.title = chatMessages.length > 0 ? (chatMessages[0].content || '').slice(0, 40) || 'Chat' : 'New chat';
+}
+
+function _restoreTab(tabId) {
+  const tab = sessionTabs.get(tabId);
+  if (!tab) return;
+  chatMessages = tab.chatMessages;
+  currentChatId = tab.currentChatId;
+  isSending = tab.isSending;
+  activeChatController = tab.activeChatController;
+  if (typeof sessionUsage !== 'undefined') Object.assign(sessionUsage, tab.sessionUsage);
+  const area = document.getElementById('chatArea');
+  if (tab.htmlSnapshot !== null) {
+    area.innerHTML = tab.htmlSnapshot;
+  } else {
+    area.innerHTML = welcomeMarkup();
+  }
+  // Update send button state
+  const btn = document.getElementById('sendBtn');
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = isSending ? '■' : '➤';
+    btn.title = isSending ? 'Stop' : 'Send';
+  }
+  activeTabId = tabId;
+}
+
+function createSessionTab(switchTo) {
+  const id = _nextTabId();
+  sessionTabs.set(id, _defaultSessionState('New chat'));
+  if (switchTo !== false) switchToTab(id);
+  renderSessionTabs();
+  return id;
+}
+
+function switchToTab(tabId) {
+  if (tabId === activeTabId) return;
+  _snapshotActiveTab();
+  _restoreTab(tabId);
+  renderSessionTabs();
+  saveChatSession();
+  loadHistory();
+}
+
+function closeSessionTab(tabId) {
+  const tab = sessionTabs.get(tabId);
+  if (!tab) return;
+  // Abort any active stream
+  if (tab.activeChatController) {
+    try { tab.activeChatController.abort(); } catch(e){}
+  }
+  sessionTabs.delete(tabId);
+  // If we closed the active tab, switch to another
+  if (tabId === activeTabId) {
+    const remaining = [...sessionTabs.keys()];
+    if (remaining.length > 0) {
+      switchToTab(remaining[remaining.length - 1]);
+    } else {
+      // Last tab — create a fresh one
+      createSessionTab();
+    }
+  }
+  renderSessionTabs();
+}
+
+function renderSessionTabs() {
+  const bar = document.getElementById('sessionTabs');
+  if (!bar) return;
+  const tabs = [...sessionTabs.entries()];
+  // Only show tab bar when there's more than 1 tab
+  bar.style.display = tabs.length > 1 ? '' : 'none';
+  bar.innerHTML = '';
+  for (const [id, tab] of tabs) {
+    const el = document.createElement('div');
+    el.className = 'session-tab' + (id === activeTabId ? ' active' : '');
+    const badgeClass = tab.status === 'streaming' ? 'streaming' : tab.status === 'done' ? 'done' : 'idle';
+    const title = tab.title || 'New chat';
+    el.innerHTML = '<span class="tab-badge ' + badgeClass + '"></span>'
+      + '<span class="tab-title">' + esc(title) + '</span>'
+      + '<button class="tab-close" onclick="event.stopPropagation();closeSessionTab(\'' + id + '\')" title="Close">&times;</button>';
+    el.onclick = () => switchToTab(id);
+    bar.appendChild(el);
+  }
+  const addBtn = document.createElement('button');
+  addBtn.className = 'session-tab-add';
+  addBtn.textContent = '+';
+  addBtn.title = 'New parallel session';
+  addBtn.onclick = () => createSessionTab();
+  bar.appendChild(addBtn);
+}
+
+function _markTabStatus(tabId, status) {
+  const tab = sessionTabs.get(tabId);
+  if (tab) {
+    tab.status = status;
+    if (status === 'streaming') tab.isSending = true;
+    if (status === 'done' || status === 'idle') tab.isSending = false;
+  }
+  renderSessionTabs();
+}
+
 window.addEventListener('DOMContentLoaded', async () => {
   await ensureApiAuthReady();
   restoreTheme();
@@ -628,6 +760,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   jarvisAutoRegisterBrowserVoice();
   refreshJarvisLive();
   setInterval(() => { refreshJarvisLive().catch(() => {}); }, 30_000);
+  // Initialize the first session tab
+  const firstTabId = createSessionTab(false);
+  activeTabId = firstTabId;
+  renderSessionTabs();
   document.getElementById('chatInput').focus();
 });
 
@@ -4192,6 +4328,8 @@ async function sendMessage(opts) {
   // Strip any prior follow-up chips and context cards so they don't pile up.
   document.querySelectorAll('.followup-chips, .context-cards').forEach((n) => n.remove());
   isSending = true;
+  const _sendTabId = activeTabId;
+  _markTabStatus(_sendTabId, 'streaming');
   // Per-turn citation collector: every successful web_read becomes a
   // numbered source under the assistant reply. Keeps the model from
   // having to parrot the URL inline.
@@ -4563,6 +4701,12 @@ async function sendMessage(opts) {
   if (tokRateTimer) clearInterval(tokRateTimer);
   isSending = false;
   activeChatController = null;
+  _markTabStatus(_sendTabId, 'done');
+  // If this tab is still active, also snapshot state to the session
+  if (_sendTabId === activeTabId) {
+    const tab = sessionTabs.get(_sendTabId);
+    if (tab) { tab.chatMessages = chatMessages; tab.currentChatId = currentChatId; tab.isSending = false; tab.activeChatController = null; }
+  }
   document.getElementById('sendBtn').disabled = false;
   document.getElementById('sendBtn').textContent = '➤';
   document.getElementById('sendBtn').title = 'Send';
@@ -6215,7 +6359,18 @@ async function searchHistory(q) {
 async function loadChat(id) { try { const r = await fetch('/api/history/' + id); const d = await r.json(); currentChatId = id; chatMessages = d.messages || []; document.getElementById('chatArea').innerHTML = ''; for (const m of chatMessages) addMsg(m.role, m.content); saveChatSession(); loadHistory(); } catch(e){} }
 async function autoSaveChat() { if (chatMessages.length < 2) return; const title = chatMessages[0].content.slice(0, 60); try { const r = await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: currentChatId, title, messages: chatMessages }) }); const d = await r.json(); if (!currentChatId) currentChatId = d.id; saveChatSession(); loadHistory(); } catch(e){} }
 async function deleteChat(id) { await fetch('/api/history/' + id, { method: 'DELETE' }); if (id === currentChatId) newChat(); loadHistory(); }
-function newChat() { currentChatId = null; chatMessages = []; resetSessionUsage(); saveChatSession(); document.getElementById('chatArea').innerHTML = welcomeMarkup(); renderModelCapabilityHint(); updateNoModelEmptyState(); loadReadiness(); loadSettings(); loadHistory(); }
+function newChat() {
+  // If current tab has messages, create a new tab; otherwise reuse the current one
+  if (chatMessages.length > 0 && sessionTabs.size > 0) {
+    createSessionTab();
+  }
+  currentChatId = null; chatMessages = []; resetSessionUsage(); saveChatSession(); document.getElementById('chatArea').innerHTML = welcomeMarkup(); renderModelCapabilityHint(); updateNoModelEmptyState(); loadReadiness(); loadSettings(); loadHistory();
+  if (activeTabId) {
+    const tab = sessionTabs.get(activeTabId);
+    if (tab) { tab.chatMessages = []; tab.currentChatId = null; tab.status = 'idle'; tab.title = 'New chat'; tab.htmlSnapshot = null; }
+    renderSessionTabs();
+  }
+}
 function getPersonalityGreeting(name, personalityText) {
   const p = personalityText.toLowerCase();
   if (p.includes('pirate')) return { headline: 'Ahoy! Captain ' + name + ' at yer service!', subtitle: 'Set course for yer next task, matey. I can navigate files, chart code, search the seven seas of the web, and remember every port we visit.' };

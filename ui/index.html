@@ -443,6 +443,21 @@
     .btn-icon{background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);width:34px;height:34px;border-radius:var(--rs);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;transition:all .2s}
     .btn-icon:hover{border-color:var(--accent);color:var(--text)}
     .chat-area{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;scroll-behavior:smooth}
+    .session-tabs{display:flex;align-items:center;gap:2px;padding:2px 8px 0;background:var(--surface);border-bottom:1px solid var(--border);min-height:32px;overflow-x:auto;scrollbar-width:thin;flex-shrink:0}
+    .session-tab{display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:6px 6px 0 0;cursor:pointer;font-size:12px;color:var(--text-dim);background:transparent;border:1px solid transparent;border-bottom:none;white-space:nowrap;max-width:180px;transition:all .15s;position:relative}
+    .session-tab:hover{background:var(--surface2);color:var(--text)}
+    .session-tab.active{background:var(--bg,#111);color:var(--text);border-color:var(--border);font-weight:600}
+    .session-tab .tab-title{overflow:hidden;text-overflow:ellipsis;max-width:120px}
+    .session-tab .tab-badge{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+    .session-tab .tab-badge.streaming{background:var(--accent);animation:tab-pulse 1s infinite}
+    .session-tab .tab-badge.done{background:#4caf50}
+    .session-tab .tab-badge.idle{display:none}
+    .session-tab .tab-close{opacity:0;background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:11px;padding:0 2px;line-height:1}
+    .session-tab:hover .tab-close{opacity:.6}
+    .session-tab .tab-close:hover{opacity:1;color:var(--error)}
+    .session-tab-add{background:none;border:1px dashed var(--border);color:var(--text-dim);cursor:pointer;padding:3px 10px;border-radius:6px 6px 0 0;font-size:14px;line-height:1;transition:all .15s}
+    .session-tab-add:hover{border-color:var(--accent);color:var(--accent)}
+    @keyframes tab-pulse{0%,100%{opacity:1}50%{opacity:.4}}
     /* Artifact panel: side preview for code blocks, HTML, SVG, markdown.
        Slides in from the right of the main-panel, leaving chat composer
        layout untouched. Hidden by default; toggled per artifact. */
@@ -1121,6 +1136,10 @@
          the user to know which tab to open. Hidden when empty. Populated
          by loadInbox() from /api/inbox. -->
     <div class="inbox-strip initial-hidden" id="inboxStrip" aria-live="polite"></div>
+
+    <div class="session-tabs" id="sessionTabs">
+      <button class="session-tab-add" onclick="createSessionTab()" title="New parallel session">+</button>
+    </div>
 
     <div class="chat-area" id="chatArea">
       <div class="welcome" id="welcome">
@@ -2065,6 +2084,6 @@
 <script src="./marked.min.js"></script>
 <script src="./chatHistory.js?v=3"></script>
 <script src="./toolActivity.js?v=1"></script>
-<script src="./app.js?v=25"></script>
+<script src="./app.js?v=26"></script>
 </body>
 </html>
