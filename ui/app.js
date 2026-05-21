@@ -9142,6 +9142,11 @@ function renderLearningManager(data) {
   const view = document.getElementById('learningView');
   if (!view) return;
   view.innerHTML += renderRoutingMetrics(data) + renderCandidateQueue(data) + renderOutputValidationTrends(data) + renderProfileFeedbackTrends(data) + renderContextLossTrend(data) + renderEvalDatasetManager(data);
+  // Inject benchmark panel as a sibling section.
+  const benchmarkContainer = document.createElement('div');
+  benchmarkContainer.id = 'benchmarkPanel';
+  view.appendChild(benchmarkContainer);
+  renderBenchmarkPanel(benchmarkContainer);
 }
 
 function renderOutputValidationTrends(data) {
@@ -9385,6 +9390,90 @@ function traceRecordText(record) { return JSON.stringify(record || {}).toLowerCa
 async function loadRuntimeStorage() { const box = document.getElementById('runtimeStorageStatus'); if (!box) return; try { const response = await fetch('/api/runtime/storage'); const data = await response.json(); box.innerHTML = '<div><strong>Trace exports</strong> ' + esc(data.traces.count) + ' files · ' + Math.round((data.traces.bytes || 0) / 1024) + ' KB</div><div><strong>Semantic index</strong> ' + (data.semanticIndex.exists ? Math.round((data.semanticIndex.bytes || 0) / 1024) + ' KB' : 'not built') + '</div>'; } catch (error) { box.textContent = error.message; } }
 
 async function cleanupRuntimeStorage(target) { const body = { traces: target === 'traces', semanticIndex: target === 'semanticIndex' }; try { const response = await fetch('/api/runtime/cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const data = await response.json(); if (data.error) { showToast(data.error); return; } await loadRuntimeStorage(); if (target === 'traces') await loadTraceExports(); } catch (error) { showToast(error.message); } }
+
+// ─── Benchmark panel (Gap #2) ───────────────────────────────────────
+
+async function runBenchmarkSuite(tiers) {
+  const btn = document.getElementById('runBenchmarkBtn');
+  const box = document.getElementById('benchmarkResults');
+  if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
+  if (box) box.innerHTML = '<div class="trace-meta">Running benchmark suite…</div>';
+  try {
+    const model = document.getElementById('modelSelect')?.value || '';
+    const response = await fetch('/api/benchmark/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tiers: tiers || undefined, model }),
+    });
+    const data = await response.json();
+    if (data.error) { showToast(data.error); return; }
+    renderBenchmarkRun(data.run, data.summary, box);
+    await loadBenchmarkHistory();
+  } catch (error) {
+    showToast(error.message);
+    if (box) box.innerHTML = '<div class="trace-meta">Error: ' + esc(error.message) + '</div>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '▶ Run'; }
+  }
+}
+
+function renderBenchmarkRun(run, summary, box) {
+  if (!box || !run) return;
+  const pct = Math.round((run.passRate || 0) * 100);
+  const badge = pct >= 80 ? '✅' : pct >= 50 ? '⚠️' : '❌';
+  const tierRows = (summary || []).map((t) =>
+    '<div class="trace-row"><strong>' + esc(t.tier) + '</strong> · ' + esc(t.passed) + '/' + esc(t.total) + ' · ' + esc(t.passRate) + '</div>'
+  ).join('');
+  const failRows = (run.results || []).filter((r) => r.status !== 'pass').map((r) =>
+    '<div class="trace-row error-row"><strong>' + esc(r.taskId) + '</strong>' +
+    (r.failureCategory ? ' <span class="tool-name">' + esc(r.failureCategory) + '</span>' : '') +
+    '<div class="trace-meta">' + esc(r.reason) + '</div></div>'
+  ).join('');
+  box.innerHTML =
+    '<div class="trace-item"><div class="trace-title">' + badge + ' ' + pct + '% · ' + run.passed + '/' + run.total + ' tasks passed</div>' +
+    '<div class="trace-meta">model: ' + esc(run.model) + ' · ' + run.total + ' tasks · ' + esc(run.finishedAt?.slice(0, 19) || '') + '</div>' +
+    '<div class="trace-block-spaced">' + tierRows + '</div>' +
+    (failRows ? '<div class="trace-block-spaced"><strong>Failures</strong>' + failRows + '</div>' : '') +
+    '</div>';
+}
+
+async function loadBenchmarkHistory() {
+  const box = document.getElementById('benchmarkHistory');
+  if (!box) return;
+  try {
+    const response = await fetch('/api/benchmark/runs');
+    const data = await response.json();
+    const runs = data.runs || [];
+    box.innerHTML = runs.slice(0, 10).map((r) => {
+      const pct = Math.round((r.passRate || 0) * 100);
+      const badge = pct >= 80 ? '✅' : pct >= 50 ? '⚠️' : '❌';
+      const tiers = (r.tiers || []).join(', ');
+      return '<div class="trace-item"><div class="trace-title">' + badge + ' ' + pct + '% · ' + esc(r.model) + '</div>' +
+        '<div class="trace-meta">' + r.passed + '/' + r.total + ' · tiers: ' + esc(tiers) + ' · ' + esc((r.startedAt || '').slice(0, 10)) + '</div></div>';
+    }).join('') || '<div class="trace-meta">No benchmark runs yet</div>';
+  } catch (e) {
+    box.innerHTML = '<div class="trace-meta">History unavailable</div>';
+  }
+}
+
+function renderBenchmarkPanel(container) {
+  if (!container) return;
+  container.innerHTML =
+    '<div class="trace-list">' +
+    '<div class="trace-title">Benchmark Suite</div>' +
+    '<div class="trace-meta" style="margin-bottom:8px">Tiered task runner: canned · stress · adversarial · regression</div>' +
+    '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">' +
+    '<button id="runBenchmarkBtn" class="btn-sm" onclick="runBenchmarkSuite()">▶ Run all</button>' +
+    '<button class="btn-sm" onclick="runBenchmarkSuite([\'canned\'])">Canned only</button>' +
+    '<button class="btn-sm" onclick="runBenchmarkSuite([\'adversarial\'])">Adversarial</button>' +
+    '<button class="btn-sm" onclick="runBenchmarkSuite([\'regression\'])">Regression</button>' +
+    '</div>' +
+    '<div id="benchmarkResults"><div class="trace-meta">No run yet this session</div></div>' +
+    '<div class="trace-title" style="margin-top:12px">Past Runs</div>' +
+    '<div id="benchmarkHistory"><div class="trace-meta">Loading…</div></div>' +
+    '</div>';
+  loadBenchmarkHistory();
+}
 
 // ─── Snapshots tab (skills + memory + config) ──────────────────────
 // Renders a list of snapshots with "Take", "Diff", "Restore", "Delete"
