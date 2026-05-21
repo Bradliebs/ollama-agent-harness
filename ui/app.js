@@ -614,7 +614,7 @@ function _defaultSessionState(title) {
 function _snapshotActiveTab() {
   if (!activeTabId || !sessionTabs.has(activeTabId)) return;
   const tab = sessionTabs.get(activeTabId);
-  tab.chatMessages = chatMessages;
+  tab.chatMessages = [...chatMessages]; // Deep copy — don't share by reference
   tab.currentChatId = currentChatId;
   tab.isSending = isSending;
   tab.activeChatController = activeChatController;
@@ -628,7 +628,7 @@ function _snapshotActiveTab() {
 function _restoreTab(tabId) {
   const tab = sessionTabs.get(tabId);
   if (!tab) return;
-  chatMessages = tab.chatMessages;
+  chatMessages = [...tab.chatMessages]; // Copy — don't share reference with tab state
   currentChatId = tab.currentChatId;
   isSending = tab.isSending;
   activeChatController = tab.activeChatController;
@@ -4712,7 +4712,7 @@ async function sendMessage(opts) {
   // If this tab is still active, also snapshot state to the session
   if (_sendTabId === activeTabId) {
     const tab = sessionTabs.get(_sendTabId);
-    if (tab) { tab.chatMessages = chatMessages; tab.currentChatId = currentChatId; tab.isSending = false; tab.activeChatController = null; }
+    if (tab) { tab.chatMessages = [...chatMessages]; tab.currentChatId = currentChatId; tab.isSending = false; tab.activeChatController = null; }
   }
   document.getElementById('sendBtn').disabled = false;
   document.getElementById('sendBtn').textContent = '➤';
