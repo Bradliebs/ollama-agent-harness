@@ -13,6 +13,7 @@ import type { LearningRecorder } from '../learning/engine';
 import type { RuntimeTracer } from './tracing';
 import { validateOutput, withOutputValidationInstructions } from './outputValidation';
 import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
+import { verifyCode } from './doneStateVerifier';
 
 export interface QueryLoopDeps {
   client: IChatClient;
@@ -327,9 +328,42 @@ export async function* queryLoop(
       if (session) {
         await appendStatus(session, 'completed', undefined, tracer);
       }
+
+      // Post-completion code verification: runs tsc / eslint / npm test
+      // when the agent mutated files and the caller opted in via config.verify.
+      // This is Gap 1 — the harness previously had no way to catch regressions
+      // introduced by agent edits.
+      let testsFailed = false;
+      if (config.verify?.enabled && anyProductiveToolSucceeded) {
+        try {
+          const verifyResult = await verifyCode({
+            projectDir: process.cwd(),
+            quick: config.verify.quick ?? false,
+            timeout: config.verify.timeout ?? 60_000,
+          });
+          tracer?.recordEvent('verification.complete', {
+            overall: verifyResult.overall,
+            checks: verifyResult.checks.length,
+          });
+          yield {
+            type: 'verification',
+            overall: verifyResult.overall,
+            checks: verifyResult.checks,
+          };
+          testsFailed = verifyResult.overall === 'fail';
+        } catch (verifyErr) {
+          const msg = verifyErr instanceof Error ? verifyErr.message : String(verifyErr);
+          tracer?.recordEvent('verification.error', { error: msg });
+        }
+      }
+
       yield {
         type: 'done',
-        reason: validationFailed ? 'completed_with_validation_failures' : 'completed',
+        reason: testsFailed
+          ? 'completed_with_test_failures'
+          : validationFailed
+            ? 'completed_with_validation_failures'
+            : 'completed',
         turns: turn,
       };
       return;

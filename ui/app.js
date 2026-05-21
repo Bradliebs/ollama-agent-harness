@@ -4548,6 +4548,10 @@ async function sendMessage(opts) {
             toolBox = ensureToolBox(toolBox);
             appendOutputValidationItem(toolBox, ev.validation);
             break;
+          case 'verification':
+            toolBox = ensureToolBox(toolBox);
+            appendVerificationItem(toolBox, ev);
+            break;
           case 'output_validation_profile_promoted':
             // Auto-promotion from oracle-prime to coding-answer when
             // productive tools succeeded. Surface it so the validation
@@ -4651,6 +4655,10 @@ async function sendMessage(opts) {
             if (ev.reason === 'completed_with_validation_failures') {
               toolBox = ensureToolBox(toolBox);
               appendToolItem(toolBox, '⚠️', 'completed with validation failures', 'work finished but the output validator rejected the final reply', true);
+            }
+            if (ev.reason === 'completed_with_test_failures') {
+              toolBox = ensureToolBox(toolBox);
+              appendToolItem(toolBox, '❌', 'completed with test failures', 'files were edited but tsc/eslint/tests failed — review the verification card above', true);
             }
             if (ev.reason === 'time_budget_synthesized') {
               toolBox = ensureToolBox(toolBox);
@@ -4833,6 +4841,22 @@ function appendOutputValidationItem(toolBox, validation) {
   }).join('');
   item.innerHTML = '<span>🧪</span><span class="tool-name">output validation</span><span class="validation-groups"><strong>' + esc(validation.profile) + ' ' + esc(validation.status) + ' · score ' + esc(String(validation.score)) + '</strong>' + groups + '</span>';
   toolBox.appendChild(item);
+  scrollBottom();
+}
+
+function appendVerificationItem(toolBox, ev) {
+  const checks = ev.checks || [];
+  const icon = ev.overall === 'pass' ? '✅' : ev.overall === 'fail' ? '❌' : ev.overall === 'warn' ? '⚠️' : '⏭️';
+  const label = ev.overall === 'pass' ? 'tests passed' : ev.overall === 'fail' ? 'tests failed' : ev.overall === 'warn' ? 'tests warned' : 'tests skipped';
+  const detail = checks.map((c) => {
+    const s = c.status === 'pass' ? '✓' : c.status === 'fail' ? '✗' : c.status === 'warn' ? '⚠' : '–';
+    return s + ' ' + c.name + (c.duration_ms != null ? ' (' + c.duration_ms + 'ms)' : '') + (c.detail ? ': ' + c.detail : '');
+  }).join(' · ') || (ev.overall === 'skip' ? 'no checks ran (no tsconfig / test script found)' : '');
+  const item = document.createElement('div');
+  item.className = 'tool-item' + (ev.overall === 'fail' ? ' error' : '');
+  item.innerHTML = '<span>' + icon + '</span><span class="tool-name">' + label + '</span><span class="tool-detail">' + esc(detail) + '</span>';
+  toolBox.appendChild(item);
+  HarnessToolActivity.updateToolActivitySummary(toolBox, ev.overall === 'fail');
   scrollBottom();
 }
 

@@ -6,6 +6,19 @@ export interface LoopConfig {
   systemPrompt: string;
   maxTurns: number;
   /**
+   * When enabled, run tsc / eslint / npm test after any coding turn that
+   * produced file mutations. Surfaces the result as a `verification` event
+   * and promotes the done reason to `completed_with_test_failures` when
+   * tests fail. Off by default to avoid blocking non-coding sessions.
+   */
+  verify?: {
+    enabled?: boolean;
+    /** Skip lint + tests, run typecheck only. */
+    quick?: boolean;
+    /** Per-check timeout in ms. Default 60 000. */
+    timeout?: number;
+  };
+  /**
    * Wall-clock budget in milliseconds. When elapsed time exceeds this
    * budget the loop triggers a synthesis turn (tools stripped, model
    * summarises its work) instead of continuing. This naturally throttles
@@ -76,7 +89,8 @@ export type LoopEvent =
   | SynthesisFiredEvent
   | AutoContinueEvent
   | TimeBudgetStatusEvent
-  | TurnCompleteEvent;
+  | TurnCompleteEvent
+  | VerificationEvent;
 
 export interface TextEvent {
   type: 'text';
@@ -159,7 +173,7 @@ export interface ErrorEvent {
 
 export interface DoneEvent {
   type: 'done';
-  reason: 'completed' | 'completed_with_validation_failures' | 'max_turns' | 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' | 'aborted' | 'error' | 'unproductive' | 'repeated_tool_failure';
+  reason: 'completed' | 'completed_with_validation_failures' | 'completed_with_test_failures' | 'max_turns' | 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' | 'aborted' | 'error' | 'unproductive' | 'repeated_tool_failure';
   turns: number;
 }
 
@@ -226,4 +240,21 @@ export interface TurnCompleteEvent {
   turn: number;
   durationMs: number;
   toolCalls: number;
+}
+
+/**
+ * Emitted after a coding run that mutated files, when `LoopConfig.verify`
+ * is enabled. Contains the result of tsc / eslint / npm test so consumers
+ * can surface a "Tests passed ✓" or "Tests failed ✗" card without running
+ * validation themselves.
+ */
+export interface VerificationEvent {
+  type: 'verification';
+  overall: 'pass' | 'fail' | 'warn' | 'skip';
+  checks: Array<{
+    name: string;
+    status: 'pass' | 'fail' | 'warn' | 'skip';
+    detail?: string;
+    duration_ms?: number;
+  }>;
 }
