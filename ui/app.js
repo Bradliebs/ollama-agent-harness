@@ -688,10 +688,10 @@ function renderSessionTabs() {
   const bar = document.getElementById('sessionTabs');
   if (!bar) return;
   const tabs = [...sessionTabs.entries()];
-  // Only show tab bar when there's more than 1 tab
-  bar.style.display = tabs.length > 1 ? '' : 'none';
   bar.innerHTML = '';
+  // Always show tab labels when 2+ tabs exist; show only the "+" button when just 1
   for (const [id, tab] of tabs) {
+    if (tabs.length < 2) continue; // Hide individual tab chips when only one session
     const el = document.createElement('div');
     el.className = 'session-tab' + (id === activeTabId ? ' active' : '');
     const badgeClass = tab.status === 'streaming' ? 'streaming' : tab.status === 'done' ? 'done' : 'idle';
@@ -704,8 +704,8 @@ function renderSessionTabs() {
   }
   const addBtn = document.createElement('button');
   addBtn.className = 'session-tab-add';
-  addBtn.textContent = '+';
-  addBtn.title = 'New parallel session';
+  addBtn.innerHTML = tabs.length < 2 ? '+ New parallel session' : '+';
+  addBtn.title = 'New parallel session — run another chat while this one streams';
   addBtn.onclick = () => createSessionTab();
   bar.appendChild(addBtn);
 }
