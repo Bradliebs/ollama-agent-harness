@@ -63,6 +63,8 @@ import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adapt
 import { startNewSession, onSessionEnd, getEvolvedPrompt, recordSessionAutoContinue, LearningRecorder } from '../learning/engine';
 import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
 import { runBenchmark, loadBenchmarkRuns, summarizeByTier, type BenchmarkTier } from '../eval/benchmark';
+import { runComparison } from '../eval/abCompare';
+import { CostTracker } from '../eval/costTracker';
 import { appendLearningCandidate, evaluatePromotionGateForCandidate, extractLearningCandidate, getLearningCandidateProvenance, listLearningCandidates, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
 import { createSubagentTool, listSubagentRoutingMetrics } from '../agents/subagent';
 import { applyGrantToLadder, clearRuntimeRegistry, composeDailyBrief, composeMermaidGraph, defaultAmbientActionPolicy, ensureCapability, eventsFromAmbientSignals, eventsFromEvidenceCards, getInboundTriageStatus, getKnowledgeGraphStatus, getMcpServerStatus, getRuntimeRegistryStatus, getVoiceStatus, ingestEvidenceCard, loadRuntimeRegistry, loadTrustLadder, markRuntimeInstalled, mergeAndSort, mineNextActions, readAll as readKnowledgeGraph, recall as kgRecall, recordOutcome, recordPermissionOutcome, runCouncilForChat, saveRuntimeRegistry, saveTrustLadder, snapshotDailyBrief, startAmbientDaemon, upsertEntity, type AmbientDaemonHandle, type RuntimeFeature } from '../jarvis';
@@ -5233,6 +5235,45 @@ app.get('/api/benchmark/runs/:id', async (req, res) => {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
   }
+});
+
+// ── A/B model comparison (Gap #3) ────────────────────────────────────
+
+app.post('/api/benchmark/compare', async (req, res) => {
+  const { modelA, modelB, tiers, filterIds } = req.body ?? {};
+  if (!modelA || !modelB) { res.status(400).json({ error: 'modelA and modelB are required' }); return; }
+  try {
+    const result = await runComparison({
+      modelA,
+      modelB,
+      benchmarkOptions: {
+        baseUrl: `http://127.0.0.1:${process.env.PORT ?? 3000}`,
+        tiers: tiers as BenchmarkTier[] | undefined,
+        filterIds,
+        projectDir: PROJECT_DIR,
+      },
+    });
+    res.json(result);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// ── Cost tracking rates (Gap #5) ────────────────────────────────────
+
+app.get('/api/cost/rates', (_req, res) => {
+  res.json({ rates: CostTracker.getAllRates() });
+});
+
+app.post('/api/cost/rates', (req, res) => {
+  const { model, input, output } = req.body ?? {};
+  if (!model || typeof input !== 'number' || typeof output !== 'number') {
+    res.status(400).json({ error: 'model, input (number), and output (number) are required' });
+    return;
+  }
+  CostTracker.registerRate(model, { input, output });
+  res.json({ ok: true, model, rate: { input, output } });
 });
 
 app.get('/api/runtime/storage', async (_req, res) => {

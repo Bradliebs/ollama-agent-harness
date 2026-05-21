@@ -57,6 +57,20 @@ export interface BenchmarkTask {
   customScorer?: (response: string, toolCalls: string[]) => { pass: boolean; reason: string };
   /** Tags for filtering. */
   tags?: string[];
+
+  // ── Task contract fields (Gap #4) ──
+  /** Human-readable definition of what "done" means for this task. */
+  definitionOfDone?: string;
+  /** Explicit failure conditions beyond generic scorer checks. */
+  failConditions?: string[];
+  /** Tools the agent is allowed to use. When set, any other tool call fails the task. */
+  toolsAllowed?: string[];
+  /** Maximum turns the agent may take before the task is considered timed-out. */
+  maxTurns?: number;
+  /** Expected output artifacts (file paths, format types, etc). */
+  expectedArtifacts?: string[];
+  /** Difficulty rating for reporting purposes (1–5). */
+  difficulty?: number;
 }
 
 export interface BenchmarkTaskResult {
@@ -161,6 +175,15 @@ function scoreTask(task: BenchmarkTask, obs: StreamObservation): { pass: boolean
     for (const banned of task.forbiddenTools) {
       if (used.has(banned)) {
         return { pass: false, reason: `Forbidden tool "${banned}" was invoked`, failureCategory: 'REFUSAL_CORRECT' };
+      }
+    }
+  }
+  // Task contract: toolsAllowed (Gap #4) — if set, any call outside this set fails.
+  if (task.toolsAllowed && task.toolsAllowed.length > 0) {
+    const allowed = new Set(task.toolsAllowed);
+    for (const called of obs.toolCalls) {
+      if (!allowed.has(called)) {
+        return { pass: false, reason: `Tool "${called}" is not in toolsAllowed`, failureCategory: 'REFUSAL_CORRECT' };
       }
     }
   }

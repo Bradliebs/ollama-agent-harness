@@ -9469,10 +9469,93 @@ function renderBenchmarkPanel(container) {
     '<button class="btn-sm" onclick="runBenchmarkSuite([\'regression\'])">Regression</button>' +
     '</div>' +
     '<div id="benchmarkResults"><div class="trace-meta">No run yet this session</div></div>' +
+
+    // A/B comparison section (Gap #3)
+    '<div class="trace-title" style="margin-top:12px">A/B Model Comparison</div>' +
+    '<div class="trace-meta" style="margin-bottom:6px">Run the same tasks against two models head-to-head</div>' +
+    '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">' +
+    '<input id="abModelA" class="learning-search-input" placeholder="Model A" style="width:160px">' +
+    '<span>vs</span>' +
+    '<input id="abModelB" class="learning-search-input" placeholder="Model B" style="width:160px">' +
+    '<button class="btn-sm" onclick="runABComparison()">⚔️ Compare</button>' +
+    '</div>' +
+    '<div id="abCompareResults"></div>' +
+
+    // Cost rates section (Gap #5)
+    '<div class="trace-title" style="margin-top:12px">Cost Rates</div>' +
+    '<div class="trace-meta" style="margin-bottom:6px">$/1K-token rates for cost-per-success calculations</div>' +
+    '<div id="costRatesPanel"><div class="trace-meta">Loading…</div></div>' +
+
     '<div class="trace-title" style="margin-top:12px">Past Runs</div>' +
     '<div id="benchmarkHistory"><div class="trace-meta">Loading…</div></div>' +
     '</div>';
   loadBenchmarkHistory();
+  loadCostRates();
+}
+
+// ─── A/B Comparison (Gap #3) ──────────────────────────────────────
+
+async function runABComparison() {
+  const modelA = (document.getElementById('abModelA') || {}).value;
+  const modelB = (document.getElementById('abModelB') || {}).value;
+  if (!modelA || !modelB) { showToast('Enter both Model A and Model B'); return; }
+  const out = document.getElementById('abCompareResults');
+  if (out) out.innerHTML = '<div class="trace-meta">Running comparison… this may take a few minutes.</div>';
+  try {
+    const r = await fetch('/api/benchmark/compare', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelA, modelB }),
+    });
+    const d = await r.json();
+    if (d.error) { if (out) out.innerHTML = '<div class="trace-meta trace-meta-warn">Error: ' + esc(d.error) + '</div>'; return; }
+    if (out) out.innerHTML = renderComparisonResult(d);
+  } catch (e) { if (out) out.innerHTML = '<div class="trace-meta trace-meta-warn">' + esc(e.message) + '</div>'; }
+}
+
+function renderComparisonResult(cmp) {
+  let html = '<div class="trace-block-spaced">';
+  html += '<div class="trace-title">' + esc(cmp.modelA.model) + ' vs ' + esc(cmp.modelB.model) + '</div>';
+  html += '<div class="metric-row"><span>Pass rate</span><span>' + Math.round(cmp.modelA.passRate * 100) + '% vs ' + Math.round(cmp.modelB.passRate * 100) + '%</span></div>';
+  html += '<div class="metric-row"><span>Avg duration</span><span>' + cmp.modelA.avgDurationMs + 'ms vs ' + cmp.modelB.avgDurationMs + 'ms</span></div>';
+  html += '<div class="metric-row"><span>Avg tool calls</span><span>' + cmp.modelA.avgToolCalls + ' vs ' + cmp.modelB.avgToolCalls + '</span></div>';
+  const winsA = (cmp.diffs || []).filter(function(d) { return d.winner === 1; }).length;
+  const winsB = (cmp.diffs || []).filter(function(d) { return d.winner === -1; }).length;
+  const ties = (cmp.diffs || []).filter(function(d) { return d.winner === 0; }).length;
+  html += '<div class="metric-row"><span>Task wins</span><span>' + winsA + ' / ' + winsB + ' / ' + ties + ' ties</span></div>';
+
+  // Per-task diffs
+  const disagreements = (cmp.diffs || []).filter(function(d) { return d.winner !== 0; });
+  if (disagreements.length > 0) {
+    html += '<div class="trace-title" style="margin-top:8px">Disagreements</div>';
+    for (const d of disagreements) {
+      const winner = d.winner === 1 ? cmp.modelA.model : cmp.modelB.model;
+      html += '<div class="trace-meta">• <strong>' + esc(d.taskId) + '</strong>: ' + esc(winner) + ' won (' + d.statusA + '/' + d.statusB + ', ' + d.durationMsA + 'ms/' + d.durationMsB + 'ms)</div>';
+    }
+  }
+  html += '</div>';
+  return html;
+}
+
+// ─── Cost Rates (Gap #5) ──────────────────────────────────────────
+
+async function loadCostRates() {
+  const panel = document.getElementById('costRatesPanel');
+  if (!panel) return;
+  try {
+    const r = await fetch('/api/cost/rates');
+    const d = await r.json();
+    const rates = d.rates || {};
+    const models = Object.keys(rates);
+    if (models.length === 0) { panel.innerHTML = '<div class="trace-meta">No rates configured</div>'; return; }
+    let html = '<div style="max-height:150px;overflow-y:auto">';
+    for (const model of models) {
+      const rate = rates[model];
+      const label = rate.input === 0 && rate.output === 0 ? 'free (local)' : '$' + rate.input + '/$' + rate.output + ' per 1K';
+      html += '<div class="metric-row"><span>' + esc(model) + '</span><span class="trace-meta">' + label + '</span></div>';
+    }
+    html += '</div>';
+    panel.innerHTML = html;
+  } catch (e) { if (panel) panel.innerHTML = '<div class="trace-meta">Failed: ' + esc(e.message) + '</div>'; }
 }
 
 // ─── Snapshots tab (skills + memory + config) ──────────────────────

@@ -71,6 +71,17 @@ export interface LoopConfig {
    * medical, legal) disable auto-continue to force human confirmation.
    */
   taskType?: string;
+  /**
+   * Cost tracking configuration (Gap #5). When enabled, the loop tracks
+   * token usage per turn and enforces an optional budget cap.
+   */
+  costTracking?: {
+    enabled?: boolean;
+    /** Abort the loop when cumulative estimated cost exceeds this (USD). */
+    budgetUsd?: number;
+    /** Override $/1K-token rates. Key = model name, value = { input, output } per 1K tokens. */
+    rates?: Record<string, { input: number; output: number }>;
+  };
 }
 
 export type LoopEvent =
