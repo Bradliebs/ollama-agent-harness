@@ -655,7 +655,19 @@ function _restoreTab(tabId) {
 function createSessionTab(switchTo) {
   const id = _nextTabId();
   sessionTabs.set(id, _defaultSessionState('New chat'));
-  if (switchTo !== false) switchToTab(id);
+  if (switchTo !== false) {
+    // Snapshot the current tab before switching
+    _snapshotActiveTab();
+    // Force-clear global state for the new empty tab
+    chatMessages = [];
+    currentChatId = null;
+    isSending = false;
+    activeChatController = null;
+    document.getElementById('chatArea').innerHTML = welcomeMarkup();
+    activeTabId = id;
+    const btn = document.getElementById('sendBtn');
+    if (btn) { btn.disabled = false; btn.textContent = '➤'; btn.title = 'Send'; }
+  }
   renderSessionTabs();
   return id;
 }
@@ -664,6 +676,14 @@ function switchToTab(tabId) {
   if (tabId === activeTabId) return;
   _snapshotActiveTab();
   _restoreTab(tabId);
+  // Safety: re-render DOM from chatMessages if htmlSnapshot might be stale
+  // (e.g. background tab was still streaming when we last left it)
+  const tab = sessionTabs.get(tabId);
+  if (tab && tab.status === 'done' && tab.htmlSnapshot === null) {
+    const area = document.getElementById('chatArea');
+    area.innerHTML = '';
+    for (const m of chatMessages) addMsg(m.role, m.content);
+  }
   renderSessionTabs();
   saveChatSession();
   loadHistory();
