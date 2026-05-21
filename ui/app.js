@@ -602,6 +602,7 @@ function _defaultSessionState(title) {
     title: title || 'New chat',
     chatMessages: [],
     currentChatId: null,
+    model: null, // per-tab model override; null = use whatever's selected
     isSending: false,
     activeChatController: null,
     sessionUsage: { calls: 0, promptTokens: 0, completionTokens: 0, totalDurationMs: 0, totalTurnMs: 0, lastModel: null },
@@ -620,6 +621,8 @@ function _snapshotActiveTab() {
   tab.sessionUsage = typeof sessionUsage !== 'undefined' ? { ...sessionUsage } : tab.sessionUsage;
   tab.htmlSnapshot = document.getElementById('chatArea').innerHTML;
   tab.title = chatMessages.length > 0 ? (chatMessages[0].content || '').slice(0, 40) || 'Chat' : 'New chat';
+  const modelSel = document.getElementById('modelSelect');
+  if (modelSel) tab.model = modelSel.value || null;
 }
 
 function _restoreTab(tabId) {
@@ -636,6 +639,9 @@ function _restoreTab(tabId) {
   } else {
     area.innerHTML = welcomeMarkup();
   }
+  // Restore per-tab model selection
+  const modelSel = document.getElementById('modelSelect');
+  if (modelSel && tab.model) modelSel.value = tab.model;
   // Update send button state
   const btn = document.getElementById('sendBtn');
   if (btn) {
@@ -696,8 +702,9 @@ function renderSessionTabs() {
     el.className = 'session-tab' + (id === activeTabId ? ' active' : '');
     const badgeClass = tab.status === 'streaming' ? 'streaming' : tab.status === 'done' ? 'done' : 'idle';
     const title = tab.title || 'New chat';
+    const modelTag = tab.model ? ' · ' + tab.model.split(':')[0] : '';
     el.innerHTML = '<span class="tab-badge ' + badgeClass + '"></span>'
-      + '<span class="tab-title">' + esc(title) + '</span>'
+      + '<span class="tab-title">' + esc(title) + '<span style="opacity:.5;font-weight:400">' + esc(modelTag) + '</span></span>'
       + '<button class="tab-close" onclick="event.stopPropagation();closeSessionTab(\'' + id + '\')" title="Close">&times;</button>';
     el.onclick = () => switchToTab(id);
     bar.appendChild(el);
