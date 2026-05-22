@@ -387,6 +387,9 @@ interface ImapFlowClient {
     flags?: Set<string>;
     bodyStructure?: unknown;
   }>;
+  search(query: Record<string, unknown>, options?: Record<string, unknown>): Promise<number[]>;
+  messageDelete(range: string | number[], options?: Record<string, unknown>): Promise<boolean>;
+  messageFlagsAdd(range: string | number[], flags: string[], options?: Record<string, unknown>): Promise<boolean>;
 }
 
 function formatAddress(addrs?: Array<{ name?: string; address?: string }>): string {
@@ -402,3 +405,136 @@ function extractTextPreview(raw: string, maxLen: number): string {
   const text = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   return text.length > maxLen ? text.slice(0, maxLen) + '…' : text;
 }
+
+// ─── Email delete tool ──────────────────────────────────────────────
+//
+// Deletes emails by sender, subject search, or age. Uses IMAP to
+// search and then expunge matching messages. Supports bulk operations
+// like "delete all emails from instagram.com".
+//
+// Safety: requires confirmation count to avoid accidental mass deletion.
+
+const MAX_DELETE_BATCH = 500;
+
+export const EmailDeleteTool: Tool = {
+  name: 'email_delete',
+  description: 'Delete emails from the inbox via IMAP. Can delete by sender (from), subject search, or older_than_days. Returns count of deleted messages. Use email_inbox first to preview what will be deleted. Safety cap: max 500 per call.',
+  parameters: {
+    type: 'object',
+    properties: {
+      from: { type: 'string', description: 'Delete emails from this sender (e.g. "instagram.com", "noreply@github.com")' },
+      subject: { type: 'string', description: 'Delete emails matching this subject substring' },
+      older_than_days: { type: 'number', description: 'Only delete emails older than this many days' },
+      folder: { type: 'string', description: 'Mailbox folder (default INBOX)' },
+      confirm_count: { type: 'number', description: 'Expected number of messages to delete. Required as a safety check — call email_inbox first to get the count.' },
+      dry_run: { type: 'boolean', description: 'If true, count matching emails without deleting (default false)' },
+    },
+    required: [],
+  },
+  isReadOnly: false,
+  execute: async (input: Record<string, unknown>): Promise<ToolResult> => {
+    const fromFilter = typeof input.from === 'string' ? input.from.trim() : '';
+    const subjectFilter = typeof input.subject === 'string' ? input.subject.trim() : '';
+    const olderThanDays = typeof input.older_than_days === 'number' ? input.older_than_days : undefined;
+    const folder = String(input.folder ?? 'INBOX').trim();
+    const confirmCount = typeof input.confirm_count === 'number' ? input.confirm_count : undefined;
+    const dryRun = Boolean(input.dry_run);
+
+    if (!fromFilter && !subjectFilter && olderThanDays === undefined) {
+      return { success: false, output: 'At least one filter is required: from, subject, or older_than_days. Refusing to delete without a filter.', error: 'no filter' };
+    }
+
+    const smtpHost = process.env.HARNESS_SMTP_HOST?.trim();
+    const user = process.env.HARNESS_SMTP_USER?.trim();
+    const pass = process.env.HARNESS_SMTP_PASS?.trim().replace(/\s+/g, '');
+    const imapHost = process.env.HARNESS_IMAP_HOST?.trim()
+      || (smtpHost ? DEFAULT_IMAP_HOSTS[smtpHost] : undefined)
+      || smtpHost;
+    const imapPort = parseInt(process.env.HARNESS_IMAP_PORT ?? '993', 10);
+
+    if (!imapHost || !user || !pass) {
+      return { success: false, output: 'IMAP not configured. Set HARNESS_SMTP_HOST, HARNESS_SMTP_USER, HARNESS_SMTP_PASS.', error: 'IMAP not configured' };
+    }
+
+    try {
+      let ImapFlowCtor: new (config: Record<string, unknown>) => ImapFlowClient;
+      try {
+        const mod = require('imapflow');
+        ImapFlowCtor = mod.ImapFlow;
+      } catch {
+        return { success: false, output: 'imapflow package not installed. Run: npm install imapflow', error: 'missing dependency' };
+      }
+
+      const client = new ImapFlowCtor({
+        host: imapHost,
+        port: imapPort,
+        secure: imapPort === 993,
+        auth: { user, pass },
+        logger: false,
+      });
+
+      await client.connect();
+      const lock = await client.getMailboxLock(folder);
+
+      try {
+        // Build IMAP search query
+        const searchCriteria: Record<string, unknown> = {};
+        if (fromFilter) searchCriteria.from = fromFilter;
+        if (subjectFilter) searchCriteria.subject = subjectFilter;
+        if (olderThanDays !== undefined) {
+          const cutoff = new Date();
+          cutoff.setDate(cutoff.getDate() - olderThanDays);
+          searchCriteria.before = cutoff;
+        }
+
+        const uids = await client.search(searchCriteria, { uid: true });
+
+        if (uids.length === 0) {
+          return { success: true, output: `No emails matched the filter in ${folder}.\nFrom: ${fromFilter || '(any)'}\nSubject: ${subjectFilter || '(any)'}${olderThanDays !== undefined ? `\nOlder than: ${olderThanDays} days` : ''}` };
+        }
+
+        if (dryRun) {
+          return {
+            success: true,
+            output: `🔍 Dry run: ${uids.length} email(s) match the filter in ${folder}.\nFrom: ${fromFilter || '(any)'}\nSubject: ${subjectFilter || '(any)'}${olderThanDays !== undefined ? `\nOlder than: ${olderThanDays} days` : ''}\n\nTo delete, call again with dry_run: false and confirm_count: ${uids.length}`,
+          };
+        }
+
+        // Safety check: require confirm_count to match
+        if (confirmCount === undefined) {
+          return {
+            success: false,
+            output: `Found ${uids.length} matching email(s). For safety, set confirm_count: ${uids.length} to proceed with deletion. Use dry_run: true first to preview.`,
+            error: 'confirm_count required',
+          };
+        }
+
+        if (confirmCount !== uids.length) {
+          return {
+            success: false,
+            output: `Safety check failed: confirm_count (${confirmCount}) does not match actual count (${uids.length}). Re-run email_inbox or email_delete with dry_run to get the current count.`,
+            error: 'count mismatch',
+          };
+        }
+
+        // Cap batch size
+        const batch = uids.slice(0, MAX_DELETE_BATCH);
+        const capped = uids.length > MAX_DELETE_BATCH;
+
+        await client.messageDelete(batch, { uid: true });
+
+        const summary = `🗑️ Deleted ${batch.length} email(s) from ${folder}.\nFrom: ${fromFilter || '(any)'}\nSubject: ${subjectFilter || '(any)'}${olderThanDays !== undefined ? `\nOlder than: ${olderThanDays} days` : ''}${capped ? `\n\n⚠️ ${uids.length - MAX_DELETE_BATCH} more match — run again to delete the rest.` : ''}`;
+
+        logger.info('Email', 'Deleted', { folder, from: fromFilter, subject: subjectFilter, count: batch.length });
+        return { success: true, output: summary };
+      } finally {
+        lock.release();
+        await client.logout();
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.warn('Email', 'IMAP delete failed', { folder, error: msg });
+      return { success: false, output: `Failed to delete emails: ${msg}`, error: msg };
+    }
+  },
+};
