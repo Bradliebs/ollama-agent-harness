@@ -11,7 +11,8 @@ import { createContinuityCheckpoint } from '../persistence/continuity';
 import { ToolDispatcher } from '../tools/dispatcher';
 import type { LearningRecorder } from '../learning/engine';
 import type { RuntimeTracer } from './tracing';
-import { validateOutput, withOutputValidationInstructions } from './outputValidation';
+import { validateOutput, withOutputValidationInstructions, detectSelfCertification } from './outputValidation';
+import type { OutputValidationProfile } from './outputValidation';
 import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
 import { verifyCode } from './doneStateVerifier';
 
@@ -64,6 +65,7 @@ export async function* queryLoop(
   let anyProductiveToolSucceeded = false;
   let anyToolSucceeded = false;
   let totalToolCalls = 0;
+  const allToolCallNames: string[] = [];
   let autoContinueCount = 0;
   const autoContinueLimit = config.autoContinueLimit ?? 5;
   const loopStarted = Date.now();
@@ -325,6 +327,34 @@ export async function* queryLoop(
       }
       yield { type: 'turn_complete', turn, durationMs: Date.now() - turnStarted, toolCalls: 0 };
       yield { type: 'text', content: assistantMessage.content };
+
+      // Self-certification check: detect claims the agent makes that
+      // have no supporting tool evidence. E.g. "email sent ✅" without
+      // any email/notification tool call in the trace.
+      const selfCertFindings = detectSelfCertification(assistantMessage.content ?? '', allToolCallNames);
+      if (selfCertFindings.length > 0) {
+        for (const finding of selfCertFindings) {
+          yield {
+            type: 'output_validation',
+            validation: {
+              profile: 'self-certification' as OutputValidationProfile,
+              status: finding.severity,
+              score: finding.severity === 'fail' ? 0.3 : 0.6,
+              findings: [{
+                code: `self-cert-${finding.claimType}`,
+                severity: finding.severity,
+                message: finding.message,
+              }],
+              missingSections: [],
+            },
+          };
+        }
+        tracer?.recordEvent('self_certification.detected', {
+          findings: selfCertFindings.length,
+          types: selfCertFindings.map((f) => f.claimType),
+        });
+      }
+
       if (session) {
         await appendStatus(session, 'completed', undefined, tracer);
       }
@@ -376,6 +406,7 @@ export async function* queryLoop(
       input: (tc.function.arguments && typeof tc.function.arguments === 'object' && !Array.isArray(tc.function.arguments) ? tc.function.arguments : {}) as Record<string, unknown>,
     }));
     totalToolCalls += toolCalls.length;
+    for (const tc of toolCalls) allToolCallNames.push(tc.name);
 
     const dispatchableToolCalls: ToolCall[] = [];
     const skippedToolResults: { call: ToolCall; result: { success: false; output: string; error: string } }[] = [];
@@ -464,6 +495,22 @@ export async function* queryLoop(
           yield { type: 'done', reason: 'unproductive', turns: turn };
           return;
         }
+      }
+    }
+
+    // Empty-result auto-retry: when a tool (typically bash running a
+    // scanner/query) returns output indicating zero matches, nudge the
+    // model to widen filters or iterate. This prevents the agent from
+    // presenting "0 results" to the user without trying alternatives.
+    if (config.autoContinue && turn < maxTurns) {
+      const lastToolOutput = toolResults.length > 0 ? String(toolResults[toolResults.length - 1].result.output ?? '') : '';
+      const emptyResultReason = detectEmptyResult(lastToolOutput);
+      if (emptyResultReason) {
+        messages.push({
+          role: 'system',
+          content: `⚠️ The last tool returned empty or zero results (${emptyResultReason}). Do NOT present this to the user as a final answer. Instead: widen filters, relax thresholds, try alternative data sources, or explain why no results are available and suggest next steps.`,
+        } as Message);
+        tracer?.recordEvent('empty_result.nudge', { turn, reason: emptyResultReason });
       }
     }
   }
@@ -568,10 +615,46 @@ export async function* queryLoop(
     }
 
     yield { type: 'text', content: synthesisText || synthMessage.content };
+
+    // Self-certification check on synthesis output too
+    const synthSelfCert = detectSelfCertification(synthesisText, allToolCallNames);
+    if (synthSelfCert.length > 0) {
+      for (const finding of synthSelfCert) {
+        yield {
+          type: 'output_validation',
+          validation: {
+            profile: 'self-certification' as OutputValidationProfile,
+            status: finding.severity,
+            score: finding.severity === 'fail' ? 0.3 : 0.6,
+            findings: [{
+              code: `self-cert-${finding.claimType}`,
+              severity: finding.severity,
+              message: finding.message,
+            }],
+            missingSections: [],
+          },
+        };
+      }
+      tracer?.recordEvent('synthesis.self_certification', {
+        findings: synthSelfCert.length,
+        types: synthSelfCert.map((f) => f.claimType),
+      });
+    }
+
     if (session) {
       await appendStatus(session, sessionStatus, undefined, tracer);
     }
-    yield { type: 'done', reason: synthesisReason, turns: turn };
+    yield {
+      type: 'done',
+      reason: synthesisReason,
+      turns: turn,
+      synthesisMetadata: {
+        elapsedMs: Date.now() - loopStarted,
+        totalToolCalls,
+        anyProductiveToolSucceeded,
+        selfCertIssues: synthSelfCert.length,
+      },
+    };
     return;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -721,6 +804,31 @@ export function detectPartialResult(text: string): string | null {
       return 'ends with question directed at user';
     }
   }
+
+  return null;
+}
+
+/**
+ * Detect tool output that indicates zero results / empty matches.
+ * Returns a reason string if empty, null otherwise.
+ */
+export function detectEmptyResult(output: string): string | null {
+  if (!output || output.trim().length < 2) return null;
+  const lower = output.toLowerCase().trim();
+
+  // Explicit zero counts
+  if (/\bpassing:\s*0\b/i.test(output)) return 'passing: 0';
+  if (/\b0\s*(results?|matches?|items?|records?|rows?|candidates?|stocks?|hits?)\s*(found|returned|match)/i.test(output)) return 'zero results found';
+  if (/\b(no|zero)\s+(results?|matches?|items?|records?|rows?|candidates?|stocks?|data)\s*(found|returned|available|exist)/i.test(output)) return 'no results available';
+  if (/\b(nothing|empty)\s+(found|returned|to show|to display)/i.test(output)) return 'nothing found';
+
+  // Common data tool patterns
+  if (/^\s*\[\s*\]\s*$/.test(output)) return 'empty JSON array';
+  if (/^\s*\{\s*\}\s*$/.test(output)) return 'empty JSON object';
+
+  // CSV/table with only headers and no data rows
+  const lines = output.split('\n').filter((l) => l.trim().length > 0);
+  if (lines.length === 1 && /[,\t|]/.test(lines[0])) return 'header-only table (no data rows)';
 
   return null;
 }

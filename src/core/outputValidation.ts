@@ -622,3 +622,75 @@ function isSectionHeading(line: string, section: string): boolean {
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+// ─── Self-certification detector ────────────────────────────────────
+// Detects when an agent claims to have done something (sent email, wrote
+// file, scheduled job, etc.) without tool evidence supporting the claim.
+// This is a cross-profile check callable from queryLoop after output
+// validation completes.
+
+/** Phrases that indicate the agent is claiming to have completed an action. */
+const CLAIM_PATTERNS: Array<{ pattern: RegExp; claimType: string }> = [
+  { pattern: /\b(sent|delivered|dispatched)\s+(an?\s+)?(email|alert|notification|message)\b/i, claimType: 'notification_sent' },
+  { pattern: /(email|alert|notification)\s*(sent|delivered)/i, claimType: 'notification_sent' },
+  { pattern: /\b(scheduled|created|set up)\s+(\d+\s+)?(daily|hourly|cron|automation|alert|job)/i, claimType: 'automation_scheduled' },
+  { pattern: /\b(file|script|code)\s+(saved|written|created|deployed)\b/i, claimType: 'file_created' },
+  { pattern: /\b(deployed|published|pushed|released)\s+(to|on|at)\b/i, claimType: 'deployment' },
+  { pattern: /\b(database|table|schema)\s+(created|migrated|updated)\b/i, claimType: 'database_modified' },
+  { pattern: /\b(tests?|build|lint)\s+(passed|succeeded|green)\b/i, claimType: 'validation_passed' },
+  { pattern: /\b(installed|configured|enabled)\s+(the\s+)?(\w+\s+)?(plugin|extension|module|service|bot|bridge)\b/i, claimType: 'installation' },
+];
+
+/** Tool names that count as evidence for each claim type. */
+const EVIDENCE_TOOLS: Record<string, string[]> = {
+  notification_sent: ['telegram_notify', 'send_email', 'email_send', 'smtp_send', 'web_fetch'],
+  automation_scheduled: ['file_write', 'file_edit', 'bash', 'add_automation_job'],
+  file_created: ['file_write', 'file_edit'],
+  deployment: ['bash', 'file_write', 'web_fetch'],
+  database_modified: ['bash', 'file_write'],
+  validation_passed: ['bash', 'file_write'],
+  installation: ['bash', 'file_write'],
+};
+
+export interface SelfCertificationFinding {
+  claimType: string;
+  claimText: string;
+  hasEvidence: boolean;
+  evidenceTools: string[];
+  severity: 'warn' | 'fail';
+  message: string;
+}
+
+/**
+ * Cross-profile check: detect when the agent's text claims actions that
+ * the tool trace does not support. Returns findings (empty if clean).
+ */
+export function detectSelfCertification(
+  responseText: string,
+  toolCallNames: string[],
+): SelfCertificationFinding[] {
+  if (!responseText || responseText.length < 20) return [];
+  const findings: SelfCertificationFinding[] = [];
+  const toolSet = new Set(toolCallNames);
+
+  for (const { pattern, claimType } of CLAIM_PATTERNS) {
+    const match = pattern.exec(responseText);
+    if (!match) continue;
+
+    const requiredTools = EVIDENCE_TOOLS[claimType] ?? [];
+    const hasEvidence = requiredTools.length === 0 || requiredTools.some((t) => toolSet.has(t));
+
+    if (!hasEvidence) {
+      findings.push({
+        claimType,
+        claimText: match[0].slice(0, 80),
+        hasEvidence: false,
+        evidenceTools: requiredTools,
+        severity: claimType === 'validation_passed' ? 'fail' : 'warn',
+        message: `Agent claims "${match[0].slice(0, 60)}" but no supporting tool call was found (expected one of: ${requiredTools.join(', ')}).`,
+      });
+    }
+  }
+  return findings;
+}
+
