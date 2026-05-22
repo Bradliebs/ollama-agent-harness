@@ -398,11 +398,30 @@ function formatAddress(addrs?: Array<{ name?: string; address?: string }>): stri
 }
 
 function extractTextPreview(raw: string, maxLen: number): string {
-  // Strip MIME headers — find double newline then take text after it
-  const headerEnd = raw.indexOf('\r\n\r\n');
-  const body = headerEnd > 0 ? raw.slice(headerEnd + 4) : raw;
-  // Strip HTML tags if present
-  const text = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  // Multi-part MIME messages have nested headers (Content-Type boundaries,
+  // Delivered-To, Received, X-* etc.). Strip everything that looks like
+  // RFC 822 headers: lines matching "Key: value" before a blank line,
+  // MIME boundary markers, and base64/quoted-printable cruft.
+  let body = raw;
+
+  // Strip all header blocks (top-level + MIME part headers).
+  // A header block is contiguous lines of "Key: value" ending at a blank line.
+  body = body.replace(/^([A-Za-z][\w-]*:\s.*(\r?\n[ \t].*)*\r?\n)+\r?\n/gm, '');
+
+  // Strip MIME boundary lines (--boundary, --boundary--)
+  body = body.replace(/^--[\w=+/.-]+--?\s*$/gm, '');
+
+  // Strip Content-Type / Content-Transfer-Encoding lines that survive
+  body = body.replace(/^Content-[\w-]+:.*$/gim, '');
+
+  // Strip base64 blobs (long lines of [A-Za-z0-9+/=])
+  body = body.replace(/^[A-Za-z0-9+/=]{60,}\s*$/gm, '');
+
+  // Strip HTML tags
+  body = body.replace(/<[^>]+>/g, ' ');
+
+  // Collapse whitespace
+  const text = body.replace(/\s+/g, ' ').trim();
   return text.length > maxLen ? text.slice(0, maxLen) + '…' : text;
 }
 
