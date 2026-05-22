@@ -208,3 +208,197 @@ export const EmailSendTool: Tool = {
     }
   },
 };
+
+// ─── Email inbox reader tool ──────────────────────────────────────
+//
+// Reads recent emails from an IMAP mailbox. Uses the same credentials
+// as the SMTP sender:
+//   HARNESS_IMAP_HOST (e.g. imap.gmail.com) — falls back to HARNESS_SMTP_HOST
+//   HARNESS_IMAP_PORT (default: 993)
+//   HARNESS_SMTP_USER (your email address)
+//   HARNESS_SMTP_PASS (app password)
+//
+// For Gmail: the same App Password works for both SMTP and IMAP.
+// Capability: email-sending (read-only, but gated under the same grant)
+
+const DEFAULT_IMAP_HOSTS: Record<string, string> = {
+  'smtp.gmail.com': 'imap.gmail.com',
+  'smtp.office365.com': 'outlook.office365.com',
+  'smtp.mail.yahoo.com': 'imap.mail.yahoo.com',
+};
+
+export const EmailInboxTool: Tool = {
+  name: 'email_inbox',
+  description: 'Check the email inbox via IMAP. Returns the most recent emails with subject, from, date, and a preview of the body. Requires SMTP credentials to be configured (uses same App Password). Set HARNESS_IMAP_HOST if different from the SMTP host.',
+  parameters: {
+    type: 'object',
+    properties: {
+      count: { type: 'number', description: 'Number of recent emails to fetch (default 10, max 50)' },
+      folder: { type: 'string', description: 'Mailbox folder to read (default INBOX)' },
+      unseen_only: { type: 'boolean', description: 'Only return unread/unseen messages (default false)' },
+      search: { type: 'string', description: 'Optional search term to filter by subject or sender' },
+    },
+    required: [],
+  },
+  isReadOnly: true,
+  execute: async (input: Record<string, unknown>): Promise<ToolResult> => {
+    const count = Math.min(Math.max(1, Number(input.count) || 10), 50);
+    const folder = String(input.folder ?? 'INBOX').trim();
+    const unseenOnly = Boolean(input.unseen_only);
+    const search = typeof input.search === 'string' ? input.search.trim() : '';
+
+    const smtpHost = process.env.HARNESS_SMTP_HOST?.trim();
+    const user = process.env.HARNESS_SMTP_USER?.trim();
+    const pass = process.env.HARNESS_SMTP_PASS?.trim().replace(/\s+/g, '');
+    const imapHost = process.env.HARNESS_IMAP_HOST?.trim()
+      || (smtpHost ? DEFAULT_IMAP_HOSTS[smtpHost] : undefined)
+      || smtpHost;
+    const imapPort = parseInt(process.env.HARNESS_IMAP_PORT ?? '993', 10);
+
+    if (!imapHost || !user || !pass) {
+      return {
+        success: false,
+        output: 'IMAP not configured. The inbox reader uses your SMTP credentials.\nSet in Settings → API Keys:\n• HARNESS_SMTP_HOST (e.g. smtp.gmail.com)\n• HARNESS_SMTP_USER\n• HARNESS_SMTP_PASS\n\nOptionally: HARNESS_IMAP_HOST if different from SMTP host.',
+        error: 'IMAP not configured',
+      };
+    }
+
+    try {
+      // Dynamic require to avoid breaking if imapflow is not installed.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      let ImapFlowCtor: new (config: Record<string, unknown>) => ImapFlowClient;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const mod = require('imapflow');
+        ImapFlowCtor = mod.ImapFlow;
+      } catch {
+        return { success: false, output: 'imapflow package not installed. Run: npm install imapflow', error: 'missing dependency' };
+      }
+
+      const client = new ImapFlowCtor({
+        host: imapHost,
+        port: imapPort,
+        secure: imapPort === 993,
+        auth: { user, pass },
+        logger: false,
+      });
+
+      await client.connect();
+
+      const lock = await client.getMailboxLock(folder);
+      try {
+        // Build search query
+        const searchQuery: Record<string, unknown> = {};
+        if (unseenOnly) searchQuery.seen = false;
+        if (search) searchQuery.or = [{ subject: search }, { from: search }];
+
+        // Fetch messages — get the latest `count` matching messages
+        const messages: EmailSummary[] = [];
+        const fetchRange = unseenOnly || search
+          ? '1:*'
+          : `${Math.max(1, (client.mailbox?.exists ?? count) - count + 1)}:*`;
+
+        const fetchOptions = { envelope: true, bodyStructure: true, source: { start: 0, maxLength: 2000 } };
+        for await (const msg of client.fetch(
+          Object.keys(searchQuery).length > 0 ? searchQuery : fetchRange,
+          fetchOptions,
+          Object.keys(searchQuery).length > 0 ? {} : undefined,
+        )) {
+          const env = msg.envelope;
+          if (!env) continue;
+          const bodyPreview = msg.source
+            ? extractTextPreview(msg.source.toString('utf-8'), 300)
+            : '';
+          messages.push({
+            uid: msg.uid,
+            date: env.date?.toISOString() ?? '',
+            from: formatAddress(env.from),
+            to: formatAddress(env.to),
+            subject: env.subject ?? '(no subject)',
+            preview: bodyPreview,
+            flags: [...(msg.flags ?? [])],
+          });
+        }
+
+        // Sort newest first, limit to count
+        messages.sort((a, b) => b.date.localeCompare(a.date));
+        const results = messages.slice(0, count);
+
+        if (results.length === 0) {
+          return {
+            success: true,
+            output: unseenOnly
+              ? `No unread emails in ${folder}.`
+              : `No emails found in ${folder}${search ? ` matching "${search}"` : ''}.`,
+          };
+        }
+
+        let output = `📬 ${results.length} email(s) from ${folder}${unseenOnly ? ' (unread only)' : ''}:\n\n`;
+        for (const msg of results) {
+          const unread = !msg.flags.includes('\\Seen') ? '🔵 ' : '';
+          output += `${unread}**${msg.subject}**\n`;
+          output += `  From: ${msg.from} | ${msg.date.slice(0, 16)}\n`;
+          if (msg.preview) output += `  ${msg.preview}\n`;
+          output += '\n';
+        }
+
+        return { success: true, output };
+      } finally {
+        lock.release();
+        await client.logout();
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.warn('Email', 'IMAP fetch failed', { folder, error: msg });
+      return { success: false, output: `Failed to check inbox: ${msg}`, error: msg };
+    }
+  },
+};
+
+interface EmailSummary {
+  uid: number;
+  date: string;
+  from: string;
+  to: string;
+  subject: string;
+  preview: string;
+  flags: string[];
+}
+
+// Minimal type for imapflow client (avoids needing @types/imapflow)
+interface ImapFlowClient {
+  connect(): Promise<void>;
+  logout(): Promise<void>;
+  getMailboxLock(folder: string): Promise<{ release(): void }>;
+  mailbox?: { exists: number };
+  fetch(
+    range: string | Record<string, unknown>,
+    options: Record<string, unknown>,
+    searchOptions?: Record<string, unknown>,
+  ): AsyncIterable<{
+    uid: number;
+    envelope?: {
+      date?: Date;
+      from?: Array<{ name?: string; address?: string }>;
+      to?: Array<{ name?: string; address?: string }>;
+      subject?: string;
+    };
+    source?: Buffer;
+    flags?: Set<string>;
+    bodyStructure?: unknown;
+  }>;
+}
+
+function formatAddress(addrs?: Array<{ name?: string; address?: string }>): string {
+  if (!addrs || addrs.length === 0) return '(unknown)';
+  return addrs.map((a) => a.name ? `${a.name} <${a.address}>` : a.address ?? '').join(', ');
+}
+
+function extractTextPreview(raw: string, maxLen: number): string {
+  // Strip MIME headers — find double newline then take text after it
+  const headerEnd = raw.indexOf('\r\n\r\n');
+  const body = headerEnd > 0 ? raw.slice(headerEnd + 4) : raw;
+  // Strip HTML tags if present
+  const text = body.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return text.length > maxLen ? text.slice(0, maxLen) + '…' : text;
+}
