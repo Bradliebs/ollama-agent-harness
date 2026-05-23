@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 title Ollama Agent Harness
 cd /d "%~dp0"
 
@@ -79,18 +80,31 @@ exit /b 1
 
 :: Step 5: Workspace — agent files go here, NOT in the harness repo
 echo.
+set "WORKSPACE_CONFIG=%~dp0.harness-workspace"
 if defined HARNESS_PROJECT_DIR (
   echo   Workspace: %HARNESS_PROJECT_DIR%
   goto WORKSPACE_OK
 )
-echo   Where should the agent work? (its files, memory, outputs go here)
-echo   Press Enter for default: %USERPROFILE%\hermes-workspace
-echo.
-set /p "WORKSPACE=  Workspace folder: "
-if "%WORKSPACE%"=="" set "WORKSPACE=%USERPROFILE%\hermes-workspace"
-if not exist "%WORKSPACE%" mkdir "%WORKSPACE%"
-set "HARNESS_PROJECT_DIR=%WORKSPACE%"
-echo   [OK] Workspace: %HARNESS_PROJECT_DIR%
+:: Load saved workspace from last run
+if exist "%WORKSPACE_CONFIG%" (
+  set /p "SAVED_WORKSPACE=" < "%WORKSPACE_CONFIG%"
+)
+if defined SAVED_WORKSPACE (
+  echo   Saved workspace: %SAVED_WORKSPACE%
+  set /p "WORKSPACE=  Press Enter to use it, or type a new path: "
+  if "!WORKSPACE!"=="" set "WORKSPACE=%SAVED_WORKSPACE%"
+) else (
+  echo   Where should the agent work? (its files, memory, outputs go here)
+  echo   Press Enter for default: %USERPROFILE%\hermes-workspace
+  echo.
+  set /p "WORKSPACE=  Workspace folder: "
+  if "!WORKSPACE!"=="" set "WORKSPACE=%USERPROFILE%\hermes-workspace"
+)
+if not exist "!WORKSPACE!" mkdir "!WORKSPACE!"
+set "HARNESS_PROJECT_DIR=!WORKSPACE!"
+:: Save for next time
+echo !WORKSPACE!> "%WORKSPACE_CONFIG%"
+echo   [OK] Workspace: !HARNESS_PROJECT_DIR!
 
 :WORKSPACE_OK
 
