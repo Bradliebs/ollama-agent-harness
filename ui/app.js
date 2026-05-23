@@ -2633,6 +2633,10 @@ async function loadSettings() {
     if (mode) mode.classList.add('active');
     refreshAutonomyBanner();
     refreshVisionReadinessStatus();
+    // Harness controls hydration
+    hydrateInjectionMode(s.injectionDefence ? s.injectionDefence.mode : 'off');
+    hydrateRbwMode(s.readBeforeWrite ? s.readBeforeWrite.mode : 'off');
+    if (s.taskContract) renderTaskContract(s.taskContract);
   } catch(e){}
 }
 
@@ -6182,6 +6186,38 @@ const SLASH_COMMANDS = [
     fallback: '',
     takesArgs: true },
   { cmd: '/schedule',    desc: 'Create a recurring automation job (type /schedule followed by the prompt)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
+  { cmd: '/goal',        desc: 'Expand a high-level intent into autonomy tasks (e.g. /goal Build a wiki from D:\\big.pdf)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
+  { cmd: '/priority',    desc: 'Set your top priority for today (e.g. /priority ship the Hermes features)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
+  { cmd: '/wiki',        desc: 'Turn a PDF into a chaptered wiki + RAG chat page (e.g. /wiki D:\\big.pdf)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
+  { cmd: '/research',    desc: 'Generate a research report on any subject (e.g. /research Acme Corp tech stack)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
+  { cmd: '/memory-wiki', desc: 'Rebuild your personal memory wiki from all stored memories',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: false },
+  { cmd: '/kanban',      desc: 'Show or manage the Kanban board (e.g. /kanban or /kanban move <id> triage)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
+  { cmd: '/brief',       desc: 'Generate your daily brief right now',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: false },
+  { cmd: '/yolo',        desc: 'Full-send: dontAsk + all grants + autonomy loop (e.g. /yolo 2h)',
     apply: () => { hideSlashPalette(); },
     fallback: '',
     takesArgs: true },
@@ -13218,9 +13254,53 @@ async function loadTasks() {
       }).join('');
       return '<div class="mem-section"><h5>' + esc(groupLabels[status]) + ' (' + items.length + ')</h5><div class="skills-gallery">' + rows + '</div></div>';
     }).join('');
-    view.innerHTML = summaryLine + newForm + (groupHtml || '<div class="trace-meta">No tasks yet — create one above.</div>');
+    view.innerHTML = summaryLine + newForm + (groupHtml || '<div class="trace-meta">No tasks yet — create one above.</div>') + '<div id="kanbanBoardSection"></div>';
+    loadKanbanBoard();
   } catch (error) {
     view.textContent = 'Failed to load tasks: ' + (error && error.message ? error.message : error);
+  }
+}
+
+async function loadKanbanBoard() {
+  const host = document.getElementById('kanbanBoardSection');
+  if (!host) return;
+  host.innerHTML = '<div class="mem-section"><h5>Kanban</h5><div class="trace-meta">Loading board…</div></div>';
+  try {
+    const response = await fetch('/api/kanban/board');
+    const board = await response.json();
+    if (board && board.error) { host.innerHTML = '<div class="mem-section"><h5>Kanban</h5><div class="trace-meta">' + esc(board.error) + '</div></div>'; return; }
+    const columns = [
+      { key: 'triage', label: 'Triage' },
+      { key: 'doing', label: 'Doing' },
+      { key: 'done', label: 'Done' },
+    ];
+    const colHtml = columns.map((col) => {
+      const items = Array.isArray(board[col.key]) ? board[col.key] : [];
+      const cards = items.map((task) => {
+        const moveBtns = columns.filter((c) => c.key !== col.key)
+          .map((c) => '<button class="btn-sm" onclick="moveKanbanCard(\'' + esc(task.id) + '\', \'' + c.key + '\')">→ ' + c.label + '</button>')
+          .join(' ');
+        return '<div class="skill-card"><div class="skill-card-top"><div><div class="skill-card-name">' + esc(task.title || task.id) + '</div><div class="skill-card-meta">' + esc(task.status || '') + ' · ' + esc(col.label) + '</div></div></div><div style="margin-top:6px">' + moveBtns + '</div></div>';
+      }).join('') || '<div class="trace-meta">(empty)</div>';
+      return '<div class="mem-section"><h5>' + esc(col.label) + ' (' + items.length + ')</h5><div class="skills-gallery">' + cards + '</div></div>';
+    }).join('');
+    host.innerHTML = '<div class="mem-section"><h5>Kanban</h5>' + colHtml + '</div>';
+  } catch (error) {
+    host.innerHTML = '<div class="mem-section"><h5>Kanban</h5><div class="trace-meta">Failed to load board: ' + esc((error && error.message) ? error.message : String(error)) + '</div></div>';
+  }
+}
+
+async function moveKanbanCard(taskId, column) {
+  try {
+    const response = await fetch('/api/kanban/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskId, column }) });
+    const data = await response.json();
+    if (data && data.error) throw new Error(data.error);
+    if (column === 'triage' && data && data.promoted && data.promoted.mutated) {
+      showToast('Moved to triage and added to IMPLEMENTATION_PLAN.md');
+    }
+    await loadKanbanBoard();
+  } catch (error) {
+    showToast('Move failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -14254,4 +14334,295 @@ async function showArchDiagram() {
   } catch (error) {
     panel.innerHTML = '<div class="trace-meta">Diagram failed: ' + esc(error.message || error) + '</div>';
   }
+}
+
+// ─── Harness Controls ─────────────────────────────────────────────
+
+// -- Run Profiles --
+let currentRunProfile = '';
+async function loadRunProfiles() {
+  try {
+    const res = await fetch('/api/profiles');
+    const data = await res.json();
+    const sel = document.getElementById('runProfileSelect');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— None —</option>';
+    for (const p of (data.profiles || [])) {
+      const opt = document.createElement('option');
+      opt.value = p.name;
+      opt.textContent = p.name;
+      if (p.name === currentRunProfile) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  } catch (e) { /* silent */ }
+}
+async function applyRunProfile(name) {
+  currentRunProfile = name;
+  const desc = document.getElementById('runProfileDescription');
+  if (!name) { if (desc) desc.textContent = ''; return; }
+  try {
+    const res = await fetch('/api/profiles/' + encodeURIComponent(name));
+    const profile = await res.json();
+    if (desc) desc.textContent = profile.description || '';
+    showToast('Profile "' + name + '" selected');
+  } catch (e) { showToast('Failed to load profile'); }
+}
+
+// -- Injection Defence --
+let currentInjectionMode = 'off';
+function setInjectionMode(mode, el) {
+  currentInjectionMode = mode;
+  document.querySelectorAll('.injection-mode-option').forEach(o => o.classList.remove('active'));
+  if (el) el.classList.add('active');
+  updateSetting('injectionDefence', { mode: mode });
+}
+function hydrateInjectionMode(mode) {
+  currentInjectionMode = mode || 'off';
+  const idx = mode === 'flag' ? 1 : mode === 'block' ? 2 : 0;
+  document.querySelectorAll('.injection-mode-option').forEach((o, i) => {
+    o.classList.toggle('active', i === idx);
+  });
+}
+
+// -- Read-before-write gate --
+let currentRbwMode = 'off';
+function setRbwMode(mode, el) {
+  currentRbwMode = mode;
+  document.querySelectorAll('.rbw-mode-option').forEach(o => o.classList.remove('active'));
+  if (el) el.classList.add('active');
+  updateSetting('readBeforeWrite', { mode: mode });
+}
+function hydrateRbwMode(mode) {
+  currentRbwMode = mode || 'off';
+  const idx = mode === 'warn' ? 1 : mode === 'enforce' ? 2 : 0;
+  document.querySelectorAll('.rbw-mode-option').forEach((o, i) => {
+    o.classList.toggle('active', i === idx);
+  });
+}
+
+// -- Repo Map --
+async function refreshRepoMap(force) {
+  const info = document.getElementById('repoMapInfo');
+  if (info) info.innerHTML = 'Scanning…';
+  try {
+    const url = force ? '/api/repo-map?force=true' : '/api/repo-map';
+    const res = await fetch(url);
+    const map = await res.json();
+    if (info) {
+      const stack = (map.frameworks || []).join(', ');
+      const pkgMgr = map.packageManager ? ' · ' + map.packageManager : '';
+      const testCmd = map.testCommand ? '<br>Test: <code>' + esc(map.testCommand) + '</code>' : '';
+      const checkCmd = map.checkCommand ? '<br>Check: <code>' + esc(map.checkCommand) + '</code>' : '';
+      const doNotEdit = (map.doNotEdit || []).length;
+      info.innerHTML = '<div class="repo-map-card"><strong>' + esc(stack) + '</strong>' + esc(pkgMgr) + testCmd + checkCmd + '<br><span style="color:var(--text-dim)">' + doNotEdit + ' do-not-edit paths</span></div>';
+    }
+    showToast(force ? 'Repo map rescanned' : 'Repo map loaded');
+  } catch (e) {
+    if (info) info.textContent = 'Failed to load';
+    showToast('Failed to load repo map');
+  }
+}
+
+// -- Memory Health --
+async function checkMemoryHealth() {
+  const info = document.getElementById('memoryHealthInfo');
+  if (info) info.innerHTML = 'Checking…';
+  try {
+    const res = await fetch('/api/memory/stale');
+    const data = await res.json();
+    const stale = data.stale || {};
+    const files = Object.keys(stale);
+    if (files.length === 0) {
+      if (info) info.innerHTML = '<span class="harness-badge fresh">✓ All fresh</span> No stale entries found';
+    } else {
+      let total = 0;
+      for (const f of files) total += stale[f].length;
+      const badges = files.map(f => '<span class="harness-badge stale">' + esc(f) + ': ' + stale[f].length + '</span>').join(' ');
+      if (info) info.innerHTML = badges + '<br><span style="color:var(--text-dim)">' + total + ' stale section(s) across ' + files.length + ' file(s)</span>';
+    }
+  } catch (e) {
+    if (info) info.textContent = 'Failed to check';
+  }
+}
+
+// -- Task Contract --
+function renderTaskContract(contract) {
+  const info = document.getElementById('taskContractInfo');
+  if (!info) return;
+  if (!contract || !contract.goal) { info.textContent = 'No active contract'; return; }
+  const lines = [];
+  lines.push('Goal: ' + contract.goal);
+  lines.push('Mode: ' + (contract.mode || '—'));
+  if (contract.constraints && contract.constraints.length) lines.push('Constraints: ' + contract.constraints.join('; '));
+  if (contract.blocked_paths && contract.blocked_paths.length) lines.push('Blocked: ' + contract.blocked_paths.join(', '));
+  if (contract.validation && contract.validation.length) lines.push('Validation: ' + contract.validation.join(', '));
+  lines.push('Max turns: ' + (contract.max_turns || '—'));
+  lines.push('Approval: ' + (contract.approval_required ? 'Yes' : 'No'));
+  info.textContent = lines.join('\n');
+}
+
+// ─── Evaluation & Prompts ─────────────────────────────────────────
+
+// -- Confidence Calibration --
+async function loadCalibrationReports() {
+  const el = document.getElementById('calibrationReports');
+  if (el) el.innerHTML = 'Loading…';
+  try {
+    const res = await fetch('/api/calibration/reports');
+    const data = await res.json();
+    const reports = data.reports || [];
+    if (reports.length === 0) {
+      if (el) el.innerHTML = '<span class="harness-badge info">No data yet</span> Record samples via the API to see calibration.';
+      return;
+    }
+    let html = '';
+    for (const r of reports) {
+      const brierPct = (r.brierScore * 100).toFixed(1);
+      const ecePct = (r.ece * 100).toFixed(1);
+      const overPct = (r.overconfidenceRatio * 100).toFixed(0);
+      const barWidth = Math.max(2, Math.min(100, 100 - r.brierScore * 200));
+      html += '<div style="margin:4px 0;padding:6px 0;border-bottom:1px solid var(--border)">';
+      html += '<strong>' + esc(r.model) + '</strong> <span style="color:var(--text-dim)">(' + r.totalSamples + ' samples)</span>';
+      html += '<div class="calibration-bar"><span>Brier: ' + brierPct + '%</span><div class="calibration-bar-track"><div class="calibration-bar-fill" style="width:' + barWidth + '%"></div></div></div>';
+      html += '<span style="font-size:10px;color:var(--text-dim)">ECE: ' + ecePct + '% · Overconfidence: ' + overPct + '%</span>';
+      html += '</div>';
+    }
+    if (el) el.innerHTML = html;
+  } catch (e) {
+    if (el) el.textContent = 'Failed to load';
+  }
+}
+
+// -- Golden Traces --
+async function loadGoldenTraces() {
+  const el = document.getElementById('goldenTracesList');
+  if (el) el.innerHTML = 'Loading…';
+  try {
+    const res = await fetch('/api/golden-traces');
+    const data = await res.json();
+    const traces = data.traces || [];
+    if (traces.length === 0) {
+      if (el) el.innerHTML = '<span class="harness-badge info">No traces</span> Capture golden traces via the API.';
+      return;
+    }
+    let html = '';
+    for (const t of traces) {
+      const tags = (t.tags || []).map(tag => '<span class="harness-badge info">' + esc(tag) + '</span>').join(' ');
+      html += '<div class="golden-trace-item" title="' + esc(t.id) + '">';
+      html += '<strong>' + esc(t.name) + '</strong> <span style="color:var(--text-dim)">' + esc(t.model) + '</span>';
+      if (tags) html += '<div style="margin-top:2px">' + tags + '</div>';
+      html += '<div style="color:var(--text-dim);font-size:10px">' + esc(t.capturedAt || '') + ' · ' + (t.expectedToolCalls || []).length + ' tools · ' + (t.expectedFiles || []).length + ' files</div>';
+      html += '</div>';
+    }
+    if (el) el.innerHTML = html;
+  } catch (e) {
+    if (el) el.textContent = 'Failed to load';
+  }
+}
+
+// -- Versioned Prompts --
+async function loadPromptRegistries() {
+  try {
+    const res = await fetch('/api/prompts');
+    const data = await res.json();
+    const sel = document.getElementById('promptRegistrySelect');
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">— Select —</option>';
+    for (const name of (data.prompts || [])) {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (name === prev) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  } catch (e) { /* silent */ }
+}
+async function loadPromptRegistry(name) {
+  const el = document.getElementById('promptVersionInfo');
+  if (!name) { if (el) el.textContent = 'Select a registry'; return; }
+  try {
+    const res = await fetch('/api/prompts/' + encodeURIComponent(name));
+    const registry = await res.json();
+    if (!registry || !registry.versions) { if (el) el.textContent = 'Not found'; return; }
+    let html = '<div style="margin-bottom:4px"><strong>Active: v' + registry.activeVersion + '</strong> · ' + registry.versions.length + ' version(s)</div>';
+    for (const v of registry.versions.slice().reverse().slice(0, 5)) {
+      const isActive = v.version === registry.activeVersion;
+      html += '<div class="prompt-version-item' + (isActive ? ' active-version' : '') + '">';
+      html += '<strong>v' + v.version + '</strong> ' + esc(v.label || '(no label)');
+      html += ' <span style="color:var(--text-dim)">' + esc(v.createdAt || '') + '</span>';
+      if (v.changelog) html += '<div style="color:var(--text-dim);font-size:10px;margin-top:2px">' + esc(v.changelog) + '</div>';
+      if (!isActive) html += ' <a href="#" onclick="activatePromptVersion(\'' + esc(name) + '\',' + v.version + ');event.preventDefault()" style="font-size:10px">activate</a>';
+      html += '</div>';
+    }
+    if (registry.versions.length > 5) html += '<div style="color:var(--text-dim);font-size:10px">… and ' + (registry.versions.length - 5) + ' more</div>';
+    if (el) el.innerHTML = html;
+  } catch (e) {
+    if (el) el.textContent = 'Failed to load';
+  }
+}
+async function activatePromptVersion(name, version) {
+  try {
+    await fetch('/api/prompts/' + encodeURIComponent(name) + '/active', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version: version }),
+    });
+    showToast('Activated v' + version);
+    loadPromptRegistry(name);
+  } catch (e) { showToast('Failed to activate version'); }
+}
+async function rollbackActivePrompt() {
+  const sel = document.getElementById('promptRegistrySelect');
+  const name = sel ? sel.value : '';
+  if (!name) { showToast('Select a prompt registry first'); return; }
+  try {
+    const res = await fetch('/api/prompts/' + encodeURIComponent(name) + '/rollback', { method: 'POST' });
+    if (!res.ok) { const err = await res.json(); showToast(err.error || 'Cannot rollback'); return; }
+    const prev = await res.json();
+    showToast('Rolled back to v' + prev.version);
+    loadPromptRegistry(name);
+  } catch (e) { showToast('Rollback failed'); }
+}
+async function saveNewPromptVersion() {
+  const sel = document.getElementById('promptRegistrySelect');
+  const name = sel ? sel.value : '';
+  if (!name) { showToast('Select a prompt registry first'); return; }
+  const sysPrompt = document.getElementById('sysPrompt');
+  const content = sysPrompt ? sysPrompt.value : '';
+  if (!content.trim()) { showToast('System prompt is empty'); return; }
+  const label = 'v' + Date.now();
+  try {
+    const res = await fetch('/api/prompts/' + encodeURIComponent(name) + '/versions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: content, label: label, changelog: 'Saved from UI' }),
+    });
+    const version = await res.json();
+    showToast('Saved prompt v' + version.version);
+    loadPromptRegistry(name);
+  } catch (e) { showToast('Failed to save version'); }
+}
+
+// ─── Injection warning in chat ────────────────────────────────────
+
+// Patch: scan outgoing messages for injection patterns and show inline warning
+const _originalSendChat = typeof sendChat === 'function' ? sendChat : null;
+// We don't patch sendChat since it's complex; instead show warning on injection match in the message area.
+
+// ─── Init: load on settings open ─────────────────────────────────
+// Hook into loadSettings to hydrate our new controls
+const _originalHydrateEnd = typeof refreshWalkthroughChecklist === 'function' ? refreshWalkthroughChecklist : null;
+const _patchedRefreshWalkthroughChecklist = function() {
+  if (_originalHydrateEnd) _originalHydrateEnd();
+  // Hydrate harness controls from current settings
+  try {
+    loadRunProfiles();
+    loadPromptRegistries();
+    // Injection / RBW mode will be hydrated from settings when we have them
+  } catch(e) {}
+};
+// Override — if refreshWalkthroughChecklist exists, wrap it
+if (typeof refreshWalkthroughChecklist === 'function') {
+  window.refreshWalkthroughChecklist = _patchedRefreshWalkthroughChecklist;
 }
