@@ -29,6 +29,7 @@ import { formatPrometheusMetrics, type PrometheusMetric } from '../observability
 import { recordSwallowed, getSwallowedFailures, getSwallowedFailureCount } from '../observability/silentFailureSink';
 import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { createTask, deleteTask, getTask, listTasks, recordCheckIn, summarizeTasks, updateTask, type TaskPriority, type TaskStatus } from '../services/taskStore';
+import { groupTasksByColumn, promoteTriageToPlan, withKanbanTag, type KanbanColumn } from '../services/kanbanBridge';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -96,7 +97,18 @@ import { subscribeEventStream } from '../persistence/eventStore';
 import { verifyCode, verifyService, verifyPromiseFulfillability } from '../core/doneStateVerifier';
 import { attachWsServer } from './wsServer';
 import { tryDeterministicShortcut } from '../core/deterministicShortcuts';
+import { tryGoalSlashCommand } from '../services/goalSlashCommand';
+import { parsePrioritySetCommand, setPriorityForToday } from '../services/morningPriority';
+import { routeSlashCommand, registerYoloHooks } from '../services/slashCommandRouter';
 import { calculateReadiness, type ReadinessInput } from '../core/readinessGate';
+import { buildTaskContract } from '../core/taskContractBuilder';
+import { buildRepoMap, loadRepoMap, saveRepoMap, getOrBuildRepoMap } from '../core/repoMap';
+import { scanFileForConflicts, findStaleEntries, findAllStaleEntries } from '../services/memoryConflictDetector';
+import { BUILTIN_PROFILES, applyProfile, getProfile, listProfiles, loadCustomProfiles, saveCustomProfiles, filterToolsByProfile, type ConfigProfile } from '../services/configProfiles';
+import { scanForInjection, sanitizeMessage } from '../safety/injectionDefence';
+import { recordSample as recordCalibrationSample, generateReport as generateCalibrationReport, generateAllReports as generateAllCalibrationReports } from '../eval/confidenceCalibration';
+import { saveGoldenTrace, loadGoldenTrace, listGoldenTraces, deleteGoldenTrace, compareWithGolden, captureFromRun, renderDriftReport } from '../eval/goldenTraces';
+import { savePromptVersion, loadRegistry, listRegistries, getActivePrompt, setActiveVersion, rollback as rollbackPrompt, diffVersions, renderPromptHistory } from '../services/versionedPrompts';
 import { validateStructuredOutput, parseAndValidate, detectSchema, BUILTIN_SCHEMAS } from '../core/structuredOutputValidator';
 import { buildRepoGraph, analyzeImpact, summarizeRepo, saveRepoGraph, loadRepoGraph } from '../core/codeIntelligence';
 import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
@@ -3605,6 +3617,46 @@ app.delete('/api/tasks/:id', async (req, res) => {
   }
 });
 
+// ─── Kanban board ───────────────────────────────────────────────────
+// Thin surface over taskStore + kanbanBridge. Moving a card into the
+// triage column also promotes the task into IMPLEMENTATION_PLAN.md so
+// the autonomy loop picks it up on the next iteration.
+
+const VALID_KANBAN_COLUMNS: ReadonlySet<KanbanColumn> = new Set<KanbanColumn>(['triage', 'doing', 'done']);
+
+app.get('/api/kanban/board', async (_req, res) => {
+  try {
+    const tasks = await listTasks(PROJECT_DIR);
+    const board = groupTasksByColumn(tasks);
+    res.json(board);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/kanban/move', async (req, res) => {
+  try {
+    const { taskId, column } = req.body ?? {};
+    if (typeof taskId !== 'string' || !taskId.trim()) { res.status(400).json({ error: 'taskId is required.' }); return; }
+    if (typeof column !== 'string' || !VALID_KANBAN_COLUMNS.has(column as KanbanColumn)) {
+      res.status(400).json({ error: 'Invalid column. Must be triage, doing, or done.' });
+      return;
+    }
+    const existing = await getTask(PROJECT_DIR, taskId);
+    if (!existing) { res.status(404).json({ error: 'Task not found.' }); return; }
+    const nextTags = withKanbanTag(existing.tags, column as KanbanColumn);
+    const task = await updateTask(PROJECT_DIR, taskId, { tags: nextTags });
+    let promoted = null;
+    if (column === 'triage') {
+      promoted = await promoteTriageToPlan([task], { projectDir: PROJECT_DIR });
+    }
+    res.json({ moved: true, task, promoted });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(message.startsWith('Task not found') ? 404 : 500).json({ error: message });
+  }
+});
+
 // ─── Triggers ───────────────────────────────────────────────────────
 // Persisted in .harness/triggers/triggers.json. The TriggerScheduler is
 // started during boot when HARNESS_TRIGGERS_ENABLED is set.
@@ -4465,6 +4517,452 @@ app.post('/api/promises/:id/cancel', async (req, res) => {
     if (!result) { res.status(404).json({ error: 'Promise not found.' }); return; }
     await emitEvent(PROJECT_DIR, 'promise', 'promise_cancelled', { promise_id: promiseId }, 'user', promiseId).catch((err) => recordSwallowed('emitEvent', err));
     res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Task Contract ───────────────────────────────────────────────────
+
+/**
+ * POST /api/task-contract/parse
+ * Convert a freeform user message into a structured TaskContract.
+ * Deterministic — no model call required.
+ *
+ * Body: { message: string, allowed_paths?: string[], extra_blocked_paths?: string[],
+ *         validation?: string[], max_turns?: number, approval_required?: boolean }
+ * Returns: TaskContract
+ */
+app.post('/api/task-contract/parse', (req, res) => {
+  try {
+    const { message, allowed_paths, extra_blocked_paths, validation, max_turns, approval_required } = req.body ?? {};
+    if (typeof message !== 'string' || !message.trim()) {
+      res.status(400).json({ error: 'message is required and must be a non-empty string.' });
+      return;
+    }
+    const contract = buildTaskContract(message, {
+      allowed_paths: Array.isArray(allowed_paths) ? allowed_paths : undefined,
+      extra_blocked_paths: Array.isArray(extra_blocked_paths) ? extra_blocked_paths : undefined,
+      validation: Array.isArray(validation) ? validation : undefined,
+      max_turns: typeof max_turns === 'number' ? max_turns : undefined,
+      approval_required: typeof approval_required === 'boolean' ? approval_required : undefined,
+    });
+    res.json(contract);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Repo Map ─────────────────────────────────────────────────────────
+
+/**
+ * GET /api/repo-map
+ * Return the cached repo map for PROJECT_DIR. Builds one if absent or stale.
+ * Query param: ?force=true  — always rebuild even if fresh.
+ */
+app.get('/api/repo-map', async (req, res) => {
+  try {
+    const force = req.query.force === 'true';
+    if (force) {
+      const fresh = await buildRepoMap(PROJECT_DIR);
+      await saveRepoMap(fresh, PROJECT_DIR);
+      res.json(fresh);
+    } else {
+      const map = await getOrBuildRepoMap(PROJECT_DIR);
+      res.json(map);
+    }
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+/**
+ * POST /api/repo-map/scan
+ * Force a full re-scan of PROJECT_DIR (or a supplied `root` path) and save.
+ * Body: { root?: string }
+ * Returns: RepoMap
+ */
+app.post('/api/repo-map/scan', async (req, res) => {
+  try {
+    const root = typeof req.body?.root === 'string' ? req.body.root : PROJECT_DIR;
+    const map = await buildRepoMap(root);
+    await saveRepoMap(map, root);
+    res.json(map);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Memory conflict + staleness ─────────────────────────────────────
+
+/**
+ * POST /api/memory/conflicts
+ * Check a candidate memory entry for conflicts against an existing file.
+ * Body: { fileName: string, body: string }
+ * Returns: { conflicts: ConflictResult[] }
+ */
+app.post('/api/memory/conflicts', async (req, res) => {
+  try {
+    const { fileName, body } = req.body ?? {};
+    if (typeof fileName !== 'string' || !fileName.trim()) {
+      res.status(400).json({ error: 'fileName is required (e.g. "patterns.md")' });
+      return;
+    }
+    if (typeof body !== 'string' || !body.trim()) {
+      res.status(400).json({ error: 'body is required' });
+      return;
+    }
+    const conflicts = await scanFileForConflicts(PROJECT_DIR, fileName, body);
+    res.json({ conflicts });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+/**
+ * GET /api/memory/stale
+ * Return stale memory sections across all (or a specific) memory file.
+ * Query param: ?file=patterns.md  — scope to one file; omit for all files.
+ * Returns: { stale: Record<string, StalenessResult[]> } or { stale: StalenessResult[] }
+ */
+app.get('/api/memory/stale', async (req, res) => {
+  try {
+    const file = typeof req.query.file === 'string' ? req.query.file : undefined;
+    if (file) {
+      const stale = await findStaleEntries(PROJECT_DIR, file);
+      res.json({ stale });
+    } else {
+      const stale = await findAllStaleEntries(PROJECT_DIR);
+      res.json({ stale });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Config Profiles ─────────────────────────────────────────────────
+
+/**
+ * GET /api/profiles
+ * List all available config profiles (built-in + custom from PROJECT_DIR).
+ */
+app.get('/api/profiles', async (_req, res) => {
+  try {
+    const profiles = await listProfiles(PROJECT_DIR);
+    res.json({ profiles });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+/**
+ * GET /api/profiles/:name
+ * Get a specific profile by name.
+ */
+app.get('/api/profiles/:name', async (req, res) => {
+  try {
+    const profile = await getProfile(req.params.name, PROJECT_DIR);
+    if (!profile) {
+      res.status(404).json({ error: `Profile "${req.params.name}" not found.` });
+      return;
+    }
+    res.json(profile);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+/**
+ * POST /api/profiles
+ * Save a custom profile to PROJECT_DIR/.harness/profiles.json.
+ * Body: ConfigProfile
+ */
+app.post('/api/profiles', async (req, res) => {
+  try {
+    const profile = req.body as ConfigProfile;
+    if (!profile?.name || !profile?.description) {
+      res.status(400).json({ error: 'name and description are required.' });
+      return;
+    }
+    const existing = await loadCustomProfiles(PROJECT_DIR);
+    const idx = existing.findIndex((p) => p.name === profile.name);
+    if (idx >= 0) {
+      existing[idx] = profile;
+    } else {
+      existing.push(profile);
+    }
+    await saveCustomProfiles(PROJECT_DIR, existing);
+    res.json({ saved: profile.name, total: existing.length });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+/**
+ * DELETE /api/profiles/:name
+ * Delete a custom profile by name.
+ */
+app.delete('/api/profiles/:name', async (req, res) => {
+  try {
+    const existing = await loadCustomProfiles(PROJECT_DIR);
+    const filtered = existing.filter((p) => p.name !== req.params.name);
+    if (filtered.length === existing.length) {
+      res.status(404).json({ error: `Custom profile "${req.params.name}" not found.` });
+      return;
+    }
+    await saveCustomProfiles(PROJECT_DIR, filtered);
+    res.json({ deleted: req.params.name, remaining: filtered.length });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Injection Defence ──────────────────────────────────────────────
+
+/**
+ * POST /api/injection/scan
+ * Scan a message for prompt injection patterns.
+ * Body: { message: string, mode?: "flag" | "block", blockThreshold?: number }
+ * Returns: InjectionScanResult
+ */
+app.post('/api/injection/scan', (req, res) => {
+  try {
+    const { message, mode, blockThreshold } = req.body ?? {};
+    if (typeof message !== 'string' || !message.trim()) {
+      res.status(400).json({ error: 'message is required.' });
+      return;
+    }
+    const result = scanForInjection(message, {
+      mode: mode ?? 'flag',
+      blockThreshold: typeof blockThreshold === 'number' ? blockThreshold : undefined,
+    });
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+/**
+ * POST /api/injection/sanitize
+ * Strip known injection markers from a message.
+ * Body: { message: string }
+ * Returns: { sanitized: string }
+ */
+app.post('/api/injection/sanitize', (req, res) => {
+  try {
+    const { message } = req.body ?? {};
+    if (typeof message !== 'string') {
+      res.status(400).json({ error: 'message is required.' });
+      return;
+    }
+    res.json({ sanitized: sanitizeMessage(message) });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Confidence Calibration ──────────────────────────────────────────
+
+app.post('/api/calibration/sample', async (req, res) => {
+  try {
+    const sample = req.body;
+    if (!sample?.id || !sample?.model || typeof sample?.predictedConfidence !== 'number') {
+      res.status(400).json({ error: 'id, model, and predictedConfidence are required.' });
+      return;
+    }
+    await recordCalibrationSample(PROJECT_DIR, sample);
+    res.json({ recorded: true });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/calibration/report/:model', async (req, res) => {
+  try {
+    const report = await generateCalibrationReport(PROJECT_DIR, req.params.model);
+    res.json(report);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/calibration/reports', async (_req, res) => {
+  try {
+    const reports = await generateAllCalibrationReports(PROJECT_DIR);
+    res.json({ reports });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Golden Traces ──────────────────────────────────────────────────
+
+app.get('/api/golden-traces', async (_req, res) => {
+  try {
+    const traces = await listGoldenTraces(PROJECT_DIR);
+    res.json({ traces });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/golden-traces/:id', async (req, res) => {
+  try {
+    const trace = await loadGoldenTrace(PROJECT_DIR, req.params.id);
+    if (!trace) { res.status(404).json({ error: 'Trace not found.' }); return; }
+    res.json(trace);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/golden-traces', async (req, res) => {
+  try {
+    const trace = req.body;
+    if (!trace?.id || !trace?.name || !trace?.input) {
+      res.status(400).json({ error: 'id, name, and input are required.' });
+      return;
+    }
+    await saveGoldenTrace(PROJECT_DIR, trace);
+    res.json({ saved: trace.id });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/golden-traces/capture', (req, res) => {
+  try {
+    const { name, model, input, output, toolCalls, files, tags, notes } = req.body ?? {};
+    if (!name || !model || !input) {
+      res.status(400).json({ error: 'name, model, and input are required.' });
+      return;
+    }
+    const trace = captureFromRun(name, model, input, output ?? '', toolCalls ?? [], files ?? [], { tags, notes });
+    res.json(trace);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/golden-traces/:id/compare', async (req, res) => {
+  try {
+    const trace = await loadGoldenTrace(PROJECT_DIR, req.params.id);
+    if (!trace) { res.status(404).json({ error: 'Trace not found.' }); return; }
+    const { output, toolCalls, files } = req.body ?? {};
+    const result = compareWithGolden(trace, {
+      output: output ?? '',
+      toolCalls: toolCalls ?? [],
+      files: files ?? [],
+    });
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.delete('/api/golden-traces/:id', async (req, res) => {
+  try {
+    const deleted = await deleteGoldenTrace(PROJECT_DIR, req.params.id);
+    if (!deleted) { res.status(404).json({ error: 'Trace not found.' }); return; }
+    res.json({ deleted: req.params.id });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// ─── Versioned Prompts ──────────────────────────────────────────────
+
+app.get('/api/prompts', async (_req, res) => {
+  try {
+    const names = await listRegistries(PROJECT_DIR);
+    res.json({ prompts: names });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/prompts/:name', async (req, res) => {
+  try {
+    const registry = await loadRegistry(PROJECT_DIR, req.params.name);
+    if (!registry) { res.status(404).json({ error: 'Prompt registry not found.' }); return; }
+    res.json(registry);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/prompts/:name/active', async (req, res) => {
+  try {
+    const active = await getActivePrompt(PROJECT_DIR, req.params.name);
+    if (!active) { res.status(404).json({ error: 'No active prompt found.' }); return; }
+    res.json(active);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/prompts/:name/versions', async (req, res) => {
+  try {
+    const { content, label, author, changelog, tags } = req.body ?? {};
+    if (typeof content !== 'string') {
+      res.status(400).json({ error: 'content is required.' });
+      return;
+    }
+    const version = await savePromptVersion(PROJECT_DIR, req.params.name, content, { label, author, changelog, tags });
+    res.json(version);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.put('/api/prompts/:name/active', async (req, res) => {
+  try {
+    const { version } = req.body ?? {};
+    if (typeof version !== 'number') {
+      res.status(400).json({ error: 'version (number) is required.' });
+      return;
+    }
+    const ok = await setActiveVersion(PROJECT_DIR, req.params.name, version);
+    if (!ok) { res.status(404).json({ error: `Version ${version} not found.` }); return; }
+    res.json({ activeVersion: version });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/prompts/:name/rollback', async (req, res) => {
+  try {
+    const prev = await rollbackPrompt(PROJECT_DIR, req.params.name);
+    if (!prev) { res.status(400).json({ error: 'Cannot rollback: only one version or registry not found.' }); return; }
+    res.json(prev);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/prompts/:name/diff', async (req, res) => {
+  try {
+    const registry = await loadRegistry(PROJECT_DIR, req.params.name);
+    if (!registry) { res.status(404).json({ error: 'Prompt registry not found.' }); return; }
+    const from = parseInt(req.query.from as string, 10);
+    const to = parseInt(req.query.to as string, 10);
+    if (!Number.isFinite(from) || !Number.isFinite(to)) {
+      res.status(400).json({ error: 'from and to query params (version numbers) are required.' });
+      return;
+    }
+    const diff = diffVersions(registry, from, to);
+    if (!diff) { res.status(404).json({ error: 'One or both versions not found.' }); return; }
+    res.json(diff);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.get('/api/prompts/:name/history', async (req, res) => {
+  try {
+    const registry = await loadRegistry(PROJECT_DIR, req.params.name);
+    if (!registry) { res.status(404).json({ error: 'Prompt registry not found.' }); return; }
+    res.json({ markdown: renderPromptHistory(registry) });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
@@ -6167,6 +6665,79 @@ app.post('/api/chat', async (req, res) => {
 
   // Tier 0: Deterministic shortcut — bypass model entirely for simple computations.
   if (messageText) {
+    // Tier 0a: /goal slash command — expand intent into autonomy tasks
+    // and append them to IMPLEMENTATION_PLAN.md. Runs before the
+    // deterministic shortcut so the command pattern always wins, and
+    // before the model so we never pay tokens for a structural command.
+    try {
+      const goalResult = await tryGoalSlashCommand(messageText, { projectDir: PROJECT_DIR });
+      if (goalResult.handled) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+        res.write(`data: ${JSON.stringify({ type: 'text', content: goalResult.response })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'done', reason: 'goal_slash_command' })}\n\n`);
+        emitEvent(PROJECT_DIR, 'system', 'goal_slash_command', {
+          mutated: goalResult.mutated,
+          taskCount: goalResult.tasks.length,
+          intent: messageText.slice(0, 200),
+        }, 'system').catch((err) => recordSwallowed('emitEvent', err));
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
+    } catch (err) {
+      recordSwallowed('tryGoalSlashCommand', err);
+      // Fall through to normal chat path on error.
+    }
+
+    // Tier 0b: Morning priority — `priority: <answer>` / `/priority …`.
+    // Stores the day's top priority and acknowledges. Skips the model
+    // entirely (no token spend, no loop).
+    try {
+      const priorityAnswer = parsePrioritySetCommand(messageText);
+      if (priorityAnswer) {
+        const stored = await setPriorityForToday(PROJECT_DIR, priorityAnswer);
+        const reply = `✅ Top priority for **${stored.date}** set: **${stored.answer}**\n\nThis will appear at the top of your daily brief until the day ends.`;
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+        res.write(`data: ${JSON.stringify({ type: 'text', content: reply })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'done', reason: 'morning_priority_set' })}\n\n`);
+        emitEvent(PROJECT_DIR, 'system', 'morning_priority_set', { date: stored.date }, 'system').catch((err) => recordSwallowed('emitEvent', err));
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
+    } catch (err) {
+      recordSwallowed('setPriorityForToday', err);
+    }
+
+    // Tier 0c: All other slash commands — /wiki, /research, /memory-wiki,
+    // /kanban, /brief. Runs the service-layer handler and streams back
+    // the result without invoking a model.
+    try {
+      const slashResult = await routeSlashCommand(messageText, PROJECT_DIR);
+      if (slashResult.handled) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+        res.write(`data: ${JSON.stringify({ type: 'text', content: slashResult.response })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'done', reason: slashResult.reason })}\n\n`);
+        if (slashResult.eventPayload) {
+          emitEvent(PROJECT_DIR, 'system', slashResult.reason, slashResult.eventPayload, 'system').catch((err) => recordSwallowed('emitEvent', err));
+        }
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
+    } catch (err) {
+      recordSwallowed('routeSlashCommand', err);
+    }
+
     const shortcut = tryDeterministicShortcut(messageText);
     if (shortcut.handled) {
       res.setHeader('Content-Type', 'text/event-stream');
@@ -10183,6 +10754,50 @@ export async function startServer(): Promise<void> {
   const preferred = parseInt(process.env.PORT ?? '3000', 10);
   const port = await findAvailablePort(preferred);
   startupProfile.record('port-selection');
+
+  // Wire YOLO mode hooks so /yolo in chat can set dontAsk + start autonomy.
+  registerYoloHooks({
+    currentMode: permissionMode,
+    setPermissionMode: (mode: string, reason: string) => {
+      const prev = permissionMode;
+      permissionMode = mode as PermissionMode;
+      appendCapabilityAuditEvent(PROJECT_DIR, { type: 'grant.created', reason: `permission.mode → ${mode}: ${reason} (was ${prev})` }).catch((err) => recordSwallowed('appendCapabilityAuditEvent', err));
+    },
+    engageTimedAutonomy: (minutes: number, reason: string) => {
+      if (minutes > 0) {
+        autonomyPreviousMode = permissionMode !== 'dontAsk' ? permissionMode : autonomyPreviousMode || 'default';
+        permissionMode = 'dontAsk' as PermissionMode;
+        autonomyExpiresAt = Date.now() + minutes * 60_000;
+        appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.engaged', reason: `${reason} (${minutes}m, reverts to ${autonomyPreviousMode})` }).catch((err) => recordSwallowed('appendCapabilityAuditEvent', err));
+      } else {
+        if (autonomyPreviousMode) permissionMode = autonomyPreviousMode as PermissionMode;
+        autonomyExpiresAt = 0;
+        appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.cleared', reason }).catch((err) => recordSwallowed('appendCapabilityAuditEvent', err));
+      }
+    },
+    startAutonomyRun: async (settings) => {
+      try {
+        const url = `http://${LOCAL_HOST}:${port}/api/autonomy/start`;
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            maxIterations: settings.maxIterations,
+            maxTurns: settings.maxTurns,
+            timeBudgetMs: settings.timeBudgetMs,
+            unproductiveTurnLimit: settings.unproductiveTurnLimit,
+            permissionMode: 'dontAsk',
+          }),
+          signal: AbortSignal.timeout(10_000),
+        });
+        const data = await r.json() as Record<string, unknown>;
+        if (!r.ok) return { started: false, error: data.error as string ?? `HTTP ${r.status}` };
+        return { started: true, pid: data.pid as number | undefined };
+      } catch (err) {
+        return { started: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  });
 
   const httpServer = app.listen(port, LOCAL_HOST, () => {
     startupProfile.record('listen-ready');

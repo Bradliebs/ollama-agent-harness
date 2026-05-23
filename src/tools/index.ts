@@ -41,6 +41,8 @@ export { DocumentExportTool } from './documentTools';
 export { TelegramNotifyTool } from './telegramTools';
 export { DesktopInputReplayTool } from './desktopInputTools';
 export { ToolDispatcher } from './dispatcher';
+export { ReadBeforeWriteGate } from './readBeforeWriteGate';
+export type { ReadBeforeWriteMode, ReadBeforeWriteGateOptions, ReadBeforeWriteCheck, ReadBeforeWriteViolation } from './readBeforeWriteGate';
 export { BUILTIN_TOOL_ENTRIES, ToolRegistry, createBuiltinToolRegistry, createToolRegistry } from './registry';
 export { createMcpToolEntries, createMcpHarnessToolName } from './mcpTools';
 export type { ToolRegistryEntry } from './registry';

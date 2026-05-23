@@ -3,12 +3,16 @@ import { OllamaClient } from './ollamaClient';
 import type { IChatClient } from './chatClient';
 import type { Tool, ToolCall, LoopConfig, LoopEvent } from '../types';
 import { toolToSchema } from '../types/tool';
+import { renderTaskContractBlock } from '../types/taskContract';
 import type { HookPipeline } from '../extensibility/hookPipeline';
 import { compactIfNeeded, DEFAULT_COMPACTION_CONFIG } from '../context/compaction';
 import { estimateTokenCount } from '../context/assembly';
 import type { SessionStorage } from '../persistence/sessionStorage';
 import { createContinuityCheckpoint } from '../persistence/continuity';
 import { ToolDispatcher } from '../tools/dispatcher';
+import { ReadBeforeWriteGate } from '../tools/readBeforeWriteGate';
+import { renderRepoMapBlock } from './repoMap';
+import { scanForInjection } from '../safety/injectionDefence';
 import type { LearningRecorder } from '../learning/engine';
 import type { RuntimeTracer } from './tracing';
 import { validateOutput, withOutputValidationInstructions, detectSelfCertification } from './outputValidation';
@@ -39,13 +43,32 @@ export async function* queryLoop(
   const { client, tools, permissionCheck, hooks, session, summarizerClient, tracer, learningRecorder } = deps;
 
   const dispatcher = new ToolDispatcher(tools);
+  const readBeforeWriteGate = config.readBeforeWrite?.mode && config.readBeforeWrite.mode !== 'off'
+    ? new ReadBeforeWriteGate({
+        mode: config.readBeforeWrite.mode,
+        exemptPaths: config.readBeforeWrite.exemptPaths,
+        allowNewFiles: config.readBeforeWrite.allowNewFiles,
+      })
+    : undefined;
   const ollamaTools = tools.map(toolToSchema);
 
   const validationProfile = config.outputValidation?.profile ?? 'oracle-prime';
   const customValidationProfiles = config.outputValidation?.customProfiles ?? [];
-  const systemPrompt = config.outputValidation?.enabled
-    ? withOutputValidationInstructions(config.systemPrompt, validationProfile, customValidationProfiles)
+
+  // Prepend repo map block (framework/commands/do-not-edit snapshot) when provided.
+  const withRepoMap = config.repoMap
+    ? `${renderRepoMapBlock(config.repoMap)}\n\n---\n\n${config.systemPrompt}`
     : config.systemPrompt;
+
+  // Prepend task contract block when provided so the model always sees
+  // the goal, constraints, and blocked paths at the top of the system prompt.
+  const baseSystemPrompt = config.taskContract
+    ? `${renderTaskContractBlock(config.taskContract)}\n\n---\n\n${withRepoMap}`
+    : withRepoMap;
+
+  const systemPrompt = config.outputValidation?.enabled
+    ? withOutputValidationInstructions(baseSystemPrompt, validationProfile, customValidationProfiles)
+    : baseSystemPrompt;
 
   const messages: Message[] = [
     { role: 'system', content: systemPrompt },
@@ -53,6 +76,27 @@ export async function* queryLoop(
   ];
 
   let turn = 0;
+
+  // ── Injection defence scan ──────────────────────────────────────────
+  // Scan user messages before they reach the model. In block mode, yield
+  // an error and stop if a high-confidence injection is detected.
+  if (config.injectionDefence?.mode && config.injectionDefence.mode !== 'off') {
+    for (const msg of initialMessages) {
+      if (msg.role !== 'user' || typeof msg.content !== 'string') continue;
+      const scan = scanForInjection(msg.content, {
+        mode: config.injectionDefence.mode,
+        blockThreshold: config.injectionDefence.blockThreshold,
+      });
+      if (scan.flagged) {
+        yield { type: 'error', message: `⚠️  ${scan.summary}`, recoverable: !scan.blocked } as LoopEvent;
+        if (scan.blocked) {
+          yield { type: 'done', reason: 'error', turns: 0 } as LoopEvent;
+          return;
+        }
+      }
+    }
+  }
+
   let unproductiveTurns = 0;
   const toolFailureCounts = new Map<string, number>();
   const PRODUCTIVE_TOOLS = new Set(['file_write', 'file_edit']);
@@ -427,7 +471,7 @@ export async function* queryLoop(
       }
     }
 
-    const dispatchedToolResults = await dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer, learningRecorder });
+    const dispatchedToolResults = await dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer, learningRecorder, readBeforeWriteGate });
     const toolResults = [...skippedToolResults, ...dispatchedToolResults];
     let producedFileChange = false;
     for (const { call, result } of toolResults) {

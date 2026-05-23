@@ -1,7 +1,63 @@
 import type { ToolCall, ToolResult } from './tool';
 import type { CustomOutputValidationProfile, OutputValidationProfile, OutputValidationResult } from '../core/outputValidation';
+import type { TaskContract } from './taskContract';
+import type { ReadBeforeWriteMode } from '../tools/readBeforeWriteGate';
+import type { RepoMap } from '../core/repoMap';
+import type { InjectionDefenceMode } from '../safety/injectionDefence';
 
 export interface LoopConfig {
+  /**
+   * Optional task contract to inject into the system prompt.
+   * When present, the loop prepends a structured Task Contract block so the
+   * model always sees the goal, constraints, blocked paths, and validation
+   * commands regardless of how the system prompt was assembled.
+   */
+  taskContract?: TaskContract;
+  /**
+   * Lightweight project snapshot injected into the system prompt.
+   * When present, the loop prepends a ## Project Snapshot block so the model
+   * always knows the framework, test command, and do-not-edit paths without
+   * having to discover them through tool calls.
+   *
+   * Build or load a map with `buildRepoMap()` / `getOrBuildRepoMap()` from
+   * `src/core/repoMap`.
+   */
+  repoMap?: RepoMap;
+  /**
+   * Read-before-write gate configuration.
+   * When set, every file_write / file_edit call is checked to ensure the same
+   * path was read earlier in the session.
+   *
+   * - `off`     — disabled (default)
+   * - `warn`    — logs a warning but allows the write
+   * - `enforce` — blocks the write and returns an error result
+   *
+   * `exemptPaths` is a list of absolute paths that bypass the check (e.g.
+   * auto-generated files or temp outputs the agent creates from scratch).
+   * `allowNewFiles` (default true) exempts writes to paths that do not yet
+   * exist on disk.
+   */
+  readBeforeWrite?: {
+    mode: ReadBeforeWriteMode;
+    exemptPaths?: string[];
+    allowNewFiles?: boolean;
+  };
+  /**
+   * Prompt injection defence.
+   * Scans incoming user messages for known injection patterns before they
+   * reach the model.
+   *
+   * - `off`   — disabled (default)
+   * - `flag`  — scan and log but allow through
+   * - `block` — reject the message when a high-confidence pattern matches
+   *
+   * `blockThreshold` (default 0.7) sets the confidence floor for blocking
+   * in `block` mode; matches below this still flag but are allowed.
+   */
+  injectionDefence?: {
+    mode: InjectionDefenceMode;
+    blockThreshold?: number;
+  };
   model: string;
   systemPrompt: string;
   maxTurns: number;

@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
+import { scanFileForConflicts } from '../services/memoryConflictDetector';
 
 // Match the resolution used by web/server.ts so the model's `remember`
 // writes land in the same .harness/memory/ that assembleSystemContext reads
@@ -61,6 +62,17 @@ export const MemoryWriteTool: Tool = {
     }
 
     try {
+      // Check for conflicts with existing memory before writing.
+      const fileName = category === 'decision' ? 'decisions.md'
+        : category === 'pattern' ? 'patterns.md'
+        : 'notes.md';
+      const conflictBody = `${title}\n${content}`;
+      const conflicts = await scanFileForConflicts(memoryProjectDir(), fileName, conflictBody);
+      const conflictWarning = conflicts.length > 0
+        ? `\n⚠️  Conflict warning: This entry may contradict ${conflicts.length} existing section(s):\n` +
+          conflicts.map((c) => `  - "${c.existingSection.title}" (${c.conflictType}, confidence ${Math.round(c.confidence * 100)}%): ${c.reason}`).join('\n') + '\n'
+        : '';
+
       // Initialize file with header if it doesn't exist
       try {
         await fs.access(filePath);
@@ -76,7 +88,7 @@ export const MemoryWriteTool: Tool = {
 
       return {
         success: true,
-        output: `📝 Remembered "${title}" in ${category}s. Saved to ${path.relative(process.cwd(), filePath)}`,
+        output: `📝 Remembered "${title}" in ${category}s. Saved to ${path.relative(process.cwd(), filePath)}${conflictWarning}`,
       };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);

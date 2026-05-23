@@ -3,6 +3,7 @@ import type { HookPipeline } from '../extensibility/hookPipeline';
 import { trackToolUsage, type LearningRecorder } from '../learning/engine';
 import type { RuntimeTracer } from '../core/tracing';
 import { recordSwallowed } from '../observability/silentFailureSink';
+import type { ReadBeforeWriteGate } from './readBeforeWriteGate';
 
 export interface DispatchResult {
   call: ToolCall;
@@ -18,6 +19,12 @@ export interface DispatchOptions {
    * instead of the legacy process-wide default. Required to avoid the
    * cross-session race on the module-level default. */
   learningRecorder?: LearningRecorder;
+  /**
+   * When set, the gate is consulted before every write tool call.
+   * Read tool calls are recorded in the gate's ledger automatically.
+   * This enforces the read-before-write discipline.
+   */
+  readBeforeWriteGate?: ReadBeforeWriteGate;
 }
 
 /**
@@ -175,6 +182,22 @@ export class ToolDispatcher {
           error: `Tool '${call.name}' not found in tool pool`,
         },
       };
+    }
+
+    // Read-before-write gate (after permission check, before execution)
+    if (options.readBeforeWriteGate) {
+      const gateResult = options.readBeforeWriteGate.gateTool(call.name, call.input);
+      if (!gateResult.allowed) {
+        dispatchSpan?.end('ok', { blockedByReadBeforeWriteGate: true });
+        return {
+          call,
+          result: {
+            success: false,
+            output: `Read-before-write gate blocked '${call.name}': ${gateResult.reason}`,
+            error: gateResult.reason,
+          },
+        };
+      }
     }
 
     // Execute with error boundary
