@@ -4765,6 +4765,80 @@ describe('web server API validation', () => {
       expect(csp).not.toContain('https://');
     });
   });
+
+  describe('Kanban API', () => {
+    const planPath = path.join(process.cwd(), 'IMPLEMENTATION_PLAN.md');
+    let planBackup: string | null = null;
+
+    beforeAll(async () => {
+      try { planBackup = await fs.readFile(planPath, 'utf-8'); } catch { planBackup = null; }
+    });
+
+    afterAll(async () => {
+      if (planBackup !== null) {
+        await fs.writeFile(planPath, planBackup, 'utf-8');
+      }
+    });
+
+    it('GET /api/kanban/board returns the 3-column shape', async () => {
+      const response = await request('/api/kanban/board');
+      expect(response.status).toBe(200);
+      const board = await response.json() as { triage: unknown[]; doing: unknown[]; done: unknown[] };
+      expect(board).toHaveProperty('triage');
+      expect(board).toHaveProperty('doing');
+      expect(board).toHaveProperty('done');
+      expect(Array.isArray(board.triage)).toBe(true);
+      expect(Array.isArray(board.doing)).toBe(true);
+      expect(Array.isArray(board.done)).toBe(true);
+    });
+
+    it('POST /api/kanban/move to triage tags the task and adds it to IMPLEMENTATION_PLAN.md', async () => {
+      const createResponse = await request('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Kanban move test task', priority: 'normal' }),
+      });
+      expect(createResponse.status).toBe(200);
+      const { task } = await createResponse.json() as { task: { id: string; tags?: string[] } };
+      expect(task && typeof task.id).toBe('string');
+      const taskId = task.id;
+
+      try {
+        const moveResponse = await request('/api/kanban/move', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ taskId, column: 'triage' }),
+        });
+        expect(moveResponse.status).toBe(200);
+        const moveBody = await moveResponse.json() as { moved: boolean; task: { tags: string[] }; promoted: unknown };
+        expect(moveBody.moved).toBe(true);
+        expect(Array.isArray(moveBody.task.tags)).toBe(true);
+        expect(moveBody.task.tags).toContain('kanban:triage');
+        expect(moveBody.promoted).toBeTruthy();
+
+        const planContents = await fs.readFile(planPath, 'utf-8');
+        // promoteTriageToPlan slugifies non-slug ids from the title.
+        const expectedId = /^[a-z0-9-]+$/.test(taskId) ? taskId : 'kanban-move-test-task';
+        expect(planContents).toContain(expectedId);
+
+        const invalidColumn = await request('/api/kanban/move', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ taskId, column: 'nope' }),
+        });
+        expect(invalidColumn.status).toBe(400);
+
+        const missing = await request('/api/kanban/move', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ taskId: 'definitely-not-a-real-task-id-xyz', column: 'doing' }),
+        });
+        expect(missing.status).toBe(404);
+      } finally {
+        await request('/api/tasks/' + encodeURIComponent(taskId), { method: 'DELETE' });
+      }
+    });
+  });
 });
 
 function buildMinimalPdf(text: string): Buffer {

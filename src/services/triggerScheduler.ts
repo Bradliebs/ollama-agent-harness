@@ -76,6 +76,23 @@ const DEFAULT_STARTUP_COOLDOWN_MS = 30_000;
 const DEFAULT_OUTPUT_CAP = 4096;
 const MIN_INTERVAL_SECONDS = 5;
 
+export const DEFAULT_TRIGGERS: TriggerDefinition[] = [
+  { id: 'morning-priority', command: 'node', args: ['scripts/morning-priority.js'], intervalSeconds: 900, enabled: true },
+];
+
+/**
+ * Ensure that built-in default triggers exist in `.harness/triggers/triggers.json`.
+ * Matches by `id`: existing entries (including user customizations) are preserved.
+ * Only writes if at least one default is missing.
+ */
+export async function ensureDefaultTriggers(projectDir: string): Promise<void> {
+  const existing = await loadTriggers(projectDir);
+  const existingIds = new Set(existing.map((t) => t.id));
+  const missing = DEFAULT_TRIGGERS.filter((t) => !existingIds.has(t.id));
+  if (missing.length === 0) return;
+  await saveTriggers(projectDir, [...existing, ...missing]);
+}
+
 function triggersFilePath(projectDir: string): string {
   return path.join(projectDir, '.harness', 'triggers', 'triggers.json');
 }
@@ -143,6 +160,9 @@ export class TriggerScheduler {
   start(): void {
     if (this.timer) return;
     this.startedAtMs = Date.now();
+    ensureDefaultTriggers(this.opts.projectDir).catch((error) =>
+      logger.warn('Triggers', 'Failed to seed default triggers', { error: error instanceof Error ? error.message : String(error) }),
+    );
     this.timer = setInterval(() => {
       this.tick().catch((error) => logger.warn('Triggers', 'Tick failed', { error: error instanceof Error ? error.message : String(error) }));
     }, this.opts.tickMs);

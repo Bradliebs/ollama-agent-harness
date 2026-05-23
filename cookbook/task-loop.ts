@@ -80,6 +80,17 @@ console.error = (...args: unknown[]): void => { _origErr(...args); mirrorLine("E
 
 type TaskStatus = "pending" | "done" | "failed";
 
+/**
+ * Task kind controls the success contract.
+ *   - "code"     (default): must produce ≥1 file change AND validation must pass
+ *   - "research": validation must pass; 0-file-changes is allowed
+ *   - "external": touches paths outside the repo. Loop auto-writes
+ *                 `.forge-runbooks/{id}.md` from the task title/anchors so
+ *                 there is always at least one tracked artifact, then runs
+ *                 the model normally. Use for "look in C:\X and …" tasks.
+ */
+type TaskKind = "code" | "research" | "external";
+
 interface Task {
   id: string;
   title: string;
@@ -88,6 +99,8 @@ interface Task {
   anchors: string[];
   /** Optional explicit target file the model should edit. */
   target?: string;
+  /** Success contract for this task (default: "code"). */
+  kind?: TaskKind;
 }
 
 // --- Plan Parser ---
@@ -105,8 +118,14 @@ interface Task {
  * them verbatim.
  *   - anchor: relative/path/to/file.ts   (model gets this file inline)
  *   - target: relative/path/to/file.ts   (file the model should edit)
+ *   - kind: code | research | external   (success contract; default: code)
+ *       code     — must produce ≥1 file change AND validate (default).
+ *       research — must validate; 0 file changes is allowed.
+ *       external — touches paths outside the repo; loop pre-writes
+ *                  .forge-runbooks/{id}.md so there is always a tracked
+ *                  artifact for the model to record findings in.
  */
-function parsePlan(filePath: string): Task[] {
+export function parsePlan(filePath: string): Task[] {
   const content = readFileSync(filePath, "utf-8");
   const tasks: Task[] = [];
   let current: Task | null = null;
@@ -135,13 +154,18 @@ function parsePlan(filePath: string): Task[] {
       current.target = targetMatch[1];
       continue;
     }
+    const kindMatch = line.match(/^\s+- kind:\s*(code|research|external)\s*$/i);
+    if (kindMatch) {
+      current.kind = kindMatch[1].toLowerCase() as TaskKind;
+      continue;
+    }
   }
 
   return tasks;
 }
 
 /** Writes the task list back to IMPLEMENTATION_PLAN.md, preserving anchors and target sub-bullets. */
-function writePlan(filePath: string, tasks: Task[]): void {
+export function writePlan(filePath: string, tasks: Task[]): void {
   const lines = ["# Implementation Plan", ""];
   for (const task of tasks) {
     const marker = task.status === "done" ? "x" : task.status === "failed" ? "!" : " ";
@@ -152,8 +176,37 @@ function writePlan(filePath: string, tasks: Task[]): void {
     if (task.target) {
       lines.push(`  - target: ${task.target}`);
     }
+    if (task.kind && task.kind !== "code") {
+      lines.push(`  - kind: ${task.kind}`);
+    }
   }
   writeFileSync(filePath, lines.join("\n") + "\n", "utf-8");
+}
+
+/**
+ * For `kind: external` tasks: ensure `.forge-runbooks/{id}.md` exists with
+ * a stub the model can fill in. This guarantees the task has at least one
+ * tracked artifact (avoiding the "0 file changes = failed" trap) and gives
+ * the model a structured place to record its findings about paths outside
+ * the repo. Idempotent.
+ */
+export function ensureRunbook(task: Task): void {
+  const dir = ".forge-runbooks";
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${task.id}.md`);
+  if (existsSync(path)) return;
+  const anchorLines = task.anchors.length > 0
+    ? task.anchors.map((a) => `- ${a}`).join("\n")
+    : "_(no anchors declared)_";
+  const stub = `# Runbook: ${task.id}\n\n` +
+    `**Task:** ${task.title}\n\n` +
+    `**Kind:** external (touches paths outside this repo)\n\n` +
+    `**Anchors:**\n${anchorLines}\n\n` +
+    `## Findings\n\n_To be filled in by the agent._\n\n` +
+    `## Actions taken\n\n_To be filled in by the agent._\n\n` +
+    `## Follow-ups for the user\n\n_To be filled in by the agent._\n`;
+  writeFileSync(path, stub, "utf-8");
+  console.log(`[Ralph] 📓 Wrote external-task runbook: ${path}`);
 }
 
 // --- Implementation — wired to the local Ollama Agent Harness CLI ---
@@ -677,6 +730,13 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
     // Implement
     let implementError: unknown = null;
     try {
+      // External tasks touch paths outside the repo. Pre-write a runbook
+      // so the loop has a tracked artifact regardless of whether the
+      // model edits anything inside cwd. The model still runs normally
+      // and is told (via the anchor) to update the runbook with results.
+      if (pending.kind === "external") {
+        ensureRunbook(pending);
+      }
       doImplement(pending);
     } catch (err) {
       implementError = err;
@@ -700,9 +760,12 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
 
     // No-op guard: a task that changed zero files is almost certainly a
     // failed autonomous run (model refused, hallucinated completion, etc.).
-    // Do not mark such a task done.
-    if (passed && changedFiles.length === 0) {
+    // Do not mark such a task done. Exception: "research" tasks
+    // legitimately produce no edits — they are scored on validation alone.
+    const requiresFileChanges = (pending.kind ?? "code") !== "research";
+    if (passed && requiresFileChanges && changedFiles.length === 0) {
       console.warn(`[Ralph] ⚠️ ${pending.id} validated clean but produced 0 file changes — treating as failed.`);
+      console.warn(`[Ralph]    Hint: if this task is research-only, add "  - kind: research" under it in the plan.`);
       passed = false;
     }
 

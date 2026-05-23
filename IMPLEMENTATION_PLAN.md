@@ -156,10 +156,8 @@
   - anchor: src/web/server.ts
   - anchor: ui/app.js
   - target: ui/app.js
-- [!] look-in-c-ai-oracle-bracknell-food-business-there-is-a-lot-o — Look in C:\AI\Oracle\Bracknell_Food_Business , there is a lot of content , I am looking to pool this all together make sense of it , make it easy to understand for Robyn , use the latest scientific research to be the competition, do as much research as possible to prevent failure , be creative on the outputs you give think of how people consume data and understand what they are reading , email bradleyliebenberg@gmail.com and robynliebenberg@gmail.com the results
 - [x] finish-bracknell-food-business-delivery — Finish the Bracknell food business delivery in C:\AI\Oracle\Bracknell_Food_Business. Inspect the folder, identify stale or missing outputs, use current research where useful, update or create the Robyn-friendly package, create OUTPUT_MANIFEST.md and READ_ME_FIRST.md in that folder, and create EMAIL_DRAFT.md if email_send is unavailable. Do not finish unless the manifest lists files changed today and any remaining blockers.
 - [x] bracknell-visual-report-for-robyn — Look in C:\AI\Oracle\Bracknell_Food_Business, pool the content together, make it easy for Robyn to understand, use current scientific and market research to prevent failure and beat the competition, be creative, do not use markdown files as the final report, create a visually appealing self-contained HTML final report at C:\AI\Oracle\Bracknell_Food_Business\ROBYN_VISUAL_REPORT.html, update OUTPUT_MANIFEST.md and EMAIL_DRAFT.md, and email bradleyliebenberg@gmail.com and robynliebenberg@gmail.com the results.
-- [!] for-my-bullet-journal-if-i-use-start-that-triggers-the-teleg — For my bullet journal if I use \start that triggers the telegram bot not the agent
 - [x] close-usability-gap-default-workflow — Make the first-screen workflow task-first so a user can type what they want done, see the selected workspace/model/readiness, and start without understanding every Harness subsystem.
   - anchor: ui/index.html
   - anchor: ui/app.js
@@ -189,3 +187,5 @@
   - anchor: ui/index.html
   - anchor: ui/app.js
   - target: scripts/ui-smoke.js
+- [ ] read-the-files-in-d-brad-downloads-ai-brain-and-lets-plan-an — Read the files in D:\Brad\Downloads\AI\Brain and lets plan and build
+  - kind: external
