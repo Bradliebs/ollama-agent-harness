@@ -77,7 +77,25 @@ exit /b 1
 
 :BUILD_OK
 
-:: Step 5: Launch
+:: Step 5: Workspace — agent files go here, NOT in the harness repo
+echo.
+if defined HARNESS_PROJECT_DIR (
+  echo   Workspace: %HARNESS_PROJECT_DIR%
+  goto WORKSPACE_OK
+)
+echo   Where should the agent work? (its files, memory, outputs go here)
+echo   Press Enter for default: %USERPROFILE%\hermes-workspace
+echo.
+set /p "WORKSPACE=  Workspace folder: "
+if "%WORKSPACE%"=="" set "WORKSPACE=%USERPROFILE%\hermes-workspace"
+if not exist "%WORKSPACE%" mkdir "%WORKSPACE%"
+set "HARNESS_PROJECT_DIR=%WORKSPACE%"
+echo   [OK] Workspace: %HARNESS_PROJECT_DIR%
+
+:WORKSPACE_OK
+
+:: Step 6: Launch
+:: Step 6: Launch
 echo.
 echo   Checking for an existing Harness server on port 4300...
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":4300.*LISTEN"') do (

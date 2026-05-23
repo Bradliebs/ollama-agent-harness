@@ -60,7 +60,23 @@ if [ ! -f "dist/web/server.js" ]; then
   echo "  ✅ Build complete"
 fi
 
-# Step 6: Launch
+# Step 6: Workspace — agent files go here, NOT in the harness repo
+if [ -z "$HARNESS_PROJECT_DIR" ]; then
+  DEFAULT_WS="$HOME/hermes-workspace"
+  echo ""
+  echo "  Where should the agent work? (its files, memory, outputs go here)"
+  echo "  Press Enter for default: $DEFAULT_WS"
+  echo ""
+  read -rp "  Workspace folder: " WORKSPACE
+  WORKSPACE="${WORKSPACE:-$DEFAULT_WS}"
+  mkdir -p "$WORKSPACE"
+  export HARNESS_PROJECT_DIR="$WORKSPACE"
+  echo "  ✅ Workspace: $HARNESS_PROJECT_DIR"
+else
+  echo "  ✅ Workspace: $HARNESS_PROJECT_DIR"
+fi
+
+# Step 7: Launch
 PORT="${PORT:-4300}"
 echo ""
 echo "  🚀 Starting Ollama Agent Harness..."

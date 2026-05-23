@@ -2,7 +2,7 @@ import express from 'express';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { watch as fsWatch } from 'fs';
+import { watch as fsWatch, existsSync, mkdirSync } from 'fs';
 import * as net from 'net';
 import * as crypto from 'crypto';
 import * as os from 'os';
@@ -154,7 +154,35 @@ app.use(express.static(path.join(__dirname, '..', '..', 'ui'), {
   },
 }));
 
-const PROJECT_DIR = process.env.HARNESS_PROJECT_DIR ? path.resolve(process.env.HARNESS_PROJECT_DIR) : process.cwd();
+/**
+ * Workspace isolation: the agent must NEVER write into the harness source tree.
+ * If no HARNESS_PROJECT_DIR is set, default to ~/hermes-workspace (created on
+ * first run). If someone launches from the harness repo without setting the env
+ * var, we detect the repo by the presence of src/web/server.ts and redirect
+ * to the safe default.
+ */
+function resolveProjectDir(): string {
+  if (process.env.HARNESS_PROJECT_DIR) {
+    return path.resolve(process.env.HARNESS_PROJECT_DIR);
+  }
+  // Detect if cwd is the harness source repo
+  const cwd = process.cwd();
+  const isHarnessRepo =
+    existsSync(path.join(cwd, 'src', 'web', 'server.ts')) &&
+    existsSync(path.join(cwd, 'src', 'tools', 'dispatcher.ts'));
+  if (isHarnessRepo) {
+    const safeDefault = path.join(os.homedir(), 'hermes-workspace');
+    if (!existsSync(safeDefault)) {
+      mkdirSync(safeDefault, { recursive: true });
+    }
+    console.log(`⚠️  Workspace isolation: cwd is the harness repo — redirecting to ${safeDefault}`);
+    console.log(`   Set HARNESS_PROJECT_DIR to override (e.g. your app folder).`);
+    return safeDefault;
+  }
+  return cwd;
+}
+
+const PROJECT_DIR = resolveProjectDir();
 const LOCAL_HOST = process.env.HOST ?? '127.0.0.1';
 const API_AUTH_TOKEN = (process.env.HARNESS_API_AUTH_TOKEN ?? '').trim();
 const HISTORY_DIR = path.join(PROJECT_DIR, '.harness', 'chat-history');
