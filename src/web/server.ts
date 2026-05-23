@@ -31,7 +31,7 @@ import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { createTask, deleteTask, getTask, listTasks, recordCheckIn, summarizeTasks, updateTask, type TaskPriority, type TaskStatus } from '../services/taskStore';
 import { groupTasksByColumn, promoteTriageToPlan, withKanbanTag, type KanbanColumn } from '../services/kanbanBridge';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
-import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths } from '../tools/pathResolution';
+import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { invalidateSkillsCache, setSkillsDir } from '../tools/skillTools';
 import { setImportSkillsDir } from '../tools/skillImportTool';
@@ -183,6 +183,7 @@ function resolveProjectDir(): string {
 }
 
 const PROJECT_DIR = resolveProjectDir();
+setProjectRoot(PROJECT_DIR);
 const LOCAL_HOST = process.env.HOST ?? '127.0.0.1';
 const API_AUTH_TOKEN = (process.env.HARNESS_API_AUTH_TOKEN ?? '').trim();
 const HISTORY_DIR = path.join(PROJECT_DIR, '.harness', 'chat-history');

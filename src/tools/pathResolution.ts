@@ -3,6 +3,22 @@ import * as os from 'os';
 import * as path from 'path';
 import { logger } from '../core/logger';
 
+// ─── Project root override ──────────────────────────────────────────
+// When the server detects workspace isolation (HARNESS_PROJECT_DIR or
+// harness-repo redirect), it calls setProjectRoot() so that all path
+// resolution honours the workspace instead of the launch-time cwd.
+let _projectRoot: string | null = null;
+
+/** Override the project root used by all path resolution functions. */
+export function setProjectRoot(dir: string): void {
+  _projectRoot = path.resolve(dir);
+}
+
+/** Return the effective project root (explicit override or process.cwd()). */
+export function getProjectRoot(): string {
+  return _projectRoot ?? process.cwd();
+}
+
 const DEFAULT_UPLOADS_DIRNAME = path.join('.harness', 'uploads');
 
 // ─── Allowed external paths ─────────────────────────────────────────
@@ -33,12 +49,12 @@ export function getAllowedExternalPaths(): string[] {
 export function getUploadsDir(): string {
   const override = process.env.HARNESS_UPLOADS_DIR?.trim();
   if (override) {
-    return path.isAbsolute(override) ? override : path.resolve(process.cwd(), override);
+    return path.isAbsolute(override) ? override : path.resolve(getProjectRoot(), override);
   }
   if (process.env.HARNESS_GLOBAL_UPLOADS === '1') {
     return path.join(os.homedir(), '.harness', 'uploads');
   }
-  return path.join(process.cwd(), DEFAULT_UPLOADS_DIRNAME);
+  return path.join(getProjectRoot(), DEFAULT_UPLOADS_DIRNAME);
 }
 
 const DEFAULT_AGENT_OUTPUT_DIRNAME = 'agent-outputs';
@@ -53,9 +69,9 @@ const DEFAULT_AGENT_OUTPUT_DIRNAME = 'agent-outputs';
 export function getAgentOutputDir(): string {
   const override = process.env.HARNESS_AGENT_OUTPUT_DIR?.trim();
   if (override) {
-    return path.isAbsolute(override) ? override : path.resolve(process.cwd(), override);
+    return path.isAbsolute(override) ? override : path.resolve(getProjectRoot(), override);
   }
-  return path.join(process.cwd(), DEFAULT_AGENT_OUTPUT_DIRNAME);
+  return path.join(getProjectRoot(), DEFAULT_AGENT_OUTPUT_DIRNAME);
 }
 
 /**
@@ -76,7 +92,7 @@ export function maybeRedirectAgentOutput(rawPath: string): string | null {
   if (!basename) return null;
 
   // Never redirect edits to existing project files.
-  const directTarget = path.resolve(process.cwd(), trimmed);
+  const directTarget = path.resolve(getProjectRoot(), trimmed);
   if (fs.existsSync(directTarget)) return null;
 
   const explicitOverride = Boolean(process.env.HARNESS_AGENT_OUTPUT_DIR?.trim());
@@ -181,7 +197,7 @@ export function getFileWriteRedirects(): { rules: FileWriteRedirectRule[]; sourc
   }
   // Fall back to the JSON file managed by the UI Settings panel.
   try {
-    const raw = fs.readFileSync(path.resolve(process.cwd(), REDIRECTS_FILE), 'utf-8');
+    const raw = fs.readFileSync(path.resolve(getProjectRoot(), REDIRECTS_FILE), 'utf-8');
     const parsed = parseRedirectRules(raw);
     if (parsed) {
       cachedRedirects = parsed;
@@ -273,7 +289,7 @@ export function previewFileWriteRedirect(
     if (re.test(normalizedPath) || re.test(basename)) {
       const targetDir = path.isAbsolute(rule.redirect)
         ? rule.redirect
-        : path.resolve(process.cwd(), rule.redirect);
+        : path.resolve(getProjectRoot(), rule.redirect);
       return { rule, destination: path.join(targetDir, basename) };
     }
   }
@@ -292,7 +308,7 @@ function matchRedirectRules(rawPath: string, rules: FileWriteRedirectRule[]): st
     if (re.test(normalizedPath) || re.test(basename)) {
       const targetDir = path.isAbsolute(rule.redirect)
         ? rule.redirect
-        : path.resolve(process.cwd(), rule.redirect);
+        : path.resolve(getProjectRoot(), rule.redirect);
       return path.join(targetDir, basename);
     }
   }
@@ -332,8 +348,9 @@ function recordFallback(requested: string, resolved: string): void {
  */
 export function resolveProjectPath(value: unknown): string | null {
   const raw = String(value ?? '');
-  const resolved = path.resolve(raw);
-  const relative = path.relative(process.cwd(), resolved);
+  const root = getProjectRoot();
+  const resolved = path.resolve(root, raw);
+  const relative = path.relative(root, resolved);
   if (!relative.startsWith('..') && !path.isAbsolute(relative)) return resolved;
   // Check allowed external paths
   for (const allowed of allowedExternalPaths) {
