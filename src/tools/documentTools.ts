@@ -315,13 +315,29 @@ async function writeDocx(filePath: string, title: string, content: Record<string
 
 // ─── PDF ────────────────────────────────────────────────────────────
 
+/** Strip characters outside the Latin-1 range that Helvetica cannot render. */
+function stripUnsupportedChars(text: string): string {
+  // Remove emoji and other characters above U+00FF, replacing with a space so words don't merge.
+  return text.replace(/[^\u0000-\u00FF]+/g, ' ').replace(/  +/g, ' ').trim();
+}
+
 async function writePdf(filePath: string, title: string, content: Record<string, unknown>): Promise<void> {
   const PDFDocument = (await import('pdfkit')).default;
   const body = parseBody(content);
   if (body.length === 0) throw new Error('PDF content must have a "body" or "paragraphs" array');
 
+  const LEFT_MARGIN = 60;
+  const RIGHT_MARGIN = 60;
+  const TOP_MARGIN = 60;
+  const BOTTOM_MARGIN = 60;
+
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 50, info: { Title: title, Author: 'Harness' } });
+    const doc = new PDFDocument({
+      size: 'A4',
+      bufferPages: true,
+      margins: { top: TOP_MARGIN, bottom: BOTTOM_MARGIN, left: LEFT_MARGIN, right: RIGHT_MARGIN },
+      info: { Title: stripUnsupportedChars(title), Author: 'Harness' },
+    });
     const chunks: Buffer[] = [];
     doc.on('data', (chunk: Buffer) => chunks.push(chunk));
     doc.on('end', async () => {
@@ -332,91 +348,147 @@ async function writePdf(filePath: string, title: string, content: Record<string,
     });
     doc.on('error', reject);
 
-    // Title
-    doc.fontSize(20).font('Helvetica-Bold').text(title, { align: 'center' });
-    doc.moveDown();
+    const pageWidth = doc.page.width - LEFT_MARGIN - RIGHT_MARGIN;
+
+    // ── Title block ──────────────────────────────────────────────────
+    doc.fillColor('#1E293B').fontSize(22).font('Helvetica-Bold')
+      .text(stripUnsupportedChars(title), LEFT_MARGIN, TOP_MARGIN, { align: 'center', width: pageWidth });
+    // Rule under title
+    const ruleY = doc.y + 6;
+    doc.moveTo(LEFT_MARGIN, ruleY).lineTo(LEFT_MARGIN + pageWidth, ruleY).strokeColor('#94A3B8').lineWidth(0.75).stroke();
+    doc.fillColor('#000000');
+    doc.moveDown(1.2);
+
+    const resetX = () => { doc.x = LEFT_MARGIN; };
 
     for (const element of body) {
       if (element.type === 'table') {
         const table = element as TableInput;
         const allRows = [...(table.headers ? [table.headers] : []), ...(table.rows ?? [])];
-        if (allRows.length > 0) {
-          const colCount = Math.max(...allRows.map((r) => (Array.isArray(r) ? r.length : 1)));
-          const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-          const colWidth = pageWidth / colCount;
-          const cellPadding = 4;
-          const cellTextWidth = colWidth - cellPadding * 2;
+        if (allRows.length === 0) continue;
 
-          for (let rowIdx = 0; rowIdx < allRows.length; rowIdx++) {
-            const row = allRows[rowIdx];
-            const cells = Array.isArray(row) ? row : [row];
-            const isHeader = rowIdx === 0 && table.headers && table.headers.length > 0;
-            const fontName = isHeader ? 'Helvetica-Bold' : 'Helvetica';
-            const fontSize = 9;
+        const colCount = Math.max(...allRows.map((r) => (Array.isArray(r) ? r.length : 1)));
+        // Two-column tables: give the first column 30% so content-heavy second columns breathe.
+        const colWidths: number[] = colCount === 2
+          ? [pageWidth * 0.30, pageWidth * 0.70]
+          : Array(colCount).fill(pageWidth / colCount);
+        const cellPadding = 5;
 
-            // Measure the height each cell needs so the row can expand.
-            let maxCellHeight = isHeader ? 16 : 14;
-            const cellTexts = [];
-            for (let colIdx = 0; colIdx < colCount; colIdx++) {
-              const cellText = String(cells[colIdx] ?? '');
-              cellTexts.push(cellText);
-              const textHeight = doc.font(fontName).fontSize(fontSize).heightOfString(cellText, { width: cellTextWidth });
-              maxCellHeight = Math.max(maxCellHeight, textHeight + cellPadding * 2);
-            }
-            const rowHeight = Math.ceil(maxCellHeight);
+        for (let rowIdx = 0; rowIdx < allRows.length; rowIdx++) {
+          const row = allRows[rowIdx];
+          const cells = Array.isArray(row) ? row : [row];
+          const isHeader = rowIdx === 0 && table.headers && table.headers.length > 0;
+          const isAltRow = !isHeader && rowIdx % 2 === 0;
+          const fontName = isHeader ? 'Helvetica-Bold' : 'Helvetica';
+          const fontSize = isHeader ? 9 : 9;
 
-            // Page break check: if row won't fit, start a new page.
-            const bottomMargin = doc.page.margins.bottom ?? 50;
-            if (doc.y + rowHeight > doc.page.height - bottomMargin) {
-              doc.addPage();
-            }
-
-            const y = doc.y;
-            for (let colIdx = 0; colIdx < colCount; colIdx++) {
-              const x = doc.page.margins.left + colIdx * colWidth;
-              doc.save();
-              if (isHeader) {
-                doc.rect(x, y, colWidth, rowHeight).fill('#E2E8F0').stroke('#CBD5E1');
-                doc.fillColor('#000000').fontSize(fontSize).font('Helvetica-Bold');
-              } else {
-                doc.rect(x, y, colWidth, rowHeight).stroke('#E2E8F0');
-                doc.fontSize(fontSize).font('Helvetica');
-              }
-              doc.text(cellTexts[colIdx], x + cellPadding, y + cellPadding, { width: cellTextWidth });
-              doc.restore();
-            }
-            doc.y = y + rowHeight;
+          // Measure required row height across all cells.
+          let maxCellHeight = isHeader ? 18 : 14;
+          const cellTexts: string[] = [];
+          for (let colIdx = 0; colIdx < colCount; colIdx++) {
+            const raw = String(cells[colIdx] ?? '');
+            const cellText = stripUnsupportedChars(raw);
+            cellTexts.push(cellText);
+            const textHeight = doc.font(fontName).fontSize(fontSize)
+              .heightOfString(cellText, { width: colWidths[colIdx] - cellPadding * 2 });
+            maxCellHeight = Math.max(maxCellHeight, textHeight + cellPadding * 2);
           }
-          doc.moveDown(0.5);
+          const rowHeight = Math.ceil(maxCellHeight);
+
+          const bottomMargin = doc.page.margins.bottom ?? BOTTOM_MARGIN;
+          if (doc.y + rowHeight > doc.page.height - bottomMargin) {
+            doc.addPage();
+          }
+
+          const y = doc.y;
+          let xCursor = LEFT_MARGIN;
+          for (let colIdx = 0; colIdx < colCount; colIdx++) {
+            const cw = colWidths[colIdx];
+            doc.save();
+            if (isHeader) {
+              doc.rect(xCursor, y, cw, rowHeight).fill('#334155').stroke('#1E293B');
+              doc.fillColor('#FFFFFF').fontSize(fontSize).font('Helvetica-Bold');
+            } else if (isAltRow) {
+              doc.rect(xCursor, y, cw, rowHeight).fill('#F8FAFC').stroke('#E2E8F0');
+              doc.fillColor('#000000').fontSize(fontSize).font('Helvetica');
+            } else {
+              doc.rect(xCursor, y, cw, rowHeight).fill('#FFFFFF').stroke('#E2E8F0');
+              doc.fillColor('#000000').fontSize(fontSize).font('Helvetica');
+            }
+            doc.text(cellTexts[colIdx], xCursor + cellPadding, y + cellPadding,
+              { width: cw - cellPadding * 2, lineGap: 1.5 });
+            doc.restore();
+            xCursor += cw;
+          }
+          doc.y = y + rowHeight;
         }
+        // Reset cursor to left margin and add spacing after table.
+        resetX();
+        doc.moveDown(0.8);
+
       } else {
         const para = element as ParagraphInput;
-        const text = String(para.text ?? '');
+        const text = stripUnsupportedChars(String(para.text ?? ''));
         if (!text) continue;
-        // Page break check for headings — keep heading with at least some
-        // following content by requiring extra space before a page break.
-        const bottomMargin = doc.page.margins.bottom ?? 50;
-        if (para.heading && doc.y > doc.page.height - bottomMargin - 60) {
-          doc.addPage();
-        }
+
+        resetX();
+        const bottomMargin = doc.page.margins.bottom ?? BOTTOM_MARGIN;
+
         if (para.heading === 1) {
+          if (doc.y > doc.page.height - bottomMargin - 80) doc.addPage();
+          doc.moveDown(0.8);
+          // Heading 1: dark background band
+          const hY = doc.y;
+          doc.rect(LEFT_MARGIN, hY, pageWidth, 26).fill('#1E293B');
+          doc.fillColor('#FFFFFF').fontSize(15).font('Helvetica-Bold')
+            .text(text, LEFT_MARGIN + 8, hY + 6, { width: pageWidth - 16 });
+          doc.fillColor('#000000');
           doc.moveDown(0.6);
-          doc.fontSize(18).font('Helvetica-Bold').text(text);
         } else if (para.heading === 2) {
+          if (doc.y > doc.page.height - bottomMargin - 60) doc.addPage();
+          doc.moveDown(0.6);
+          doc.fillColor('#1E40AF').fontSize(13).font('Helvetica-Bold').text(text);
+          // Underline
+          const ulY = doc.y + 1;
+          doc.moveTo(LEFT_MARGIN, ulY).lineTo(LEFT_MARGIN + pageWidth * 0.4, ulY)
+            .strokeColor('#3B82F6').lineWidth(0.5).stroke();
+          doc.fillColor('#000000');
           doc.moveDown(0.4);
-          doc.fontSize(15).font('Helvetica-Bold').text(text);
         } else if (para.heading === 3) {
+          if (doc.y > doc.page.height - bottomMargin - 40) doc.addPage();
+          doc.moveDown(0.4);
+          doc.fillColor('#374151').fontSize(11).font('Helvetica-Bold').text(text);
+          doc.fillColor('#000000');
           doc.moveDown(0.3);
-          doc.fontSize(13).font('Helvetica-Bold').text(text);
         } else if (para.bold) {
-          doc.fontSize(11).font('Helvetica-Bold').text(text);
+          doc.fontSize(11).font('Helvetica-Bold').text(text, { lineGap: 2 });
+          doc.moveDown(0.3);
         } else if (para.italic) {
-          doc.fontSize(11).font('Helvetica-Oblique').text(text);
+          doc.fontSize(10).font('Helvetica-Oblique').fillColor('#374151').text(text, { lineGap: 2 });
+          doc.fillColor('#000000');
+          doc.moveDown(0.3);
+        } else if (text.startsWith('- ')) {
+          // List item: indent + bullet
+          const bulletText = '\u2022  ' + text.slice(2);
+          doc.fontSize(10.5).font('Helvetica').text(bulletText,
+            LEFT_MARGIN + 12, doc.y, { width: pageWidth - 12, lineGap: 2 });
+          doc.moveDown(0.2);
         } else {
-          doc.fontSize(11).font('Helvetica').text(text, { lineGap: 2 });
+          doc.fontSize(10.5).font('Helvetica').text(text,
+            LEFT_MARGIN, doc.y, { width: pageWidth, lineGap: 3, paragraphGap: 2 });
+          doc.moveDown(0.35);
         }
-        doc.moveDown(0.3);
       }
+    }
+
+    // Footer: page numbers
+    const range = doc.bufferedPageRange();
+    for (let i = 0; i < range.count; i++) {
+      doc.switchToPage(range.start + i);
+      doc.fontSize(8).fillColor('#94A3B8').font('Helvetica')
+        .text(`Page ${i + 1} of ${range.count}`,
+          LEFT_MARGIN, doc.page.height - BOTTOM_MARGIN + 20,
+          { width: pageWidth, align: 'center' });
     }
 
     doc.end();
