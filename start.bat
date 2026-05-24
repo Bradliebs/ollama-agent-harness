@@ -103,7 +103,7 @@ if defined SAVED_WORKSPACE (
 if not exist "!WORKSPACE!" mkdir "!WORKSPACE!"
 set "HARNESS_PROJECT_DIR=!WORKSPACE!"
 :: Save for next time
-echo !WORKSPACE!> "%WORKSPACE_CONFIG%"
+powershell -Command "Set-Content -Path '%WORKSPACE_CONFIG%' -Value '!WORKSPACE!' -NoNewline -Encoding UTF8"
 echo   [OK] Workspace: !HARNESS_PROJECT_DIR!
 
 :WORKSPACE_OK

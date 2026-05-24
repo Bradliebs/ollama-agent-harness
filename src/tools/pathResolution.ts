@@ -29,7 +29,12 @@ let allowedExternalPaths: string[] = [];
 export function setAllowedExternalPaths(paths: string[]): void {
   allowedExternalPaths = paths
     .map((p) => path.resolve(p.trim()))
-    .filter((p) => p.length > 3); // reject empty or root-level
+    .filter((p) => {
+      const segments = p.split(path.sep).filter(Boolean);
+      // Require at least 2 path segments to prevent near-root paths
+      // e.g. reject C:\, C:\x but allow C:\Users\..., /home/user/...
+      return segments.length >= 2;
+    });
 }
 
 export function getAllowedExternalPaths(): string[] {
@@ -290,6 +295,10 @@ export function previewFileWriteRedirect(
       const targetDir = path.isAbsolute(rule.redirect)
         ? rule.redirect
         : path.resolve(getProjectRoot(), rule.redirect);
+      // Safety: reject redirect rules that escape workspace and allowed paths
+      const safeTargetDir = isInsideOrEqualPath(targetDir, getProjectRoot()) ||
+        allowedExternalPaths.some((p) => isInsideOrEqualPath(targetDir, p));
+      if (!safeTargetDir) continue;  // skip unsafe rule silently
       return { rule, destination: path.join(targetDir, basename) };
     }
   }
@@ -309,6 +318,10 @@ function matchRedirectRules(rawPath: string, rules: FileWriteRedirectRule[]): st
       const targetDir = path.isAbsolute(rule.redirect)
         ? rule.redirect
         : path.resolve(getProjectRoot(), rule.redirect);
+      // Safety: reject redirect rules that escape workspace and allowed paths
+      const safeTargetDir = isInsideOrEqualPath(targetDir, getProjectRoot()) ||
+        allowedExternalPaths.some((p) => isInsideOrEqualPath(targetDir, p));
+      if (!safeTargetDir) return null;  // skip unsafe rule silently
       return path.join(targetDir, basename);
     }
   }
