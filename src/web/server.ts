@@ -109,6 +109,7 @@ import { scanForInjection, sanitizeMessage } from '../safety/injectionDefence';
 import { recordSample as recordCalibrationSample, generateReport as generateCalibrationReport, generateAllReports as generateAllCalibrationReports } from '../eval/confidenceCalibration';
 import { saveGoldenTrace, loadGoldenTrace, listGoldenTraces, deleteGoldenTrace, compareWithGolden, captureFromRun, renderDriftReport } from '../eval/goldenTraces';
 import { savePromptVersion, loadRegistry, listRegistries, getActivePrompt, setActiveVersion, rollback as rollbackPrompt, diffVersions, renderPromptHistory } from '../services/versionedPrompts';
+import { setCcmemUrl } from '../services/conceptMemoryClient';
 import { validateStructuredOutput, parseAndValidate, detectSchema, BUILTIN_SCHEMAS } from '../core/structuredOutputValidator';
 import { buildRepoGraph, analyzeImpact, summarizeRepo, saveRepoGraph, loadRepoGraph } from '../core/codeIntelligence';
 import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
@@ -2205,8 +2206,6 @@ app.post('/api/settings', async (req, res) => {
   if (req.body.ccmemUrl !== undefined) {
     const parsed = typeof req.body.ccmemUrl === 'string' ? req.body.ccmemUrl.trim() : '';
     ccmemUrl = parsed;
-    // Keep the client in sync immediately so new writes go to the right URL.
-    const { setCcmemUrl } = await import('../services/conceptMemoryClient');
     setCcmemUrl(ccmemUrl || 'http://localhost:8765');
   }
   await saveSettingsToDisk();
@@ -10075,6 +10074,7 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   }
   if (settings.ccmemUrl !== undefined) {
     ccmemUrl = String(settings.ccmemUrl).trim().slice(0, 500);
+    setCcmemUrl(ccmemUrl || 'http://localhost:8765');
   }
 }
 
