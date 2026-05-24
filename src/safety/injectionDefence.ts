@@ -208,6 +208,23 @@ const BUILTIN_PATTERNS: InjectionPattern[] = [
 // ─── Scanner ─────────────────────────────────────────────────────────
 
 /**
+ * Normalize a message to reduce unicode bypass techniques:
+ * - Strips zero-width and invisible characters
+ * - Normalizes unicode to NFC form
+ * - Collapses repeated whitespace
+ */
+function normalizeForScanning(message: string): string {
+  // Remove zero-width and invisible unicode chars
+  // eslint-disable-next-line no-control-regex
+  let normalized = message.replace(/[\u200B-\u200D\u2060\uFEFF\u00AD\u034F\u115F\u1160\u17B4\u17B5\u3164\uFFA0]/g, '');
+  // Normalize unicode (handles composed/decomposed forms)
+  normalized = normalized.normalize('NFC');
+  // Collapse multiple spaces
+  normalized = normalized.replace(/\s+/g, ' ');
+  return normalized;
+}
+
+/**
  * Scan a user message for prompt injection patterns.
  * Returns a result object with all matches, flags, and a summary.
  */
@@ -222,12 +239,16 @@ export function scanForInjection(
     return { scanned: false, flagged: false, blocked: false, matches: [], summary: '' };
   }
 
+  // Normalize before scanning to resist unicode bypass techniques
+  const normalizedMessage = normalizeForScanning(message);
+
   const patterns = [...BUILTIN_PATTERNS, ...(options.extraPatterns ?? [])];
   const matches: InjectionMatch[] = [];
 
   for (const { id, category, pattern, confidence } of patterns) {
-    if (pattern.global) pattern.lastIndex = 0;
-    const m = pattern.exec(message);
+    // Clone the regex to avoid mutating shared lastIndex on module-level constants
+    const re = new RegExp(pattern.source, pattern.flags);
+    const m = re.exec(normalizedMessage);
     if (m) {
       matches.push({
         patternId: id,

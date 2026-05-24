@@ -64,11 +64,28 @@ function modelFilePath(projectDir: string, model: string): string {
 
 // ─── Core functions ──────────────────────────────────────────────────
 
+const MAX_SAMPLES_PER_MODEL = 10_000;
+
 /** Append a sample to `<projectDir>/.harness/calibration/<model>.jsonl`. */
 export async function recordSample(projectDir: string, sample: CalibrationSample): Promise<void> {
   const dir = calibrationDir(projectDir);
   await fs.promises.mkdir(dir, { recursive: true });
   const filePath = modelFilePath(projectDir, sample.model);
+
+  // Check current line count to avoid unbounded growth
+  try {
+    const existing = await fs.promises.readFile(filePath, 'utf-8');
+    const lines = existing.split('\n').filter((l) => l.trim().length > 0);
+    if (lines.length >= MAX_SAMPLES_PER_MODEL) {
+      // Keep the most recent MAX_SAMPLES_PER_MODEL - 1 lines + append new one
+      const trimmed = lines.slice(lines.length - (MAX_SAMPLES_PER_MODEL - 1)).join('\n');
+      await fs.promises.writeFile(filePath, trimmed + '\n' + JSON.stringify(sample) + '\n', 'utf-8');
+      return;
+    }
+  } catch {
+    // File doesn't exist yet — that's fine, just append below
+  }
+
   await fs.promises.appendFile(filePath, JSON.stringify(sample) + '\n', 'utf-8');
 }
 

@@ -77,8 +77,10 @@ describe('ReadBeforeWriteGate', () => {
 
   it('gateTool records reads and allows subsequent writes', () => {
     const gate = new ReadBeforeWriteGate({ mode: 'enforce' });
-    // Simulate reading via gateTool
-    gate.gateTool('file_read', { path: '/project/src/risk.ts' });
+    // Simulate reading via gateTool then confirming the read
+    const gateResult = gate.gateTool('file_read', { path: '/project/src/risk.ts' });
+    expect(gateResult.pendingReadPath).toBeDefined();
+    gate.confirmRead(gateResult.pendingReadPath!);
     // Now write should pass
     const result = gate.gateTool('file_edit', { path: '/project/src/risk.ts' });
     expect(result.allowed).toBe(true);

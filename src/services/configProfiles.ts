@@ -262,7 +262,15 @@ export async function loadCustomProfiles(projectDir: string): Promise<ConfigProf
     const raw = await fs.readFile(filePath, 'utf8');
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isValidProfile);
+    const profiles = parsed.filter(isValidProfile);
+    // Log warnings for dangerous profiles
+    for (const profile of profiles) {
+      const warnings = auditCustomProfile(profile);
+      for (const warning of warnings) {
+        console.warn(`[configProfiles] ⚠️  ${warning}`);
+      }
+    }
+    return profiles;
   } catch {
     return [];
   }
@@ -323,4 +331,27 @@ function isValidProfile(obj: unknown): obj is ConfigProfile {
     typeof (obj as ConfigProfile).name === 'string' &&
     typeof (obj as ConfigProfile).description === 'string'
   );
+}
+
+const DANGEROUS_TOOLS = new Set(['bash', 'shell', 'execute', 'run_command', 'file_write', 'file_edit', 'make_directory']);
+
+/**
+ * Returns a list of warnings for a custom profile that grants dangerous tools.
+ * Built-in profiles are trusted and exempt.
+ */
+export function auditCustomProfile(profile: ConfigProfile): string[] {
+  const warnings: string[] = [];
+  if (profile.allowedTools && profile.allowedTools.length > 0) {
+    const dangerous = profile.allowedTools.filter((t) => DANGEROUS_TOOLS.has(t));
+    if (dangerous.length > 0) {
+      warnings.push(`Profile "${profile.name}" explicitly allows dangerous tools: ${dangerous.join(', ')}. Review before use.`);
+    }
+  }
+  if (profile.blockedTools && profile.blockedTools.length > 0) {
+    // Warn if blockedTools is empty (unblocks everything) when allowedTools is also unset
+    if (profile.blockedTools.length === 0 && !profile.allowedTools) {
+      warnings.push(`Profile "${profile.name}" has empty blockedTools — all tools are accessible.`);
+    }
+  }
+  return warnings;
 }

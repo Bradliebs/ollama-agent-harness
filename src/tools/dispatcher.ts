@@ -185,6 +185,7 @@ export class ToolDispatcher {
     }
 
     // Read-before-write gate (after permission check, before execution)
+    let pendingReadPath: string | undefined;
     if (options.readBeforeWriteGate) {
       const gateResult = options.readBeforeWriteGate.gateTool(call.name, call.input);
       if (!gateResult.allowed) {
@@ -198,6 +199,7 @@ export class ToolDispatcher {
           },
         };
       }
+      pendingReadPath = gateResult.pendingReadPath;
     }
 
     // Execute with error boundary
@@ -207,6 +209,10 @@ export class ToolDispatcher {
       const result = await tool.execute(call.input);
       const durationMs = Date.now() - startTime;
       toolSpan?.end(result.success ? 'ok' : 'error', { durationMs, success: result.success });
+      // Confirm deferred read after successful execution
+      if (result.success && pendingReadPath && options.readBeforeWriteGate) {
+        options.readBeforeWriteGate.confirmRead(pendingReadPath);
+      }
       if (options.trackUsage) {
         const recorder = options.learningRecorder;
         try {

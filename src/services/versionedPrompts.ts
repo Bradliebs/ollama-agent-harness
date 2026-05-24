@@ -5,6 +5,7 @@
 // at <projectDir>/.harness/prompts/<name>.json. Versions are append-only
 // and auto-incremented.
 
+import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -25,6 +26,8 @@ export interface PromptVersion {
   changelog?: string;
   /** Optional tags */
   tags?: string[];
+  /** HMAC-SHA256 of version+label+content+createdAt. Detects file tampering. */
+  signature?: string;
 }
 
 export interface PromptDiff {
@@ -61,6 +64,24 @@ function promptsDir(projectDir: string): string {
 
 function registryPath(projectDir: string, name: string): string {
   return path.join(promptsDir(projectDir), `${sanitizeName(name)}.json`);
+}
+
+// ─── HMAC integrity ─────────────────────────────────────────────────
+
+// Use a fixed key derived from the harness identity (not a secret — just tamper detection)
+const HMAC_KEY = 'harness-prompt-integrity-v1';
+
+function signVersion(v: PromptVersion): string {
+  return crypto
+    .createHmac('sha256', HMAC_KEY)
+    .update(`${v.version}:${v.label}:${v.content}:${v.createdAt}`)
+    .digest('hex')
+    .slice(0, 32);
+}
+
+function verifyVersion(v: PromptVersion): boolean {
+  if (!v.signature) return true; // legacy versions without signature pass through
+  return v.signature === signVersion(v);
 }
 
 // ─── Pure helpers ───────────────────────────────────────────────────
@@ -127,7 +148,18 @@ export async function loadRegistry(
   const filePath = registryPath(projectDir, name);
   try {
     const raw = await fs.readFile(filePath, 'utf-8');
-    return JSON.parse(raw) as PromptRegistry;
+    const parsed = JSON.parse(raw) as PromptRegistry;
+    if (parsed.versions) {
+      const validVersions = parsed.versions.filter((v: PromptVersion) => {
+        if (!verifyVersion(v)) {
+          console.warn(`[versionedPrompts] Version ${v.version} of "${parsed.name}" failed integrity check — skipping`);
+          return false;
+        }
+        return true;
+      });
+      parsed.versions = validVersions;
+    }
+    return parsed;
   } catch {
     return undefined;
   }
@@ -178,7 +210,7 @@ export async function savePromptVersion(
       ? registry.versions[registry.versions.length - 1].version + 1
       : 1;
 
-  const version: PromptVersion = {
+  const newVersion: PromptVersion = {
     version: nextVersion,
     label: opts?.label ?? `v${nextVersion}`,
     content,
@@ -187,12 +219,13 @@ export async function savePromptVersion(
     ...(opts?.changelog !== undefined && { changelog: opts.changelog }),
     ...(opts?.tags !== undefined && { tags: opts.tags }),
   };
+  const signed: PromptVersion = { ...newVersion, signature: signVersion(newVersion) };
 
-  registry.versions.push(version);
+  registry.versions.push(signed);
   registry.activeVersion = nextVersion;
 
   await saveRegistry(projectDir, registry);
-  return version;
+  return signed;
 }
 
 export async function getActivePrompt(

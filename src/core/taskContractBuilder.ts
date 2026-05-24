@@ -52,15 +52,19 @@ const CONSTRAINT_PATTERNS: Array<{ pattern: RegExp; template: (m: RegExpMatchArr
   },
 ];
 
+const MAX_CONSTRAINTS = 20;
+
 /** Extract explicit constraints from a natural-language message. */
 export function extractConstraints(message: string): string[] {
   const found: string[] = [];
   const seen = new Set<string>();
 
   for (const { pattern, template } of CONSTRAINT_PATTERNS) {
+    if (found.length >= MAX_CONSTRAINTS) break;
     pattern.lastIndex = 0;
     let m: RegExpMatchArray | null;
     while ((m = pattern.exec(message)) !== null) {
+      if (found.length >= MAX_CONSTRAINTS) break;
       const text = template(m).replace(/\s+/g, ' ').trim();
       const key = text.toLowerCase();
       if (!seen.has(key) && text.length >= 6) {

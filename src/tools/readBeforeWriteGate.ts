@@ -156,20 +156,16 @@ export class ReadBeforeWriteGate {
    *
    * Returns { allowed, reason } compatible with ToolDispatcher permissionCheck.
    */
-  gateTool(toolName: string, input: Record<string, unknown>): { allowed: boolean; reason?: string } {
+  gateTool(toolName: string, input: Record<string, unknown>): { allowed: boolean; reason?: string; pendingReadPath?: string } {
     if (this.mode === 'off') return { allowed: true };
 
     const filePath = typeof input.path === 'string' ? input.path : null;
     if (!filePath) return { allowed: true };
 
     if (READ_TOOLS.has(toolName)) {
-      // Record the read so subsequent writes to the same path are allowed.
-      // Note: we record optimistically here (before execution). The caller
-      // should call recordRead() after a *successful* read if they need
-      // strict confirmation. For most use-cases, optimistic recording is
-      // fine because a failed read is not a useful prior.
-      this.recordRead(filePath);
-      return { allowed: true };
+      // Return the path for the caller to confirm after successful execution.
+      // Do NOT record yet — a failed read should not unlock writes.
+      return { allowed: true, pendingReadPath: filePath };
     }
 
     if (WRITE_TOOLS.has(toolName)) {
@@ -180,6 +176,11 @@ export class ReadBeforeWriteGate {
     }
 
     return { allowed: true };
+  }
+
+  /** Confirm that a read tool executed successfully. Call after successful execution. */
+  confirmRead(filePath: string): void {
+    this.recordRead(filePath);
   }
 
   /** How many distinct paths have been read. */

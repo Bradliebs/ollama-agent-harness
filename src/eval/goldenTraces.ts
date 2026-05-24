@@ -30,6 +30,12 @@ export interface GoldenTrace {
   tags: string[];
   /** Optional notes about why this is considered golden */
   notes?: string;
+  /** Optional custom weights for drift comparison. Defaults: output 0.5, tools 0.3, files 0.2. */
+  similarityWeights?: {
+    output: number;
+    tools: number;
+    files: number;
+  };
 }
 
 export type DriftSeverity = 'none' | 'minor' | 'major' | 'critical';
@@ -171,7 +177,8 @@ export function compareWithGolden(
   const toolSim = orderedSimilarity(trace.expectedToolCalls, actual.toolCalls);
   const fileSim = setSimilarity(trace.expectedFiles, actual.files);
 
-  const similarity = outputSim * 0.5 + toolSim * 0.3 + fileSim * 0.2;
+  const w = trace.similarityWeights ?? { output: 0.5, tools: 0.3, files: 0.2 };
+  const similarity = outputSim * w.output + toolSim * w.tools + fileSim * w.files;
 
   const diffs: DriftDiff[] = [];
 

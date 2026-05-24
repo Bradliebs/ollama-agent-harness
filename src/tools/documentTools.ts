@@ -339,7 +339,17 @@ async function writePdf(filePath: string, title: string, content: Record<string,
       info: { Title: stripUnsupportedChars(title), Author: 'Harness' },
     });
     const chunks: Buffer[] = [];
-    doc.on('data', (chunk: Buffer) => chunks.push(chunk));
+    let totalPdfBytes = 0;
+    const MAX_PDF_BYTES = 10 * 1024 * 1024; // 10 MB
+    doc.on('data', (chunk: Buffer) => {
+      totalPdfBytes += chunk.length;
+      if (totalPdfBytes > MAX_PDF_BYTES) {
+        doc.end();
+        reject(new Error(`PDF generation aborted: output exceeded ${MAX_PDF_BYTES} byte limit`));
+        return;
+      }
+      chunks.push(chunk);
+    });
     doc.on('end', async () => {
       try {
         await fs.writeFile(filePath, Buffer.concat(chunks));

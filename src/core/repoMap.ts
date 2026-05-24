@@ -12,6 +12,7 @@
 // Persisted to <projectDir>/.harness/repo-map.json so repeated runs do not
 // re-scan unless the map is stale (default staleness threshold: 24 h).
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
@@ -46,6 +47,8 @@ export interface RepoMap {
   configFiles: string[];
   /** ISO 8601 timestamp when this map was built. */
   builtAt: string;
+  /** SHA-256 of the sorted file list — used to detect tampering with the stored map. */
+  contentHash?: string;
   /**
    * Optional hand-written notes appended by the caller.
    * Surfaced verbatim in the system prompt block.
@@ -214,6 +217,9 @@ export async function buildRepoMap(projectDir: string): Promise<RepoMap> {
     fs.existsSync(path.join(root, p)) || p.includes('*')
   );
 
+  const fileListForHash = [...configFiles].sort().join('\n');
+  const contentHash = crypto.createHash('sha256').update(fileListForHash).digest('hex').slice(0, 16);
+
   return {
     version: SCHEMA_VERSION,
     root,
@@ -227,6 +233,7 @@ export async function buildRepoMap(projectDir: string): Promise<RepoMap> {
     keyDirs: keyDirs.sort(),
     configFiles: configFiles.sort(),
     builtAt: new Date().toISOString(),
+    contentHash,
   };
 }
 
@@ -250,6 +257,14 @@ export async function loadRepoMap(projectDir: string): Promise<RepoMap | undefin
     const raw = await fsp.readFile(filePath, 'utf8');
     const parsed = JSON.parse(raw) as RepoMap;
     if (parsed.version !== SCHEMA_VERSION) return undefined;
+    // Verify content hash if present
+    if (parsed.contentHash) {
+      const fileListForHash = [...(parsed.configFiles ?? [])].sort().join('\n');
+      const expected = crypto.createHash('sha256').update(fileListForHash).digest('hex').slice(0, 16);
+      if (expected !== parsed.contentHash) {
+        return undefined; // tampered — force rebuild
+      }
+    }
     return parsed;
   } catch {
     return undefined;
