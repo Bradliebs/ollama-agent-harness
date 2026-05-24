@@ -3,7 +3,7 @@ import { BashTool } from './bashTool';
 import { FileEditTool, FileReadTool, FileWriteTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool, MakeDirectoryTool, AddWorkspacePathTool } from './fileTools';
 import { GrepTool } from './grepTool';
 import { AnalyzePatternsTool, ConsolidateTool, EvolveTool, ImproveSkillTool, PromotePatternTool, ReflectTool } from './learningTools';
-import { MemoryReadTool, MemoryWriteTool } from './memoryTools';
+import { MemoryReadTool, MemoryWriteTool, SemanticRecallTool } from './memoryTools';
 import { AudioTranscribeTool, ImageAnalyzeTool } from './multimodalTools';
 import { PdfExtractTablesTool, PdfMetadataTool, PdfReadTool, PdfRenderPageTool } from './pdfTool';
 import { CuratorPreviewTool } from './curatorTools';
@@ -107,6 +107,7 @@ export const BUILTIN_TOOL_ENTRIES: ToolRegistryEntry[] = [
   { tool: CreateSkillTool, toolset: 'skills', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'skills', canDryRun: false },
   { tool: MemoryWriteTool, toolset: 'memory', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false },
   { tool: MemoryReadTool, toolset: 'memory', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false },
+  { tool: SemanticRecallTool, toolset: 'memory', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false },
   { tool: ReflectTool, toolset: 'learning', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'learning', canDryRun: false },
   { tool: AnalyzePatternsTool, toolset: 'learning', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'learning', canDryRun: false },
   { tool: PromotePatternTool, toolset: 'learning', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'learning', canDryRun: false },

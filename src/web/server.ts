@@ -338,6 +338,9 @@ interface WebSettings {
   whatsappAccessToken: string;
   whatsappPhoneNumberId: string;
   whatsappAllowedRecipients: string;
+  /** URL of the Concept Cells memory service (ccmem). Empty = disabled.
+   *  Default: http://localhost:8765 (override via HARNESS_CCMEM_URL). */
+  ccmemUrl: string;
 }
 
 interface ConnectorSecretStatus {
@@ -419,7 +422,7 @@ interface WebRuntimeDeps {
   createSession(projectDir: string, model: string): SessionStorage;
   startNewSession(): void;
   getEvolvedPrompt(basePrompt: string): Promise<string>;
-  assembleSystemContext(input: { systemPrompt: string; projectDir: string; skillsDir: string; recallProjectDir?: string; recallQuery?: string; ragProjectDir?: string; ragQuery?: string; ragOllamaHost?: string; palaceProjectDir?: string; sessionSearchProjectDir?: string; sessionSearchQuery?: string }): Promise<string>;
+  assembleSystemContext(input: { systemPrompt: string; projectDir: string; skillsDir: string; recallProjectDir?: string; recallQuery?: string; ragProjectDir?: string; ragQuery?: string; ragOllamaHost?: string; palaceProjectDir?: string; sessionSearchProjectDir?: string; sessionSearchQuery?: string; ccmemUrl?: string; ccmemQuery?: string; ccmemTopK?: number }): Promise<string>;
   runQueryLoop: QueryLoopRunner;
   onSessionEnd(): Promise<{ reflection: { insights: string[] }; newPatterns: unknown[] }>;
   rebuildSemanticMemory(projectDir: string): Promise<unknown[]>;
@@ -464,6 +467,7 @@ let slackWebhookUrl: string = process.env.HARNESS_SLACK_WEBHOOK_URL ?? '';
 let whatsappAccessToken: string = process.env.HARNESS_WHATSAPP_ACCESS_TOKEN ?? '';
 let whatsappPhoneNumberId: string = process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID ?? '';
 let whatsappAllowedRecipients: string = process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS ?? '';
+let ccmemUrl: string = process.env.HARNESS_CCMEM_URL?.trim() || '';
 let outputValidation: OutputValidationSettings = { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: true };
 let customOutputValidationProfiles: CustomOutputValidationProfile[] = [];
 let modelCatalog: ModelCatalogSettings = { url: '', ttlHours: 24 };
@@ -2197,6 +2201,13 @@ app.post('/api/settings', async (req, res) => {
     else delete process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID;
     if (whatsappAllowedRecipients) process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS = whatsappAllowedRecipients;
     else delete process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS;
+  }
+  if (req.body.ccmemUrl !== undefined) {
+    const parsed = typeof req.body.ccmemUrl === 'string' ? req.body.ccmemUrl.trim() : '';
+    ccmemUrl = parsed;
+    // Keep the client in sync immediately so new writes go to the right URL.
+    const { setCcmemUrl } = await import('../services/conceptMemoryClient');
+    setCcmemUrl(ccmemUrl || 'http://localhost:8765');
   }
   await saveSettingsToDisk();
   logger.info('Settings', 'Updated', {
@@ -7010,7 +7021,7 @@ app.post('/api/chat', async (req, res) => {
   // Jarvis: pass the latest user message as the recall query so the
   // knowledge graph can inject relevant entity/fact hits automatically.
   const recallQuery = typeof messageText === 'string' ? messageText.slice(0, 240) : undefined;
-  const baseSystemPrompt = await webRuntime.assembleSystemContext({ systemPrompt: withRoutingPolicy(evolvedPrompt), projectDir, skillsDir: SKILLS_DIR, recallProjectDir: PROJECT_DIR, recallQuery, ragProjectDir: PROJECT_DIR, ragQuery: recallQuery, ragOllamaHost: ollamaHost, palaceProjectDir: PROJECT_DIR, sessionSearchProjectDir: PROJECT_DIR, sessionSearchQuery: recallQuery });
+  const baseSystemPrompt = await webRuntime.assembleSystemContext({ systemPrompt: withRoutingPolicy(evolvedPrompt), projectDir, skillsDir: SKILLS_DIR, recallProjectDir: PROJECT_DIR, recallQuery, ragProjectDir: PROJECT_DIR, ragQuery: recallQuery, ragOllamaHost: ollamaHost, palaceProjectDir: PROJECT_DIR, sessionSearchProjectDir: PROJECT_DIR, sessionSearchQuery: recallQuery, ccmemUrl: ccmemUrl || undefined, ccmemQuery: recallQuery });
   const attachmentsBlock = await buildAttachmentsContextBlock(req.body?.attachments);
   const explicitSkill = messageText ? await loadExplicitSkillContext(messageText) : { context: '' };
 
@@ -9752,6 +9763,7 @@ function getCurrentSettings(): WebSettings {
     whatsappAccessToken: '',
     whatsappPhoneNumberId: whatsappPhoneNumberId || process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID || '',
     whatsappAllowedRecipients: whatsappAllowedRecipients || process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS || '',
+    ccmemUrl,
   };
 }
 
@@ -10060,6 +10072,9 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
     whatsappAllowedRecipients = sanitized.allowedRecipients;
     if (whatsappPhoneNumberId) process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID = whatsappPhoneNumberId;
     if (whatsappAllowedRecipients) process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS = whatsappAllowedRecipients;
+  }
+  if (settings.ccmemUrl !== undefined) {
+    ccmemUrl = String(settings.ccmemUrl).trim().slice(0, 500);
   }
 }
 

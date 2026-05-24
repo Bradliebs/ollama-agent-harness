@@ -81,6 +81,12 @@ export const ReflectTool: Tool = {
       }
       await fs.appendFile(targetFile, entry);
 
+      // Dual-write to concept memory for semantic recall across sessions.
+      void (await import('../services/conceptMemoryClient')).store(
+        observation,
+        `reflect/${category}: ${observation.slice(0, 60)}`,
+      ).catch(() => undefined);
+
       return {
         success: true,
         output: `💡 Reflection saved (${category}): "${observation.slice(0, 80)}"\nThis will be available in future sessions.`,

@@ -9,6 +9,7 @@ import { listIndexes as listRagIndexes, search as searchRagIndex } from '../pers
 import { buildMemoryPalace } from '../persistence/semanticMemory';
 import { searchSessions } from '../persistence/sessionSearchIndex';
 import { recordSwallowed } from '../observability/silentFailureSink';
+import * as ccmem from '../services/conceptMemoryClient';
 
 const PROJECT_MEMORY_MAX_CHARS = 8_000;
 const AGENT_MEMORY_MAX_CHARS = 4_000;
@@ -48,6 +49,16 @@ export interface ContextConfig {
   /** When set with a non-empty `sessionSearchQuery`, inject prior-session hits. */
   sessionSearchProjectDir?: string;
   sessionSearchQuery?: string;
+  /**
+   * When set, query the Concept Cells memory service (ccmem) for semantically
+   * relevant memories and inject the top hits. Uses `recallQuery` as the
+   * search text when ccmemQuery is not explicitly provided.
+   * Requires cc_service running at the configured URL (default localhost:8765).
+   */
+  ccmemUrl?: string;
+  ccmemQuery?: string;
+  /** Max concept memory hits to inject (default 5). */
+  ccmemTopK?: number;
 }
 
 export async function assembleSystemContext(config: ContextConfig): Promise<string> {
@@ -189,6 +200,27 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
         recallParts.push(`\n--- Prior sessions matching: ${sessionSearchText.slice(0, 120)} ---\n${lines.join('\n')}`);
       }
     } catch (err) { recordSwallowed('assembly.sessionSearch', err); }
+  }
+
+  // Concept memory recall: semantically relevant memories from ccmem.
+  // Uses MiniLM embeddings so it surfaces related memories even when
+  // keywords don't match (e.g. "auth" finds "JWT", "login", "token").
+  const ccmemQueryText = (config.ccmemQuery ?? config.recallQuery ?? '').trim();
+  if (config.ccmemUrl && ccmemQueryText.length > 0) {
+    try {
+      ccmem.setCcmemUrl(config.ccmemUrl);
+      const topK = config.ccmemTopK ?? 5;
+      const hits = await ccmem.recall(ccmemQueryText, topK);
+      if (hits.length > 0) {
+        const lines = hits.map((h) => {
+          const label = h.label ? ` [${h.label}]` : '';
+          const snippet = (h.source_text ?? '').replace(/\s+/g, ' ').trim();
+          const trimmed = snippet.length > 300 ? `${snippet.slice(0, 300)}...` : snippet;
+          return `- (activation ${h.activation.toFixed(3)})${label} ${trimmed}`;
+        });
+        recallParts.push(`\n--- Concept memory recall: ${ccmemQueryText.slice(0, 120)} ---\n${lines.join('\n')}`);
+      }
+    } catch (err) { recordSwallowed('assembly.ccmemRecall', err); }
   }
 
   if (recallParts.length > 0) {

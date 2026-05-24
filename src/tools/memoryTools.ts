@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
 import { scanFileForConflicts } from '../services/memoryConflictDetector';
+import * as ccmem from '../services/conceptMemoryClient';
 
 // Match the resolution used by web/server.ts so the model's `remember`
 // writes land in the same .harness/memory/ that assembleSystemContext reads
@@ -86,6 +87,10 @@ export const MemoryWriteTool: Tool = {
       // Append the entry
       await fs.appendFile(filePath, entry, 'utf-8');
 
+      // Dual-write to concept memory for semantic recall across sessions.
+      // Best-effort — never fail the remember call if ccmem is offline.
+      void ccmem.store(`${title}\n${content}`, `${category}: ${title}`).catch(() => undefined);
+
       return {
         success: true,
         output: `📝 Remembered "${title}" in ${category}s. Saved to ${path.relative(process.cwd(), filePath)}${conflictWarning}`,
@@ -137,5 +142,66 @@ export const MemoryReadTool: Tool = {
     }
 
     return { success: true, output: parts.join('\n\n---\n\n') };
+  },
+};
+
+/**
+ * SemanticRecallTool — queries the Concept Cells memory service (ccmem) for
+ * semantically relevant memories. Unlike `recall` (which reads markdown files),
+ * this uses MiniLM embeddings so it finds related memories even when exact
+ * keywords don't match.
+ *
+ * Requires the cc_service to be running (H:\MiniLM\cc_service).
+ * If unavailable, returns a graceful message.
+ */
+export const SemanticRecallTool: Tool = {
+  name: 'semantic_recall',
+  description: 'Search your memory semantically — finds relevant past decisions, patterns, and notes even when you don\'t know the exact words. Powered by MiniLM concept cells.',
+  parameters: {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        description: 'What you want to remember — describe it naturally, e.g. "how did I handle authentication" or "database choice for this project"',
+      },
+      top_k: {
+        type: 'number',
+        description: 'Maximum number of results to return (default 5, max 10)',
+      },
+    },
+    required: ['query'],
+  },
+  isReadOnly: true,
+  async execute(input: Record<string, unknown>): Promise<ToolResult> {
+    const query = (input.query as string ?? '').trim();
+    if (!query) return { success: false, output: 'semantic_recall requires a query.', error: 'missing query' };
+
+    const topK = Math.min(Math.max(1, Number(input.top_k ?? 5) | 0), 10);
+
+    const available = await ccmem.isAvailable();
+    if (!available) {
+      return {
+        success: false,
+        output: `Concept memory service is not running. Start it with:\n  cd H:\\MiniLM\\cc_service\n  uvicorn service.main:app --host 0.0.0.0 --port 8765`,
+        error: 'ccmem unavailable',
+      };
+    }
+
+    const hits = await ccmem.recall(query, topK);
+    if (hits.length === 0) {
+      return { success: true, output: 'No relevant memories found for that query.' };
+    }
+
+    const lines = hits.map((h, i) => {
+      const label = h.label ? ` [${h.label}]` : '';
+      const score = `(activation ${h.activation.toFixed(3)})`;
+      const text = h.source_text ? `\n  ${h.source_text.replace(/\n/g, '\n  ')}` : '';
+      return `${i + 1}.${label} ${score}${text}`;
+    });
+
+    return {
+      success: true,
+      output: `Found ${hits.length} relevant memories for "${query}":\n\n${lines.join('\n\n')}`,
+    };
   },
 };
