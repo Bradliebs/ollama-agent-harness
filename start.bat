@@ -90,9 +90,8 @@ if exist "%WORKSPACE_CONFIG%" (
   set /p "SAVED_WORKSPACE=" < "%WORKSPACE_CONFIG%"
 )
 if defined SAVED_WORKSPACE (
-  echo   Saved workspace: %SAVED_WORKSPACE%
-  set /p "WORKSPACE=  Press Enter to use it, or type a new path: "
-  if "!WORKSPACE!"=="" set "WORKSPACE=%SAVED_WORKSPACE%"
+  echo   [OK] Using saved workspace: %SAVED_WORKSPACE%
+  set "WORKSPACE=%SAVED_WORKSPACE%"
 ) else (
   echo   Where should the agent work? (its files, memory, outputs go here)
   echo   Press Enter for default: %USERPROFILE%\hermes-workspace
