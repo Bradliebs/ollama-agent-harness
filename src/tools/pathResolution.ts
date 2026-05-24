@@ -295,10 +295,14 @@ export function previewFileWriteRedirect(
       const targetDir = path.isAbsolute(rule.redirect)
         ? rule.redirect
         : path.resolve(getProjectRoot(), rule.redirect);
-      // Safety: reject redirect rules that escape workspace and allowed paths
-      const safeTargetDir = isInsideOrEqualPath(targetDir, getProjectRoot()) ||
-        allowedExternalPaths.some((p) => isInsideOrEqualPath(targetDir, p));
-      if (!safeTargetDir) continue;  // skip unsafe rule silently
+      // Safety: relative paths that resolve outside the workspace are traversal
+      // attacks (e.g. redirect: '../../../system32'). Block them. Absolute paths
+      // are explicit user config and are allowed unconditionally.
+      if (!path.isAbsolute(rule.redirect)) {
+        const safeTargetDir = isInsideOrEqualPath(targetDir, getProjectRoot()) ||
+          allowedExternalPaths.some((p) => isInsideOrEqualPath(targetDir, p));
+        if (!safeTargetDir) continue;
+      }
       return { rule, destination: path.join(targetDir, basename) };
     }
   }
@@ -318,10 +322,14 @@ function matchRedirectRules(rawPath: string, rules: FileWriteRedirectRule[]): st
       const targetDir = path.isAbsolute(rule.redirect)
         ? rule.redirect
         : path.resolve(getProjectRoot(), rule.redirect);
-      // Safety: reject redirect rules that escape workspace and allowed paths
-      const safeTargetDir = isInsideOrEqualPath(targetDir, getProjectRoot()) ||
-        allowedExternalPaths.some((p) => isInsideOrEqualPath(targetDir, p));
-      if (!safeTargetDir) return null;  // skip unsafe rule silently
+      // Safety: relative paths that resolve outside the workspace are traversal
+      // attacks (e.g. redirect: '../../../system32'). Block them. Absolute paths
+      // are explicit user config and are allowed unconditionally.
+      if (!path.isAbsolute(rule.redirect)) {
+        const safeTargetDir = isInsideOrEqualPath(targetDir, getProjectRoot()) ||
+          allowedExternalPaths.some((p) => isInsideOrEqualPath(targetDir, p));
+        if (!safeTargetDir) return null;
+      }
       return path.join(targetDir, basename);
     }
   }
