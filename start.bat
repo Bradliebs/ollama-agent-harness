@@ -107,18 +107,19 @@ echo   [OK] Workspace: !HARNESS_PROJECT_DIR!
 
 :WORKSPACE_OK
 
-:: Step 6: Launch cc_service (Concept Memory - optional, Brad's local setup)
-if defined HARNESS_CCMEM_DIR (
-  if exist "%HARNESS_CCMEM_DIR%\service\main.py" (
-    netstat -ano | findstr ":8765.*LISTEN" >nul 2>nul
-    if errorlevel 1 (
-      echo   Starting cc_service (semantic memory) on port 8765...
-      start "cc_service" /min cmd /c "cd /d "%HARNESS_CCMEM_DIR%" && uvicorn service.main:app --host 0.0.0.0 --port 8765"
-      echo   [OK] cc_service starting
-    ) else (
-      echo   [OK] cc_service already running on port 8765
-    )
+:: Step 6: Launch ccmem (Concept Cells semantic memory — built-in, optional)
+python --version >nul 2>nul
+if not errorlevel 1 (
+  netstat -ano | findstr ":8765.*LISTEN" >nul 2>nul
+  if errorlevel 1 (
+    echo   Starting ccmem (semantic memory) on port 8765...
+    start "ccmem" /min cmd /c "cd /d "%~dp0" && python -m uvicorn ccmem.service:app --host 0.0.0.0 --port 8765"
+    echo   [OK] ccmem starting
+  ) else (
+    echo   [OK] ccmem already running on port 8765
   )
+) else (
+  echo   [--] Python not found - semantic memory disabled (install Python to enable)
 )
 
 :: Step 7: Launch
