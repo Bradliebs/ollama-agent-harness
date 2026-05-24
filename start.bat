@@ -108,8 +108,23 @@ echo   [OK] Workspace: !HARNESS_PROJECT_DIR!
 
 :WORKSPACE_OK
 
-:: Step 6: Launch
-:: Step 6: Launch
+:: Step 6: Launch cc_service (Concept Memory - MiniLM semantic memory)
+echo.
+echo   Starting cc_service (semantic memory)...
+set "CCMEM_DIR=H:\MiniLM\cc_service"
+if exist "%CCMEM_DIR%\service\main.py" (
+  netstat -ano | findstr ":8765.*LISTEN" >nul 2>nul
+  if errorlevel 1 (
+    start "cc_service" /min cmd /c "cd /d "%CCMEM_DIR%" && uvicorn service.main:app --host 0.0.0.0 --port 8765"
+    echo   [OK] cc_service starting on port 8765
+  ) else (
+    echo   [OK] cc_service already running on port 8765
+  )
+) else (
+  echo   [--] cc_service not found at %CCMEM_DIR% - semantic memory disabled
+)
+
+:: Step 7: Launch
 echo.
 echo   Checking for an existing Harness server on port 4300...
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":4300.*LISTEN"') do (
