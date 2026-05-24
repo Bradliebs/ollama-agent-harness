@@ -25,6 +25,11 @@ Network.md
 Bracknell_Food_Business/
 forge-memory/
 
+# Runtime state files (user-specific, not for version control)
+.harness-workspace
+.forge-state.json
+.forge-stop
+
 # Bare-filename agent writes (file_write redirects scratch output here so
 # it does not pile up at the repo root). Force-add intentional outputs.
 agent-outputs/
