@@ -62,7 +62,7 @@ fi
 
 # Step 6: Workspace — agent files go here, NOT in the harness repo
 if [ -z "$HARNESS_PROJECT_DIR" ]; then
-  DEFAULT_WS="$HOME/hermes-workspace"
+  DEFAULT_WS="$HOME/apex-workspace"
   echo ""
   echo "  Where should the agent work? (its files, memory, outputs go here)"
   echo "  Press Enter for default: $DEFAULT_WS"

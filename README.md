@@ -25,9 +25,9 @@ You chat with a model, it can call tools (read/write files, run bash, search the
 
 **v0.4.8** adds a quote-aware bash safety scanner (so `python -c \"a; b\"` is no longer falsely blocked), a new `make_directory` tool, a configurable Allowed External Paths allowlist for reading and writing outside the project, and the `agent-outputs/` redirect with bash auto-resolve for bare script filenames. See the [CHANGELOG](CHANGELOG.md) for older releases.
 
-### 🌅 Hermes-class autonomous experiences
+### 🌅 Apex-class autonomous experiences
 
-A small family of end-to-end experiences composed from existing harness primitives: the `/goal` natural-language expander, a PDF → wiki blueprint, a triage/doing/done Kanban bridge that auto-promotes cards into the autonomy plan, a competitor-research report renderer, a personal memory wiki, and a daily morning-priority prompt. See [`docs/HERMES-FEATURES.md`](docs/HERMES-FEATURES.md) for the full tour with copy-pasteable commands.
+A small family of end-to-end experiences composed from existing harness primitives: the `/goal` natural-language expander, a PDF → wiki blueprint, a triage/doing/done Kanban bridge that auto-promotes cards into the autonomy plan, a competitor-research report renderer, a personal memory wiki, and a daily morning-priority prompt. See [`docs/APEX-FEATURES.md`](docs/APEX-FEATURES.md) for the full tour with copy-pasteable commands.
 
 ## How it works
 

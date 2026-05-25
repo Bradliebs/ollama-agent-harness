@@ -172,7 +172,7 @@ function resolveProjectDir(): string {
     existsSync(path.join(cwd, 'src', 'web', 'server.ts')) &&
     existsSync(path.join(cwd, 'src', 'tools', 'dispatcher.ts'));
   if (isHarnessRepo) {
-    const safeDefault = path.join(os.homedir(), 'hermes-workspace');
+    const safeDefault = path.join(os.homedir(), 'apex-workspace');
     if (!existsSync(safeDefault)) {
       mkdirSync(safeDefault, { recursive: true });
     }
@@ -11011,7 +11011,7 @@ export async function startServer(): Promise<void> {
     // Auto-build code intelligence graph (non-blocking).
     loadRepoGraph(PROJECT_DIR).then((existing) => {
       if (!existing) {
-        buildRepoGraph(PROJECT_DIR, { maxFiles: 5_000, ignoreDirs: ['hermes-agent-main', 'agent-outputs', 'journal', 'Bracknell_Food_Business'] }).then((graph) => {
+        buildRepoGraph(PROJECT_DIR, { maxFiles: 5_000, ignoreDirs: ['apex-agent-main', 'agent-outputs', 'journal', 'Bracknell_Food_Business'] }).then((graph) => {
           saveRepoGraph(PROJECT_DIR, graph).then(async () => {
             const summary = summarizeRepo(graph);
             console.log(`  Code intelligence:     ${summary.total_files} files, ${summary.total_edges} edges`);

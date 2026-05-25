@@ -94,10 +94,10 @@ if defined SAVED_WORKSPACE (
   set "WORKSPACE=%SAVED_WORKSPACE%"
 ) else (
   echo   Where should the agent work? (its files, memory, outputs go here)
-  echo   Press Enter for default: %USERPROFILE%\hermes-workspace
+  echo   Press Enter for default: %USERPROFILE%\apex-workspace
   echo.
   set /p "WORKSPACE=  Workspace folder: "
-  if "!WORKSPACE!"=="" set "WORKSPACE=%USERPROFILE%\hermes-workspace"
+  if "!WORKSPACE!"=="" set "WORKSPACE=%USERPROFILE%\apex-workspace"
 )
 if not exist "!WORKSPACE!" mkdir "!WORKSPACE!"
 set "HARNESS_PROJECT_DIR=!WORKSPACE!"

@@ -1,7 +1,7 @@
 /**
  * blueprint-pdf-to-wiki.ts — CopilotForge Cookbook Recipe
  *
- * Hermes-style one-shot demo: hand it a PDF, walk away, come back to a
+ * Apex-style one-shot demo: hand it a PDF, walk away, come back to a
  * browsable wiki + a RAG index + a tiny self-contained chat page that
  * queries the index. No new domain logic — pure composition of the
  * harness's existing primitives (extractPdfText + ragIndex.build +

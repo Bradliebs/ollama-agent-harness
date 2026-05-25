@@ -1,6 +1,6 @@
-# 🌅 Hermes-class autonomous experiences
+# 🌅 Apex-class autonomous experiences
 
-Hermes-class features are end-to-end autonomous experiences composed entirely from existing harness primitives — task store, RAG index, daily brief, triggers, web tools, semantic memory. None of them invent a new runtime; each one is a thin orchestration layer that turns a single user gesture (a slash command, a kanban drag, a one-line CLI invocation) into a multi-step result. The six capabilities below ship together and share the same "compose, don't replace" philosophy.
+Apex-class features are end-to-end autonomous experiences composed entirely from existing harness primitives — task store, RAG index, daily brief, triggers, web tools, semantic memory. None of them invent a new runtime; each one is a thin orchestration layer that turns a single user gesture (a slash command, a kanban drag, a one-line CLI invocation) into a multi-step result. The six capabilities below ship together and share the same "compose, don't replace" philosophy.
 
 ---
 
