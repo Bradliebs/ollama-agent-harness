@@ -52,14 +52,21 @@ if exist node_modules goto DEPS_OK
 echo.
 echo   Installing dependencies (first time only, may take a minute)...
 call npm ci
-if errorlevel 1 goto DEPS_FAIL
+if errorlevel 1 (
+  echo   npm ci failed, trying npm install...
+  call npm install
+  if errorlevel 1 (
+    echo.
+    echo   [X] Dependency install failed. Common fixes:
+    echo       - Check your internet connection
+    echo       - Delete node_modules folder and try again
+    echo.
+    pause
+    exit /b 1
+  )
+)
 echo   [OK] Dependencies installed
 goto DEPS_OK
-
-:DEPS_FAIL
-echo   [X] Dependency install failed.
-pause
-exit /b 1
 
 :DEPS_OK
 
@@ -67,16 +74,18 @@ exit /b 1
 echo.
 echo   Building from source...
 call npm run build
-if errorlevel 1 goto BUILD_FAIL
+if errorlevel 1 (
+  echo.
+  echo   [X] Build failed. Try these steps:
+  echo       1. Delete node_modules folder
+  echo       2. Run: npm install
+  echo       3. Run: npm run build
+  echo       If it still fails, check the error above for details.
+  echo.
+  pause
+  exit /b 1
+)
 echo   [OK] Build complete
-goto BUILD_OK
-
-:BUILD_FAIL
-echo   [X] Build failed.
-pause
-exit /b 1
-
-:BUILD_OK
 
 :: Step 5: Workspace — agent files go here, NOT in the harness repo
 echo.
