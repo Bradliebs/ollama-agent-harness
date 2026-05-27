@@ -120,18 +120,46 @@ echo   [OK] Workspace: !HARNESS_PROJECT_DIR!
 
 :: Step 6: Launch ccmem (Concept Cells semantic memory — built-in, optional)
 python --version >nul 2>nul
-if not errorlevel 1 (
-  netstat -ano | findstr ":8765.*LISTEN" >nul 2>nul
-  if errorlevel 1 (
-    echo   Starting ccmem ^(semantic memory^) on port 8765...
-    start "ccmem" /min cmd /c "cd /d "%~dp0" && python -m uvicorn ccmem.service:app --host 0.0.0.0 --port 8765"
-    echo   [OK] ccmem starting
-  ) else (
-    echo   [OK] ccmem already running on port 8765
-  )
-) else (
+if errorlevel 1 (
   echo   [--] Python not found - semantic memory disabled ^(install Python to enable^)
+  goto CCMEM_DONE
 )
+
+:: Verify ccmem's Python deps are importable before launching
+python -c "import uvicorn, fastapi, sentence_transformers" >nul 2>nul
+if errorlevel 1 (
+  echo   [--] ccmem Python deps missing - semantic memory disabled
+  echo        To enable: pip install -r ccmem\requirements.txt
+  goto CCMEM_DONE
+)
+
+:: If port 8765 is held, verify it's actually ccmem responding to /health
+netstat -ano | findstr ":8765.*LISTEN" >nul 2>nul
+if not errorlevel 1 (
+  powershell -NoProfile -Command "try { Invoke-WebRequest -Uri 'http://127.0.0.1:8765/health' -UseBasicParsing -TimeoutSec 2 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>nul
+  if not errorlevel 1 (
+    echo   [OK] ccmem already running on port 8765
+  ) else (
+    echo   [!!] Port 8765 is in use by something else - semantic memory disabled
+  )
+  goto CCMEM_DONE
+)
+
+echo   Starting ccmem ^(semantic memory^) on port 8765...
+start "ccmem" /min cmd /c "cd /d "%~dp0" && python -m uvicorn ccmem.service:app --host 0.0.0.0 --port 8765"
+
+:: Poll /health for up to 30s before declaring ready (single PowerShell process
+:: avoids spawning 30 sub-shells; uvicorn typically binds in ~2s)
+powershell -NoProfile -Command "$d=(Get-Date).AddSeconds(30); while((Get-Date) -lt $d) { try { Invoke-WebRequest -Uri 'http://127.0.0.1:8765/health' -UseBasicParsing -TimeoutSec 1 | Out-Null; exit 0 } catch {} ; Start-Sleep -Milliseconds 500 } ; exit 1"
+if not errorlevel 1 (
+  echo   [OK] ccmem ready on port 8765
+  echo        Note: first memory call downloads ~80 MB embedding model ^(one-time^)
+) else (
+  echo   [!!] ccmem did not respond within 30s - semantic memory may be unavailable
+  echo        Check the ccmem window for errors
+)
+
+:CCMEM_DONE
 
 :: Step 7: Launch
 echo.
