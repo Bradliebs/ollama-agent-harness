@@ -2,7 +2,7 @@
 title: Ollama Agent Harness
 description: Local-first Ollama agent harness with tools, documents, Telegram, email, tracing, learning, and a browser UI
 author: Bradliebs
-ms.date: 2026-05-16
+ms.date: 2026-05-27
 ms.topic: overview
 keywords:
   - ollama
@@ -23,7 +23,7 @@ Ollama Agent Harness is a local-first agent runtime that wraps Ollama models wit
 
 You chat with a model, it can call tools (read/write files, run bash, search the web, analyze images, transcribe audio, generate documents, send emails), and the harness manages permissions, context, and history.
 
-**v0.4.8** adds a quote-aware bash safety scanner (so `python -c \"a; b\"` is no longer falsely blocked), a new `make_directory` tool, a configurable Allowed External Paths allowlist for reading and writing outside the project, and the `agent-outputs/` redirect with bash auto-resolve for bare script filenames. See the [CHANGELOG](CHANGELOG.md) for older releases.
+**v0.6.4** brings semantic memory via the bundled `ccmem` concept-cell service (auto-started on port 8765), the **Apex** family of autonomous experiences (`/goal` natural-language expander, PDF → wiki blueprint, Kanban bridge, competitor-research renderer, personal memory wiki, daily morning-priority prompt), persistent workspace path so `start.bat` only asks once, and a smarter empty-synthesis fallback that leads with any files the model wrote and falls back to short labelled bullets instead of raw page dumps. See the [CHANGELOG](CHANGELOG.md) for the full history.
 
 ### 🌅 Apex-class autonomous experiences
 
