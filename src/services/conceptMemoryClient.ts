@@ -1,11 +1,11 @@
 /**
- * Concept Memory Client — thin HTTP client for the cc_service (ccmem) FastAPI.
+ * Concept Memory Client — thin HTTP client for the ccmem FastAPI service.
  *
- * cc_service lives at H:\MiniLM\cc_service and exposes:
+ * ccmem lives in this repo at ccmem/service.py and exposes:
  *   POST /write          — store a single text as a concept cell
  *   POST /write_many     — batch store
  *   POST /query          — semantic search
- *   POST /bind           — bind related cells into a composite cell
+ *   POST /bind           — bind related texts into a composite cell
  *   GET  /health         — liveness probe
  *
  * Integration rules:
@@ -15,6 +15,13 @@
  *   - URL configured via HARNESS_CCMEM_URL env or ccmemUrl settings field.
  *     Default: http://localhost:8765
  *   - Health is checked lazily and cached for HEALTH_CACHE_MS.
+ *
+ * Wire contract matches ccmem/service.py exactly:
+ *   write    : req {text, label}              res {id, label}
+ *   write_many: req {items:[{text,label}]}    res {ids:[number]}
+ *   query    : req {text, top_k}              res {hits:[{id,label,source,margin}]}
+ *   bind     : req {texts:[string], label}    res {id, label, theta}
+ * The service's `label` field defaults to "" (empty string) — never send null.
  */
 
 const DEFAULT_URL = 'http://localhost:8765';
@@ -35,26 +42,24 @@ export function getCcmemUrl(): string {
   return _configuredUrl;
 }
 
-// ── Types matching cc_service schema ──────────────────────────────────────────
+// ── Types matching ccmem/service.py schema ────────────────────────────────────
 
 export interface ConceptHit {
-  cell_id: number;
-  label: string | null;
-  kind: string;
-  activation: number;
+  id: number;
+  label: string;
+  source: string;
   margin: number;
-  source_text: string | null;
 }
 
 export interface StoreResult {
-  cell_id: number;
-  label: string | null;
+  id: number;
+  label: string;
 }
 
 export interface BindResult {
-  bound_cell_id: number;
-  source_cell_ids: number[];
-  items_fire_after_binding: boolean[];
+  id: number;
+  label: string;
+  theta: number;
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -109,12 +114,12 @@ export async function isAvailable(): Promise<boolean> {
  */
 export async function store(text: string, label?: string): Promise<StoreResult | null> {
   if (!text.trim()) return null;
-  const result = await post<{ cell_id: number; label: string | null; theta: number }>(
+  const result = await post<{ id: number; label: string }>(
     '/write',
-    { text: text.trim(), label: label ?? null },
+    { text: text.trim(), label: label ?? '' },
   );
   if (!result) return null;
-  return { cell_id: result.cell_id, label: result.label };
+  return { id: result.id, label: result.label };
 }
 
 /**
@@ -126,11 +131,10 @@ export async function storeMany(
 ): Promise<number[]> {
   const valid = entries.filter(e => e.text.trim().length > 0);
   if (valid.length === 0) return [];
-  const result = await post<{ cell_ids: number[] }>('/write_many', {
-    texts: valid.map(e => e.text.trim()),
-    labels: valid.map(e => e.label ?? null),
+  const result = await post<{ ids: number[] }>('/write_many', {
+    items: valid.map(e => ({ text: e.text.trim(), label: e.label ?? '' })),
   });
-  return result?.cell_ids ?? [];
+  return result?.ids ?? [];
 }
 
 /**
@@ -142,25 +146,25 @@ export async function recall(
   topK = 5,
 ): Promise<ConceptHit[]> {
   if (!query.trim()) return [];
-  const result = await post<{
-    query: string;
-    n_hits: number;
-    hits: ConceptHit[];
-  }>('/query', { text: query.trim(), top_k: topK });
+  const result = await post<{ hits: ConceptHit[] }>(
+    '/query',
+    { text: query.trim(), top_k: topK },
+  );
   return result?.hits ?? [];
 }
 
 /**
- * Bind a set of related cells into a composite concept cell that fires for
+ * Bind a set of related texts into a composite concept cell that fires for
  * any of them. Useful for grouping a cluster of related learnings.
  */
 export async function bind(
-  cellIds: number[],
+  texts: string[],
   label?: string,
 ): Promise<BindResult | null> {
-  if (cellIds.length < 2) return null;
+  const cleaned = texts.map(t => t.trim()).filter(Boolean);
+  if (cleaned.length < 2) return null;
   return post<BindResult>('/bind', {
-    source_cell_ids: cellIds,
-    label: label ?? null,
+    texts: cleaned,
+    label: label ?? '',
   });
 }

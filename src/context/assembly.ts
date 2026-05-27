@@ -214,9 +214,9 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
       if (hits.length > 0) {
         const lines = hits.map((h) => {
           const label = h.label ? ` [${h.label}]` : '';
-          const snippet = (h.source_text ?? '').replace(/\s+/g, ' ').trim();
+          const snippet = (h.source ?? '').replace(/\s+/g, ' ').trim();
           const trimmed = snippet.length > 300 ? `${snippet.slice(0, 300)}...` : snippet;
-          return `- (activation ${h.activation.toFixed(3)})${label} ${trimmed}`;
+          return `- (margin ${h.margin.toFixed(3)})${label} ${trimmed}`;
         });
         recallParts.push(`\n--- Concept memory recall: ${ccmemQueryText.slice(0, 120)} ---\n${lines.join('\n')}`);
       }

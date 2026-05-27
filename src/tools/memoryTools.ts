@@ -182,7 +182,7 @@ export const SemanticRecallTool: Tool = {
     if (!available) {
       return {
         success: false,
-        output: `Concept memory service is not running. Start it with:\n  cd H:\\MiniLM\\cc_service\n  uvicorn service.main:app --host 0.0.0.0 --port 8765`,
+        output: `Concept memory service is not running. It is auto-started by start.bat; if launching the harness manually, run:\n  python -m uvicorn ccmem.service:app --host 0.0.0.0 --port 8765`,
         error: 'ccmem unavailable',
       };
     }
@@ -194,8 +194,8 @@ export const SemanticRecallTool: Tool = {
 
     const lines = hits.map((h, i) => {
       const label = h.label ? ` [${h.label}]` : '';
-      const score = `(activation ${h.activation.toFixed(3)})`;
-      const text = h.source_text ? `\n  ${h.source_text.replace(/\n/g, '\n  ')}` : '';
+      const score = `(margin ${h.margin.toFixed(3)})`;
+      const text = h.source ? `\n  ${h.source.replace(/\n/g, '\n  ')}` : '';
       return `${i + 1}.${label} ${score}${text}`;
     });
 
