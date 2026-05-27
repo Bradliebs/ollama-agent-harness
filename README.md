@@ -15,7 +15,6 @@ estimated_reading_time: 7
 ---
 
 [![Release](https://img.shields.io/github/v/release/Bradliebs/ollama-agent-harness)](https://github.com/Bradliebs/ollama-agent-harness/releases/latest)
-[![npm](https://img.shields.io/npm/v/ollama-agent-harness)](https://www.npmjs.com/package/ollama-agent-harness)
 
 ## What is this?
 
@@ -82,20 +81,13 @@ graph TD
 
 Download **Harness-Setup.exe** from the [latest release](https://github.com/Bradliebs/ollama-agent-harness/releases/latest), run it, and double-click the desktop shortcut. The installer checks for Node.js and Ollama automatically.
 
-### Option B — npm global install
-
-```powershell
-npm install -g ollama-agent-harness
-harness
-```
-
-### Option C — Double-click (from source)
+### Option B — Double-click (from source)
 
 1. Clone this repo
 2. Double-click `start.bat` (Windows) or run `./start.sh` (Mac/Linux)
 3. Open **http://127.0.0.1:4300** in your browser
 
-### Option D — Terminal (from source)
+### Option C — Terminal (from source)
 
 ```powershell
 npm install
