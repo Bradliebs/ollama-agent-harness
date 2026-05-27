@@ -94,15 +94,17 @@ if defined HARNESS_PROJECT_DIR (
   echo   Workspace: %HARNESS_PROJECT_DIR%
   goto WORKSPACE_OK
 )
-:: Load saved workspace from last run
+:: Load saved workspace from last run (PowerShell read strips any UTF-8 BOM
+:: written by older versions of this script)
+set "SAVED_WORKSPACE="
 if exist "%WORKSPACE_CONFIG%" (
-  set /p "SAVED_WORKSPACE=" < "%WORKSPACE_CONFIG%"
+  for /f "usebackq tokens=* delims=" %%i in (`powershell -NoProfile -Command "(Get-Content -Raw -LiteralPath '%WORKSPACE_CONFIG%').Trim()"`) do set "SAVED_WORKSPACE=%%i"
 )
 if defined SAVED_WORKSPACE (
-  echo   [OK] Using saved workspace: %SAVED_WORKSPACE%
-  set "WORKSPACE=%SAVED_WORKSPACE%"
+  echo   [OK] Using saved workspace: !SAVED_WORKSPACE!
+  set "WORKSPACE=!SAVED_WORKSPACE!"
 ) else (
-  echo   Where should the agent work? (its files, memory, outputs go here)
+  echo   Where should the agent work? ^(its files, memory, outputs go here^)
   echo   Press Enter for default: %USERPROFILE%\apex-workspace
   echo.
   set /p "WORKSPACE=  Workspace folder: "
@@ -110,8 +112,8 @@ if defined SAVED_WORKSPACE (
 )
 if not exist "!WORKSPACE!" mkdir "!WORKSPACE!"
 set "HARNESS_PROJECT_DIR=!WORKSPACE!"
-:: Save for next time
-powershell -Command "Set-Content -Path '%WORKSPACE_CONFIG%' -Value '!WORKSPACE!' -NoNewline -Encoding UTF8"
+:: Save for next time (plain cmd redirect = no BOM)
+>"%WORKSPACE_CONFIG%" echo !WORKSPACE!
 echo   [OK] Workspace: !HARNESS_PROJECT_DIR!
 
 :WORKSPACE_OK
@@ -121,14 +123,14 @@ python --version >nul 2>nul
 if not errorlevel 1 (
   netstat -ano | findstr ":8765.*LISTEN" >nul 2>nul
   if errorlevel 1 (
-    echo   Starting ccmem (semantic memory) on port 8765...
+    echo   Starting ccmem ^(semantic memory^) on port 8765...
     start "ccmem" /min cmd /c "cd /d "%~dp0" && python -m uvicorn ccmem.service:app --host 0.0.0.0 --port 8765"
     echo   [OK] ccmem starting
   ) else (
     echo   [OK] ccmem already running on port 8765
   )
 ) else (
-  echo   [--] Python not found - semantic memory disabled (install Python to enable)
+  echo   [--] Python not found - semantic memory disabled ^(install Python to enable^)
 )
 
 :: Step 7: Launch
