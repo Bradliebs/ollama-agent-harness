@@ -636,12 +636,84 @@ export async function* queryLoop(
       await appendSession(session, 'assistant_message', { kind: 'message', message: synthMessage }, tracer);
     }
 
-    // If the synthesis turn produced empty text (common with small models
-    // that try to call tools even when told not to), build a fallback
-    // from the tool results so the user at least sees what was found.
+    // If the synthesis turn produced empty text (common with tool-trained
+    // models like kimi-k2.6 that try to keep calling tools even when told
+    // not to), build a SHORT, readable summary from the tool history so
+    // the user gets useful signal instead of either an empty turn or a
+    // raw page-dump wall. Mirrors the brevity of the UI buildToolOnlyFallback.
     let synthesisText = typeof synthMessage.content === 'string' ? synthMessage.content.trim() : '';
-    if (!synthesisText && recentToolResults) {
-      synthesisText = `The model ran out of time but here is what it found:\n\n${recentToolResults}`;
+    if (!synthesisText) {
+      const toolMsgs = messages.filter((m) => m.role === 'tool' && typeof m.content === 'string');
+      const writeNames = new Set(['file_write', 'file_create', 'write_file', 'write']);
+
+      type CallPair = { name: string; input: Record<string, unknown>; result: string; success: boolean };
+      const pairs: CallPair[] = [];
+      const pending: Array<{ name: string; input: Record<string, unknown>; id?: string }> = [];
+      for (const m of messages) {
+        if (m.role === 'assistant' && m.tool_calls?.length) {
+          for (const tc of m.tool_calls) {
+            const args = (tc.function.arguments && typeof tc.function.arguments === 'object' ? tc.function.arguments : {}) as Record<string, unknown>;
+            pending.push({ name: tc.function.name, input: args, id: (tc as { id?: string }).id });
+          }
+          continue;
+        }
+        if (m.role === 'tool' && typeof m.content === 'string') {
+          const tid = (m as { tool_call_id?: string }).tool_call_id;
+          let idx = -1;
+          if (tid) idx = pending.findIndex((p) => p.id === tid);
+          if (idx < 0) idx = 0;
+          const match = pending[idx];
+          if (!match) continue;
+          pending.splice(idx, 1);
+          const resultText = m.content;
+          const failed = /^(permission denied|error|failed|❌)/i.test(resultText.trim()) && !/saved to:/i.test(resultText);
+          pairs.push({ name: match.name, input: match.input, result: resultText, success: !failed });
+        }
+      }
+
+      const writes: Array<{ path: string; bytes?: number }> = [];
+      for (const p of pairs) {
+        if (!writeNames.has(p.name) || !p.success) continue;
+        const inputPath = typeof p.input.path === 'string' ? p.input.path : (typeof p.input.file === 'string' ? p.input.file : '');
+        const inputContent = typeof p.input.content === 'string' ? p.input.content : '';
+        const savedMatch = p.result.match(/Saved to:\s*([^\r\n]+)/i);
+        const finalPath = (savedMatch ? savedMatch[1].trim() : inputPath).trim();
+        if (!finalPath) continue;
+        writes.push({ path: finalPath, bytes: inputContent ? inputContent.length : undefined });
+      }
+
+      const summarise = (p: CallPair): string => {
+        const collapsed = p.result.replace(/\s+/g, ' ').trim();
+        if (!collapsed) return '';
+        const target = typeof p.input.query === 'string' ? p.input.query
+          : typeof p.input.url === 'string' ? p.input.url
+          : typeof p.input.path === 'string' ? p.input.path
+          : '';
+        const label = target ? `${p.name} for "${target.slice(0, 90)}"` : p.name;
+        return `${label}: ${collapsed.slice(0, 220)}${collapsed.length > 220 ? '…' : ''}`;
+      };
+
+      const switchHint = `_Use **Regenerate** to retry. Tool-trained cloud models (kimi-k2.6, smaller gemmas) often skip the synthesis step — switching to \`llama3.3\` or \`qwen2.5\` usually gives a clean written summary._`;
+
+      if (writes.length > 0) {
+        // File(s) created — that IS the deliverable. Keep it short.
+        const fileList = writes.map((w) => `- \`${w.path}\`${w.bytes ? ` — ${w.bytes.toLocaleString()} chars` : ''}`).join('\n');
+        synthesisText = `**✅ Created ${writes.length} file${writes.length === 1 ? '' : 's'}:**\n\n${fileList}\n\nThe model ran ${totalToolCalls} tool call${totalToolCalls === 1 ? '' : 's'} and saved the result above, but didn't write a prose summary. Open the file to view, or click **Regenerate** for a written summary.\n\n${switchHint}`;
+      } else {
+        // No artifact — give 4 short labelled bullets from non-trivial results.
+        const bullets = Array.from(new Set(
+          pairs
+            .filter((p) => p.success && !writeNames.has(p.name))
+            .map(summarise)
+            .filter(Boolean)
+        )).slice(-4);
+        const lead = `**The model ran ${totalToolCalls} tool call${totalToolCalls === 1 ? '' : 's'} but didn't write a final answer.**`;
+        if (bullets.length > 0) {
+          synthesisText = `${lead}\n\nHere is what it found from the tools:\n${bullets.map((b) => `- ${b}`).join('\n')}\n\n${switchHint}`;
+        } else {
+          synthesisText = `${lead}\n\nNo readable tool results remain in context. ${switchHint}`;
+        }
+      }
     }
 
     // Optional path-claim verifier: when HARNESS_VERIFY_PATH_CLAIMS=1 is

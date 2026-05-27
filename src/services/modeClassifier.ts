@@ -34,7 +34,7 @@ const MODE_RULES: ModeRule[] = [
   { mode: 'operate', priority: 90, label: 'send me reminders', pattern: /\b(sends? me\b.{0,30}\breminders?|remind me\b.{0,20}\b(daily|every|each)|check in with me|keep track|manage this|monitor this|notify me|add tasks|update tasks|close tasks|add notes|review daily|review weekly|follow up|ask me every morning|keep me honest|keep a log|let me add tasks|let me update tasks|let me close tasks|update for me|telegram reminder)\b/i },
   { mode: 'operate', priority: 85, label: 'bullet journal service', pattern: /\b(bullet journal|bullet proof journal)\b[\s\S]{0,200}\b(service|agent|remind|keep track|manage|update for me|keep me honest)\b/i },
   { mode: 'operate', priority: 80, label: 'recurring check', pattern: /\b(check|scan|visit|look at|watch)\b[\s\S]{0,200}\b(daily|every day|each day|every morning|each morning)\b/i },
-  { mode: 'operate', priority: 80, label: 'agentic search', pattern: /\b(look for|find|search for|watch for|monitor for|check for)\b[\s\S]{0,120}\b(book|books|room|rooms|appointment|appointments|slot|slots|availability|stock|tickets?)\b/i },
+  { mode: 'operate', priority: 80, label: 'agentic search', pattern: /\b(watch for|monitor for)\b[\s\S]{0,120}\b(book|books|room|rooms|appointment|appointments|slot|slots|availability|stock|tickets?)\b/i },
   { mode: 'operate', priority: 75, label: 'service command', pattern: /^(show status|status|add note|record observation|observed|pause reminders|resume reminders)\b/i },
 
   // AUTOMATE — recurring workflows, scheduled pipelines
