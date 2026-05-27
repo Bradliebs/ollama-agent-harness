@@ -171,6 +171,11 @@ function resolveProjectDir(): string {
   const isHarnessRepo =
     existsSync(path.join(cwd, 'src', 'web', 'server.ts')) &&
     existsSync(path.join(cwd, 'src', 'tools', 'dispatcher.ts'));
+  // Tests write fixtures into cwd/.harness; don't redirect under jest.
+  // (jest sets NODE_ENV='test' automatically; --runInBand does not set JEST_WORKER_ID.)
+  if (isHarnessRepo && (process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID)) {
+    return cwd;
+  }
   if (isHarnessRepo) {
     const safeDefault = path.join(os.homedir(), 'apex-workspace');
     if (!existsSync(safeDefault)) {
@@ -615,8 +620,34 @@ function checkAutonomyExpiry(): void {
     permissionMode = prev;
     autonomyExpiresAt = 0;
     autonomyPreviousMode = 'default';
+    revokeAutoGrantedCapabilities('Auto-revoked: timed autonomy expired.');
     saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
   }
+}
+
+/**
+ * Revoke any capability grants that were issued automatically while dontAsk
+ * mode was active. Called when timed autonomy ends (expiry, manual clear, or
+ * kill switch) so /yolo cannot leave behind 8-hour grants that outlive it.
+ * The match tag is the `reason` string written by autoGrantGatedCapabilities.
+ */
+function revokeAutoGrantedCapabilities(revocationReason: string): number {
+  const AUTO_TAG = 'Auto-granted in dontAsk mode.';
+  const autoGranted = capabilityGrants.filter((g) => g.reason === AUTO_TAG);
+  if (autoGranted.length === 0) return 0;
+  capabilityGrants = sanitizeCapabilityGrants(
+    capabilityGrants.filter((g) => g.reason !== AUTO_TAG),
+  );
+  for (const grant of autoGranted) {
+    appendCapabilityAuditEvent(PROJECT_DIR, {
+      type: 'grant.revoked',
+      capabilityId: grant.capabilityId,
+      grantId: grant.id,
+      reason: revocationReason,
+    }).catch((err) => recordSwallowed('appendCapabilityAuditEvent', err));
+  }
+  logger.info('Permissions', `Revoked ${autoGranted.length} auto-granted capability grant(s): ${revocationReason}`);
+  return autoGranted.length;
 }
 
 function formatMinutesRemaining(expiresAtMs: number): string {
@@ -5891,6 +5922,7 @@ app.post('/api/permissions/timed-autonomy', (req, res) => {
         permissionMode = autonomyPreviousMode;
         logger.info('Permissions', 'Timed autonomy cleared, reverted to ' + permissionMode);
         appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.cleared', reason: `Manually cleared, reverted to ${permissionMode}` }).catch((err) => recordSwallowed('appendCapabilityAuditEvent', err));
+        revokeAutoGrantedCapabilities('Auto-revoked: timed autonomy manually cleared.');
       }
       if (clearTools && timedToolEnables.size > 0) {
         timedToolEnables.clear();
@@ -5930,6 +5962,7 @@ app.post('/api/permissions/kill-switch', (req, res) => {
         autonomyExpiresAt = 0;
         autonomyPreviousMode = 'default';
         logger.info('Permissions', 'Cleared timed autonomy due to kill switch, reverted to ' + permissionMode);
+        revokeAutoGrantedCapabilities('Auto-revoked: kill switch engaged.');
       }
       logger.warn('Permissions', 'Kill switch engaged', { reason: killSwitchReason });
       runtimeTracer.recordEvent('permission.kill_switch_engaged', { reason: killSwitchReason });
