@@ -2,13 +2,145 @@
 title: Ollama Agent Harness Changelog
 description: Release notes generated from local RPI changes logs for Ollama Agent Harness
 author: Bradliebs
-ms.date: 2026-05-16
+ms.date: 2026-05-27
 ms.topic: reference
 keywords:
 	- ollama
 	- release notes
 	- changelog
-estimated_reading_time: 14
+estimated_reading_time: 18
+---
+
+## Ollama Agent Harness v0.6.4
+
+Concept Cells Memory (`ccmem`) ships in-tree. The harness now writes every
+`remember` entry into a semantic memory bank and pulls related memories
+back into the prompt by meaning, not keyword match.
+
+### ccmem semantic memory
+
+- `ccmem/service.py`: FastAPI sidecar implementing the high-dimensional
+  concept-cell scheme from Tyukin & Gorban (2018). Stores items as
+  unit-vector "neurons" with per-cell firing thresholds in
+  `.harness/ccmem/bank.db` (SQLite). Exposes `/write`, `/write_many`,
+  `/query`, `/bind`, `/health`, `/cells`.
+- `src/services/conceptMemoryClient.ts`: thin TS client. Best-effort —
+  if the service is down the harness behaves identically.
+- `src/tools/memoryTools.ts`: every `remember` call dual-writes to
+  ccmem alongside the existing markdown files.
+- `src/context/assembly.ts`: `Concept memory recall` section added to
+  the auto-recall buffer; subject to the shared 4 000-char cap.
+- `start.bat` step 6: auto-launches ccmem on port 8765 when Python is
+  present; defaults `ccmemUrl` to `http://localhost:8765` so the
+  feature is on out of the box.
+- `setCcmemUrl` is statically imported so saved settings propagate to
+  the client on startup (no first-call URL mismatch).
+
+### Apex naming
+
+The autonomous-experiences track originally shipped as "Hermes" in
+v0.6.0; renamed to "Apex" in v0.6.4 to avoid trademark concerns. No
+behavioural change — strings and identifiers only.
+
+### Startup hardening
+
+- `start.bat`: resolved a BOM-corrupted workspace path and unescaped
+  parentheses in echo blocks that broke launch on some shells.
+- Better error messages when `npm install` is required.
+- Hardcoded `cc_service` path removed; the bundled `ccmem/` is the
+  only source of truth.
+
+### Operate-mode routing + synthesis fallback
+
+`src/services/queryRouter.ts` and the synthesis fallback formatter
+tightened so operate-mode queries don't fall back into chat-mode
+synthesis silently.
+
+### Runtime files ignored
+
+`.harness-workspace`, `.forge-state.json`, and `.forge-stop` added to
+`.gitignore` so they no longer surface as dirty-tree noise.
+
+---
+
+## Ollama Agent Harness v0.6.3
+
+Workspace folder memory and the M-tier security batch.
+
+### Workspace memory
+
+`start.bat` now remembers the last chosen workspace folder in
+`.harness-workspace`. After the first run the prompt is skipped.
+
+### Security batch (M1 / M3 / M4 / M5 / M6 / L1)
+
+`b15695c` collected six audit fixes spanning path handling, write
+gates, and permission boundaries. Notably:
+
+- `baf9f7b`: atomic write helpers, path-traversal guard, near-root
+  path filter for tool writes.
+- C2 redirect guard now allows absolute paths it previously rejected.
+- Trigger-interval test flake stabilised.
+
+### Tests
+
+`src/tools/readBeforeWriteGate.test.ts` and adjacent suites updated
+to cover the new path-traversal and atomic-write paths.
+
+---
+
+## Ollama Agent Harness v0.6.2
+
+Workspace isolation — phase 2.
+
+`src/web/server.ts` path resolution now anchors to the project root
+rather than `process.cwd()`. Combined with v0.6.1, the agent cannot
+write into the harness repo from a chat launched in a different
+workspace, even when relative paths are passed.
+
+---
+
+## Ollama Agent Harness v0.6.1
+
+Workspace isolation — phase 1.
+
+The agent no longer writes into the harness repository when the user
+is working in an external project. `267a0f6` is a hard boundary: any
+write whose resolved path lands inside the harness checkout is
+refused. Combined with v0.6.2 below, this closes the "agent edited
+its own code without asking" class of incident.
+
+Also: PDF rendering fixes (emoji/unsupported-char corruption, cursor
+reset after tables, styled headings, alternating row colours, page
+numbers).
+
+---
+
+## Ollama Agent Harness v0.6.0
+
+Apex (originally "Hermes") autonomous experiences and `/yolo` mode.
+
+### `/yolo` autonomy
+
+`/yolo <duration>` switches the harness into `dontAsk` permission mode
+for a bounded window, letting the agent run without per-call prompts.
+On expiry the mode reverts. (Note: v0.6.4 / v0.6.5 follow-ups added
+grant revocation on expiry — see `451ead2`.)
+
+### Apex (Hermes) experiences
+
+`e77075e` introduced the autonomous-experience track: long-horizon
+tasks the harness can drive without continuous user input. UI panels
+for all nine harness features shipped in `b931922`.
+
+### Gap closure (267 tests)
+
+`fd81f84` closed nine outstanding harness gaps and shipped 267 new
+tests. The feature inventory expanded to cover doneStateVerifier
+wiring (gap1), benchmark task runner with tiered tasks (gap2), A/B
+model comparison + task contracts + cost tracking (gaps 3–5), and the
+remaining UX gaps.
+
 ---
 
 ## Ollama Agent Harness v0.5.9
