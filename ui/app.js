@@ -5607,6 +5607,71 @@ function attachGoalStartButton(msgEl, taskCount, planPath) {
   status.className = 'goal-start-status';
   status.style.cssText = 'font-size:12px;color:var(--text-dim);white-space:pre-line';
   status.textContent = 'Or open the Autonomy panel for full controls.';
+
+  // Live status pump: after a successful start, subscribe to the
+  // autonomy state SSE stream and rewrite the status line on every
+  // checkpoint push. One stream per click; closes when the run ends or
+  // the chat tab unloads.
+  let liveES = null;
+  let liveStartedAt = 0;
+  function closeLive() {
+    if (liveES) { try { liveES.close(); } catch { /* noop */ } liveES = null; }
+  }
+  function fmtElapsed(ms) {
+    if (!ms || ms < 0) return '';
+    const s = Math.round(ms / 1000);
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return m + 'm ' + (r < 10 ? '0' : '') + r + 's';
+  }
+  function renderLive(s) {
+    if (!s) return;
+    const phase = s.status || s.lastTaskStatus || 'running';
+    const icon = phase === 'done' ? '✅' : phase === 'failed' ? '❌' : phase === 'running' ? '⏳' : '•';
+    const task = s.lastTaskId || s.currentTask || '?';
+    const taskElapsed = fmtElapsed(s.lastTaskElapsedMs);
+    const runElapsed = fmtElapsed(Date.now() - liveStartedAt);
+    const done = s.totalDone ?? 0;
+    const failed = s.totalFailed ?? 0;
+    const pending = s.totalPending ?? 0;
+    const counts = done + '✓ ' + failed + '✗ ' + pending + '⋯';
+    const parts = [icon + ' ' + phase, 'task: ' + task];
+    if (taskElapsed) parts.push(taskElapsed);
+    parts.push(counts);
+    parts.push('elapsed: ' + runElapsed);
+    status.textContent = parts.join(' · ');
+    // Terminal states: lock in the final line and stop the stream.
+    const terminal = phase === 'done' || phase === 'failed' || (pending === 0 && phase !== 'running');
+    if (terminal) {
+      const finalIcon = phase === 'failed' || failed > 0 ? '❌' : '✅';
+      status.textContent = finalIcon + ' ' + (phase === 'failed' ? 'failed' : 'done')
+        + ' in ' + runElapsed + ' · ' + counts
+        + ' · see agent-outputs/ and .harness/sessions/ for artefacts.';
+      closeLive();
+    }
+  }
+  function startLive() {
+    if (typeof window.EventSource !== 'function') return;
+    closeLive();
+    liveStartedAt = Date.now();
+    try {
+      liveES = new EventSource('/api/autonomy/state/stream');
+      liveES.onmessage = (evt) => {
+        try {
+          const s = evt.data === 'null' ? null : JSON.parse(evt.data);
+          renderLive(s);
+        } catch { /* ignore malformed frames */ }
+      };
+      liveES.onerror = () => {
+        if (liveES && liveES.readyState === EventSource.CLOSED) closeLive();
+      };
+    } catch { /* SSE unavailable; the panel polls as a fallback */ }
+  }
+  if (typeof window !== 'undefined') {
+    window.addEventListener('beforeunload', closeLive);
+  }
+
   btn.onclick = async () => {
     btn.disabled = true;
     btn.style.opacity = '0.6';
@@ -5626,8 +5691,9 @@ function attachGoalStartButton(msgEl, taskCount, planPath) {
           : '';
         throw new Error((data.error || ('HTTP ' + response.status)) + detail);
       }
-      status.textContent = '✓ Started PID ' + (data.pid || '?') + ' — autonomy is now working through ' + planPath + '.';
+      status.textContent = '✓ Started PID ' + (data.pid || '?') + ' — waiting for first checkpoint...';
       btn.textContent = '✓ Autonomy started';
+      startLive();
       if (typeof startAutonomyPolling === 'function') {
         try { startAutonomyPolling(); } catch { /* noop */ }
       }
