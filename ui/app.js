@@ -4272,6 +4272,22 @@ async function sendMessage(opts) {
     }
   }
 
+  // /run <target>: launch the Active Goal primitive end-to-end. Creates the
+  // goal via POST /api/goals, then streams iteration SSE events from
+  // /api/goals/:id/start into per-iteration cards rendered inline in chat.
+  if (!isRegenerate && /^\s*\/run\s+\S/i.test(inp.value)) {
+    const target = inp.value.replace(/^\s*\/run\s+/i, '').trim();
+    if (target) {
+      const userText = inp.value;
+      hideSlashPalette();
+      inp.value = '';
+      autoSize(inp);
+      addMsg('user', userText);
+      runActiveGoalFromChat(target);
+      return;
+    }
+  }
+
   // /<skill-name> [args]: rewrite to "Use the skill: name with input: args" so
   // the agent picks it up via existing trigger matching. Only applies when the
   // first token matches a known runtime skill.
@@ -5272,6 +5288,156 @@ async function forkSession(id) {
   } catch (e) { showToast(e.message); }
 }
 
+// ── Active Goal /run: chat-driven launch + inline iteration cards ──────
+// /run <target> creates a goal via POST /api/goals then opens a streaming
+// POST /api/goals/:id/start. Browser EventSource is GET-only so we parse
+// the SSE frames manually from the fetch ReadableStream.
+async function runActiveGoalFromChat(target) {
+  let goal;
+  try {
+    const createResp = await fetch('/api/goals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target }),
+    });
+    if (!createResp.ok) {
+      const errTxt = await createResp.text().catch(() => '');
+      addMsg('assistant', '❌ Failed to create goal (HTTP ' + createResp.status + '): ' + (errTxt || ''));
+      return;
+    }
+    const body = await createResp.json();
+    goal = body.goal;
+  } catch (err) {
+    addMsg('assistant', '❌ Failed to create goal: ' + ((err && err.message) || err));
+    return;
+  }
+
+  const container = appendGoalRunContainer(goal);
+
+  let startResp;
+  try {
+    startResp = await fetch('/api/goals/' + encodeURIComponent(goal.id) + '/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runner: 'queryloop' }),
+    });
+  } catch (err) {
+    container.querySelector('.goal-run-status').textContent = 'Failed to start: ' + ((err && err.message) || err);
+    return;
+  }
+  if (!startResp.ok || !startResp.body) {
+    let errTxt = '';
+    try { errTxt = await startResp.text(); } catch (_) { /* ignore */ }
+    container.querySelector('.goal-run-status').textContent = 'Failed to start (HTTP ' + startResp.status + '): ' + errTxt;
+    return;
+  }
+
+  const reader = startResp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        let evType = 'message';
+        const dataLines = [];
+        for (const line of frame.split('\n')) {
+          if (line.startsWith('event:')) evType = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+        }
+        if (dataLines.length === 0) continue;
+        let parsed;
+        try { parsed = JSON.parse(dataLines.join('\n')); } catch (_) { parsed = { raw: dataLines.join('\n') }; }
+        handleGoalRunEvent(container, evType, parsed);
+      }
+    }
+  } catch (err) {
+    container.querySelector('.goal-run-status').textContent = 'Stream error: ' + ((err && err.message) || err);
+  }
+}
+
+function appendGoalRunContainer(goal) {
+  const area = document.getElementById('chatArea');
+  const el = document.createElement('div');
+  el.className = 'msg assistant goal-run';
+  el.innerHTML = '<div class="msg-avatar">' + esc(getAgentAvatar()) + '</div>'
+    + '<div class="msg-body"><div class="msg-role">' + esc(currentAgentName || 'Assistant') + ' · Active Goal</div>'
+    + '<div class="msg-content">'
+    + '<div class="goal-run-banner"><strong>Goal:</strong> ' + esc(goal.target) + ' <span class="goal-run-id">(' + esc(goal.id) + ')</span></div>'
+    + '<div class="goal-run-status">Starting…</div>'
+    + '<div class="goal-run-cards"></div>'
+    + '</div></div>';
+  area.appendChild(el);
+  scrollBottom();
+  return el;
+}
+
+function handleGoalRunEvent(container, evType, data) {
+  const status = container.querySelector('.goal-run-status');
+  const cards = container.querySelector('.goal-run-cards');
+  if (evType === 'loop_start') {
+    status.textContent = 'Loop started';
+    return;
+  }
+  if (evType === 'iteration_start') {
+    const card = document.createElement('div');
+    card.className = 'iter-card';
+    card.dataset.iter = String(data.iteration);
+    card.innerHTML = '<div class="iter-card-header">Iteration ' + esc(data.iteration) + ' <span class="iter-card-status">running…</span></div>'
+      + '<div class="iter-card-body"></div>';
+    cards.appendChild(card);
+    status.textContent = 'Iteration ' + data.iteration + ' running…';
+    scrollBottom();
+    return;
+  }
+  if (evType === 'iteration_end') {
+    const card = cards.querySelector('.iter-card[data-iter="' + data.iteration + '"]');
+    if (!card) return;
+    card.querySelector('.iter-card-status').textContent = data.outcome && data.outcome.error ? 'error' : 'done';
+    const out = data.outcome || {};
+    const body = card.querySelector('.iter-card-body');
+    const counters = [];
+    if (out.action) counters.push(out.action);
+    if (typeof out.toolCalls === 'number') counters.push(out.toolCalls + ' tool calls');
+    if (Array.isArray(out.filesTouched) && out.filesTouched.length) counters.push(out.filesTouched.length + ' files');
+    if (typeof out.tokensUsed === 'number' && out.tokensUsed > 0) counters.push(out.tokensUsed + ' tokens');
+    body.innerHTML = '<div class="iter-card-counters">' + counters.map((c) => '<span class="iter-card-pill">' + esc(c) + '</span>').join(' ') + '</div>';
+    if (out.error) body.innerHTML += '<div class="iter-card-error">' + esc(out.error) + '</div>';
+    if (out.notes) body.innerHTML += '<details class="iter-card-notes"><summary>notes</summary><pre>' + esc(out.notes) + '</pre></details>';
+    scrollBottom();
+    return;
+  }
+  if (evType === 'verification_end') {
+    const card = cards.querySelector('.iter-card[data-iter="' + data.iteration + '"]');
+    if (!card) return;
+    const r = data.result || {};
+    const total = Array.isArray(r.results) ? r.results.length : 0;
+    const passed = Array.isArray(r.results) ? r.results.filter((x) => x.result && x.result.passed).length : 0;
+    const verifLine = document.createElement('div');
+    verifLine.className = 'iter-card-verif' + (r.allRequiredPassed ? ' ok' : ' fail');
+    verifLine.textContent = 'verification: ' + passed + '/' + total + ' passed · required ' + (r.requiredPassed || 0) + '/' + (r.requiredCount || 0);
+    card.querySelector('.iter-card-body').appendChild(verifLine);
+    return;
+  }
+  if (evType === 'transitioned') {
+    status.textContent = 'Status: ' + (data.from || '?') + ' → ' + (data.to || '?');
+    return;
+  }
+  if (evType === 'loop_end') {
+    status.textContent = 'Loop ended: ' + (data.reason || 'unknown') + ' · ' + (data.iterations || 0) + ' iteration(s)';
+    scrollBottom();
+    return;
+  }
+  if (evType === 'error') {
+    status.textContent = 'Error: ' + (data.message || JSON.stringify(data));
+  }
+}
+
 function addMsg(role, text) {
   const area = document.getElementById('chatArea');
   const el = document.createElement('div');
@@ -6190,6 +6356,10 @@ const SLASH_COMMANDS = [
     fallback: '',
     takesArgs: true },
   { cmd: '/goal',        desc: 'Expand a high-level intent into autonomy tasks (e.g. /goal Build a wiki from D:\\big.pdf)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
+  { cmd: '/run',         desc: 'Run an Active Goal end-to-end with per-iteration cards (e.g. /run make the test suite pass)',
     apply: () => { hideSlashPalette(); },
     fallback: '',
     takesArgs: true },

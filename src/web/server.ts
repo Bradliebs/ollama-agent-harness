@@ -100,6 +100,7 @@ import { tryDeterministicShortcut } from '../core/deterministicShortcuts';
 import { tryGoalSlashCommand } from '../services/goalSlashCommand';
 import { createGoalRouter } from './goalRoutes';
 import { makeShellCommandRunner, type IterationRunner } from '../goal/shellRunner';
+import { makeQueryLoopRunner } from '../goal/queryLoopRunner';
 import { surfaceResumableGoalOnBoot } from '../goal/bootResume';
 import { parsePrioritySetCommand, setPriorityForToday } from '../services/morningPriority';
 import { routeSlashCommand, registerYoloHooks } from '../services/slashCommandRouter';
@@ -310,7 +311,27 @@ app.use(createGoalRouter({
         timeoutMs: typeof b.timeoutMs === 'number' ? b.timeoutMs : undefined,
       });
     }
-    throw new Error(`unsupported runner kind: '${kind}' (supported: 'shell')`);
+    if (kind === 'queryloop') {
+      // Drive the harness chat loop as the iteration body — same model,
+      // same tools the chat UI uses. Picks up the server's currently
+      // selected model unless the request body overrides it.
+      const model = typeof b.model === 'string' && b.model.trim().length > 0 ? b.model : currentModel;
+      if (!model) throw new Error("'queryloop' runner requires a selected model (no current model set)");
+      const systemPrompt = typeof b.systemPrompt === 'string' && b.systemPrompt.length > 0
+        ? b.systemPrompt
+        : (systemPromptOverride || 'You are an autonomy agent. Make concrete progress on the active goal each iteration. The outer loop will run verification after you stop.');
+      const client = webRuntime.createClient(model, ollamaHost);
+      const tools = webRuntime.getTools();
+      return makeQueryLoopRunner({
+        client,
+        tools,
+        model,
+        systemPrompt,
+        maxTurnsPerIteration: typeof b.maxTurns === 'number' ? b.maxTurns : undefined,
+        maxTimeMs: typeof b.maxTimeMs === 'number' ? b.maxTimeMs : undefined,
+      });
+    }
+    throw new Error(`unsupported runner kind: '${kind}' (supported: 'shell', 'queryloop')`);
   },
 }));
 
