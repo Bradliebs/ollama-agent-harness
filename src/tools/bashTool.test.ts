@@ -21,6 +21,44 @@ describe('BashTool safety guardrails', () => {
     expect(result.error).toContain('file_read/list_files');
   });
 
+  it('redirects unix-only commands on Windows with an actionable message', async () => {
+    // Pin the "spawn ls ENOENT" regression: previously `ls` (and cat,
+    // grep, etc.) would fall through to spawn and surface an opaque
+    // ENOENT. Agents would retry the same command, burn iterations, and
+    // never recover. The gate must name the right replacement tool.
+    if (process.platform !== 'win32') return;
+
+    const ls = await BashTool.execute({ command: 'ls -la' });
+    expect(ls.success).toBe(false);
+    expect(ls.error).toContain("'ls' is a Unix command not available on Windows");
+    expect(ls.error).toContain('list_files');
+
+    const cat = await BashTool.execute({ command: 'cat package.json' });
+    expect(cat.success).toBe(false);
+    expect(cat.error).toContain('file_read');
+
+    const grep = await BashTool.execute({ command: 'grep TODO src/index.ts' });
+    expect(grep.success).toBe(false);
+    expect(grep.error).toContain('grep tool');
+
+    const rm = await BashTool.execute({ command: 'rm foo.txt' });
+    expect(rm.success).toBe(false);
+    expect(rm.error).toContain('file_delete');
+  });
+
+  it('does not redirect when the executable is path-qualified (WSL/MSYS users opt in)', async () => {
+    if (process.platform !== 'win32') return;
+
+    // A path-qualified invocation will still fail to spawn here (the
+    // path doesn't exist), but it must NOT be intercepted by the
+    // unix-redirect gate — agents on WSL/MSYS legitimately point at
+    // their own ls. The spawn failure surfaces as the regular ENOENT
+    // path with whatever message the OS gives.
+    const result = await BashTool.execute({ command: 'C:/wsl/bin/ls' });
+    expect(result.success).toBe(false);
+    expect(result.error).not.toContain('Unix command not available');
+  });
+
   it('blocks shell control operators', async () => {
     const result = await BashTool.execute({ command: 'echo safe && whoami' });
 

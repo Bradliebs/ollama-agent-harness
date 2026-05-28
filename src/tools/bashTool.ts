@@ -256,6 +256,55 @@ function unsupportedWindowsBuiltin(executable: string): string | null {
   return `Blocked: ${executable} is a Windows shell built-in, but bash runs direct executables only. Use file_read/list_files for inspection, file_write/file_edit for files, make_directory to create folders, or a direct executable such as git, npm, node, or powershell.exe.`;
 }
 
+// Unix-only commands that don't exist on default Windows installs and
+// previously surfaced as opaque `spawn <cmd> ENOENT` errors. Each entry
+// names the right tool/replacement so the model can recover on the next
+// turn instead of retrying the same unix-ism. Only fires on Windows;
+// Linux/macOS spawn these for real.
+const UNIX_ONLY_REDIRECTS: Record<string, string> = {
+  ls: "use the list_files tool (cross-platform) instead of shelling out",
+  cat: "use the file_read tool instead of shelling out",
+  head: "use file_read and slice the result in your reasoning; head isn't on Windows",
+  tail: "use file_read; tail isn't on Windows without extra tooling",
+  grep: "use the grep tool (separate from bash) for pattern search",
+  rg: "use the grep tool for pattern search",
+  ack: "use the grep tool for pattern search",
+  find: "use list_files to enumerate files; Windows 'find' is a different program and rarely what you want",
+  pwd: "the cwd is the project root; no shell call needed",
+  touch: "use file_write with empty content to create the file",
+  mv: "use the file_move tool",
+  cp: "use file_read + file_write, or call 'powershell.exe Copy-Item' explicitly",
+  rm: "use the file_delete tool",
+  sed: "use the file_edit tool for in-place text edits; sed isn't on Windows",
+  awk: "awk isn't on Windows; use 'node -e' or 'python -c' for text transformation",
+  wc: "wc isn't on Windows; use file_read and count lines/words yourself, or 'node -e'",
+  cut: "cut isn't on Windows; transform with 'node -e' or 'python -c'",
+  tr: "tr isn't on Windows; transform with 'node -e' or 'python -c'",
+  uniq: "uniq isn't on Windows; sort + dedupe via 'node -e' or 'python -c'",
+  diff: "diff isn't standard on Windows; use 'git diff' for tracked files",
+  less: "less isn't on Windows; use file_read to inspect files",
+  more: "avoid shelling for pagers; use file_read to inspect files",
+  man: "man isn't on Windows; consult the tool's --help or its docs",
+  basename: "basename isn't on Windows; compute it inline (node path.basename / python os.path.basename)",
+  dirname: "dirname isn't on Windows; compute it inline (node path.dirname / python os.path.dirname)",
+  realpath: "realpath isn't on Windows; use 'node -e' with path.resolve or 'python -c' with os.path.realpath",
+  du: "du isn't on Windows; use 'powershell.exe Get-ChildItem | Measure-Object Length -Sum'",
+  df: "df isn't on Windows; use 'powershell.exe Get-PSDrive'",
+  file: "the 'file' command isn't on Windows; inspect extensions and magic bytes via file_read",
+};
+
+function unsupportedUnixCommand(executable: string): string | null {
+  if (process.platform !== 'win32') return null;
+  // Path-qualified invocations target a specific binary the agent chose;
+  // assume they know it exists (e.g. WSL paths, MSYS2 installs).
+  if (executable.includes('\\') || executable.includes('/')) return null;
+  if (WINDOWS_NATIVE_EXT_PATTERN.test(executable)) return null;
+  const normalized = executable.toLowerCase();
+  const redirect = UNIX_ONLY_REDIRECTS[normalized];
+  if (!redirect) return null;
+  return `Blocked: '${executable}' is a Unix command not available on Windows. ${redirect}.`;
+}
+
 function formatOutput(stdout: string, stderr: string): string {
   const output = [
     stdout ? `STDOUT:\n${stdout.slice(0, MAX_OUTPUT_SIZE)}` : '',
@@ -370,6 +419,11 @@ export const BashTool: Tool = {
       const blockedBuiltin = unsupportedWindowsBuiltin(executable);
       if (blockedBuiltin) {
         resolve({ success: false, output: blockedBuiltin, error: blockedBuiltin });
+        return;
+      }
+      const blockedUnix = unsupportedUnixCommand(executable);
+      if (blockedUnix) {
+        resolve({ success: false, output: blockedUnix, error: blockedUnix });
         return;
       }
       const rawArgs = argv.slice(1);
