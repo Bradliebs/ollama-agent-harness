@@ -117,6 +117,29 @@ export async function tryGoalSlashCommand(messageText: string, options: GoalSlas
 
   const planAbsPath = path.resolve(options.projectDir, planPath);
   const existingIds = await discoverExistingIds(planAbsPath, fsHooks);
+
+  // Reject the "pasted-back plan line" case: if the intent's first
+  // whitespace-separated token is already a task ID in the plan, we
+  // would otherwise slugify the whole pasted blob, bump a suffix, and
+  // produce a Frankenstein title like `slug--3 — slug--2 — slug- — …`.
+  // Tell the user what's happening instead of silently corrupting the
+  // plan.
+  const leadingToken = intent.split(/\s+/)[0]?.toLowerCase();
+  const duplicateId = leadingToken
+    ? existingIds.find((id) => id.toLowerCase() === leadingToken)
+    : undefined;
+  if (duplicateId) {
+    return {
+      handled: true,
+      mutated: false,
+      tasks: [],
+      response:
+        `_Task \`${duplicateId}\` already exists in \`${planPath}\`._\n\n` +
+        `- To re-run it, type \`/yolo\` (runs all pending tasks) or \`/run ${duplicateId}\`.\n` +
+        `- To create a fresh task, rephrase the goal without the existing task id at the start.`,
+    };
+  }
+
   const result = expandGoal(intent, { existingIds });
 
   if (result.tasks.length === 0) {

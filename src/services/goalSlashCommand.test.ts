@@ -94,4 +94,23 @@ describe('tryGoalSlashCommand', () => {
     const result = await tryGoalSlashCommand('/goal    ', { projectDir: REPO, fs: fake.hooks });
     expect(result.response).toMatch(/Usage:/);
   });
+
+  it('refuses when the intent starts with an existing task id (pasted-back plan line)', async () => {
+    const initial =
+      '# Implementation Plan\n\n' +
+      '- [ ] find-me-portable-aircons- — find me portable aircons\n' +
+      '  - kind: external\n';
+    const fake = makeFakeFs({ [PLAN]: initial });
+    const pasted =
+      '/goal find-me-portable-aircons- — find me portable aircons again now with more detail';
+    const result = await tryGoalSlashCommand(pasted, { projectDir: REPO, fs: fake.hooks });
+    expect(result.handled).toBe(true);
+    expect(result.mutated).toBe(false);
+    expect(result.tasks).toEqual([]);
+    expect(result.response).toMatch(/already exists/);
+    expect(result.response).toMatch(/\/yolo/);
+    expect(result.response).toMatch(/\/run find-me-portable-aircons-/);
+    // Plan untouched.
+    expect(fake.store.get(PLAN)).toBe(initial);
+  });
 });
