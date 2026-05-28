@@ -98,6 +98,9 @@ import { verifyCode, verifyService, verifyPromiseFulfillability } from '../core/
 import { attachWsServer } from './wsServer';
 import { tryDeterministicShortcut } from '../core/deterministicShortcuts';
 import { tryGoalSlashCommand } from '../services/goalSlashCommand';
+import { createGoalRouter } from './goalRoutes';
+import { makeShellCommandRunner, type IterationRunner } from '../goal/shellRunner';
+import { surfaceResumableGoalOnBoot } from '../goal/bootResume';
 import { parsePrioritySetCommand, setPriorityForToday } from '../services/morningPriority';
 import { routeSlashCommand, registerYoloHooks } from '../services/slashCommandRouter';
 import { calculateReadiness, type ReadinessInput } from '../core/readinessGate';
@@ -284,6 +287,32 @@ function requireAuditReason(
   res.status(400).json({ error: `${actionLabel} requires a reason of at least 8 characters.` });
   return null;
 }
+
+// ── Active Goal routes ───────────────────────────────────────────────────
+// Mounted early so the goals API is available regardless of which other
+// route blocks follow. The router is self-contained; it only needs
+// projectDir + auth + a runner factory. The factory below dispatches on the
+// request body so callers pick the runner explicitly per /start request.
+app.use(createGoalRouter({
+  projectDir: PROJECT_DIR,
+  requireAuth: (req, res, label) => requireEscalationAuth(req, res, label),
+  makeRunner: (body: unknown, _goalId: string): IterationRunner => {
+    const b = (body && typeof body === 'object') ? body as Record<string, unknown> : {};
+    const kind = typeof b.runner === 'string' ? b.runner : 'shell';
+    if (kind === 'shell') {
+      if (typeof b.command !== 'string' || b.command.trim().length === 0) {
+        throw new Error("'shell' runner requires 'command' (string)");
+      }
+      return makeShellCommandRunner({
+        command: b.command,
+        args: Array.isArray(b.args) ? b.args.filter((a): a is string => typeof a === 'string') : undefined,
+        cwd: typeof b.cwd === 'string' ? b.cwd : PROJECT_DIR,
+        timeoutMs: typeof b.timeoutMs === 'number' ? b.timeoutMs : undefined,
+      });
+    }
+    throw new Error(`unsupported runner kind: '${kind}' (supported: 'shell')`);
+  },
+}));
 
 type QueryLoopRunner = (config: LoopConfig, deps: QueryLoopDeps, initialMessages: Message[]) => AsyncGenerator<LoopEvent>;
 
@@ -10796,6 +10825,10 @@ export async function startServer(): Promise<void> {
   }
   await ensureSettingsLoaded();
   startupProfile.record('settings-load');
+  // Surface any active/paused goal that survived the restart so operators
+  // see it in the boot log even before they open the UI. Best-effort; a
+  // failure here must not block startup.
+  try { await surfaceResumableGoalOnBoot(PROJECT_DIR); } catch { /* ignore */ }
   const staleSessionCount = await SessionStorage.markStaleRunningSessions(PROJECT_DIR, MODULE_LOAD_STARTED_AT).catch(() => 0);
   if (staleSessionCount > 0) logger.warn('Sessions', `Marked ${staleSessionCount} stale running session(s) as aborted after restart`);
   startupProfile.record('stale-session-cleanup');
