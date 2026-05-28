@@ -445,7 +445,14 @@ async function handleYolo(text: string, _projectDir: string): Promise<SlashResul
   if (startResult.pid) lines.push(`- Autonomy PID: **${startResult.pid}**`);
   lines.push('');
   if (!startResult.started) {
-    lines.push('⚠️ Autonomy run did not start (no pending tasks?). dontAsk mode is active — add tasks with `/goal` then start from the Autonomy tab.');
+    // Surface the real reason instead of guessing. Common cases the
+    // server returns: 'No pending tasks in IMPLEMENTATION_PLAN.md.',
+    // 'An autonomy run is already active.', 'Kill switch is active.',
+    // 'Autonomy preflight failed.'. Hardcoding "no pending tasks?"
+    // misled users when the real cause was something else.
+    const reason = startResult.error ? startResult.error : 'unknown reason';
+    lines.push(`⚠️ Autonomy run did not start: ${reason}`);
+    lines.push('dontAsk mode is active. Add tasks with `/goal`, then click Start in the autonomy panel or re-run `/yolo`.');
   } else {
     lines.push('The agent is now working through `IMPLEMENTATION_PLAN.md` autonomously.');
   }

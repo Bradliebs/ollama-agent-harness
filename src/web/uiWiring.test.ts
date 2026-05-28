@@ -5,6 +5,7 @@ const root = process.cwd();
 const indexHtml = fs.readFileSync(path.join(root, 'ui', 'index.html'), 'utf-8');
 const appJs = fs.readFileSync(path.join(root, 'ui', 'app.js'), 'utf-8');
 const serverTs = fs.readFileSync(path.join(root, 'src', 'web', 'server.ts'), 'utf-8');
+const goalRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'goalRoutes.ts'), 'utf-8');
 
 const inlineGlobals = new Set([
   'alert',
@@ -239,7 +240,9 @@ describe('web UI wiring', () => {
   });
 
   it('keeps UI API calls backed by server routes', () => {
-    const serverRoutes = new Set([...serverTs.matchAll(/app\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1])));
+    const appRoutes = [...serverTs.matchAll(/app\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const routerRoutes = [...goalRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const serverRoutes = new Set([...appRoutes, ...routerRoutes]);
     const uiRoutes = [...new Set(extractFetchExpressions(appJs).map(normalizeUiFetchPath).filter((route): route is string => Boolean(route)))].sort();
 
     // A UI route like '/api/foo/:param' is satisfied either by an exact match
@@ -253,6 +256,14 @@ describe('web UI wiring', () => {
       if (serverRoutes.has(route)) return false;
       if (route.endsWith('/:param')) {
         const prefix = route.slice(0, -':param'.length);
+        for (const serverRoute of serverRoutes) {
+          if (serverRoute.startsWith(prefix) && serverRoute.length > prefix.length) {
+            return false;
+          }
+        }
+      }
+      if (route.endsWith('/:param/')) {
+        const prefix = route.slice(0, -':param/'.length);
         for (const serverRoute of serverRoutes) {
           if (serverRoute.startsWith(prefix) && serverRoute.length > prefix.length) {
             return false;

@@ -6799,6 +6799,15 @@ app.post('/api/chat', async (req, res) => {
         res.setHeader('Connection', 'keep-alive');
         res.flushHeaders();
         res.write(`data: ${JSON.stringify({ type: 'text', content: goalResult.response })}\n\n`);
+        if (goalResult.mutated && goalResult.tasks.length > 0) {
+          // Side-channel hint for the chat UI: render a one-click Start
+          // button under the response so beginners do not have to hunt
+          // for the Autonomy tab. The response markdown still says
+          // "Start the autonomy loop to begin work." — the button is
+          // additive, not a replacement, and degrades gracefully when
+          // the client does not handle this event.
+          res.write(`data: ${JSON.stringify({ type: 'goal_appended', taskCount: goalResult.tasks.length, planPath: 'IMPLEMENTATION_PLAN.md' })}\n\n`);
+        }
         res.write(`data: ${JSON.stringify({ type: 'done', reason: 'goal_slash_command' })}\n\n`);
         emitEvent(PROJECT_DIR, 'system', 'goal_slash_command', {
           mutated: goalResult.mutated,

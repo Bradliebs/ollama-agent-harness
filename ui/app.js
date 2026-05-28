@@ -4462,6 +4462,12 @@ async function sendMessage(opts) {
             renderMd(msgEl.querySelector('.msg-content'), assistantText);
             scrollBottom();
             break;
+          case 'goal_appended':
+            // Server signal that /goal appended tasks. Render a Start
+            // button under the response so a first-time user can run
+            // autonomy in one click without hunting for the dashboard.
+            if (msgEl) attachGoalStartButton(msgEl, ev.taskCount || 1, ev.planPath || 'IMPLEMENTATION_PLAN.md');
+            break;
           case 'tool_call':
             notePetToolCall();
             toolBox = ensureToolBox(toolBox);
@@ -5583,6 +5589,56 @@ function addMsg(role, text) {
   area.appendChild(el);
   scrollBottom();
   return el;
+}
+
+function attachGoalStartButton(msgEl, taskCount, planPath) {
+  const body = msgEl.querySelector('.msg-body');
+  if (!body) return;
+  if (body.querySelector('.goal-start-row')) return;
+  const row = document.createElement('div');
+  row.className = 'goal-start-row';
+  row.style.cssText = 'margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'goal-start-btn';
+  btn.textContent = '▶ Start autonomy on ' + taskCount + ' task' + (taskCount === 1 ? '' : 's');
+  btn.style.cssText = 'padding:6px 12px;border-radius:6px;border:1px solid var(--accent,#6cf);background:var(--accent,#6cf);color:#000;font-weight:600;cursor:pointer';
+  const status = document.createElement('span');
+  status.className = 'goal-start-status';
+  status.style.cssText = 'font-size:12px;color:var(--text-dim)';
+  status.textContent = 'Or open the Autonomy panel for full controls.';
+  btn.onclick = async () => {
+    btn.disabled = true;
+    btn.style.opacity = '0.6';
+    status.textContent = 'Starting...';
+    try {
+      const model = (document.getElementById('modelSelect')?.value) || '';
+      const response = await fetch('/api/autonomy/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, maxIterations: taskCount, maxTurns: 30, timeBudgetMs: 0, unproductiveTurnLimit: 6 }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.error) {
+        const blocked = data.preflight?.blocked || [];
+        const detail = blocked.length ? ': ' + blocked.map((c) => c.label).join(', ') : '';
+        throw new Error((data.error || ('HTTP ' + response.status)) + detail);
+      }
+      status.textContent = '✓ Started PID ' + (data.pid || '?') + ' — autonomy is now working through ' + planPath + '.';
+      btn.textContent = '✓ Autonomy started';
+      if (typeof startAutonomyPolling === 'function') {
+        try { startAutonomyPolling(); } catch { /* noop */ }
+      }
+    } catch (error) {
+      status.textContent = '⚠️ ' + (error.message || String(error));
+      btn.disabled = false;
+      btn.style.opacity = '1';
+    }
+  };
+  row.appendChild(btn);
+  row.appendChild(status);
+  body.appendChild(row);
+  scrollBottom();
 }
 
 function attachEvidenceCard(msgEl, evidence) {

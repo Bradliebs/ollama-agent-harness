@@ -1,0 +1,44 @@
+Phase 4.4: one-click Start button after /goal + /yolo prints the real error
+
+Two beginner-UX fixes. The shared goal: if I have never seen this
+before, can I open it and use it?
+
+1) /goal response now offers a one-click Start button.
+
+   Before: /goal appended a task and said "Start the autonomy loop to
+   begin work." A first-time user has no idea where that loop lives and
+   the message is a dead end.
+
+   After: server emits a side-channel `goal_appended` SSE event after
+   the response text. The chat UI handles it by attaching a Start button
+   under the assistant bubble. Click -> POST /api/autonomy/start with
+   sensible defaults (maxIterations = taskCount, 30 turns, no time cap,
+   stall 6). Errors surface inline. The button is additive -- the prose
+   hint still renders, and the event degrades silently for any client
+   that does not handle it.
+
+   src/web/server.ts:  emit goal_appended only when mutated && tasks > 0.
+   ui/app.js:          new switch case for goal_appended +
+                       attachGoalStartButton() helper.
+
+2) /yolo no longer lies about "no pending tasks?".
+
+   Before: the only failure message read "Autonomy run did not start
+   (no pending tasks?)". If the real cause was the kill switch, an
+   already-running run, or a failed preflight, the user was misled.
+
+   After: print the actual startResult.error verbatim, then a single
+   actionable next-step line.
+
+   src/services/slashCommandRouter.ts: use startResult.error.
+
+3) Bonus: fix a pre-existing test failure from Phase 3.
+
+   src/web/uiWiring.test.ts only scanned `app.<verb>(...)` declarations
+   and missed routes mounted via `app.use(createGoalRouter(...))`. The
+   /api/goals/* family looked unbacked. Also extended the prefix-match
+   logic to handle UI patterns like `fetch('/api/goals/' + id + '/' +
+   action)` which normalize to `/api/goals/:param/`.
+
+Validation: tsc clean. 15 suites / 172 tests green (added uiWiring,
+slashCommandRouter, goalSlashCommand, bashTool, goalRoutes, src/goal/*).
