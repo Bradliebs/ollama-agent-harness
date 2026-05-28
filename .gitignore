@@ -36,6 +36,9 @@ forge-memory/
 .forge-state.json
 .forge-stop
 
+# Transient build output from scripts/preview-comparison-report.js
+.preview-build/
+
 # Bare-filename agent writes (file_write redirects scratch output here so
 # it does not pile up at the repo root). Force-add intentional outputs.
 agent-outputs/
