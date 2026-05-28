@@ -2602,7 +2602,13 @@ async function buildAutonomyPreflight(planPreview?: Awaited<ReturnType<typeof re
     { id: 'model.health', label: 'Model backend health', status: modelHealthy ? 'ready' : 'blocked', message: modelHealthy ? `${modelBackend} backend is available.` : `${modelBackend} backend is not ready.` },
     { id: 'plan.pending', label: 'Pending plan tasks', status: planPreview && planPreview.pending > 0 ? 'ready' : 'blocked', message: planPreview ? `${planPreview.pending} pending task(s) in IMPLEMENTATION_PLAN.md.` : 'IMPLEMENTATION_PLAN.md could not be parsed.' },
     { id: 'kill.switch', label: 'Kill switch clear', status: killSwitchActive ? 'blocked' : 'ready', message: killSwitchActive ? `Kill switch active: ${killSwitchReason}` : 'Kill switch is clear.' },
-    { id: 'validation.scripts', label: 'Validation scripts', status: setup.local.package.ok ? 'ready' : 'blocked', message: setup.local.package.message },
+    // Validation scripts (npm test + typecheck/lint) are a code-quality
+    // signal, not a precondition for autonomy. A research task with
+    // kind:external has no use for them; gating all runs on their
+    // presence locked first-time users out of the loop entirely. The
+    // /api/readiness section reports the same check as 'warn'; mirror
+    // that here.
+    { id: 'validation.scripts', label: 'Validation scripts', status: setup.local.package.ok ? 'ready' : 'warn', message: setup.local.package.message, action: 'Run doctor' },
     checkToolEnabled('bash'),
     checkToolEnabled('file_edit'),
     checkToolEnabled('file_write'),

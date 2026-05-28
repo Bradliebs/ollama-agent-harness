@@ -5605,7 +5605,7 @@ function attachGoalStartButton(msgEl, taskCount, planPath) {
   btn.style.cssText = 'padding:6px 12px;border-radius:6px;border:1px solid var(--accent,#6cf);background:var(--accent,#6cf);color:#000;font-weight:600;cursor:pointer';
   const status = document.createElement('span');
   status.className = 'goal-start-status';
-  status.style.cssText = 'font-size:12px;color:var(--text-dim)';
+  status.style.cssText = 'font-size:12px;color:var(--text-dim);white-space:pre-line';
   status.textContent = 'Or open the Autonomy panel for full controls.';
   btn.onclick = async () => {
     btn.disabled = true;
@@ -5620,8 +5620,10 @@ function attachGoalStartButton(msgEl, taskCount, planPath) {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.error) {
-        const blocked = data.preflight?.blocked || [];
-        const detail = blocked.length ? ': ' + blocked.map((c) => c.label).join(', ') : '';
+        const blocked = (data.preflight && data.preflight.blocked) || [];
+        const detail = blocked.length
+          ? '\n' + blocked.map((c) => '• ' + c.label + ': ' + (c.message || 'no detail') + (c.action ? ' — ' + c.action : '')).join('\n')
+          : '';
         throw new Error((data.error || ('HTTP ' + response.status)) + detail);
       }
       status.textContent = '✓ Started PID ' + (data.pid || '?') + ' — autonomy is now working through ' + planPath + '.';
