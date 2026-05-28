@@ -5289,24 +5289,64 @@ async function forkSession(id) {
 }
 
 // ── Active Goal /run: chat-driven launch + inline iteration cards ──────
-// /run <target> [-- verify <cmd>]... creates a goal via POST /api/goals
+// /run <target> [-- verify <check>]... creates a goal via POST /api/goals
 // then opens a streaming POST /api/goals/:id/start. Browser EventSource is
 // GET-only so we parse the SSE frames manually from the fetch ReadableStream.
 //
 // Verification syntax: the loop treats a goal with zero required checks as
-// "already satisfied" and exits after iteration 0. So /run requires at
-// least one `-- verify <shell command>` segment. The first segment becomes
-// the goal target; subsequent `-- verify <cmd>` segments become required
-// `command` checks (exit 0 = pass).
+// "already satisfied" and exits after iteration 0, so /run requires at
+// least one `-- verify` segment. Two forms are supported per segment:
+//   -- verify file:<relative or absolute path>      → file_exists check
+//   -- verify <argv>                                 → command check
+//                                                     (tokenized, no shell)
+// `file:` is cross-platform; the command form goes through Node's execFile
+// so the first token must be a real binary (no shell builtins like `test`).
+function tokenizeShellWords(s) {
+  // Minimal POSIX-ish tokenizer: whitespace splits, single/double quotes
+  // group, backslash escapes the next char. Not a full shell parser; good
+  // enough to turn `cmd /c "if exist x (exit 0)"` into 3 argv items.
+  const out = [];
+  let cur = '';
+  let quote = null;
+  let escaped = false;
+  let hasContent = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (escaped) { cur += c; hasContent = true; escaped = false; continue; }
+    if (c === '\\') { escaped = true; continue; }
+    if (quote) {
+      if (c === quote) { quote = null; hasContent = true; continue; }
+      cur += c; hasContent = true; continue;
+    }
+    if (c === '"' || c === "'") { quote = c; hasContent = true; continue; }
+    if (/\s/.test(c)) {
+      if (hasContent) { out.push(cur); cur = ''; hasContent = false; }
+      continue;
+    }
+    cur += c; hasContent = true;
+  }
+  if (hasContent) out.push(cur);
+  return out;
+}
+
 function parseRunInvocation(raw) {
   const trimmed = (raw || '').trim();
   if (!trimmed) return { target: '', verifications: [] };
-  // Split on ` -- verify ` (case-insensitive, at least one surrounding space).
   const parts = trimmed.split(/\s+--\s+verify\s+/i);
   const target = (parts[0] || '').trim();
-  const verifications = parts.slice(1)
-    .map((c) => c.trim())
-    .filter((c) => c.length > 0);
+  const verifications = [];
+  for (const seg of parts.slice(1)) {
+    const s = seg.trim();
+    if (!s) continue;
+    if (/^file:/i.test(s)) {
+      const p = s.slice(5).trim();
+      if (p) verifications.push({ kind: 'file_exists', path: p, raw: s });
+      continue;
+    }
+    const tokens = tokenizeShellWords(s);
+    if (tokens.length === 0) continue;
+    verifications.push({ kind: 'command', command: tokens[0], args: tokens.slice(1), raw: s });
+  }
   return { target, verifications };
 }
 
@@ -5317,20 +5357,25 @@ async function runActiveGoalFromChat(rawTarget) {
     return;
   }
   if (verifications.length === 0) {
-    addMsg('assistant', '❌ `/run` needs at least one verification check, otherwise the loop exits immediately. '
-      + 'Use `-- verify <shell command>` (exit code 0 = pass). '
-      + 'Example: `/run make all tests pass -- verify npm test`.');
+    addMsg('assistant', '❌ `/run` needs at least one `-- verify` check, otherwise the loop exits immediately.\n\n'
+      + 'Two forms:\n'
+      + '• `-- verify file:<path>` — passes when the file exists (cross-platform, recommended for research/output goals).\n'
+      + '• `-- verify <argv>` — passes when the command exits 0. Tokenized as argv, no shell, so the first token must be a real binary (not `test` or `if`).\n\n'
+      + 'Examples:\n'
+      + '• `/run gather aircon notes -- verify file:agent-outputs/aircons.md`\n'
+      + '• `/run make all tests pass -- verify npm test`');
     return;
   }
 
   const goalBody = {
     target,
-    verification: verifications.map((cmd, i) => ({
-      id: 'v' + (i + 1),
-      description: cmd,
-      required: true,
-      spec: { kind: 'command', command: cmd, expectExitCode: 0 },
-    })),
+    verification: verifications.map((v, i) => {
+      const baseId = 'v' + (i + 1);
+      if (v.kind === 'file_exists') {
+        return { id: baseId, description: v.raw, required: true, spec: { kind: 'file_exists', path: v.path } };
+      }
+      return { id: baseId, description: v.raw, required: true, spec: { kind: 'command', command: v.command, args: v.args, expectExitCode: 0 } };
+    }),
   };
 
   let goal;
@@ -5508,7 +5553,7 @@ function handleGoalRunEvent(container, evType, data) {
     const passed = Array.isArray(r.results) ? r.results.filter((x) => x.result && x.result.passed).length : 0;
     const verifLine = document.createElement('div');
     verifLine.className = 'iter-card-verif' + (r.allRequiredPassed ? ' ok' : ' fail');
-    verifLine.textContent = 'verification: ' + passed + '/' + total + ' passed · required ' + (r.requiredPassed || 0) + '/' + (r.requiredCount || 0);
+    verifLine.textContent = 'verification: ' + passed + '/' + total + ' passed (' + (r.requiredPassed || 0) + '/' + (r.requiredCount || 0) + ' required)';
     card.querySelector('.iter-card-body').appendChild(verifLine);
     return;
   }
@@ -6447,7 +6492,7 @@ const SLASH_COMMANDS = [
     apply: () => { hideSlashPalette(); },
     fallback: '',
     takesArgs: true },
-  { cmd: '/run',         desc: 'Run an Active Goal end-to-end (e.g. /run make all tests pass -- verify npm test)',
+  { cmd: '/run',         desc: 'Run an Active Goal end-to-end (e.g. /run gather notes -- verify file:agent-outputs/notes.md, or -- verify npm test)',
     apply: () => { hideSlashPalette(); },
     fallback: '',
     takesArgs: true },
