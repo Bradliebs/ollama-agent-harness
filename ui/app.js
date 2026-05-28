@@ -5289,16 +5289,56 @@ async function forkSession(id) {
 }
 
 // ── Active Goal /run: chat-driven launch + inline iteration cards ──────
-// /run <target> creates a goal via POST /api/goals then opens a streaming
-// POST /api/goals/:id/start. Browser EventSource is GET-only so we parse
-// the SSE frames manually from the fetch ReadableStream.
-async function runActiveGoalFromChat(target) {
+// /run <target> [-- verify <cmd>]... creates a goal via POST /api/goals
+// then opens a streaming POST /api/goals/:id/start. Browser EventSource is
+// GET-only so we parse the SSE frames manually from the fetch ReadableStream.
+//
+// Verification syntax: the loop treats a goal with zero required checks as
+// "already satisfied" and exits after iteration 0. So /run requires at
+// least one `-- verify <shell command>` segment. The first segment becomes
+// the goal target; subsequent `-- verify <cmd>` segments become required
+// `command` checks (exit 0 = pass).
+function parseRunInvocation(raw) {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return { target: '', verifications: [] };
+  // Split on ` -- verify ` (case-insensitive, at least one surrounding space).
+  const parts = trimmed.split(/\s+--\s+verify\s+/i);
+  const target = (parts[0] || '').trim();
+  const verifications = parts.slice(1)
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0);
+  return { target, verifications };
+}
+
+async function runActiveGoalFromChat(rawTarget) {
+  const { target, verifications } = parseRunInvocation(rawTarget);
+  if (!target) {
+    addMsg('assistant', '❌ `/run` needs a goal. Try `/run make all tests pass -- verify npm test`.');
+    return;
+  }
+  if (verifications.length === 0) {
+    addMsg('assistant', '❌ `/run` needs at least one verification check, otherwise the loop exits immediately. '
+      + 'Use `-- verify <shell command>` (exit code 0 = pass). '
+      + 'Example: `/run make all tests pass -- verify npm test`.');
+    return;
+  }
+
+  const goalBody = {
+    target,
+    verification: verifications.map((cmd, i) => ({
+      id: 'v' + (i + 1),
+      description: cmd,
+      required: true,
+      spec: { kind: 'command', command: cmd, expectExitCode: 0 },
+    })),
+  };
+
   let goal;
   try {
     const createResp = await fetch('/api/goals', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ target }),
+      body: JSON.stringify(goalBody),
     });
     if (!createResp.ok) {
       const errTxt = await createResp.text().catch(() => '');
@@ -5323,12 +5363,14 @@ async function runActiveGoalFromChat(target) {
     });
   } catch (err) {
     container.querySelector('.goal-run-status').textContent = 'Failed to start: ' + ((err && err.message) || err);
+    finalizeGoalRunControls(container);
     return;
   }
   if (!startResp.ok || !startResp.body) {
     let errTxt = '';
     try { errTxt = await startResp.text(); } catch (_) { /* ignore */ }
     container.querySelector('.goal-run-status').textContent = 'Failed to start (HTTP ' + startResp.status + '): ' + errTxt;
+    finalizeGoalRunControls(container);
     return;
   }
 
@@ -5358,6 +5400,8 @@ async function runActiveGoalFromChat(target) {
     }
   } catch (err) {
     container.querySelector('.goal-run-status').textContent = 'Stream error: ' + ((err && err.message) || err);
+  } finally {
+    finalizeGoalRunControls(container);
   }
 }
 
@@ -5365,16 +5409,60 @@ function appendGoalRunContainer(goal) {
   const area = document.getElementById('chatArea');
   const el = document.createElement('div');
   el.className = 'msg assistant goal-run';
+  el.dataset.goalId = goal.id;
+  const checksSummary = (goal.verification && goal.verification.length)
+    ? goal.verification.length + ' check(s)'
+    : 'no checks';
   el.innerHTML = '<div class="msg-avatar">' + esc(getAgentAvatar()) + '</div>'
     + '<div class="msg-body"><div class="msg-role">' + esc(currentAgentName || 'Assistant') + ' · Active Goal</div>'
     + '<div class="msg-content">'
-    + '<div class="goal-run-banner"><strong>Goal:</strong> ' + esc(goal.target) + ' <span class="goal-run-id">(' + esc(goal.id) + ')</span></div>'
+    + '<div class="goal-run-banner"><strong>Goal:</strong> ' + esc(goal.target)
+    + ' <span class="goal-run-id">(' + esc(goal.id) + ' · ' + esc(checksSummary) + ')</span></div>'
+    + '<div class="goal-run-controls">'
+    +   '<button type="button" class="goal-run-pause">Pause</button>'
+    +   '<button type="button" class="goal-run-abandon">Abandon</button>'
+    + '</div>'
     + '<div class="goal-run-status">Starting…</div>'
     + '<div class="goal-run-cards"></div>'
     + '</div></div>';
   area.appendChild(el);
+  el.querySelector('.goal-run-pause').addEventListener('click', () => goalRunControl(el, 'pause'));
+  el.querySelector('.goal-run-abandon').addEventListener('click', () => goalRunControl(el, 'abandon'));
   scrollBottom();
   return el;
+}
+
+async function goalRunControl(container, action) {
+  const goalId = container.dataset.goalId;
+  if (!goalId) return;
+  const status = container.querySelector('.goal-run-status');
+  const btn = container.querySelector(action === 'pause' ? '.goal-run-pause' : '.goal-run-abandon');
+  if (btn) btn.disabled = true;
+  try {
+    const resp = await fetch('/api/goals/' + encodeURIComponent(goalId) + '/' + action, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (!resp.ok) {
+      const errTxt = await resp.text().catch(() => '');
+      status.textContent = action + ' failed (HTTP ' + resp.status + '): ' + errTxt;
+      if (btn) btn.disabled = false;
+      return;
+    }
+    status.textContent = action === 'pause' ? 'Pause requested…' : 'Abandon requested…';
+    if (action === 'abandon') finalizeGoalRunControls(container);
+  } catch (err) {
+    status.textContent = action + ' failed: ' + ((err && err.message) || err);
+    if (btn) btn.disabled = false;
+  }
+}
+
+function finalizeGoalRunControls(container) {
+  const pause = container.querySelector('.goal-run-pause');
+  const abandon = container.querySelector('.goal-run-abandon');
+  if (pause) pause.disabled = true;
+  if (abandon) abandon.disabled = true;
 }
 
 function handleGoalRunEvent(container, evType, data) {
@@ -6359,7 +6447,7 @@ const SLASH_COMMANDS = [
     apply: () => { hideSlashPalette(); },
     fallback: '',
     takesArgs: true },
-  { cmd: '/run',         desc: 'Run an Active Goal end-to-end with per-iteration cards (e.g. /run make the test suite pass)',
+  { cmd: '/run',         desc: 'Run an Active Goal end-to-end (e.g. /run make all tests pass -- verify npm test)',
     apply: () => { hideSlashPalette(); },
     fallback: '',
     takesArgs: true },
@@ -6523,6 +6611,32 @@ function applySelectedSlashCommand() {
   const choice = slashPaletteState.filtered[slashPaletteState.index];
   if (!choice) return;
   const inp = document.getElementById('chatInput');
+  const currentValue = inp ? inp.value : '';
+
+  // takesArgs commands: don't wipe input on Enter — autocomplete the command
+  // so the user can type args, or if args are already present, submit. This
+  // fixes the "type /goal, hit Enter, nothing happens" beginner trap where
+  // the old behavior cleared the input and silently closed the palette.
+  if (choice.takesArgs) {
+    const cmdEsc = choice.cmd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const hasArgs = new RegExp('^\\s*' + cmdEsc + '\\s+\\S', 'i').test(currentValue);
+    if (hasArgs) {
+      hideSlashPalette();
+      sendMessage();
+      return;
+    }
+    if (inp) {
+      inp.value = choice.cmd + ' ';
+      inp.style.height = 'auto';
+      inp.style.height = Math.min(inp.scrollHeight, 180) + 'px';
+      inp.focus();
+      inp.setSelectionRange(inp.value.length, inp.value.length);
+    }
+    hideSlashPalette();
+    return;
+  }
+
+  // No-args command: invoke its apply handler (preserves existing behavior).
   if (inp) { inp.value = choice.fallback || ''; autoSize(inp); inp.focus(); }
   try { choice.apply(); } catch (e) { console.warn('slash command failed', e); }
 }
