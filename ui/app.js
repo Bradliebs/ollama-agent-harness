@@ -3757,7 +3757,7 @@ async function checkSettingsHealth() {
     const data = await response.json();
     if (data.error) throw new Error(data.error);
     setVisionReadinessStatus(data.vision);
-    if (detail) detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio) + (data.pdfOcr ? renderSetupHealthRow('PDF OCR', data.pdfOcr) : '');
+    if (detail) detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio) + (data.pdfOcr ? renderSetupHealthRow('PDF OCR', data.pdfOcr) : '') + (data.ccmem ? renderSetupHealthRow('Long-term memory', data.ccmem) : '');
   } catch (error) {
     if (detail) detail.innerHTML = '<div><strong>Setup</strong> ' + esc(error.message || error) + '</div>';
   }
@@ -4175,6 +4175,8 @@ function autoSize(el) {
   // Re-evaluate slash palette every keystroke so it appears as soon as the
   // user types `/` and disappears the moment the prefix becomes invalid.
   maybeShowSlashPalette(el.value);
+  // Plain-English requests (no slash) get a one-click feature suggestion.
+  maybeShowIntentChip(el.value);
 }
 
 // Same auto-grow pattern as the chat composer, but for the Autonomy
@@ -4189,6 +4191,8 @@ function sendTip(el) { document.getElementById('chatInput').value = el.textConte
 async function sendMessage(opts) {
   // Mark guided tour as seen on first send
   try { localStorage.setItem('harness_tour_seen', '1'); } catch(e){}
+  // Clear any plain-English feature suggestion once the message is sent.
+  hideIntentChip();
   // opts.regenerateFromIndex: when set, drop chatMessages from that index
   // onwards (typically a stale assistant reply) and re-run with the
   // existing user prompt that lives at index-1. Used by the per-message
@@ -6694,6 +6698,113 @@ const slashPaletteState = { visible: false, index: 0, filtered: [] };
 
 function getAllSlashCommands() {
   return SLASH_COMMANDS.concat(dynamicSkillSlashCommands);
+}
+
+// ── Plain-English → feature suggestions ──────────────────────────────
+// Beginners type "back up my stuff", not "/snapshots". This deterministic,
+// LLM-free matcher maps natural phrasing onto the slash commands that already
+// exist, then surfaces a one-click chip. The button reuses each command's own
+// apply(), so there is no duplicate navigation logic. Ordered most-specific
+// first; the first matching pattern wins.
+const FEATURE_INTENTS = [
+  { cmd: '/snapshots', label: 'back up your skills & memory', re: /\b(back\s?up|backup)\b.*\b(data|settings|stuff|everything|memor|skill|chat|work)|\bsnapshot/i },
+  { cmd: '/memory',    label: 'see what I remember about you',  re: /\bwhat.*(remember|know about me)|\bmy memor|\bremember about me/i },
+  { cmd: '/tools',     label: 'see the tools you can use',      re: /\b(what|which|list).{0,12}tools|\byour tools\b|\btool status\b|\btools.{0,12}(have|available)/i },
+  { cmd: '/skills',    label: 'see your skills',                re: /\b(what|which|list|my)\b.{0,8}skills\b|\byour skills\b/i },
+  { cmd: '/rag',       label: 'search your local documents',   re: /\b(search|index|build).{0,16}(docs|documents|notes|files|folder|pdf)|\blocal rag\b/i },
+  { cmd: '/files',     label: 'browse your files',             re: /\bmy files\b|\b(show|browse|open|see).{0,8}files\b/i },
+  { cmd: '/history',   label: 'see your chat history',         re: /\bchat history\b|\bpast chats\b|\bprevious (chats|conversations)\b|\bmy history\b/i },
+  { cmd: '/new',       label: 'start a new chat',              re: /\bnew chat\b|\bstart over\b|\bclear (the )?chat\b|\breset (the )?(chat|conversation)\b|\bfresh chat\b/i },
+  { cmd: '/export',    label: 'export this chat',              re: /\bexport.{0,12}(chat|conversation)|\bsave (this )?(chat|conversation)\b|\bdownload (this )?chat\b/i },
+  { cmd: '/settings',  label: 'open settings',                 re: /\bopen settings\b|\bmy settings\b|\bpreferences\b|\bchange settings\b/i },
+  { cmd: '/brief',     label: 'generate your daily brief',     re: /\bdaily brief\b|\bmy brief\b|\bcatch me up\b/i },
+  { cmd: '/kanban',    label: 'open your task board',          re: /\bkanban\b|\btask board\b|\bmy board\b/i },
+  // Argument-taking commands: the chip prefills "/cmd <arg>" (arg extracted
+  // from the phrasing when clean) and focuses the box. It never auto-sends, so
+  // the user can review a path or topic before kicking off a long operation.
+  { cmd: '/wiki',     label: 'turn a document into a wiki',          btnLabel: 'Set up',   takesArgs: true,
+    re: /\b(make|build|create|turn)\b.{0,20}\bwiki\b|\bwiki\b.{0,12}\b(from|out of)\b/i,
+    arg: /(?:from|out of|on)\s+(.+?)(?:\s+into\s+a\s+wiki)?$|turn\s+(.+?)\s+into\s+a\s+wiki/i },
+  { cmd: '/research', label: 'research a topic and write a report',  btnLabel: 'Start',    takesArgs: true,
+    re: /\bresearch\b|\breport on\b|\blook into\b/i,
+    arg: /(?:research(?:\s+on)?|report on|look into)\s+(.+)$/i },
+  { cmd: '/goal',     label: 'break a big goal into autonomous tasks', btnLabel: 'Set up', takesArgs: true,
+    re: /\bmy goal is\b|\bset (a |my )?goal\b|\bbreak (this|it) down into (steps|tasks)\b/i,
+    arg: /(?:my goal is|set (?:a |my )?goal(?: to| of| is)?)\s+(.+)$/i },
+  { cmd: '/schedule', label: 'schedule a recurring job',             btnLabel: 'Schedule', takesArgs: true,
+    re: /\bevery\s+\d+\s*(h|hr|hrs|hours?|m|min|mins|minutes?)\b|\bremind me every\b/i,
+    arg: /(remind me every\s+.+)$|(every\s+.+)$/i },
+  { cmd: '/priority', label: 'set your top priority for today',      btnLabel: 'Set',      takesArgs: true,
+    re: /\bmy (top )?priority\b|\bpriority for today\b|\btop priority is\b/i,
+    arg: /priority(?:\s+(?:is|for today is|today is))?\s+(.+)$/i },
+  { cmd: '/yolo',     label: 'run fully autonomous for a while',     btnLabel: 'Start',    takesArgs: true,
+    re: /\byolo\b|\bfull[\s-]?send\b|\bgo (fully )?autonomous\b/i,
+    arg: /\b(\d+\s*(?:h|hr|hrs|hours?|m|min|minutes?))\b/i },
+  { cmd: '/help',      label: 'see what you can do here',      re: /\bwhat can (you|i) (do|type)\b|\bshow .{0,8}commands\b|\blist commands\b|\bhelp me get started\b/i },
+];
+
+let intentChipDismissedFor = '';
+
+function detectFeatureIntent(text) {
+  for (const intent of FEATURE_INTENTS) {
+    if (intent.re.test(text)) return intent;
+  }
+  return null;
+}
+
+function hideIntentChip() {
+  const chip = document.getElementById('intentChip');
+  if (chip) chip.classList.add('hidden');
+}
+
+function maybeShowIntentChip(value) {
+  const chip = document.getElementById('intentChip');
+  if (!chip) return;
+  const v = (value || '').trim();
+  // Stay out of the slash palette's way and ignore tiny/dismissed input.
+  if (!v || v.startsWith('/') || v.length < 4 || slashPaletteState.visible || v === intentChipDismissedFor) {
+    hideIntentChip();
+    return;
+  }
+  const hit = detectFeatureIntent(v);
+  if (!hit) { hideIntentChip(); return; }
+  chip.textContent = '';
+  const text = document.createElement('span');
+  text.textContent = '💡 Sounds like you want to ' + hit.label + '.';
+  const open = document.createElement('button');
+  open.type = 'button';
+  open.className = 'intent-chip-btn';
+  open.textContent = hit.btnLabel || 'Open';
+  open.onclick = () => {
+    hideIntentChip();
+    if (hit.takesArgs) {
+      // Prefill "/cmd <arg>" and focus; the user reviews, then presses Enter.
+      const input = document.getElementById('chatInput');
+      if (!input) return;
+      let argText = '';
+      if (hit.arg) {
+        const m = v.match(hit.arg);
+        if (m) argText = (m[1] || m[2] || '').trim();
+      }
+      input.value = hit.cmd + (argText ? ' ' + argText : ' ');
+      input.focus();
+      try { autoSize(input); } catch (e) {}
+      try { input.setSelectionRange(input.value.length, input.value.length); } catch (e) {}
+      return;
+    }
+    const c = getAllSlashCommands().find((x) => x.cmd === hit.cmd);
+    if (c && typeof c.apply === 'function') c.apply();
+  };
+  const dismiss = document.createElement('button');
+  dismiss.type = 'button';
+  dismiss.className = 'intent-chip-dismiss';
+  dismiss.title = 'Dismiss';
+  dismiss.textContent = '✕';
+  dismiss.onclick = () => { intentChipDismissedFor = v; hideIntentChip(); };
+  chip.appendChild(text);
+  chip.appendChild(open);
+  chip.appendChild(dismiss);
+  chip.classList.remove('hidden');
 }
 
 function maybeShowSlashPalette(value) {

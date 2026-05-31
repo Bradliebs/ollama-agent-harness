@@ -471,7 +471,11 @@ export async function* queryLoop(
       }
     }
 
-    const dispatchedToolResults = await dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer, learningRecorder, readBeforeWriteGate });
+    const compressOutput = process.env.HARNESS_TOOL_COMPRESSION_ENABLED === '1';
+    const compressionConfig = process.env.HARNESS_TOOL_COMPRESSION_MAX_CHARS
+      ? { maxChars: Number(process.env.HARNESS_TOOL_COMPRESSION_MAX_CHARS) || undefined }
+      : undefined;
+    const dispatchedToolResults = await dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer, learningRecorder, readBeforeWriteGate, compressOutput, compressionConfig });
     const toolResults = [...skippedToolResults, ...dispatchedToolResults];
     let producedFileChange = false;
     for (const { call, result } of toolResults) {

@@ -4,6 +4,7 @@ import { trackToolUsage, type LearningRecorder } from '../learning/engine';
 import type { RuntimeTracer } from '../core/tracing';
 import { recordSwallowed } from '../observability/silentFailureSink';
 import type { ReadBeforeWriteGate } from './readBeforeWriteGate';
+import { compressToolResult, type CompressionConfig } from './outputCompression';
 
 export interface DispatchResult {
   call: ToolCall;
@@ -25,6 +26,15 @@ export interface DispatchOptions {
    * This enforces the read-before-write discipline.
    */
   readBeforeWriteGate?: ReadBeforeWriteGate;
+  /**
+   * When true, successful string tool outputs are run through the
+   * rule-based compression pass (`outputCompression.ts`) before they
+   * enter history. Gated OFF by default; the caller decides based on
+   * `HARNESS_TOOL_COMPRESSION_ENABLED`.
+   */
+  compressOutput?: boolean;
+  /** Optional overrides for the compression pass. */
+  compressionConfig?: CompressionConfig;
 }
 
 /**
@@ -206,9 +216,17 @@ export class ToolDispatcher {
     try {
       const startTime = Date.now();
       const toolSpan = options.tracer?.startSpan('tool.execute', { tool: call.name });
-      const result = await tool.execute(call.input);
+      let result = await tool.execute(call.input);
       const durationMs = Date.now() - startTime;
       toolSpan?.end(result.success ? 'ok' : 'error', { durationMs, success: result.success });
+      // Compress verbose output at the boundary, before it enters history.
+      if (options.compressOutput) {
+        const compressed = compressToolResult(call.name, result, options.compressionConfig);
+        if (compressed.saved > 0) {
+          options.tracer?.startSpan('tool.compress', { tool: call.name })?.end('ok', { saved: compressed.saved });
+          result = compressed.result;
+        }
+      }
       // Confirm deferred read after successful execution
       if (result.success && pendingReadPath && options.readBeforeWriteGate) {
         options.readBeforeWriteGate.confirmRead(pendingReadPath);

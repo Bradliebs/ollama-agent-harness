@@ -70,6 +70,8 @@ export interface SetupHealthResult {
   fallback: FallbackRoutingConfig;
   /** SMTP email configuration status. */
   smtp: { ok: boolean; message: string };
+  /** Concept memory (ccmem) service reachability. Optional; reports not-running when the service is offline. */
+  ccmem: { ok: boolean; message: string };
   /** Per-model synthesis turn statistics (optional, populated when stats file exists). */
   synthesisStats?: Record<string, { fired: number; total: number; adaptiveMaxTurns: number }>;
 }
@@ -92,6 +94,7 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
   const backends = checkBackendAuth();
   const fallback = checkFallbackConfig(backends);
   const smtp = checkSmtpConfig();
+  const ccmem = await checkCcmemHealth();
   const rawStats = await loadSynthesisStats(input.projectDir ?? process.cwd());
   const synthesisStats: Record<string, { fired: number; total: number; adaptiveMaxTurns: number }> = {};
   for (const [model, record] of Object.entries(rawStats)) {
@@ -124,6 +127,7 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
       backends,
       fallback,
       smtp,
+      ccmem,
       ...(Object.keys(synthesisStats).length > 0 ? { synthesisStats } : {}),
     };
   } catch (error) {
@@ -137,6 +141,7 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
       backends,
       fallback,
       smtp,
+      ccmem,
       ...(Object.keys(synthesisStats).length > 0 ? { synthesisStats } : {}),
     };
   }
@@ -208,6 +213,26 @@ function checkSmtpConfig(): { ok: boolean; message: string } {
   }
   const port = process.env.HARNESS_SMTP_PORT?.trim() || '587';
   return { ok: true, message: `SMTP configured: ${host}:${port} as ${from || user}.` };
+}
+
+/**
+ * Probe the optional Concept Memory (ccmem) service. The harness works fine
+ * without it — long-term memory is simply off — so a not-running result is
+ * informational, not a failure. Lazy-imports the client to avoid loading it
+ * unless health checks run, mirroring the mycelium check.
+ */
+async function checkCcmemHealth(): Promise<{ ok: boolean; message: string }> {
+  try {
+    const { isAvailable, getCcmemUrl } = await import('../services/conceptMemoryClient');
+    const url = getCcmemUrl();
+    const ok = await isAvailable();
+    return ok
+      ? { ok: true, message: `Long-term memory service is reachable at ${url}.` }
+      : { ok: false, message: `Long-term memory service is not running at ${url} (optional). Start it with: python ccmem/service.py` };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, message: `Long-term memory check failed: ${message}` };
+  }
 }
 
 async function checkLocalHealth(projectDir: string): Promise<SetupHealthResult['local']> {

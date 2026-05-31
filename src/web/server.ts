@@ -484,10 +484,29 @@ interface WebRuntimeDeps {
   rebuildSemanticMemory(projectDir: string): Promise<unknown[]>;
 }
 
+// Resolve the default Ollama host, honoring the OLLAMA_HOST env var when set.
+// OLLAMA_HOST is a server *bind* directive (e.g. "0.0.0.0:11434"); bind-all
+// addresses are not valid client targets, so map them back to localhost.
+function resolveDefaultOllamaHost(): string {
+  const raw = process.env.OLLAMA_HOST?.trim();
+  if (!raw) return 'http://localhost:11434';
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
+  try {
+    const url = new URL(withScheme);
+    if (!url.port) url.port = '11434';
+    if (url.hostname === '0.0.0.0' || url.hostname === '::' || url.hostname === '') {
+      url.hostname = 'localhost';
+    }
+    return url.origin;
+  } catch {
+    return 'http://localhost:11434';
+  }
+}
+
 // --- State ---
 let currentModel = '';
 let permissionMode: PermissionMode = 'default';
-let ollamaHost = 'http://localhost:11434';
+let ollamaHost = resolveDefaultOllamaHost();
 let systemPromptOverride = '';
 let agentPersonality = '';
 let agentName = '';

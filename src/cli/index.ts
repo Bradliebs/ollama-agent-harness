@@ -497,6 +497,7 @@ export function formatSetupHealth(result: SetupHealthResult): string {
   ];
   if (result.pdfOcr) lines.push(formatHealthLine('PDF OCR', result.pdfOcr.ok, result.pdfOcr.message));
   lines.push(formatHealthLine('SMTP', result.smtp.ok, result.smtp.message));
+  if (result.ccmem) lines.push(formatHealthLine('Long-term memory', result.ccmem.ok, result.ccmem.message));
   lines.push(formatHealthLine('Node', result.local.node.ok, result.local.node.message));
   lines.push(formatHealthLine('Package', result.local.package.ok, result.local.package.message));
   lines.push(formatHealthLine('Sessions', result.local.sessions.ok, result.local.sessions.message));
