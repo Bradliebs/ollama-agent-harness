@@ -1428,6 +1428,21 @@ app.post('/api/autonomy/tasks', async (req, res) => {
     const planPath = path.join(PROJECT_DIR, 'IMPLEMENTATION_PLAN.md');
     let existing = '';
     try { existing = await fs.readFile(planPath, 'utf-8'); } catch { existing = '# Implementation Plan\n'; }
+    // Reject the "pasted-back plan line" case: if the title's first
+    // whitespace-separated token is already a task id in the plan, we would
+    // otherwise slugify the whole pasted blob, bump a suffix, and produce a
+    // Frankenstein title like `slug--3 — slug--2 — slug- — …` that nests
+    // deeper on every re-add. Mirrors the /goal slash-command defense.
+    const existingIds = new Set<string>();
+    for (const planLine of existing.split(/\r?\n/)) {
+      const m = planLine.match(/^- \[.\] (\S+)\s+[—-]/);
+      if (m) existingIds.add(m[1].toLowerCase());
+    }
+    const leadingToken = title.split(/\s+/)[0]?.toLowerCase();
+    if (leadingToken && existingIds.has(leadingToken)) {
+      res.status(409).json({ error: `Task "${leadingToken}" already exists. To re-run it use the existing task; to add a new one, rephrase without the task id at the start.` });
+      return;
+    }
     const subBullets = [
       ...anchors.map((a) => `  - anchor: ${a}`),
       ...(target ? [`  - target: ${target}`] : []),

@@ -1556,6 +1556,21 @@ describe('web server API validation', () => {
     expect(response.status).toBe(400);
   });
 
+  it('rejects a pasted-back plan line to prevent nested task titles', async () => {
+    const planPath = path.join(process.cwd(), 'IMPLEMENTATION_PLAN.md');
+    const original = await fs.readFile(planPath, 'utf-8');
+    try {
+      const created = await request('/api/autonomy/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Nested guard probe' }) });
+      expect(created.status).toBe(200);
+      const { id } = await created.json() as { id: string };
+      // Re-submitting "<id> — <text>" (a pasted-back plan line) must be refused.
+      const pasted = await request('/api/autonomy/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: `${id} — Nested guard probe again` }) });
+      expect(pasted.status).toBe(409);
+    } finally {
+      await fs.writeFile(planPath, original, 'utf-8');
+    }
+  });
+
   it('generates and downloads Markdown documents', async () => {
     const createdDocuments: HarnessDocumentArtifact[] = [];
     try {
