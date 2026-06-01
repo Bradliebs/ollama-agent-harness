@@ -1362,8 +1362,6 @@ function renderReadiness(data) {
   if (compact) compact.innerHTML = summary;
   const panel = document.getElementById('missionControlPanel');
   if (!panel) return;
-  // Check if permission mode message contains timed info for the header
-  const modeLabel = data.permissionMode || 'default';
   const allChecks = sections.flatMap((s) => s.checks || []);
   const permCheck = allChecks.find((c) => c.id === 'permission.mode');
   const firstAttentionCheck = allChecks.find((c) => c.status === 'blocked') || allChecks.find((c) => c.status === 'warn');
@@ -1376,7 +1374,6 @@ function renderReadiness(data) {
     actionLabel: readinessAction.actionLabel,
     actionHandler: readinessAction.actionHandler,
   });
-  const timedNote = permCheck && permCheck.message && permCheck.message.includes('timed') ? ' <span class="text-warning-xs">(' + esc(permCheck.message.replace(/^.*\(/, '').replace(/\).*$/, '')) + ')</span>' : '';
   // Identify fixable blockers for the fix-all button
   const fixableChecks = allChecks.filter((c) => c.status === 'blocked' || c.status === 'warn').filter((c) => {
     if (c.id && c.id.startsWith('tool.')) return true;
@@ -1388,8 +1385,8 @@ function renderReadiness(data) {
   const fixBtn = fixableChecks.length > 0 ? ' <button class="btn-sm btn-success-soft" onclick="fixReadinessBlockers()">Fix ' + fixableChecks.length + '</button>'
     + ' <button class="btn-sm btn-warning-soft" onclick="fixReadinessBlockersTimed()">Fix ' + fixableChecks.length + ' (timed)</button>' : '';
   const undoBtn = window._fixAllUndoSnapshot ? ' <button class="btn-sm btn-info-soft" onclick="undoFixAll()">Undo fix-all</button>' : '';
-  panel.innerHTML = '<div class="mission-header"><div><h3>Start work</h3><p>' + esc(data.model || 'No model selected') + ' · ' + esc(modeLabel) + timedNote + '</p></div><div class="inline-actions"><button class="btn-sm" onclick="loadReadiness()">Refresh</button>' + fixBtn + undoBtn + '</div></div>'
-    + renderTaskFirstPanel(data, { avg, ready, total: sections.length, blocked, warn, firstAttentionCheck })
+  const headerActions = '<button class="btn-sm" onclick="loadReadiness()">Refresh</button>' + fixBtn + undoBtn;
+  panel.innerHTML = renderTaskFirstPanel(data, { avg, ready, total: sections.length, blocked, warn, firstAttentionCheck, headerActions })
     + '<details class="readiness-details" id="readinessDetailsPanel"><summary>Readiness details</summary><div class="readiness-details-body">'
     + '<div class="readiness-summary">' + summary + '</div>'
     + '<div class="mission-grid">' + sections.map(renderReadinessSection).join('') + '</div>'
@@ -1438,7 +1435,7 @@ function renderTaskFirstPanel(data, summary) {
   ];
   return '<div class="task-first-panel" id="taskFirstPanel">'
     + '<div class="task-first-top"><div><div class="task-first-title">Tell Harness the job</div><div class="task-first-subtitle">' + esc(attention) + '</div></div>'
-    + '<div class="task-first-status"><span class="task-first-pill" title="' + escAttr(workspace) + '">' + esc(workspaceLabel) + '</span><span class="task-first-pill">' + esc(modelLabel) + '</span><span class="task-first-pill ' + readinessClass + '">' + esc(readinessLabel) + '</span></div></div>'
+    + '<div class="task-first-status-col"><div class="task-first-status"><span class="task-first-pill" title="' + escAttr(workspace) + '">' + esc(workspaceLabel) + '</span><span class="task-first-pill">' + esc(modelLabel) + '</span><span class="task-first-pill ' + readinessClass + '">' + esc(readinessLabel) + '</span></div>' + (summary.headerActions ? '<div class="inline-actions">' + summary.headerActions + '</div>' : '') + '</div></div>'
     + '<div class="task-first-input-row"><textarea id="missionTaskInput" placeholder="Example: Fix the failing test, update the report, or review the current changes."></textarea>'
     + '<div class="task-first-actions"><button class="btn-sm primary" onclick="sendTaskFirstPrompt()">Use task</button><button class="btn-sm" onclick="openLeftTabByName(\'runs\')">Runs</button></div></div>'
     + renderCodingLoopRail()
@@ -1454,9 +1451,11 @@ function renderCodingLoopRail() {
     ['Validate', 'Run checks'],
     ['Review', 'Diff and evidence'],
   ];
-  return '<div class="coding-loop-rail" id="codingLoopRail">'
+  return '<details class="readiness-details coding-loop-details"><summary>How a task runs</summary><div class="readiness-details-body">'
+    + '<div class="coding-loop-rail" id="codingLoopRail">'
     + steps.map(([title, note]) => '<div class="coding-loop-step"><strong>' + esc(title) + '</strong><span>' + esc(note) + '</span></div>').join('')
-    + '</div><div class="coding-loop-action"><button class="btn-sm btn-xxs-muted" onclick="startCodingLoopPrompt()">Use coding loop</button></div>';
+    + '</div><div class="coding-loop-action"><button class="btn-sm btn-xxs-muted" onclick="startCodingLoopPrompt()">Use coding loop</button></div>'
+    + '</div></details>';
 }
 
 function sendTaskFirstPrompt() {
