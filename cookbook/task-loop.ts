@@ -55,7 +55,7 @@
  *   - Environment variables: Use $env:VAR (PowerShell) or export VAR (bash)
  */
 
-import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, statSync, openSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync, execSync } from "node:child_process";
 
@@ -427,14 +427,24 @@ function implementTask(task: Task): void {
   const timeoutMs = parseInt(process.env.HARNESS_TASK_TIMEOUT_MS ?? "600000", 10);
   console.log(`[Ralph] >>> node ${cliArgs.join(" ")}`);
   console.log(`[Ralph] (per-task timeout: ${Math.round(timeoutMs / 1000)}s, prompt size: ${prompt.length} bytes, anchors: ${task.anchors.length})`);
+  // Stream the model's live step-by-step activity (ὒ7 file_write, tool
+  // results) into .forge-run.log so the dashboard shows what it is doing and
+  // which files/folders it is creating in real time. We hand the child the
+  // log file's descriptor as stdout+stderr: the OS writes its output live
+  // (no buffering) while execFileSync still blocks until the child exits.
+  let logFd: number | undefined;
+  try { logFd = openSync(LOG_PATH, "a"); } catch { logFd = undefined; }
+  const childStdio: ("inherit" | number)[] = ["inherit", logFd ?? "inherit", logFd ?? "inherit"];
   try {
-    execFileSync(process.execPath, cliArgs, { stdio: "inherit", timeout: timeoutMs, killSignal: "SIGKILL" });
+    execFileSync(process.execPath, cliArgs, { stdio: childStdio, timeout: timeoutMs, killSignal: "SIGKILL" });
   } catch (err) {
     const e = err as { signal?: string; status?: number; message?: string };
     if (e?.signal === "SIGKILL" || e?.signal === "SIGTERM") {
       throw new Error(`harness CLI killed after ${timeoutMs}ms timeout`);
     }
     throw err;
+  } finally {
+    if (logFd !== undefined) { try { closeSync(logFd); } catch { /* best-effort */ } }
   }
 }
 
