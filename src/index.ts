@@ -102,7 +102,7 @@ export { classifyIntent, logConciergeDecision, readConciergeLog } from './servic
 export type { ConciergeLogEntry, TriageOptions, TriageResult } from './services/concierge';
 
 // ─── Audit Hook ─────────────────────────────────────────────────────
-export { auditFilePath, createAuditHooks, readAuditLog, renderRecentAuditForPrompt } from './permissions/audit';
+export { appendAuditEntry, auditFilePath, createAuditHooks, readAuditLog, renderRecentAuditForPrompt } from './permissions/audit';
 export type { AuditEntry, AuditHookOptions, RenderRecentAuditOptions } from './permissions/audit';
 
 // ─── Docker Sandbox ─────────────────────────────────────────────────
@@ -119,8 +119,8 @@ export { deleteStructuredEntry, exportIdentity, importIdentity, queryStructured,
 export type { IdentityExport, IdentityFileName, IdentityGcOptions, IdentityGcSummary, IdentitySnapshot, ImportIdentityOptions, ImportIdentitySummary, StructuredEntry, StructuredStore, UpsertStructuredInput } from './services/identity';
 
 // ─── Subagent Orchestrator ──────────────────────────────────────────
-export { orchestrate, mergeResults, getAgentRoleDefaults } from './agents/orchestrator';
-export type { AgentRole, AgentBudget, WorkstreamTask, WorkstreamResult, OrchestrationResult } from './agents/orchestrator';
+export { orchestrate, mergeResults, mergeVerified, attachVerification, verifyCodeBranch, getAgentRoleDefaults } from './agents/orchestrator';
+export type { AgentRole, AgentBudget, WorkstreamTask, WorkstreamResult, OrchestrationResult, BranchVerifier } from './agents/orchestrator';
 
 // ─── Code Intelligence ──────────────────────────────────────────────
 export { buildRepoGraph, analyzeImpact, summarizeRepo, saveRepoGraph, loadRepoGraph } from './core/codeIntelligence';

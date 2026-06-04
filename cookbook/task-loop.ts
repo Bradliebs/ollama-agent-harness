@@ -89,7 +89,7 @@ type TaskStatus = "pending" | "done" | "failed";
  *                 there is always at least one tracked artifact, then runs
  *                 the model normally. Use for "look in C:\X and …" tasks.
  */
-type TaskKind = "code" | "research" | "external";
+export type TaskKind = "code" | "research" | "external";
 
 interface Task {
   id: string;
@@ -598,6 +598,82 @@ function writeHealthSummary(tasks: Task[], startTime: number, reason: string): v
   }
 }
 
+// --- Ratchet Decision ---
+//
+// AutoResearch-style keep/revert gate for one autonomy iteration. A task is
+// "ratcheted forward" (kept + committed) ONLY when a real check earned it:
+// the implement step did not throw, validation passed, and — for code tasks —
+// the work actually changed files. Anything short of that is reverted. This is
+// the sequential sibling of src/agents/verifiedMerge's parallel gate: keep
+// proven work, revert everything else, and record WHICH check earned the keep
+// so the commit and logs carry honest provenance rather than a bare "done".
+// Mirrors the harness honesty rule — no "done" without proof a check ran.
+
+export type RatchetCode = "errored" | "validation-failed" | "no-file-changes" | "kept";
+
+export interface RatchetInput {
+  /** Did the implement step throw before producing verifiable work? */
+  errored: boolean;
+  /** Did the validation command pass? (Only meaningful when not errored.) */
+  validated: boolean;
+  /** Per-task success contract; "research" tasks may legitimately change 0 files. */
+  kind?: TaskKind;
+  /** Number of in-repo + external files the iteration changed. */
+  changedFileCount: number;
+  /** Human label of the check that gates the keep (e.g. the validate command). */
+  validateLabel?: string;
+}
+
+export interface RatchetDecision {
+  outcome: "keep" | "revert";
+  code: RatchetCode;
+  /** Plain-language, honest reason for the outcome. */
+  reason: string;
+  /** The concrete check that earned the keep — null on revert (nothing earned it). */
+  earnedBy: string | null;
+}
+
+/**
+ * Pure keep/revert verdict for one autonomy iteration. No I/O, no clock, no
+ * globals — it decides purely from the facts the loop already gathered. Keep
+ * iff the work neither errored nor failed validation and (for code tasks)
+ * actually changed files; otherwise revert with an honest reason. On a keep,
+ * `earnedBy` names the check that proved it.
+ */
+export function decideRatchet(input: RatchetInput): RatchetDecision {
+  const { errored, validated, kind, changedFileCount } = input;
+  const check = input.validateLabel?.trim() || "validation";
+  if (errored) {
+    return {
+      outcome: "revert",
+      code: "errored",
+      reason: "implementation step threw before producing verifiable work",
+      earnedBy: null,
+    };
+  }
+  if (!validated) {
+    return {
+      outcome: "revert",
+      code: "validation-failed",
+      reason: `${check} failed — not keeping unproven work`,
+      earnedBy: null,
+    };
+  }
+  const requiresFileChanges = (kind ?? "code") !== "research";
+  if (requiresFileChanges && changedFileCount === 0) {
+    return {
+      outcome: "revert",
+      code: "no-file-changes",
+      reason: `${check} passed but the task changed 0 files — no work to keep`,
+      earnedBy: null,
+    };
+  }
+  const evidence = requiresFileChanges
+    ? `${check} passed with ${changedFileCount} file change(s)`
+    : `${check} passed (research task — no file changes required)`;
+  return { outcome: "keep", code: "kept", reason: evidence, earnedBy: evidence };
+}
+
 // --- Ralph Loop ---
 
 /**
@@ -756,17 +832,24 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
     const changedFiles = [...repoChangedFiles, ...externalChangedFiles];
 
     // Validate (skip if implement crashed; treat as failure)
-    let passed = implementError ? false : doValidate(pending);
+    const validated = implementError ? false : doValidate(pending);
 
-    // No-op guard: a task that changed zero files is almost certainly a
-    // failed autonomous run (model refused, hallucinated completion, etc.).
-    // Do not mark such a task done. Exception: "research" tasks
-    // legitimately produce no edits — they are scored on validation alone.
-    const requiresFileChanges = (pending.kind ?? "code") !== "research";
-    if (passed && requiresFileChanges && changedFiles.length === 0) {
-      console.warn(`[Ralph] ⚠️ ${pending.id} validated clean but produced 0 file changes — treating as failed.`);
+    // AutoResearch-style ratchet gate: keep ONLY work a real check earned,
+    // revert everything else, and record WHICH check earned the keep. The
+    // no-op guard (a task that changed zero files is almost certainly a
+    // failed run) lives inside decideRatchet, with "research" tasks exempt
+    // since they are scored on validation alone.
+    const ratchet = decideRatchet({
+      errored: Boolean(implementError),
+      validated,
+      kind: pending.kind,
+      changedFileCount: changedFiles.length,
+      validateLabel: HARNESS_VALIDATE_CMD,
+    });
+    const passed = ratchet.outcome === "keep";
+    if (ratchet.code === "no-file-changes") {
+      console.warn(`[Ralph] ⚠️ ${pending.id}: ${ratchet.reason} — treating as failed.`);
       console.warn(`[Ralph]    Hint: if this task is research-only, add "  - kind: research" under it in the plan.`);
-      passed = false;
     }
 
     // Update status on disk
@@ -779,13 +862,13 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
 
     if (passed) {
       consecutiveFailures = 0;
-      console.log(`[Ralph] ✅ Task ${pending.id} passed — committing ${changedFiles.length} file(s).`);
+      console.log(`[Ralph] ✅ Task ${pending.id} kept — ${ratchet.reason}. Committing ${changedFiles.length} file(s).`);
       if (changedFiles.length > 0) console.log(`[Ralph] Changed files: ${changedFiles.join(", ")}`);
-      gitCommit(`chore(autonomy): ${pending.id} — ${pending.title}`, changedFiles);
+      gitCommit(`chore(autonomy): ${pending.id} — ${pending.title}\n\nRatchet: kept — ${ratchet.earnedBy}`, changedFiles);
     } else {
       consecutiveFailures++;
       totalFailures++;
-      console.log(`[Ralph] ❌ Task ${pending.id} failed — marked as failed, continuing.`);
+      console.log(`[Ralph] ❌ Task ${pending.id} reverted — ${ratchet.reason}.`);
       if (changedFiles.length > 0) console.log(`[Ralph] Changed files before restore: ${changedFiles.join(", ")}`);
 
       // Restore the working tree to the pre-iteration snapshot so the next

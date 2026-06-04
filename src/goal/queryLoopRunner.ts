@@ -32,6 +32,10 @@ export interface MakeQueryLoopRunnerOptions {
   maxTimeMs?: number;
   /** Truncate captured notes (assistant final text) at this many chars. */
   maxNotesChars?: number;
+  /** When set, file-mutating tool calls across every iteration of a goal are
+   * recorded as reversible side effects under the goal's id, so the whole goal
+   * can be undone as a unit. Omit to leave recording off (e.g. in tests). */
+  projectDir?: string;
   /** Forwarded to QueryLoopDeps (hooks, tracer, session, etc.). */
   extraDeps?: Omit<QueryLoopDeps, 'client' | 'tools'>;
 }
@@ -72,7 +76,14 @@ export function makeQueryLoopRunner(opts: MakeQueryLoopRunnerOptions): Iteration
     };
 
     const initialMessage = buildIterationPrompt(goal, n);
-    const deps: QueryLoopDeps = { client: opts.client, tools, ...(opts.extraDeps ?? {}) };
+    const deps: QueryLoopDeps = {
+      client: opts.client,
+      tools,
+      ...(opts.extraDeps ?? {}),
+      // Scope every iteration of this goal under one run id so the goal
+      // reverts as a unit. Authoritative over any recorder in extraDeps.
+      ...(opts.projectDir ? { sideEffectRecorder: { projectDir: opts.projectDir, runId: goal.id } } : {}),
+    };
 
     let toolCalls = 0;
     const filesTouched = new Set<string>();

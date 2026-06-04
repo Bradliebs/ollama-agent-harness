@@ -3,7 +3,7 @@ import type { ChatRequest, ChatResponse, Message, Tool, ToolCall } from 'ollama'
 import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import { appendFileSync } from 'fs';
-import type { ChatResult, IChatClient, StreamChunk, TokenUsage } from './chatClient';
+import type { ChatResult, IChatClient, ModelLocality, StreamChunk, TokenUsage } from './chatClient';
 
 export type { ChatResult, StreamChunk, TokenUsage } from './chatClient';
 
@@ -164,6 +164,10 @@ export class OllamaClient implements IChatClient {
 
   getModel(): string {
     return this.model;
+  }
+
+  getLocality(): ModelLocality {
+    return 'local';
   }
 }
 

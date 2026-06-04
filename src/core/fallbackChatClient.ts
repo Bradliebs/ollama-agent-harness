@@ -1,5 +1,5 @@
 import type { Message, Tool } from 'ollama';
-import type { ChatResult, IChatClient, StreamChunk } from './chatClient';
+import type { ChatResult, IChatClient, ModelLocality, StreamChunk } from './chatClient';
 
 export interface FallbackChatClientEntry {
   backend: string;
@@ -109,6 +109,10 @@ export class FallbackChatClient implements IChatClient {
 
   getModel(): string {
     return this.entries[0].client.getModel();
+  }
+
+  getLocality(): ModelLocality {
+    return this.entries[0].client.getLocality?.() ?? 'unknown';
   }
 
   private async tryClients(

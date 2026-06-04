@@ -1,5 +1,5 @@
 import type { Message, Tool } from 'ollama';
-import type { ChatResult, IChatClient, StreamChunk } from './chatClient';
+import type { ChatResult, IChatClient, ModelLocality, StreamChunk } from './chatClient';
 
 export interface ReplicateClientOptions {
   apiKey: string;
@@ -86,6 +86,10 @@ export class ReplicateClient implements IChatClient {
 
   getModel(): string {
     return this.model;
+  }
+
+  getLocality(): ModelLocality {
+    return 'cloud';
   }
 
   private predictionUrl(): string {

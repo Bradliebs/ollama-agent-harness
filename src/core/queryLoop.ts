@@ -15,10 +15,12 @@ import { renderRepoMapBlock } from './repoMap';
 import { scanForInjection } from '../safety/injectionDefence';
 import type { LearningRecorder } from '../learning/engine';
 import type { RuntimeTracer } from './tracing';
+import type { SideEffectRecorder } from '../persistence/sideEffectRecording';
 import { validateOutput, withOutputValidationInstructions, detectSelfCertification } from './outputValidation';
 import type { OutputValidationProfile } from './outputValidation';
 import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
 import { verifyCode } from './doneStateVerifier';
+import { classifyModelLocality } from '../observability/costProvenance';
 
 export interface QueryLoopDeps {
   client: IChatClient;
@@ -32,6 +34,10 @@ export interface QueryLoopDeps {
    * so tool usage is logged under the caller's PROJECT_DIR and sessionId
    * instead of the legacy default recorder bound to `process.cwd()`. */
   learningRecorder?: LearningRecorder;
+  /** When set, file-mutating tool calls record reversible side effects under
+   * this run id so the whole run can be undone. The caller owns the run
+   * boundary (e.g. a goal scopes all its iterations under one id). */
+  sideEffectRecorder?: SideEffectRecorder;
 }
 
 export async function* queryLoop(
@@ -40,7 +46,14 @@ export async function* queryLoop(
   initialMessages: Message[] = [],
 ): AsyncGenerator<LoopEvent> {
   const { maxTurns, abortSignal } = config;
-  const { client, tools, permissionCheck, hooks, session, summarizerClient, tracer, learningRecorder } = deps;
+  const { client, tools, permissionCheck, hooks, session, summarizerClient, tracer, learningRecorder, sideEffectRecorder } = deps;
+
+  // Authoritative cost-honesty signal for this run: the serving client knows
+  // whether it runs on-box (Ollama → 'local', $0 marginal) or hosted. Fall
+  // back to registry classification when the client predates getLocality;
+  // the model name alone can't tell apart off-registry local pulls, so the
+  // client signal is preferred.
+  const runLocality = client.getLocality?.() ?? classifyModelLocality(config.model);
 
   const dispatcher = new ToolDispatcher(tools);
   const readBeforeWriteGate = config.readBeforeWrite?.mode && config.readBeforeWrite.mode !== 'off'
@@ -248,6 +261,7 @@ export async function* queryLoop(
           type: 'usage',
           model: config.model,
           turn,
+          locality: runLocality,
           promptTokens: result.usage.promptTokens ?? 0,
           completionTokens: result.usage.completionTokens ?? 0,
           totalDurationMs: Math.round((result.usage.totalDurationNs ?? 0) / 1_000_000),
@@ -475,7 +489,7 @@ export async function* queryLoop(
     const compressionConfig = process.env.HARNESS_TOOL_COMPRESSION_MAX_CHARS
       ? { maxChars: Number(process.env.HARNESS_TOOL_COMPRESSION_MAX_CHARS) || undefined }
       : undefined;
-    const dispatchedToolResults = await dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer, learningRecorder, readBeforeWriteGate, compressOutput, compressionConfig });
+    const dispatchedToolResults = await dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer, learningRecorder, readBeforeWriteGate, compressOutput, compressionConfig, sideEffectRecorder });
     const toolResults = [...skippedToolResults, ...dispatchedToolResults];
     let producedFileChange = false;
     for (const { call, result } of toolResults) {
@@ -626,6 +640,7 @@ export async function* queryLoop(
         type: 'usage',
         model: config.model,
         turn,
+        locality: runLocality,
         promptTokens: synthResult.usage.promptTokens ?? 0,
         completionTokens: synthResult.usage.completionTokens ?? 0,
         totalDurationMs: Math.round((synthResult.usage.totalDurationNs ?? 0) / 1_000_000),

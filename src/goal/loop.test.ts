@@ -50,6 +50,101 @@ describe('runGoalLoop', () => {
     expect(final?.status).toBe('complete');
   });
 
+  it('emits a verification_adequacy warning for an execution-grounded task with no proof check', async () => {
+    // A code task verified only by a model_judge check: looks done, not proven.
+    const judgeOnly: GoalCheck = {
+      id: 'judge-1', description: 'judge', required: true,
+      spec: { kind: 'model_judge', rubric: 'looks right?' },
+    };
+    const g = await createGoal(dir, { target: 'implement a function to sum a list', verification: [judgeOnly] });
+    const events = await drain(runGoalLoop({
+      projectDir: dir, goalId: g.id,
+      runIteration: async (): Promise<IterationOutcome> => ({ action: 'tried' }),
+      defaultMaxIterations: 1,
+      verifyCtx: { judge: async () => ({ score: 0, rationale: 'no' }) },
+    }));
+    const adequacy = events.find((e) => e.type === 'verification_adequacy') as Extract<GoalLoopEvent, { type: 'verification_adequacy' }>;
+    expect(adequacy).toBeDefined();
+    expect(adequacy.adequacy.taskKind).toBe('code');
+    expect(adequacy.adequacy.executionGrounded).toBe(true);
+    expect(adequacy.adequacy.adequate).toBe(false);
+  });
+
+  it('emits verification_adequacy=adequate for a code task backed by a test_suite check', async () => {
+    const testCheck: GoalCheck = {
+      id: 'ts-1', description: 'tests', required: true,
+      spec: { kind: 'test_suite', command: 'node', args: ['-e', 'console.log("Tests: 1 passed, 1 total")'] },
+    };
+    const g = await createGoal(dir, { target: 'implement a function', verification: [testCheck] });
+    const events = await drain(runGoalLoop({
+      projectDir: dir, goalId: g.id,
+      runIteration: async (): Promise<IterationOutcome> => ({ action: 'tried' }),
+      defaultMaxIterations: 1,
+    }));
+    const adequacy = events.find((e) => e.type === 'verification_adequacy') as Extract<GoalLoopEvent, { type: 'verification_adequacy' }>;
+    expect(adequacy.adequacy.adequate).toBe(true);
+    expect(adequacy.adequacy.matchedProofChecks).toContain('test_suite');
+  });
+
+  it('honors injected per-kind verification strategy overrides', async () => {
+    // Default: a model_judge-only code task is inadequate. An override that makes
+    // `code` provable by a model_judge check flips the same goal to adequate.
+    const judgeOnly: GoalCheck = {
+      id: 'judge-1', description: 'judge', required: true,
+      spec: { kind: 'model_judge', rubric: 'looks right?' },
+    };
+    const g = await createGoal(dir, { target: 'implement a function to sum a list', verification: [judgeOnly] });
+    const events = await drain(runGoalLoop({
+      projectDir: dir, goalId: g.id,
+      runIteration: async (): Promise<IterationOutcome> => ({ action: 'tried' }),
+      defaultMaxIterations: 1,
+      verifyCtx: { judge: async () => ({ score: 1, rationale: 'ok' }) },
+      verificationStrategies: {
+        code: {
+          taskKind: 'code', executionGrounded: true,
+          proofChecks: ['model_judge'], proofLabel: 'judge approval',
+        },
+      },
+    }));
+    const adequacy = events.find((e) => e.type === 'verification_adequacy') as Extract<GoalLoopEvent, { type: 'verification_adequacy' }>;
+    expect(adequacy.adequacy.taskKind).toBe('code');
+    expect(adequacy.adequacy.adequate).toBe(true);
+    expect(adequacy.adequacy.matchedProofChecks).toContain('model_judge');
+  });
+
+  it('marks completion verified=true when a code task completes on a deterministic proof check', async () => {
+    const g = await createGoal(dir, { target: 'implement a function to sum a list', verification: [passingCheck] });
+    const events = await drain(runGoalLoop({ projectDir: dir, goalId: g.id, runIteration: async (): Promise<IterationOutcome> => ({ action: 'noop' }) }));
+    const end = events.find((e) => e.type === 'loop_end') as Extract<GoalLoopEvent, { type: 'loop_end' }>;
+    expect(end.reason).toBe('already_satisfied');
+    expect(end.verified).toBe(true);
+  });
+
+  it('marks completion verified=false when a code task completes on a model_judge only (looks done)', async () => {
+    const judgeOnly: GoalCheck = {
+      id: 'judge-2', description: 'judge', required: true,
+      spec: { kind: 'model_judge', rubric: 'looks right?' },
+    };
+    const g = await createGoal(dir, { target: 'implement a function to sum a list', verification: [judgeOnly] });
+    const events = await drain(runGoalLoop({
+      projectDir: dir, goalId: g.id,
+      runIteration: async (): Promise<IterationOutcome> => ({ action: 'noop' }),
+      verifyCtx: { judge: async () => ({ score: 1, rationale: 'looks fine' }) },
+    }));
+    const end = events.find((e) => e.type === 'loop_end') as Extract<GoalLoopEvent, { type: 'loop_end' }>;
+    expect(end.reason).toBe('already_satisfied');
+    expect(end.verified).toBe(false);
+  });
+
+  it('persists a completionVerdict on the goal when it completes (durable, not just live)', async () => {
+    const g = await createGoal(dir, { target: 'implement a function to sum a list', verification: [passingCheck] });
+    await drain(runGoalLoop({ projectDir: dir, goalId: g.id, runIteration: async (): Promise<IterationOutcome> => ({ action: 'noop' }) }));
+    const final = await readGoal(dir, g.id);
+    expect(final?.status).toBe('complete');
+    expect(final?.completionVerdict).toMatchObject({ verified: true, executionGrounded: true });
+    expect(typeof final?.completionVerdict?.at).toBe('string');
+  });
+
   it('transitions a draft goal to active before iterating', async () => {
     const g = await createGoal(dir, { target: 't', verification: [failingCheck] });
     const events = await drain(runGoalLoop({

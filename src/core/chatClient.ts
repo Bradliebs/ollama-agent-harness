@@ -1,4 +1,7 @@
 import type { Message, Tool } from 'ollama';
+import type { ModelLocality } from '../observability/costProvenance';
+
+export type { ModelLocality } from '../observability/costProvenance';
 
 /**
  * Per-LLM-call usage stats. Same shape used by OllamaClient and any other
@@ -42,4 +45,12 @@ export interface IChatClient {
   getContextWindow(): Promise<number | null>;
   healthCheck(): Promise<{ ok: boolean; error?: string }>;
   getModel(): string;
+  /**
+   * Authoritative locality of the backend serving this client: 'local' for
+   * an on-box runtime (Ollama), 'cloud' for a hosted provider. Optional so
+   * existing clients/stubs stay valid; consumers fall back to registry
+   * classification when absent. The serving client knows the truth even for
+   * off-registry models (custom local pulls), which the registry cannot.
+   */
+  getLocality?(): ModelLocality;
 }

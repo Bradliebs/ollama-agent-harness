@@ -1,6 +1,6 @@
 import type { Message, Tool, ToolCall } from 'ollama';
 import { appendFileSync } from 'fs';
-import type { ChatResult, IChatClient, StreamChunk, TokenUsage } from './chatClient';
+import type { ChatResult, IChatClient, ModelLocality, StreamChunk, TokenUsage } from './chatClient';
 import { liftInlineToolCalls } from './ollamaClient';
 import { recordSwallowed } from '../observability/silentFailureSink';
 
@@ -274,6 +274,10 @@ export class OpenAIClient implements IChatClient {
 
   getModel(): string {
     return this.model;
+  }
+
+  getLocality(): ModelLocality {
+    return 'cloud';
   }
 
   private async invoke(

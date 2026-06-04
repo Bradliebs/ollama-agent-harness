@@ -115,6 +115,17 @@ export interface GoalBlock {
   needs: string;            // what's required to unblock
 }
 
+// Honest snapshot, taken at completion time, of whether the verification that
+// grounded this completion was adequate proof for the task kind. Captured here
+// rather than recomputed because a goal's verification array can change after
+// the fact — the audit record must reflect what actually grounded completion.
+export interface GoalCompletionVerdict {
+  verified: boolean;          // completion rested on adequate proof for the task kind
+  executionGrounded: boolean; // task kind requires deterministic proof (code/edit/data)
+  reason: string;             // human-readable explanation from the adequacy assessment
+  at: string;
+}
+
 export interface Goal {
   schemaVersion: typeof GOAL_SCHEMA_VERSION;
   id: string;
@@ -127,6 +138,7 @@ export interface Goal {
   spawnedFrom?: string;
   pause?: GoalPause;
   block?: GoalBlock;
+  completionVerdict?: GoalCompletionVerdict;  // set on transition into 'complete'
   startedAt?: string;       // first transition into 'active'
   createdAt: string;
   updatedAt: string;

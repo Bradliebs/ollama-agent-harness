@@ -15,9 +15,10 @@
 //   * run verification after each iteration; complete on all-required-pass
 //   * persist each iteration via updateGoal so progress survives a crash
 
-import { Goal, isTerminal } from './types';
+import { Goal, GoalCompletionVerdict, isTerminal } from './types';
 import { readGoal, transitionGoal, updateGoal } from './store';
 import { runAllChecks, type RunCheckContext, type BatchResult } from './verification';
+import { assessVerificationAdequacy, type VerificationAdequacy, type VerificationStrategyOverrides } from './verificationKernel';
 import { extractBudget } from './loopConfig';
 
 /** Default outer-loop cap when the goal has no `budget` constraint. */
@@ -50,12 +51,17 @@ export type GoalLoopReason =
 
 export type GoalLoopEvent =
   | { type: 'loop_start'; goalId: string; budget: ReturnType<typeof extractBudget>; at: string }
+  | { type: 'verification_adequacy'; goalId: string; adequacy: VerificationAdequacy; at: string }
   | { type: 'verification_start'; goalId: string; iteration: number; at: string }
   | { type: 'verification_end'; goalId: string; iteration: number; result: BatchResult; at: string }
   | { type: 'iteration_start'; goalId: string; iteration: number; at: string }
   | { type: 'iteration_end'; goalId: string; iteration: number; outcome: IterationOutcome; at: string }
   | { type: 'transitioned'; goalId: string; from: Goal['status']; to: Goal['status']; at: string }
-  | { type: 'loop_end'; goalId: string; reason: GoalLoopReason; iterations: number; at: string };
+  // `verified` is set only on completion (reasons `success` / `already_satisfied`):
+  // true when the completion rests on adequate proof for the task kind, false when
+  // an execution-grounded task reached "complete" without deterministic proof (it
+  // only looks done). Undefined for non-completion terminal reasons.
+  | { type: 'loop_end'; goalId: string; reason: GoalLoopReason; iterations: number; verified?: boolean; at: string };
 
 export interface RunGoalLoopDeps {
   projectDir: string;
@@ -68,6 +74,12 @@ export interface RunGoalLoopDeps {
   now?: () => Date;
   /** Outer-loop cap when the goal has no `budget` constraint. */
   defaultMaxIterations?: number;
+  /**
+   * Per-kind verification strategy overrides. Lets a caller make proof rules
+   * pluggable per task kind (e.g. require a stricter check, or mark a kind
+   * execution-grounded). Unset kinds use the kernel defaults.
+   */
+  verificationStrategies?: VerificationStrategyOverrides;
   /** Stop iterating early. The loop yields `loop_end` with reason `externally_paused`. */
   abortSignal?: AbortSignal;
 }
@@ -109,6 +121,27 @@ export async function* runGoalLoop(deps: RunGoalLoopDeps): AsyncGenerator<GoalLo
   const startedAtMs = now().getTime();
   yield { type: 'loop_start', goalId, budget, at: new Date(startedAtMs).toISOString() };
 
+  // Honest verification check: if this is an execution-grounded task (code/edit/
+  // data) with no deterministic proof check, surface it so callers/UI can warn
+  // that a "complete" here would only look done. Observability only — the loop
+  // still respects the goal's declared checks and does not block on this. The same
+  // verdict is attached to the completion `loop_end` so the terminal record is
+  // self-contained.
+  const adequacy = assessVerificationAdequacy(goal.target, goal.verification, deps.verificationStrategies);
+  yield {
+    type: 'verification_adequacy',
+    goalId,
+    adequacy,
+    at: now().toISOString(),
+  };
+  // Snapshot of the same verdict for persistence on completion (see GoalCompletionVerdict).
+  const completionVerdict = (): GoalCompletionVerdict => ({
+    verified: adequacy.adequate,
+    executionGrounded: adequacy.executionGrounded,
+    reason: adequacy.reason,
+    at: now().toISOString(),
+  });
+
   // ── Initial verification ──────────────────────────────────────────────
   // If the goal is already satisfied, skip work entirely. Always persist
   // the initial check history so the evidence trail captures every run,
@@ -118,9 +151,9 @@ export async function* runGoalLoop(deps: RunGoalLoopDeps): AsyncGenerator<GoalLo
   yield initial.end;
   await persistCheckHistory(projectDir, goalId, goal, initial.result, now);
   if (initial.result.allRequiredPassed) {
-    await transitionGoal(projectDir, goalId, 'complete', {}, now());
+    await transitionGoal(projectDir, goalId, 'complete', { completionVerdict: completionVerdict() }, now());
     yield { type: 'transitioned', goalId, from: 'active', to: 'complete', at: now().toISOString() };
-    yield { type: 'loop_end', goalId, reason: 'already_satisfied', iterations: 0, at: now().toISOString() };
+    yield { type: 'loop_end', goalId, reason: 'already_satisfied', iterations: 0, verified: adequacy.adequate, at: now().toISOString() };
     return;
   }
 
@@ -187,9 +220,9 @@ export async function* runGoalLoop(deps: RunGoalLoopDeps): AsyncGenerator<GoalLo
     await persistCheckHistory(projectDir, goalId, goal, verif.result, now);
 
     if (verif.result.allRequiredPassed) {
-      await transitionGoal(projectDir, goalId, 'complete', {}, now());
+      await transitionGoal(projectDir, goalId, 'complete', { completionVerdict: completionVerdict() }, now());
       yield { type: 'transitioned', goalId, from: 'active', to: 'complete', at: now().toISOString() };
-      yield { type: 'loop_end', goalId, reason: 'success', iterations: n, at: now().toISOString() };
+      yield { type: 'loop_end', goalId, reason: 'success', iterations: n, verified: adequacy.adequate, at: now().toISOString() };
       return;
     }
   }

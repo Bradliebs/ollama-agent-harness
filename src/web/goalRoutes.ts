@@ -18,6 +18,8 @@ import { resumeGoal } from '../goal/resume';
 import { getResumableGoal } from '../goal/resume';
 import { runGoalLoop, type GoalLoopEvent } from '../goal/loop';
 import { abortRun, isRunning, registerRun, unregisterRun } from '../goal/runRegistry';
+import { revertRun } from '../persistence/runReverter';
+import { appendAuditEntry } from '../permissions/audit';
 import { isTerminal, makeGoal, type GoalCheck, type GoalConstraint, type NewGoalInput } from '../goal/types';
 import type { IterationRunner } from '../goal/shellRunner';
 
@@ -127,6 +129,36 @@ export function createGoalRouter(deps: GoalRoutesDeps): express.Router {
       res.json({ goal });
     } catch (err) {
       sendError(res, 400, err);
+    }
+  });
+
+  // ── Undo (revert recorded side effects) ─────────────────────────────────
+  // Reverts every file mutation recorded under this goal's run id as a unit.
+  // Irreversible effects (e.g. a sent notification) are reported, never
+  // silently skipped. Blocked while a run is in flight so we never revert
+  // files out from under an iterating loop.
+  router.post('/api/goals/:id/undo', async (req, res) => {
+    if (!requireAuth(req, res, 'undo goal')) return;
+    const goalId = req.params.id;
+    try {
+      const goal = await readGoal(deps.projectDir, goalId);
+      if (!goal) { res.status(404).json({ error: 'goal not found' }); return; }
+      if (isRunning(goalId)) {
+        res.status(409).json({ error: 'goal has an in-flight run; pause or let it finish before undoing' });
+        return;
+      }
+      const result = await revertRun(deps.projectDir, goalId);
+      // Audit the rollback: a destructive recovery action must leave a trace.
+      await appendAuditEntry(deps.projectDir, {
+        timestamp: now().toISOString(),
+        eventType: 'PostToolUse',
+        tool: 'goal_undo',
+        input: JSON.stringify({ goalId }),
+        output: `reverted ${result.reverted.length}, irreversible ${result.irreversible.length}, failed ${result.failed.length}`,
+      });
+      res.json({ result });
+    } catch (err) {
+      sendError(res, 500, err);
     }
   });
 

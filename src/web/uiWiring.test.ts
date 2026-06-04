@@ -275,4 +275,18 @@ describe('web UI wiring', () => {
 
     expect(missing).toEqual([]);
   });
+
+  it('exposes a per-goal Undo control wired to the undo route', () => {
+    // The Undo button lets a user roll back a goal run's recorded side effects.
+    // It is keyed by goal.id via the container dataset, posts to the undo
+    // route, and surfaces the revert summary.
+    expect(appJs).toContain("class=\"goal-run-undo\"");
+    expect(appJs).toContain("goalRunControl(el, 'undo')");
+    expect(appJs).toContain("if (action === 'undo')");
+    expect(appJs).toContain('Undone: reverted ');
+    // finalizeGoalRunControls disables pause/abandon but must leave Undo usable
+    // after the run ends, since undo is a post-run recovery action.
+    const finalizeBody = appJs.slice(appJs.indexOf('function finalizeGoalRunControls'));
+    expect(finalizeBody.slice(0, 200)).not.toContain('goal-run-undo');
+  });
 });

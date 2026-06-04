@@ -5,6 +5,7 @@ import { OllamaClient } from '../core/ollamaClient';
 import type { IChatClient } from '../core/chatClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { withFileLock } from '../persistence/atomicFile';
+import { revertRun } from '../persistence/runReverter';
 import { createHelperAgentConfig, type HelperTaskType, type ModelRoutingDecision, type ModelRoutingInput, type ModelRoutingPolicy } from './modelRouting';
 import { resolveAgentDefinition, type AgentDefinition } from './agentLoader';
 import { registerSubagent, unregisterSubagent, updateSubagentActivity, getActiveSubagent } from '../services/subagentRegistry';
@@ -32,6 +33,14 @@ export interface SubagentConfig {
   runId?: string;
   /** Optional abort signal piped into the inner queryLoop. Used by the cancel endpoint together with runId. */
   abortSignal?: AbortSignal;
+  /**
+   * Opt-in side-effect recovery. When set (and `runId` is present), the
+   * subagent's file mutations are recorded under its own `runId` and reverted
+   * if the run ends in error — a thrown error, or a queryLoop `done` event with
+   * reason `error`. User cancellation and soft no-output runs are NOT reverted.
+   * Omitted by default, so existing callers and tests are unaffected.
+   */
+  undoOnError?: { projectDir: string };
   /** Optional listener invoked for every loop event. Useful for surfacing live progress to a parent UI. */
   onEvent?: (event: { type: string; [key: string]: unknown }) => void;
 }
@@ -171,6 +180,9 @@ export async function runSubagent(
   const deps: QueryLoopDeps = {
     client,
     tools: subagentTools,
+    ...(effectiveConfig.undoOnError && effectiveConfig.runId
+      ? { sideEffectRecorder: { projectDir: effectiveConfig.undoOnError.projectDir, runId: effectiveConfig.runId } }
+      : {}),
   };
 
   // Build the abort controller used by the cancel endpoint. If the caller
@@ -200,6 +212,7 @@ export async function runSubagent(
   let lastText = '';
   let cancelled = false;
   let runError: Error | null = null;
+  let erroredOut = false;
 
   try {
     for await (const event of queryLoop(loopConfig, deps, messages)) {
@@ -221,6 +234,9 @@ export async function runSubagent(
       if (event.type === 'text') {
         lastText = event.content;
       }
+      if (event.type === 'done' && (event as { reason?: string }).reason === 'error') {
+        erroredOut = true;
+      }
     }
     success = lastText.length > 0;
   } catch (error) {
@@ -233,6 +249,16 @@ export async function runSubagent(
   } finally {
     if (externalSignal) {
       try { externalSignal.removeEventListener('abort', onExternalAbort); } catch { /* best-effort */ }
+    }
+    // Opt-in recovery: if recording was enabled and the run ended in error
+    // (thrown error, or a loop `done` event with reason `error`), revert the
+    // subagent's file mutations so a failed delegation leaves no half-applied
+    // changes behind. Best-effort — the run already happened. Cancellation and
+    // soft no-output runs are intentionally left untouched.
+    if (effectiveConfig.undoOnError && effectiveConfig.runId && (runError || erroredOut)) {
+      try {
+        await revertRun(effectiveConfig.undoOnError.projectDir, effectiveConfig.runId);
+      } catch (err) { recordSwallowed('subagent.undoOnError', err); }
     }
     // Snapshot the tool history from the registry BEFORE we unregister so
     // it can be persisted into the run record. Without this, the "what did

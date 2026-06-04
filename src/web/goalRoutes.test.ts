@@ -6,6 +6,8 @@ import * as os from 'os';
 import * as path from 'path';
 import { createGoalRouter } from './goalRoutes';
 import { createGoal, transitionGoal } from '../goal/store';
+import { writeFileTracked } from '../persistence/recordingFileOps';
+import { readAuditLog } from '../permissions/audit';
 import { _resetFileLocksForTest } from '../persistence/atomicFile';
 import { _resetRunRegistryForTest } from '../goal/runRegistry';
 import type { Goal } from '../goal/types';
@@ -165,5 +167,56 @@ describe('web/goalRoutes', () => {
     await transitionGoal(h.projectDir, g.id, 'abandoned');
     const r = await fetch(`${h.baseUrl}/api/goals/${g.id}/start`, { method: 'POST' });
     expect(r.status).toBe(409);
+  });
+
+  it('POST /:id/undo reverts files recorded under the goal as a unit', async () => {
+    h = await startHarness();
+    const g = await createGoal(h.projectDir, { target: 'x' });
+    // Seed a recorded create under runId = goal.id.
+    await writeFileTracked({ projectDir: h.projectDir, runId: g.id, filePath: 'made.txt', content: 'hi' });
+    expect(await fs.readFile(path.join(h.projectDir, 'made.txt'), 'utf-8')).toBe('hi');
+
+    const r = await fetch(`${h.baseUrl}/api/goals/${g.id}/undo`, { method: 'POST' });
+    expect(r.status).toBe(200);
+    const { result } = await r.json() as { result: { reverted: unknown[]; failed: unknown[] } };
+    expect(result.reverted).toHaveLength(1);
+    expect(result.failed).toHaveLength(0);
+    await expect(fs.access(path.join(h.projectDir, 'made.txt'))).rejects.toThrow();
+  });
+
+  it('POST /:id/undo writes an audit entry recording the rollback', async () => {
+    h = await startHarness();
+    const g = await createGoal(h.projectDir, { target: 'x' });
+    await writeFileTracked({ projectDir: h.projectDir, runId: g.id, filePath: 'made.txt', content: 'hi' });
+
+    const r = await fetch(`${h.baseUrl}/api/goals/${g.id}/undo`, { method: 'POST' });
+    expect(r.status).toBe(200);
+
+    const entries = await readAuditLog(h.projectDir);
+    const undoEntry = entries.find((e) => e.tool === 'goal_undo');
+    expect(undoEntry).toBeDefined();
+    expect(undoEntry?.input).toContain(g.id);
+    expect(undoEntry?.output).toContain('reverted 1');
+  });
+
+  it('POST /:id/undo does not audit when auth is rejected', async () => {
+    h = await startHarness({ requireAuth: (_req, res) => { res.status(401).json({ error: 'no' }); return false; } });
+    const g = await createGoal(h.projectDir, { target: 'x' });
+    await fetch(`${h.baseUrl}/api/goals/${g.id}/undo`, { method: 'POST' });
+    const entries = await readAuditLog(h.projectDir);
+    expect(entries.find((e) => e.tool === 'goal_undo')).toBeUndefined();
+  });
+
+  it('POST /:id/undo returns 404 for an unknown goal', async () => {
+    h = await startHarness();
+    const r = await fetch(`${h.baseUrl}/api/goals/nope/undo`, { method: 'POST' });
+    expect(r.status).toBe(404);
+  });
+
+  it('POST /:id/undo is gated by requireAuth', async () => {
+    h = await startHarness({ requireAuth: (_req, res) => { res.status(401).json({ error: 'no' }); return false; } });
+    const g = await createGoal(h.projectDir, { target: 'x' });
+    const r = await fetch(`${h.baseUrl}/api/goals/${g.id}/undo`, { method: 'POST' });
+    expect(r.status).toBe(401);
   });
 });

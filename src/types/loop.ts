@@ -4,6 +4,7 @@ import type { TaskContract } from './taskContract';
 import type { ReadBeforeWriteMode } from '../tools/readBeforeWriteGate';
 import type { RepoMap } from '../core/repoMap';
 import type { InjectionDefenceMode } from '../safety/injectionDefence';
+import type { ModelLocality } from '../observability/costProvenance';
 
 export interface LoopConfig {
   /**
@@ -256,14 +257,18 @@ export interface DoneEvent {
  * provider-specific log fields.
  *
  * `model` is the resolved model name; `turn` is the 1-based loop turn so the
- * UI can attribute multi-turn usage to the right agent reply. Costs are
- * intentionally omitted — Ollama is local; if a hosted backend is added,
- * wire the conversion at emit time using a per-model rate map.
+ * UI can attribute multi-turn usage to the right agent reply. `locality`
+ * flags whether the serving backend ran locally ($0 marginal) or in the
+ * cloud, so the UI can show an honest cost badge instead of assuming local.
  */
 export interface UsageEvent {
   type: 'usage';
   model: string;
   turn: number;
+  /** Cost-honesty signal: 'local' ($0 marginal), 'cloud' (billed), or
+   * 'unknown' when locality could not be established. Optional so legacy
+   * emitters/consumers stay valid. */
+  locality?: ModelLocality;
   promptTokens: number;
   completionTokens: number;
   totalDurationMs: number;

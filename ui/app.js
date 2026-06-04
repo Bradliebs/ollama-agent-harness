@@ -832,6 +832,7 @@ function resolveReadinessAction(check) {
   if (check.action === 'Open Tools') return { actionLabel: 'Open tools', actionHandler: () => openLeftTabByName('tools') };
   if (check.action === 'Open Promises') return { actionLabel: 'Open promises', actionHandler: () => openLeftTabByName('promises') };
   if (check.id === 'permission.mode') return { actionLabel: 'Set safe mode', actionHandler: () => toggleRight() };
+  if (check.id === 'model.toolCalling') return { actionLabel: 'Probe model', actionHandler: () => probeModelTools() };
   if (check.id && check.id.startsWith('tool.')) return { actionLabel: 'Fix blockers', actionHandler: () => fixReadinessBlockers() };
   return { actionLabel: 'Refresh checks', actionHandler: () => loadReadiness() };
 }
@@ -1499,6 +1500,8 @@ function renderReadinessSection(section) {
           const toolName = c.id.replace('tool.', '');
           actionBtn = ' <button class="btn-sm btn-xxs" onclick="event.stopPropagation();toggleTool(\'' + escAttr(toolName) + '\',true).then(function(){loadReadiness()})">Enable</button>'
             + ' <button class="btn-sm btn-xxs-warning" onclick="event.stopPropagation();readinessTimedFix(\'tool\',\'' + escAttr(toolName) + '\')">⏱</button>';
+        } else if (c.id === 'model.toolCalling') {
+          actionBtn = ' <button class="btn-sm btn-xxs" onclick="event.stopPropagation();probeModelTools()">Probe</button>';
         } else if (c.id === 'permission.mode') {
           actionBtn = ' <button class="btn-sm btn-xxs" onclick="event.stopPropagation();setMode(\'dontAsk\',document.querySelectorAll(\'.permission-mode-option\')[0]);setTimeout(loadReadiness,500)">Set dontAsk</button>'
             + ' <button class="btn-sm btn-xxs-warning" onclick="event.stopPropagation();readinessTimedFix(\'mode\')">⏱</button>';
@@ -1606,6 +1609,22 @@ async function importMissionPrompts() {
 }
 
 window._readinessFixableChecks = [];
+// Actively verify whether the selected model can call tools, then refresh
+// readiness so the measured verdict replaces the static heuristic. Explicit
+// user action — never auto-run — so cloud models are not probed unprompted.
+async function probeModelTools() {
+  showToast('Probing model tool-calling…', 2500, 'info');
+  try {
+    const response = await fetch('/api/model/probe-tools', { method: 'POST' });
+    const data = await readApiJson(response, 'Tool-calling probe');
+    const tone = data.verdict === 'verified' ? 'success' : data.verdict === 'failed' ? 'warning' : 'info';
+    showToast(data.message || ('Probe ' + (data.verdict || 'finished') + '.'), 6000, tone);
+  } catch (error) {
+    showToast('Probe failed: ' + (error.message || error), 5000, 'warning');
+  }
+  await loadReadiness();
+}
+
 async function fixReadinessBlockers(timedMinutes) {
   const checks = window._readinessFixableChecks || [];
   if (checks.length === 0) return;
@@ -4566,6 +4585,28 @@ async function sendMessage(opts) {
             sessionUsage.totalTurnMs += ev.durationMs || 0;
             updateSessionHud();
             break;
+          case 'run_cost':
+            // Honest run-level cost verdict (server-side rollup). Renders a
+            // "100% local · $0" badge only when every call was provably local.
+            renderRunCost(ev);
+            break;
+          case 'answer_confidence':
+            // Honest answer-confidence verdict (server-side). Renders an
+            // abstention or stated-confidence band; stays silent when unstated.
+            renderAnswerConfidence(ev);
+            break;
+          case 'run_provenance':
+            // Honest, auditable run provenance (server-side): which model
+            // produced the run, when, and from what sources. Stays silent
+            // when nothing beyond a timestamp is provable.
+            renderRunProvenance(ev);
+            break;
+          case 'offline':
+            // Honest offline guarantee (server-side): a 🔒 Offline badge only
+            // when the run was provably local; 🌐 Online when it provably
+            // reached the network; silent when offline can't be confirmed.
+            renderOffline(ev);
+            break;
           case 'context':
             updateContextHud(ev.pressure, ev.strategy, ev.qualityScore, ev.autosaved);
             if (ev.strategy !== 'budget_reduction' || ev.autosaved) {
@@ -5475,6 +5516,7 @@ function appendGoalRunContainer(goal) {
     + '<div class="goal-run-controls">'
     +   '<button type="button" class="goal-run-pause">Pause</button>'
     +   '<button type="button" class="goal-run-abandon">Abandon</button>'
+    +   '<button type="button" class="goal-run-undo">Undo</button>'
     + '</div>'
     + '<div class="goal-run-status">Starting…</div>'
     + '<div class="goal-run-cards"></div>'
@@ -5482,6 +5524,7 @@ function appendGoalRunContainer(goal) {
   area.appendChild(el);
   el.querySelector('.goal-run-pause').addEventListener('click', () => goalRunControl(el, 'pause'));
   el.querySelector('.goal-run-abandon').addEventListener('click', () => goalRunControl(el, 'abandon'));
+  el.querySelector('.goal-run-undo').addEventListener('click', () => goalRunControl(el, 'undo'));
   scrollBottom();
   return el;
 }
@@ -5490,7 +5533,7 @@ async function goalRunControl(container, action) {
   const goalId = container.dataset.goalId;
   if (!goalId) return;
   const status = container.querySelector('.goal-run-status');
-  const btn = container.querySelector(action === 'pause' ? '.goal-run-pause' : '.goal-run-abandon');
+  const btn = container.querySelector('.goal-run-' + action);
   if (btn) btn.disabled = true;
   try {
     const resp = await fetch('/api/goals/' + encodeURIComponent(goalId) + '/' + action, {
@@ -5502,6 +5545,15 @@ async function goalRunControl(container, action) {
       const errTxt = await resp.text().catch(() => '');
       status.textContent = action + ' failed (HTTP ' + resp.status + '): ' + errTxt;
       if (btn) btn.disabled = false;
+      return;
+    }
+    if (action === 'undo') {
+      const body = await resp.json().catch(() => ({}));
+      const r = (body && body.result) || {};
+      const reverted = (r.reverted || []).length;
+      const irreversible = (r.irreversible || []).length;
+      const failed = (r.failed || []).length;
+      status.textContent = 'Undone: reverted ' + reverted + ', irreversible ' + irreversible + ', failed ' + failed;
       return;
     }
     status.textContent = action === 'pause' ? 'Pause requested…' : 'Abandon requested…';
@@ -6207,6 +6259,10 @@ function resetSessionUsage() {
   sessionUsage = { calls: 0, promptTokens: 0, completionTokens: 0, totalDurationMs: 0, totalTurnMs: 0, lastModel: null };
   currentTurnUsage = null;
   updateSessionHud();
+  renderRunCost(null);
+  renderAnswerConfidence(null);
+  renderRunProvenance(null);
+  renderOffline(null);
 }
 
 function formatTokensCompact(n) {
@@ -6250,6 +6306,109 @@ function updateSessionHud() {
       + formatDurationCompact(sessionUsage.totalDurationMs) + ' model'
       + (sessionUsage.totalTurnMs ? ' · ' + formatDurationCompact(sessionUsage.totalTurnMs) + ' wall-clock' : '')
       + (sessionUsage.lastModel ? ' · last model: ' + sessionUsage.lastModel : '');
+}
+
+// Honest run-level cost verdict rendered into the session HUD. The server
+// emits one `run_cost` event at the end of each run; we paint a badge that
+// claims "$0 local" ONLY when the server proved every call ran locally.
+function renderRunCost(verdict) {
+  const costEl = document.getElementById('sessionHudCost');
+  const sepEl = document.getElementById('sessionHudCostSep');
+  if (!costEl || !sepEl) return;
+  if (!verdict || !verdict.calls) {
+    costEl.style.display = 'none';
+    sepEl.style.display = 'none';
+    return;
+  }
+  let label;
+  if (verdict.freeMarginal) {
+    label = '🟢 100% local · $0';
+  } else if (verdict.locality === 'cloud') {
+    label = '☁ cloud · billed';
+  } else {
+    label = 'cost unknown';
+  }
+  costEl.textContent = label;
+  costEl.title = verdict.reason || '';
+  costEl.style.display = '';
+  sepEl.style.display = '';
+}
+
+// Honest answer-confidence verdict rendered into the session HUD. The server
+// emits one `answer_confidence` event after a run that produced answer text.
+// We surface an explicit abstention or a model-stated confidence band, and
+// render NOTHING when the model expressed no confidence ('unstated') rather
+// than inventing one.
+function renderAnswerConfidence(verdict) {
+  const confEl = document.getElementById('sessionHudConf');
+  const sepEl = document.getElementById('sessionHudConfSep');
+  if (!confEl || !sepEl) return;
+  if (!verdict || verdict.band === 'unstated') {
+    confEl.style.display = 'none';
+    sepEl.style.display = 'none';
+    return;
+  }
+  let label;
+  if (verdict.abstained) {
+    label = '🤔 abstained';
+  } else if (verdict.band === 'high') {
+    label = '✓ high confidence';
+  } else if (verdict.band === 'medium') {
+    label = '~ medium confidence';
+  } else {
+    label = '! low confidence';
+  }
+  confEl.textContent = label;
+  confEl.title = verdict.reason || '';
+  confEl.style.display = '';
+  sepEl.style.display = '';
+}
+
+// Honest, auditable run provenance rendered into the session HUD. The server
+// emits one `run_provenance` event per run: which model produced it, when,
+// and the tools/commands/files that fed it. We paint a badge with the model
+// and source count, and render NOTHING when nothing beyond a timestamp is
+// provable (no model and no sources) rather than implying false provenance.
+function renderRunProvenance(verdict) {
+  const provEl = document.getElementById('sessionHudProv');
+  const sepEl = document.getElementById('sessionHudProvSep');
+  if (!provEl || !sepEl) return;
+  const hasModel = Boolean(verdict && verdict.model);
+  const sources = verdict && Array.isArray(verdict.sources) ? verdict.sources : [];
+  if (!verdict || (!hasModel && sources.length === 0)) {
+    provEl.style.display = 'none';
+    sepEl.style.display = 'none';
+    return;
+  }
+  const parts = [];
+  if (hasModel) parts.push(verdict.model);
+  if (sources.length > 0) {
+    const proven = sources.filter((s) => s && s.proven).length;
+    parts.push(sources.length + ' source' + (sources.length === 1 ? '' : 's')
+      + (proven < sources.length ? ' (' + proven + ' proven)' : ''));
+  }
+  provEl.textContent = '🔗 ' + parts.join(' · ');
+  provEl.title = verdict.reason || '';
+  provEl.style.display = '';
+  sepEl.style.display = '';
+}
+
+function renderOffline(verdict) {
+  const offEl = document.getElementById('sessionHudOffline');
+  const sepEl = document.getElementById('sessionHudOfflineSep');
+  if (!offEl || !sepEl) return;
+  const state = verdict && verdict.state;
+  // Stay silent unless offline is provably confirmed or the run provably
+  // reached the network. 'unknown' paints nothing rather than a false claim.
+  if (state !== 'offline' && state !== 'online') {
+    offEl.style.display = 'none';
+    sepEl.style.display = 'none';
+    return;
+  }
+  offEl.textContent = state === 'offline' ? '🔒 Offline' : '🌐 Online';
+  offEl.title = verdict.reason || '';
+  offEl.style.display = '';
+  sepEl.style.display = '';
 }
 
 function attachMessageMeta(msgEl, usage) {

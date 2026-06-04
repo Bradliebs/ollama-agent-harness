@@ -174,7 +174,7 @@ export async function transitionGoal(
   projectDir: string,
   id: string,
   to: GoalStatus,
-  patch: Partial<Pick<Goal, 'pause' | 'block'>> = {},
+  patch: Partial<Pick<Goal, 'pause' | 'block' | 'completionVerdict'>> = {},
   now: Date = new Date(),
 ): Promise<Goal> {
   const next = await updateGoal(projectDir, id, (g) => {
@@ -183,6 +183,7 @@ export async function transitionGoal(
     if (to !== 'paused') g.pause = undefined;
     if (to === 'blocked' && patch.block) g.block = patch.block;
     if (to !== 'blocked') g.block = undefined;
+    if (to === 'complete' && patch.completionVerdict) g.completionVerdict = patch.completionVerdict;
     return g;
   }, now);
   if (isTerminal(to)) {

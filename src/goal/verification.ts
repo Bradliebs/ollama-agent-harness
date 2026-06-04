@@ -195,7 +195,7 @@ async function runModelJudge(spec: Extract<GoalCheckSpec, { kind: 'model_judge' 
 
 // Parse Jest summary line: "Tests:       12 passed, 1 failed, 13 total"
 // Returns null if no recognisable summary present.
-function parseJestSummary(output: string): { passed: number; failed: number; total: number } | null {
+export function parseJestSummary(output: string): { passed: number; failed: number; total: number } | null {
   const m = output.match(/Tests:\s+(?:(\d+)\s+failed,\s+)?(?:(\d+)\s+skipped,\s+)?(\d+)\s+passed(?:,\s+(\d+)\s+skipped)?(?:,\s+(\d+)\s+failed)?,\s+(\d+)\s+total/);
   if (!m) return null;
   const failedA = parseInt(m[1] ?? '0', 10);

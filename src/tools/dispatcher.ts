@@ -5,6 +5,7 @@ import type { RuntimeTracer } from '../core/tracing';
 import { recordSwallowed } from '../observability/silentFailureSink';
 import type { ReadBeforeWriteGate } from './readBeforeWriteGate';
 import { compressToolResult, type CompressionConfig } from './outputCompression';
+import { prepareSideEffectRecording, type SideEffectRecorder } from '../persistence/sideEffectRecording';
 
 export interface DispatchResult {
   call: ToolCall;
@@ -35,6 +36,14 @@ export interface DispatchOptions {
   compressOutput?: boolean;
   /** Optional overrides for the compression pass. */
   compressionConfig?: CompressionConfig;
+  /**
+   * When set, file-mutating tool calls (file_write / file_edit / file_delete)
+   * record a reversible side effect against this run, so the whole run can be
+   * undone later. The pre-image is captured before the tool runs; the effect is
+   * recorded only after it succeeds. Best-effort — a recording failure is
+   * surfaced to the silent-failure sink and never blocks the tool.
+   */
+  sideEffectRecorder?: SideEffectRecorder;
 }
 
 /**
@@ -216,6 +225,14 @@ export class ToolDispatcher {
     try {
       const startTime = Date.now();
       const toolSpan = options.tracer?.startSpan('tool.execute', { tool: call.name });
+      let commitSideEffect: (() => Promise<void>) | null = null;
+      if (options.sideEffectRecorder) {
+        try {
+          commitSideEffect = await prepareSideEffectRecording(options.sideEffectRecorder, call.name, call.input);
+        } catch (err) {
+          recordSwallowed('dispatcher.sideEffectRecord.prepare', err);
+        }
+      }
       let result = await tool.execute(call.input);
       const durationMs = Date.now() - startTime;
       toolSpan?.end(result.success ? 'ok' : 'error', { durationMs, success: result.success });
@@ -230,6 +247,14 @@ export class ToolDispatcher {
       // Confirm deferred read after successful execution
       if (result.success && pendingReadPath && options.readBeforeWriteGate) {
         options.readBeforeWriteGate.confirmRead(pendingReadPath);
+      }
+      // Record the reversible side effect once the mutation actually succeeded.
+      if (result.success && commitSideEffect) {
+        try {
+          await commitSideEffect();
+        } catch (err) {
+          recordSwallowed('dispatcher.sideEffectRecord.commit', err);
+        }
       }
       if (options.trackUsage) {
         const recorder = options.learningRecorder;

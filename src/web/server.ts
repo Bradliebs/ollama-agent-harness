@@ -59,6 +59,10 @@ import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
 import { attachOtlpExporter, type OtlpExporter } from '../observability/otlpExporter';
 import { mintTraceId } from '../observability/openinference';
+import { summarizeRunCost, type RunUsageSample, type ModelLocality } from '../observability/costProvenance';
+import { assessAnswerConfidence } from '../observability/answerConfidence';
+import { buildRunProvenance } from '../observability/runProvenance';
+import { assessOfflineGuarantee } from '../observability/offlineGuarantee';
 import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, describeOutputValidationProfileSuggestion, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
 import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, adaptiveTimeBudget, recordAvgTurnDuration, clearSynthesisStats, recordToolUseStats } from '../core/synthesisStats';
 import { startNewSession, onSessionEnd, getEvolvedPrompt, recordSessionAutoContinue, LearningRecorder } from '../learning/engine';
@@ -78,6 +82,7 @@ import { resolveSessionSquad } from '../services/squadSessions';
 import { deleteStructuredEntry, exportIdentity, importIdentity, queryStructured, readIdentityFile, readIdentitySnapshot, renderIdentityForPrompt, upsertStructuredEntry, writeIdentityFile, type IdentityFileName } from '../services/identity';
 import { calibrateModelRoutingPolicy, summarizeRoutingMetrics } from '../agents/modelRouting';
 import { checkSetupHealth } from '../setup/health';
+import { probeToolCalling, type ToolCallProbeResult } from '../setup/toolCallProbe';
 import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCatalog';
 import { isVisionCapableModelName } from '../models/visionModels';
 import { createAutomationJob, deleteAutomationJob, executeDueJobs, listAutomationJobs, listDueAutomationJobs, parseAutomationSchedule, computeNextAutomationRun, readAutomationRunLog, updateAutomationJob } from '../automation/jobs';
@@ -102,6 +107,7 @@ import { createGoalRouter } from './goalRoutes';
 import { makeShellCommandRunner, type IterationRunner } from '../goal/shellRunner';
 import { makeQueryLoopRunner } from '../goal/queryLoopRunner';
 import { surfaceResumableGoalOnBoot } from '../goal/bootResume';
+import { parseJestSummary } from '../goal/verification';
 import { parsePrioritySetCommand, setPriorityForToday } from '../services/morningPriority';
 import { routeSlashCommand, registerYoloHooks } from '../services/slashCommandRouter';
 import { calculateReadiness, type ReadinessInput } from '../core/readinessGate';
@@ -327,6 +333,7 @@ app.use(createGoalRouter({
         tools,
         model,
         systemPrompt,
+        projectDir: PROJECT_DIR,
         maxTurnsPerIteration: typeof b.maxTurns === 'number' ? b.maxTurns : undefined,
         maxTimeMs: typeof b.maxTimeMs === 'number' ? b.maxTimeMs : undefined,
       });
@@ -1613,6 +1620,31 @@ app.post('/api/autonomy/reset', async (_req, res) => {
 });
 
 // List available models from Ollama
+// Cache of the most recent tool-calling probe per model id. Tool-calling
+// capability is a property of the model+backend, so a single verified/failed
+// verdict stays valid until the user explicitly re-probes. Keeps /api/readiness
+// fast (no network call per poll) while still surfacing real, measured results.
+const toolCallProbeCache = new Map<string, ToolCallProbeResult>();
+
+// Actively verify whether the *current* model emits tool calls. This is an
+// on-demand, explicit action (never auto-run) so cloud models are not probed —
+// and charged — without the user asking. Result is cached for /api/readiness.
+app.post('/api/model/probe-tools', async (_req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    if (!currentModel) {
+      res.status(400).json({ error: 'No model selected.' });
+      return;
+    }
+    const client = webRuntime.createClient(currentModel, ollamaHost);
+    const result = await probeToolCalling(client);
+    toolCallProbeCache.set(currentModel, result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 app.get('/api/models', async (_req, res) => {
   try {
     await ensureSettingsLoaded();
@@ -2623,6 +2655,35 @@ function checkToolEnabled(toolName: string): ReadinessCheck {
     : { id: `tool.${toolName}`, label: `${toolName} enabled`, status: 'ready', message: `${toolName} is available.` };
 }
 
+// Tool-calling readiness for the current model. Prefers a measured probe
+// result (cached from /api/model/probe-tools) over the static name heuristic,
+// so users see whether their model *actually* calls tools rather than a guess.
+function toolCallingReadinessCheck(): ReadinessCheck {
+  const id = 'model.toolCalling';
+  const label = 'Tool calling verified';
+  if (!currentModel) {
+    return { id, label, status: 'warn', message: 'No model selected.', action: 'Pick a model' };
+  }
+  const probed = toolCallProbeCache.get(currentModel);
+  if (probed) {
+    if (probed.verdict === 'verified') {
+      return { id, label, status: 'ready', message: probed.message };
+    }
+    if (probed.verdict === 'failed') {
+      return { id, label, status: 'blocked', message: probed.message, action: 'Pick a model' };
+    }
+    return { id, label, status: 'warn', message: probed.message, action: 'Probe model' };
+  }
+  const toolUse = inferModelCapabilities(currentModel).toolUse;
+  if (toolUse === 'strong') {
+    return { id, label, status: 'ready', message: `${currentModel} is expected to support tool calling (not yet verified). Probe to confirm.`, action: 'Probe model' };
+  }
+  if (toolUse === 'weak') {
+    return { id, label, status: 'warn', message: `${currentModel} may not reliably call tools. Probe to verify, or pick a stronger model for research/file tasks.`, action: 'Probe model' };
+  }
+  return { id, label, status: 'warn', message: `Tool calling not yet verified for ${currentModel}. Probe before research, file, or automation tasks.`, action: 'Probe model' };
+}
+
 async function buildAutonomyPreflight(planPreview?: Awaited<ReturnType<typeof readAutonomyPlanPreview>>): Promise<{ blocked: ReadinessCheck[]; warnings: ReadinessCheck[] }> {
   await ensureSettingsLoaded();
   const setup = await checkSetupHealth({ host: ollamaHost, visionModel: mediaTools.visionModel, audioTranscribeCommand: mediaTools.audioTranscribeCommand, pdfOcrCommand: mediaTools.pdfOcrCommand, projectDir: PROJECT_DIR });
@@ -2711,6 +2772,7 @@ app.get('/api/readiness', async (_req, res) => {
       readinessSection('chat', 'Chat', [
         { id: 'model.selected', label: 'Model selected', status: modelSelected ? 'ready' : 'blocked', message: modelSelected ? `Selected ${currentModel}.` : 'No model selected.', action: 'Pick a model' },
         { id: 'model.health', label: 'Model backend health', status: modelHealthy ? 'ready' : 'blocked', message: modelHealthy ? `${modelBackend} backend is available.` : `${modelBackend} backend is not ready.`, action: 'Open Settings' },
+        toolCallingReadinessCheck(),
         { id: 'context.window', label: 'Context window', status: effectiveCtx >= 4096 ? 'ready' : 'warn', message: ctxMessage },
       ]),
       readinessSection('coding', 'Coding', [
@@ -5544,6 +5606,11 @@ function evidenceMarkdown(evidence: EvidenceCard): string {
     `* Commands: ${evidence.commands.length}`,
   ];
   if (evidence.validation) lines.push(`* Validation: ${evidence.validation.status} (${Math.round(evidence.validation.score * 100)}%)`);
+  const verifiedTests = evidence.commands.reduce(
+    (acc, c) => (c.testCounts ? { passed: acc.passed + c.testCounts.passed, failed: acc.failed + c.testCounts.failed, total: acc.total + c.testCounts.total } : acc),
+    { passed: 0, failed: 0, total: 0 },
+  );
+  if (verifiedTests.total > 0) lines.push(`* Tests verified: ${verifiedTests.passed} passed, ${verifiedTests.failed} failed, ${verifiedTests.total} total`);
   if (evidence.mycelium?.route?.length) lines.push(`* Mycelium route: ${evidence.mycelium.route.join(' > ')}`);
   return lines.join('\n');
 }
@@ -7465,6 +7532,10 @@ CONTEXT HYGIENE (critical for long tasks):
   // Per-tool success/total counters so the verifier can spot silent failures
   // in failure-prone tools (web_fetch, pdf_*) that the aggregate ratio dilutes.
   const toolStats = new Map<string, { success: number; total: number }>();
+  // Honest run model locality, folded once the cost rollup is built; read
+  // after the loop to decide the offline-guarantee badge. Defaults to
+  // 'unknown' so a run that never reaches the rollup never claims offline.
+  let runLocality: ModelLocality = 'unknown';
 
   try {
     if (droppedForTokens > 0) {
@@ -7485,6 +7556,7 @@ CONTEXT HYGIENE (critical for long tasks):
     }
     const seenFallbackKeys = new Set<string>();
     let suppressedFallbacks = 0;
+    const runUsageSamples: RunUsageSample[] = [];
     for await (const event of webRuntime.runQueryLoop(config, deps, messages)) {
       if (event.type === 'tool_result') {
         toolCallCount++;
@@ -7500,7 +7572,8 @@ CONTEXT HYGIENE (critical for long tasks):
         });
         evidenceFiles.push(...evidenceFilesFromTool(event.call.name, event.call.input));
         if (event.call.name === 'bash' && typeof event.call.input.command === 'string') {
-          evidenceCommands.push({ command: event.call.input.command, success: Boolean(event.result?.success), outputSummary: summarizeForEvidence(event.result?.output) });
+          const testCounts = parseJestSummary(String(event.result?.output ?? '')) ?? undefined;
+          evidenceCommands.push({ command: event.call.input.command, success: Boolean(event.result?.success), outputSummary: summarizeForEvidence(event.result?.output), testCounts });
         }
         if (event.call?.name) {
           toolCallSequence.push(event.call.name);
@@ -7564,6 +7637,15 @@ CONTEXT HYGIENE (critical for long tasks):
         autoContinueCount++;
         chatLearningRecorder.recordAutoContinue(activeModel);
       }
+      if (event.type === 'usage') {
+        // Accumulate per-call locality + tokens for an honest run-level cost
+        // rollup emitted once the loop completes (see run_cost below).
+        runUsageSamples.push({
+          locality: event.locality ?? 'unknown',
+          promptTokens: event.promptTokens,
+          completionTokens: event.completionTokens,
+        });
+      }
       for (const fallbackEvent of drainRemoteProviderFallbackEvents()) {
         res.write(`data: ${JSON.stringify(fallbackEvent)}\n\n`);
       }
@@ -7597,6 +7679,23 @@ CONTEXT HYGIENE (critical for long tasks):
           })}\n\n`);
         }
       }
+    }
+    // Honest run-level cost rollup: claims a $0 all-local run only when every
+    // model call was provably local; a single cloud call makes the run billed.
+    const runCost = summarizeRunCost(runUsageSamples);
+    runLocality = runCost.locality;
+    res.write(`data: ${JSON.stringify({
+      type: 'run_cost',
+      ...runCost,
+    })}\n\n`);
+    // Honest answer-confidence signal: surfaces an explicit abstention or a
+    // model-stated confidence band, and stays silent ('unstated') rather than
+    // fabricating a number when the answer expressed none.
+    if (assistantTextBuffer.trim()) {
+      res.write(`data: ${JSON.stringify({
+        type: 'answer_confidence',
+        ...assessAnswerConfidence(assistantTextBuffer),
+      })}\n\n`);
     }
     for (const fallbackEvent of drainRemoteProviderFallbackEvents()) {
       res.write(`data: ${JSON.stringify(fallbackEvent)}\n\n`);
@@ -7808,6 +7907,22 @@ CONTEXT HYGIENE (critical for long tasks):
     },
   };
   res.write(`data: ${JSON.stringify({ type: 'evidence', evidence: evidenceCard })}\n\n`);
+  // Honest, auditable provenance for the run: which model produced it, when,
+  // and from what sources. Derived from the just-built evidence card so it
+  // never fabricates a model/time and marks sources proven only on evidence.
+  res.write(`data: ${JSON.stringify({ type: 'run_provenance', ...buildRunProvenance(evidenceCard) })}\n\n`);
+  // Honest offline guarantee: paints an 'offline' badge ONLY when the run's
+  // model was provably local AND no network-category tool was used. A cloud
+  // model or network tool proves 'online'; an unrecorded locality or an
+  // unresolvable tool category yields 'unknown' rather than a false claim.
+  {
+    const offlineRegistry = createToolRegistry(PROJECT_DIR);
+    const offlineToolRefs = evidenceCard.tools.map((t) => ({
+      name: t.name,
+      category: offlineRegistry.get(t.name)?.permissionCategory,
+    }));
+    res.write(`data: ${JSON.stringify({ type: 'offline', ...assessOfflineGuarantee({ modelLocality: runLocality, tools: offlineToolRefs }) })}\n\n`);
+  }
 
   // Promise detection: scan assistant output for commitment language and auto-record promises.
   if (assistantTextBuffer.trim()) {

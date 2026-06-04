@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { runCheck, runAllChecks, RunCheckContext, ModelJudgeFn } from './verification';
+import { runCheck, runAllChecks, RunCheckContext, ModelJudgeFn, parseJestSummary } from './verification';
 import { GoalCheck } from './types';
 
 async function makeTempDir(): Promise<string> {
@@ -174,6 +174,21 @@ Time:        2.345 s
     const args = ['-e', `process.stdout.write(${JSON.stringify(jestOutput)}); process.exit(1)`];
     const r = await runCheck(check({ kind: 'test_suite', command: 'node', args, minPassRate: 0.95 }), baseCtx);
     expect(r.passed).toBe(false);
+  });
+});
+
+describe('verification: parseJestSummary', () => {
+  it('parses a passed/failed/total summary line', () => {
+    expect(parseJestSummary('Tests:       11 passed, 1 failed, 12 total')).toEqual({ passed: 11, failed: 1, total: 12 });
+  });
+
+  it('parses failed-first ordering and embedded preamble', () => {
+    const output = `Command 'npx' failed with exit code 1\nPASS src/a.test.ts\nTests:       1 failed, 11 passed, 12 total\n`;
+    expect(parseJestSummary(output)).toEqual({ passed: 11, failed: 1, total: 12 });
+  });
+
+  it('returns null when no recognisable summary is present', () => {
+    expect(parseJestSummary('build succeeded\nno tests here')).toBeNull();
   });
 });
 
