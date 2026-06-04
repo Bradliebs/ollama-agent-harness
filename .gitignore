@@ -72,3 +72,6 @@ machine-bias-detector.js
 # Scratch buffers for commit messages composed via -F
 .git-commit-msg.tmp
 
+# Generated ML experiment artifacts (binary outputs)
+results/
+

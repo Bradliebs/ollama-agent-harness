@@ -5,9 +5,12 @@
  * thin. Each handler is a pure async function that returns an SSE-ready
  * response or `null` (= not my command, fall through).
  *
- * Commands are token-free — they never call a model. They compose the
- * harness's existing services so the user can drive everything from the
- * chat box without touching menus, scripts, or terminals.
+ * Most commands are token-free — they never call a model. The exception is
+ * `/research`, which uses a model (when one is wired via registerResearchHooks)
+ * to analyse search results into ranked, structured findings, and falls back
+ * to a token-free stub when no model is available. Commands compose the
+ * harness's existing services so the user can drive everything from the chat
+ * box without touching menus, scripts, or terminals.
  */
 
 import * as path from 'node:path';
@@ -17,9 +20,12 @@ import { tryGoalSlashCommand } from './goalSlashCommand';
 import { parsePrioritySetCommand, setPriorityForToday, getPriorityForToday, loadMorningPriorityInputs } from './morningPriority';
 import { groupTasksByColumn, promoteTriageToPlan, withKanbanTag } from './kanbanBridge';
 import { listTasks, updateTask, type Task } from './taskStore';
+import { writeResearchReport } from './researchReport';
+import { buildBlueprint } from './pdfToWiki';
+import { buildPersonalWiki } from './personalWiki';
 
-// Cookbook modules live outside src/rootDir — use inline require() to
-// avoid TS6059. The types we need are declared locally below.
+// Local type declarations for the /research input shape. These mirror the
+// renderer's input contract and are kept here to keep the handler self-contained.
 
 interface ResearchSource {
   title: string;
@@ -42,6 +48,19 @@ interface ResearchInput {
   findings: ResearchFinding[];
   sources: ResearchSource[];
   generatedAt?: string;
+}
+
+/** Hooks that let `/research` call the configured model for analysis. */
+export interface ResearchModelHooks {
+  /** Sends a single prompt to the model and returns its text response. */
+  callModel: (prompt: string) => Promise<string>;
+}
+
+let researchHooks: ResearchModelHooks | null = null;
+
+/** Call from server.ts startup to enable model-backed `/research` analysis. */
+export function registerResearchHooks(hooks: ResearchModelHooks): void {
+  researchHooks = hooks;
 }
 
 export interface SlashResult {
@@ -86,8 +105,6 @@ async function handleWiki(text: string, projectDir: string): Promise<SlashResult
   }
 
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { buildBlueprint } = require('../../cookbook/blueprint-pdf-to-wiki') as { buildBlueprint: (pdfPath: string, outDir: string, opts?: Record<string, unknown>) => Promise<{ chapters: { length: number }[]; files: { index: string; chat: string; ragIndex: string } }> };
     const result = await buildBlueprint(pdfPath, outDir, { projectDir, skipRag: false });
     const lines: string[] = [];
     lines.push(`✅ **Wiki built** from \`${path.basename(pdfPath)}\``);
@@ -145,6 +162,11 @@ async function handleResearch(text: string, projectDir: string): Promise<SlashRe
     const entries = block.split(/\n\d+\.\s+\*\*/);
     for (const entry of entries) {
       if (!entry.trim()) continue;
+      // Splitting leaves the "Search results for ...:" header (and any
+      // "No results found" message) as the first chunk. Real result
+      // entries always carry the closing ** from **title**; the header
+      // does not — so skip chunks without it to avoid a bogus source.
+      if (!entry.includes('**')) continue;
       const titleMatch = entry.match(/^([^*]+)\**/);
       const urlMatch = entry.match(/\n\s+(https?:\/\/\S+)/);
       const snippetMatch = entry.match(/\n\s+(?:https?:\/\/\S+\n\s+)?(.+)/s);
@@ -159,11 +181,40 @@ async function handleResearch(text: string, projectDir: string): Promise<SlashRe
     }
   }
 
-  if (sources.length > 0) {
-    // Group snippets into a single finding
+  // Synthesise findings. When a model is wired (registerResearchHooks), feed
+  // the search results to it and ask for ranked, constraint-aware findings.
+  // Fall back to a single token-free finding when no model is available, the
+  // model errors, or its output cannot be parsed.
+  let summary = sources.length > 0
+    ? `Research on "${subject}" based on ${sources.length} web source${sources.length === 1 ? '' : 's'}.`
+    : `Research on "${subject}" — no web results available (offline mode or search failed).`;
+  let oneLineAnswer: string | undefined;
+  let analyzed = false;
+  let pagesRead = 0;
+
+  if (sources.length > 0 && researchHooks?.callModel) {
+    try {
+      // Deep read: fetch the full text of the top results so the model ranks
+      // on real page content (prices, specs) rather than thin search snippets.
+      const pageContents = await fetchPageContents(sources);
+      pagesRead = pageContents.size;
+      const synth = await synthesizeResearch(subject, sources, researchHooks.callModel, pageContents);
+      if (synth) {
+        findings.push(...synth.findings);
+        summary = synth.summary;
+        oneLineAnswer = synth.oneLineAnswer;
+        analyzed = true;
+      }
+    } catch {
+      // Model unavailable or failed — fall through to the stub finding below.
+    }
+  }
+
+  if (!analyzed && sources.length > 0) {
+    // Token-free fallback: one finding that lists every source snippet.
     findings.push({
       label: 'Web search results',
-      body: sources.map((s, i) => `**${s.title}**: ${s.snippet || 'No snippet available.'}`).join('\n\n'),
+      body: sources.map((s) => `**${s.title}**: ${s.snippet || 'No snippet available.'}`).join('\n\n'),
       confidence: 0.6,
       sourceIds: sources.map((_, i) => i),
     });
@@ -171,9 +222,8 @@ async function handleResearch(text: string, projectDir: string): Promise<SlashRe
 
   const input: ResearchInput = {
     subject,
-    summary: sources.length > 0
-      ? `Research on "${subject}" based on ${sources.length} web source${sources.length === 1 ? '' : 's'}.`
-      : `Research on "${subject}" — no web results available (offline mode or search failed).`,
+    summary,
+    oneLineAnswer,
     findings,
     sources,
   };
@@ -181,27 +231,189 @@ async function handleResearch(text: string, projectDir: string): Promise<SlashRe
   const slug = subject.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'research';
   const outPath = path.join(projectDir, '.harness', 'research', `${slug}.html`);
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { writeResearchReport } = require('../../cookbook/blueprint-competitor-research') as { writeResearchReport: (input: ResearchInput, outPath: string) => { html: string; markdownSummary: string } };
     const rendered = writeResearchReport(input, outPath);
     const relPath = path.relative(projectDir, outPath);
+    const reportUrl = `/api/research/report/${slug}.html`;
     const lines: string[] = [];
     lines.push(`✅ **Research report generated** for "${subject}"`);
     lines.push('');
     lines.push(`- **${sources.length}** source${sources.length === 1 ? '' : 's'} cited`);
     lines.push(`- **${findings.length}** finding${findings.length === 1 ? '' : 's'}`);
-    lines.push(`- Report: \`${relPath}\``);
+    lines.push(`- Report: <a href="${reportUrl}" target="_blank" rel="noopener">open in browser ↗</a> — \`${relPath}\``);
     lines.push('');
     if (sources.length === 0) {
       lines.push('⚠️ No web results — the report is a stub. Make sure you have internet access for richer results.');
+    } else if (analyzed) {
+      lines.push('🧠 Findings were analysed by the model — ranked and weighed against your question.');
+      if (pagesRead > 0) {
+        lines.push(`🌐 Read the full content of **${pagesRead}** top page${pagesRead === 1 ? '' : 's'} for deeper price/spec analysis.`);
+      }
+      lines.push('Open the report in your browser for the full breakdown.');
     } else {
+      lines.push('ℹ️ No model wired for analysis — the report lists raw sources without ranking.');
       lines.push('Open the report in your browser for the full formatted view.');
     }
-    return ok(lines.join('\n'), 'research_built', { subject, sources: sources.length, path: relPath });
+    return ok(lines.join('\n'), 'research_built', { subject, sources: sources.length, pagesRead, path: relPath });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return ok(`❌ Research report failed: ${msg}`, 'research_error');
   }
+}
+
+/** Result of model-driven research synthesis. */
+interface SynthResult {
+  oneLineAnswer?: string;
+  summary: string;
+  findings: ResearchFinding[];
+}
+
+/** How many top results to deep-read, and the per-page char budget. */
+const DEEP_READ_COUNT = 3;
+const DEEP_READ_CHARS = 3_000;
+
+/**
+ * Fetch the readable text of the top results that have URLs, using the
+ * harness's WebReadTool (which strips HTML, scripts, and nav). Returns a map
+ * of source index → truncated page text. Fully defensive: any failure (offline,
+ * timeout, missing tool) is swallowed so /research still falls back to snippets.
+ */
+async function fetchPageContents(sources: ResearchSource[]): Promise<Map<number, string>> {
+  const contents = new Map<number, string>();
+  const targets = sources
+    .map((s, i) => ({ i, url: s.url }))
+    .filter((t): t is { i: number; url: string } => typeof t.url === 'string' && /^https?:\/\//i.test(t.url))
+    .slice(0, DEEP_READ_COUNT);
+  if (targets.length === 0) return contents;
+
+  let WebReadTool: typeof import('../tools/webSearchTool').WebReadTool | undefined;
+  try {
+    ({ WebReadTool } = await import('../tools/webSearchTool'));
+  } catch {
+    return contents;
+  }
+  if (!WebReadTool?.execute) return contents;
+
+  const results = await Promise.allSettled(
+    targets.map((t) => WebReadTool!.execute({ url: t.url })),
+  );
+  results.forEach((res, idx) => {
+    if (res.status !== 'fulfilled') return;
+    const out = res.value;
+    if (!out?.success || !out.output) return;
+    // WebReadTool prefixes output with "Content from <url>:\n\n" — drop it.
+    let textBody = out.output.replace(/^Content from \S+:\n\n/, '').trim();
+    if (!textBody) return;
+    if (textBody.length > DEEP_READ_CHARS) textBody = textBody.slice(0, DEEP_READ_CHARS);
+    contents.set(targets[idx].i, textBody);
+  });
+  return contents;
+}
+
+/**
+ * Ask the model to turn raw search results into ranked, constraint-aware
+ * findings. Returns null when the model output cannot be parsed into at least
+ * one valid finding, so the caller can fall back to the token-free stub.
+ */
+async function synthesizeResearch(
+  subject: string,
+  sources: ResearchSource[],
+  callModel: (prompt: string) => Promise<string>,
+  pageContents?: Map<number, string>,
+): Promise<SynthResult | null> {
+  const resultsBlock = sources
+    .map((s, i) => {
+      const head = `[${i + 1}] ${s.title}\n    ${s.url ?? '(no url)'}\n    ${s.snippet ?? '(no snippet)'}`;
+      const page = pageContents?.get(i);
+      return page ? `${head}\n    --- full page content ---\n${page}` : head;
+    })
+    .join('\n\n');
+
+  const prompt = [
+    'You are a research analyst. Using ONLY the web search results below, analyse and answer the question.',
+    '',
+    `Question: ${subject}`,
+    '',
+    'Search results:',
+    resultsBlock,
+    '',
+    'Respond with ONLY a JSON object (no markdown fences, no commentary) of this exact shape:',
+    '{',
+    '  "oneLineAnswer": "one-sentence direct answer",',
+    '  "summary": "2-4 sentence executive summary",',
+    '  "findings": [',
+    '    {"label": "short label", "body": "analysis prose", "confidence": 0.7, "sources": [1, 2]}',
+    '  ]',
+    '}',
+    '',
+    'Rules:',
+    '- Base every claim on the results above. Do not invent facts that are not present.',
+    '- Where a result includes "full page content", prefer it over the snippet — it holds real prices, specs, and detail.',
+    '- If the question has constraints (e.g. a budget or location), explicitly state which results meet them and which do not.',
+    '- "sources" lists the result numbers (as shown in [n]) that back each finding.',
+    '- Produce 3 to 6 findings. If the results cannot answer the question, say so in the summary and use low confidence.',
+  ].join('\n');
+
+  const raw = await callModel(prompt);
+  return parseSynthResult(raw, sources.length);
+}
+
+/** Parse the model's JSON response into a SynthResult, defensively. */
+function parseSynthResult(raw: string, sourceCount: number): SynthResult | null {
+  if (!raw || !raw.trim()) return null;
+
+  // Strip optional code fences, then isolate the outermost JSON object.
+  let text = raw.trim();
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) text = fence[1].trim();
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const obj = parsed as Record<string, unknown>;
+  if (!Array.isArray(obj.findings)) return null;
+
+  const findings: ResearchFinding[] = [];
+  for (const item of obj.findings) {
+    if (typeof item !== 'object' || item === null) continue;
+    const f = item as Record<string, unknown>;
+    if (typeof f.label !== 'string' || typeof f.body !== 'string') continue;
+    const label = f.label.trim();
+    const body = f.body.trim();
+    if (!label || !body) continue;
+
+    let confidence: number | undefined;
+    if (typeof f.confidence === 'number' && Number.isFinite(f.confidence)) {
+      confidence = Math.min(1, Math.max(0, f.confidence));
+    }
+
+    // Convert 1-based result numbers to 0-based source ids, clamped to range.
+    const rawIds = Array.isArray(f.sources) ? f.sources : Array.isArray(f.sourceIds) ? f.sourceIds : undefined;
+    let sourceIds: number[] | undefined;
+    if (rawIds) {
+      const ids = rawIds
+        .map((n) => (typeof n === 'number' ? Math.round(n) - 1 : NaN))
+        .filter((n) => Number.isInteger(n) && n >= 0 && n < sourceCount);
+      if (ids.length > 0) sourceIds = Array.from(new Set(ids));
+    }
+
+    findings.push({ label, body, confidence, sourceIds });
+  }
+  if (findings.length === 0) return null;
+
+  const summary = typeof obj.summary === 'string' && obj.summary.trim() ? obj.summary.trim() : '';
+  if (!summary) return null;
+  const oneLineAnswer = typeof obj.oneLineAnswer === 'string' && obj.oneLineAnswer.trim()
+    ? obj.oneLineAnswer.trim()
+    : undefined;
+
+  return { oneLineAnswer, summary, findings };
 }
 
 // ─── /memory-wiki ───────────────────────────────────────────────────
@@ -214,8 +426,6 @@ async function handleMemoryWiki(text: string, projectDir: string): Promise<Slash
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { rebuildSemanticMemory } = require('../persistence/semanticMemory') as { rebuildSemanticMemory: (dir: string) => Promise<Array<{ id: string; timestamp: string; kind: string; text: string; sessionId: string }>> };
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { buildPersonalWiki } = require('../../cookbook/blueprint-personal-wiki') as { buildPersonalWiki: (entries: unknown[], outDir: string, opts?: Record<string, unknown>) => { totalEntries: number; days: string[]; indexFile: string } };
 
     const entries = await rebuildSemanticMemory(projectDir);
     const mapped = entries.map((e) => ({
