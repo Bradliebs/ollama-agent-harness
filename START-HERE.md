@@ -53,7 +53,7 @@ Ollama runs the AI models on your computer.
    npm run ui
    ```
 
-3. Open the URL shown in the terminal (usually **<http://127.0.0.1:4300>**)
+3. Open the URL shown in the terminal (usually **<http://127.0.0.1:3000>**). Always use the exact address the terminal prints — if a port is busy, it picks the next free one.
 
 ### Step 4: Start chatting
 
@@ -166,7 +166,7 @@ Make sure Ollama is running. Open a terminal and type `ollama serve`. Then refre
 
 ### The browser shows a blank page
 
-Check the terminal window — it should show a URL like `http://127.0.0.1:4300`. Go to that exact URL.
+Check the terminal window — it should show a URL like `http://127.0.0.1:4300` (double-click `start.bat`) or `http://127.0.0.1:3000` (`npm run ui`). Go to whichever exact URL the terminal prints.
 
 ### How do I stop the server?
 

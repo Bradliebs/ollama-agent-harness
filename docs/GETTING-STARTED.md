@@ -1,37 +1,14 @@
-# Getting Started with CopilotForge
+# Getting Started
 
-> **⚠ This document is NOT the Harness getting-started guide.**
-> It was scaffolded by the CopilotForge planner skill and is about a separate tool.
-> **If you're trying to use the Ollama Agent Harness, open [`../START-HERE.md`](../START-HERE.md) instead.**
+> **The beginner's setup guide lives at [`../START-HERE.md`](../START-HERE.md).**
 
-> Your project has been scaffolded! Here's what to do next.
+To set up and run the Ollama Agent Harness for the first time, open
+[`START-HERE.md`](../START-HERE.md) in the project root. It walks you through:
 
-## What was created
+1. Installing **Node.js** and **Ollama**
+2. Pulling a model (`ollama pull llama3.2`)
+3. Starting the harness — double-click `start.bat` on Windows, or run `./start.sh` on macOS/Linux
+4. Opening the chat UI at the URL the terminal prints
 
-| File | Purpose |
-|------|---------|
-| `.github/skills/planner/SKILL.md` | The wizard skill — teaches your AI assistant how to set up projects |
-| `.github/skills/planner/reference.md` | Reference material for the planner |
-| `FORGE.md` | Your project's control panel — edit this to change what Copilot knows |
-| `.copilot/agents/planner.md` | Planner agent definition |
-| `forge-memory/decisions.md` | Architecture decision log |
-| `forge-memory/patterns.md` | Coding conventions and patterns |
-| `forge-memory/preferences.md` | Your preferences for CopilotForge behavior |
-| `cookbook/hello-world.ts` | Starter recipe (TypeScript) |
-| `cookbook/hello-world.py` | Starter recipe (Python) |
+For the full feature reference, see the [README](../README.md).
 
-## Quickstart (3 steps)
-
-1. **Open your AI assistant** — GitHub Copilot Chat, Claude Code, or any tool that reads `.github/skills/`
-2. **Say: "set up my project"** — the planner wizard will start
-3. **Answer a few questions** — describe your project, stack, and preferences
-
-That's it! Your AI assistant generates skills, agents, and recipes customized for your stack.
-
-## Learn more
-
-- [Full documentation](https://github.com/Bradliebs/CopilotForge)
-- [Examples](https://github.com/Bradliebs/CopilotForge/tree/main/examples)
-- [Cookbook recipes](https://github.com/Bradliebs/CopilotForge/tree/main/cookbook)
-
-<!-- copilotforge: v1.7.0 -->
