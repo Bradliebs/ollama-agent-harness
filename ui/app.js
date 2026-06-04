@@ -376,7 +376,11 @@ function _readTeammateWizard() {
   const time = document.getElementById('teammateTime').value || '08:00';
   const days = Array.from(document.querySelectorAll('#teammateDays .teammate-day-chip.active')).map((el) => el.dataset.day);
   const channels = Array.from(document.querySelectorAll('#teammateChannels input[type=checkbox]')).filter((el) => el.checked).map((el) => el.dataset.channel);
-  return { enabled: true, scheduleTime: time, scheduleDays: days.length > 0 ? days : TEAMMATE_DAYS, channels: channels.length > 0 ? channels : ['file'] };
+  const briefingPrompt = (document.getElementById('teammateBriefingPrompt')?.value || '').trim();
+  const maxWordsRaw = parseInt(document.getElementById('teammateBriefingMaxWords')?.value || '150', 10);
+  const briefingMaxWords = Number.isFinite(maxWordsRaw) ? maxWordsRaw : 150;
+  const calendarPath = (document.getElementById('teammateCalendarPath')?.value || '').trim();
+  return { enabled: true, scheduleTime: time, scheduleDays: days.length > 0 ? days : TEAMMATE_DAYS, channels: channels.length > 0 ? channels : ['file'], briefingPrompt, briefingMaxWords, calendarPath };
 }
 
 async function openTeammateWizard() {
@@ -388,6 +392,12 @@ async function openTeammateWizard() {
   document.getElementById('teammateTime').value = state.settings.scheduleTime || '08:00';
   _renderTeammateDays(Array.isArray(state.settings.scheduleDays) && state.settings.scheduleDays.length ? state.settings.scheduleDays : TEAMMATE_DAYS);
   _renderTeammateChannels(Array.isArray(state.settings.channels) && state.settings.channels.length ? state.settings.channels : ['file'], state);
+  const promptEl = document.getElementById('teammateBriefingPrompt');
+  if (promptEl) promptEl.value = state.settings.briefingPrompt || '';
+  const wordsEl = document.getElementById('teammateBriefingMaxWords');
+  if (wordsEl) wordsEl.value = state.settings.briefingMaxWords || 150;
+  const calEl = document.getElementById('teammateCalendarPath');
+  if (calEl) calEl.value = state.settings.calendarPath || '';
   const hint = document.getElementById('teammateNextRunHint');
   if (hint) hint.textContent = state.nextRunAt ? `Next run: ${new Date(state.nextRunAt).toLocaleString()}` : '';
   modal.classList.remove('hidden-by-default');

@@ -13,6 +13,8 @@ import { createChatClient, OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiK
 import { drainRemoteProviderFallbackEvents } from '../core/fallbackChatClient';
 import type { IChatClient } from '../core/chatClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
+import { buildMorningBriefing, type BriefingCalendarEvent } from '../jarvis/morningBriefing';
+import { parseIcsEvents } from '../tools/calendarTools';
 import { getRuntimeTools } from '../tools';
 import { createToolRegistry } from '../tools/registry';
 import { WorkflowRegistry } from '../workflows/workflowRegistry';
@@ -9752,6 +9754,46 @@ export function stopAutomationScheduler(): void {
 // scheduler is a no-op when settings.enabled is false; we still keep the
 // instance alive so manual `runNow` calls work from the API.
 
+// Runs a briefing prompt through the model on a NON-INTERACTIVE path: only the
+// read-only web tools are exposed and every call is auto-allowed, so an
+// unattended scheduled run never blocks on a permission prompt. Returns the
+// model's accumulated text.
+async function runBriefingChat(prompt: string): Promise<string> {
+  const model = currentModel || 'llama3.1:8b';
+  const client = webRuntime.createClient(model, ollamaHost);
+  const webTools = webRuntime.getTools().filter((t) => t.name === 'web_search' || t.name === 'web_read');
+  const config: LoopConfig = {
+    model,
+    systemPrompt: 'You are a concise briefing assistant. Use the web tools to gather current facts. Never fabricate weather, news, or other facts you have not looked up.',
+    maxTurns: 6,
+    maxTimeMs: 120_000,
+  };
+  const deps: QueryLoopDeps = {
+    client,
+    tools: webTools,
+    permissionCheck: async () => ({ allowed: true }),
+  };
+  let text = '';
+  for await (const event of webRuntime.runQueryLoop(config, deps, [{ role: 'user', content: prompt }])) {
+    if (event.type === 'text') text += event.content;
+  }
+  return text.trim();
+}
+
+// Best-effort calendar source for the briefing: reads a local .ics file and
+// maps it to lightweight events. Throws are caught upstream by the briefing
+// builder, which then simply omits the agenda.
+async function loadCalendarEventsFromPath(rawPath: string, projectDir: string): Promise<BriefingCalendarEvent[]> {
+  const filePath = path.isAbsolute(rawPath) ? rawPath : path.resolve(projectDir, rawPath);
+  if (!filePath.toLowerCase().endsWith('.ics')) return [];
+  const content = await fs.readFile(filePath, 'utf-8');
+  return parseIcsEvents(content).map((e) => ({
+    start: new Date(e.start),
+    summary: e.summary,
+    location: e.location,
+  }));
+}
+
 function configureTeammateScheduler(): void {
   if (teammateScheduler) {
     teammateScheduler.stop();
@@ -9764,6 +9806,23 @@ function configureTeammateScheduler(): void {
     updateSettings: async (next) => {
       teammateSettings = next;
       await saveSettingsToDisk().catch((err) => recordSwallowed('teammate.saveSettings', err));
+    },
+    // Per-run snapshot producer. When a custom briefing prompt is configured,
+    // run it through the model + web search; otherwise fall back to the default
+    // activity brief. Read live settings so config changes take effect per run.
+    snapshot: async (dir) => {
+      const s = teammateSettings;
+      const prompt = (s.briefingPrompt ?? '').trim();
+      if (!prompt) {
+        return snapshotDailyBrief({ projectDir: dir, ambientSignals: jarvisAmbientBus.recent(), windowDescription: 'scheduled' });
+      }
+      const calendarPath = (s.calendarPath ?? '').trim();
+      return buildMorningBriefing({
+        prompt,
+        maxWords: s.briefingMaxWords,
+        runChat: runBriefingChat,
+        calendar: calendarPath ? () => loadCalendarEventsFromPath(calendarPath, dir) : undefined,
+      });
     },
     delivery: {
       sendTelegram: async (markdown) => {
