@@ -1092,7 +1092,7 @@ app.get('/api/about/verify', async (_req, res) => {
 // banner. Returns 204 when no autonomy run has occurred (file absent), 200
 // with the parsed checkpoint otherwise. Read-only; never blocks on disk.
 app.get('/api/autonomy/state', async (_req, res) => {
-  const statePath = path.join(process.cwd(), '.forge-state.json');
+  const statePath = path.join(PROJECT_DIR, '.forge-state.json');
   try {
     const raw = await fs.readFile(statePath, 'utf-8');
     const parsed = JSON.parse(raw);
@@ -1136,7 +1136,7 @@ app.get('/api/autonomy/state/stream', (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
-  const statePath = path.join(process.cwd(), '.forge-state.json');
+  const statePath = path.join(PROJECT_DIR, '.forge-state.json');
 
   const sendSnapshot = async (): Promise<void> => {
     try {
@@ -1165,7 +1165,7 @@ app.get('/api/autonomy/state/stream', (req, res) => {
   let debounce: NodeJS.Timeout | null = null;
   let watcher: ReturnType<typeof fsWatch> | null = null;
   try {
-    watcher = fsWatch(process.cwd(), (_event, filename) => {
+    watcher = fsWatch(PROJECT_DIR, (_event, filename) => {
       if (!filename || filename.toString() !== '.forge-state.json') return;
       if (debounce) clearTimeout(debounce);
       debounce = setTimeout(() => { void sendSnapshot(); }, 100);
@@ -1194,7 +1194,7 @@ app.get('/api/autonomy/state/stream', (req, res) => {
 // trailing lines to return (default 50, max 500). Returns 204 when no log
 // exists yet so the UI can hide the panel without surfacing an error.
 app.get('/api/autonomy/log', async (req, res) => {
-  const logPath = path.join(process.cwd(), '.forge-run.log');
+  const logPath = path.join(PROJECT_DIR, '.forge-run.log');
   const requested = parseInt(String(req.query.lines ?? '50'), 10);
   const lineCount = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 500) : 50;
   try {
@@ -1219,7 +1219,7 @@ app.get('/api/autonomy/log', async (req, res) => {
 // skipped, not surfaced as errors, since the file is append-only and a
 // half-written tail is recoverable on the next iteration.
 app.get('/api/autonomy/history', async (req, res) => {
-  const historyPath = path.join(process.cwd(), '.forge-history.jsonl');
+  const historyPath = path.join(PROJECT_DIR, '.forge-history.jsonl');
   const requested = parseInt(String(req.query.limit ?? '100'), 10);
   const limit = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 1000) : 100;
   try {
@@ -1666,27 +1666,34 @@ app.post('/api/autonomy/start', async (req, res) => {
     setEnv('HARNESS_UNPRODUCTIVE_TURN_LIMIT', requestedUnproductiveTurnLimit);
     await fs.rm(path.join(PROJECT_DIR, '.forge-stop'), { force: true }).catch((err) => recordSwallowed('fs.rm', err));
     autonomyStartedAt = new Date().toISOString();
-    // Windows: Node 20.12+/18.20.2+ refuses to spawn .bat/.cmd directly
-    // (CVE-2024-27980). npm on Windows is npm.cmd, so the previous
-    // spawn(npmCommand, ['run', 'autonomy']) died with EINVAL on every
-    // Start click. Use cmd.exe /d /s /c instead — Node 22 deprecates
-    // shell:true with array args (DEP0190), so explicit cmd.exe is the
-    // forward-compatible choice. Pinned by manual smoke 2026-05-07.
-    if (process.platform === 'win32') {
-      const comSpec = env.ComSpec || env.COMSPEC || process.env.ComSpec || process.env.COMSPEC || 'cmd.exe';
-      try {
-        autonomyChild = spawn(comSpec, ['/d', '/s', '/c', 'npm run autonomy'], { cwd: PROJECT_DIR, env });
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== 'EINVAL') throw error;
-        logger.warn('Autonomy', 'Primary Windows spawn failed with EINVAL; retrying with minimal env', { code });
-        const minimalEnv = buildMinimalWindowsSpawnEnv(env);
-        autonomyChild = spawn(comSpec, ['/d', '/s', '/c', 'npm run autonomy'], { cwd: PROJECT_DIR, env: minimalEnv });
-      }
-    } else {
-      autonomyChild = spawn('npm', ['run', 'autonomy'], { cwd: PROJECT_DIR, env });
+    // The autonomy loop (cookbook/task-loop.ts) lives in the harness repo,
+    // not in the user's project workspace. Previously we spawned
+    // `npm run autonomy` with cwd=PROJECT_DIR, which failed with
+    // "Missing script: autonomy" whenever PROJECT_DIR was an isolated
+    // workspace. Instead, launch the repo's loop directly with Node +
+    // ts-node while keeping cwd=PROJECT_DIR so the loop reads/writes the
+    // plan, logs, state, and git in the workspace. HARNESS_HOME lets the
+    // loop locate the compiled CLI (dist/cli/index.js) in the repo.
+    const harnessHome = path.join(__dirname, '..', '..');
+    const tsNodeRegister = path.join(harnessHome, 'node_modules', 'ts-node', 'register', 'transpile-only');
+    const taskLoopEntry = path.join(harnessHome, 'cookbook', 'task-loop.ts');
+    const loopArgs = ['-r', tsNodeRegister, taskLoopEntry];
+    env.HARNESS_HOME = harnessHome;
+    env.TS_NODE_TRANSPILE_ONLY = '1';
+    env.TS_NODE_PROJECT = path.join(harnessHome, 'tsconfig.json');
+    try {
+      autonomyChild = spawn(process.execPath, loopArgs, { cwd: PROJECT_DIR, env });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EINVAL') throw error;
+      logger.warn('Autonomy', 'Primary spawn failed with EINVAL; retrying with minimal env', { code });
+      const minimalEnv = buildMinimalWindowsSpawnEnv(env);
+      minimalEnv.HARNESS_HOME = harnessHome;
+      minimalEnv.TS_NODE_TRANSPILE_ONLY = '1';
+      minimalEnv.TS_NODE_PROJECT = path.join(harnessHome, 'tsconfig.json');
+      autonomyChild = spawn(process.execPath, loopArgs, { cwd: PROJECT_DIR, env: minimalEnv });
     }
-    const evidence = createRunEvidence({ id: `autonomy:${autonomyStartedAt}`, kind: 'autonomy', request: preview.tasks.find((task) => task.status === 'pending')?.title || 'Run next pending implementation task', runName: 'Ralph autonomy loop', command: 'npm run autonomy', success: true, summary: `Started with ${preview.pending} pending task(s).` });
+    const evidence = createRunEvidence({ id: `autonomy:${autonomyStartedAt}`, kind: 'autonomy', request: preview.tasks.find((task) => task.status === 'pending')?.title || 'Run next pending implementation task', runName: 'Ralph autonomy loop', command: 'node -r ts-node/register/transpile-only cookbook/task-loop.ts', success: true, summary: `Started with ${preview.pending} pending task(s).` });
     await appendRunEvidence(PROJECT_DIR, evidence);
     autonomyChild.on('exit', () => { autonomyChild = null; autonomyStartedAt = undefined; });
     res.json({ ok: true, startedAt: autonomyStartedAt, pid: autonomyChild.pid, pending: preview.pending, requestedMaxIterations, requestedMaxTurns, requestedUnproductiveTurnLimit, effectiveMaxIterations, checkpointIteration, evidence });

@@ -406,22 +406,29 @@ function implementTask(task: Task): void {
   const promptPath = ".forge-prompt.txt";
   writeFileSync(promptPath, prompt, "utf-8");
 
-  const cmd = [
-    "npx ts-node src/cli/index.ts",
-    `--backend "${HARNESS_BACKEND}"`,
-    `--model "${HARNESS_MODEL}"`,
-    `--host "${HARNESS_HOST}"`,
-    `--mode ${HARNESS_PERMISSION_MODE}`,
-    `--max-turns ${HARNESS_MAX_TURNS}`,
-    `--unproductive-turn-limit ${HARNESS_UNPRODUCTIVE_TURN_LIMIT}`,
-    `--prompt-file "${promptPath}"`,
-  ].join(" ");
+  // Run the harness CLI from the harness repo's compiled output. The loop's
+  // cwd is the user's project workspace, which has neither the CLI source nor
+  // ts-node, so the old `npx ts-node src/cli/index.ts` (relative to cwd)
+  // failed. HARNESS_HOME points at the harness repo; fall back to this file's
+  // repo when launched directly for dogfooding.
+  const harnessHome = process.env.HARNESS_HOME ?? join(__dirname, "..");
+  const cliEntry = join(harnessHome, "dist", "cli", "index.js");
+  const cliArgs = [
+    cliEntry,
+    "--backend", HARNESS_BACKEND,
+    "--model", HARNESS_MODEL,
+    "--host", HARNESS_HOST,
+    "--mode", HARNESS_PERMISSION_MODE,
+    "--max-turns", String(HARNESS_MAX_TURNS),
+    "--unproductive-turn-limit", String(HARNESS_UNPRODUCTIVE_TURN_LIMIT),
+    "--prompt-file", promptPath,
+  ];
 
   const timeoutMs = parseInt(process.env.HARNESS_TASK_TIMEOUT_MS ?? "600000", 10);
-  console.log(`[Ralph] >>> ${cmd}`);
+  console.log(`[Ralph] >>> node ${cliArgs.join(" ")}`);
   console.log(`[Ralph] (per-task timeout: ${Math.round(timeoutMs / 1000)}s, prompt size: ${prompt.length} bytes, anchors: ${task.anchors.length})`);
   try {
-    execSync(cmd, { stdio: "inherit", timeout: timeoutMs, killSignal: "SIGKILL" });
+    execFileSync(process.execPath, cliArgs, { stdio: "inherit", timeout: timeoutMs, killSignal: "SIGKILL" });
   } catch (err) {
     const e = err as { signal?: string; status?: number; message?: string };
     if (e?.signal === "SIGKILL" || e?.signal === "SIGTERM") {

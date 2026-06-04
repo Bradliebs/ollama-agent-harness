@@ -163,9 +163,14 @@ if not errorlevel 1 (
 
 :: Step 7: Launch
 echo.
-echo   Checking for an existing Harness server on port 4300...
+echo   Closing any Harness servers that are already running...
+:: Kill every prior Harness server regardless of which port it grabbed.
+:: Matches only "dist\web\server.js" node processes, so editors, Ollama and
+:: other node apps are never touched.
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -match 'dist.web.server' } | ForEach-Object { Write-Host ('   Stopping Harness server PID ' + $_.ProcessId); Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+:: Backstop: free the target port (4300) even if a non-Harness process holds it.
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":4300.*LISTEN"') do (
-	echo   Stopping stale server PID %%p
+	echo   Freeing port 4300 held by PID %%p
 	taskkill /PID %%p /F >nul 2>nul
 )
 echo.
