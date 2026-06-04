@@ -1551,6 +1551,46 @@ describe('web server API validation', () => {
     }
   });
 
+  it('decomposes a plain-English goal into plan tasks via plan-from-goal', async () => {
+    const planPath = path.join(process.cwd(), 'IMPLEMENTATION_PLAN.md');
+    const original = await fs.readFile(planPath, 'utf-8');
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({
+        chatOnce: jest.fn().mockResolvedValue({
+          message: { role: 'assistant', content: '[{"title":"Set up the project"},{"title":"Build the to-do list UI"},{"title":"Add save and load"}]' },
+          usage: { promptTokens: 0, completionTokens: 0, totalDurationNs: 0 },
+        }),
+      }) as never),
+    });
+    try {
+      const response = await request('/api/autonomy/plan-from-goal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ goal: 'A simple to-do list app', model: 'stub-model' }),
+      });
+      expect(response.status).toBe(200);
+      const data = await response.json() as { ok: boolean; added: { id: string; title: string }[]; pending: number };
+      expect(data.ok).toBe(true);
+      expect(data.added).toHaveLength(3);
+      expect(data.added[0].title).toBe('Set up the project');
+      expect(data.added[1].id).toBe('build-the-to-do-list-ui');
+      const planAfter = await fs.readFile(planPath, 'utf-8');
+      expect(planAfter).toContain('Build the to-do list UI');
+    } finally {
+      restore();
+      await fs.writeFile(planPath, original, 'utf-8');
+    }
+  });
+
+  it('rejects plan-from-goal with an empty goal', async () => {
+    const response = await request('/api/autonomy/plan-from-goal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ goal: '', model: 'stub-model' }),
+    });
+    expect(response.status).toBe(400);
+  });
+
   it('rejects task creation with empty title', async () => {
     const response = await request('/api/autonomy/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: '' }) });
     expect(response.status).toBe(400);

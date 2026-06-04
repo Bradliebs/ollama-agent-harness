@@ -109,7 +109,7 @@ import { makeQueryLoopRunner } from '../goal/queryLoopRunner';
 import { surfaceResumableGoalOnBoot } from '../goal/bootResume';
 import { parseJestSummary } from '../goal/verification';
 import { parsePrioritySetCommand, setPriorityForToday } from '../services/morningPriority';
-import { routeSlashCommand, registerYoloHooks } from '../services/slashCommandRouter';
+import { routeSlashCommand, registerYoloHooks, registerResearchHooks } from '../services/slashCommandRouter';
 import { calculateReadiness, type ReadinessInput } from '../core/readinessGate';
 import { buildTaskContract } from '../core/taskContractBuilder';
 import { buildRepoMap, loadRepoMap, saveRepoMap, getOrBuildRepoMap } from '../core/repoMap';
@@ -1419,6 +1419,59 @@ app.get('/api/inbox', async (_req, res) => {
   }
 });
 
+// Parse a model's decomposition reply into clean { id, title } task steps.
+// Primary path: a JSON array of objects with a `title`. Fallback: plain
+// numbered / bulleted / checkbox lines. Titles are slugified to ids using
+// the same rule as the manual task endpoint, then capped at 12 steps so a
+// runaway reply can't flood the plan.
+function parseGoalIntoTasks(text: string): { id: string; title: string }[] {
+  const slug = (title: string): string =>
+    title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+  const titles: string[] = [];
+
+  const jsonStart = text.indexOf('[');
+  const jsonEnd = text.lastIndexOf(']');
+  if (jsonStart !== -1 && jsonEnd > jsonStart) {
+    try {
+      const parsed = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          const title = typeof item === 'string'
+            ? item
+            : (item && typeof item.title === 'string' ? item.title : '');
+          const trimmed = title.trim();
+          if (trimmed) titles.push(trimmed);
+        }
+      }
+    } catch {
+      // Fall through to line parsing.
+    }
+  }
+
+  if (titles.length === 0) {
+    for (const rawLine of text.split(/\r?\n/)) {
+      // Strip leading "- [ ] id —", "1.", "-", "*" markers, keep the title.
+      const line = rawLine
+        .replace(/^\s*[-*]\s*\[.\]\s*\S+\s*[—-]\s*/, '')
+        .replace(/^\s*\d+[.)]\s*/, '')
+        .replace(/^\s*[-*]\s*/, '')
+        .trim();
+      if (line && line.length <= 200 && !line.startsWith('#')) titles.push(line);
+    }
+  }
+
+  const tasks: { id: string; title: string }[] = [];
+  const seen = new Set<string>();
+  for (const title of titles) {
+    const id = slug(title);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    tasks.push({ id, title });
+    if (tasks.length >= 12) break;
+  }
+  return tasks;
+}
+
 app.post('/api/autonomy/tasks', async (req, res) => {
   try {
     const title = String(req.body?.title ?? '').trim();
@@ -1458,6 +1511,76 @@ app.post('/api/autonomy/tasks', async (req, res) => {
     await fs.writeFile(planPath, existing.replace(/\n*$/, '') + entry, 'utf-8');
     const preview = await readAutonomyPlanPreview();
     res.json({ ok: true, id, title: description, ...preview });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Turn a plain-English goal into an ordered list of build steps. Powers the
+// non-technical "Build Mode": the user describes what they want, the model
+// decomposes it into tasks, and we append them to the same
+// IMPLEMENTATION_PLAN.md the autonomy loop already consumes. We APPEND (never
+// overwrite) so an existing plan is never destroyed.
+app.post('/api/autonomy/plan-from-goal', async (req, res) => {
+  try {
+    const goal = String(req.body?.goal ?? '').trim();
+    if (!goal) { res.status(400).json({ error: 'Please describe what you want to build.' }); return; }
+    if (goal.length > 4000) { res.status(400).json({ error: 'That description is very long — please shorten it to under 4000 characters.' }); return; }
+    const model = String(req.body?.model ?? currentModel ?? '').trim();
+    if (!model) { res.status(400).json({ error: 'No AI model is selected yet. Pick a model first, then try again.' }); return; }
+
+    const systemPrompt = [
+      'You are a planning assistant for a non-technical user. Break their request into a short, ordered list of concrete build steps an autonomous coding agent can carry out one at a time.',
+      'Rules:',
+      '- 3 to 10 steps. Fewer is better for a small request.',
+      '- Each step is one self-contained unit of work with a clear, plain-English title (max ~12 words).',
+      '- Order steps so each builds on the previous: scaffold/setup first, then features, then polish.',
+      '- Do not include steps about asking the user questions, deployment, or anything outside building the thing.',
+      '- Respond with ONLY a JSON array, no prose and no code fences. Each element: {"title": "..."}.',
+    ].join('\n');
+
+    const client = webRuntime.createClient(model, ollamaHost);
+    let modelText = '';
+    try {
+      const result = await client.chatOnce([
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: goal },
+      ]);
+      modelText = result.message?.content ?? '';
+    } catch (modelErr) {
+      const detail = modelErr instanceof Error ? modelErr.message : String(modelErr);
+      res.status(502).json({ error: `I couldn't reach the AI model. Is it running? (${detail})` });
+      return;
+    }
+
+    const steps = parseGoalIntoTasks(modelText);
+    if (steps.length === 0) {
+      res.status(502).json({ error: 'The model did not return a usable plan. Try rephrasing your idea, or add steps manually below.' });
+      return;
+    }
+
+    const planPath = path.join(PROJECT_DIR, 'IMPLEMENTATION_PLAN.md');
+    let existing = '';
+    try { existing = await fs.readFile(planPath, 'utf-8'); } catch { existing = '# Implementation Plan\n'; }
+    const existingIds = new Set<string>();
+    for (const planLine of existing.split(/\r?\n/)) {
+      const m = planLine.match(/^- \[.\] (\S+)\s+[—-]/);
+      if (m) existingIds.add(m[1].toLowerCase());
+    }
+    const added: { id: string; title: string }[] = [];
+    const entries: string[] = [];
+    for (const step of steps) {
+      let uniqueId = step.id;
+      let suffix = 2;
+      while (existingIds.has(uniqueId)) { uniqueId = `${step.id}-${suffix++}`; }
+      existingIds.add(uniqueId);
+      added.push({ id: uniqueId, title: step.title });
+      entries.push(`\n- [ ] ${uniqueId} — ${step.title}`);
+    }
+    await fs.writeFile(planPath, existing.replace(/\n*$/, '') + entries.join('') + '\n', 'utf-8');
+    const preview = await readAutonomyPlanPreview();
+    res.json({ ok: true, goal, added, ...preview });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -3498,7 +3621,36 @@ app.get('/api/desktop-input/evidence/file/:name', (req, res) => {
     res.status(404).json({ error: 'Desktop evidence file not found.' });
     return;
   }
-  res.sendFile(path.join(PROJECT_DIR, '.harness', 'desktop', name));
+  // dotfiles: 'allow' is required because the evidence lives under the
+  // `.harness` dot-directory; sendFile defaults to `dotfiles: 'ignore'`,
+  // which 404s any path containing a dot-segment even when the file exists.
+  // The error callback turns a genuinely missing file into a clean 404
+  // instead of an unhandled NotFoundError stack.
+  res.sendFile(path.join(PROJECT_DIR, '.harness', 'desktop', name), { dotfiles: 'allow' }, (err) => {
+    if (err && !res.headersSent) {
+      res.status(404).json({ error: 'Desktop evidence file not found.' });
+    }
+  });
+});
+
+app.get('/api/research/report/:name', (req, res) => {
+  const name = String(req.params.name || '');
+  // Slugs are sanitised to [a-z0-9-] before the .html suffix, so this also
+  // blocks path traversal (no slashes or dots can appear in the name).
+  if (!/^[a-z0-9][a-z0-9-]*\.html$/.test(name)) {
+    res.status(404).json({ error: 'Research report not found.' });
+    return;
+  }
+  // dotfiles: 'allow' is required because the report lives under the
+  // `.harness` dot-directory; sendFile defaults to `dotfiles: 'ignore'`,
+  // which 404s any path containing a dot-segment even when the file exists.
+  // The error callback turns a genuinely missing file into a clean 404
+  // instead of an unhandled NotFoundError stack.
+  res.sendFile(path.join(PROJECT_DIR, '.harness', 'research', name), { dotfiles: 'allow' }, (err) => {
+    if (err && !res.headersSent) {
+      res.status(404).json({ error: 'Research report not found. Re-run /research to regenerate it.' });
+    }
+  });
 });
 
 app.get('/api/webhooks', (_req, res) => {
@@ -11049,6 +11201,18 @@ export async function startServer(): Promise<void> {
   const preferred = parseInt(process.env.PORT ?? '3000', 10);
   const port = await findAvailablePort(preferred);
   startupProfile.record('port-selection');
+
+  // Wire model-backed /research analysis. When unavailable, /research falls
+  // back to its token-free stub, so this is best-effort.
+  registerResearchHooks({
+    callModel: async (prompt: string): Promise<string> => {
+      const model = currentModel || summarizerModel;
+      if (!model) throw new Error('No model configured for /research analysis');
+      const client = webRuntime.createClient(model, ollamaHost);
+      const response = await client.chat([{ role: 'user', content: prompt }]);
+      return response.message?.content ?? '';
+    },
+  });
 
   // Wire YOLO mode hooks so /yolo in chat can set dontAsk + start autonomy.
   registerYoloHooks({

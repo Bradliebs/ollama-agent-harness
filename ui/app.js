@@ -2122,11 +2122,117 @@ function renderAutonomyBudgetField(id, label, value, min, max, step, title) {
     + '</label>';
 }
 
+// --- BUILD MODE (non-technical "describe it and I'll build it") ---
+// A friendly front-end over the existing autonomy loop: the user types a
+// plain-English goal, the server decomposes it into plan steps, the user
+// reviews them and picks how long to work, then presses Build it — which
+// reuses applyAutonomyPreset + startAutonomyRun under the hood.
+
+const BUILD_TIME_LABELS = {
+  single: 'Quick try (one step, quick check)',
+  work: 'About an hour',
+  overnight: "Until it's done (overnight)",
+};
+
+function renderBuildModeCard() {
+  const chosen = window.__buildTimeChoice || null;
+  const timeBtn = (preset, label) =>
+    '<button class="btn-sm build-time-btn' + (chosen === preset ? ' selected' : '')
+    + '" onclick="chooseBuildTime(\'' + preset + '\')">' + esc(label) + '</button>';
+  return '<div class="build-mode-card">'
+    + '<div class="build-mode-head"><strong>🚀 Build something</strong>'
+    + '<span>Describe what you want in plain English — I\'ll turn it into steps and build it for you.</span></div>'
+    + '<textarea id="buildGoalInput" class="build-goal-input" rows="3" '
+    + 'placeholder="e.g. A simple to-do list web app where I can add, complete, and delete tasks."></textarea>'
+    + '<div class="build-examples">Try: '
+    + '<button class="btn-xs" onclick="fillBuildExample(\'A personal expense tracker with a chart of spending by category.\')">expense tracker</button> '
+    + '<button class="btn-xs" onclick="fillBuildExample(\'A landing page for a coffee shop with a menu and a contact form.\')">coffee shop site</button> '
+    + '<button class="btn-xs" onclick="fillBuildExample(\'A command-line tool that renames photo files by the date they were taken.\')">photo renamer</button>'
+    + '</div>'
+    + '<div class="build-mode-actions"><button class="btn-sm build-plan-btn" onclick="planFromGoal()">📝 Plan it</button></div>'
+    + '<div class="build-mode-status" id="buildModeStatus"></div>'
+    + '<div class="build-review" id="buildReview"></div>'
+    + '<div class="build-time-choice"><div class="build-time-label">When the steps look right, choose how long I should work:</div>'
+    + '<div class="build-time-buttons">'
+    + timeBtn('single', 'Quick try')
+    + timeBtn('work', 'About an hour')
+    + timeBtn('overnight', "Until it's done")
+    + '</div></div>'
+    + '<button class="btn build-it-btn" onclick="buildIt()">▶ Build it</button>'
+    + '</div>';
+}
+
+function fillBuildExample(text) {
+  const input = document.getElementById('buildGoalInput');
+  if (input) { input.value = text; input.focus(); }
+}
+
+function setBuildStatus(text, tone) {
+  const el = document.getElementById('buildModeStatus');
+  if (!el) return;
+  el.textContent = text || '';
+  el.className = 'build-mode-status' + (tone ? ' ' + tone : '');
+}
+
+async function planFromGoal() {
+  const input = document.getElementById('buildGoalInput');
+  const goal = (input?.value || '').trim();
+  if (!goal) { setBuildStatus('Type what you want to build first, then press Plan it.', 'warn'); return; }
+  const model = document.getElementById('modelSelect')?.value || '';
+  setBuildStatus('Thinking… breaking your idea into clear steps…');
+  const review = document.getElementById('buildReview');
+  if (review) review.innerHTML = '';
+  try {
+    const response = await fetch('/api/autonomy/plan-from-goal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ goal, model }),
+    });
+    const data = await readApiJson(response, 'Plan from goal API');
+    if (data.error) throw new Error(data.error);
+    const added = data.added || [];
+    if (review) {
+      review.innerHTML = '<div class="build-review-title">Here\'s my plan — ' + esc(added.length) + ' step'
+        + (added.length === 1 ? '' : 's') + ':</div>'
+        + '<ol class="build-review-list">'
+        + added.map((t) => '<li>' + esc(t.title) + '</li>').join('')
+        + '</ol>';
+    }
+    setBuildStatus('Done. Review the steps, choose how long I should work, then press Build it.', 'ok');
+  } catch (error) {
+    setBuildStatus(error.message || String(error), 'warn');
+  }
+}
+
+function chooseBuildTime(preset) {
+  window.__buildTimeChoice = preset;
+  applyAutonomyPreset(preset);
+  const labels = { single: 'Quick try', work: 'About an hour', overnight: "Until it's done" };
+  document.querySelectorAll('.build-time-btn').forEach((btn) => {
+    btn.classList.toggle('selected', (btn.textContent || '').trim() === labels[preset]);
+  });
+  setBuildStatus('Set to: ' + (BUILD_TIME_LABELS[preset] || preset) + '. Press Build it when ready.', 'ok');
+}
+
+async function buildIt() {
+  if (!window.__buildTimeChoice) {
+    window.__buildTimeChoice = 'work';
+    applyAutonomyPreset('work');
+  }
+  if (window.__buildTimeChoice === 'overnight') {
+    const ok = window.confirm('This will keep working for up to several hours. You can press Stop anytime. Start the overnight build?');
+    if (!ok) { setBuildStatus('Cancelled — nothing started.', 'warn'); return; }
+  }
+  setBuildStatus('Starting your build… watch progress in the banner at the top.', 'ok');
+  await startAutonomyRun();
+}
+
 function renderAutonomyBuilder(data) {
   const runSettings = getAutonomyRunSettings();
   const nextTasks = (data.tasks || []).filter((task) => task.status === 'pending').slice(0, 5);
   const doneTasks = (data.tasks || []).filter((task) => task.status === 'done').slice(-3);
-  return '<div class="autonomy-head"><div><strong>Autonomy Run Builder</strong><span>' + esc(data.pending || 0) + ' pending · ' + esc(data.done || 0) + ' done · ' + esc(data.failed || 0) + ' failed</span></div><button class="btn-sm danger" onclick="stopAutonomyRun()">Stop</button></div>'
+  return renderBuildModeCard()
+    + '<div class="autonomy-head"><div><strong>Autonomy Run Builder</strong><span>' + esc(data.pending || 0) + ' pending · ' + esc(data.done || 0) + ' done · ' + esc(data.failed || 0) + ' failed</span></div><button class="btn-sm danger" onclick="stopAutonomyRun()">Stop</button></div>'
     + '<div class="autonomy-actions"><button class="btn-sm" onclick="dryRunAutonomy()">Dry run next</button><button class="btn-sm" onclick="startAutonomyRun()">Start run</button><button class="btn-sm" onclick="toggleAutonomyLog()">View live log</button><button class="btn-sm" onclick="resetAutonomyRunState()">Reset run state</button><button class="btn-sm" onclick="openLeftTabByName(\'runs\')">Open runs</button></div>'
     + '<div class="trace-meta" style="margin-bottom:6px">1) Pick a preset or set values · 2) Start run · 3) Watch live log</div>'
     + '<div class="autonomy-actions"><button class="btn-sm" onclick="applyAutonomyPreset(\'single\')">Quick test</button><button class="btn-sm" onclick="applyAutonomyPreset(\'work\')">Work session</button><button class="btn-sm" onclick="applyAutonomyPreset(\'overnight\')">Overnight</button></div>'
