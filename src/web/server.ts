@@ -35,6 +35,7 @@ import { createTaskRoutesRouter } from './taskRoutes';
 import { createPromiseRouter } from './promiseRoutes';
 import { createProfileRouter } from './profileRoutes';
 import { createEvalRouter } from './evalRoutes';
+import { createMemoryHealthRouter } from './memoryHealthRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -119,7 +120,6 @@ import { routeSlashCommand, registerYoloHooks, registerResearchHooks } from '../
 import { calculateReadiness, type ReadinessInput } from '../core/readinessGate';
 import { buildTaskContract } from '../core/taskContractBuilder';
 import { buildRepoMap, loadRepoMap, saveRepoMap, getOrBuildRepoMap } from '../core/repoMap';
-import { scanFileForConflicts, findStaleEntries, findAllStaleEntries } from '../services/memoryConflictDetector';
 import { BUILTIN_PROFILES, applyProfile, filterToolsByProfile } from '../services/configProfiles';
 import { scanForInjection, sanitizeMessage } from '../safety/injectionDefence';
 import { renderDriftReport } from '../eval/goldenTraces';
@@ -4768,51 +4768,9 @@ app.post('/api/repo-map/scan', async (req, res) => {
 });
 
 // ─── Memory conflict + staleness ─────────────────────────────────────
-
-/**
- * POST /api/memory/conflicts
- * Check a candidate memory entry for conflicts against an existing file.
- * Body: { fileName: string, body: string }
- * Returns: { conflicts: ConflictResult[] }
- */
-app.post('/api/memory/conflicts', async (req, res) => {
-  try {
-    const { fileName, body } = req.body ?? {};
-    if (typeof fileName !== 'string' || !fileName.trim()) {
-      res.status(400).json({ error: 'fileName is required (e.g. "patterns.md")' });
-      return;
-    }
-    if (typeof body !== 'string' || !body.trim()) {
-      res.status(400).json({ error: 'body is required' });
-      return;
-    }
-    const conflicts = await scanFileForConflicts(PROJECT_DIR, fileName, body);
-    res.json({ conflicts });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-/**
- * GET /api/memory/stale
- * Return stale memory sections across all (or a specific) memory file.
- * Query param: ?file=patterns.md  — scope to one file; omit for all files.
- * Returns: { stale: Record<string, StalenessResult[]> } or { stale: StalenessResult[] }
- */
-app.get('/api/memory/stale', async (req, res) => {
-  try {
-    const file = typeof req.query.file === 'string' ? req.query.file : undefined;
-    if (file) {
-      const stale = await findStaleEntries(PROJECT_DIR, file);
-      res.json({ stale });
-    } else {
-      const stale = await findAllStaleEntries(PROJECT_DIR);
-      res.json({ stale });
-    }
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Routes extracted to ./memoryHealthRoutes.ts. server.ts no longer
+// imports memoryConflictDetector — used exclusively by the HTTP layer.
+app.use(createMemoryHealthRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Config Profiles ─────────────────────────────────────────────────
 // Routes extracted to ./profileRoutes.ts. server.ts still imports the
