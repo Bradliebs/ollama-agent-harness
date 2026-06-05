@@ -9352,7 +9352,7 @@ app.post('/api/upload', express.raw({ type: '*/*', limit: '10mb' }), async (req,
   const mimeType = req.headers['content-type']?.toString() || 'application/octet-stream';
   const mediaKind = inferMediaKind(safe, mimeType);
   if (mediaKind === 'other') {
-    res.status(415).json({ error: 'Unsupported upload type. Allowed kinds: image, audio, pdf, text, data.' });
+    res.status(415).json({ error: 'Unsupported upload type. Allowed kinds: image, audio, pdf, text, data, document.' });
     return;
   }
 
@@ -9369,12 +9369,13 @@ app.post('/api/upload', express.raw({ type: '*/*', limit: '10mb' }), async (req,
   }
 });
 
-function inferMediaKind(fileName: string, mimeType: string): 'image' | 'audio' | 'pdf' | 'text' | 'data' | 'other' {
+function inferMediaKind(fileName: string, mimeType: string): 'image' | 'audio' | 'pdf' | 'text' | 'data' | 'document' | 'other' {
   const lowerName = fileName.toLowerCase();
   const lowerMime = mimeType.toLowerCase();
   if (lowerMime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(lowerName)) return 'image';
   if (lowerMime.startsWith('audio/') || /\.(mp3|wav|m4a|flac|ogg|aac|opus)$/.test(lowerName)) return 'audio';
   if (lowerMime === 'application/pdf' || lowerName.endsWith('.pdf')) return 'pdf';
+  if (/\.(docx|xlsx|pptx)$/.test(lowerName)) return 'document';
   if (lowerMime.startsWith('text/') || /\.(txt|md|csv|json|log|ts|js|py|cs|rs|html|css)$/.test(lowerName)) return 'text';
   if (/\.(jsonl|xml|yaml|yml|parquet|sqlite|db)$/.test(lowerName)) return 'data';
   return 'other';
@@ -11001,7 +11002,7 @@ async function buildAttachmentsContextBlock(raw: unknown): Promise<string | null
   return [
     '--- Session Attachments (authoritative) ---',
     'The user attached the following files via the Harness UI. These paths are exact and verified by the harness.',
-    'Always pass the exact "path" string to file_read, pdf_read, image_analyze, or audio_transcribe — never strip the .harness/uploads/ prefix and never pass only the bare filename.',
+    'Always pass the exact "path" string to file_read, pdf_read, document_read, image_analyze, or audio_transcribe — never strip the .harness/uploads/ prefix and never pass only the bare filename.',
     'You may also call list_uploads at any time to re-list every available attachment.',
     'A short head preview is included inline for text-like attachments so you can often answer without reading the whole file.',
     ...lines,

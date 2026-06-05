@@ -440,8 +440,9 @@ async function handleDocumentMessage(bot: TelegramBot, msg: TelegramMessage, cha
     const isPdf = filename.toLowerCase().endsWith('.pdf');
     const isImage = /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(filename);
     const isAudio = /\.(mp3|wav|m4a|ogg|flac)$/i.test(filename);
-    const toolHint = isPdf ? 'pdf_read' : isImage ? 'image_analyze' : isAudio ? 'audio_transcribe' : 'file_read';
-    const mediaKind = isPdf ? 'pdf' : isImage ? 'image' : isAudio ? 'audio' : 'data';
+    const isDocument = /\.(docx|xlsx|pptx)$/i.test(filename);
+    const toolHint = isPdf ? 'pdf_read' : isImage ? 'image_analyze' : isAudio ? 'audio_transcribe' : isDocument ? 'document_read' : 'file_read';
+    const mediaKind = isPdf ? 'pdf' : isImage ? 'image' : isAudio ? 'audio' : isDocument ? 'document' : 'data';
 
     const message = `${caption}\n\n[Attached files]\n- ${mediaKind}: name="${filename}" path="${uploadData.path}"\n\nIMPORTANT: Use ${toolHint} with the path "${uploadData.path}" to process this file.`;
     await relayChatAndRespond(bot, chatId, message, serverUrl);

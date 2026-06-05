@@ -15,7 +15,7 @@ export interface MotorPermission {
 }
 
 // Tool categories for risk assessment
-const READ_ONLY_TOOLS = new Set(['file_read', 'list_files', 'list_uploads', 'grep', 'web_search', 'web_read', 'rag_search', 'rag_list_indexes', 'calendar_read', 'image_analyze', 'pdf_read', 'pdf_metadata', 'pdf_extract_tables', 'audio_transcribe', 'desktop_screenshot', 'browser_bookmarks', 'email_inbox']);
+const READ_ONLY_TOOLS = new Set(['file_read', 'list_files', 'list_uploads', 'grep', 'web_search', 'web_read', 'rag_search', 'rag_list_indexes', 'calendar_read', 'image_analyze', 'pdf_read', 'pdf_metadata', 'pdf_extract_tables', 'document_read', 'audio_transcribe', 'desktop_screenshot', 'browser_bookmarks', 'email_inbox']);
 const WRITE_TOOLS = new Set(['file_write', 'file_edit', 'file_move', 'file_delete', 'create_skill', 'install_skill', 'import_skill', 'memory_write', 'document_export']);
 const NETWORK_TOOLS = new Set(['web_fetch', 'email_send', 'email_draft', 'telegram_notify', 'slack_notify']);
 const SHELL_TOOLS = new Set(['bash']);

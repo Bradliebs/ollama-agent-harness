@@ -8,6 +8,7 @@ import { AudioTranscribeTool, ImageAnalyzeTool } from './multimodalTools';
 import { PdfExtractTablesTool, PdfMetadataTool, PdfReadTool, PdfRenderPageTool } from './pdfTool';
 import { CuratorPreviewTool } from './curatorTools';
 import { DocumentExportTool } from './documentTools';
+import { DocumentReadTool } from './documentReadTool';
 import { RagListIndexesTool, RagSearchTool } from './ragTools';
 import { CreateSkillTool, ListSkillsTool, SkillTool } from './skillTools';
 import { WebFetchTool } from './webFetchTool';
@@ -143,6 +144,7 @@ export const BUILTIN_TOOL_ENTRIES: ToolRegistryEntry[] = [
   { tool: CalendarReadTool, toolset: 'communications', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
   { tool: CalendarWriteTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'write', canDryRun: false },
   { tool: DocumentExportTool, toolset: 'documents', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'write', canDryRun: false },
+  { tool: DocumentReadTool, toolset: 'documents', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
   { tool: TaskManageTool, toolset: 'tasks', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false },
   { tool: TaskProgressTool, toolset: 'tasks', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false },
   { tool: CreateCustomAgentTool, toolset: 'agents', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'skills', canDryRun: false },
