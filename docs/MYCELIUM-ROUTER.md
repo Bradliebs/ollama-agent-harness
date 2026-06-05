@@ -86,7 +86,7 @@ The router is visible through three surfaces.
 
 ### Browser UI
 
-The Mycelium tab shows graph stats, protected nodes and edges, archived edges,
+The AI Router tab (🍄 Mycelium) shows graph stats, protected nodes and edges, archived edges,
 recent episodes, the last selected route, grouped selection reasons, reward
 components, applied verifiers, and blocked routes.
 

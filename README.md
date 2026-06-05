@@ -296,23 +296,25 @@ Reviewer:  llama3.1:8b (local) or magistral-small-latest (API)
 
 ## UI tabs
 
-The browser UI has 13 tabs in the left sidebar:
+The browser UI keeps five primary tabs in the left sidebar, with everything else under a **More** (⋯) menu:
 
 | Tab | What it does |
 |-----|-------------|
-| 💬 **Chats** | Chat history, new/export sessions |
-| 📁 **Files** | Browse and read project files |
-| ⚡ **Skills** | Runtime and repo skill libraries, skill curator, install/scaffold actions |
-| 🧠 **Memory** | Agent memory entries per session |
-| 🏛 **Palace** | Memory palace browser (semantic memory) |
-| 🔮 **Discover** | Discovered patterns and learning candidates |
-| 📈 **Learning** | Eval trace runs, output validation trends, learning datasets |
-| 📦 **Snaps** | Skill and memory snapshots for backup/restore |
-| 🔎 **RAG** | Local vector index over chosen files with search and rebuild |
-| 🛠 **Tools** | Tool registry with risk badges, permissions, kill switch, capability grants, shell presets |
-| 📜 **Runs** | Session list, automation jobs, run history, scheduler status |
-| ⚙ **Flows** | Declarative tool-call workflows (YAML/JSON under `.harness/workflows/`) |
-| 🍄 **Mycelium** | Adaptive context routing network — nodes, edges, episodes |
+| 💬 **Chats** | Your past conversations; new/export sessions |
+| 📁 **Files** | Browse files in this project |
+| ⚡ **Abilities** | Reusable instructions (skills) the AI can follow |
+| 🧠 **Memory** | What the AI remembers across sessions |
+| ⚙ **Automations** | Saved sequences of AI actions (workflows under `.harness/workflows/`) |
+
+The **More** menu groups the remaining tabs:
+
+| Group | Tabs |
+|-------|------|
+| **Build & use** | 🤖 Agents · 👥 Squads · ⚡ Triggers · ✅ Tasks · 🪪 Identity |
+| **Search & knowledge** | 🔎 Search Files (vector index) · 🏛 Memory Bank (semantic memory) · 🔮 Discoveries · 🧬 Code Intel |
+| **History & diagnostics** | 📜 Runs · 📋 Events · 🛡 Activity Log · 📈 Learning · 💓 Health |
+| **Admin & backup** | 🛠 Tools (registry, permissions, kill switch, capability grants) · 📦 Backups · 📎 Generated Files |
+| **Advanced** | 🚀 Autonomy · 🍄 AI Router (adaptive routing network) · 🤝 Commitments |
 
 The right side has a **Settings** panel for Ollama host, generation parameters, model routing, media tools, output validation, and safety mode. Settings are saved to `.harness/settings.json`.
 
@@ -449,7 +451,7 @@ Click **⚡ Full Autonomy** in Settings to set `dontAsk` mode and enable all too
 
 ### Mycelium context router
 
-An adaptive graph system that learns which combinations of tools, skills, and memories work best for different queries. The network reinforces successful routes and decays unused ones. View the graph in the 🍄 Mycelium tab.
+An adaptive graph system that learns which combinations of tools, skills, and memories work best for different queries. The network reinforces successful routes and decays unused ones. View the graph in the 🍄 AI Router tab.
 
 ### Automation
 

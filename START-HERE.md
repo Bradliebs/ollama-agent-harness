@@ -95,19 +95,19 @@ The sidebar has **5 primary tabs** plus a **⋯ More** button for everything els
 |------|-----|-------------|
 | 💬 | **Chats** | Your conversation history |
 | 📁 | **Files** | Browse project files |
-| ⚡ | **Skills** | Reusable AI capabilities |
+| ⚡ | **Abilities** | Reusable AI capabilities |
 | 🧠 | **Memory** | What the AI remembers |
-| ⚙ | **Flows** | Automated multi-step workflows |
+| ⚙ | **Automations** | Automated multi-step workflows |
 
 **Under ⋯ More** (grouped — hover an item for a one-line description):
 
 - *Build & use:* Agents, Squads, Triggers, Tasks, Identity
-- *Search & knowledge:* RAG, Palace, Discover, Code Intel
-- *History & diagnostics:* Runs, Events, Audit, Learning, Health
-- *Admin & backup:* Tools, Snapshots, Artifacts
-- *Advanced:* Autonomy, Mycelium, Promises
+- *Search & knowledge:* Search Files, Memory Bank, Discoveries, Code Intel
+- *History & diagnostics:* Runs, Events, Activity Log, Learning, Health
+- *Admin & backup:* Tools, Backups, Generated Files
+- *Advanced:* Autonomy, AI Router, Commitments
 
-If you want to know "what is the agent actually doing right now?" — open **⋯ More → 🛡 Audit** for a chronological list of every tool call.
+If you want to know "what is the agent actually doing right now?" — open **⋯ More → 🛡 Activity Log** for a chronological list of every tool call.
 
 ### What is "Jarvis"?
 
