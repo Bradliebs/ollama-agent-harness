@@ -214,7 +214,12 @@ const SETTINGS_SAVE_RETRY_DELAYS_MS = [25, 75, 150, 300, 600];
 const API_KEYS_PATH = path.join(PROJECT_DIR, '.harness', 'api-keys.json');
 const FILE_REDIRECTS_PATH = path.join(PROJECT_DIR, '.harness', 'file-write-redirects.json');
 const OUTPUT_VALIDATION_PROFILES_PATH = path.join(PROJECT_DIR, '.harness', 'output-validation-profiles.json');
-const RELEASE_PROVENANCE_PATH = path.join(PROJECT_DIR, 'release-provenance.json');
+// Harness install root — the directory containing the harness's own
+// package.json and release artifacts. Distinct from PROJECT_DIR, which can be
+// redirected to an isolated user workspace; src/web/server.ts and
+// dist/web/server.js both sit two levels below the harness root.
+const HARNESS_ROOT = path.resolve(__dirname, '..', '..');
+const RELEASE_PROVENANCE_PATH = path.join(HARNESS_ROOT, 'release-provenance.json');
 const WORKFLOWS_DIR = path.join(PROJECT_DIR, '.harness', 'workflows');
 const workflowRegistry = new WorkflowRegistry(WORKFLOWS_DIR);
 const ALLOWED_PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'dontAsk'];
@@ -11080,7 +11085,7 @@ async function getRuntimeStorageSummary(): Promise<{ traces: { count: number; by
 }
 
 async function getAboutInfo(): Promise<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string; manifestName: string; manifestUrl: string }> {
-  const packageJson = JSON.parse(await fs.readFile(path.join(PROJECT_DIR, 'package.json'), 'utf-8')) as { version?: string };
+  const packageJson = JSON.parse(await fs.readFile(path.join(HARNESS_ROOT, 'package.json'), 'utf-8')) as { version?: string };
   const rawProvenance = await readReleaseProvenance();
   const provenance = packageJson.version && rawProvenance.version && rawProvenance.version !== packageJson.version ? {} : rawProvenance;
   const version = packageJson.version ?? provenance.version ?? 'unknown';
@@ -11100,7 +11105,7 @@ async function getAboutInfo(): Promise<{ version: string; commit: string; assetN
 
 async function getReleaseVerification(): Promise<{ status: 'verified' | 'warning'; message: string; version: string; commit: string; assetName: string; releaseUrl: string; expectedSha256: string; localArchiveSha256: string; localArchivePath: string }> {
   const about = await getAboutInfo();
-  const localArchivePath = path.join(PROJECT_DIR, 'release', about.assetName);
+  const localArchivePath = path.join(HARNESS_ROOT, 'release', about.assetName);
   const localArchiveSha256 = await sha256FileIfExists(localArchivePath);
   if (about.assetSha256 && localArchiveSha256) {
     const verified = about.assetSha256.toLowerCase() === localArchiveSha256.toLowerCase();
@@ -11113,7 +11118,7 @@ async function getReleaseVerification(): Promise<{ status: 'verified' | 'warning
       releaseUrl: about.releaseUrl,
       expectedSha256: about.assetSha256,
       localArchiveSha256,
-      localArchivePath: path.relative(PROJECT_DIR, localArchivePath),
+      localArchivePath: path.relative(HARNESS_ROOT, localArchivePath),
     };
   }
   return {
@@ -11127,7 +11132,7 @@ async function getReleaseVerification(): Promise<{ status: 'verified' | 'warning
     releaseUrl: about.releaseUrl,
     expectedSha256: about.assetSha256,
     localArchiveSha256,
-    localArchivePath: path.relative(PROJECT_DIR, localArchivePath),
+    localArchivePath: path.relative(HARNESS_ROOT, localArchivePath),
   };
 }
 
@@ -11153,8 +11158,8 @@ async function readReleaseProvenance(): Promise<Partial<{ version: string; commi
 
 async function readReleaseManifest(assetName?: string): Promise<Partial<{ assetName: string; assetSha256: string; generatedAt: string; manifestName: string }>> {
   const candidates = [
-    path.join(PROJECT_DIR, 'release-manifest.json'),
-    assetName ? path.join(PROJECT_DIR, 'release', `${assetName}.sha256.json`) : '',
+    path.join(HARNESS_ROOT, 'release-manifest.json'),
+    assetName ? path.join(HARNESS_ROOT, 'release', `${assetName}.sha256.json`) : '',
   ].filter(Boolean);
   for (const candidate of candidates) {
     try {
