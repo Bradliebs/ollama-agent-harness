@@ -33,6 +33,7 @@ forge-memory/
 
 # Runtime state files (user-specific, not for version control)
 .harness-workspace
+.harness-workspace.bak-*
 .forge-state.json
 .forge-stop
 
