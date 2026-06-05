@@ -17,6 +17,7 @@ const promptsRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'promptsRo
 const eventRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'eventRoutes.ts'), 'utf-8');
 const doneStateRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'doneStateRoutes.ts'), 'utf-8');
 const codeIntelRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'codeIntelRoutes.ts'), 'utf-8');
+const myceliumRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'myceliumRoutes.ts'), 'utf-8');
 
 const inlineGlobals = new Set([
   'alert',
@@ -264,7 +265,8 @@ describe('web UI wiring', () => {
     const eventRouterRoutes = [...eventRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const doneStateRouterRoutes = [...doneStateRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const codeIntelRouterRoutes = [...codeIntelRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
-    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes, ...promptsRouterRoutes, ...eventRouterRoutes, ...doneStateRouterRoutes, ...codeIntelRouterRoutes]);
+    const myceliumRouterRoutes = [...myceliumRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes, ...promptsRouterRoutes, ...eventRouterRoutes, ...doneStateRouterRoutes, ...codeIntelRouterRoutes, ...myceliumRouterRoutes]);
     const uiRoutes = [...new Set(extractFetchExpressions(appJs).map(normalizeUiFetchPath).filter((route): route is string => Boolean(route)))].sort();
 
     // A UI route like '/api/foo/:param' is satisfied either by an exact match

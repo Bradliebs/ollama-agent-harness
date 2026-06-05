@@ -41,6 +41,7 @@ import { createPromptsRouter } from './promptsRoutes';
 import { createEventRouter } from './eventRoutes';
 import { createDoneStateRouter } from './doneStateRoutes';
 import { createCodeIntelRouter } from './codeIntelRoutes';
+import { createMyceliumRouter } from './myceliumRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -5898,90 +5899,9 @@ app.get('/api/automations/output', async (req, res) => {
 });
 
 // ─── Mycelium graph API ──────────────────────────────────────────
-app.get('/api/mycelium', async (_req, res) => {
-  try {
-    const { loadMyceliumGraph: load } = await import('../mycelium/graph');
-    const graph = await load(PROJECT_DIR);
-    res.json({
-      stats: graph.stats(),
-      nodes: graph.listNodes(),
-      edges: graph.listEdges(),
-      episodes: graph.listEpisodes(20),
-      archivedEdges: graph.listArchivedEdges().slice(-20),
-    });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// Last episode + its selection reasons / route ordering for the UI.
-app.get('/api/mycelium/last-route', async (_req, res) => {
-  try {
-    const { loadMyceliumGraph: load } = await import('../mycelium/graph');
-    const graph = await load(PROJECT_DIR);
-    const episodes = graph.listEpisodes(1);
-    const lastEpisode = episodes[episodes.length - 1] ?? null;
-    if (!lastEpisode) {
-      res.json({ episode: null, nodes: [], edges: [] });
-      return;
-    }
-    // Hydrate the route's node references and any edges between them.
-    const nodes = lastEpisode.route
-      .map((id) => graph.getNode(id))
-      .filter((n): n is NonNullable<typeof n> => Boolean(n));
-    const idSet = new Set(lastEpisode.route);
-    const edges = graph.listEdges().filter((e) => idSet.has(e.source) && idSet.has(e.target));
-    res.json({ episode: lastEpisode, nodes, edges });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.delete('/api/mycelium', async (_req, res) => {
-  try {
-    const { MyceliumGraph, saveMyceliumGraph: save } = await import('../mycelium/graph');
-    await save(PROJECT_DIR, new MyceliumGraph());
-    logger.info('Mycelium', 'Graph reset');
-    res.json({ reset: true });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// Apply explicit user feedback (👍 / 👎) to the most recent route. The
-// feedback is recorded as a fresh episode tagged with userFeedback so the
-// router learns from human judgment, not just the heuristic verifier.
-app.post('/api/mycelium/feedback', async (req, res) => {
-  const vote = req.body?.vote;
-  const note = typeof req.body?.note === 'string' ? req.body.note : undefined;
-  if (vote !== 'up' && vote !== 'down' && vote !== 'neutral') {
-    res.status(400).json({ error: 'vote must be "up", "down", or "neutral"' });
-    return;
-  }
-  try {
-    const router = await createMycelialRouter(PROJECT_DIR);
-    // Re-hydrate lastRoute from the most recent episode so feedback works
-    // across requests (the chat handler's router instance is per-request).
-    const lastEpisode = router.getGraph().listEpisodes(1)[0];
-    if (!lastEpisode) {
-      res.status(404).json({ error: 'no recent episode to apply feedback to' });
-      return;
-    }
-    // The router doesn't expose setLastRoute; reconstruct via a private cast.
-    (router as unknown as { lastRoute: string[] }).lastRoute = lastEpisode.route;
-    (router as unknown as { lastQuery: string }).lastQuery = lastEpisode.query;
-    const result = router.applyUserFeedback(vote, note);
-    await router.save();
-    res.json(result);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    logger.warn('Mycelium', 'Feedback failed', { error: msg });
-    res.status(500).json({ error: msg });
-  }
-});
+// Routes extracted to ./myceliumRoutes.ts. server.ts still imports
+// createMycelialRouter for the chat handler and heartbeat seeding.
+app.use(createMyceliumRouter({ projectDir: PROJECT_DIR }));
 
 // Enable or disable a single tool at runtime. Disabled tools are filtered out
 // of the agent's tool list before each chat turn.
