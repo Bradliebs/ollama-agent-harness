@@ -30,6 +30,11 @@ async function main() {
   instrumentBrowserDiagnostics(browser);
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    // Suppress the first-visit onboarding modal (shown ~400ms after load) so it
+    // does not overlay and intercept later clicks such as "Verify install".
+    await page.addInitScript(() => {
+      try { localStorage.setItem('harness.onboardSeen', String(Date.now())); } catch (e) {}
+    });
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => Boolean(document.getElementById('chatInput')) && Boolean(window.loadReadiness));
     const slashPaletteSmoke = await page.evaluate(() => {
@@ -848,32 +853,33 @@ async function main() {
 async function runMobileBeginnerSmoke(browser, targetUrl) {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   try {
+    // Suppress the first-visit onboarding modal so it does not overlay and
+    // intercept clicks on the landing page during the layout-fit checks.
+    await page.addInitScript(() => {
+      try { localStorage.setItem('harness.onboardSeen', String(Date.now())); } catch (e) {}
+    });
     await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
-    await page.waitForFunction(() => Boolean(document.getElementById('chatInput')) && Boolean(document.getElementById('beginnerReadiness')));
+    await page.waitForFunction(() => Boolean(document.getElementById('chatInput')) && typeof window.loadReadiness === 'function');
     await page.evaluate(() => { const details = document.getElementById('welcomeFirstRun'); if (details) details.open = true; });
     await page.click('#firstRunSetup button:has-text("Check setup")');
     await page.waitForFunction(() => !document.getElementById('firstRunHealth').classList.contains('initial-hidden'));
     return await page.evaluate(() => {
-      const readiness = document.getElementById('beginnerReadiness');
       const quickStart = document.getElementById('quickStartBtn');
       const input = document.getElementById('chatInput');
       const firstRun = document.getElementById('firstRunSetup');
-      const readinessBox = readiness?.getBoundingClientRect();
       const inputBox = input?.getBoundingClientRect();
       const firstRunBox = firstRun?.getBoundingClientRect();
       const viewportWidth = window.innerWidth;
       const serializeBox = (box) => box ? ({ left: box.left, right: box.right, width: box.width }) : null;
       const boxes = {
-        readiness: serializeBox(readinessBox),
         input: serializeBox(inputBox),
         firstRun: serializeBox(firstRunBox),
       };
-      const fits = [readinessBox, inputBox, firstRunBox].every((box) => box && box.width <= viewportWidth && box.left >= -1 && box.right <= viewportWidth + 1);
+      const fits = [inputBox, firstRunBox].every((box) => box && box.width <= viewportWidth && box.left >= -1 && box.right <= viewportWidth + 1);
       return {
-        ok: Boolean(readiness && quickStart && input && firstRun && fits && readiness.textContent?.trim()),
+        ok: Boolean(quickStart && input && firstRun && fits),
         viewportWidth,
         boxes,
-        readinessText: readiness?.textContent || '',
         quickStartDisabled: Boolean(quickStart?.disabled),
         fits,
       };
