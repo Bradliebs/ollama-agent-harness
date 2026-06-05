@@ -27,9 +27,13 @@ describe('cli setup doctor', () => {
       delete process.env.HARNESS_AGENT_OUTPUT_DIR;
       delete process.env.HARNESS_SMTP_HOST;
       await mkdir(path.join(projectDir, '.harness'), { recursive: true });
+      // Real absolute paths for the current platform so the resolve-based
+      // assertions hold on both Windows and POSIX CI runners.
+      const oracleDir = path.join(os.tmpdir(), 'harness-ext-oracle', 'docs');
+      const agentOutputDir = path.join(os.tmpdir(), 'harness-ext-agent', 'files');
       await writeFile(path.join(projectDir, '.harness', 'settings.json'), JSON.stringify({
-        allowedExternalPaths: ['C:/AI/Oracle'],
-        agentOutputDir: 'C:/AI/AgentFiles',
+        allowedExternalPaths: [oracleDir],
+        agentOutputDir,
         webReadMaxChars: 2000,
       }), 'utf-8');
       await writeFile(path.join(projectDir, '.harness', 'api-keys.json'), JSON.stringify({
@@ -38,10 +42,10 @@ describe('cli setup doctor', () => {
 
       await loadHeadlessRuntimeSettings(projectDir);
 
-      expect(getAllowedExternalPaths()).toEqual(['C:\\AI\\Oracle', 'C:\\AI\\AgentFiles']);
-      expect(process.env.HARNESS_AGENT_OUTPUT_DIR).toBe('C:/AI/AgentFiles');
+      expect(getAllowedExternalPaths()).toEqual([path.resolve(oracleDir), path.resolve(agentOutputDir)]);
+      expect(process.env.HARNESS_AGENT_OUTPUT_DIR).toBe(agentOutputDir);
       expect(process.env.HARNESS_SMTP_HOST).toBe('smtp.example.test');
-      expect(buildSystemPrompt({})).toContain('C:\\AI\\Oracle');
+      expect(buildSystemPrompt({})).toContain(path.resolve(oracleDir));
       expect(buildSystemPrompt({})).toContain('research the web');
     } finally {
       if (previousOutputDir === undefined) delete process.env.HARNESS_AGENT_OUTPUT_DIR;
