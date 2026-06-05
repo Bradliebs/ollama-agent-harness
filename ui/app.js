@@ -13650,10 +13650,18 @@ function refreshHealthCard() { refreshHealthCardAsync(); }
 // ─── Theme toggle ───────────────────────────────────────────────────
 
 function toggleTheme() {
-  const isLight = document.documentElement.classList.toggle('light');
-  localStorage.setItem('harness-theme', isLight ? 'light' : 'dark');
-  const btn = document.getElementById('themeToggle');
-  if (btn) btn.textContent = isLight ? '☀️' : '🌙';
+  const apply = () => {
+    const isLight = document.documentElement.classList.toggle('light');
+    localStorage.setItem('harness-theme', isLight ? 'light' : 'dark');
+    const btn = document.getElementById('themeToggle');
+    if (btn) btn.textContent = isLight ? '☀️' : '🌙';
+  };
+  const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (document.startViewTransition && !reduced) {
+    document.startViewTransition(apply);
+  } else {
+    apply();
+  }
 }
 
 function restoreTheme() {
