@@ -46,6 +46,7 @@ import { createTraceRouter } from './traceRoutes';
 import { createSnapshotRouter } from './snapshotRoutes';
 import { createHistoryRouter } from './historyRoutes';
 import { createFileRedirectRouter } from './fileRedirectRoutes';
+import { createDocumentRouter } from './documentRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -5028,66 +5029,21 @@ app.get('/api/evidence/runs', async (_req, res) => {
   }
 });
 
-app.get('/api/documents/formats', async (_req, res) => {
-  try {
-    const converters = await localDocumentConverters();
-    res.json({ formats: { markdown: { available: true }, html: { available: true }, pdf: { available: converters.pandoc, converter: 'pandoc' }, docx: { available: converters.pandoc, converter: 'pandoc' } } });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/documents', async (_req, res) => {
-  try {
-    await fs.mkdir(DOCUMENTS_DIR, { recursive: true });
-    const files = await fs.readdir(DOCUMENTS_DIR, { withFileTypes: true });
-    const documents: GeneratedDocumentMetadata[] = [];
-    for (const file of files.filter((entry) => entry.isFile() && entry.name.endsWith('.json'))) {
-      try {
-        const metadata = JSON.parse(await fs.readFile(path.join(DOCUMENTS_DIR, file.name), 'utf-8')) as GeneratedDocumentMetadata;
-        documents.push(metadata);
-      } catch { /* ignore corrupt metadata */ }
-    }
-    documents.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    res.json({ documents });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/documents/generate', async (req, res) => {
-  try {
-    const title = String(req.body?.title || 'Harness Document').trim().slice(0, 160) || 'Harness Document';
-    const template = normalizeDocumentTemplate(req.body?.template);
-    const format = normalizeDocumentFormat(req.body?.format);
-    const sourceLabel = String(req.body?.sourceLabel || 'Harness chat').trim().slice(0, 120) || 'Harness chat';
-    const content = String(req.body?.content || '').slice(0, 200_000);
-    const evidence = req.body?.evidence && typeof req.body.evidence === 'object' ? req.body.evidence as EvidenceCard : undefined;
-    const document = await createGeneratedDocument({ title, template, format, sourceLabel, content, evidence });
-    res.json({ ok: true, document: document.metadata, content: document.content });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/documents/:id/download', async (req, res) => {
-  const id = safeLocalId(req.params.id);
-  if (!id) { res.status(400).json({ error: 'Invalid document id.' }); return; }
-  try {
-    const metadata = JSON.parse(await fs.readFile(path.join(DOCUMENTS_DIR, `${id}.json`), 'utf-8')) as GeneratedDocumentMetadata;
-    const filePath = path.join(DOCUMENTS_DIR, metadata.filename);
-    const raw = await fs.readFile(filePath);
-    const contentType = metadata.format === 'html' ? 'text/html; charset=utf-8' : metadata.format === 'pdf' ? 'application/pdf' : metadata.format === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'text/markdown; charset=utf-8';
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="${metadata.filename}"`);
-    res.send(raw);
-  } catch {
-    res.status(404).json({ error: 'Document not found.' });
-  }
-});
+// Document generation routes extracted to ./documentRoutes.ts.
+app.use(createDocumentRouter({
+  projectDir: PROJECT_DIR,
+  localDocumentConverters,
+  normalizeDocumentTemplate,
+  normalizeDocumentFormat,
+  createGeneratedDocument: (input) => createGeneratedDocument({
+    title: input.title,
+    template: input.template as DocumentTemplate,
+    format: input.format as DocumentFormat,
+    sourceLabel: input.sourceLabel,
+    content: input.content,
+    evidence: input.evidence as EvidenceCard | undefined,
+  }),
+}));
 
 app.get('/api/evals/trace-examples', async (_req, res) => {
   try {
