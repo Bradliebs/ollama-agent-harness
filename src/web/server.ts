@@ -33,6 +33,7 @@ import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { summarizeTasks } from '../services/taskStore';
 import { createTaskRoutesRouter } from './taskRoutes';
 import { createPromiseRouter } from './promiseRoutes';
+import { createProfileRouter } from './profileRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -118,7 +119,7 @@ import { calculateReadiness, type ReadinessInput } from '../core/readinessGate';
 import { buildTaskContract } from '../core/taskContractBuilder';
 import { buildRepoMap, loadRepoMap, saveRepoMap, getOrBuildRepoMap } from '../core/repoMap';
 import { scanFileForConflicts, findStaleEntries, findAllStaleEntries } from '../services/memoryConflictDetector';
-import { BUILTIN_PROFILES, applyProfile, getProfile, listProfiles, loadCustomProfiles, saveCustomProfiles, filterToolsByProfile, type ConfigProfile } from '../services/configProfiles';
+import { BUILTIN_PROFILES, applyProfile, filterToolsByProfile } from '../services/configProfiles';
 import { scanForInjection, sanitizeMessage } from '../safety/injectionDefence';
 import { recordSample as recordCalibrationSample, generateReport as generateCalibrationReport, generateAllReports as generateAllCalibrationReports } from '../eval/confidenceCalibration';
 import { saveGoldenTrace, loadGoldenTrace, listGoldenTraces, deleteGoldenTrace, compareWithGolden, captureFromRun, renderDriftReport } from '../eval/goldenTraces';
@@ -4814,81 +4815,10 @@ app.get('/api/memory/stale', async (req, res) => {
 });
 
 // ─── Config Profiles ─────────────────────────────────────────────────
-
-/**
- * GET /api/profiles
- * List all available config profiles (built-in + custom from PROJECT_DIR).
- */
-app.get('/api/profiles', async (_req, res) => {
-  try {
-    const profiles = await listProfiles(PROJECT_DIR);
-    res.json({ profiles });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-/**
- * GET /api/profiles/:name
- * Get a specific profile by name.
- */
-app.get('/api/profiles/:name', async (req, res) => {
-  try {
-    const profile = await getProfile(req.params.name, PROJECT_DIR);
-    if (!profile) {
-      res.status(404).json({ error: `Profile "${req.params.name}" not found.` });
-      return;
-    }
-    res.json(profile);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-/**
- * POST /api/profiles
- * Save a custom profile to PROJECT_DIR/.harness/profiles.json.
- * Body: ConfigProfile
- */
-app.post('/api/profiles', async (req, res) => {
-  try {
-    const profile = req.body as ConfigProfile;
-    if (!profile?.name || !profile?.description) {
-      res.status(400).json({ error: 'name and description are required.' });
-      return;
-    }
-    const existing = await loadCustomProfiles(PROJECT_DIR);
-    const idx = existing.findIndex((p) => p.name === profile.name);
-    if (idx >= 0) {
-      existing[idx] = profile;
-    } else {
-      existing.push(profile);
-    }
-    await saveCustomProfiles(PROJECT_DIR, existing);
-    res.json({ saved: profile.name, total: existing.length });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-/**
- * DELETE /api/profiles/:name
- * Delete a custom profile by name.
- */
-app.delete('/api/profiles/:name', async (req, res) => {
-  try {
-    const existing = await loadCustomProfiles(PROJECT_DIR);
-    const filtered = existing.filter((p) => p.name !== req.params.name);
-    if (filtered.length === existing.length) {
-      res.status(404).json({ error: `Custom profile "${req.params.name}" not found.` });
-      return;
-    }
-    await saveCustomProfiles(PROJECT_DIR, filtered);
-    res.json({ deleted: req.params.name, remaining: filtered.length });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Routes extracted to ./profileRoutes.ts. server.ts still imports the
+// other configProfiles surface (BUILTIN_PROFILES/applyProfile/filterToolsByProfile)
+// for non-HTTP wiring.
+app.use(createProfileRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Injection Defence ──────────────────────────────────────────────
 
