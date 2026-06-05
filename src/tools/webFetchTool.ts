@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { extractPdfText } from './pdfTool';
+import { wrapUntrusted } from '../safety/untrustedWrap';
 import type { Tool, ToolResult } from '../types';
 
 const MAX_RESPONSE_SIZE = 50_000;
@@ -53,7 +54,7 @@ export const WebFetchTool: Tool = {
             'PDF extraction',
           );
           const header = `[PDF fetched from ${url}; pages ${result.startPage}-${result.endPage} of ${result.pageCount}]\n\n`;
-          return { success: true, output: header + result.text };
+          return { success: true, output: header + wrapUntrusted('pdf', result.text, { label: url }) };
         } finally {
           await fs.rm(tmpPath, { force: true });
         }
@@ -72,7 +73,7 @@ export const WebFetchTool: Tool = {
         };
       }
 
-      return { success: true, output: truncated };
+      return { success: true, output: wrapUntrusted('web', truncated, { label: url }) };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return { success: false, output: `Fetch failed: ${msg}`, error: msg };
