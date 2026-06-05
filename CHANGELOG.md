@@ -2,7 +2,7 @@
 title: Ollama Agent Harness Changelog
 description: Release notes generated from local RPI changes logs for Ollama Agent Harness
 author: Bradliebs
-ms.date: 2026-05-27
+ms.date: 2026-06-05
 ms.topic: reference
 keywords:
 	- ollama
@@ -10,6 +10,39 @@ keywords:
 	- changelog
 estimated_reading_time: 18
 ---
+
+## Ollama Agent Harness v0.6.5
+
+This release focuses on making the harness approachable for non-developers and
+more reliable when running autonomously, plus trustworthier output.
+
+### Build Mode and guided experiences
+
+- **Build Mode**: a simplified flow for describing a goal in plain English and
+  letting the harness plan and build it, without needing developer tooling.
+- **`/wiki`, `/memory-wiki`, and research slash commands**, built on a set of
+  reusable renderers so the output format stays consistent.
+- Plain-English intent chips and a decluttered Start-work panel for newcomers.
+
+### Trustworthier output
+
+- **Evidence-first verification**: a side-effect ledger and a research skill
+  that check work before it is presented, rather than asserting success.
+- Tool-output compression keeps large tool results from crowding the context.
+
+### Autonomy reliability
+
+- The Build-it loop now launches correctly in isolated workspaces (it runs the
+  in-repo task loop instead of assuming a script in the target project).
+- Live model tool activity streams into `.forge-run.log` so the dashboard shows
+  what the agent is doing as it happens.
+- The run builder rejects pasted-back plan lines that previously produced nested
+  task titles.
+
+### Configuration
+
+- Honor the `OLLAMA_HOST` environment variable so the harness can talk to a
+  non-default Ollama endpoint.
 
 ## Ollama Agent Harness v0.6.4
 

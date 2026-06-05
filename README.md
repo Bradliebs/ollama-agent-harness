@@ -24,9 +24,9 @@ You chat with a model, it can call tools (read/write files, run bash, search the
 
 **v0.6.4** brings semantic memory via the bundled `ccmem` concept-cell service (auto-started on port 8765), the **Apex** family of autonomous experiences (`/goal` natural-language expander, PDF → wiki blueprint, Kanban bridge, competitor-research renderer, personal memory wiki, daily morning-priority prompt), persistent workspace path so `start.bat` only asks once, and a smarter empty-synthesis fallback that leads with any files the model wrote and falls back to short labelled bullets instead of raw page dumps. See the [CHANGELOG](CHANGELOG.md) for the full history.
 
-### Since v0.6.4 (on `main`, ahead of the latest tag)
+### What's new in v0.6.5
 
-Shipped to `main` since the v0.6.4 tag and awaiting the next release:
+Shipped since the v0.6.4 release:
 
 * **Build Mode** — a simplified, non-developer flow for describing a goal and letting the harness plan and build it.
 * **`/wiki` and `/memory-wiki`** slash commands, plus research commands, built on reusable renderers.
