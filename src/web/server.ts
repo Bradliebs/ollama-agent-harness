@@ -47,6 +47,7 @@ import { createSnapshotRouter } from './snapshotRoutes';
 import { createHistoryRouter } from './historyRoutes';
 import { createFileRedirectRouter } from './fileRedirectRoutes';
 import { createDocumentRouter } from './documentRoutes';
+import { createBenchmarkRouter } from './benchmarkRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -84,8 +85,6 @@ import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, descri
 import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, adaptiveTimeBudget, recordAvgTurnDuration, clearSynthesisStats, recordToolUseStats } from '../core/synthesisStats';
 import { startNewSession, onSessionEnd, getEvolvedPrompt, recordSessionAutoContinue, LearningRecorder } from '../learning/engine';
 import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
-import { runBenchmark, loadBenchmarkRuns, summarizeByTier, type BenchmarkTier } from '../eval/benchmark';
-import { runComparison } from '../eval/abCompare';
 import { CostTracker } from '../eval/costTracker';
 import { appendLearningCandidate, evaluatePromotionGateForCandidate, extractLearningCandidate, getLearningCandidateProvenance, listLearningCandidates, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
 import { createSubagentTool, listSubagentRoutingMetrics } from '../agents/subagent';
@@ -5171,79 +5170,12 @@ app.post('/api/evals/replay-examples', async (req, res) => {
 
 // ─── Benchmark routes (Gap #2) ───────────────────────────────────────
 
-app.post('/api/benchmark/run', async (req, res) => {
-  try {
-    const rawTiers = req.body?.tiers;
-    const tiers: BenchmarkTier[] | undefined = Array.isArray(rawTiers)
-      ? rawTiers.filter((t): t is BenchmarkTier => ['canned', 'stress', 'adversarial', 'regression'].includes(t))
-      : undefined;
-    const model = typeof req.body?.model === 'string' ? req.body.model : currentModel;
-    const run = await runBenchmark({
-      baseUrl: `http://127.0.0.1:${process.env.PORT ?? 3000}`,
-      model: sanitizeModelName(model) ?? undefined,
-      tiers,
-      filterIds: Array.isArray(req.body?.filterIds) ? req.body.filterIds.map(String) : undefined,
-      perTaskTimeoutMs: typeof req.body?.perTaskTimeoutMs === 'number' ? req.body.perTaskTimeoutMs : 60_000,
-      projectDir: PROJECT_DIR,
-    });
-    res.json({ run, summary: summarizeByTier(run) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/benchmark/runs', async (_req, res) => {
-  try {
-    const runs = await loadBenchmarkRuns(PROJECT_DIR);
-    // Return slim summaries (no full result arrays) for the list view.
-    const summaries = runs.map(({ results: _results, ...rest }) => ({
-      ...rest,
-      tierBreakdown: summarizeByTier({ results: _results, ...rest }),
-    }));
-    res.json({ runs: summaries });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/benchmark/runs/:id', async (req, res) => {
-  const id = req.params.id?.replace(/[^a-zA-Z0-9_\-]/g, '');
-  if (!id) { res.status(400).json({ error: 'Invalid run id' }); return; }
-  try {
-    const runs = await loadBenchmarkRuns(PROJECT_DIR);
-    const run = runs.find((r) => r.id === id);
-    if (!run) { res.status(404).json({ error: 'Run not found' }); return; }
-    res.json({ run, summary: summarizeByTier(run) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// ── A/B model comparison (Gap #3) ────────────────────────────────────
-
-app.post('/api/benchmark/compare', async (req, res) => {
-  const { modelA, modelB, tiers, filterIds } = req.body ?? {};
-  if (!modelA || !modelB) { res.status(400).json({ error: 'modelA and modelB are required' }); return; }
-  try {
-    const result = await runComparison({
-      modelA,
-      modelB,
-      benchmarkOptions: {
-        baseUrl: `http://127.0.0.1:${process.env.PORT ?? 3000}`,
-        tiers: tiers as BenchmarkTier[] | undefined,
-        filterIds,
-        projectDir: PROJECT_DIR,
-      },
-    });
-    res.json(result);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+app.use(createBenchmarkRouter({
+  projectDir: PROJECT_DIR,
+  getCurrentModel: () => currentModel,
+  sanitizeModelName,
+  getBaseUrl: () => `http://127.0.0.1:${process.env.PORT ?? 3000}`,
+}));
 
 // ── Cost tracking rates (Gap #5) ────────────────────────────────────
 
