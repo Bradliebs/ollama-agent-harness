@@ -21,6 +21,7 @@ const myceliumRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'mycelium
 const traceRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'traceRoutes.ts'), 'utf-8');
 const snapshotRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'snapshotRoutes.ts'), 'utf-8');
 const historyRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'historyRoutes.ts'), 'utf-8');
+const fileRedirectRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'fileRedirectRoutes.ts'), 'utf-8');
 
 const inlineGlobals = new Set([
   'alert',
@@ -272,7 +273,8 @@ describe('web UI wiring', () => {
     const traceRouterRoutes = [...traceRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const snapshotRouterRoutes = [...snapshotRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const historyRouterRoutes = [...historyRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
-    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes, ...promptsRouterRoutes, ...eventRouterRoutes, ...doneStateRouterRoutes, ...codeIntelRouterRoutes, ...myceliumRouterRoutes, ...traceRouterRoutes, ...snapshotRouterRoutes, ...historyRouterRoutes]);
+    const fileRedirectRouterRoutes = [...fileRedirectRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes, ...promptsRouterRoutes, ...eventRouterRoutes, ...doneStateRouterRoutes, ...codeIntelRouterRoutes, ...myceliumRouterRoutes, ...traceRouterRoutes, ...snapshotRouterRoutes, ...historyRouterRoutes, ...fileRedirectRouterRoutes]);
     const uiRoutes = [...new Set(extractFetchExpressions(appJs).map(normalizeUiFetchPath).filter((route): route is string => Boolean(route)))].sort();
 
     // A UI route like '/api/foo/:param' is satisfied either by an exact match
