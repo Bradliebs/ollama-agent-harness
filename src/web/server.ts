@@ -36,6 +36,7 @@ import { createPromiseRouter } from './promiseRoutes';
 import { createProfileRouter } from './profileRoutes';
 import { createEvalRouter } from './evalRoutes';
 import { createMemoryHealthRouter } from './memoryHealthRoutes';
+import { createScanRouter } from './scanRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -119,9 +120,7 @@ import { parsePrioritySetCommand, setPriorityForToday } from '../services/mornin
 import { routeSlashCommand, registerYoloHooks, registerResearchHooks } from '../services/slashCommandRouter';
 import { calculateReadiness, type ReadinessInput } from '../core/readinessGate';
 import { buildTaskContract } from '../core/taskContractBuilder';
-import { buildRepoMap, loadRepoMap, saveRepoMap, getOrBuildRepoMap } from '../core/repoMap';
 import { BUILTIN_PROFILES, applyProfile, filterToolsByProfile } from '../services/configProfiles';
-import { scanForInjection, sanitizeMessage } from '../safety/injectionDefence';
 import { renderDriftReport } from '../eval/goldenTraces';
 import { savePromptVersion, loadRegistry, listRegistries, getActivePrompt, setActiveVersion, rollback as rollbackPrompt, diffVersions, renderPromptHistory } from '../services/versionedPrompts';
 import { setCcmemUrl } from '../services/conceptMemoryClient';
@@ -4727,45 +4726,10 @@ app.post('/api/task-contract/parse', (req, res) => {
   }
 });
 
-// ─── Repo Map ─────────────────────────────────────────────────────────
-
-/**
- * GET /api/repo-map
- * Return the cached repo map for PROJECT_DIR. Builds one if absent or stale.
- * Query param: ?force=true  — always rebuild even if fresh.
- */
-app.get('/api/repo-map', async (req, res) => {
-  try {
-    const force = req.query.force === 'true';
-    if (force) {
-      const fresh = await buildRepoMap(PROJECT_DIR);
-      await saveRepoMap(fresh, PROJECT_DIR);
-      res.json(fresh);
-    } else {
-      const map = await getOrBuildRepoMap(PROJECT_DIR);
-      res.json(map);
-    }
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-/**
- * POST /api/repo-map/scan
- * Force a full re-scan of PROJECT_DIR (or a supplied `root` path) and save.
- * Body: { root?: string }
- * Returns: RepoMap
- */
-app.post('/api/repo-map/scan', async (req, res) => {
-  try {
-    const root = typeof req.body?.root === 'string' ? req.body.root : PROJECT_DIR;
-    const map = await buildRepoMap(root);
-    await saveRepoMap(map, root);
-    res.json(map);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// ─── Repo Map + Injection Defence ───────────────────────────────────
+// Routes extracted to ./scanRoutes.ts. server.ts no longer imports
+// repoMap or injectionDefence — both used exclusively by the HTTP layer.
+app.use(createScanRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Memory conflict + staleness ─────────────────────────────────────
 // Routes extracted to ./memoryHealthRoutes.ts. server.ts no longer
@@ -4777,50 +4741,6 @@ app.use(createMemoryHealthRouter({ projectDir: PROJECT_DIR }));
 // other configProfiles surface (BUILTIN_PROFILES/applyProfile/filterToolsByProfile)
 // for non-HTTP wiring.
 app.use(createProfileRouter({ projectDir: PROJECT_DIR }));
-
-// ─── Injection Defence ──────────────────────────────────────────────
-
-/**
- * POST /api/injection/scan
- * Scan a message for prompt injection patterns.
- * Body: { message: string, mode?: "flag" | "block", blockThreshold?: number }
- * Returns: InjectionScanResult
- */
-app.post('/api/injection/scan', (req, res) => {
-  try {
-    const { message, mode, blockThreshold } = req.body ?? {};
-    if (typeof message !== 'string' || !message.trim()) {
-      res.status(400).json({ error: 'message is required.' });
-      return;
-    }
-    const result = scanForInjection(message, {
-      mode: mode ?? 'flag',
-      blockThreshold: typeof blockThreshold === 'number' ? blockThreshold : undefined,
-    });
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-/**
- * POST /api/injection/sanitize
- * Strip known injection markers from a message.
- * Body: { message: string }
- * Returns: { sanitized: string }
- */
-app.post('/api/injection/sanitize', (req, res) => {
-  try {
-    const { message } = req.body ?? {};
-    if (typeof message !== 'string') {
-      res.status(400).json({ error: 'message is required.' });
-      return;
-    }
-    res.json({ sanitized: sanitizeMessage(message) });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
 
 // ─── Confidence Calibration + Golden Traces ─────────────────────────
 // Routes extracted to ./evalRoutes.ts. server.ts still imports
