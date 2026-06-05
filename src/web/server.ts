@@ -48,6 +48,7 @@ import { createHistoryRouter } from './historyRoutes';
 import { createFileRedirectRouter } from './fileRedirectRoutes';
 import { createDocumentRouter } from './documentRoutes';
 import { createBenchmarkRouter } from './benchmarkRoutes';
+import { createSquadRouter } from './squadRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -93,7 +94,7 @@ import { SignalBus } from '../nervous/signals';
 import { BUILTIN_AGENT_ROLES, loadAgentDefinitions } from '../agents/agentLoader';
 import { classifyIntent, logConciergeDecision, readConciergeLog } from '../services/concierge';
 import { getModelProfile, loadModelProfiles, setModelProfileField, type ModelProfileStore } from '../services/modelProfiles';
-import { createSquad, deleteSquad, getSquad, listSquads, routeMessage, updateSquad } from '../services/squad';
+import { getSquad, listSquads, routeMessage } from '../services/squad';
 import { resolveSessionSquad } from '../services/squadSessions';
 import { renderIdentityForPrompt } from '../services/identity';
 import { createIdentityRouter } from './identityRoutes';
@@ -4303,72 +4304,10 @@ app.post('/api/agents/:id/run', async (req, res) => {
 });
 
 // ─── Squads ─────────────────────────────────────────────────────────
-// Persistent agent rosters with regex-based routing rules. Each squad
-// lives under .harness/squads/<id>.json. Mutations emit events that the
-// WebSocket broadcaster forwards to live UI clients.
-
-app.get('/api/squads', async (_req, res) => {
-  try {
-    const squads = await listSquads(PROJECT_DIR);
-    res.json({ squads });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/squads/:id', async (req, res) => {
-  try {
-    const squad = await getSquad(PROJECT_DIR, req.params.id);
-    if (!squad) { res.status(404).json({ error: 'Squad not found.' }); return; }
-    res.json({ squad });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/squads', async (req, res) => {
-  try {
-    const squad = await createSquad(PROJECT_DIR, req.body ?? {});
-    res.json({ squad });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const status = message.includes('already exists') ? 409 : 400;
-    res.status(status).json({ error: message });
-  }
-});
-
-app.patch('/api/squads/:id', async (req, res) => {
-  try {
-    const squad = await updateSquad(PROJECT_DIR, req.params.id, req.body ?? {});
-    res.json({ squad });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const status = message.includes('not found') ? 404 : 400;
-    res.status(status).json({ error: message });
-  }
-});
-
-app.delete('/api/squads/:id', async (req, res) => {
-  try {
-    const removed = await deleteSquad(PROJECT_DIR, req.params.id);
-    if (!removed) { res.status(404).json({ error: 'Squad not found.' }); return; }
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/squads/:id/route', async (req, res) => {
-  try {
-    const squad = await getSquad(PROJECT_DIR, req.params.id);
-    if (!squad) { res.status(404).json({ error: 'Squad not found.' }); return; }
-    const message = typeof req.body?.message === 'string' ? req.body.message : '';
-    if (!message.trim()) { res.status(400).json({ error: 'message is required.' }); return; }
-    res.json({ result: routeMessage(squad, message) });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Persistent agent rosters with regex-based routing rules. Routes
+// extracted to ./squadRoutes.ts; server.ts still uses getSquad/
+// routeMessage in the chat handler and listSquads in system health.
+app.use(createSquadRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Identity ───────────────────────────────────────────────────────
 // SOUL.md / USER.md / structured.json under .harness/identity/. Routes
