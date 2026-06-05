@@ -44,6 +44,7 @@ import { createCodeIntelRouter } from './codeIntelRoutes';
 import { createMyceliumRouter } from './myceliumRoutes';
 import { createTraceRouter } from './traceRoutes';
 import { createSnapshotRouter } from './snapshotRoutes';
+import { createHistoryRouter } from './historyRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -7764,90 +7765,9 @@ app.post('/api/models/pull', async (req, res) => {
 });
 
 // --- API: Chat History ---
-app.get('/api/history', async (_req, res) => {
-  try {
-    await fs.mkdir(HISTORY_DIR, { recursive: true });
-    const files = await fs.readdir(HISTORY_DIR);
-    const chats = [];
-    for (const f of files.filter(f => f.endsWith('.json')).sort().reverse().slice(0, 50)) {
-      try {
-        const raw = await fs.readFile(path.join(HISTORY_DIR, f), 'utf-8');
-        const data = JSON.parse(raw);
-        chats.push({ id: f.replace('.json', ''), title: data.title ?? 'Untitled', date: data.date, messageCount: data.messages?.length ?? 0 });
-      } catch { /* skip corrupt */ }
-    }
-    res.json({ chats });
-  } catch { res.json({ chats: [] }); }
-});
-
-app.get('/api/history/search', async (req, res) => {
-  const q = String(req.query.q ?? '').trim().toLowerCase();
-  if (!q) { res.json({ results: [] }); return; }
-  try {
-    await fs.mkdir(HISTORY_DIR, { recursive: true });
-    const files = (await fs.readdir(HISTORY_DIR)).filter(f => f.endsWith('.json')).sort().reverse();
-    const results: Array<{ id: string; title: string; date: string; snippet: string; matchCount: number }> = [];
-    for (const f of files) {
-      try {
-        const raw = await fs.readFile(path.join(HISTORY_DIR, f), 'utf-8');
-        const data = JSON.parse(raw);
-        const title: string = data.title ?? 'Untitled';
-        const messages: Array<{ role: string; content: string }> = data.messages ?? [];
-        let snippet = '';
-        let matchCount = 0;
-        if (title.toLowerCase().includes(q)) { matchCount++; snippet = title; }
-        for (const m of messages) {
-          const text = String(m.content ?? '');
-          const idx = text.toLowerCase().indexOf(q);
-          if (idx !== -1) {
-            matchCount++;
-            if (!snippet) {
-              const start = Math.max(0, idx - 40);
-              const end = Math.min(text.length, idx + q.length + 80);
-              snippet = (start > 0 ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : '');
-            }
-          }
-        }
-        if (matchCount > 0) {
-          results.push({ id: f.replace('.json', ''), title, date: data.date ?? '', snippet, matchCount });
-        }
-      } catch { /* skip corrupt */ }
-    }
-    results.sort((a, b) => b.matchCount - a.matchCount);
-    res.json({ results: results.slice(0, 30) });
-  } catch { res.json({ results: [] }); }
-});
-
-app.get('/api/history/:id', async (req, res) => {
-  try {
-    const chatId = safeLocalId(req.params.id);
-    if (!chatId) { res.status(400).json({ error: 'Invalid chat id.' }); return; }
-    const raw = await fs.readFile(path.join(HISTORY_DIR, `${chatId}.json`), 'utf-8');
-    res.json(JSON.parse(raw));
-  } catch { res.status(404).json({ error: 'Chat not found' }); }
-});
-
-app.post('/api/history', async (req, res) => {
-  const { id, title, messages, date } = req.body;
-  try {
-    await fs.mkdir(HISTORY_DIR, { recursive: true });
-    const chatId = safeLocalId(id) || Date.now().toString(36);
-    await fs.writeFile(path.join(HISTORY_DIR, `${chatId}.json`), JSON.stringify({ title, messages, date: date || new Date().toISOString() }, null, 2));
-    res.json({ id: chatId });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.delete('/api/history/:id', async (req, res) => {
-  try {
-    const chatId = safeLocalId(req.params.id);
-    if (!chatId) { res.status(400).json({ error: 'Invalid chat id.' }); return; }
-    await fs.unlink(path.join(HISTORY_DIR, `${chatId}.json`));
-    res.json({ ok: true });
-  } catch { res.status(404).json({ error: 'Not found' }); }
-});
+// Routes extracted to ./historyRoutes.ts. server.ts keeps HISTORY_DIR
+// const for the system-overview report (line 10391).
+app.use(createHistoryRouter({ projectDir: PROJECT_DIR }));
 
 // --- API: Skills ---
 app.get('/api/skills', async (_req, res) => {
