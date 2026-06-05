@@ -38,6 +38,7 @@ import { createEvalRouter } from './evalRoutes';
 import { createMemoryHealthRouter } from './memoryHealthRoutes';
 import { createScanRouter } from './scanRoutes';
 import { createPromptsRouter } from './promptsRoutes';
+import { createEventRouter } from './eventRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -106,8 +107,7 @@ import { getCapabilityTemplateStarter, getMessageIngressPolicy, listCapabilityTe
 import { WorkerQueue } from '../services/workerQueue';
 import { createPromise, listPromises, updatePromise, checkObligations, fulfilPromise, failPromise, detectCommitments, type PromiseStatus } from '../services/promiseLedger';
 import { getServiceLifecycle, initServiceLifecycle, transitionService, probeServiceHealth, SERVICE_TEMPLATES, type ServiceLifecycleStatus } from '../services/serviceLifecycle';
-import { appendEvent, emitEvent, queryEvents, summarizeEventStore, generatePostmortem, createSnapshot, getSnapshot, listSnapshots, type EventCategory } from '../persistence/eventStore';
-import { subscribeEventStream } from '../persistence/eventStore';
+import { emitEvent, queryEvents, summarizeEventStore } from '../persistence/eventStore';
 import { verifyCode, verifyService, verifyPromiseFulfillability } from '../core/doneStateVerifier';
 import { attachWsServer } from './wsServer';
 import { tryDeterministicShortcut } from '../core/deterministicShortcuts';
@@ -4753,91 +4753,11 @@ app.use(createEvalRouter({ projectDir: PROJECT_DIR }));
 app.use(createPromptsRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Event Store ────────────────────────────────────────────────────
-
-app.get('/api/events', async (req, res) => {
-  try {
-    const query = {
-      category: req.query.category as EventCategory | undefined,
-      type: typeof req.query.type === 'string' ? req.query.type : undefined,
-      subject_id: typeof req.query.subject_id === 'string' ? req.query.subject_id : undefined,
-      after: typeof req.query.after === 'string' ? req.query.after : undefined,
-      before: typeof req.query.before === 'string' ? req.query.before : undefined,
-      limit: typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) || 50 : 50,
-      actor: typeof req.query.actor === 'string' ? req.query.actor : undefined,
-    };
-    const events = await queryEvents(PROJECT_DIR, query);
-    res.json({ total: events.length, events });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/events/summary', async (_req, res) => {
-  try {
-    const summary = await summarizeEventStore(PROJECT_DIR);
-    res.json(summary);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/events/postmortem/:id', async (req, res) => {
-  try {
-    const subjectId = req.params.id;
-    const window = typeof req.query.window === 'string' ? parseInt(req.query.window, 10) || 30 : 30;
-    const postmortem = await generatePostmortem(PROJECT_DIR, subjectId, window);
-    res.json({ postmortem });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/events/snapshots', async (_req, res) => {
-  try {
-    const subjects = await listSnapshots(PROJECT_DIR);
-    res.json({ subjects });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/events/snapshots/:id', async (req, res) => {
-  try {
-    const snapshot = await getSnapshot(PROJECT_DIR, req.params.id);
-    if (!snapshot) { res.status(404).json({ error: 'Snapshot not found.' }); return; }
-    res.json(snapshot);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/events/stream', (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders();
-
-  const unsubscribe = subscribeEventStream((event) => {
-    res.write(`data: ${JSON.stringify(event)}\n\n`);
-  });
-
-  req.on('close', () => {
-    unsubscribe();
-  });
-});
-
-app.post('/api/events', async (req, res) => {
-  try {
-    const { category, type, data, actor, subject_id, parent_event_id } = req.body ?? {};
-    if (!category || !type) { res.status(400).json({ error: 'category and type are required.' }); return; }
-    const validCategories: EventCategory[] = ['service', 'promise', 'task', 'tool', 'model', 'route', 'approval', 'file', 'schedule', 'notification', 'permission', 'system'];
-    if (!validCategories.includes(category)) { res.status(400).json({ error: `Invalid category. Must be one of: ${validCategories.join(', ')}` }); return; }
-    const event = await emitEvent(PROJECT_DIR, category, type, data ?? {}, actor ?? 'external', subject_id, parent_event_id);
-    res.json(event);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Routes extracted to ./eventRoutes.ts. server.ts still imports emitEvent,
+// queryEvents, summarizeEventStore for cross-cutting non-HTTP wiring
+// (concierge auto-route, service lifecycle, subagent lifecycle, subsystems
+// health, tool failure alerts).
+app.use(createEventRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Done-State Verifier ────────────────────────────────────────────
 
