@@ -34,6 +34,7 @@ import { summarizeTasks } from '../services/taskStore';
 import { createTaskRoutesRouter } from './taskRoutes';
 import { createPromiseRouter } from './promiseRoutes';
 import { createProfileRouter } from './profileRoutes';
+import { createEvalRouter } from './evalRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -121,8 +122,7 @@ import { buildRepoMap, loadRepoMap, saveRepoMap, getOrBuildRepoMap } from '../co
 import { scanFileForConflicts, findStaleEntries, findAllStaleEntries } from '../services/memoryConflictDetector';
 import { BUILTIN_PROFILES, applyProfile, filterToolsByProfile } from '../services/configProfiles';
 import { scanForInjection, sanitizeMessage } from '../safety/injectionDefence';
-import { recordSample as recordCalibrationSample, generateReport as generateCalibrationReport, generateAllReports as generateAllCalibrationReports } from '../eval/confidenceCalibration';
-import { saveGoldenTrace, loadGoldenTrace, listGoldenTraces, deleteGoldenTrace, compareWithGolden, captureFromRun, renderDriftReport } from '../eval/goldenTraces';
+import { renderDriftReport } from '../eval/goldenTraces';
 import { savePromptVersion, loadRegistry, listRegistries, getActivePrompt, setActiveVersion, rollback as rollbackPrompt, diffVersions, renderPromptHistory } from '../services/versionedPrompts';
 import { setCcmemUrl } from '../services/conceptMemoryClient';
 import { validateStructuredOutput, parseAndValidate, detectSchema, BUILTIN_SCHEMAS } from '../core/structuredOutputValidator';
@@ -4864,114 +4864,10 @@ app.post('/api/injection/sanitize', (req, res) => {
   }
 });
 
-// ─── Confidence Calibration ──────────────────────────────────────────
-
-app.post('/api/calibration/sample', async (req, res) => {
-  try {
-    const sample = req.body;
-    if (!sample?.id || !sample?.model || typeof sample?.predictedConfidence !== 'number') {
-      res.status(400).json({ error: 'id, model, and predictedConfidence are required.' });
-      return;
-    }
-    await recordCalibrationSample(PROJECT_DIR, sample);
-    res.json({ recorded: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/calibration/report/:model', async (req, res) => {
-  try {
-    const report = await generateCalibrationReport(PROJECT_DIR, req.params.model);
-    res.json(report);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/calibration/reports', async (_req, res) => {
-  try {
-    const reports = await generateAllCalibrationReports(PROJECT_DIR);
-    res.json({ reports });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// ─── Golden Traces ──────────────────────────────────────────────────
-
-app.get('/api/golden-traces', async (_req, res) => {
-  try {
-    const traces = await listGoldenTraces(PROJECT_DIR);
-    res.json({ traces });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/golden-traces/:id', async (req, res) => {
-  try {
-    const trace = await loadGoldenTrace(PROJECT_DIR, req.params.id);
-    if (!trace) { res.status(404).json({ error: 'Trace not found.' }); return; }
-    res.json(trace);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/golden-traces', async (req, res) => {
-  try {
-    const trace = req.body;
-    if (!trace?.id || !trace?.name || !trace?.input) {
-      res.status(400).json({ error: 'id, name, and input are required.' });
-      return;
-    }
-    await saveGoldenTrace(PROJECT_DIR, trace);
-    res.json({ saved: trace.id });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/golden-traces/capture', (req, res) => {
-  try {
-    const { name, model, input, output, toolCalls, files, tags, notes } = req.body ?? {};
-    if (!name || !model || !input) {
-      res.status(400).json({ error: 'name, model, and input are required.' });
-      return;
-    }
-    const trace = captureFromRun(name, model, input, output ?? '', toolCalls ?? [], files ?? [], { tags, notes });
-    res.json(trace);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/golden-traces/:id/compare', async (req, res) => {
-  try {
-    const trace = await loadGoldenTrace(PROJECT_DIR, req.params.id);
-    if (!trace) { res.status(404).json({ error: 'Trace not found.' }); return; }
-    const { output, toolCalls, files } = req.body ?? {};
-    const result = compareWithGolden(trace, {
-      output: output ?? '',
-      toolCalls: toolCalls ?? [],
-      files: files ?? [],
-    });
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete('/api/golden-traces/:id', async (req, res) => {
-  try {
-    const deleted = await deleteGoldenTrace(PROJECT_DIR, req.params.id);
-    if (!deleted) { res.status(404).json({ error: 'Trace not found.' }); return; }
-    res.json({ deleted: req.params.id });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// ─── Confidence Calibration + Golden Traces ─────────────────────────
+// Routes extracted to ./evalRoutes.ts. server.ts still imports
+// renderDriftReport directly for non-HTTP wiring.
+app.use(createEvalRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Versioned Prompts ──────────────────────────────────────────────
 

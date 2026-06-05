@@ -10,6 +10,7 @@ const identityRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'identity
 const taskRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'taskRoutes.ts'), 'utf-8');
 const promiseRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'promiseRoutes.ts'), 'utf-8');
 const profileRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'profileRoutes.ts'), 'utf-8');
+const evalRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'evalRoutes.ts'), 'utf-8');
 
 const inlineGlobals = new Set([
   'alert',
@@ -250,7 +251,8 @@ describe('web UI wiring', () => {
     const taskRouterRoutes = [...taskRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const promiseRouterRoutes = [...promiseRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const profileRouterRoutes = [...profileRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
-    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes]);
+    const evalRouterRoutes = [...evalRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes]);
     const uiRoutes = [...new Set(extractFetchExpressions(appJs).map(normalizeUiFetchPath).filter((route): route is string => Boolean(route)))].sort();
 
     // A UI route like '/api/foo/:param' is satisfied either by an exact match
