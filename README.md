@@ -2,7 +2,7 @@
 title: Ollama Agent Harness
 description: Local-first Ollama agent harness with tools, documents, Telegram, email, tracing, learning, and a browser UI
 author: Bradliebs
-ms.date: 2026-05-27
+ms.date: 2026-06-05
 ms.topic: overview
 keywords:
   - ollama
@@ -23,6 +23,16 @@ Ollama Agent Harness is a local-first agent runtime that wraps Ollama models wit
 You chat with a model, it can call tools (read/write files, run bash, search the web, analyze images, transcribe audio, generate documents, send emails), and the harness manages permissions, context, and history.
 
 **v0.6.4** brings semantic memory via the bundled `ccmem` concept-cell service (auto-started on port 8765), the **Apex** family of autonomous experiences (`/goal` natural-language expander, PDF → wiki blueprint, Kanban bridge, competitor-research renderer, personal memory wiki, daily morning-priority prompt), persistent workspace path so `start.bat` only asks once, and a smarter empty-synthesis fallback that leads with any files the model wrote and falls back to short labelled bullets instead of raw page dumps. See the [CHANGELOG](CHANGELOG.md) for the full history.
+
+### Since v0.6.4 (on `main`, ahead of the latest tag)
+
+Shipped to `main` since the v0.6.4 tag and awaiting the next release:
+
+* **Build Mode** — a simplified, non-developer flow for describing a goal and letting the harness plan and build it.
+* **`/wiki` and `/memory-wiki`** slash commands, plus research commands, built on reusable renderers.
+* **Evidence-first verification** — a side-effect ledger and research skill that check work before presenting it.
+* **Autonomy reliability fixes** — the Build-it loop now launches correctly in isolated workspaces and streams live tool activity to the dashboard.
+* **`OLLAMA_HOST` support**, tool-output compression, and plain-English intent chips.
 
 ### 🌅 Apex-class autonomous experiences
 
