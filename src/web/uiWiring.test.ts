@@ -15,6 +15,7 @@ const memoryHealthRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'memo
 const scanRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'scanRoutes.ts'), 'utf-8');
 const promptsRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'promptsRoutes.ts'), 'utf-8');
 const eventRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'eventRoutes.ts'), 'utf-8');
+const doneStateRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'doneStateRoutes.ts'), 'utf-8');
 
 const inlineGlobals = new Set([
   'alert',
@@ -260,7 +261,8 @@ describe('web UI wiring', () => {
     const scanRouterRoutes = [...scanRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const promptsRouterRoutes = [...promptsRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const eventRouterRoutes = [...eventRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
-    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes, ...promptsRouterRoutes, ...eventRouterRoutes]);
+    const doneStateRouterRoutes = [...doneStateRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes, ...promptsRouterRoutes, ...eventRouterRoutes, ...doneStateRouterRoutes]);
     const uiRoutes = [...new Set(extractFetchExpressions(appJs).map(normalizeUiFetchPath).filter((route): route is string => Boolean(route)))].sort();
 
     // A UI route like '/api/foo/:param' is satisfied either by an exact match

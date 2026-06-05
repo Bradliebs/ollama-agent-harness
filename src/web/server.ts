@@ -39,6 +39,7 @@ import { createMemoryHealthRouter } from './memoryHealthRoutes';
 import { createScanRouter } from './scanRoutes';
 import { createPromptsRouter } from './promptsRoutes';
 import { createEventRouter } from './eventRoutes';
+import { createDoneStateRouter } from './doneStateRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -108,7 +109,6 @@ import { WorkerQueue } from '../services/workerQueue';
 import { createPromise, listPromises, updatePromise, checkObligations, fulfilPromise, failPromise, detectCommitments, type PromiseStatus } from '../services/promiseLedger';
 import { getServiceLifecycle, initServiceLifecycle, transitionService, probeServiceHealth, SERVICE_TEMPLATES, type ServiceLifecycleStatus } from '../services/serviceLifecycle';
 import { emitEvent, queryEvents, summarizeEventStore } from '../persistence/eventStore';
-import { verifyCode, verifyService, verifyPromiseFulfillability } from '../core/doneStateVerifier';
 import { attachWsServer } from './wsServer';
 import { tryDeterministicShortcut } from '../core/deterministicShortcuts';
 import { tryGoalSlashCommand } from '../services/goalSlashCommand';
@@ -4760,27 +4760,9 @@ app.use(createPromptsRouter({ projectDir: PROJECT_DIR }));
 app.use(createEventRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Done-State Verifier ────────────────────────────────────────────
-
-app.post('/api/verify/code', async (req, res) => {
-  try {
-    const quick = req.body?.quick === true;
-    const result = await verifyCode({ projectDir: PROJECT_DIR, quick });
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/verify/service/:id', async (req, res) => {
-  try {
-    const serviceId = safeLocalId(req.params.id);
-    if (!serviceId) { res.status(400).json({ error: 'Invalid service id.' }); return; }
-    const result = await verifyService(PROJECT_DIR, serviceId);
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Routes extracted to ./doneStateRoutes.ts. server.ts no longer imports
+// doneStateVerifier -- used exclusively by the HTTP layer.
+app.use(createDoneStateRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Code Intelligence ──────────────────────────────────────────────
 
