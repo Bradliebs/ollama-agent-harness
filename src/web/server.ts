@@ -42,6 +42,7 @@ import { createEventRouter } from './eventRoutes';
 import { createDoneStateRouter } from './doneStateRoutes';
 import { createCodeIntelRouter } from './codeIntelRoutes';
 import { createMyceliumRouter } from './myceliumRoutes';
+import { createTraceRouter } from './traceRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -4910,56 +4911,11 @@ app.get('/api/pdf/extract', async (req, res) => {
   }
 });
 
-app.get('/api/traces', (_req, res) => {
-  res.json(runtimeTracer.snapshot());
-});
-
-app.delete('/api/traces', (_req, res) => {
-  runtimeTracer.clear();
-  res.json({ ok: true });
-});
-
-app.get('/api/traces/exports', async (_req, res) => {
-  try {
-    await fs.mkdir(TRACES_DIR, { recursive: true });
-    const files = await fs.readdir(TRACES_DIR, { withFileTypes: true });
-    const exports = [];
-    for (const file of files.filter((entry) => entry.isFile() && entry.name.endsWith('.json'))) {
-      const stat = await fs.stat(path.join(TRACES_DIR, file.name));
-      exports.push({ id: file.name.replace(/\.json$/, ''), name: file.name, size: stat.size, createdAt: stat.birthtime.toISOString(), modifiedAt: stat.mtime.toISOString() });
-    }
-    exports.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
-    res.json({ exports });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/traces/exports', async (_req, res) => {
-  try {
-    await fs.mkdir(TRACES_DIR, { recursive: true });
-    const snapshot = runtimeTracer.snapshot();
-    const id = `trace-${new Date().toISOString().replace(/[:.]/g, '-')}`;
-    const filePath = path.join(TRACES_DIR, `${id}.json`);
-    await fs.writeFile(filePath, JSON.stringify({ id, exportedAt: new Date().toISOString(), ...snapshot }, null, 2), 'utf-8');
-    res.json({ id, path: filePath, spans: snapshot.spans.length, events: snapshot.events.length });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/traces/exports/:id', async (req, res) => {
-  const exportId = safeLocalId(req.params.id);
-  if (!exportId) { res.status(400).json({ error: 'Invalid trace export id.' }); return; }
-  try {
-    const raw = await fs.readFile(path.join(TRACES_DIR, `${exportId}.json`), 'utf-8');
-    res.type('application/json').send(raw);
-  } catch {
-    res.status(404).json({ error: 'Trace export not found.' });
-  }
-});
+// ─── Traces (in-memory tracer + on-disk exports) ─────────────────
+// Routes extracted to ./traceRoutes.ts. server.ts still imports
+// runtimeTracer + uses TRACES_DIR for non-HTTP wiring (cleanup at line
+// 5440, system health at line 10340, system overview at line 10483).
+app.use(createTraceRouter({ projectDir: PROJECT_DIR }));
 
 type DocumentFormat = 'markdown' | 'html' | 'pdf' | 'docx';
 type DocumentTemplate = 'brief' | 'report' | 'runbook' | 'spec' | 'adr' | 'release-notes' | 'handoff';
