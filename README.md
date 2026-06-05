@@ -438,8 +438,8 @@ Optional deterministic checks on the model's final answer. Built-in profiles: `o
 
 ### Media tools
 
-* **Image analysis** — configure a vision model in Settings or with `HARNESS_VISION_MODEL`
-* **Audio transcription** — configure a transcription command in Settings or with `HARNESS_AUDIO_TRANSCRIBE_COMMAND`
+* **Image analysis** — auto-detects an installed Ollama vision model; or set one in Settings / `HARNESS_VISION_MODEL`
+* **Audio transcription** — auto-detects an OpenAI Whisper install on `PATH` (`pip install -U openai-whisper`); or set a command in Settings / `HARNESS_AUDIO_TRANSCRIBE_COMMAND`
 
 ### Agent identity
 
