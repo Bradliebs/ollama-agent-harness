@@ -453,9 +453,33 @@ export async function main(): Promise<void> {
   const session = new SessionStorage(projectDir, options.model);
   await session.initialize();
 
+  // In headless/autonomy mode the CLI is the agent's only entry point — the
+  // web chat path (which injects KG recall, RAG, memory palace, prior
+  // sessions, and ccmem concept memory) is bypassed entirely. Seed the same
+  // recall pipeline here from the task prompt so autonomous runs benefit from
+  // learned context instead of starting blind. Interactive mode is left
+  // unchanged. Every section inside assembleSystemContext is failure-tolerant
+  // and budget-capped, so a missing index / offline ccmem sidecar is a no-op.
+  const recallQuery = headlessPrompt ? headlessPrompt.trim().slice(0, 400) : undefined;
+  const memoryRecallFields = recallQuery
+    ? {
+        recallProjectDir: projectDir,
+        recallQuery,
+        ragProjectDir: projectDir,
+        ragQuery: recallQuery,
+        ragOllamaHost: options.host,
+        palaceProjectDir: projectDir,
+        sessionSearchProjectDir: projectDir,
+        sessionSearchQuery: recallQuery,
+        ccmemUrl: process.env.HARNESS_CCMEM_URL?.trim() || 'http://localhost:8765',
+        ccmemQuery: recallQuery,
+      }
+    : {};
+
   const systemPrompt = await assembleSystemContext({
     systemPrompt: options.compactRemoteSmoke ? 'Reply briefly in plain text.' : buildSystemPrompt(options.modelRouting),
     projectDir,
+    ...memoryRecallFields,
   });
 
   const config: LoopConfig = {
