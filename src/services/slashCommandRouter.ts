@@ -23,6 +23,7 @@ import { listTasks, updateTask, type Task } from './taskStore';
 import { writeResearchReport } from './researchReport';
 import { buildBlueprint } from './pdfToWiki';
 import { buildPersonalWiki } from './personalWiki';
+import { extractPdfText } from '../tools/pdfTool';
 
 // Local type declarations for the /research input shape. These mirror the
 // renderer's input contract and are kept here to keep the handler self-contained.
@@ -70,6 +71,12 @@ export interface SlashResult {
   reason: string;
   /** Structured payload for emitEvent. */
   eventPayload?: Record<string, unknown>;
+}
+
+/** Optional per-request context threaded into handlers (e.g. attachments). */
+export interface SlashCommandContext {
+  /** Absolute paths to PDF files the user attached to this chat message. */
+  pdfAttachments?: string[];
 }
 
 const NOT_HANDLED: SlashResult = { handled: false, response: '', reason: '' };
@@ -126,7 +133,42 @@ async function handleWiki(text: string, projectDir: string): Promise<SlashResult
 
 const RESEARCH_PATTERN = /^\s*\/research\b\s*(.*)$/si;
 
-async function handleResearch(text: string, projectDir: string): Promise<SlashResult> {
+/** Per-PDF character budget fed to the model for attachment research. */
+const PDF_RESEARCH_MAX_CHARS = 12_000;
+
+/**
+ * Read attached PDFs into research sources. Each readable PDF becomes one
+ * source (title = filename, snippet = head of its text) plus a full-text
+ * entry in the returned content map, keyed by source index so the model
+ * synthesis step can analyse the real document text.
+ */
+async function readPdfSources(
+  pdfPaths: string[],
+): Promise<{ sources: ResearchSource[]; contents: Map<number, string> }> {
+  const sources: ResearchSource[] = [];
+  const contents = new Map<number, string>();
+  for (const abs of pdfPaths.slice(0, 5)) {
+    let text = '';
+    try {
+      const data = await fs.readFile(abs);
+      const result = await extractPdfText(data, { maxChars: PDF_RESEARCH_MAX_CHARS }, abs);
+      text = (result.text || '').trim();
+    } catch {
+      continue; // Unreadable PDF — skip it.
+    }
+    if (!text) continue; // Empty extraction (likely scanned, no OCR) — skip.
+    const index = sources.length;
+    sources.push({
+      title: path.basename(abs),
+      snippet: text.replace(/--- Page \d+ ---/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200),
+      retrievedAt: new Date().toISOString(),
+    });
+    contents.set(index, text);
+  }
+  return { sources, contents };
+}
+
+async function handleResearch(text: string, projectDir: string, context?: SlashCommandContext): Promise<SlashResult> {
   const m = text.match(RESEARCH_PATTERN);
   if (!m) return NOT_HANDLED;
   const subject = m[1].trim();
@@ -139,44 +181,61 @@ async function handleResearch(text: string, projectDir: string): Promise<SlashRe
     );
   }
 
-  // Web search via the harness's built-in tool
-  let searchResults: string[] = [];
-  try {
-    const { WebSearchTool } = await import('../tools/webSearchTool');
-    const result = await WebSearchTool.execute({ query: subject, max_results: 8 });
-    if (result.success && result.output) {
-      searchResults.push(result.output);
-    }
-  } catch {
-    // Offline — fall through with empty results
-  }
-
-  // Build a stub ResearchInput from search snippets (no model call —
-  // keeps it token-free and fast. The report still looks good because
-  // the template adds structure.)
   const sources: ResearchSource[] = [];
   const findings: ResearchFinding[] = [];
 
-  for (const block of searchResults) {
-    // Parse the WebSearchTool output format: "N. **title**\n   url\n   snippet"
-    const entries = block.split(/\n\d+\.\s+\*\*/);
-    for (const entry of entries) {
-      if (!entry.trim()) continue;
-      // Splitting leaves the "Search results for ...:" header (and any
-      // "No results found" message) as the first chunk. Real result
-      // entries always carry the closing ** from **title**; the header
-      // does not — so skip chunks without it to avoid a bogus source.
-      if (!entry.includes('**')) continue;
-      const titleMatch = entry.match(/^([^*]+)\**/);
-      const urlMatch = entry.match(/\n\s+(https?:\/\/\S+)/);
-      const snippetMatch = entry.match(/\n\s+(?:https?:\/\/\S+\n\s+)?(.+)/s);
-      if (titleMatch) {
-        sources.push({
-          title: titleMatch[1].trim(),
-          url: urlMatch?.[1],
-          snippet: snippetMatch?.[1]?.trim().slice(0, 200),
-          retrievedAt: new Date().toISOString(),
-        });
+  // PDF-first: when the user attached PDF(s) to this message, research
+  // against their extracted text instead of going straight to web search.
+  const pdfPaths = context?.pdfAttachments ?? [];
+  let fromPdf = false;
+  let pdfContents = new Map<number, string>();
+  if (pdfPaths.length > 0) {
+    const pdf = await readPdfSources(pdfPaths);
+    if (pdf.sources.length > 0) {
+      sources.push(...pdf.sources);
+      pdfContents = pdf.contents;
+      fromPdf = true;
+    }
+  }
+
+  // Web search via the harness's built-in tool — skipped when we already
+  // have PDF sources so an attachment takes priority over the web.
+  if (!fromPdf) {
+    let searchResults: string[] = [];
+    try {
+      const { WebSearchTool } = await import('../tools/webSearchTool');
+      const result = await WebSearchTool.execute({ query: subject, max_results: 8 });
+      if (result.success && result.output) {
+        searchResults.push(result.output);
+      }
+    } catch {
+      // Offline — fall through with empty results
+    }
+
+    // Build a stub ResearchInput from search snippets (no model call —
+    // keeps it token-free and fast. The report still looks good because
+    // the template adds structure.)
+    for (const block of searchResults) {
+      // Parse the WebSearchTool output format: "N. **title**\n   url\n   snippet"
+      const entries = block.split(/\n\d+\.\s+\*\*/);
+      for (const entry of entries) {
+        if (!entry.trim()) continue;
+        // Splitting leaves the "Search results for ...:" header (and any
+        // "No results found" message) as the first chunk. Real result
+        // entries always carry the closing ** from **title**; the header
+        // does not — so skip chunks without it to avoid a bogus source.
+        if (!entry.includes('**')) continue;
+        const titleMatch = entry.match(/^([^*]+)\**/);
+        const urlMatch = entry.match(/\n\s+(https?:\/\/\S+)/);
+        const snippetMatch = entry.match(/\n\s+(?:https?:\/\/\S+\n\s+)?(.+)/s);
+        if (titleMatch) {
+          sources.push({
+            title: titleMatch[1].trim(),
+            url: urlMatch?.[1],
+            snippet: snippetMatch?.[1]?.trim().slice(0, 200),
+            retrievedAt: new Date().toISOString(),
+          });
+        }
       }
     }
   }
@@ -186,7 +245,9 @@ async function handleResearch(text: string, projectDir: string): Promise<SlashRe
   // Fall back to a single token-free finding when no model is available, the
   // model errors, or its output cannot be parsed.
   let summary = sources.length > 0
-    ? `Research on "${subject}" based on ${sources.length} web source${sources.length === 1 ? '' : 's'}.`
+    ? (fromPdf
+        ? `Research on "${subject}" based on ${sources.length} attached PDF${sources.length === 1 ? '' : 's'}.`
+        : `Research on "${subject}" based on ${sources.length} web source${sources.length === 1 ? '' : 's'}.`)
     : `Research on "${subject}" — no web results available (offline mode or search failed).`;
   let oneLineAnswer: string | undefined;
   let analyzed = false;
@@ -196,7 +257,7 @@ async function handleResearch(text: string, projectDir: string): Promise<SlashRe
     try {
       // Deep read: fetch the full text of the top results so the model ranks
       // on real page content (prices, specs) rather than thin search snippets.
-      const pageContents = await fetchPageContents(sources);
+      const pageContents = fromPdf ? pdfContents : await fetchPageContents(sources);
       pagesRead = pageContents.size;
       const synth = await synthesizeResearch(subject, sources, researchHooks.callModel, pageContents);
       if (synth) {
@@ -213,7 +274,7 @@ async function handleResearch(text: string, projectDir: string): Promise<SlashRe
   if (!analyzed && sources.length > 0) {
     // Token-free fallback: one finding that lists every source snippet.
     findings.push({
-      label: 'Web search results',
+      label: fromPdf ? 'Attached PDF contents' : 'Web search results',
       body: sources.map((s) => `**${s.title}**: ${s.snippet || 'No snippet available.'}`).join('\n\n'),
       confidence: 0.6,
       sourceIds: sources.map((_, i) => i),
@@ -245,7 +306,9 @@ async function handleResearch(text: string, projectDir: string): Promise<SlashRe
       lines.push('⚠️ No web results — the report is a stub. Make sure you have internet access for richer results.');
     } else if (analyzed) {
       lines.push('🧠 Findings were analysed by the model — ranked and weighed against your question.');
-      if (pagesRead > 0) {
+      if (fromPdf) {
+        lines.push(`📄 Sourced from **${sources.length}** attached PDF${sources.length === 1 ? '' : 's'} — read in full before any web search.`);
+      } else if (pagesRead > 0) {
         lines.push(`🌐 Read the full content of **${pagesRead}** top page${pagesRead === 1 ? '' : 's'} for deeper price/spec analysis.`);
       }
       lines.push('Open the report in your browser for the full breakdown.');
@@ -674,14 +737,16 @@ async function handleYolo(text: string, _projectDir: string): Promise<SlashResul
 
 // ─── Master router ──────────────────────────────────────────────────
 
-const handlers = [
+type SlashHandler = (text: string, projectDir: string, context?: SlashCommandContext) => Promise<SlashResult>;
+
+const handlers: SlashHandler[] = [
   handleWiki,
   handleResearch,
   handleMemoryWiki,
   handleKanban,
   handleBrief,
   handleYolo,
-] as const;
+];
 
 /**
  * Try every registered slash-command handler. Returns the first match
@@ -691,9 +756,9 @@ const handlers = [
  * were wired before this router existed. They could be migrated here in
  * the future.
  */
-export async function routeSlashCommand(messageText: string, projectDir: string): Promise<SlashResult> {
+export async function routeSlashCommand(messageText: string, projectDir: string, context?: SlashCommandContext): Promise<SlashResult> {
   for (const handler of handlers) {
-    const result = await handler(messageText, projectDir);
+    const result = await handler(messageText, projectDir, context);
     if (result.handled) return result;
   }
   return NOT_HANDLED;

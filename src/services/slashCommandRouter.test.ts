@@ -29,6 +29,14 @@ jest.mock('../tools/webSearchTool', () => ({
   },
 }));
 
+// Keep PDF extraction hermetic: any attached PDF yields a fixed marker text
+// so the PDF-first path is exercised without reading a real document.
+jest.mock('../tools/pdfTool', () => ({
+  extractPdfText: jest.fn(async () => ({
+    text: 'EXTRACTED_PDF_TEXT_MARKER — the attached paper describes RETRO retrieval.',
+  })),
+}));
+
 describe('slashCommandRouter', () => {
   const projectDir = path.resolve(__dirname, '..', '..');
 
@@ -95,6 +103,30 @@ describe('slashCommandRouter', () => {
     // Two model-produced findings (not the single collapsed stub finding).
     expect(r.response).toMatch(/\*\*2\*\* findings/);
     expect(r.response).toMatch(/analysed by the model/i);
+  });
+
+  it('/research reads an attached PDF first instead of web search', async () => {
+    const callModel = jest.fn(async (_prompt: string) =>
+      JSON.stringify({
+        oneLineAnswer: 'The paper proposes RETRO.',
+        summary: 'Summarised from the attached PDF.',
+        findings: [
+          { label: 'Key idea', body: 'Retrieval-augmented model.', confidence: 0.9, sources: [1] },
+        ],
+      }),
+    );
+    registerResearchHooks({ callModel });
+
+    const r = await routeSlashCommand('/research summarise this paper', projectDir, {
+      pdfAttachments: [path.join(projectDir, 'package.json')],
+    });
+    expect(r.handled).toBe(true);
+    expect(r.reason).toBe('research_built');
+    // One source: the attached PDF, not the two mocked web results.
+    expect(r.eventPayload?.sources).toBe(1);
+    expect(r.response).toMatch(/attached PDF/i);
+    // The model saw the extracted PDF text, not web page content.
+    expect(callModel.mock.calls[0][0]).toMatch(/EXTRACTED_PDF_TEXT_MARKER/);
   });
 
   it('/memory-wiki triggers the memory wiki handler', async () => {

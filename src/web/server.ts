@@ -7157,7 +7157,8 @@ app.post('/api/chat', async (req, res) => {
     // /kanban, /brief. Runs the service-layer handler and streams back
     // the result without invoking a model.
     try {
-      const slashResult = await routeSlashCommand(messageText, PROJECT_DIR);
+      const pdfAttachments = await resolveAttachmentPdfPaths(req.body?.attachments);
+      const slashResult = await routeSlashCommand(messageText, PROJECT_DIR, { pdfAttachments });
       if (slashResult.handled) {
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');
@@ -10930,6 +10931,33 @@ function withRoutingPolicy(prompt: string): string {
   const entries = Object.entries(modelRouting).filter(([, value]) => value !== undefined && value !== '');
   if (entries.length === 0) return prompt;
   return prompt + '\n\n--- Helper Model Routing Policy ---\n' + entries.map(([key, value]) => `${key}: ${value}`).join('\n');
+}
+
+/**
+ * Resolve the subset of session attachments that are readable PDFs to their
+ * absolute paths in the uploads dir. Mirrors the name-sanitisation and
+ * existence checks in buildAttachmentsContextBlock so /research can read the
+ * exact files the user attached.
+ */
+async function resolveAttachmentPdfPaths(raw: unknown): Promise<string[]> {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const uploadsDir = getUploadsDir();
+  const out: string[] = [];
+  for (const entry of raw.slice(0, 20)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const name = typeof (entry as { name?: unknown }).name === 'string' ? (entry as { name: string }).name : null;
+    if (!name) continue;
+    const safeName = path.basename(name).replace(/[^a-zA-Z0-9._-]/g, '_');
+    if (!safeName || path.extname(safeName).toLowerCase() !== '.pdf') continue;
+    const absolute = path.join(uploadsDir, safeName);
+    try {
+      const stat = await fs.stat(absolute);
+      if (stat.isFile()) out.push(absolute);
+    } catch {
+      // Missing on disk — skip.
+    }
+  }
+  return out;
 }
 
 async function buildAttachmentsContextBlock(raw: unknown): Promise<string | null> {
