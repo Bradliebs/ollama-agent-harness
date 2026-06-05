@@ -13,6 +13,7 @@ const profileRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'profileRo
 const evalRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'evalRoutes.ts'), 'utf-8');
 const memoryHealthRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'memoryHealthRoutes.ts'), 'utf-8');
 const scanRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'scanRoutes.ts'), 'utf-8');
+const promptsRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'promptsRoutes.ts'), 'utf-8');
 
 const inlineGlobals = new Set([
   'alert',
@@ -256,7 +257,8 @@ describe('web UI wiring', () => {
     const evalRouterRoutes = [...evalRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const memoryHealthRouterRoutes = [...memoryHealthRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const scanRouterRoutes = [...scanRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
-    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes]);
+    const promptsRouterRoutes = [...promptsRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes, ...promptsRouterRoutes]);
     const uiRoutes = [...new Set(extractFetchExpressions(appJs).map(normalizeUiFetchPath).filter((route): route is string => Boolean(route)))].sort();
 
     // A UI route like '/api/foo/:param' is satisfied either by an exact match

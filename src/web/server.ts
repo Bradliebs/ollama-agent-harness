@@ -37,6 +37,7 @@ import { createProfileRouter } from './profileRoutes';
 import { createEvalRouter } from './evalRoutes';
 import { createMemoryHealthRouter } from './memoryHealthRoutes';
 import { createScanRouter } from './scanRoutes';
+import { createPromptsRouter } from './promptsRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -122,7 +123,6 @@ import { calculateReadiness, type ReadinessInput } from '../core/readinessGate';
 import { buildTaskContract } from '../core/taskContractBuilder';
 import { BUILTIN_PROFILES, applyProfile, filterToolsByProfile } from '../services/configProfiles';
 import { renderDriftReport } from '../eval/goldenTraces';
-import { savePromptVersion, loadRegistry, listRegistries, getActivePrompt, setActiveVersion, rollback as rollbackPrompt, diffVersions, renderPromptHistory } from '../services/versionedPrompts';
 import { setCcmemUrl } from '../services/conceptMemoryClient';
 import { validateStructuredOutput, parseAndValidate, detectSchema, BUILTIN_SCHEMAS } from '../core/structuredOutputValidator';
 import { buildRepoGraph, analyzeImpact, summarizeRepo, saveRepoGraph, loadRepoGraph } from '../core/codeIntelligence';
@@ -4748,102 +4748,9 @@ app.use(createProfileRouter({ projectDir: PROJECT_DIR }));
 app.use(createEvalRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Versioned Prompts ──────────────────────────────────────────────
-
-app.get('/api/prompts', async (_req, res) => {
-  try {
-    const names = await listRegistries(PROJECT_DIR);
-    res.json({ prompts: names });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/prompts/:name', async (req, res) => {
-  try {
-    const registry = await loadRegistry(PROJECT_DIR, req.params.name);
-    if (!registry) { res.status(404).json({ error: 'Prompt registry not found.' }); return; }
-    res.json(registry);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/prompts/:name/active', async (req, res) => {
-  try {
-    const active = await getActivePrompt(PROJECT_DIR, req.params.name);
-    if (!active) { res.status(404).json({ error: 'No active prompt found.' }); return; }
-    res.json(active);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/prompts/:name/versions', async (req, res) => {
-  try {
-    const { content, label, author, changelog, tags } = req.body ?? {};
-    if (typeof content !== 'string') {
-      res.status(400).json({ error: 'content is required.' });
-      return;
-    }
-    const version = await savePromptVersion(PROJECT_DIR, req.params.name, content, { label, author, changelog, tags });
-    res.json(version);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.put('/api/prompts/:name/active', async (req, res) => {
-  try {
-    const { version } = req.body ?? {};
-    if (typeof version !== 'number') {
-      res.status(400).json({ error: 'version (number) is required.' });
-      return;
-    }
-    const ok = await setActiveVersion(PROJECT_DIR, req.params.name, version);
-    if (!ok) { res.status(404).json({ error: `Version ${version} not found.` }); return; }
-    res.json({ activeVersion: version });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/prompts/:name/rollback', async (req, res) => {
-  try {
-    const prev = await rollbackPrompt(PROJECT_DIR, req.params.name);
-    if (!prev) { res.status(400).json({ error: 'Cannot rollback: only one version or registry not found.' }); return; }
-    res.json(prev);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/prompts/:name/diff', async (req, res) => {
-  try {
-    const registry = await loadRegistry(PROJECT_DIR, req.params.name);
-    if (!registry) { res.status(404).json({ error: 'Prompt registry not found.' }); return; }
-    const from = parseInt(req.query.from as string, 10);
-    const to = parseInt(req.query.to as string, 10);
-    if (!Number.isFinite(from) || !Number.isFinite(to)) {
-      res.status(400).json({ error: 'from and to query params (version numbers) are required.' });
-      return;
-    }
-    const diff = diffVersions(registry, from, to);
-    if (!diff) { res.status(404).json({ error: 'One or both versions not found.' }); return; }
-    res.json(diff);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/prompts/:name/history', async (req, res) => {
-  try {
-    const registry = await loadRegistry(PROJECT_DIR, req.params.name);
-    if (!registry) { res.status(404).json({ error: 'Prompt registry not found.' }); return; }
-    res.json({ markdown: renderPromptHistory(registry) });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Routes extracted to ./promptsRoutes.ts. server.ts no longer imports
+// versionedPrompts — it is used exclusively by the HTTP layer.
+app.use(createPromptsRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Event Store ────────────────────────────────────────────────────
 
