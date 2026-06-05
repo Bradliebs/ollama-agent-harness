@@ -5396,6 +5396,16 @@ async function resolvePermission(id, allowed) {
   }
   try {
     const res = await fetch('/api/permissions/' + encodeURIComponent(id) + '/resolve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ allowed }) });
+    if (res.status === 404) {
+      // The prompt is no longer pending on the server — it timed out, was
+      // already resolved, or the server restarted since this card was last
+      // polled. That's a benign race, not a failure: drop the stale card and
+      // re-sync rather than alarming with a red "Could not approve" error.
+      if (card) card.remove();
+      showToast('That permission request already expired — it is no longer pending.', 3500, 'warning');
+      pollPermissions().catch((err) => console.warn('pollPermissions follow-up failed', err));
+      return;
+    }
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
       throw new Error('HTTP ' + res.status + (detail ? ' — ' + detail.slice(0, 160) : ''));
