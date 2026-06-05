@@ -1,3 +1,4 @@
+import { wrapUntrusted } from '../safety/untrustedWrap';
 import type { Tool, ToolResult } from '../types';
 
 const MAX_RESULTS = 8;
@@ -61,7 +62,7 @@ export const WebSearchTool: Tool = {
         `${i + 1}. **${r.title}**\n   ${r.url}\n   ${r.snippet}`
       ).join('\n\n');
 
-      return { success: true, output: `Search results for "${query}":\n\n${output}` };
+      return { success: true, output: `Search results for "${query}":\n\n${wrapUntrusted('web', output)}` };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return { success: false, output: `Search failed: ${msg}`, error: msg };
@@ -149,7 +150,7 @@ export const WebReadTool: Tool = {
       // If it's plain text or JSON, return as-is
       if (!contentType.includes('html')) {
         const truncated = truncateForWebRead(body);
-        return { success: true, output: truncated };
+        return { success: true, output: wrapUntrusted('web', truncated, { label: url }) };
       }
 
       // Extract readable content from HTML
@@ -160,7 +161,7 @@ export const WebReadTool: Tool = {
       const combined = fallback ? `${text}\n\n${fallback}` : text;
       const truncated = truncateForWebRead(combined);
 
-      return { success: true, output: `Content from ${url}:\n\n${truncated}` };
+      return { success: true, output: `Content from ${url}:\n\n${wrapUntrusted('web', truncated, { label: url })}` };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return { success: false, output: `Failed to read: ${msg}`, error: msg };

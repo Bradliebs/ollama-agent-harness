@@ -35,7 +35,7 @@ import { groupTasksByColumn, promoteTriageToPlan, withKanbanTag, type KanbanColu
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
-import { invalidateSkillsCache, setSkillsDir } from '../tools/skillTools';
+import { invalidateSkillsCache, setSkillsDir, setLowerSkillTiers } from '../tools/skillTools';
 import { setImportSkillsDir } from '../tools/skillImportTool';
 import { setInstallSkillsDir } from '../tools/skillInstallTool';
 import { setRagRuntime } from '../tools/ragTools';
@@ -54,7 +54,7 @@ import { discoverMcpServerTools, invokeMcpServerTool, listMcpServers, removeMcpS
 import { assembleSystemContext, estimateTokenCount } from '../context/assembly';
 import { HookPipeline } from '../extensibility/hookPipeline';
 import { createAuditHooks, readAuditLog, renderRecentAuditForPrompt } from '../permissions/audit';
-import { loadSkillsDir, matchSkillTrigger, scanSkillsDir, type SkillDefinition, type SkillDirectoryScan } from '../extensibility/skillLoader';
+import { loadSkillsDir, loadSkillsFromDirs, matchSkillTrigger, scanSkillsDir, type SkillDefinition, type SkillDirectoryScan } from '../extensibility/skillLoader';
 import { discoverExtensionManifests } from '../extensibility/extensionManifest';
 import { RateLimiter } from '../core/rateLimiter';
 import { logger } from '../core/logger';
@@ -207,6 +207,10 @@ const API_AUTH_TOKEN = (process.env.HARNESS_API_AUTH_TOKEN ?? '').trim();
 const HISTORY_DIR = path.join(PROJECT_DIR, '.harness', 'chat-history');
 const SKILLS_DIR = path.join(PROJECT_DIR, '.harness', 'skills');
 const REPO_SKILLS_DIR = path.join(PROJECT_DIR, '.github', 'skills');
+// Global, user-level skills shared across every workspace. Allow an override
+// for tests/headless setups via HARNESS_GLOBAL_SKILLS_DIR.
+const GLOBAL_SKILLS_DIR = (process.env.HARNESS_GLOBAL_SKILLS_DIR ?? '').trim()
+  || path.join(os.homedir(), '.harness', 'skills');
 const TRACES_DIR = path.join(PROJECT_DIR, '.harness', 'traces');
 const DOCUMENTS_DIR = path.join(PROJECT_DIR, '.harness', 'documents');
 const SETTINGS_PATH = path.join(PROJECT_DIR, '.harness', 'settings.json');
@@ -1004,7 +1008,29 @@ const defaultWebRuntime: WebRuntimeDeps = {
 };
 let webRuntime: WebRuntimeDeps = defaultWebRuntime;
 
-type SkillApiSource = 'runtime' | 'repo';
+// Enrich shell-command approval cards with a friendly, model-generated
+// explanation and a safe "always allow" pattern. Wired here (not at broker
+// construction) because it depends on `webRuntime`/`currentModel`, which are
+// defined above only as this point. Advisory only — never gates a decision.
+permissionPrompts.setClassifier({
+  infer: async ({ systemPrompt, userMessage, timeoutMs }) => {
+    const client = webRuntime.createClient(currentModel || 'llama3.1:8b', ollamaHost);
+    const chat = client.chatOnce(
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
+      ],
+    );
+    const timeout = new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error('classifier inference timed out')), timeoutMs ?? 8_000);
+    });
+    const result = await Promise.race([chat, timeout]);
+    return result.message.content ?? '';
+  },
+});
+
+
+type SkillApiSource = 'runtime' | 'repo' | 'global';
 
 function skillFolderId(skill: SkillDefinition): string {
   return path.basename(path.dirname(skill.filePath));
@@ -1036,6 +1062,10 @@ function skillSourceForApi(source: SkillApiSource, label: string, directory: str
 
 // Initialize skills directory for SkillTool
 setSkillsDir(SKILLS_DIR);
+// Let the agent also invoke repo (.github/skills) and global (~/.harness/skills)
+// skills. Ordered low-to-high precedence: global, then repo; the workspace tier
+// set above outranks both, so a workspace skill shadows a same-named global one.
+setLowerSkillTiers([GLOBAL_SKILLS_DIR, REPO_SKILLS_DIR]);
 setImportSkillsDir(SKILLS_DIR);
 setInstallSkillsDir(SKILLS_DIR);
 setRagRuntime({ projectDir: PROJECT_DIR, ollamaHost });
@@ -1369,7 +1399,7 @@ app.get('/api/inbox', async (_req, res) => {
         id: `permission:${prompt.id}`,
         kind: 'permission',
         title: `Approve ${prompt.call.name}`,
-        detail: prompt.reason || 'Tool call waiting on your decision.',
+        detail: prompt.classification?.explanation || prompt.reason || 'Tool call waiting on your decision.',
         timestamp: prompt.createdAt,
         priority: 100,
         action: { kind: 'open_tab', payload: 'tools' },
@@ -3722,7 +3752,7 @@ app.get('/api/discovery', async (_req, res) => {
   try {
     const automationPolicy = getAutomationPolicyContext();
     const ttlMs = modelCatalog.ttlHours * 60 * 60 * 1000;
-    const [catalog, catalogStatus, extensions, automationJobs, dueAutomations, agenticServices, sessionSearch, runtimeSkills, repoSkills, curatorLog] = await Promise.all([
+    const [catalog, catalogStatus, extensions, automationJobs, dueAutomations, agenticServices, sessionSearch, runtimeSkills, repoSkills, globalSkills, curatorLog] = await Promise.all([
       getModelCatalog(PROJECT_DIR, { url: modelCatalog.url || undefined, ttlMs, fetchJson: fetchJsonFromUrl }),
       getModelCatalogCacheStatus(PROJECT_DIR, new Date(), ttlMs),
       discoverExtensionManifests(PROJECT_DIR),
@@ -3732,6 +3762,7 @@ app.get('/api/discovery', async (_req, res) => {
       getSessionSearchIndexStatus(PROJECT_DIR),
       scanSkillsDir(SKILLS_DIR),
       scanSkillsDir(REPO_SKILLS_DIR),
+      scanSkillsDir(GLOBAL_SKILLS_DIR),
       readCuratorLog(PROJECT_DIR, 10),
     ]);
     res.json({
@@ -3742,9 +3773,11 @@ app.get('/api/discovery', async (_req, res) => {
         skills: {
           runtime: { directory: SKILLS_DIR, total: runtimeSkills.skills.length, diagnosticCount: runtimeSkills.diagnostics.length, diagnostics: runtimeSkills.diagnostics },
           repo: { directory: REPO_SKILLS_DIR, total: repoSkills.skills.length, diagnosticCount: repoSkills.diagnostics.length, diagnostics: repoSkills.diagnostics },
+          global: { directory: GLOBAL_SKILLS_DIR, total: globalSkills.skills.length, diagnosticCount: globalSkills.diagnostics.length, diagnostics: globalSkills.diagnostics },
           sources: [
             skillSourceForApi('runtime', 'Runtime skills', SKILLS_DIR, runtimeSkills, true),
             skillSourceForApi('repo', 'Repo skills', REPO_SKILLS_DIR, repoSkills, false),
+            skillSourceForApi('global', 'Global skills', GLOBAL_SKILLS_DIR, globalSkills, false),
           ],
         },
       },
@@ -7016,7 +7049,8 @@ async function loadExplicitSkillContext(messageText: string): Promise<{ skill?: 
   const invocation = parseExplicitSkillInvocation(messageText);
   if (!invocation) return { context: '' };
 
-  const skills = await loadSkillsDir(SKILLS_DIR).catch(() => []);
+  // Workspace skills outrank global/repo ones of the same name (last wins).
+  const skills = await loadSkillsFromDirs([GLOBAL_SKILLS_DIR, REPO_SKILLS_DIR, SKILLS_DIR]).catch(() => []);
   const skill = skills.find((candidate) => candidate.name.toLowerCase() === invocation.name.toLowerCase());
   if (!skill) return { context: '' };
 
@@ -7403,11 +7437,12 @@ app.post('/api/chat', async (req, res) => {
     myceliumRouter.seedToolNodes(tools.map((t) => ({ name: t.name, description: t.description })));
     // Seed skills from runtime and repo directories
     try {
-      const [runtimeSkills, repoSkills] = await Promise.all([
+      const [runtimeSkills, repoSkills, globalSkills] = await Promise.all([
         loadSkillsDir(SKILLS_DIR).catch(() => []),
         loadSkillsDir(REPO_SKILLS_DIR).catch(() => []),
+        loadSkillsDir(GLOBAL_SKILLS_DIR).catch(() => []),
       ]);
-      const allSkills = [...runtimeSkills, ...repoSkills];
+      const allSkills = [...runtimeSkills, ...repoSkills, ...globalSkills];
       myceliumRouter.seedSkillNodes(allSkills.map((s) => ({ name: s.name, description: s.description, domain: s.domain })));
     } catch (err) { recordSwallowed('mycelium.seedSkillNodes', err); }
     // Seed semantic memory entries
@@ -8716,9 +8751,10 @@ app.delete('/api/history/:id', async (req, res) => {
 app.get('/api/skills', async (_req, res) => {
   try {
     await fs.mkdir(SKILLS_DIR, { recursive: true });
-    const [runtime, repo] = await Promise.all([
+    const [runtime, repo, global] = await Promise.all([
       scanSkillsDir(SKILLS_DIR),
       scanSkillsDir(REPO_SKILLS_DIR),
+      scanSkillsDir(GLOBAL_SKILLS_DIR),
     ]);
     res.json({
       skills: runtime.skills.map(mapSkillForApi('runtime')),
@@ -8726,6 +8762,7 @@ app.get('/api/skills', async (_req, res) => {
       sources: [
         skillSourceForApi('runtime', 'Runtime skills', SKILLS_DIR, runtime, true),
         skillSourceForApi('repo', 'Repo skills', REPO_SKILLS_DIR, repo, false),
+        skillSourceForApi('global', 'Global skills', GLOBAL_SKILLS_DIR, global, false),
       ],
     });
   } catch { res.json({ skills: [], diagnostics: [], sources: [] }); }

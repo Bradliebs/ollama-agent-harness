@@ -1,3 +1,5 @@
+import { redact, redactSecrets } from '../safety/secretRedactor';
+
 export type TraceStatus = 'ok' | 'error';
 
 export interface TraceRecord {
@@ -35,7 +37,7 @@ export class RuntimeTracer {
       id: createTraceId(),
       name,
       startedAt: new Date().toISOString(),
-      attributes,
+      attributes: redactAttributes(attributes),
     };
     const started = Date.now();
     this.spans.push(record);
@@ -48,21 +50,21 @@ export class RuntimeTracer {
         record.endedAt = new Date().toISOString();
         record.durationMs = Date.now() - started;
         record.status = status;
-        record.attributes = { ...record.attributes, ...attributes };
+        record.attributes = { ...record.attributes, ...redactAttributes(attributes) };
       },
       fail: (error: unknown, attributes: Record<string, unknown> = {}) => {
         if (record.endedAt) return;
         record.endedAt = new Date().toISOString();
         record.durationMs = Date.now() - started;
         record.status = 'error';
-        record.error = error instanceof Error ? error.message : String(error);
-        record.attributes = { ...record.attributes, ...attributes };
+        record.error = redact(error instanceof Error ? error.message : String(error));
+        record.attributes = { ...record.attributes, ...redactAttributes(attributes) };
       },
     };
   }
 
   recordEvent(name: string, attributes: Record<string, unknown> = {}): void {
-    this.events.push({ id: createTraceId(), name, timestamp: new Date().toISOString(), attributes });
+    this.events.push({ id: createTraceId(), name, timestamp: new Date().toISOString(), attributes: redactAttributes(attributes) });
     this.trim();
   }
 
@@ -92,4 +94,23 @@ export const runtimeTracer = new RuntimeTracer();
 
 function createTraceId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Scrub recognized secrets from string-valued attributes before they are
+ * stored in the trace buffer (and later exported via OTLP or shown in the UI).
+ * Only top-level string values are scanned — that covers the high-risk
+ * `tool.input` / `tool.output` attributes without recursing into structured
+ * payloads or paying a cost on numeric/boolean fields.
+ */
+function redactAttributes(attributes: Record<string, unknown>): Record<string, unknown> {
+  let scrubbed: Record<string, unknown> | undefined;
+  for (const [key, value] of Object.entries(attributes)) {
+    if (typeof value !== 'string') continue;
+    const { result, count } = redactSecrets(value);
+    if (count === 0) continue;
+    scrubbed ??= { ...attributes };
+    scrubbed[key] = result;
+  }
+  return scrubbed ?? attributes;
 }

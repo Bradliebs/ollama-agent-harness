@@ -88,6 +88,35 @@ export async function scanSkillsDir(skillsDir: string): Promise<SkillDirectorySc
   return { skills, diagnostics };
 }
 
+/**
+ * Scan several skill directories and merge them into one set. When the same
+ * skill name appears in more than one tier, the entry from the later
+ * (higher-precedence) directory wins — e.g. a workspace skill shadows a global
+ * one of the same name. Diagnostics from every tier are preserved.
+ *
+ * Pass directories ordered low-to-high precedence, e.g.
+ * `[globalDir, repoDir, workspaceDir]`.
+ */
+export async function scanSkillsDirs(dirs: string[]): Promise<SkillDirectoryScan> {
+  const byName = new Map<string, SkillDefinition>();
+  const diagnostics: SkillLoadDiagnostic[] = [];
+
+  for (const dir of dirs) {
+    const scan = await scanSkillsDir(dir);
+    for (const skill of scan.skills) {
+      byName.set(skill.name.toLowerCase(), skill);
+    }
+    diagnostics.push(...scan.diagnostics);
+  }
+
+  return { skills: [...byName.values()], diagnostics };
+}
+
+/** Convenience wrapper around {@link scanSkillsDirs} returning only the merged skills. */
+export async function loadSkillsFromDirs(dirs: string[]): Promise<SkillDefinition[]> {
+  return (await scanSkillsDirs(dirs)).skills;
+}
+
 async function skillFileExists(filePath: string): Promise<boolean> {
   try {
     const stat = await fs.stat(filePath);
