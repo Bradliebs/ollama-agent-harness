@@ -131,7 +131,13 @@ export async function findEntityByName(projectDir: string, name: string, type?: 
   const matches = records.filter(
     (r): r is GraphEntity => r.kind === 'entity' && r.name.toLowerCase() === name.toLowerCase() && (!type || r.type === type),
   );
-  return matches.sort((a, b) => b.observedAt.localeCompare(a.observedAt))[0];
+  // Most recent wins. On equal observedAt (two writes in the same millisecond,
+  // common under fast CI), the later-appended record is the newer write, so
+  // ties break toward file order via >= while iterating append-order records.
+  return matches.reduce<GraphEntity | undefined>(
+    (best, r) => (!best || r.observedAt >= best.observedAt ? r : best),
+    undefined,
+  );
 }
 
 /** Merge an entity by name+type, returning the existing id if found, else creating. */

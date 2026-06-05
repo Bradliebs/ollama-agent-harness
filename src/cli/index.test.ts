@@ -108,6 +108,7 @@ describe('cli setup doctor', () => {
       backends: [],
       fallback: { enabled: true, cooldownMs: 30000, order: 'default', configuredCount: 0 },
       smtp: { ok: false, message: 'SMTP not configured. Missing: HARNESS_SMTP_HOST, HARNESS_SMTP_USER, HARNESS_SMTP_PASS.' },
+      ccmem: { ok: false, message: 'Concept memory service not running.' },
     });
 
     expect(output).toContain('Setup doctor');
@@ -137,6 +138,7 @@ describe('cli setup doctor', () => {
       ],
       fallback: { enabled: true, cooldownMs: 30000, order: 'default', configuredCount: 1 },
       smtp: { ok: false, message: 'SMTP not configured.' },
+      ccmem: { ok: false, message: 'Concept memory service not running.' },
     });
 
     expect(output).toContain('Backends (OpenAI-compatible):');
@@ -174,6 +176,7 @@ describe('cli setup doctor', () => {
       ],
       fallback: { enabled: true, cooldownMs: 30000, order: 'default', configuredCount: 1 },
       smtp: { ok: false, message: 'SMTP not configured.' },
+      ccmem: { ok: false, message: 'Concept memory service not running.' },
     });
 
     expect(output).toContain('CEREBRAS_API_KEY');
