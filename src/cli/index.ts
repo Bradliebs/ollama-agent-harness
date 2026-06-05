@@ -17,9 +17,15 @@ import * as nodemailer from 'nodemailer';
 import { summarizeEventStore } from '../persistence/eventStore';
 import { checkObligations } from '../services/promiseLedger';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
-import { OUTPUT_VALIDATION_PROFILES, parseOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
+import { OUTPUT_VALIDATION_PROFILES, parseOutputValidationProfile, type OutputValidationProfile, type OutputValidationResult } from '../core/outputValidation';
 import { formatCliHelp, resolveCliCommand } from './commands';
 import { runMyceliumCli } from '../mycelium/cli';
+import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
+import { heuristicVerifier } from '../mycelium/verifier';
+import type { ContextPackage } from '../mycelium/contextPackage';
+import { loadSkillsDir } from '../extensibility/skillLoader';
+import { searchSemanticMemory } from '../persistence/semanticMemory';
+import { recordSwallowed } from '../observability/silentFailureSink';
 import type { LoopConfig, PermissionMode } from '../types';
 import { configureWebReadTool, DEFAULT_WEB_READ_MAX_CHARS, sanitizeWebReadMaxChars } from '../tools/webSearchTool';
 import { getAgentOutputDir, getAllowedExternalPaths, setAllowedExternalPaths } from '../tools/pathResolution';
@@ -482,9 +488,29 @@ export async function main(): Promise<void> {
     ...memoryRecallFields,
   });
 
+  // Mycelium adaptive routing for autonomy: the headless path is the agent's
+  // only entry point, so — like the chat path (server.ts) — create + seed the
+  // router from the task prompt, inject its learned route context into the
+  // system prompt, and reinforce the graph after the run. Interactive mode is
+  // left unchanged. Routing failures are swallowed so a missing graph never
+  // breaks a run.
+  let myceliumRouter: MycelialContextRouter | null = null;
+  let myceliumContextPackage: ContextPackage | null = null;
+  let finalSystemPrompt = systemPrompt;
+  if (headlessPrompt && recallQuery) {
+    try {
+      const m = await buildHeadlessMyceliumContext(projectDir, recallQuery, tools);
+      if (m) {
+        myceliumRouter = m.router;
+        myceliumContextPackage = m.contextPackage;
+        finalSystemPrompt = systemPrompt + m.contextText;
+      }
+    } catch (err) { recordSwallowed('cli.mycelium.context', err); }
+  }
+
   const config: LoopConfig = {
     model: options.model,
-    systemPrompt,
+    systemPrompt: finalSystemPrompt,
     maxTurns: options.maxTurns,
     unproductiveTurnLimit: options.unproductiveTurnLimit,
     outputValidation: options.outputValidation ? { enabled: true, profile: options.outputValidation } : undefined,
@@ -504,7 +530,12 @@ export async function main(): Promise<void> {
   // --prompt-file lets callers pass large prompts (e.g. inline file contents)
   // that would otherwise overflow shell command-line size limits.
   if (headlessPrompt) {
-    await runHeadless(config, deps, session, headlessPrompt);
+    const outcome = await runHeadless(config, deps, session, headlessPrompt);
+    if (myceliumRouter) {
+      try {
+        await reinforceHeadlessMycelium(myceliumRouter, myceliumContextPackage, outcome);
+      } catch (err) { recordSwallowed('cli.mycelium.reinforce', err); }
+    }
     return;
   }
 
@@ -629,15 +660,161 @@ export function buildConsoleToolOnlyResponse(input: { toolCalls: number; toolSum
   return 'No response from the model.';
 }
 
+const MYCELIUM_CONTEXT_MAX_CHARS = 4_000;
+
+/** Tools whose silent failures should pull mycelium tool_reliability down.
+ * Scoped to network / document tools so a benign file_read miss does not
+ * tank an otherwise-healthy run (mirrors the chat path's TRACKED_TOOLS,
+ * decoupled from exact tool names). */
+const MYCELIUM_FAILURE_PRONE_TOOL = /web|pdf|fetch|http|browse/i;
+
+/** Outcome signal surfaced from a headless run so the caller can reinforce
+ * the mycelium router after the loop completes. */
+interface HeadlessOutcome {
+  assistantText: string;
+  toolCallCount: number;
+  toolSuccessCount: number;
+  /** Per-tool success ratio for failure-prone tools (web/pdf/fetch). */
+  toolSuccessRatios: Record<string, number>;
+  /** Ordered tool-call names, used to learn tool-sequence edges. */
+  toolCallSequence: string[];
+  validationScore?: number;
+  validationStatus?: OutputValidationResult['status'];
+}
+
+function formatMyceliumContextText(contextText: string, maxChars: number): string {
+  if (contextText.length <= maxChars) return contextText;
+  const lines = contextText.split('\n').filter((line) => line.trim());
+  const selected: string[] = [];
+  let chars = 0;
+  for (const line of lines) {
+    if (chars + line.length + 1 > maxChars) break;
+    selected.push(line);
+    chars += line.length + 1;
+  }
+  return selected.join('\n') + `\n...(mycelium route context trimmed from ${lines.length} to ${selected.length} item(s) for prompt budget)`;
+}
+
+/** Create + seed the mycelium router and route the task prompt, returning the
+ * adaptive-context block to inject into the system prompt plus the router and
+ * context package needed to reinforce after the run. Mirrors the chat path
+ * (server.ts) so autonomous runs route through the same learned graph.
+ * Returns null when routing produces no nodes (router still reinforces via
+ * the caller using the returned router/contextPackage). */
+async function buildHeadlessMyceliumContext(
+  projectDir: string,
+  query: string,
+  tools: ReturnType<typeof getBuiltinTools>,
+): Promise<{ router: MycelialContextRouter; contextPackage: ContextPackage; contextText: string } | null> {
+  const router = await createMycelialRouter(projectDir);
+  router.seedGeneric();
+  router.seedToolNodes(tools.map((t) => ({ name: t.name, description: t.description })));
+  try {
+    const skills = await loadSkillsDir(path.join(projectDir, '.harness', 'skills'));
+    router.seedSkillNodes(skills.map((s) => ({ name: s.name, description: s.description, domain: s.domain })));
+  } catch (err) { recordSwallowed('cli.mycelium.seedSkillNodes', err); }
+  try {
+    const memResults = await searchSemanticMemory(projectDir, query.slice(0, 200));
+    if (memResults.length > 0) {
+      router.seedMemoryNodes(memResults.slice(0, 10).map((r) => ({ id: r.entry.id, text: r.entry.text, kind: r.entry.kind })));
+    }
+  } catch (err) { recordSwallowed('cli.mycelium.seedMemoryNodes', err); }
+
+  const result = router.routeQueryRich(query);
+  let contextText = '';
+  if (result.nodes.length > 0) {
+    const safetyBlock = result.contextPackage.safety_notes.length > 0
+      ? '\n[Safety notes]\n  - ' + result.contextPackage.safety_notes.join('\n  - ')
+      : '';
+    contextText =
+      `\n\n--- Mycelium context (adaptive routing) ---\n` +
+      `[Task type: ${result.classification.type}; high_risk: ${result.classification.highRisk}; exploration: ${result.classification.explorationRate}]\n` +
+      formatMyceliumContextText(result.contextText, MYCELIUM_CONTEXT_MAX_CHARS) +
+      safetyBlock;
+  }
+  return { router, contextPackage: result.contextPackage, contextText };
+}
+
+/** Reinforce the mycelium router from a completed headless run. Runs the
+ * heuristic verifier first so the reward reflects safety + tool reliability,
+ * then strengthens/weakens routes, learns tool-sequence edges, decays, and
+ * persists. Mirrors the chat path minus the chat-only nervous system. */
+async function reinforceHeadlessMycelium(
+  router: MycelialContextRouter,
+  contextPackage: ContextPackage | null,
+  outcome: HeadlessOutcome,
+): Promise<void> {
+  const hasOutput = outcome.assistantText.trim().length > 0;
+  const toolSuccessRate = outcome.toolCallCount > 0 ? outcome.toolSuccessCount / outcome.toolCallCount : 0.5;
+  let verifierScore = 0.5;
+  let verifierBlocked = false;
+  let verifierBlockReason: string | undefined;
+  let verifierAppliedVerifiers: string[] = [];
+  if (contextPackage) {
+    try {
+      const ratios = outcome.toolSuccessRatios;
+      const realSignals = (outcome.validationScore !== undefined || Object.keys(ratios).length > 0)
+        ? {
+            outputValidationScore: outcome.validationScore,
+            outputValidationStatus: outcome.validationStatus,
+            toolSuccessRatios: Object.keys(ratios).length > 0 ? ratios : undefined,
+          }
+        : undefined;
+      const v = heuristicVerifier({
+        response: outcome.assistantText,
+        contextPackage,
+        toolCallCount: outcome.toolCallCount,
+        toolSuccessCount: outcome.toolSuccessCount,
+        errored: !hasOutput,
+        realSignals,
+      });
+      verifierScore = v.score;
+      verifierAppliedVerifiers = v.appliedVerifiers;
+      if (v.failedHardCheck) {
+        verifierBlocked = true;
+        verifierBlockReason = v.notes.find((n) => /fail|hard|irreversible/i.test(n)) ?? v.notes[0] ?? 'verifier_hard_check';
+      }
+    } catch (err) { recordSwallowed('cli.mycelium.heuristicVerifier', err); }
+  }
+
+  router.reinforce({
+    taskSuccess: hasOutput ? 0.7 : 0.2,
+    correctness: hasOutput ? 0.6 + toolSuccessRate * 0.3 : 0.1,
+    usefulness: hasOutput ? 0.5 + toolSuccessRate * 0.3 : 0.1,
+    costEfficiency: outcome.toolCallCount <= 5 ? 0.8 : outcome.toolCallCount <= 15 ? 0.5 : 0.2,
+    userSatisfaction: verifierScore,
+  }, {
+    blocked: verifierBlocked,
+    blockReason: verifierBlockReason,
+    appliedVerifiers: verifierAppliedVerifiers,
+  });
+
+  const graph = router.getGraph();
+  for (let i = 0; i < outcome.toolCallSequence.length - 1; i++) {
+    const srcId = `tool.${outcome.toolCallSequence[i]}`;
+    const tgtId = `tool.${outcome.toolCallSequence[i + 1]}`;
+    if (graph.getNode(srcId) && graph.getNode(tgtId)) {
+      graph.addEdge(srcId, tgtId, 0.3, { relation: 'sequence_learning', origin: 'sequence' });
+    }
+  }
+  router.decay();
+  await router.save();
+}
+
 async function runHeadless(
   config: LoopConfig,
   deps: QueryLoopDeps,
   session: SessionStorage,
   prompt: string,
-): Promise<void> {
+): Promise<HeadlessOutcome> {
   const messages = [{ role: 'user' as const, content: prompt }];
   let assistantText = '';
   let toolCalls = 0;
+  let toolSuccessCount = 0;
+  const toolStats = new Map<string, { success: number; total: number }>();
+  const toolCallSequence: string[] = [];
+  let validationScore: number | undefined;
+  let validationStatus: OutputValidationResult['status'] | undefined;
   const toolSummaries: string[] = [];
   const errors: string[] = [];
 
@@ -648,10 +825,18 @@ async function runHeadless(
         console.log(event.content);
         break;
       case 'tool_call':
+        toolCallSequence.push(event.call.name);
         console.error(`🔧 ${event.call.name}(${JSON.stringify(event.call.input).slice(0, 100)})`);
         break;
       case 'tool_result':
         toolCalls++;
+        if (event.result.success) toolSuccessCount++;
+        if (MYCELIUM_FAILURE_PRONE_TOOL.test(event.call.name)) {
+          const stats = toolStats.get(event.call.name) ?? { success: 0, total: 0 };
+          stats.total++;
+          if (event.result.success) stats.success++;
+          toolStats.set(event.call.name, stats);
+        }
         const summary = summarizeConsoleToolResult(event.call.name, event.result.success, event.result.output);
         if (summary) toolSummaries.push(summary);
         const icon = event.result.success ? '✅' : '❌';
@@ -661,6 +846,8 @@ async function runHeadless(
         console.error(`🧠 context ${event.strategy}: freed ~${event.tokensFreed} tokens, pressure ${Math.round(event.pressure * 100)}%${event.autosaved ? ', autosaved' : ''}`);
         break;
       case 'output_validation':
+        validationScore = event.validation.score;
+        validationStatus = event.validation.status;
         console.error(`🧪 output validation ${event.validation.status}: score ${event.validation.score}`);
         for (const finding of event.validation.findings.slice(0, 5)) {
           console.error(`  ${finding.severity.toUpperCase()} ${finding.message}`);
@@ -682,6 +869,20 @@ async function runHeadless(
         break;
     }
   }
+
+  const toolSuccessRatios: Record<string, number> = {};
+  for (const [name, stats] of toolStats) {
+    if (stats.total > 0) toolSuccessRatios[name] = stats.success / stats.total;
+  }
+  return {
+    assistantText,
+    toolCallCount: toolCalls,
+    toolSuccessCount,
+    toolSuccessRatios,
+    toolCallSequence,
+    validationScore,
+    validationStatus,
+  };
 }
 
 async function runCompactRemoteSmoke(client: IChatClient, prompt: string): Promise<void> {
