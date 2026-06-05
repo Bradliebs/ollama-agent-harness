@@ -8,7 +8,9 @@
 //   1. Talk to @BotFather on Telegram and create a bot → copy the token
 //   2. Set the token in Harness Settings → Telegram Bot Token
 //      (or set HARNESS_TELEGRAM_BOT_TOKEN env var)
-//   3. Optionally restrict to your chat ID with HARNESS_TELEGRAM_ALLOWED_CHAT_IDS
+//   3. Restrict to your chat ID with HARNESS_TELEGRAM_ALLOWED_CHAT_IDS
+//      (REQUIRED — the bot refuses to start without it; bypass with
+//      HARNESS_TELEGRAM_ALLOW_ANY_CHAT=1 only if you understand the risk)
 //
 // The bridge starts automatically when the server boots if a token is configured.
 
@@ -147,6 +149,11 @@ let ownsPollingLock = false;
 /** Chat IDs that have sent at least one message — used for broadcast notifications. */
 const knownChatIds = new Set<string>();
 
+function isAllowAnyChatOptIn(): boolean {
+  const raw = (process.env.HARNESS_TELEGRAM_ALLOW_ANY_CHAT ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
 export function startTelegramBot(token: string, serverUrl: string, allowedChatIds?: string[]): TelegramBot | null {
   const trimmedToken = token.trim();
   if (!trimmedToken) return null;
@@ -164,6 +171,17 @@ export function startTelegramBot(token: string, serverUrl: string, allowedChatId
       .map((id) => id.trim())
       .filter(Boolean),
   );
+
+  // Fail-closed: refuse to start the bot when no allow-list is configured.
+  // The bot can call /task, /schedule, file uploads, and free-text chat — all
+  // of which run with the local user's permissions. Accepting every Telegram
+  // chat by default is a remote-control surface. Operators who genuinely want
+  // an open bot must opt in explicitly via HARNESS_TELEGRAM_ALLOW_ANY_CHAT=1.
+  if (allowedIds.size === 0 && !isAllowAnyChatOptIn()) {
+    releaseTelegramPollingLock();
+    logger.error('Telegram', 'Refusing to start: no allow-list configured. Set HARNESS_TELEGRAM_ALLOWED_CHAT_IDS to your chat ID, or HARNESS_TELEGRAM_ALLOW_ANY_CHAT=1 to opt into accepting any chat (not recommended).');
+    return null;
+  }
 
   try {
     const bot = new TelegramBot(trimmedToken, { polling: true });
