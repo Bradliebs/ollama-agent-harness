@@ -30,8 +30,9 @@ import { createToolFailureAlerts, type ToolFailureAlertTracker } from '../servic
 import { formatPrometheusMetrics, type PrometheusMetric } from '../observability/prometheus';
 import { recordSwallowed, getSwallowedFailures, getSwallowedFailureCount } from '../observability/silentFailureSink';
 import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
-import { createTask, deleteTask, getTask, listTasks, recordCheckIn, summarizeTasks, updateTask, type TaskPriority, type TaskStatus } from '../services/taskStore';
-import { groupTasksByColumn, promoteTriageToPlan, withKanbanTag, type KanbanColumn } from '../services/kanbanBridge';
+import { summarizeTasks } from '../services/taskStore';
+import { createTaskRoutesRouter } from './taskRoutes';
+import { createPromiseRouter } from './promiseRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -81,7 +82,8 @@ import { classifyIntent, logConciergeDecision, readConciergeLog } from '../servi
 import { getModelProfile, loadModelProfiles, setModelProfileField, type ModelProfileStore } from '../services/modelProfiles';
 import { createSquad, deleteSquad, getSquad, listSquads, routeMessage, updateSquad } from '../services/squad';
 import { resolveSessionSquad } from '../services/squadSessions';
-import { deleteStructuredEntry, exportIdentity, importIdentity, queryStructured, readIdentityFile, readIdentitySnapshot, renderIdentityForPrompt, upsertStructuredEntry, writeIdentityFile, type IdentityFileName } from '../services/identity';
+import { renderIdentityForPrompt } from '../services/identity';
+import { createIdentityRouter } from './identityRoutes';
 import { calibrateModelRoutingPolicy, summarizeRoutingMetrics } from '../agents/modelRouting';
 import { checkSetupHealth } from '../setup/health';
 import { probeToolCalling, type ToolCallProbeResult } from '../setup/toolCallProbe';
@@ -139,6 +141,7 @@ import * as nodemailer from 'nodemailer';
 import { NervousSystemController } from '../nervous';
 import { listShellCommandAllowlistPresets } from '../automation/runner';
 import { appendCapabilityAuditEvent, readCapabilityAuditEvents } from '../permissions/capabilityAudit';
+import { addOverride, checkBudgetState, getEnvCapUsd, readTodaySpend } from '../budget/dailyBudget';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
 import type { LoopConfig, LoopEvent, PermissionMode, Tool } from '../types';
 import type { EvidenceCard, EvidenceFileSummary, EvidenceMode, EvidenceToolSummary } from '../types/evidence';
@@ -1085,6 +1088,35 @@ app.get('/api/auth/config', (_req, res) => {
     header: 'Authorization: Bearer <token>',
     altHeader: 'x-harness-api-token: <token>',
   });
+});
+
+// DNS-rebinding defence: when bound to loopback, only accept Host headers
+// pointing at a loopback name. A malicious page that tricks the browser into
+// resolving evil.example to 127.0.0.1 still sends Host: evil.example, so
+// rejecting non-loopback host names blocks the rebind even though the IP
+// matches. Skipped when LOCAL_HOST is non-loopback because the operator has
+// opted into external access (auth is the gate there).
+const HOST_HEADER_ENFORCED = isLoopbackHost(LOCAL_HOST);
+const HOST_HEADER_ALLOWED_NAMES = new Set<string>(['127.0.0.1', 'localhost', '::1', '[::1]']);
+app.use('/api', (req, res, next) => {
+  if (!HOST_HEADER_ENFORCED) {
+    next();
+    return;
+  }
+  const rawHost = req.headers.host;
+  if (typeof rawHost !== 'string' || rawHost.length === 0) {
+    res.status(421).json({ error: 'Missing Host header.' });
+    return;
+  }
+  // Strip port; preserve IPv6 brackets.
+  const hostname = rawHost.startsWith('[')
+    ? rawHost.slice(0, rawHost.indexOf(']') + 1).toLowerCase()
+    : rawHost.split(':')[0].toLowerCase();
+  if (!HOST_HEADER_ALLOWED_NAMES.has(hostname)) {
+    res.status(421).json({ error: 'Misdirected request: Host header not in allow-list.' });
+    return;
+  }
+  next();
 });
 
 app.use('/api', (req, res, next) => {
@@ -3946,137 +3978,10 @@ app.get('/api/services/:id/health', async (req, res) => {
   }
 });
 
-// ─── Tasks ──────────────────────────────────────────────────────────
-// Structured task lifecycle. Mutations also emit events through the event
-// store so live WebSocket clients refresh without polling.
-
-const VALID_TASK_STATUSES = new Set<TaskStatus>(['pending', 'assigned', 'in_progress', 'blocked', 'review', 'done', 'failed', 'cancelled']);
-const VALID_TASK_PRIORITIES = new Set<TaskPriority>(['low', 'normal', 'high']);
-
-app.get('/api/tasks', async (req, res) => {
-  try {
-    const status = typeof req.query.status === 'string' ? req.query.status as TaskStatus : undefined;
-    if (status && !VALID_TASK_STATUSES.has(status)) { res.status(400).json({ error: 'Invalid status filter.' }); return; }
-    const assigneeId = typeof req.query.assignee === 'string' ? req.query.assignee : undefined;
-    const tasks = await listTasks(PROJECT_DIR, { status, assigneeId });
-    const summary = await summarizeTasks(PROJECT_DIR);
-    res.json({ tasks, summary });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/tasks/:id', async (req, res) => {
-  try {
-    const task = await getTask(PROJECT_DIR, req.params.id);
-    if (!task) { res.status(404).json({ error: 'Task not found.' }); return; }
-    res.json({ task });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/tasks', async (req, res) => {
-  try {
-    const { title, description, priority, assigneeId, parentTaskId, dependsOn, tags, metadata } = req.body ?? {};
-    if (!title || typeof title !== 'string') { res.status(400).json({ error: 'title is required.' }); return; }
-    if (priority && !VALID_TASK_PRIORITIES.has(priority)) { res.status(400).json({ error: 'Invalid priority.' }); return; }
-    const task = await createTask(PROJECT_DIR, {
-      title, description, priority, assigneeId, parentTaskId,
-      dependsOn: Array.isArray(dependsOn) ? dependsOn : undefined,
-      tags: Array.isArray(tags) ? tags : undefined,
-      metadata: metadata && typeof metadata === 'object' ? metadata : undefined,
-    });
-    res.json({ task });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.patch('/api/tasks/:id', async (req, res) => {
-  try {
-    const { title, description, status, priority, assigneeId, dependsOn, tags, metadata } = req.body ?? {};
-    if (status && !VALID_TASK_STATUSES.has(status)) { res.status(400).json({ error: 'Invalid status.' }); return; }
-    if (priority && !VALID_TASK_PRIORITIES.has(priority)) { res.status(400).json({ error: 'Invalid priority.' }); return; }
-    const task = await updateTask(PROJECT_DIR, req.params.id, {
-      title, description, status, priority, assigneeId,
-      dependsOn: Array.isArray(dependsOn) ? dependsOn : undefined,
-      tags: Array.isArray(tags) ? tags : undefined,
-      metadata: metadata && typeof metadata === 'object' ? metadata : undefined,
-    });
-    res.json({ task });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    res.status(message.startsWith('Task not found') ? 404 : 500).json({ error: message });
-  }
-});
-
-app.post('/api/tasks/:id/check-in', async (req, res) => {
-  try {
-    const { progressPercent, message, status } = req.body ?? {};
-    if (typeof message !== 'string' || !message.trim()) { res.status(400).json({ error: 'message is required.' }); return; }
-    if (status && !VALID_TASK_STATUSES.has(status)) { res.status(400).json({ error: 'Invalid status.' }); return; }
-    const task = await recordCheckIn(PROJECT_DIR, req.params.id, {
-      progressPercent: typeof progressPercent === 'number' ? progressPercent : undefined,
-      message,
-      status: status as TaskStatus | undefined,
-    });
-    res.json({ task });
-  } catch (error) {
-    const errMsg = error instanceof Error ? error.message : String(error);
-    res.status(errMsg.startsWith('Task not found') ? 404 : 500).json({ error: errMsg });
-  }
-});
-
-app.delete('/api/tasks/:id', async (req, res) => {
-  try {
-    const removed = await deleteTask(PROJECT_DIR, req.params.id);
-    if (!removed) { res.status(404).json({ error: 'Task not found.' }); return; }
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// ─── Kanban board ───────────────────────────────────────────────────
-// Thin surface over taskStore + kanbanBridge. Moving a card into the
-// triage column also promotes the task into IMPLEMENTATION_PLAN.md so
-// the autonomy loop picks it up on the next iteration.
-
-const VALID_KANBAN_COLUMNS: ReadonlySet<KanbanColumn> = new Set<KanbanColumn>(['triage', 'doing', 'done']);
-
-app.get('/api/kanban/board', async (_req, res) => {
-  try {
-    const tasks = await listTasks(PROJECT_DIR);
-    const board = groupTasksByColumn(tasks);
-    res.json(board);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/kanban/move', async (req, res) => {
-  try {
-    const { taskId, column } = req.body ?? {};
-    if (typeof taskId !== 'string' || !taskId.trim()) { res.status(400).json({ error: 'taskId is required.' }); return; }
-    if (typeof column !== 'string' || !VALID_KANBAN_COLUMNS.has(column as KanbanColumn)) {
-      res.status(400).json({ error: 'Invalid column. Must be triage, doing, or done.' });
-      return;
-    }
-    const existing = await getTask(PROJECT_DIR, taskId);
-    if (!existing) { res.status(404).json({ error: 'Task not found.' }); return; }
-    const nextTags = withKanbanTag(existing.tags, column as KanbanColumn);
-    const task = await updateTask(PROJECT_DIR, taskId, { tags: nextTags });
-    let promoted = null;
-    if (column === 'triage') {
-      promoted = await promoteTriageToPlan([task], { projectDir: PROJECT_DIR });
-    }
-    res.json({ moved: true, task, promoted });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    res.status(message.startsWith('Task not found') ? 404 : 500).json({ error: message });
-  }
-});
+// ─── Tasks + Kanban ─────────────────────────────────────────────────
+// Structured task lifecycle and the Kanban board over them. Routes
+// extracted to ./taskRoutes.ts so server.ts holds wiring, not handlers.
+app.use(createTaskRoutesRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Triggers ───────────────────────────────────────────────────────
 // Persisted in .harness/triggers/triggers.json. The TriggerScheduler is
@@ -4538,103 +4443,14 @@ app.post('/api/squads/:id/route', async (req, res) => {
 });
 
 // ─── Identity ───────────────────────────────────────────────────────
-// SOUL.md / USER.md / structured.json under .harness/identity/. The
-// identity layer is rendered into the chat system prompt (when
-// non-empty) so the agent's persistent persona and the user's stored
-// preferences shape replies.
-
-app.get('/api/identity', async (_req, res) => {
-  try {
-    const snapshot = await readIdentitySnapshot(PROJECT_DIR);
-    res.json(snapshot);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-const VALID_IDENTITY_FILES = new Set<IdentityFileName>(['SOUL.md', 'USER.md']);
-
-app.put('/api/identity/:file', async (req, res) => {
-  try {
-    const fileName = req.params.file as IdentityFileName;
-    if (!VALID_IDENTITY_FILES.has(fileName)) { res.status(400).json({ error: 'file must be SOUL.md or USER.md.' }); return; }
-    const content = typeof req.body?.content === 'string' ? req.body.content : '';
-    await writeIdentityFile(PROJECT_DIR, fileName, content);
-    const reread = await readIdentityFile(PROJECT_DIR, fileName);
-    res.json({ file: fileName, content: reread });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/identity/structured', async (req, res) => {
-  try {
-    const category = typeof req.query.category === 'string' ? req.query.category : undefined;
-    const q = typeof req.query.q === 'string' ? req.query.q : undefined;
-    const entries = await queryStructured(PROJECT_DIR, { category, q });
-    res.json({ entries });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/identity/structured', async (req, res) => {
-  try {
-    const { id, category, summary, metadata } = req.body ?? {};
-    if (typeof category !== 'string' || !category.trim()) { res.status(400).json({ error: 'category is required.' }); return; }
-    if (typeof summary !== 'string' || !summary.trim()) { res.status(400).json({ error: 'summary is required.' }); return; }
-    const entry = await upsertStructuredEntry(PROJECT_DIR, {
-      id: typeof id === 'string' ? id : undefined,
-      category,
-      summary,
-      metadata: metadata && typeof metadata === 'object' ? metadata : undefined,
-    });
-    res.json({ entry });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete('/api/identity/structured/:id', async (req, res) => {
-  try {
-    const removed = await deleteStructuredEntry(PROJECT_DIR, req.params.id);
-    if (!removed) { res.status(404).json({ error: 'Structured entry not found.' }); return; }
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/identity/export', async (_req, res) => {
-  try {
-    const payload = await exportIdentity(PROJECT_DIR);
-    res.json(payload);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/identity/import', async (req, res) => {
-  try {
-    if (!requireEscalationAuth(req, res, 'identity import')) return;
-    const mergeStructured = req.body?.mergeStructured !== false;
-    const overwriteFiles = req.body?.overwriteFiles !== false;
-    const hasOverwriteContent = overwriteFiles && (
-      (typeof req.body?.snapshot?.soul === 'string' && req.body.snapshot.soul.trim().length > 0)
-      || (typeof req.body?.snapshot?.user === 'string' && req.body.snapshot.user.trim().length > 0)
-    );
-    if (hasOverwriteContent) {
-      const reason = requireAuditReason(req.body?.reason, res, 'Identity import with SOUL/USER overwrite');
-      if (!reason) return;
-      logger.info('Identity', 'Import requested with file overwrite', { reason, mergeStructured });
-    }
-    const summary = await importIdentity(PROJECT_DIR, req.body, { mergeStructured, overwriteFiles });
-    res.json({ summary });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ error: message });
-  }
-});
+// SOUL.md / USER.md / structured.json under .harness/identity/. Routes
+// extracted to ./identityRoutes.ts so server.ts holds wiring, not handlers.
+app.use(createIdentityRouter({
+  projectDir: PROJECT_DIR,
+  requireAuth: requireEscalationAuth,
+  requireAuditReason,
+  logger,
+}));
 
 // ─── System Health ──────────────────────────────────────────────────
 // Aggregated dashboard endpoint surfacing live state across the daemon's
@@ -4873,75 +4689,11 @@ app.put('/api/system/model-profiles/:model', async (req, res) => {
 });
 
 // ─── Promise Ledger ─────────────────────────────────────────────────
-
-app.get('/api/promises', async (req, res) => {
-  try {
-    const status = req.query.status as PromiseStatus | undefined;
-    const service_id = typeof req.query.service_id === 'string' ? req.query.service_id : undefined;
-    const promises = await listPromises(PROJECT_DIR, { status, service_id });
-    res.json({ total: promises.length, promises });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/promises', async (req, res) => {
-  try {
-    const { commitment, service_id, schedule_id, capability_required, next_due_at, fallback_message, session_id } = req.body ?? {};
-    if (!commitment || typeof commitment !== 'string') { res.status(400).json({ error: 'commitment is required.' }); return; }
-    const promise = await createPromise(PROJECT_DIR, commitment, { service_id, schedule_id, capability_required, next_due_at, fallback_message, session_id });
-    await emitEvent(PROJECT_DIR, 'promise', 'promise_created', { promise_id: promise.promise_id, commitment }, 'user', promise.promise_id).catch((err) => recordSwallowed('emitEvent', err));
-    res.json(promise);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/promises/:id/fulfil', async (req, res) => {
-  try {
-    const promiseId = req.params.id;
-    const result = await fulfilPromise(PROJECT_DIR, promiseId);
-    if (!result) { res.status(404).json({ error: 'Promise not found.' }); return; }
-    await emitEvent(PROJECT_DIR, 'promise', 'promise_fulfilled', { promise_id: promiseId }, 'system', promiseId).catch((err) => recordSwallowed('emitEvent', err));
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/promises/:id/fail', async (req, res) => {
-  try {
-    const promiseId = req.params.id;
-    const markFailed = req.body?.markFailed === true;
-    const result = await failPromise(PROJECT_DIR, promiseId, markFailed);
-    if (!result) { res.status(404).json({ error: 'Promise not found.' }); return; }
-    await emitEvent(PROJECT_DIR, 'promise', 'promise_failed', { promise_id: promiseId, markFailed }, 'system', promiseId).catch((err) => recordSwallowed('emitEvent', err));
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/promises/obligations', async (_req, res) => {
-  try {
-    const result = await checkObligations(PROJECT_DIR);
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/promises/:id/cancel', async (req, res) => {
-  try {
-    const promiseId = req.params.id;
-    const result = await updatePromise(PROJECT_DIR, promiseId, { status: 'cancelled' });
-    if (!result) { res.status(404).json({ error: 'Promise not found.' }); return; }
-    await emitEvent(PROJECT_DIR, 'promise', 'promise_cancelled', { promise_id: promiseId }, 'user', promiseId).catch((err) => recordSwallowed('emitEvent', err));
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Routes extracted to ./promiseRoutes.ts. server.ts still imports the
+// ledger functions directly because schedulers + session bootstrap use
+// them outside the HTTP surface (see checkObligations / createPromise
+// call sites elsewhere in this file).
+app.use(createPromiseRouter({ projectDir: PROJECT_DIR, recordSwallowed }));
 
 // ─── Task Contract ───────────────────────────────────────────────────
 
@@ -6229,6 +5981,55 @@ app.post('/api/runtime/cleanup', async (req, res) => {
 
 app.get('/api/permissions/pending', (_req, res) => {
   res.json({ prompts: permissionPrompts.list() });
+});
+
+// Daily-spend cap routes (Fix #6). Status is read-only; override is escalation-
+// guarded and audit-logged. When HARNESS_DAILY_SPEND_USD is unset or 0, status
+// returns {status:'off'} and overrides still record (so the cap can be enabled
+// later without losing the audit trail).
+app.get('/api/budget/status', async (_req, res) => {
+  try {
+    const cap = getEnvCapUsd();
+    const [state, todayRecord] = await Promise.all([
+      checkBudgetState(PROJECT_DIR, cap),
+      readTodaySpend(PROJECT_DIR),
+    ]);
+    res.json({
+      state,
+      byModel: todayRecord?.byModel ?? {},
+      firstAt: todayRecord?.firstAt ?? null,
+      lastAt: todayRecord?.lastAt ?? null,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/budget/override', async (req, res) => {
+  try {
+    if (!requireEscalationAuth(req, res, 'daily spend override')) return;
+    const reason = requireAuditReason(req.body?.reason, res, 'Daily spend override');
+    if (!reason) return;
+    const additionalUsd = Number(req.body?.additionalUsd);
+    if (!Number.isFinite(additionalUsd) || additionalUsd <= 0) {
+      res.status(400).json({ error: 'additionalUsd must be a positive number.' });
+      return;
+    }
+    if (additionalUsd > 1000) {
+      res.status(400).json({ error: 'additionalUsd capped at 1000 per request. Issue multiple overrides if intentional.' });
+      return;
+    }
+    const cap = getEnvCapUsd();
+    const state = await addOverride(PROJECT_DIR, additionalUsd, cap);
+    logger.warn('Budget', 'Daily spend override applied', { additionalUsd, newCap: state.effectiveCapUsd, utcDate: state.utcDate });
+    appendCapabilityAuditEvent(PROJECT_DIR, {
+      type: 'budget.override',
+      reason: `${reason} (+$${additionalUsd.toFixed(2)}, new cap $${state.effectiveCapUsd.toFixed(2)} for ${state.utcDate})`,
+    }).catch((err) => recordSwallowed('appendCapabilityAuditEvent', err));
+    res.json({ state });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 // Audit log: every tool call (PreToolUse + PostToolUse + PostToolUseFailure)
