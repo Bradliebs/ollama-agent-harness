@@ -43,6 +43,7 @@ import { createDoneStateRouter } from './doneStateRoutes';
 import { createCodeIntelRouter } from './codeIntelRoutes';
 import { createMyceliumRouter } from './myceliumRoutes';
 import { createTraceRouter } from './traceRoutes';
+import { createSnapshotRouter } from './snapshotRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -7528,57 +7529,9 @@ app.get('/api/memory/palace', async (req, res) => {
 });
 
 // --- API: Snapshots (skills, memory, config) ---
-// Lightweight point-in-time copies of `.harness/skills`, MEMORY.md,
-// USER.md, SOUL.md so users can roll back self-improvement edits or
-// recover a tree they accidentally clobbered.
-
-app.get('/api/snapshots', async (_req, res) => {
-  try {
-    res.json({ snapshots: await snapshots.list(PROJECT_DIR) });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/snapshots', async (req, res) => {
-  try {
-    const reason = typeof req.body?.reason === 'string' ? req.body.reason : 'manual';
-    const meta = await snapshots.take(PROJECT_DIR, reason);
-    res.json({ snapshot: meta });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/snapshots/:id/diff', async (req, res) => {
-  try {
-    const diff = await snapshots.diff(PROJECT_DIR, req.params.id);
-    if (!diff) { res.status(404).json({ error: 'snapshot not found' }); return; }
-    res.json(diff);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/snapshots/:id/restore', async (req, res) => {
-  try {
-    const result = await snapshots.restore(PROJECT_DIR, req.params.id);
-    if (!result) { res.status(404).json({ error: 'snapshot not found' }); return; }
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete('/api/snapshots/:id', async (req, res) => {
-  try {
-    const ok = await snapshots.remove(PROJECT_DIR, req.params.id);
-    if (!ok) { res.status(404).json({ error: 'snapshot not found' }); return; }
-    res.json({ ok: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Routes extracted to ./snapshotRoutes.ts. server.ts still imports
+// snapshots for the pre-recovery snapshot call in the chat handler.
+app.use(createSnapshotRouter({ projectDir: PROJECT_DIR }));
 
 // --- API: Local RAG indexes ---
 // Build, query, and drop semantic indexes over arbitrary local files.
