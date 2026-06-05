@@ -49,6 +49,7 @@ import { createFileRedirectRouter } from './fileRedirectRoutes';
 import { createDocumentRouter } from './documentRoutes';
 import { createBenchmarkRouter } from './benchmarkRoutes';
 import { createSquadRouter } from './squadRoutes';
+import { createRuntimeCostRouter } from './runtimeCostRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -86,7 +87,6 @@ import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, descri
 import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, adaptiveTimeBudget, recordAvgTurnDuration, clearSynthesisStats, recordToolUseStats } from '../core/synthesisStats';
 import { startNewSession, onSessionEnd, getEvolvedPrompt, recordSessionAutoContinue, LearningRecorder } from '../learning/engine';
 import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
-import { CostTracker } from '../eval/costTracker';
 import { appendLearningCandidate, evaluatePromotionGateForCandidate, extractLearningCandidate, getLearningCandidateProvenance, listLearningCandidates, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
 import { createSubagentTool, listSubagentRoutingMetrics } from '../agents/subagent';
 import { applyGrantToLadder, clearRuntimeRegistry, composeDailyBrief, composeMermaidGraph, defaultAmbientActionPolicy, ensureCapability, eventsFromAmbientSignals, eventsFromEvidenceCards, getInboundTriageStatus, getKnowledgeGraphStatus, getMcpServerStatus, getRuntimeRegistryStatus, getVoiceStatus, ingestEvidenceCard, loadRuntimeRegistry, loadTrustLadder, markRuntimeInstalled, mergeAndSort, mineNextActions, readAll as readKnowledgeGraph, recall as kgRecall, recordOutcome, recordPermissionOutcome, runCouncilForChat, saveRuntimeRegistry, saveTrustLadder, snapshotDailyBrief, startAmbientDaemon, upsertEntity, type AmbientDaemonHandle, type RuntimeFeature } from '../jarvis';
@@ -5116,48 +5116,9 @@ app.use(createBenchmarkRouter({
   getBaseUrl: () => `http://127.0.0.1:${process.env.PORT ?? 3000}`,
 }));
 
-// ── Cost tracking rates (Gap #5) ────────────────────────────────────
-
-app.get('/api/cost/rates', (_req, res) => {
-  res.json({ rates: CostTracker.getAllRates() });
-});
-
-app.post('/api/cost/rates', (req, res) => {
-  const { model, input, output } = req.body ?? {};
-  if (!model || typeof input !== 'number' || typeof output !== 'number') {
-    res.status(400).json({ error: 'model, input (number), and output (number) are required' });
-    return;
-  }
-  CostTracker.registerRate(model, { input, output });
-  res.json({ ok: true, model, rate: { input, output } });
-});
-
-app.get('/api/runtime/storage', async (_req, res) => {
-  try {
-    res.json(await getRuntimeStorageSummary());
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/runtime/cleanup', async (req, res) => {
-  try {
-    const cleaned: string[] = [];
-    if (Boolean(req.body.traces)) {
-      await fs.rm(TRACES_DIR, { recursive: true, force: true });
-      cleaned.push('traces');
-    }
-    if (Boolean(req.body.semanticIndex)) {
-      await fs.rm(path.join(PROJECT_DIR, '.harness', 'memory', 'semantic-index.json'), { force: true });
-      cleaned.push('semanticIndex');
-    }
-    res.json({ cleaned, storage: await getRuntimeStorageSummary() });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// ── Cost tracking rates + runtime storage ───────────────────────────
+// Routes extracted to ./runtimeCostRoutes.ts.
+app.use(createRuntimeCostRouter({ projectDir: PROJECT_DIR, tracesDir: TRACES_DIR }));
 
 app.get('/api/permissions/pending', (_req, res) => {
   res.json({ prompts: permissionPrompts.list() });
@@ -9914,13 +9875,6 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function getRuntimeStorageSummary(): Promise<{ traces: { count: number; bytes: number }; semanticIndex: { exists: boolean; bytes: number } }> {
-  return {
-    traces: await directoryJsonStats(TRACES_DIR),
-    semanticIndex: await fileStats(path.join(PROJECT_DIR, '.harness', 'memory', 'semantic-index.json')),
-  };
-}
-
 async function getAboutInfo(): Promise<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string; manifestName: string; manifestUrl: string }> {
   const packageJson = JSON.parse(await fs.readFile(path.join(HARNESS_ROOT, 'package.json'), 'utf-8')) as { version?: string };
   const rawProvenance = await readReleaseProvenance();
@@ -10006,32 +9960,6 @@ async function readReleaseManifest(assetName?: string): Promise<Partial<{ assetN
     }
   }
   return {};
-}
-
-async function directoryJsonStats(dirPath: string): Promise<{ count: number; bytes: number }> {
-  try {
-    const entries = await fs.readdir(dirPath, { withFileTypes: true });
-    let count = 0;
-    let bytes = 0;
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-      const stat = await fs.stat(path.join(dirPath, entry.name));
-      count++;
-      bytes += stat.size;
-    }
-    return { count, bytes };
-  } catch {
-    return { count: 0, bytes: 0 };
-  }
-}
-
-async function fileStats(filePath: string): Promise<{ exists: boolean; bytes: number }> {
-  try {
-    const stat = await fs.stat(filePath);
-    return { exists: stat.isFile(), bytes: stat.isFile() ? stat.size : 0 };
-  } catch {
-    return { exists: false, bytes: 0 };
-  }
 }
 
 async function checkSourceDistFreshness(): Promise<void> {

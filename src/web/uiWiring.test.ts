@@ -25,6 +25,7 @@ const fileRedirectRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'file
 const documentRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'documentRoutes.ts'), 'utf-8');
 const benchmarkRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'benchmarkRoutes.ts'), 'utf-8');
 const squadRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'squadRoutes.ts'), 'utf-8');
+const runtimeCostRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'runtimeCostRoutes.ts'), 'utf-8');
 
 const inlineGlobals = new Set([
   'alert',
@@ -280,7 +281,8 @@ describe('web UI wiring', () => {
     const documentRouterRoutes = [...documentRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const benchmarkRouterRoutes = [...benchmarkRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const squadRouterRoutes = [...squadRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
-    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes, ...promptsRouterRoutes, ...eventRouterRoutes, ...doneStateRouterRoutes, ...codeIntelRouterRoutes, ...myceliumRouterRoutes, ...traceRouterRoutes, ...snapshotRouterRoutes, ...historyRouterRoutes, ...fileRedirectRouterRoutes, ...documentRouterRoutes, ...benchmarkRouterRoutes, ...squadRouterRoutes]);
+    const runtimeCostRouterRoutes = [...runtimeCostRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes, ...promptsRouterRoutes, ...eventRouterRoutes, ...doneStateRouterRoutes, ...codeIntelRouterRoutes, ...myceliumRouterRoutes, ...traceRouterRoutes, ...snapshotRouterRoutes, ...historyRouterRoutes, ...fileRedirectRouterRoutes, ...documentRouterRoutes, ...benchmarkRouterRoutes, ...squadRouterRoutes, ...runtimeCostRouterRoutes]);
     const uiRoutes = [...new Set(extractFetchExpressions(appJs).map(normalizeUiFetchPath).filter((route): route is string => Boolean(route)))].sort();
 
     // A UI route like '/api/foo/:param' is satisfied either by an exact match
