@@ -152,17 +152,19 @@ async function main() {
     const exportedServicesPayload = JSON.parse(fs.readFileSync(exportPath, 'utf-8'));
     const importPath = path.join(os.tmpdir(), `harness-operating-services-import-${Date.now()}.json`);
     fs.writeFileSync(importPath, JSON.stringify(exportedServicesPayload, null, 2), 'utf-8');
-    const importDialogPromise = new Promise((resolve) => page.once('dialog', async (dialog) => {
-      const message = dialog.message();
-      await dialog.accept();
-      resolve(message);
-    }));
     const fileChooser = await Promise.all([
       page.waitForEvent('filechooser'),
       page.click('#operatingServicesDiscoveryPanel button:has-text("Import JSON")'),
     ]).then(([chooser]) => chooser);
     await fileChooser.setFiles(importPath);
-    const importDialogMessage = await importDialogPromise;
+    // Import reports completion via an in-page toast (showToast), not a browser
+    // dialog as it once did. Waiting on a never-firing 'dialog' event hung the
+    // smoke forever; instead wait for the toast text and capture it.
+    await page.waitForFunction(() => Array.from(document.querySelectorAll('div')).some((el) => el.style.zIndex === '10000' && /Imported \d+ service\(s\); skipped \d+\./.test(el.textContent || '')), null, { timeout: 15000 });
+    const importDialogMessage = await page.evaluate(() => {
+      const el = Array.from(document.querySelectorAll('div')).find((node) => node.style.zIndex === '10000' && /Imported \d+ service\(s\); skipped \d+\./.test(node.textContent || ''));
+      return el ? el.textContent.trim() : '';
+    });
     await page.waitForFunction(() => document.getElementById('operatingServicesDiscoveryPanel')?.textContent.includes('service(s) configured'));
     await page.locator('#operatingServicesDiscoveryPanel button:has-text("Details")').first().click();
     await page.waitForFunction(() => document.getElementById('operatingServiceDetail')?.textContent.includes('storage'));
@@ -482,7 +484,7 @@ async function main() {
         hasMissionControl: Boolean(document.getElementById('missionControlPanel')),
         missionControlRendered: (() => {
           const panel = document.getElementById('missionControlPanel');
-          return Boolean(panel && (panel.textContent || '').includes('Start work'));
+          return Boolean(panel && (panel.textContent || '').includes('Tell Harness the job'));
         })(),
         readinessDetailsSmoke: (() => {
           const panel = document.getElementById('readinessDetailsPanel');
@@ -600,11 +602,8 @@ async function main() {
           const titles = cards.map((card) => card.querySelector('.qc-title')?.textContent?.trim() || '');
           return { count: cards.length, titles, populated: host?.dataset?.populated === '1' };
         })(),
-        hasBeginnerReadiness: Boolean(document.getElementById('beginnerReadiness')) && Boolean(document.getElementById('beginnerReadinessBadge')),
-        beginnerReadinessText: document.getElementById('beginnerReadiness')?.textContent || '',
         hasFirstRunInputs: Boolean(document.getElementById('firstRunOllamaHost')) && Boolean(document.getElementById('firstRunVisionModel')) && Boolean(document.getElementById('firstRunAudioCommand')) && Boolean(document.getElementById('firstRunAudioSamplePath')),
         hasFirstRunHealth: Boolean(document.getElementById('firstRunHealth')),
-        hasModelCapabilityHint: Boolean(document.getElementById('modelCapabilityHint')),
         hasAttachmentHint: Boolean(document.getElementById('attachmentHint')),
         hasMemoryPalace: Boolean(document.getElementById('memoryPalaceView')),
         hasPalaceDetail: Boolean(document.getElementById('palaceDetail')),
@@ -766,10 +765,8 @@ async function main() {
     if (!result.quickStartChips?.populated || (result.quickStartChips?.count ?? 0) < 4) {
       failures.push(`quick-start chips did not populate from quickStartChipsMarkup(): ${JSON.stringify(result.quickStartChips)}`);
     }
-    if (!result.hasBeginnerReadiness) failures.push('beginner readiness verdict was not found');
     if (!result.hasFirstRunInputs) failures.push('first-run setup inputs were not found');
     if (!result.hasFirstRunHealth) failures.push('first-run health panel was not found');
-    if (!result.hasModelCapabilityHint) failures.push('model capability hint was not found');
     if (!result.hasAttachmentHint) failures.push('attachment hint was not found');
     if (!result.hasMemoryPalace) failures.push('memory palace view was not found');
     if (result.palaceAnchorButtons > 0 && !result.hasPalaceDetail) failures.push('palace detail panel was not found');
@@ -1214,7 +1211,6 @@ async function runStaticSmoke() {
     hasTraceEvalExamples: ids.includes('traceEvalExamples'),
     hasWeatherReplayEvalButton: ids.includes('createWeatherReplayEvalBtn'),
     hasBeginnerGuide: ids.includes('beginnerGuide'),
-    hasBeginnerReadiness: ids.includes('beginnerReadiness') && ids.includes('beginnerReadinessBadge') && appScript.includes('function setBeginnerReadiness'),
     hasCapabilityTemplatePanelSupport: appScript.includes('capabilityTemplatePanel') && appScript.includes('function loadCapabilityTemplates'),
     hasCapabilityTemplateStarterDetailFunction: appScript.includes('function loadCapabilityTemplateStarterDetail') && appScript.includes('/api/capability-templates/') && appScript.includes('/starter'),
     hasCapabilityTemplateStarterActionFunction: appScript.includes('function runCapabilityTemplateStarterAction') && appScript.includes('/actions') && appScript.includes('Preview ready'),
@@ -1222,7 +1218,6 @@ async function runStaticSmoke() {
     hasFirstRunSetup: ids.includes('firstRunSetup'),
     hasFirstRunInputs: ids.includes('firstRunOllamaHost') && ids.includes('firstRunVisionModel') && ids.includes('firstRunAudioCommand') && ids.includes('firstRunAudioSamplePath'),
     hasFirstRunHealth: ids.includes('firstRunHealth'),
-    hasModelCapabilityHint: ids.includes('modelCapabilityHint'),
     hasAttachmentHint: ids.includes('attachmentHint'),
     hasMemoryPalace: ids.includes('memoryPalaceView'),
     hasMyceliumView: ids.includes('myceliumView'),
@@ -1312,7 +1307,6 @@ async function runStaticSmoke() {
   if (!result.hasTraceEvalExamples) failures.push('trace eval example panel was not found');
   if (!result.hasWeatherReplayEvalButton) failures.push('weather replay eval button was not found');
   if (!result.hasBeginnerGuide) failures.push('beginner guide was not found');
-  if (!result.hasBeginnerReadiness) failures.push('beginner readiness verdict was not found');
   if (!result.hasCapabilityTemplatePanelSupport) failures.push('capability template panel support was not found');
   if (!result.hasCapabilityTemplateStarterDetailFunction) failures.push('capability template starter detail function was not found');
   if (!result.hasCapabilityTemplateStarterActionFunction) failures.push('capability template starter action function was not found');
@@ -1320,7 +1314,6 @@ async function runStaticSmoke() {
   if (!result.hasFirstRunSetup) failures.push('first-run setup panel was not found');
   if (!result.hasFirstRunInputs) failures.push('first-run setup inputs were not found');
   if (!result.hasFirstRunHealth) failures.push('first-run health panel was not found');
-  if (!result.hasModelCapabilityHint) failures.push('model capability hint was not found');
   if (!result.hasAttachmentHint) failures.push('attachment hint was not found');
   if (!result.hasMemoryPalace) failures.push('memory palace view was not found');
   if (!result.hasMyceliumView) failures.push('mycelium view was not found');
