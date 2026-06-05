@@ -40,6 +40,7 @@ import { createScanRouter } from './scanRoutes';
 import { createPromptsRouter } from './promptsRoutes';
 import { createEventRouter } from './eventRoutes';
 import { createDoneStateRouter } from './doneStateRoutes';
+import { createCodeIntelRouter } from './codeIntelRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -125,7 +126,7 @@ import { BUILTIN_PROFILES, applyProfile, filterToolsByProfile } from '../service
 import { renderDriftReport } from '../eval/goldenTraces';
 import { setCcmemUrl } from '../services/conceptMemoryClient';
 import { validateStructuredOutput, parseAndValidate, detectSchema, BUILTIN_SCHEMAS } from '../core/structuredOutputValidator';
-import { buildRepoGraph, analyzeImpact, summarizeRepo, saveRepoGraph, loadRepoGraph } from '../core/codeIntelligence';
+import { buildRepoGraph, summarizeRepo, saveRepoGraph, loadRepoGraph } from '../core/codeIntelligence';
 import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
 import { heuristicVerifier } from '../mycelium/verifier';
 import { seedCodeIntelligence } from '../mycelium/seeds';
@@ -4765,53 +4766,10 @@ app.use(createEventRouter({ projectDir: PROJECT_DIR }));
 app.use(createDoneStateRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Code Intelligence ──────────────────────────────────────────────
-
-app.post('/api/code-intelligence/build', async (_req, res) => {
-  try {
-    const graph = await buildRepoGraph(PROJECT_DIR);
-    await saveRepoGraph(PROJECT_DIR, graph);
-    const summary = summarizeRepo(graph);
-    await emitEvent(PROJECT_DIR, 'system', 'repo_graph_built', { files: summary.total_files, edges: summary.total_edges }, 'system').catch((err) => recordSwallowed('emitEvent', err));
-    res.json(summary);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/code-intelligence/summary', async (_req, res) => {
-  try {
-    const graph = await loadRepoGraph(PROJECT_DIR);
-    if (!graph) { res.status(404).json({ error: 'No repo graph built yet. POST /api/code-intelligence/build first.' }); return; }
-    res.json(summarizeRepo(graph));
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/code-intelligence/impact', async (req, res) => {
-  try {
-    const files = req.body?.files as string[] | undefined;
-    if (!Array.isArray(files) || files.length === 0) { res.status(400).json({ error: 'files array is required.' }); return; }
-    const graph = await loadRepoGraph(PROJECT_DIR);
-    if (!graph) { res.status(404).json({ error: 'No repo graph. POST /api/code-intelligence/build first.' }); return; }
-    const impact = analyzeImpact(graph, files);
-    res.json(impact);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/code-intelligence/diagram', async (_req, res) => {
-  try {
-    const graph = await loadRepoGraph(PROJECT_DIR);
-    if (!graph) { res.status(404).json({ error: 'No repo graph. Build first.' }); return; }
-    const { generateArchitectureDiagram } = await import('../core/codeIntelligence');
-    const mermaid = generateArchitectureDiagram(graph);
-    res.json({ mermaid });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Routes extracted to ./codeIntelRoutes.ts. server.ts still imports
+// buildRepoGraph/saveRepoGraph/loadRepoGraph/summarizeRepo for non-HTTP
+// wiring (setup health, subsystems health, heartbeat repo-graph rebuild).
+app.use(createCodeIntelRouter({ projectDir: PROJECT_DIR }));
 
 app.get('/api/subsystems/health', async (_req, res) => {
   try {
