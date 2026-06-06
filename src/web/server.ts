@@ -67,8 +67,9 @@ import { createSynthesisStatsRouter } from './synthesisStatsRoutes';
 import { createAboutRouter } from './aboutRoutes';
 import { createBudgetRouter } from './budgetRoutes';
 import { createConnectorRouter } from './connectorRoutes';
+import { createSaveOutputRouter } from './saveOutputRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
-import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
+import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { setSkillsDir, setLowerSkillTiers } from '../tools/skillTools';
 import { setImportSkillsDir } from '../tools/skillImportTool';
@@ -6832,50 +6833,12 @@ function inferMediaKind(fileName: string, mimeType: string): 'image' | 'audio' |
 }
 
 // --- API: Save chat output to agent-outputs/ ---
-// UI-initiated "💾 Save reply" path: writes a chat reply (or any
-// piece of text) to the agent-outputs/ corral. Path resolution is
-// deliberately strict — basename only, no traversal, never overwrites
-// an existing file (auto-suffixes -2, -3, …). Reuses getAgentOutputDir
-// so the user's HARNESS_AGENT_OUTPUT_DIR setting is honoured.
-const SAVE_OUTPUT_MAX_BYTES = 1_000_000; // 1 MB cap; replies are text, this is generous
-app.post('/api/save-output', express.json({ limit: '2mb' }), async (req, res) => {
-  try {
-    const content = typeof req.body?.content === 'string' ? req.body.content : '';
-    if (!content) { res.status(400).json({ error: 'content is required' }); return; }
-    if (Buffer.byteLength(content, 'utf-8') > SAVE_OUTPUT_MAX_BYTES) {
-      res.status(413).json({ error: `content exceeds ${SAVE_OUTPUT_MAX_BYTES} byte cap` });
-      return;
-    }
-    const requested = typeof req.body?.filename === 'string' ? req.body.filename.trim() : '';
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const fallback = `reply-${stamp}.md`;
-    const baseRaw = requested ? path.basename(requested) : fallback;
-    const safeBase = baseRaw.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 200) || fallback;
-    const outDir = getAgentOutputDir();
-    await fs.mkdir(outDir, { recursive: true });
-    const ext = path.extname(safeBase);
-    const stem = ext ? safeBase.slice(0, -ext.length) : safeBase;
-    let candidate = path.join(outDir, safeBase);
-    let suffix = 2;
-    // Never overwrite — keeps the "save what the model just produced" path
-    // safe even when the same auto-name collides within the same minute.
-    while (await fileExists(candidate)) {
-      candidate = path.join(outDir, `${stem}-${suffix}${ext || '.md'}`);
-      suffix += 1;
-      if (suffix > 100) { res.status(500).json({ error: 'Could not allocate a unique filename' }); return; }
-    }
-    await fs.writeFile(candidate, content, 'utf-8');
-    const rel = path.relative(PROJECT_DIR, candidate).split(path.sep).join('/');
-    logger.info('SaveOutput', `Saved chat output → ${rel} (${Buffer.byteLength(content, 'utf-8')} bytes)`);
-    res.json({ path: candidate, relativePath: rel.startsWith('..') ? candidate : rel, name: path.basename(candidate), bytes: Buffer.byteLength(content, 'utf-8') });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-async function fileExists(fp: string): Promise<boolean> {
-  try { await fs.access(fp); return true; } catch { return false; }
-}
+// ─── Save chat reply / output ───────────────────────────────────────────────
+// POST /api/save-output — writes a chat reply (or arbitrary text) to the
+// agent-outputs/ corral. Basename-only path resolution, never overwrites
+// existing files (auto-suffixes -2, -3, …), 1 MB cap. Helper fileExists +
+// the getAgentOutputDir import moved into ./saveOutputRoutes.ts.
+app.use(createSaveOutputRouter({ projectDir: PROJECT_DIR }));
 
 app.get('/api/uploads', async (_req, res) => {
   const uploadsDir = getUploadsDir();
