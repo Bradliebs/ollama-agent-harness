@@ -131,7 +131,7 @@ describe('PermissionEngine', () => {
       expect(result.decision).toBe('ask');
     });
 
-    it.each(['reflect', 'analyze_patterns', 'promote_pattern', 'consolidate', 'evolve', 'improve_skill', 'memory_write', 'memory_read'])(
+    it.each(['reflect', 'analyze_patterns', 'promote_pattern', 'consolidate', 'evolve', 'improve_skill', 'create_skill', 'memory_write', 'memory_read'])(
       'acceptEdits mode auto-approves harness meta tool: %s',
       (toolName) => {
         const engine = new PermissionEngine([], 'acceptEdits');

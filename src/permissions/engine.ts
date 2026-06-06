@@ -53,6 +53,7 @@ const META_TOOLS = new Set([
   'consolidate',
   'evolve',
   'improve_skill',
+  'create_skill',
   'memory_write',
   'memory_read',
 ]);
