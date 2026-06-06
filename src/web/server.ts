@@ -62,6 +62,7 @@ import { createWebhookRouter } from './webhookRoutes';
 import { createAgentRouter } from './agentRoutes';
 import { createFileBrowseRouter } from './fileBrowseRoutes';
 import { createAssetRouter } from './assetRoutes';
+import { createNervousRouter } from './nervousRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -3598,30 +3599,19 @@ app.use(createAssetRouter({ projectDir: PROJECT_DIR }));
 // loadWebhooksFromEnv + sendWebhookNotification (non-HTTP boot/notify paths).
 app.use(createWebhookRouter());
 
-app.get('/api/nervous', (_req, res) => {
-  const snap = lastNervousSnapshot;
-  const state = snap?.runState ?? null;
-  const signals = snap?.signals ?? [];
-  const summary = snap?.summary ?? { totalSignals: 0, bySeverity: {}, byType: {}, runActive: false };
-  const recovery = snap?.recovery ?? null;
-  res.json({
-    active: state !== null,
-    permissionMode,
-    verificationBypassActive: shouldBypassNervousVerification(),
-    summary,
-    signals: signals.slice(-20).map((s) => ({ type: s.type, severity: s.severity, message: s.message, source: s.source, createdAt: s.createdAt })),
-    recovery: recovery ? { reason: recovery.reason, safeNextAction: recovery.safeNextAction } : null,
-  });
-});
-
-app.get('/api/nervous/history', async (_req, res) => {
-  try {
-    const history = await NervousSystemController.readPersistedSignals(PROJECT_DIR, 100);
-    res.json({ signals: history });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// ─── Nervous-system snapshot API ─────────────────────────────────────
+// /api/nervous (live snapshot of last chat-handler controller) + /api/nervous/
+// history (persisted signal log). Extracted to ./nervousRoutes.ts. server.ts
+// still owns the lastNervousSnapshot module-level cache + shouldBypassNervousVerification
+// (3 non-HTTP callers in the tool-call loop); router takes callable deps so it
+// sees mutable state at request time.
+app.use(createNervousRouter({
+  projectDir: PROJECT_DIR,
+  getLastSnapshot: () => lastNervousSnapshot,
+  getPermissionMode: () => permissionMode,
+  isVerificationBypassActive: () => shouldBypassNervousVerification(),
+  readPersistedSignals: (projectDir, limit) => NervousSystemController.readPersistedSignals(projectDir, limit),
+}));
 
 app.get('/api/discovery', async (_req, res) => {
   await ensureSettingsLoaded();
