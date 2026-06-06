@@ -76,6 +76,7 @@ import { createUploadsRouter } from './uploadsRoutes';
 import { createTeammateRouter } from './teammateRoutes';
 import { createToolsRouter } from './toolsRoutes';
 import { createCuratorRouter } from './curatorRoutes';
+import { createEvalsRouter } from './evalsRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -110,7 +111,7 @@ import { assessOfflineGuarantee } from '../observability/offlineGuarantee';
 import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, describeOutputValidationProfileSuggestion, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
 import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, adaptiveTimeBudget, recordAvgTurnDuration, recordToolUseStats } from '../core/synthesisStats';
 import { startNewSession, onSessionEnd, getEvolvedPrompt, recordSessionAutoContinue, LearningRecorder } from '../learning/engine';
-import { appendEvalTraceExample, createEvalTraceExample, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
+import { listEvalTraceRuns, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun } from '../learning/evalTrace';
 import { appendLearningCandidate, extractLearningCandidate, listLearningCandidates, listReviewedLearningCandidates } from '../learning/sessionLearning';
 import { createSubagentTool } from '../agents/subagent';
 import { applyGrantToLadder, clearRuntimeRegistry, composeDailyBrief, composeMermaidGraph, defaultAmbientActionPolicy, ensureCapability, eventsFromAmbientSignals, eventsFromEvidenceCards, getInboundTriageStatus, getKnowledgeGraphStatus, getMcpServerStatus, getRuntimeRegistryStatus, getVoiceStatus, ingestEvidenceCard, loadRuntimeRegistry, loadTrustLadder, markRuntimeInstalled, mergeAndSort, mineNextActions, readAll as readKnowledgeGraph, recall as kgRecall, recordOutcome, recordPermissionOutcome, runCouncilForChat, saveRuntimeRegistry, saveTrustLadder, snapshotDailyBrief, startAmbientDaemon, upsertEntity, type AmbientDaemonHandle, type RuntimeFeature } from '../jarvis';
@@ -4502,129 +4503,25 @@ app.use(createDocumentRouter({
   }),
 }));
 
-app.get('/api/evals/trace-examples', async (_req, res) => {
-  try {
-    const examples = await listEvalTraceExamples(PROJECT_DIR);
-    res.json({ examples });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/evals/trace-examples/download', async (_req, res) => {
-  try {
-    const raw = await readEvalTraceDataset(PROJECT_DIR);
-    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="trace-examples.jsonl"');
-    res.send(raw);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/evals/runs', async (_req, res) => {
-  try {
-    const runs = await listEvalTraceRuns(PROJECT_DIR);
-    res.json({ runs, trend: summarizeEvalTraceRuns(runs), outputValidationTrend: summarizeOutputValidationRuns(runs), profileFeedbackTrend: summarizeProfileFeedbackRuns(runs), contextLossTrend: summarizeContextLossRuns(runs), uploadsFallbackTrend: summarizeUploadsFallbackRuns(runs) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/evals/trace-examples/run', async (req, res) => {
-  try {
-    const mode = req.body?.mode === 'live' || req.body?.mode === 'mock' ? req.body.mode : 'stored';
-    const run = await runEvalTraceDataset(PROJECT_DIR, {
-      replayAdapter: mode === 'stored' ? undefined : async (example) => {
-        if (mode === 'mock') {
-          return {
-            actualResponse: req.body?.mockResponse?.toString() ?? example.actualResponse,
-            actualTools: Array.isArray(req.body?.mockTools) ? req.body.mockTools.map(String) : example.actualTools,
-          };
-        }
-        const activeModel = sanitizeModelName(req.body?.model ?? currentModel);
-        if (!activeModel) return { actualResponse: '', actualTools: [] };
-        const activeContextMaxTokens = await resolveContextMaxTokens(activeModel);
-        const client = webRuntime.createClient(activeModel, ollamaHost, activeContextMaxTokens);
-        const response = await client.chat([{ role: 'user' as const, content: example.prompt ?? example.task }]);
-        const toolCalls = response.message.tool_calls?.map((call) => call.function.name) ?? [];
-        return { actualResponse: response.message.content ?? '', actualTools: toolCalls };
-      },
-    });
-    const runs = await listEvalTraceRuns(PROJECT_DIR);
-    res.json({ run, trend: summarizeEvalTraceRuns(runs), mode });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.patch('/api/evals/trace-examples/:id/tags', async (req, res) => {
-  const exampleId = safeEvalExampleId(req.params.id);
-  if (!exampleId) { res.status(400).json({ error: 'Invalid eval example id.' }); return; }
-  try {
-    const tags = Array.isArray(req.body?.tags) ? req.body.tags.map(String) : String(req.body?.tags ?? '').split(',');
-    const example = await updateEvalTraceExampleTags(PROJECT_DIR, exampleId, tags);
-    res.json({ example });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(404).json({ error: msg });
-  }
-});
-
-app.delete('/api/evals/trace-examples/:id', async (req, res) => {
-  const exampleId = safeEvalExampleId(req.params.id);
-  if (!exampleId) { res.status(400).json({ error: 'Invalid eval example id.' }); return; }
-  try {
-    const deleted = await deleteEvalTraceExample(PROJECT_DIR, exampleId);
-    if (!deleted) { res.status(404).json({ error: 'Eval trace example not found.' }); return; }
-    res.json({ ok: true });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/evals/trace-examples', async (req, res) => {
-  try {
-    const example = createEvalTraceExample(runtimeTracer.snapshot(), {
-      task: req.body?.task?.toString() || 'web runtime trace',
-      expectedBehavior: req.body?.expectedBehavior?.toString() || undefined,
-      tags: Array.isArray(req.body?.tags) ? req.body.tags.map(String) : ['web', 'runtime'],
-    });
-    const filePath = await appendEvalTraceExample(PROJECT_DIR, example);
-    res.json({ example, path: filePath });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/evals/replay-examples', async (req, res) => {
-  try {
-    const example = createReplayEvalExample({
-      task: req.body?.task?.toString() || 'replay regression',
-      prompt: req.body?.prompt?.toString() || '',
-      expectedBehavior: req.body?.expectedBehavior?.toString() || undefined,
-      expectedResponseIncludes: Array.isArray(req.body?.expectedResponseIncludes) ? req.body.expectedResponseIncludes.map(String) : [],
-      expectedTools: Array.isArray(req.body?.expectedTools) ? req.body.expectedTools.map(String) : [],
-      actualResponse: req.body?.actualResponse?.toString() || undefined,
-      actualTools: Array.isArray(req.body?.actualTools) ? req.body.actualTools.map(String) : [],
-      sourceTraceId: req.body?.sourceTraceId?.toString() || undefined,
-      sourceSessionId: req.body?.sourceSessionId?.toString() || undefined,
-      sourceContext: req.body?.sourceContext?.toString() || undefined,
-      tags: Array.isArray(req.body?.tags) ? req.body.tags.map(String) : ['replay'],
-    });
-    const filePath = await appendEvalTraceExample(PROJECT_DIR, example);
-    res.json({ example, path: filePath });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// 8 /api/evals* routes moved to ./evalsRoutes.ts. server.ts retains
+// currentModel / ollamaHost mutables and the sanitizeModelName +
+// resolveContextMaxTokens helpers; the router gets a single
+// buildLiveAdapter bridge that captures the live-mode client creation.
+app.use(createEvalsRouter({
+  projectDir: PROJECT_DIR,
+  buildLiveAdapter: async (requestedModel) => {
+    const activeModel = sanitizeModelName(requestedModel ?? currentModel);
+    if (!activeModel) return null;
+    const activeContextMaxTokens = await resolveContextMaxTokens(activeModel);
+    const client = webRuntime.createClient(activeModel, ollamaHost, activeContextMaxTokens);
+    return async (example) => {
+      const response = await client.chat([{ role: 'user' as const, content: example.prompt ?? example.task }]);
+      const toolCalls = response.message.tool_calls?.map((call) => call.function.name) ?? [];
+      return { actualResponse: response.message.content ?? '', actualTools: toolCalls };
+    };
+  },
+  getRuntimeTracerSnapshot: () => runtimeTracer.snapshot(),
+}));
 
 // ─── Benchmark routes (Gap #2) ───────────────────────────────────────
 
