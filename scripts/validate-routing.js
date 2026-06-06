@@ -4,7 +4,23 @@ const { spawnSync } = require('child_process');
 const path = require('path');
 
 const DEFAULT_HOST = 'http://127.0.0.1:11434';
-const host = (argValue('--host') || process.env.OLLAMA_HOST || DEFAULT_HOST).replace(/\/$/, '');
+// OLLAMA_HOST is a server bind directive that may be scheme-less (e.g. "0.0.0.0:11434");
+// normalise to a client URL so `new URL` / `fetch` accept it. Mirrors src/web/server.ts.
+function normaliseHost(raw) {
+  const trimmed = String(raw).trim().replace(/\/$/, '');
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  try {
+    const url = new URL(withScheme);
+    if (!url.port) url.port = '11434';
+    if (url.hostname === '0.0.0.0' || url.hostname === '::' || url.hostname === '') {
+      url.hostname = 'localhost';
+    }
+    return url.origin;
+  } catch {
+    return DEFAULT_HOST;
+  }
+}
+const host = normaliseHost(argValue('--host') || process.env.OLLAMA_HOST || DEFAULT_HOST);
 const timeoutMs = Number(argValue('--timeout-ms') || process.env.HARNESS_ROUTING_PROBE_TIMEOUT_MS || 60000);
 const requestedModels = values('--model');
 
