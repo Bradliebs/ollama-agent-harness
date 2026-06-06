@@ -21,7 +21,7 @@ import { WorkflowRegistry } from '../workflows/workflowRegistry';
 import { runCurator, runDeterministicPhase, readCuratorLog, readCuratorProposals, restoreSkill, parseMergeProposals, applyMergeProposal, clearCuratorProposals, type CuratorConfig } from '../curator/curator';
 import { CuratorScheduler } from '../curator/scheduler';
 import { SelfLearningHeartbeat, createCleanupAgentOutputsAction, createIdentityGcAction, createReflectAndLearnAction, createSkillEvolutionAction, createWorkAssignedTasksAction, defaultHeartbeatActions, readHeartbeatHistory } from '../services/selfLearningHeartbeat';
-import { TriggerScheduler, loadTriggers, saveTriggers, type TriggerDefinition } from '../services/triggerScheduler';
+import { TriggerScheduler } from '../services/triggerScheduler';
 import { SchedulerRegistry } from '../services/schedulerRegistry';
 import { TeammateScheduler, sanitizeTeammateSettings, defaultTeammateSettings, type TeammateSettings, type TeammateChannel } from '../automation/teammateScheduler';
 import { listArtifacts, readArtifact, type ArtifactCategory } from '../services/artifactCatalog';
@@ -50,6 +50,7 @@ import { createDocumentRouter } from './documentRoutes';
 import { createBenchmarkRouter } from './benchmarkRoutes';
 import { createSquadRouter } from './squadRoutes';
 import { createRuntimeCostRouter } from './runtimeCostRoutes';
+import { createTriggerRouter } from './triggerRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -3913,84 +3914,15 @@ app.get('/api/services/:id/health', async (req, res) => {
 app.use(createTaskRoutesRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Triggers ───────────────────────────────────────────────────────
-// Persisted in .harness/triggers/triggers.json. The TriggerScheduler is
-// started during boot when HARNESS_TRIGGERS_ENABLED is set.
-
-function sanitizeTriggerInput(value: unknown): TriggerDefinition | null {
-  if (!value || typeof value !== 'object') return null;
-  const v = value as Record<string, unknown>;
-  if (typeof v.id !== 'string' || !v.id.trim()) return null;
-  if (typeof v.command !== 'string' || !v.command.trim()) return null;
-  const intervalSeconds = Number(v.intervalSeconds);
-  if (!Number.isFinite(intervalSeconds) || intervalSeconds < 1) return null;
-  const args = Array.isArray(v.args) ? v.args.filter((arg): arg is string => typeof arg === 'string') : undefined;
-  const cwd = typeof v.cwd === 'string' && v.cwd.trim() ? v.cwd : undefined;
-  const enabled = v.enabled === undefined ? true : Boolean(v.enabled);
-  return { id: v.id.trim(), command: v.command.trim(), args, cwd, intervalSeconds: Math.floor(intervalSeconds), enabled };
-}
-
-app.get('/api/triggers', async (_req, res) => {
-  try {
-    const triggers = await loadTriggers(PROJECT_DIR);
-    res.json({ enabled: triggersEnabled(), triggers });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/triggers', async (req, res) => {
-  try {
-    const definition = sanitizeTriggerInput(req.body);
-    if (!definition) { res.status(400).json({ error: 'id, command, intervalSeconds are required.' }); return; }
-    const triggers = await loadTriggers(PROJECT_DIR);
-    if (triggers.some((trigger) => trigger.id === definition.id)) {
-      res.status(409).json({ error: `Trigger ${definition.id} already exists.` }); return;
-    }
-    triggers.push(definition);
-    await saveTriggers(PROJECT_DIR, triggers);
-    if (triggerScheduler) await triggerScheduler.invalidate().catch((err) => recordSwallowed('triggerScheduler.invalidate', err));
-    res.json({ trigger: definition });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.patch('/api/triggers/:id', async (req, res) => {
-  try {
-    const triggers = await loadTriggers(PROJECT_DIR);
-    const idx = triggers.findIndex((trigger) => trigger.id === req.params.id);
-    if (idx === -1) { res.status(404).json({ error: 'Trigger not found.' }); return; }
-    const updates = req.body ?? {};
-    const merged: TriggerDefinition = {
-      ...triggers[idx],
-      ...(typeof updates.command === 'string' ? { command: updates.command.trim() } : {}),
-      ...(Array.isArray(updates.args) ? { args: updates.args.filter((arg: unknown): arg is string => typeof arg === 'string') } : {}),
-      ...(typeof updates.cwd === 'string' ? { cwd: updates.cwd } : {}),
-      ...(updates.intervalSeconds !== undefined ? { intervalSeconds: Math.max(1, Math.floor(Number(updates.intervalSeconds))) } : {}),
-      ...(updates.enabled !== undefined ? { enabled: Boolean(updates.enabled) } : {}),
-    };
-    triggers[idx] = merged;
-    await saveTriggers(PROJECT_DIR, triggers);
-    if (triggerScheduler) await triggerScheduler.invalidate().catch((err) => recordSwallowed('triggerScheduler.invalidate', err));
-    res.json({ trigger: merged });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete('/api/triggers/:id', async (req, res) => {
-  try {
-    const triggers = await loadTriggers(PROJECT_DIR);
-    const idx = triggers.findIndex((trigger) => trigger.id === req.params.id);
-    if (idx === -1) { res.status(404).json({ error: 'Trigger not found.' }); return; }
-    triggers.splice(idx, 1);
-    await saveTriggers(PROJECT_DIR, triggers);
-    if (triggerScheduler) await triggerScheduler.invalidate().catch((err) => recordSwallowed('triggerScheduler.invalidate', err));
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Persisted in .harness/triggers/triggers.json. Routes extracted to
+// ./triggerRoutes.ts. server.ts still owns the TriggerScheduler instance
+// (configureTriggerScheduler / triggersEnabled) — the router just calls
+// back via the isEnabled + invalidateScheduler deps.
+app.use(createTriggerRouter({
+  projectDir: PROJECT_DIR,
+  isEnabled: () => triggersEnabled(),
+  invalidateScheduler: () => triggerScheduler ? triggerScheduler.invalidate() : Promise.resolve(),
+}));
 
 // ─── Artifacts catalog ───────────────────────────────────
 // Cross-session view of files written by the agent into agent-outputs/.
