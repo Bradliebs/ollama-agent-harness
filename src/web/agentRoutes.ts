@@ -120,7 +120,7 @@ export function createAgentRouter(deps: AgentRoutesDeps): express.Router {
       if (!prompt) { res.status(400).json({ error: 'prompt is required.' }); return; }
       await refreshCustomAgentsIfStale();
       const customAgents = getCachedCustomAgentsSnapshot();
-      const isKnown = customAgents.some((agent) => agent.id === id)
+      const isKnown = customAgents.some((agent) => agent.id === id && agent.enabled)
         || BUILTIN_AGENT_ROLES.some((agent) => agent.id === id);
       if (!isKnown) { res.status(404).json({ error: 'Agent not found.' }); return; }
       const currentModel = getCurrentModel();

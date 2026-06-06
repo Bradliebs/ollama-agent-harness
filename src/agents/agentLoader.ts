@@ -12,6 +12,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { atomicWriteFile } from '../persistence/atomicFile';
 import type { HelperTaskType } from './modelRouting';
+import { assertValidAgentId, isValidAgentId } from './agentId';
 
 export type AgentRole = 'researcher' | 'developer' | 'qa' | 'writer' | 'architect' | 'security';
 
@@ -69,7 +70,7 @@ export interface AgentDefinition {
 export interface AgentLoadDiagnostic {
   id: string;
   filePath: string;
-  reason: 'missing-frontmatter' | 'unreadable-file';
+  reason: 'missing-frontmatter' | 'unreadable-file' | 'invalid-agent-id' | 'unknown-sub-agent-ref';
   message: string;
 }
 
@@ -185,9 +186,37 @@ export async function scanAgentDefinitions(projectDir: string): Promise<AgentDir
         diagnostics.push({ id, filePath, reason: 'missing-frontmatter', message: 'Agent file is missing YAML frontmatter.' });
         continue;
       }
+      if (!isValidAgentId(definition.id)) {
+        diagnostics.push({
+          id: definition.id,
+          filePath,
+          reason: 'invalid-agent-id',
+          message: `Agent id ${JSON.stringify(definition.id)} is not a valid identifier (alphanumeric with - or _ only).`,
+        });
+        continue;
+      }
       agents.push(definition);
     } catch (error) {
       diagnostics.push({ id, filePath, reason: 'unreadable-file', message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  // Cross-agent validation: surface sub-recipe references that point at ids
+  // we never loaded so authors don't have to wait for tool-invocation time to
+  // discover a typo or a deleted agent.
+  const knownIds = new Set<string>([
+    ...agents.map((agent) => agent.id),
+    ...BUILTIN_AGENT_ROLES.map((agent) => agent.id),
+  ]);
+  for (const agent of agents) {
+    if (!agent.subAgents) continue;
+    for (const ref of agent.subAgents) {
+      if (knownIds.has(ref.agentId)) continue;
+      diagnostics.push({
+        id: agent.id,
+        filePath: agent.filePath,
+        reason: 'unknown-sub-agent-ref',
+        message: `Agent ${JSON.stringify(agent.id)} declares sub-agent ${JSON.stringify(ref.name)} that targets unknown agent id ${JSON.stringify(ref.agentId)}.`,
+      });
     }
   }
   return { agents, diagnostics };
@@ -257,7 +286,7 @@ export interface CreateCustomAgentInput {
 }
 
 export async function writeCustomAgent(projectDir: string, input: CreateCustomAgentInput): Promise<string> {
-  if (!/^[a-z0-9][a-z0-9-_]*$/i.test(input.id)) throw new Error('Agent id must be alphanumeric with - or _ only.');
+  assertValidAgentId(input.id);
   if (!input.systemPrompt.trim()) throw new Error('systemPrompt is required.');
   const dir = path.join(projectDir, '.harness', 'agents');
   await fs.mkdir(dir, { recursive: true });
@@ -433,6 +462,7 @@ function coerceSubAgents(raw: unknown[]): SubAgentRef[] {
     const agentIdRaw = obj.agent_id ?? obj.agentId;
     const agentId = typeof agentIdRaw === 'string' ? agentIdRaw.trim() : '';
     if (!name || !agentId) continue;
+    if (!isValidAgentId(agentId)) continue;
     const ref: SubAgentRef = { name, agentId };
     if (typeof obj.description === 'string' && obj.description.trim()) {
       ref.description = obj.description;

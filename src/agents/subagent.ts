@@ -8,6 +8,7 @@ import { withFileLock } from '../persistence/atomicFile';
 import { revertRun } from '../persistence/runReverter';
 import { createHelperAgentConfig, type HelperTaskType, type ModelRoutingDecision, type ModelRoutingInput, type ModelRoutingPolicy } from './modelRouting';
 import { resolveAgentDefinition, type AgentDefinition, type SubAgentRef } from './agentLoader';
+import { requireAgentDefinition } from './agentId';
 import { registerSubagent, unregisterSubagent, updateSubagentActivity, getActiveSubagent } from '../services/subagentRegistry';
 import { appendSubagentRun } from '../services/subagentRuns';
 import { recordSwallowed } from '../observability/silentFailureSink';
@@ -338,20 +339,20 @@ export async function runSubagent(
 
 export function resolveSubagentConfig(config: SubagentConfig, prompt: string): SubagentConfig {
   // Step 1: apply built-in or custom agent definition (when agentId is set).
+  // Strict: an explicit agentId that resolves to nothing throws — silently
+  // running with no role/defaults is the bug Tier 3 #2 is closing.
   let working = config;
   if (config.agentId) {
-    const definition = resolveAgentDefinition(config.agentId, config.customAgents ?? []);
-    if (definition) {
-      working = {
-        ...config,
-        name: config.name || definition.name || definition.id,
-        systemPrompt: config.systemPrompt || definition.systemPrompt,
-        model: config.model ?? definition.model,
-        maxTurns: config.maxTurns ?? definition.maxTurns,
-        preset: config.preset ?? definition.preset,
-        allowedTools: config.allowedTools ?? definition.allowedTools,
-      };
-    }
+    const definition = requireAgentDefinition(config.agentId, config.customAgents ?? []);
+    working = {
+      ...config,
+      name: config.name || definition.name || definition.id,
+      systemPrompt: config.systemPrompt || definition.systemPrompt,
+      model: config.model ?? definition.model,
+      maxTurns: config.maxTurns ?? definition.maxTurns,
+      preset: config.preset ?? definition.preset,
+      allowedTools: config.allowedTools ?? definition.allowedTools,
+    };
   }
 
   // Step 2: apply preset routing if a preset is set.

@@ -96,6 +96,7 @@ export type { HeartbeatAction, HeartbeatActionResult, HeartbeatRunRecord, Identi
 // ─── Custom Agents ──────────────────────────────────────────────────
 export { BUILTIN_AGENT_ROLES, loadAgentDefinitions, parseAgentFile, resolveAgentDefinition, scanAgentDefinitions, writeCustomAgent } from './agents/agentLoader';
 export type { AgentDefinition, AgentLoadDiagnostic, AgentDirectoryScan, AgentRole as CustomAgentRole, CreateCustomAgentInput, SubAgentRef } from './agents/agentLoader';
+export { AGENT_ID_PATTERN, assertValidAgentId, isValidAgentId, requireAgentDefinition, UnknownAgentError } from './agents/agentId';
 
 // ─── Triggers ───────────────────────────────────────────────────────
 export { TriggerScheduler, loadTriggers, normalizeEnvelope, saveTriggers } from './services/triggerScheduler';
