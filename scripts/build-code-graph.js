@@ -30,12 +30,9 @@ const path = require('path');
 const crypto = require('crypto');
 const ts = require('typescript');
 
-const REPO_ROOT = path.resolve(__dirname, '..');
-const SRC_DIR = path.join(REPO_ROOT, 'src');
-const OUT_DIR = path.join(REPO_ROOT, '.harness');
-const OUT_FILE = path.join(OUT_DIR, 'code-graph.json');
+const DEFAULT_REPO_ROOT = path.resolve(__dirname, '..');
 
-function listTsFiles(dir) {
+function listTsFiles(dir, _seen = new Set()) {
   const out = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
@@ -48,8 +45,8 @@ function listTsFiles(dir) {
   return out;
 }
 
-function rel(p) {
-  return path.relative(REPO_ROOT, p).replace(/\\/g, '/');
+function relTo(repoRoot, p) {
+  return path.relative(repoRoot, p).replace(/\\/g, '/');
 }
 
 function hashFile(p) {
@@ -76,16 +73,23 @@ function lineOf(node, sourceFile) {
   return sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
 }
 
-function main() {
-  const startedAt = Date.now();
-  const files = listTsFiles(SRC_DIR);
-  console.log(`[code-graph] scanning ${files.length} TS files under src/`);
+function buildCodeGraph(opts = {}) {
+  const repoRoot = opts.repoRoot ?? DEFAULT_REPO_ROOT;
+  const srcDir = opts.srcDir ?? path.join(repoRoot, 'src');
+  const outDir = opts.outDir ?? path.join(repoRoot, '.harness');
+  const outFile = opts.outFile ?? path.join(outDir, 'code-graph.json');
+  const log = opts.log ?? (() => {});
+  const rel = (p) => relTo(repoRoot, p);
 
-  const tsconfigPath = path.join(REPO_ROOT, 'tsconfig.json');
+  const startedAt = Date.now();
+  const files = listTsFiles(srcDir);
+  log(`[code-graph] scanning ${files.length} TS files under ${rel(srcDir)}/`);
+
+  const tsconfigPath = path.join(repoRoot, 'tsconfig.json');
   const tsconfig = ts.parseJsonConfigFileContent(
     ts.readConfigFile(tsconfigPath, ts.sys.readFile).config,
     ts.sys,
-    REPO_ROOT,
+    repoRoot,
   );
 
   const program = ts.createProgram({
@@ -217,11 +221,11 @@ function main() {
     return true;
   });
 
-  if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
+  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
   const out = {
     schema: 1,
     builtAt: new Date().toISOString(),
-    repo: rel(REPO_ROOT) || '.',
+    repo: rel(repoRoot) || '.',
     counts: {
       files: fileRows.length,
       nodes: nodeRows.length,
@@ -234,14 +238,19 @@ function main() {
     nodes: nodeRows,
     edges: dedupedEdges,
   };
-  fs.writeFileSync(OUT_FILE, JSON.stringify(out, null, 2));
+  fs.writeFileSync(outFile, JSON.stringify(out, null, 2));
 
   const ms = Date.now() - startedAt;
-  console.log(`[code-graph] wrote ${rel(OUT_FILE)} (${ms}ms)`);
-  console.log(
+  log(`[code-graph] wrote ${rel(outFile)} (${ms}ms)`);
+  log(
     `[code-graph]   files=${out.counts.files} nodes=${out.counts.nodes} ` +
       `imports=${out.counts.imports} contains=${out.counts.contains} calls=${out.counts.calls}`,
   );
+  return { ...out, durationMs: ms, outFile };
 }
 
-main();
+module.exports = { buildCodeGraph, DEFAULT_REPO_ROOT };
+
+if (require.main === module) {
+  buildCodeGraph({ log: (...args) => console.log(...args) });
+}

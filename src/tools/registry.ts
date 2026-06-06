@@ -22,6 +22,7 @@ import { EmailDraftTool, EmailSendTool, EmailInboxTool, EmailDeleteTool } from '
 import { SlackNotifyTool } from './slackTools';
 import { TelegramNotifyTool } from './telegramTools';
 import { createRecallTool } from './recallTool';
+import { createCodeGraphTool } from './codeGraphTool';
 import { CalendarReadTool, CalendarWriteTool } from './calendarTools';
 import { createMcpToolEntries } from './mcpTools';
 import { TaskManageTool, TaskProgressTool } from './taskTools';
@@ -84,6 +85,7 @@ export function createToolRegistry(projectDir?: string): ToolRegistry {
   if (projectDir) {
     for (const entry of createMcpToolEntries(projectDir)) registry.register(entry);
     registry.register({ tool: createRecallTool(projectDir), toolset: 'memory', source: 'runtime', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false });
+    registry.register({ tool: createCodeGraphTool(projectDir), toolset: 'code-graph', source: 'runtime', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false });
   }
   return registry;
 }
