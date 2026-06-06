@@ -18,7 +18,7 @@ import { parseIcsEvents } from '../tools/calendarTools';
 import { getRuntimeTools } from '../tools';
 import { createToolRegistry } from '../tools/registry';
 import { WorkflowRegistry } from '../workflows/workflowRegistry';
-import { runCurator, runDeterministicPhase, readCuratorLog, readCuratorProposals, restoreSkill, parseMergeProposals, applyMergeProposal, clearCuratorProposals, type CuratorConfig } from '../curator/curator';
+import { runCurator, runDeterministicPhase, readCuratorLog, readCuratorProposals, type CuratorConfig } from '../curator/curator';
 import { CuratorScheduler } from '../curator/scheduler';
 import { SelfLearningHeartbeat, createCleanupAgentOutputsAction, createIdentityGcAction, createReflectAndLearnAction, createSkillEvolutionAction, createWorkAssignedTasksAction, defaultHeartbeatActions, readHeartbeatHistory } from '../services/selfLearningHeartbeat';
 import { TriggerScheduler } from '../services/triggerScheduler';
@@ -75,6 +75,7 @@ import { createMcpRouter } from './mcpRoutes';
 import { createUploadsRouter } from './uploadsRoutes';
 import { createTeammateRouter } from './teammateRoutes';
 import { createToolsRouter } from './toolsRoutes';
+import { createCuratorRouter } from './curatorRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -6414,8 +6415,14 @@ app.use(createSkillRouter({
 }));
 
 // --- API: Curator ---
-app.get('/api/curator', async (_req, res) => {
-  try {
+// 7 /api/curator* routes moved to ./curatorRoutes.ts. server.ts retains
+// curatorSettings/lastUserActivityMs/curatorScheduler mutables + the
+// curatorConfigFromSettings/curatorDeps helpers (still used by the
+// curator scheduler wired in at line ~1101) and bridges them via three
+// thick callables.
+app.use(createCuratorRouter({
+  projectDir: PROJECT_DIR,
+  getCuratorStatus: async () => {
     const log = await readCuratorLog(PROJECT_DIR, 50);
     const proposals = await readCuratorProposals(PROJECT_DIR);
     let archived: string[] = [];
@@ -6424,104 +6431,27 @@ app.get('/api/curator', async (_req, res) => {
       const entries = await fs.readdir(archiveDir, { withFileTypes: true });
       archived = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
     } catch { /* archive dir does not exist yet */ }
-    res.json({
+    return {
       settings: curatorSettings,
       lastUserActivityAt: new Date(lastUserActivityMs).toISOString(),
       schedulerRunning: Boolean(curatorScheduler),
       log,
       proposals,
       archived,
-    });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Manually trigger a curator preview (dry-run, never mutates).
-app.post('/api/curator/preview', async (_req, res) => {
-  try {
-    const summary = await runDeterministicPhase(PROJECT_DIR, curatorConfigFromSettings(), curatorDeps(), { dryRun: true });
-    res.json({ summary });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Manually trigger a curator run. Honors the kill switch.
-app.post('/api/curator/run', async (_req, res) => {
-  try {
+    };
+  },
+  runCuratorPreview: async () => {
+    return runDeterministicPhase(PROJECT_DIR, curatorConfigFromSettings(), curatorDeps(), { dryRun: true });
+  },
+  runCuratorPhase: async () => {
     const summary = await runCurator(PROJECT_DIR, curatorConfigFromSettings(), curatorDeps());
     if (!summary.dryRun) {
       curatorSettings = { ...curatorSettings, lastRunAt: new Date().toISOString() };
       await saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
     }
-    res.json({ summary });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Restore an archived skill.
-app.post('/api/curator/restore/:name', async (req, res) => {
-  const skillName = safeLocalId(req.params.name);
-  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
-  try {
-    const result = await restoreSkill(PROJECT_DIR, skillName);
-    res.json({ ok: true, ...result });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Return the last LLM phase output as a structured proposal list. UI uses
-// this to render Approve / Dismiss buttons per cluster instead of asking the
-// user to read raw markdown.
-app.get('/api/curator/proposals', async (_req, res) => {
-  try {
-    const raw = await readCuratorProposals(PROJECT_DIR);
-    const proposals = raw ? parseMergeProposals(raw) : [];
-    res.json({ proposals, raw });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Apply a single merge proposal: writes a new umbrella SKILL.md and archives
-// the source skills (pinned ones are skipped). Body: { proposal, umbrellaName?, description?, dryRun? }.
-app.post('/api/curator/proposals/apply', async (req, res) => {
-  const proposal = req.body?.proposal;
-  if (!proposal || !Array.isArray(proposal.mergeSkills) || proposal.mergeSkills.length < 2) {
-    res.status(400).json({ error: 'proposal must include at least 2 mergeSkills' });
-    return;
-  }
-  const opts = {
-    umbrellaName: typeof req.body?.umbrellaName === 'string' ? req.body.umbrellaName : undefined,
-    description: typeof req.body?.description === 'string' ? req.body.description : undefined,
-    dryRun: Boolean(req.body?.dryRun),
-  };
-  try {
-    const result = await applyMergeProposal(PROJECT_DIR, {
-      umbrellaName: typeof proposal.umbrellaName === 'string' ? proposal.umbrellaName : 'umbrella',
-      heading: typeof proposal.heading === 'string' ? proposal.heading : '',
-      mergeSkills: proposal.mergeSkills.map((item: unknown) => String(item)),
-      rationale: typeof proposal.rationale === 'string' ? proposal.rationale : undefined,
-      proposedDescription: typeof proposal.proposedDescription === 'string' ? proposal.proposedDescription : undefined,
-    }, opts);
-    res.json({ ok: true, result });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Clear the proposals file (Dismiss all).
-app.delete('/api/curator/proposals', async (_req, res) => {
-  try {
-    await clearCuratorProposals(PROJECT_DIR);
-    res.json({ ok: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+    return summary;
+  },
+}));
 
 // --- API: Agent Memory ---
 // Moved to ./memoryRoutes.ts (createMemoryRouter mount above).
