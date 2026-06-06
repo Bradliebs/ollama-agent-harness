@@ -69,6 +69,7 @@ import { createBudgetRouter } from './budgetRoutes';
 import { createConnectorRouter } from './connectorRoutes';
 import { createSaveOutputRouter } from './saveOutputRoutes';
 import { createMiscRouter } from './miscRoutes';
+import { createRunsRouter } from './runsRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -6344,38 +6345,9 @@ CONTEXT HYGIENE (critical for long tasks):
 
 // Runs view: same source as /api/sessions but enriched with derived fields
 // (duration, age) the dashboard renders without per-row computation.
-app.get('/api/runs', async (_req, res) => {
-  try {
-    const sessions = await SessionStorage.listSessions(PROJECT_DIR);
-    const evidence = await readRunEvidence(PROJECT_DIR, 200);
-    const now = Date.now();
-    const runs = sessions.map((session) => {
-      const startMs = Date.parse(session.createdAt);
-      const endMs = session.updatedAt ? Date.parse(session.updatedAt) : Number.NaN;
-      const durationMs = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs ? endMs - startMs : null;
-      const ageMs = Number.isFinite(startMs) ? Math.max(0, now - startMs) : null;
-      return {
-        sessionId: session.sessionId,
-        title: session.title || 'Untitled run',
-        model: session.model,
-        status: session.status || 'unknown',
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt,
-        durationMs,
-        ageMs,
-        checkpointCount: session.checkpointCount ?? 0,
-        lastError: session.lastError,
-        parentSessionId: session.parentSessionId,
-      };
-    });
-    const counts: Record<string, number> = {};
-    for (const run of runs) counts[run.status] = (counts[run.status] ?? 0) + 1;
-    res.json({ runs, total: runs.length, counts, evidence });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// Extracted to ./runsRoutes.ts. server.ts still imports SessionStorage +
+// readRunEvidence for many other callers (chat handler, jarvis brief, etc).
+app.use(createRunsRouter({ projectDir: PROJECT_DIR }));
 
 // --- API: Snapshots (skills, memory, config) ---
 // Routes extracted to ./snapshotRoutes.ts. server.ts still imports
