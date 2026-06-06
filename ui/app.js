@@ -7236,7 +7236,15 @@ function openLeftTabByName(name) {
   const tabs = Array.from(document.querySelectorAll('.tab'));
   const tab = tabs.find((t) => (t.textContent || '').toLowerCase().includes(lookup.text.toLowerCase()));
   revealLeftPanel();
-  if (tab) showLeftTab(lookup.key, tab);
+  if (tab) { showLeftTab(lookup.key, tab); return; }
+  // No visible tab matched — but the key may still be a valid view that
+  // lives under the "More" overflow menu (autonomy, runs, tools, etc.).
+  // showLeftTab() switches view by id regardless of which DOM tab was
+  // clicked, so call it directly without a tab element. Without this
+  // fallback, inbox cards targeting More-menu views appear to do nothing.
+  if (typeof MORE_MENU_TABS !== 'undefined' && MORE_MENU_TABS.includes(lookup.key)) {
+    try { showLeftTab(lookup.key); } catch (e) { console.warn('openLeftTabByName fallback failed', e); }
+  }
 }
 
 async function loadHistory() {
