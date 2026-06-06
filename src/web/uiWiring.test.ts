@@ -45,6 +45,7 @@ const aboutRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'aboutRoutes
 const budgetRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'budgetRoutes.ts'), 'utf-8');
 const connectorRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'connectorRoutes.ts'), 'utf-8');
 const saveOutputRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'saveOutputRoutes.ts'), 'utf-8');
+const miscRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'miscRoutes.ts'), 'utf-8');
 
 const inlineGlobals = new Set([
   'alert',
@@ -320,7 +321,8 @@ describe('web UI wiring', () => {
     const budgetRouterRoutes = [...budgetRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const connectorRouterRoutes = [...connectorRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const saveOutputRouterRoutes = [...saveOutputRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
-    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes, ...promptsRouterRoutes, ...eventRouterRoutes, ...doneStateRouterRoutes, ...codeIntelRouterRoutes, ...myceliumRouterRoutes, ...traceRouterRoutes, ...snapshotRouterRoutes, ...historyRouterRoutes, ...fileRedirectRouterRoutes, ...documentRouterRoutes, ...benchmarkRouterRoutes, ...squadRouterRoutes, ...runtimeCostRouterRoutes, ...triggerRouterRoutes, ...artifactRouterRoutes, ...subagentRouterRoutes, ...sessionRouterRoutes, ...memoryRouterRoutes, ...ragRouterRoutes, ...serviceRouterRoutes, ...skillRouterRoutes, ...workflowRouterRoutes, ...webhookRouterRoutes, ...agentRouterRoutes, ...fileBrowseRouterRoutes, ...assetRouterRoutes, ...nervousRouterRoutes, ...synthesisStatsRouterRoutes, ...aboutRouterRoutes, ...budgetRouterRoutes, ...connectorRouterRoutes, ...saveOutputRouterRoutes]);
+    const miscRouterRoutes = [...miscRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes, ...promptsRouterRoutes, ...eventRouterRoutes, ...doneStateRouterRoutes, ...codeIntelRouterRoutes, ...myceliumRouterRoutes, ...traceRouterRoutes, ...snapshotRouterRoutes, ...historyRouterRoutes, ...fileRedirectRouterRoutes, ...documentRouterRoutes, ...benchmarkRouterRoutes, ...squadRouterRoutes, ...runtimeCostRouterRoutes, ...triggerRouterRoutes, ...artifactRouterRoutes, ...subagentRouterRoutes, ...sessionRouterRoutes, ...memoryRouterRoutes, ...ragRouterRoutes, ...serviceRouterRoutes, ...skillRouterRoutes, ...workflowRouterRoutes, ...webhookRouterRoutes, ...agentRouterRoutes, ...fileBrowseRouterRoutes, ...assetRouterRoutes, ...nervousRouterRoutes, ...synthesisStatsRouterRoutes, ...aboutRouterRoutes, ...budgetRouterRoutes, ...connectorRouterRoutes, ...saveOutputRouterRoutes, ...miscRouterRoutes]);
     const uiRoutes = [...new Set(extractFetchExpressions(appJs).map(normalizeUiFetchPath).filter((route): route is string => Boolean(route)))].sort();
 
     // A UI route like '/api/foo/:param' is satisfied either by an exact match

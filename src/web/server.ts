@@ -27,7 +27,7 @@ import { TeammateScheduler, sanitizeTeammateSettings, defaultTeammateSettings, t
 import { listActiveSubagents, subscribeSubagentRegistry } from '../services/subagentRegistry';
 import { createToolFailureAlerts, type ToolFailureAlertTracker } from '../services/toolFailureAlerts';
 import { formatPrometheusMetrics, type PrometheusMetric } from '../observability/prometheus';
-import { recordSwallowed, getSwallowedFailures, getSwallowedFailureCount } from '../observability/silentFailureSink';
+import { recordSwallowed } from '../observability/silentFailureSink';
 import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { summarizeTasks } from '../services/taskStore';
 import { createTaskRoutesRouter } from './taskRoutes';
@@ -68,6 +68,7 @@ import { createAboutRouter } from './aboutRoutes';
 import { createBudgetRouter } from './budgetRoutes';
 import { createConnectorRouter } from './connectorRoutes';
 import { createSaveOutputRouter } from './saveOutputRoutes';
+import { createMiscRouter } from './miscRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -129,7 +130,6 @@ import { classifyMode, type HarnessMode } from '../services/modeClassifier';
 import { createDefaultCapabilityRegistry, type CapabilityRegistry } from '../services/capabilityRegistry';
 import { evaluateCapabilityTemplates, type ConnectorReadinessInput } from '../services/capabilityTemplates';
 import { getCapabilityTemplateStarter, listCapabilityTemplateStarters, type CapabilityTemplateStarter } from '../services/capabilityTemplateStarters';
-import { WorkerQueue } from '../services/workerQueue';
 import { createPromise, listPromises, updatePromise, checkObligations, fulfilPromise, failPromise, detectCommitments, type PromiseStatus } from '../services/promiseLedger';
 import { emitEvent, queryEvents, summarizeEventStore } from '../persistence/eventStore';
 import { attachWsServer } from './wsServer';
@@ -2801,12 +2801,6 @@ async function buildAutonomyPreflight(planPreview?: Awaited<ReturnType<typeof re
 // recorded since process start. Used to surface failures of the audit log
 // itself (emitEvent, saveSettingsToDisk, etc.) that would otherwise be
 // completely invisible. Bounded at 200 entries; oldest evicted first.
-app.get('/api/diagnostics/swallowed', (_req, res) => {
-  res.json({
-    count: getSwallowedFailureCount(),
-    failures: getSwallowedFailures(),
-  });
-});
 
 app.get('/api/readiness', async (_req, res) => {
   try {
@@ -3648,18 +3642,10 @@ app.get('/api/capabilities/registry', async (_req, res) => {
 });
 
 // ─── Worker Queue status ────────────────────────────────────────────
-const workerQueue = new WorkerQueue();
-
-app.get('/api/worker/status', (_req, res) => {
-  res.json({ pending: workerQueue.pendingCount(), queue: workerQueue.pending(), history: workerQueue.history() });
-});
-
-// ─── Mode classification ────────────────────────────────────────────
-app.get('/api/modes/classify', (req, res) => {
-  const message = typeof req.query.message === 'string' ? req.query.message : '';
-  if (!message) { res.status(400).json({ error: 'message query parameter is required' }); return; }
-  res.json(classifyMode(message));
-});
+// Misc small routes (worker queue, mode classifier, swallowed-failure
+// diagnostics) extracted to ./miscRoutes.ts. classifyMode is still
+// imported by server.ts (chat handler ~5417 + agent routes ~2493).
+app.use(createMiscRouter());
 
 // ─── Agentic services + lifecycle + templates + health ──────────────
 // All /api/services/* routes extracted to ./serviceRoutes.ts. server.ts
