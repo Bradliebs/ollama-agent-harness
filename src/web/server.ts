@@ -74,6 +74,7 @@ import { createLearningRouter } from './learningRoutes';
 import { createMcpRouter } from './mcpRoutes';
 import { createUploadsRouter } from './uploadsRoutes';
 import { createTeammateRouter } from './teammateRoutes';
+import { createToolsRouter } from './toolsRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -4755,10 +4756,10 @@ app.post('/api/permissions/kill-switch', (req, res) => {
   }
 });
 
-// Read-only registry view for the Tools dashboard. Returns one entry per
-// registered tool with risk/category metadata grouped by toolset.
-app.get('/api/tools', (_req, res) => {
-  try {
+// Tools routes moved to ./toolsRoutes.ts. server.ts retains the disabledTools
+// + timedToolEnables mutables and bridges them via callable deps.
+app.use(createToolsRouter({
+  getToolStatus: () => {
     const registry = createToolRegistry(PROJECT_DIR);
     const tools = registry.listEntries().map((entry) => {
       const name = entry.tool.name;
@@ -4782,7 +4783,7 @@ app.get('/api/tools', (_req, res) => {
     const toolsets: Record<string, number> = {};
     for (const tool of tools) toolsets[tool.toolset] = (toolsets[tool.toolset] ?? 0) + 1;
     const capabilities = listCapabilityPolicies();
-    res.json({
+    return {
       tools,
       toolsets,
       disabled: Array.from(disabledTools).sort(),
@@ -4791,12 +4792,60 @@ app.get('/api/tools', (_req, res) => {
         summary: summarizeCapabilityAlignment(capabilities),
         coverage: mapToolsToCapabilityCoverage(),
       },
-    });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+    };
+  },
+  toggleTool: async (toolName, requestedEnabled, expiresInMinutes) => {
+    await ensureSettingsLoaded();
+    const registry = createToolRegistry(PROJECT_DIR);
+    if (!registry.get(toolName)) return null;
+    const currentlyEnabled = isToolEnabled(toolName);
+    const desiredEnabled = requestedEnabled === undefined ? !currentlyEnabled : requestedEnabled;
+    if (desiredEnabled) {
+      if (expiresInMinutes) {
+        disabledTools.add(toolName);
+        timedToolEnables.set(toolName, Date.now() + expiresInMinutes * 60_000);
+      } else {
+        disabledTools.delete(toolName);
+        timedToolEnables.delete(toolName);
+      }
+    } else {
+      disabledTools.add(toolName);
+      timedToolEnables.delete(toolName);
+    }
+    const timedExpiry = timedToolEnables.get(toolName);
+    const enabledUntil = timedExpiry !== undefined && Date.now() < timedExpiry ? new Date(timedExpiry).toISOString() : undefined;
+    logger.info('Tools', 'Tool toggled', { tool: toolName, enabled: desiredEnabled, expiresInMinutes });
+    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
+    return { name: toolName, enabled: desiredEnabled, enabledUntil, disabled: Array.from(disabledTools).sort() };
+  },
+  bulkToggleTools: async (names, desiredEnabled, expiresInMinutes) => {
+    await ensureSettingsLoaded();
+    const registry = createToolRegistry(PROJECT_DIR);
+    const results: Array<{ name: string; enabled: boolean; enabledUntil?: string }> = [];
+    for (const raw of names) {
+      const toolName = raw.trim();
+      if (!toolName || !registry.get(toolName)) continue;
+      if (desiredEnabled) {
+        if (expiresInMinutes) {
+          disabledTools.add(toolName);
+          timedToolEnables.set(toolName, Date.now() + expiresInMinutes * 60_000);
+        } else {
+          disabledTools.delete(toolName);
+          timedToolEnables.delete(toolName);
+        }
+      } else {
+        disabledTools.add(toolName);
+        timedToolEnables.delete(toolName);
+      }
+      const timedExpiry = timedToolEnables.get(toolName);
+      const enabledUntil = timedExpiry !== undefined && Date.now() < timedExpiry ? new Date(timedExpiry).toISOString() : undefined;
+      results.push({ name: toolName, enabled: desiredEnabled, enabledUntil });
+    }
+    logger.info('Tools', 'Bulk toggle', { count: results.length, enabled: desiredEnabled, expiresInMinutes });
+    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
+    return { toggled: results, disabled: Array.from(disabledTools).sort() };
+  },
+}));
 
 app.get('/api/capabilities', async (_req, res) => {
   try {
@@ -5054,78 +5103,7 @@ app.use(createMyceliumRouter({ projectDir: PROJECT_DIR }));
 // Enable or disable a single tool at runtime. Disabled tools are filtered out
 // of the agent's tool list before each chat turn.
 // Pass { enabled: true, expiresInMinutes: N } to enable for a limited time.
-app.post('/api/tools/:name/toggle', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const toolName = String(req.params.name || '').trim();
-    if (!toolName) { res.status(400).json({ error: 'tool name required' }); return; }
-    const registry = createToolRegistry(PROJECT_DIR);
-    if (!registry.get(toolName)) { res.status(404).json({ error: 'unknown tool' }); return; }
-    const currentlyEnabled = isToolEnabled(toolName);
-    const desiredEnabled = req.body?.enabled === undefined ? !currentlyEnabled : Boolean(req.body.enabled);
-    const expiresInMinutes = typeof req.body?.expiresInMinutes === 'number' && req.body.expiresInMinutes > 0
-      ? Math.min(req.body.expiresInMinutes, 1440) : undefined;
-
-    if (desiredEnabled) {
-      if (expiresInMinutes) {
-        // Time-limited enable: keep in disabledTools but add timed override
-        disabledTools.add(toolName);
-        timedToolEnables.set(toolName, Date.now() + expiresInMinutes * 60_000);
-      } else {
-        // Permanent enable
-        disabledTools.delete(toolName);
-        timedToolEnables.delete(toolName);
-      }
-    } else {
-      disabledTools.add(toolName);
-      timedToolEnables.delete(toolName);
-    }
-    const timedExpiry = timedToolEnables.get(toolName);
-    const enabledUntil = timedExpiry !== undefined && Date.now() < timedExpiry ? new Date(timedExpiry).toISOString() : undefined;
-    logger.info('Tools', 'Tool toggled', { tool: toolName, enabled: desiredEnabled, expiresInMinutes });
-    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
-    res.json({ name: toolName, enabled: desiredEnabled, enabledUntil, disabled: Array.from(disabledTools).sort() });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Batch enable/disable multiple tools in a single call.
-app.post('/api/tools/bulk-toggle', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const names = Array.isArray(req.body?.names) ? req.body.names : [];
-    const desiredEnabled = Boolean(req.body?.enabled);
-    const expiresInMinutes = typeof req.body?.expiresInMinutes === 'number' && req.body.expiresInMinutes > 0
-      ? Math.min(req.body.expiresInMinutes, 1440) : undefined;
-    const registry = createToolRegistry(PROJECT_DIR);
-    const results: Array<{ name: string; enabled: boolean; enabledUntil?: string }> = [];
-    for (const raw of names) {
-      const toolName = String(raw).trim();
-      if (!toolName || !registry.get(toolName)) continue;
-      if (desiredEnabled) {
-        if (expiresInMinutes) {
-          disabledTools.add(toolName);
-          timedToolEnables.set(toolName, Date.now() + expiresInMinutes * 60_000);
-        } else {
-          disabledTools.delete(toolName);
-          timedToolEnables.delete(toolName);
-        }
-      } else {
-        disabledTools.add(toolName);
-        timedToolEnables.delete(toolName);
-      }
-      const timedExpiry = timedToolEnables.get(toolName);
-      const enabledUntil = timedExpiry !== undefined && Date.now() < timedExpiry ? new Date(timedExpiry).toISOString() : undefined;
-      results.push({ name: toolName, enabled: desiredEnabled, enabledUntil });
-    }
-    logger.info('Tools', 'Bulk toggle', { count: results.length, enabled: desiredEnabled, expiresInMinutes });
-    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
-    res.json({ toggled: results, disabled: Array.from(disabledTools).sort() });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// /api/tools/:name/toggle + /api/tools/bulk-toggle moved to ./toolsRoutes.ts (createToolsRouter mount above).
 
 // --- Workflows ---
 // 10 routes extracted to ./workflowRoutes.ts. server.ts keeps the
