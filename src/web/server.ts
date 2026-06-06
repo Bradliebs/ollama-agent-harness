@@ -58,6 +58,7 @@ import { createRagRouter } from './ragRoutes';
 import { createServiceRouter } from './serviceRoutes';
 import { createSkillRouter } from './skillRoutes';
 import { createWorkflowRouter } from './workflowRoutes';
+import { createWebhookRouter } from './webhookRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -149,7 +150,7 @@ import { startDiscordBot, stopDiscordBot, isDiscordBotRunning } from '../integra
 import { getSlackConnectorStatus, sanitizeSlackWebhookUrl } from '../integrations/slack';
 import { getWhatsAppConnectorStatus, sanitizeWhatsAppSetup } from '../integrations/whatsapp';
 import { configureWebReadTool, DEFAULT_WEB_READ_MAX_CHARS, sanitizeWebReadMaxChars } from '../tools/webSearchTool';
-import { addWebhook, removeWebhook, listWebhooks, loadWebhooksFromEnv, sendWebhookNotification } from '../integrations/webhooks';
+import { loadWebhooksFromEnv, sendWebhookNotification } from '../integrations/webhooks';
 import * as nodemailer from 'nodemailer';
 import { NervousSystemController } from '../nervous';
 import { listShellCommandAllowlistPresets } from '../automation/runner';
@@ -3643,9 +3644,10 @@ app.get('/api/research/report/:name', (req, res) => {
   });
 });
 
-app.get('/api/webhooks', (_req, res) => {
-  res.json({ webhooks: listWebhooks() });
-});
+// 3 webhook routes (GET /api/webhooks, POST /api/webhooks, DELETE
+// /api/webhooks/:id) extracted to ./webhookRoutes.ts. server.ts keeps
+// loadWebhooksFromEnv + sendWebhookNotification (non-HTTP boot/notify paths).
+app.use(createWebhookRouter());
 
 app.get('/api/nervous', (_req, res) => {
   const snap = lastNervousSnapshot;
@@ -3670,25 +3672,6 @@ app.get('/api/nervous/history', async (_req, res) => {
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
-});
-
-app.post('/api/webhooks', (req, res) => {
-  try {
-    const url = String(req.body?.url ?? '').trim();
-    if (!url) { res.status(400).json({ error: 'url is required' }); return; }
-    const secret = typeof req.body?.secret === 'string' ? req.body.secret.trim() : undefined;
-    const events = Array.isArray(req.body?.events) ? req.body.events.map(String) : [];
-    const webhook = addWebhook({ url, secret, events, enabled: true });
-    res.json({ ok: true, webhook: { ...webhook, secret: secret ? '***' : undefined } });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete('/api/webhooks/:id', (req, res) => {
-  const removed = removeWebhook(String(req.params.id));
-  if (!removed) { res.status(404).json({ error: 'Webhook not found' }); return; }
-  res.json({ ok: true });
 });
 
 app.get('/api/discovery', async (_req, res) => {
