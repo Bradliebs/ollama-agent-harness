@@ -77,6 +77,7 @@ import { createTeammateRouter } from './teammateRoutes';
 import { createToolsRouter } from './toolsRoutes';
 import { createCuratorRouter } from './curatorRoutes';
 import { createEvalsRouter } from './evalsRoutes';
+import { createAutomationRouter } from './automationRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -127,9 +128,7 @@ import { checkSetupHealth } from '../setup/health';
 import { probeToolCalling, type ToolCallProbeResult } from '../setup/toolCallProbe';
 import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCatalog';
 import { isVisionCapableModelName } from '../models/visionModels';
-import { createAutomationJob, deleteAutomationJob, executeDueJobs, listAutomationJobs, listDueAutomationJobs, parseAutomationSchedule, computeNextAutomationRun, readAutomationRunLog, updateAutomationJob } from '../automation/jobs';
-import { auditAutomationJobSafety } from '../automation/jobSafety';
-import { prepareAutomationRun } from '../automation/runner';
+import { createAutomationJob, listAutomationJobs, listDueAutomationJobs, readAutomationRunLog } from '../automation/jobs';
 import { AutomationScheduler } from '../automation/scheduler';
 import { handleOperateModeRequest, listAgenticServices } from '../services/agenticServiceMode';
 import { classifyMode, type HarnessMode } from '../services/modeClassifier';
@@ -4844,154 +4843,26 @@ app.get('/api/capabilities/audit', async (_req, res) => {
   }
 });
 
-app.post('/api/automations/execute-due', async (_req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    if (killSwitchActive) {
-      res.status(403).json({ error: 'Kill switch is active.', results: [] });
-      return;
-    }
-    const policy = getAutomationPolicyContext();
-    const results = await executeDueJobs(PROJECT_DIR, policy);
-    const evidence = [];
-    for (const result of results) {
-      const card = createRunEvidence({ id: `automation:${result.jobId}:${new Date().toISOString()}`, kind: 'automation', request: result.run.prompt, runName: result.name, command: result.run.scriptOutput ? 'automation script context' : undefined, outputPath: result.run.outputPath, success: true, summary: result.run.scriptOutput.slice(0, 220) });
-      await appendRunEvidence(PROJECT_DIR, card);
-      evidence.push(card);
-    }
-    // Notify via Telegram if bot is running.
-    if (results.length > 0) {
-      const summary = results.map((r) => `• ${r.name}`).join('\n');
-      sendTelegramNotification('Automation jobs completed', `${results.length} job(s) ran:\n${summary}`).catch((err) => recordSwallowed('sendTelegramNotification', err));
-      sendWebhookNotification('automation.completed', { executed: results.length, jobs: results.map((r) => ({ id: r.jobId, name: r.name })) }).catch((err) => recordSwallowed('sendWebhookNotification', err));
-    }
-    res.json({ executed: results.length, results: results.map((r) => ({ jobId: r.jobId, name: r.name, scriptOutput: r.run.scriptOutput, outputPath: r.run.outputPath })), evidence });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/automations/:id/execute', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    if (killSwitchActive) { res.status(403).json({ error: 'Kill switch is active.' }); return; }
-    const jobId = safeLocalId(req.params.id);
-    if (!jobId) { res.status(400).json({ error: 'Invalid job id.' }); return; }
-    const jobs = await listAutomationJobs(PROJECT_DIR);
-    const job = jobs.find((j) => j.id === jobId);
-    if (!job) { res.status(404).json({ error: 'Job not found.' }); return; }
-    const policy = getAutomationPolicyContext();
-    const run = await prepareAutomationRun(PROJECT_DIR, job, new Date(), policy);
-    const card = createRunEvidence({ id: `automation:${jobId}:${new Date().toISOString()}`, kind: 'automation', request: run.prompt, runName: job.name, command: run.scriptOutput ? 'automation script context' : undefined, outputPath: run.outputPath, success: true, summary: (run.scriptOutput || '').slice(0, 220) });
-    await appendRunEvidence(PROJECT_DIR, card);
-    res.json({ ok: true, jobId, name: job.name, scriptOutput: run.scriptOutput, outputPath: run.outputPath, evidence: card });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// Preview an automation schedule string without persisting anything. Used by
-// the wizard's "Next run" hint so users see what they're about to commit.
-app.post('/api/automations/preview', (req, res) => {
-  const value = typeof req.body?.schedule === 'string' ? req.body.schedule : '';
-  if (!value.trim()) { res.status(400).json({ error: 'schedule is required.' }); return; }
-  try {
-    const now = new Date();
-    const schedule = parseAutomationSchedule(value, now);
-    const nextRunAt = computeNextAutomationRun(schedule, undefined, now);
-    res.json({ ok: true, schedule, nextRunAt });
-  } catch (error) {
-    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/automations/jobs/safety', async (_req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const jobs = await listAutomationJobs(PROJECT_DIR);
-    res.json({ audit: auditAutomationJobSafety(jobs) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/automations/jobs', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const name = String(req.body?.name ?? '').trim();
-    const prompt = String(req.body?.prompt ?? '').trim();
-    const schedule = String(req.body?.schedule ?? '').trim();
-    if (!name || !prompt || !schedule) {
-      res.status(400).json({ error: 'name, prompt, and schedule are required.' });
-      return;
-    }
-    const scriptCommand = typeof req.body?.scriptCommand === 'string' ? req.body.scriptCommand : undefined;
-    const job = await createAutomationJob(PROJECT_DIR, { name, prompt, schedule, scriptCommand });
-    logger.info('Automation', 'Job created', { jobId: job.id, name: job.name });
-    res.json({ job });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ error: msg });
-  }
-});
-
-app.delete('/api/automations/jobs/:id', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const jobId = String(req.params.id ?? '').trim();
-    const deleted = await deleteAutomationJob(PROJECT_DIR, jobId);
-    if (!deleted) { res.status(404).json({ error: 'Automation job not found.' }); return; }
-    logger.info('Automation', 'Job deleted', { jobId });
-    res.json({ deleted: jobId });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.patch('/api/automations/jobs/:id', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const jobId = String(req.params.id ?? '').trim();
-    const updated = await updateAutomationJob(PROJECT_DIR, jobId, req.body ?? {});
-    if (!updated) { res.status(404).json({ error: 'Automation job not found.' }); return; }
-    logger.info('Automation', 'Job updated', { jobId, name: updated.name });
-    res.json({ job: updated });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ error: msg });
-  }
-});
-
-app.get('/api/automations/runs', async (_req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const entries = await readAutomationRunLog(PROJECT_DIR);
-    const evidence = await readRunEvidence(PROJECT_DIR);
-    res.json({ runs: entries, evidence: evidence.filter((card) => card.kind === 'automation') });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/automations/output', async (req, res) => {
-  try {
-    const rawPath = typeof req.query.path === 'string' ? req.query.path : '';
-    if (!rawPath) { res.status(400).json({ error: 'path is required' }); return; }
-    const resolved = path.resolve(PROJECT_DIR, rawPath);
-    const automationsDir = path.resolve(PROJECT_DIR, '.harness', 'automations');
-    if (!resolved.startsWith(automationsDir)) { res.status(403).json({ error: 'Path must be inside .harness/automations/' }); return; }
-    const content = await fs.readFile(resolved, 'utf-8');
-    res.json({ path: rawPath, content: content.slice(0, 50_000) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(404).json({ error: msg });
-  }
-});
+// 9 /api/automations* routes moved to ./automationRoutes.ts. server.ts
+// retains getAutomationPolicyContext + createRunEvidence locally because
+// both close over module-level state (killSwitchActive, capabilityGrants,
+// currentModel, permissionMode). The router gets buildEvidenceCard +
+// getPolicyContext bridges plus a thin notifyAutomationCompleted closure
+// that fans out to Telegram and webhooks without exposing those modules.
+app.use(createAutomationRouter({
+  projectDir: PROJECT_DIR,
+  ensureSettingsLoaded,
+  isKillSwitchActive: () => killSwitchActive,
+  getPolicyContext: () => getAutomationPolicyContext(),
+  buildEvidenceCard: (input) => createRunEvidence(input),
+  notifyAutomationCompleted: (results) => {
+    const summary = results.map((r) => `• ${r.name}`).join('\n');
+    sendTelegramNotification('Automation jobs completed', `${results.length} job(s) ran:\n${summary}`)
+      .catch((err) => recordSwallowed('sendTelegramNotification', err));
+    sendWebhookNotification('automation.completed', { executed: results.length, jobs: results })
+      .catch((err) => recordSwallowed('sendWebhookNotification', err));
+  },
+}));
 
 // ─── Mycelium graph API ──────────────────────────────────────────
 // Routes extracted to ./myceliumRoutes.ts. server.ts still imports
