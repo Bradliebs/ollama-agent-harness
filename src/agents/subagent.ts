@@ -11,6 +11,7 @@ import { resolveAgentDefinition, type AgentDefinition, type SubAgentRef } from '
 import { registerSubagent, unregisterSubagent, updateSubagentActivity, getActiveSubagent } from '../services/subagentRegistry';
 import { appendSubagentRun } from '../services/subagentRuns';
 import { recordSwallowed } from '../observability/silentFailureSink';
+import { renderTemplate } from '../prompts/template';
 
 export interface SubagentConfig {
   name: string;
@@ -510,12 +511,16 @@ function buildSubAgentTool(
  * then prepend a Context block listing the bindings so the child agent sees
  * them whether or not the prompt referenced them. Returns the prompt
  * unchanged when no values are bound.
+ *
+ * Variable substitution is delegated to the shared prompt template engine
+ * (../prompts/template) so prompts can also use {{#if key}} / {{#unless key}}
+ * blocks if they want to conditionalise sections on the presence of a bound
+ * value. Unbound `{{key}}` placeholders are left in place (more debuggable
+ * than a silent drop).
  */
 export function renderSubAgentPrompt(prompt: string, values?: Record<string, string>): string {
   if (!values || Object.keys(values).length === 0) return prompt;
-  const substituted = prompt.replace(/\{\{\s*([A-Za-z_][\w-]*)\s*\}\}/g, (match, key) => (
-    Object.prototype.hasOwnProperty.call(values, key) ? values[key] : match
-  ));
+  const substituted = renderTemplate(prompt, values);
   const contextLines = Object.entries(values).map(([k, v]) => `- ${k}: ${v}`).join('\n');
   return `Context (pre-bound by parent):\n${contextLines}\n\n${substituted}`;
 }

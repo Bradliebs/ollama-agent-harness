@@ -63,6 +63,8 @@ export { appendEvalTraceExample, createEvalTraceExample, createOutputValidationT
 export type { EvalTraceExample, EvalTraceOptions, EvalTraceRun, EvalTraceRunResult, EvalTraceRunTrend, OutputValidationEvalRunOptions, OutputValidationRunTrend, OutputValidationSelectionSource, OutputValidationTrendExport, ReplayEvalActuals, ReplayEvalOptions, ReplayEvalRunOptions, ReplayEvalSourceLinks, TraceSnapshot } from './learning/evalTrace';
 export { loadSkillsDir, parseSkillFile, matchSkillTrigger } from './extensibility/skillLoader';
 export { HookPipeline } from './extensibility/hookPipeline';
+export { renderTemplate, renderTemplateDetailed } from './prompts/template';
+export type { RenderResult, TemplateContext, TemplateValue } from './prompts/template';
 export type { LoopConfig, LoopEvent, OutputValidationEvent, Tool, ToolResult, ToolCall, PermissionRule, PermissionMode, SessionEvent, SessionMeta, ContinuityCheckpoint, Hook, HookContext, HookResult } from './types';
 
 // ─── Promise Ledger ─────────────────────────────────────────────────
