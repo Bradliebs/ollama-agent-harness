@@ -20,3 +20,4 @@ export {
   type BuildInspectorsOptions,
   type BuildInspectorsResult,
 } from './buildFromEnv';
+export { createLlmAdversaryJudge } from './llmJudge';

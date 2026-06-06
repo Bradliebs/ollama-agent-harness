@@ -13,6 +13,7 @@ import { createChatClient, OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiK
 import { drainRemoteProviderFallbackEvents } from '../core/fallbackChatClient';
 import type { IChatClient } from '../core/chatClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
+import { createLlmAdversaryJudge } from '../safety/toolInspectors';
 import { buildMorningBriefing, type BriefingCalendarEvent } from '../jarvis/morningBriefing';
 import { parseIcsEvents } from '../tools/calendarTools';
 import { getRuntimeTools } from '../tools';
@@ -5601,6 +5602,34 @@ CONTEXT HYGIENE (critical for long tasks):
     summarizerClient: summarizerModel ? webRuntime.createClient(summarizerModel, ollamaHost, activeContextMaxTokens) : undefined,
     tracer: runtimeTracer,
     learningRecorder: chatLearningRecorder,
+    // Bridge inspector requireApproval into the same prompt broker the
+    // permission engine uses, so users see one queue. Routed through the
+    // current `permissionMode`: dontAsk auto-allows (matches existing
+    // permission behaviour); ask/acceptEdits surface the prompt.
+    onApprovalRequired: async (info) => {
+      if (permissionMode === 'dontAsk') {
+        runtimeTracer.recordEvent('inspector.auto_approved', {
+          tool: info.call.name,
+          inspector: info.inspectorName,
+          reason: info.reason,
+        });
+        return true;
+      }
+      runtimeTracer.recordEvent('permission.prompt_created', {
+        tool: info.call.name,
+        reason: info.reason,
+        source: `inspector.${info.inspectorName}`,
+      });
+      const result = await permissionPrompts.request(
+        info.call,
+        `Inspector '${info.inspectorName}': ${info.reason}${info.warning ? ` (${info.warning})` : ''}`,
+      );
+      return result.allowed;
+    },
+    // LLM-graded safety judge for AdversaryInspector. Reuses the chat
+    // client; only invoked when HARNESS_INSPECTOR_ADVERSARY=1 and
+    // <project>/.harness/adversary.md exists.
+    adversaryJudge: createLlmAdversaryJudge(client),
   };
 
   const messages: Message[] = [];

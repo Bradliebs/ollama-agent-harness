@@ -11,7 +11,7 @@ import type { SessionStorage } from '../persistence/sessionStorage';
 import { createContinuityCheckpoint } from '../persistence/continuity';
 import { ToolDispatcher } from '../tools/dispatcher';
 import { ReadBeforeWriteGate } from '../tools/readBeforeWriteGate';
-import { buildInspectorsFromEnv } from '../safety/toolInspectors';
+import { buildInspectorsFromEnv, type AdversaryJudge } from '../safety/toolInspectors';
 import { renderRepoMapBlock } from './repoMap';
 import { scanForInjection } from '../safety/injectionDefence';
 import type { LearningRecorder } from '../learning/engine';
@@ -39,6 +39,24 @@ export interface QueryLoopDeps {
    * this run id so the whole run can be undone. The caller owns the run
    * boundary (e.g. a goal scopes all its iterations under one id). */
   sideEffectRecorder?: SideEffectRecorder;
+  /**
+   * Optional LLM-backed judge wired into AdversaryInspector. Constructed by
+   * the caller (e.g. `createLlmAdversaryJudge(client)`) so the inspector
+   * module stays provider-free. Only consulted when
+   * `HARNESS_INSPECTOR_ADVERSARY=1` AND `.harness/adversary.md` exists.
+   */
+  adversaryJudge?: AdversaryJudge;
+  /**
+   * Called when a safety inspector requires human confirmation before a
+   * tool runs. Return `true` to proceed, `false` to abort. Without this,
+   * `requireApproval` decisions silently pass through (matches goose CLI).
+   */
+  onApprovalRequired?: (info: {
+    call: ToolCall;
+    reason: string;
+    warning?: string;
+    inspectorName: string;
+  }) => Promise<boolean>;
 }
 
 export async function* queryLoop(
@@ -47,7 +65,7 @@ export async function* queryLoop(
   initialMessages: Message[] = [],
 ): AsyncGenerator<LoopEvent> {
   const { maxTurns, abortSignal } = config;
-  const { client, tools, permissionCheck, hooks, session, summarizerClient, tracer, learningRecorder, sideEffectRecorder } = deps;
+  const { client, tools, permissionCheck, hooks, session, summarizerClient, tracer, learningRecorder, sideEffectRecorder, adversaryJudge, onApprovalRequired } = deps;
 
   // Authoritative cost-honesty signal for this run: the serving client knows
   // whether it runs on-box (Ollama → 'local', $0 marginal) or hosted. Fall
@@ -490,8 +508,8 @@ export async function* queryLoop(
     const compressionConfig = process.env.HARNESS_TOOL_COMPRESSION_MAX_CHARS
       ? { maxChars: Number(process.env.HARNESS_TOOL_COMPRESSION_MAX_CHARS) || undefined }
       : undefined;
-    const { manager: inspectors, largeResponseConfig } = buildInspectorsFromEnv();
-    const dispatchedToolResults = await dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer, learningRecorder, readBeforeWriteGate, compressOutput, compressionConfig, sideEffectRecorder, inspectors, largeResponseConfig });
+    const { manager: inspectors, largeResponseConfig } = buildInspectorsFromEnv({ adversaryJudge });
+    const dispatchedToolResults = await dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer, learningRecorder, readBeforeWriteGate, compressOutput, compressionConfig, sideEffectRecorder, inspectors, largeResponseConfig, onApprovalRequired });
     const toolResults = [...skippedToolResults, ...dispatchedToolResults];
     let producedFileChange = false;
     for (const { call, result } of toolResults) {
