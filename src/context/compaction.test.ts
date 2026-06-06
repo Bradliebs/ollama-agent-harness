@@ -1,4 +1,12 @@
-import { applyBudgetReduction, applyAutoCompact, applySnip, compactIfNeeded } from './compaction';
+import {
+  applyBudgetReduction,
+  applyAutoCompact,
+  applySnip,
+  compactIfNeeded,
+  COMPACTION_STRATEGIES,
+  isCompactionBoundary,
+  AUTO_COMPACT_BOUNDARY_PREFIX,
+} from './compaction';
 import { estimateTokenCount } from './assembly';
 import type { Message } from 'ollama';
 
@@ -147,6 +155,101 @@ describe('Context Compaction', () => {
       ];
       const count = estimateTokenCount(messages);
       expect(count).toBe(100);
+    });
+  });
+
+  describe('CompactionStrategy contract', () => {
+    it('exposes the closed set of strategies', () => {
+      expect(COMPACTION_STRATEGIES).toEqual([
+        'budget_reduction',
+        'snip',
+        'auto_compact',
+        'snip_quality_fallback',
+      ]);
+    });
+  });
+
+  describe('isCompactionBoundary', () => {
+    it('matches auto-compact summary boundaries', () => {
+      expect(isCompactionBoundary({
+        role: 'system',
+        content: `${AUTO_COMPACT_BOUNDARY_PREFIX}5 messages]\nsummary body`,
+      })).toBe(true);
+    });
+
+    it('matches snip boundaries with any digit count', () => {
+      expect(isCompactionBoundary({
+        role: 'system',
+        content: '[12 earlier messages snipped to save context]',
+      })).toBe(true);
+      expect(isCompactionBoundary({
+        role: 'system',
+        content: '[1 earlier messages snipped to save context]',
+      })).toBe(true);
+    });
+
+    it('rejects unrelated system messages', () => {
+      expect(isCompactionBoundary({ role: 'system', content: 'system prompt' })).toBe(false);
+      expect(isCompactionBoundary({ role: 'system', content: '[notes] hello' })).toBe(false);
+      expect(isCompactionBoundary({ role: 'system', content: '[abc earlier messages snipped to save context]' })).toBe(false);
+    });
+
+    it('rejects non-system roles even if content looks boundary-like', () => {
+      expect(isCompactionBoundary({
+        role: 'user',
+        content: `${AUTO_COMPACT_BOUNDARY_PREFIX}5 messages]\nfake`,
+      })).toBe(false);
+    });
+  });
+
+  describe('boundary accumulation guard', () => {
+    it('does not stack snip boundaries across repeated compactions', () => {
+      const messages: Message[] = [
+        { role: 'system', content: 'system' },
+        { role: 'user', content: 'msg 1' },
+        { role: 'assistant', content: 'reply 1' },
+        { role: 'user', content: 'msg 2' },
+        { role: 'assistant', content: 'reply 2' },
+        { role: 'user', content: 'msg 3' },
+        { role: 'assistant', content: 'reply 3' },
+        { role: 'user', content: 'msg 4' },
+        { role: 'assistant', content: 'reply 4' },
+      ];
+
+      const first = applySnip(messages, 3);
+      const second = applySnip(first.messages, 3);
+      const third = applySnip(second.messages, 3);
+
+      const boundaries = third.messages.filter(isCompactionBoundary);
+      expect(boundaries.length).toBe(1);
+    });
+
+    it('drops the prior auto-compact summary before producing a new one', async () => {
+      const seedSummary: Message = {
+        role: 'system',
+        content: `${AUTO_COMPACT_BOUNDARY_PREFIX}3 messages]\nold summary`,
+      };
+      const messages: Message[] = [
+        { role: 'system', content: 'system' },
+        seedSummary,
+        { role: 'user', content: 'new question 1' },
+        { role: 'assistant', content: 'new reply 1' },
+        { role: 'user', content: 'new question 2' },
+        { role: 'assistant', content: 'new reply 2' },
+        { role: 'user', content: 'latest' },
+      ];
+      const client = {
+        chat: jest.fn().mockResolvedValue({
+          message: { role: 'assistant', content: 'fresh summary' },
+        }),
+      };
+
+      const result = await applyAutoCompact(messages, client as never);
+
+      const boundaries = result.messages.filter(isCompactionBoundary);
+      expect(boundaries.length).toBe(1);
+      expect(boundaries[0].content).toContain('fresh summary');
+      expect(boundaries[0].content).not.toContain('old summary');
     });
   });
 });

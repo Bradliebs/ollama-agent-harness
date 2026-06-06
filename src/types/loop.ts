@@ -204,7 +204,7 @@ export interface ProviderFallbackEvent {
 
 export interface ContextEvent {
   type: 'context';
-  strategy: string;
+  strategy: import('../context/compaction').CompactionStrategy;
   tokensFreed: number;
   compactedCount: number;
   autosaved: boolean;
