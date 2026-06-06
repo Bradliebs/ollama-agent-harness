@@ -70,6 +70,7 @@ import { createConnectorRouter } from './connectorRoutes';
 import { createSaveOutputRouter } from './saveOutputRoutes';
 import { createMiscRouter } from './miscRoutes';
 import { createRunsRouter } from './runsRoutes';
+import { createLearningRouter } from './learningRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -105,9 +106,9 @@ import { assessOfflineGuarantee } from '../observability/offlineGuarantee';
 import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, describeOutputValidationProfileSuggestion, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
 import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, adaptiveTimeBudget, recordAvgTurnDuration, recordToolUseStats } from '../core/synthesisStats';
 import { startNewSession, onSessionEnd, getEvolvedPrompt, recordSessionAutoContinue, LearningRecorder } from '../learning/engine';
-import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
-import { appendLearningCandidate, evaluatePromotionGateForCandidate, extractLearningCandidate, getLearningCandidateProvenance, listLearningCandidates, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
-import { createSubagentTool, listSubagentRoutingMetrics } from '../agents/subagent';
+import { appendEvalTraceExample, createEvalTraceExample, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
+import { appendLearningCandidate, extractLearningCandidate, listLearningCandidates, listReviewedLearningCandidates } from '../learning/sessionLearning';
+import { createSubagentTool } from '../agents/subagent';
 import { applyGrantToLadder, clearRuntimeRegistry, composeDailyBrief, composeMermaidGraph, defaultAmbientActionPolicy, ensureCapability, eventsFromAmbientSignals, eventsFromEvidenceCards, getInboundTriageStatus, getKnowledgeGraphStatus, getMcpServerStatus, getRuntimeRegistryStatus, getVoiceStatus, ingestEvidenceCard, loadRuntimeRegistry, loadTrustLadder, markRuntimeInstalled, mergeAndSort, mineNextActions, readAll as readKnowledgeGraph, recall as kgRecall, recordOutcome, recordPermissionOutcome, runCouncilForChat, saveRuntimeRegistry, saveTrustLadder, snapshotDailyBrief, startAmbientDaemon, upsertEntity, type AmbientDaemonHandle, type RuntimeFeature } from '../jarvis';
 import { SignalBus } from '../nervous/signals';
 import { BUILTIN_AGENT_ROLES, loadAgentDefinitions } from '../agents/agentLoader';
@@ -117,7 +118,6 @@ import { getSquad, listSquads, routeMessage } from '../services/squad';
 import { resolveSessionSquad } from '../services/squadSessions';
 import { renderIdentityForPrompt } from '../services/identity';
 import { createIdentityRouter } from './identityRoutes';
-import { calibrateModelRoutingPolicy, summarizeRoutingMetrics } from '../agents/modelRouting';
 import { checkSetupHealth } from '../setup/health';
 import { probeToolCalling, type ToolCallProbeResult } from '../setup/toolCallProbe';
 import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCatalog';
@@ -6349,6 +6349,21 @@ CONTEXT HYGIENE (critical for long tasks):
 // readRunEvidence for many other callers (chat handler, jarvis brief, etc).
 app.use(createRunsRouter({ projectDir: PROJECT_DIR }));
 
+// Learning console routes — read evolved prompts/reflections/candidates and
+// apply routing calibration. Extracted to ./learningRoutes.ts. Mutable
+// modelRouting state is bridged via callable deps so server.ts stays the
+// single owner of policy persistence (used by /api/settings + boot load).
+app.use(createLearningRouter({
+  projectDir: PROJECT_DIR,
+  getModelRouting: () => modelRouting,
+  applyRoutingCalibration: async (suggestedPolicy) => {
+    await ensureSettingsLoaded();
+    modelRouting = sanitizeModelRoutingPolicy({ ...modelRouting, ...suggestedPolicy });
+    await saveSettingsToDisk();
+    return getCurrentSettings();
+  },
+}));
+
 // --- API: Snapshots (skills, memory, config) ---
 // Routes extracted to ./snapshotRoutes.ts. server.ts still imports
 // snapshots for the pre-recovery snapshot call in the chat handler.
@@ -6623,132 +6638,7 @@ app.delete('/api/curator/proposals', async (_req, res) => {
 // --- API: Agent Memory ---
 // Moved to ./memoryRoutes.ts (createMemoryRouter mount above).
 
-// --- API: Learning ---
-app.get('/api/learning', async (_req, res) => {
-  const learningDir = path.join(PROJECT_DIR, '.harness', 'learning');
-  const result: Record<string, unknown> = {};
-  try {
-    result.patterns = JSON.parse(await fs.readFile(path.join(learningDir, 'detected-patterns.json'), 'utf-8'));
-  } catch { result.patterns = []; }
-  try {
-    const raw = await fs.readFile(path.join(learningDir, 'reflections.jsonl'), 'utf-8');
-    result.reflections = raw.trim().split('\n').map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean).slice(-20);
-  } catch { result.reflections = []; }
-  try {
-    result.evolvedPrompt = await fs.readFile(path.join(learningDir, 'evolved-prompt.md'), 'utf-8');
-  } catch { result.evolvedPrompt = ''; }
-  try {
-    result.digest = await fs.readFile(path.join(learningDir, 'consolidated-digest.md'), 'utf-8');
-  } catch { result.digest = ''; }
-  const subagentRouting = await listSubagentRoutingMetrics(PROJECT_DIR, 100);
-  result.candidates = await listReviewedLearningCandidates(PROJECT_DIR);
-  result.subagentRouting = subagentRouting;
-  result.routingSummary = summarizeRoutingMetrics(subagentRouting);
-  result.routingCalibration = calibrateModelRoutingPolicy(subagentRouting, modelRouting);
-  const evalRuns = await listEvalTraceRuns(PROJECT_DIR);
-  result.evalExamples = await listEvalTraceExamples(PROJECT_DIR);
-  result.evalRuns = evalRuns;
-  result.evalRunTrend = summarizeEvalTraceRuns(evalRuns);
-  result.outputValidationTrend = summarizeOutputValidationRuns(evalRuns);
-  result.profileFeedbackTrend = summarizeProfileFeedbackRuns(evalRuns);
-  result.contextLossTrend = summarizeContextLossRuns(evalRuns);
-  try {
-    const raw = await fs.readFile(path.join(learningDir, 'tool-usage.jsonl'), 'utf-8');
-    const lines = raw.trim().split('\n');
-    result.totalToolCalls = lines.length;
-    // Tool usage breakdown
-    const counts: Record<string, number> = {};
-    for (const line of lines) { try { const e = JSON.parse(line); counts[e.tool] = (counts[e.tool] || 0) + 1; } catch {} }
-    result.toolBreakdown = counts;
-  } catch { result.totalToolCalls = 0; result.toolBreakdown = {}; }
-  res.json(result);
-});
-
-app.get('/api/learning/routing', async (_req, res) => {
-  try {
-    const metrics = await listSubagentRoutingMetrics(PROJECT_DIR, 100);
-    res.json({ metrics, summary: summarizeRoutingMetrics(metrics), calibration: calibrateModelRoutingPolicy(metrics, modelRouting) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/learning/output-validation-trends/download', async (_req, res) => {
-  try {
-    const runs = await listEvalTraceRuns(PROJECT_DIR, 1000);
-    const payload = createOutputValidationTrendExport(runs);
-    const stamp = payload.generatedAt.replace(/[:.]/g, '-');
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="output-validation-trends-${stamp}.json"`);
-    res.send(JSON.stringify(payload, null, 2));
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/learning/routing/apply-calibration', async (_req, res) => {
-  await ensureSettingsLoaded();
-  try {
-    const metrics = await listSubagentRoutingMetrics(PROJECT_DIR, 100);
-    const calibration = calibrateModelRoutingPolicy(metrics, modelRouting);
-    modelRouting = sanitizeModelRoutingPolicy({ ...modelRouting, ...calibration.suggestedPolicy });
-    await saveSettingsToDisk();
-    res.json({ settings: getCurrentSettings(), calibration });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/learning/candidates/review', async (req, res) => {
-  const candidateId = String(req.body?.id ?? '').trim();
-  const action = req.body?.action === 'promote' || req.body?.action === 'reject' ? req.body.action : null;
-  if (!candidateId || !action) { res.status(400).json({ error: 'Candidate id and review action are required.' }); return; }
-  try {
-    const review = await reviewLearningCandidate(PROJECT_DIR, candidateId, action, req.body?.reason?.toString());
-    const candidates = await listReviewedLearningCandidates(PROJECT_DIR);
-    res.json({ review, candidates });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ error: msg });
-  }
-});
-
-app.get('/api/learning/candidates/:id/provenance', async (req, res) => {
-  const candidateId = safeEvalExampleId(req.params.id);
-  if (!candidateId) { res.status(400).json({ error: 'Invalid learning candidate id.' }); return; }
-  try {
-    res.json(await getLearningCandidateProvenance(PROJECT_DIR, candidateId));
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(404).json({ error: msg });
-  }
-});
-
-app.get('/api/learning/candidates/:id/gate', async (req, res) => {
-  const candidateId = safeEvalExampleId(req.params.id);
-  if (!candidateId) { res.status(400).json({ error: 'Invalid learning candidate id.' }); return; }
-  try {
-    const verdict = await evaluatePromotionGateForCandidate(PROJECT_DIR, candidateId);
-    if (!verdict.candidateFound) { res.status(404).json({ error: verdict.reason }); return; }
-    res.json({
-      gate_enabled: process.env.HARNESS_PROMOTION_GATE_ENABLED === '1',
-      candidate_id: verdict.candidateId,
-      allowed: verdict.allowed,
-      reason: verdict.reason,
-      pass_count: verdict.passCount,
-      considered_runs: verdict.consideredRuns,
-      required_passes: verdict.requiredPasses,
-      pass_at_all: verdict.passAtAll,
-      safety_violations: verdict.safetyViolations,
-    });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// Learning routes moved to ./learningRoutes.ts (createLearningRouter mount above).
 
 // --- API: File Upload ---
 app.post('/api/upload', express.raw({ type: '*/*', limit: '10mb' }), async (req, res) => {
