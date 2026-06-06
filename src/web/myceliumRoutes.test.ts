@@ -1,7 +1,7 @@
 import type { Server } from 'http';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { app, setWebRuntimeOverrides, stopUploadsAutoPrune } from './server';
+import { app, drainChatBackgroundTasksForTest, setWebRuntimeOverrides, stopUploadsAutoPrune } from './server';
 import type { LoopEvent } from '../types';
 
 jest.setTimeout(30_000);
@@ -34,6 +34,7 @@ describe('web mycelium route API validation', () => {
   });
 
   afterAll(async () => {
+    await drainChatBackgroundTasksForTest();
     await new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());
     });

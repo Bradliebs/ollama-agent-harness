@@ -255,6 +255,13 @@ const HARNESS_ROOT = path.resolve(__dirname, '..', '..');
 export function resolveJarvisWhisperBridgePath(): string {
   return path.join(HARNESS_ROOT, 'scripts', 'jarvis_whisper.py');
 }
+
+export function resolveHarnessSourceDistFreshnessPaths(): { sourceKey: string; distKey: string } {
+  return {
+    sourceKey: path.join(HARNESS_ROOT, 'src', 'web', 'server.ts'),
+    distKey: path.join(HARNESS_ROOT, 'dist', 'web', 'server.js'),
+  };
+}
 const WORKFLOWS_DIR = path.join(PROJECT_DIR, '.harness', 'workflows');
 const workflowRegistry = new WorkflowRegistry(WORKFLOWS_DIR);
 const ALLOWED_PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'dontAsk'];
@@ -1038,6 +1045,19 @@ const defaultWebRuntime: WebRuntimeDeps = {
   rebuildSemanticMemory,
 };
 let webRuntime: WebRuntimeDeps = defaultWebRuntime;
+const pendingChatBackgroundTasks = new Set<Promise<unknown>>();
+
+function queueChatBackgroundTask(label: string, task: Promise<unknown>): void {
+  const tracked = task.catch((err) => recordSwallowed(label, err));
+  pendingChatBackgroundTasks.add(tracked);
+  tracked.finally(() => pendingChatBackgroundTasks.delete(tracked));
+}
+
+export async function drainChatBackgroundTasksForTest(): Promise<void> {
+  while (pendingChatBackgroundTasks.size > 0) {
+    await Promise.allSettled(Array.from(pendingChatBackgroundTasks));
+  }
+}
 
 // Enrich shell-command approval cards with a friendly, model-generated
 // explanation and a safe "always allow" pattern. Wired here (not at broker
@@ -5853,22 +5873,22 @@ CONTEXT HYGIENE (critical for long tasks):
   }
 
   // Auto-reflection: analyze this session's tool usage (runs silently, non-blocking)
-  recordToolUseStats(PROJECT_DIR, activeModel, {
+  queueChatBackgroundTask('recordToolUseStats', recordToolUseStats(PROJECT_DIR, activeModel, {
     toolCalls: toolCallCount,
     toolSuccesses: toolSuccessCount,
     finalTextResponse: assistantTextBuffer.trim().length > 0,
-  }).catch((err) => recordSwallowed('server.ts:6571', err));
+  }));
 
-  chatLearningRecorder.onSessionEnd().then(({ reflection, newPatterns }) => {
+  queueChatBackgroundTask('chatLearningRecorder.onSessionEnd', chatLearningRecorder.onSessionEnd().then(({ reflection, newPatterns }) => {
     if (reflection.insights.length > 0) {
       logger.info('Learning', `Session reflection: ${reflection.insights.join('; ')}`);
     }
     if (newPatterns.length > 0) {
       logger.info('Learning', `${newPatterns.length} patterns ready for skill promotion`);
     }
-  }).catch((err) => recordSwallowed('server.ts:6580', err));
-  persistSessionLearning(session, projectDir).catch((err) => recordSwallowed('persistSessionLearning', err));
-  webRuntime.rebuildSemanticMemory(projectDir).catch((err) => recordSwallowed('webRuntime.rebuildSemanticMemory', err));
+  }));
+  queueChatBackgroundTask('persistSessionLearning', persistSessionLearning(session, projectDir));
+  queueChatBackgroundTask('webRuntime.rebuildSemanticMemory', webRuntime.rebuildSemanticMemory(projectDir));
 
   // Mycelium reinforcement: strengthen or weaken routes based on outcome.
   // Run a heuristic verifier first so the reward reflects safety + tool reliability.
@@ -7737,8 +7757,7 @@ function delay(ms: number): Promise<void> {
 }
 
 async function checkSourceDistFreshness(): Promise<void> {
-  const sourceKey = path.join(PROJECT_DIR, 'src', 'web', 'server.ts');
-  const distKey = path.join(PROJECT_DIR, 'dist', 'web', 'server.js');
+  const { sourceKey, distKey } = resolveHarnessSourceDistFreshnessPaths();
   try {
     const [srcStat, distStat] = await Promise.all([fs.stat(sourceKey), fs.stat(distKey)]);
     if (srcStat.mtimeMs > distStat.mtimeMs + 1000) {
