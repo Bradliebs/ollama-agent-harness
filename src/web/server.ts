@@ -63,6 +63,7 @@ import { createAgentRouter } from './agentRoutes';
 import { createFileBrowseRouter } from './fileBrowseRoutes';
 import { createAssetRouter } from './assetRoutes';
 import { createNervousRouter } from './nervousRoutes';
+import { createSynthesisStatsRouter } from './synthesisStatsRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -96,7 +97,7 @@ import { assessAnswerConfidence } from '../observability/answerConfidence';
 import { buildRunProvenance } from '../observability/runProvenance';
 import { assessOfflineGuarantee } from '../observability/offlineGuarantee';
 import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, describeOutputValidationProfileSuggestion, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
-import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, adaptiveTimeBudget, recordAvgTurnDuration, clearSynthesisStats, recordToolUseStats } from '../core/synthesisStats';
+import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, adaptiveTimeBudget, recordAvgTurnDuration, recordToolUseStats } from '../core/synthesisStats';
 import { startNewSession, onSessionEnd, getEvolvedPrompt, recordSessionAutoContinue, LearningRecorder } from '../learning/engine';
 import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
 import { appendLearningCandidate, evaluatePromotionGateForCandidate, extractLearningCandidate, getLearningCandidateProvenance, listLearningCandidates, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
@@ -2350,41 +2351,13 @@ app.get('/api/settings', async (_req, res) => {
   }
 });
 
-app.get('/api/synthesis-stats', async (_req, res) => {
-  try {
-    const stats = await loadSynthesisStats(PROJECT_DIR);
-    const withAdaptive: Record<string, unknown> = {};
-    for (const [model, record] of Object.entries(stats)) {
-      const backend = model.includes('/') ? model.slice(0, model.indexOf('/')) : 'ollama';
-      const isLocal = backend === 'ollama' && !model.includes('cloud');
-      const defaultBudget = isLocal ? 180_000 : 600_000;
-      const toolSuccessRate = record.toolCalls && record.toolCalls > 0 ? (record.toolSuccesses ?? 0) / record.toolCalls : undefined;
-      const finalTextRate = record.total > 0 ? (record.finalTextResponses ?? 0) / record.total : undefined;
-      withAdaptive[model] = {
-        ...record,
-        adaptiveMaxTurns: adaptiveMaxTurns(stats, model, 25),
-        adaptiveTimeBudgetMs: adaptiveTimeBudget(stats, model, defaultBudget),
-        toolSuccessRate,
-        finalTextRate,
-      };
-    }
-    res.json({ stats: withAdaptive, defaultMaxTurns: 25 });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.delete('/api/synthesis-stats', async (req, res) => {
-  try {
-    const model = typeof req.query.model === 'string' ? req.query.model : undefined;
-    await clearSynthesisStats(PROJECT_DIR, model);
-    res.json({ cleared: model ?? 'all' });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// ─── Synthesis stats (adaptive maxTurns / time budget) ──────────────
+// GET reads the per-model stats file + computes adaptive limits; DELETE
+// clears one model (?model=) or all. Extracted to ./synthesisStatsRoutes.ts.
+// server.ts keeps loadSynthesisStats + adaptiveMaxTurns + adaptiveTimeBudget
+// imports (chat handler at line ~5829 still uses them); only clearSynthesisStats
+// was dropped from the server.ts import.
+app.use(createSynthesisStatsRouter({ projectDir: PROJECT_DIR }));
 
 app.post('/api/settings', async (req, res) => {
   await ensureSettingsLoaded();
