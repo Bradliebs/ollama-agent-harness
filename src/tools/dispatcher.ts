@@ -6,6 +6,8 @@ import { recordSwallowed } from '../observability/silentFailureSink';
 import type { ReadBeforeWriteGate } from './readBeforeWriteGate';
 import { compressToolResult, type CompressionConfig } from './outputCompression';
 import { prepareSideEffectRecording, type SideEffectRecorder } from '../persistence/sideEffectRecording';
+import type { ToolInspectionManager, InspectorContext } from '../safety/toolInspectors';
+import { maybeSpoolLargeResponse, type LargeResponseConfig } from './largeResponseHandler';
 
 export interface DispatchResult {
   call: ToolCall;
@@ -44,6 +46,34 @@ export interface DispatchOptions {
    * surfaced to the silent-failure sink and never blocks the tool.
    */
   sideEffectRecorder?: SideEffectRecorder;
+  /**
+   * Chain of safety inspectors (repetition guard, egress detector, adversary
+   * judge, ...) consulted between the permission gate and tool execution.
+   * Borrowed from goose's `ToolInspectionManager`. `deny` halts the call;
+   * `requireApproval` is surfaced via `onApprovalRequired` for the host to
+   * decide. When the host does not wire `onApprovalRequired`, `requireApproval`
+   * is treated as a soft pass (the reason is appended to the tool span only).
+   */
+  inspectors?: ToolInspectionManager;
+  /** Context passed to inspectors (recent messages, session id, ...). */
+  inspectorContext?: InspectorContext;
+  /**
+   * Called when an inspector requests human confirmation. Return `true` to
+   * proceed, `false` to abort. If omitted, `requireApproval` is treated as
+   * `allow` (matches goose's CLI when no confirmation channel is wired).
+   */
+  onApprovalRequired?: (info: {
+    call: ToolCall;
+    reason: string;
+    warning?: string;
+    inspectorName: string;
+  }) => Promise<boolean>;
+  /**
+   * When set, tool responses larger than the threshold are spooled to a
+   * temp file and replaced with a pointer message. Mirrors goose's
+   * `large_response_handler`. Runs before `compressOutput`.
+   */
+  largeResponseConfig?: LargeResponseConfig;
 }
 
 /**
@@ -189,6 +219,53 @@ export class ToolDispatcher {
       }
     }
 
+    // Safety inspectors (repetition guard, egress detector, adversary judge, ...)
+    if (options.inspectors) {
+      const inspectSpan = options.tracer?.startSpan('inspector.chain', { tool: call.name });
+      const decision = await options.inspectors.decide(call, options.inspectorContext ?? {});
+      inspectSpan?.end('ok', {
+        action: decision.action.kind,
+        inspector: decision.inspectorName,
+      });
+      if (decision.action.kind === 'deny') {
+        dispatchSpan?.end('ok', { inspectorDenied: true, inspector: decision.inspectorName });
+        return {
+          call,
+          result: {
+            success: false,
+            output: `Blocked by inspector '${decision.inspectorName}': ${decision.action.reason}`,
+            error: decision.action.reason,
+          },
+        };
+      }
+      if (decision.action.kind === 'requireApproval' && options.onApprovalRequired) {
+        const approvalSpan = options.tracer?.startSpan('inspector.approval', { tool: call.name });
+        let approved = false;
+        try {
+          approved = await options.onApprovalRequired({
+            call,
+            reason: decision.action.reason,
+            warning: decision.action.warning,
+            inspectorName: decision.inspectorName,
+          });
+        } catch (err) {
+          recordSwallowed('dispatcher.inspector.approval', err);
+        }
+        approvalSpan?.end('ok', { approved });
+        if (!approved) {
+          dispatchSpan?.end('ok', { approvalDenied: true, inspector: decision.inspectorName });
+          return {
+            call,
+            result: {
+              success: false,
+              output: `Inspector '${decision.inspectorName}' required approval but it was not granted: ${decision.action.reason}`,
+              error: decision.action.reason,
+            },
+          };
+        }
+      }
+    }
+
     // Lookup tool
     const tool = this.toolMap.get(call.name);
     if (!tool) {
@@ -236,6 +313,17 @@ export class ToolDispatcher {
       let result = await tool.execute(call.input);
       const durationMs = Date.now() - startTime;
       toolSpan?.end(result.success ? 'ok' : 'error', { durationMs, success: result.success });
+      // Spool overly large responses to disk before they enter history.
+      // Runs before compression so compression sees the pointer message.
+      if (options.largeResponseConfig) {
+        const outcome = maybeSpoolLargeResponse(call.name, result, options.largeResponseConfig);
+        if (outcome.spooled) {
+          options.tracer
+            ?.startSpan('tool.spool', { tool: call.name })
+            ?.end('ok', { originalChars: outcome.originalChars, spoolPath: outcome.spoolPath });
+        }
+        result = outcome.result;
+      }
       // Compress verbose output at the boundary, before it enters history.
       if (options.compressOutput) {
         const compressed = compressToolResult(call.name, result, options.compressionConfig);

@@ -76,3 +76,6 @@ machine-bias-detector.js
 # Generated ML experiment artifacts (binary outputs)
 results/
 
+
+# External reference codebases (read-only, not part of harness)
+goose-main/
