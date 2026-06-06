@@ -15,3 +15,8 @@ export {
   type AdversaryJudgeInput,
   type AdversaryJudgeOutput,
 } from './adversaryInspector';
+export {
+  buildInspectorsFromEnv,
+  type BuildInspectorsOptions,
+  type BuildInspectorsResult,
+} from './buildFromEnv';

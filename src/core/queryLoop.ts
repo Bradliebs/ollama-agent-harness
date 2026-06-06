@@ -11,6 +11,7 @@ import type { SessionStorage } from '../persistence/sessionStorage';
 import { createContinuityCheckpoint } from '../persistence/continuity';
 import { ToolDispatcher } from '../tools/dispatcher';
 import { ReadBeforeWriteGate } from '../tools/readBeforeWriteGate';
+import { buildInspectorsFromEnv } from '../safety/toolInspectors';
 import { renderRepoMapBlock } from './repoMap';
 import { scanForInjection } from '../safety/injectionDefence';
 import type { LearningRecorder } from '../learning/engine';
@@ -489,7 +490,8 @@ export async function* queryLoop(
     const compressionConfig = process.env.HARNESS_TOOL_COMPRESSION_MAX_CHARS
       ? { maxChars: Number(process.env.HARNESS_TOOL_COMPRESSION_MAX_CHARS) || undefined }
       : undefined;
-    const dispatchedToolResults = await dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer, learningRecorder, readBeforeWriteGate, compressOutput, compressionConfig, sideEffectRecorder });
+    const { manager: inspectors, largeResponseConfig } = buildInspectorsFromEnv();
+    const dispatchedToolResults = await dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer, learningRecorder, readBeforeWriteGate, compressOutput, compressionConfig, sideEffectRecorder, inspectors, largeResponseConfig });
     const toolResults = [...skippedToolResults, ...dispatchedToolResults];
     let producedFileChange = false;
     for (const { call, result } of toolResults) {
