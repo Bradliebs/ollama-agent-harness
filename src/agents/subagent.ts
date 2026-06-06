@@ -7,7 +7,7 @@ import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { withFileLock } from '../persistence/atomicFile';
 import { revertRun } from '../persistence/runReverter';
 import { createHelperAgentConfig, type HelperTaskType, type ModelRoutingDecision, type ModelRoutingInput, type ModelRoutingPolicy } from './modelRouting';
-import { resolveAgentDefinition, type AgentDefinition } from './agentLoader';
+import { resolveAgentDefinition, type AgentDefinition, type SubAgentRef } from './agentLoader';
 import { registerSubagent, unregisterSubagent, updateSubagentActivity, getActiveSubagent } from '../services/subagentRegistry';
 import { appendSubagentRun } from '../services/subagentRuns';
 import { recordSwallowed } from '../observability/silentFailureSink';
@@ -43,6 +43,15 @@ export interface SubagentConfig {
   undoOnError?: { projectDir: string };
   /** Optional listener invoked for every loop event. Useful for surfacing live progress to a parent UI. */
   onEvent?: (event: { type: string; [key: string]: unknown }) => void;
+  /**
+   * Chain of agent ids from the root caller to (but excluding) this run, used
+   * by declarative sub-agent tools for cycle detection and depth limiting.
+   * The runtime appends the current agent's id to this list when it builds
+   * sub-agent tools for its own declared `subAgents` surface.
+   */
+  parentChain?: string[];
+  /** Maximum sub-agent invocation depth before the chain is rejected. Default 5. */
+  maxDepth?: number;
 }
 
 export interface SubagentRoutingMetric {
@@ -175,6 +184,24 @@ export async function runSubagent(
   if (effectiveConfig.allowedTools && effectiveConfig.allowedTools.length > 0) {
     const allow = new Set(effectiveConfig.allowedTools);
     subagentTools = subagentTools.filter((tool) => allow.has(tool.name));
+  }
+
+  // Append declared sub-agent tools so this agent can delegate to its own
+  // declarative `subAgents` surface. Cycle/depth checks fire at invocation
+  // time. The parentChain we pass downward includes this agent's id.
+  if (effectiveConfig.agentId) {
+    const definition = resolveAgentDefinition(effectiveConfig.agentId, effectiveConfig.customAgents ?? []);
+    if (definition?.subAgents && definition.subAgents.length > 0) {
+      const myChain = [...(effectiveConfig.parentChain ?? []), effectiveConfig.agentId];
+      const subTools = createSubAgentToolsFromDefinition(definition, {
+        getParentClient: () => parentClient,
+        getAvailableTools: () => availableTools,
+        getCustomAgents: () => effectiveConfig.customAgents ?? [],
+        parentChain: myChain,
+        maxDepth: effectiveConfig.maxDepth,
+      });
+      subagentTools = [...subagentTools, ...subTools];
+    }
   }
 
   const deps: QueryLoopDeps = {
@@ -383,3 +410,113 @@ function filterToolsForSubagent(tools: Tool[], subagentType: string): Tool[] {
       return tools.filter((t) => t.name !== 'agent');
   }
 }
+
+/** Default maximum sub-agent chain depth (root → child → grandchild → …). */
+export const DEFAULT_SUBAGENT_MAX_DEPTH = 5;
+
+export interface SubAgentToolFactoryDeps {
+  getParentClient(): IChatClient;
+  getAvailableTools(): Tool[];
+  getCustomAgents?: () => AgentDefinition[];
+  /** Chain of agent ids leading up to (but not including) the parent of these tools. */
+  parentChain: string[];
+  maxDepth?: number;
+  /** Optional override of runSubagent — primarily for tests. */
+  runner?: typeof runSubagent;
+}
+
+/**
+ * Build per-sub-agent Tool entries from a parent AgentDefinition's declarative
+ * `subAgents` field. Each returned tool is named `subagent_<ref.name>`, calls
+ * `runSubagent` with the bound `agentId`, and substitutes the ref's `values`
+ * into the LLM-supplied prompt via `{{key}}` placeholders (extra values are
+ * surfaced as a Context block so the child can use them either way).
+ *
+ * Cycle and depth checks run at tool invocation time, not at factory time,
+ * because the factory may build tools that are never actually called.
+ */
+export function createSubAgentToolsFromDefinition(
+  definition: AgentDefinition,
+  deps: SubAgentToolFactoryDeps,
+): Tool[] {
+  if (!definition.subAgents || definition.subAgents.length === 0) return [];
+  const runner = deps.runner ?? runSubagent;
+  const maxDepth = deps.maxDepth ?? DEFAULT_SUBAGENT_MAX_DEPTH;
+  return definition.subAgents.map((ref) => buildSubAgentTool(ref, definition, deps, runner, maxDepth));
+}
+
+function buildSubAgentTool(
+  ref: SubAgentRef,
+  parent: AgentDefinition,
+  deps: SubAgentToolFactoryDeps,
+  runner: typeof runSubagent,
+  maxDepth: number,
+): Tool {
+  const valueSummary = ref.values && Object.keys(ref.values).length > 0
+    ? ` Pre-bound values: ${Object.keys(ref.values).join(', ')}.`
+    : '';
+  const description = (ref.description ? `${ref.description}. ` : '')
+    + `Delegate to sub-agent "${ref.name}" (agent_id: ${ref.agentId}).${valueSummary}`;
+  return {
+    name: `subagent_${ref.name}`,
+    description,
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: `The task prompt for sub-agent "${ref.name}". Pre-bound values can be referenced via {{key}} placeholders.` },
+      },
+      required: ['prompt'],
+    },
+    isReadOnly: false,
+    async execute(input: Record<string, unknown>): Promise<ToolResult> {
+      const promptRaw = typeof input.prompt === 'string' ? input.prompt.trim() : '';
+      if (!promptRaw) {
+        return { success: false, output: 'prompt is required', error: 'prompt is required' };
+      }
+      // Cycle and depth checks against the chain leading to this tool.
+      const projectedChain = [...deps.parentChain, ref.agentId];
+      if (projectedChain.length > maxDepth) {
+        const message = `Sub-agent depth limit exceeded (${projectedChain.length} > ${maxDepth}): ${projectedChain.join(' -> ')}`;
+        return { success: false, output: message, error: message };
+      }
+      if (deps.parentChain.includes(ref.agentId)) {
+        const message = `Sub-agent cycle detected: ${projectedChain.join(' -> ')}`;
+        return { success: false, output: message, error: message };
+      }
+      const effectivePrompt = renderSubAgentPrompt(promptRaw, ref.values);
+      const runId = `subagent-${ref.name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const config: SubagentConfig = {
+        name: `${parent.id}:${ref.name}`,
+        systemPrompt: '',
+        agentId: ref.agentId,
+        customAgents: deps.getCustomAgents ? deps.getCustomAgents() : [],
+        runId,
+        parentChain: projectedChain,
+        maxDepth,
+      };
+      try {
+        const summary = await runner(config, effectivePrompt, deps.getParentClient(), deps.getAvailableTools());
+        return { success: true, output: summary };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { success: false, output: `Sub-agent "${ref.name}" failed: ${message}`, error: message };
+      }
+    },
+  };
+}
+
+/**
+ * Substitute `{{key}}` placeholders in `prompt` with the supplied `values`,
+ * then prepend a Context block listing the bindings so the child agent sees
+ * them whether or not the prompt referenced them. Returns the prompt
+ * unchanged when no values are bound.
+ */
+export function renderSubAgentPrompt(prompt: string, values?: Record<string, string>): string {
+  if (!values || Object.keys(values).length === 0) return prompt;
+  const substituted = prompt.replace(/\{\{\s*([A-Za-z_][\w-]*)\s*\}\}/g, (match, key) => (
+    Object.prototype.hasOwnProperty.call(values, key) ? values[key] : match
+  ));
+  const contextLines = Object.entries(values).map(([k, v]) => `- ${k}: ${v}`).join('\n');
+  return `Context (pre-bound by parent):\n${contextLines}\n\n${substituted}`;
+}
+
