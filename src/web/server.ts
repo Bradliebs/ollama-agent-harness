@@ -54,6 +54,7 @@ import { createArtifactRouter } from './artifactRoutes';
 import { createSubagentRouter } from './subagentRoutes';
 import { createSessionRouter } from './sessionRoutes';
 import { createMemoryRouter } from './memoryRoutes';
+import { createRagRouter } from './ragRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -6968,102 +6969,9 @@ app.get('/api/runs', async (_req, res) => {
 app.use(createSnapshotRouter({ projectDir: PROJECT_DIR }));
 
 // --- API: Local RAG indexes ---
-// Build, query, and drop semantic indexes over arbitrary local files.
-// Backend is auto-detected: prefers Ollama embeddings when reachable,
-// falls back to a deterministic feature-hash so the UI works offline.
-
-app.get('/api/rag/indexes', async (_req, res) => {
-  try {
-    res.json({ indexes: await ragIndex.listIndexes(PROJECT_DIR) });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/rag/build', async (req, res) => {
-  try {
-    const name = String(req.body?.name || '').trim();
-    const paths = Array.isArray(req.body?.paths) ? req.body.paths.map((p: unknown) => String(p)) : [];
-    const backend = req.body?.backend === 'ollama' || req.body?.backend === 'hash' ? req.body.backend : undefined;
-    if (!name) { res.status(400).json({ error: 'name is required' }); return; }
-    if (paths.length === 0) { res.status(400).json({ error: 'at least one path is required' }); return; }
-    const result = await ragIndex.build(PROJECT_DIR, name, paths, { backend, ollamaHost });
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/rag/preview', async (req, res) => {
-  try {
-    const paths = Array.isArray(req.body?.paths) ? req.body.paths.map((p: unknown) => String(p)) : [];
-    if (paths.length === 0) { res.status(400).json({ error: 'at least one path is required' }); return; }
-    const preview = await ragIndex.previewBuild(PROJECT_DIR, paths);
-    const backend = await ragIndex.selectBackend(ollamaHost, undefined);
-    res.json({ ...preview, backend });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Streamed build with progress events (SSE) so the UI can show file-by-file
-// progress for long indexing runs. Body shape matches POST /api/rag/build.
-app.post('/api/rag/build/stream', async (req, res) => {
-  const name = String(req.body?.name || '').trim();
-  const paths = Array.isArray(req.body?.paths) ? req.body.paths.map((p: unknown) => String(p)) : [];
-  const backend = req.body?.backend === 'ollama' || req.body?.backend === 'hash' ? req.body.backend : undefined;
-  if (!name) { res.status(400).json({ error: 'name is required' }); return; }
-  if (paths.length === 0) { res.status(400).json({ error: 'at least one path is required' }); return; }
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders();
-  const writeEvent = (event: string, data: unknown): void => {
-    res.write(`event: ${event}\n`);
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-  };
-  let aborted = false;
-  res.on('close', () => { aborted = true; });
-  try {
-    for await (const event of ragIndex.iterateBuild(PROJECT_DIR, name, paths, { backend, ollamaHost })) {
-      if (aborted) break;
-      writeEvent(event.stage, event);
-    }
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    writeEvent('error', { message: msg });
-  } finally {
-    if (!res.writableEnded) res.end();
-  }
-});
-
-app.post('/api/rag/search', async (req, res) => {
-  try {
-    const name = String(req.body?.name || '').trim();
-    const query = String(req.body?.query || '').trim();
-    const k = Number.isFinite(req.body?.k) ? Math.max(1, Math.min(20, Number(req.body.k))) : 5;
-    if (!name || !query) { res.status(400).json({ error: 'name and query are required' }); return; }
-    const results = await ragIndex.search(PROJECT_DIR, name, query, { k, ollamaHost });
-    res.json({ results });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete('/api/rag/indexes/:name', async (req, res) => {
-  try {
-    const ok = await ragIndex.dropIndex(PROJECT_DIR, req.params.name);
-    if (!ok) { res.status(404).json({ error: 'index not found' }); return; }
-    res.json({ ok: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// --- API: MCP catalog + local runtime manager ---
-// The catalog stays static and offline-friendly. Runtime definitions are
-// persisted locally and started only behind the existing arbitrary-shell
-// capability grant because MCP servers are external processes.
+// Routes extracted to ./ragRoutes.ts. server.ts keeps `ragIndex` for
+// listIndexes() in the system-overview/registry paths.
+app.use(createRagRouter({ projectDir: PROJECT_DIR, getOllamaHost: () => ollamaHost }));
 
 app.get('/api/mcp/catalog', (_req, res) => {
   res.json({ catalog: MCP_CATALOG });
