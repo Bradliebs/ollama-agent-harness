@@ -73,6 +73,7 @@ import { createRunsRouter } from './runsRoutes';
 import { createLearningRouter } from './learningRoutes';
 import { createMcpRouter } from './mcpRoutes';
 import { createUploadsRouter } from './uploadsRoutes';
+import { createTeammateRouter } from './teammateRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -7040,50 +7041,29 @@ export function stopTeammateScheduler(): void {
   schedulerRegistry.unregister('teammate');
 }
 
-// API: GET /api/teammate/status — what the UI shows on the welcome card.
-app.get('/api/teammate/status', async (_req, res) => {
-  res.json({
+// Teammate routes moved to ./teammateRoutes.ts (createTeammateRouter mount below).
+app.use(createTeammateRouter({
+  getStatus: () => ({
     settings: teammateSettings,
     nextRunAt: teammateScheduler ? teammateScheduler.computeNextRunAt() : '',
     schedulerRunning: teammateScheduler !== null && teammateSettings.enabled,
     telegramConfigured: Boolean((telegramBotToken || process.env.HARNESS_TELEGRAM_BOT_TOKEN || '').trim()),
     discordConfigured: Boolean((connectorSecretValue('HARNESS_DISCORD_BOT_TOKEN') || '').trim()),
     slackConfigured: Boolean((connectorSecretValue('HARNESS_SLACK_WEBHOOK_URL') || '').trim()),
-  });
-});
-
-// API: POST /api/teammate/config — write the dailyBrief settings block in
-// one call so the setup wizard does not have to PUT the entire settings
-// object. Validates via the same sanitizer used at boot.
-app.post('/api/teammate/config', async (req, res) => {
-  try {
-    const next = sanitizeTeammateSettings(req.body);
+  }),
+  applyTeammateConfig: async (body) => {
+    const next = sanitizeTeammateSettings(body);
     teammateSettings = next;
     configureTeammateScheduler();
     await saveSettingsToDisk();
-    res.json({ ok: true, settings: teammateSettings, nextRunAt: teammateScheduler ? teammateScheduler.computeNextRunAt() : '' });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// API: POST /api/teammate/run-now — fire the brief immediately for
-// preview/testing. Bypasses schedule but honours the kill switch.
-app.post('/api/teammate/run-now', async (_req, res) => {
-  try {
+    return { settings: teammateSettings, nextRunAt: teammateScheduler ? teammateScheduler.computeNextRunAt() : '' };
+  },
+  runTeammateNow: async () => {
     if (!teammateScheduler) configureTeammateScheduler();
-    if (killSwitch.isActive()) {
-      res.status(409).json({ error: 'Kill switch is engaged. Release it first.' });
-      return;
-    }
-    const result = await teammateScheduler!.runNow();
-    res.json({ ok: result.fired, result });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+    return teammateScheduler!.runNow();
+  },
+  isKillSwitchActive: () => killSwitch.isActive(),
+}));
 
 /**
  * Stop every registered scheduler in reverse-registration order. Intended
