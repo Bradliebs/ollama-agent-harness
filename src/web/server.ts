@@ -60,6 +60,7 @@ import { createSkillRouter } from './skillRoutes';
 import { createWorkflowRouter } from './workflowRoutes';
 import { createWebhookRouter } from './webhookRoutes';
 import { createAgentRouter } from './agentRoutes';
+import { createFileBrowseRouter } from './fileBrowseRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -7569,73 +7570,12 @@ export function getSchedulerStatuses(): Array<{ name: string; running: boolean }
   return schedulerRegistry.list();
 }
 
-// --- API: File Tree ---
-app.get('/api/files', async (req, res) => {
-  const dir = resolveProjectPath((req.query.path as string) || PROJECT_DIR);
-  if (!dir) { res.status(400).json({ error: 'Path is outside the project directory.' }); return; }
-  try {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    const items = entries
-      .filter(e => !e.name.startsWith('.') && e.name !== 'node_modules' && e.name !== 'dist')
-      .map(e => {
-        const absolute = path.join(dir, e.name);
-        const relative = path.relative(PROJECT_DIR, absolute).split(path.sep).join('/');
-        return { name: e.name, type: e.isDirectory() ? 'dir' : 'file', path: absolute, relative };
-      })
-      .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
-    res.json({ items, cwd: dir, projectDir: PROJECT_DIR });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ error: msg });
-  }
-});
-
-// --- API: Directory Browser (for the Agent Files folder picker) ---
-// Lists subdirectories of any path on disk so the user can navigate to
-// the destination folder for agent file_write outputs without typing.
-// NOT confined to PROJECT_DIR — the whole point is the user picking a
-// folder OUTSIDE the project (e.g. C:/AI/Lottery-Toolkit/inbox).
-//
-// Returns: { cwd, parent, presets, dirs[] }. presets are platform-aware
-// quick-jump locations (home, Desktop, Documents, Downloads, project,
-// project/agent-outputs). dirs is the immediate subdirectory listing.
-app.get('/api/browse-dirs', async (req, res) => {
-  try {
-    const queryPath = typeof req.query.path === 'string' ? req.query.path.trim() : '';
-    const home = os.homedir();
-    const cwd = queryPath
-      ? path.resolve(queryPath)
-      : home;
-    let parent: string | null = path.dirname(cwd);
-    if (parent === cwd) parent = null;
-    const presets: Array<{ label: string; path: string }> = [
-      { label: 'Home', path: home },
-      { label: 'Desktop', path: path.join(home, 'Desktop') },
-      { label: 'Documents', path: path.join(home, 'Documents') },
-      { label: 'Downloads', path: path.join(home, 'Downloads') },
-      { label: 'Project root', path: PROJECT_DIR },
-      { label: 'agent-outputs (default)', path: path.join(PROJECT_DIR, 'agent-outputs') },
-    ];
-    let dirs: Array<{ name: string; path: string }> = [];
-    try {
-      const entries = await fs.readdir(cwd, { withFileTypes: true });
-      dirs = entries
-        .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
-        .map((e) => ({ name: e.name, path: path.join(cwd, e.name) }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-    } catch (error) {
-      // If the path is unreadable (permission denied, doesn't exist), still
-      // return the presets so the UI stays useful.
-      const msg = error instanceof Error ? error.message : String(error);
-      res.json({ cwd, parent, presets, dirs: [], error: msg });
-      return;
-    }
-    res.json({ cwd, parent, presets, dirs });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// ─── File / Directory Browse ────────────────────────────────────────
+// /api/files (project-confined file tree) + /api/browse-dirs (free-roam
+// directory picker for agent_outputs folder selection). Extracted to
+// ./fileBrowseRoutes.ts; resolveProjectPath helper moved into router
+// (it had no other callers in server.ts).
+app.use(createFileBrowseRouter({ projectDir: PROJECT_DIR }));
 
 // --- Start ---
 
@@ -7812,13 +7752,6 @@ function safeLocalId(value: unknown): string | null {
 function safeEvalExampleId(value: unknown): string | null {
   const id = String(value ?? '').trim();
   return id.length > 0 && /^[a-zA-Z0-9:._-]+$/.test(id) ? id : null;
-}
-
-function resolveProjectPath(value: string): string | null {
-  const resolved = path.resolve(value);
-  const relative = path.relative(PROJECT_DIR, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  return resolved;
 }
 
 function getCurrentSettings(): WebSettings {
