@@ -53,6 +53,7 @@ import { createTriggerRouter } from './triggerRoutes';
 import { createArtifactRouter } from './artifactRoutes';
 import { createSubagentRouter } from './subagentRoutes';
 import { createSessionRouter } from './sessionRoutes';
+import { createMemoryRouter } from './memoryRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -66,7 +67,7 @@ import { PermissionPromptBroker } from '../permissions/promptBroker';
 import { KillSwitch } from '../permissions/killSwitch';
 import { createCapabilityGrant, evaluateCapabilityGrant, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, summarizeCapabilityAlignment, autoGrantGatedCapabilities, type CapabilityGrant } from '../permissions/capabilities';
 import { SessionStorage } from '../persistence/sessionStorage';
-import { buildMemoryPalace, getSemanticMemoryContext, getSemanticMemoryEntry, rebuildSemanticMemory, searchSemanticMemory } from '../persistence/semanticMemory';
+import { rebuildSemanticMemory, searchSemanticMemory } from '../persistence/semanticMemory';
 import * as snapshots from '../persistence/snapshots';
 import * as ragIndex from '../persistence/ragIndex';
 import { MCP_CATALOG } from '../extensibility/mcpCatalog';
@@ -3948,6 +3949,12 @@ app.use(createSessionRouter({
   getCurrentModel: () => currentModel || '',
 }));
 
+// ─── Memory (semantic + curated) ──────────────────────
+// All /api/memory/* routes extracted to ./memoryRoutes.ts. server.ts
+// still imports rebuildSemanticMemory + searchSemanticMemory directly
+// for the chat handler + webRuntime registry hooks.
+app.use(createMemoryRouter({ projectDir: PROJECT_DIR }));
+
 // Bridge registry mutations onto the event store so live WebSocket
 // clients can react to start / end / cancel without polling. Server
 // startup wires this once; the unsubscribe handle is stored on the
@@ -6955,64 +6962,6 @@ app.get('/api/runs', async (_req, res) => {
   }
 });
 
-app.post('/api/memory/rebuild', async (_req, res) => {
-  try {
-    const entries = await rebuildSemanticMemory(PROJECT_DIR);
-    res.json({ entries: entries.length });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/memory/search', async (req, res) => {
-  try {
-    const query = req.query.q?.toString() ?? '';
-    const results = await searchSemanticMemory(PROJECT_DIR, query.slice(0, 500));
-    res.json({ results });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/memory/entries/:id', async (req, res) => {
-  const entryId = safeLocalId(req.params.id);
-  if (!entryId) { res.status(400).json({ error: 'Invalid memory entry id.' }); return; }
-  try {
-    const entry = await getSemanticMemoryEntry(PROJECT_DIR, entryId);
-    if (!entry) { res.status(404).json({ error: 'Memory entry not found.' }); return; }
-    res.json({ entry });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/memory/entries/:id/context', async (req, res) => {
-  const entryId = safeLocalId(req.params.id);
-  if (!entryId) { res.status(400).json({ error: 'Invalid memory entry id.' }); return; }
-  try {
-    const context = await getSemanticMemoryContext(PROJECT_DIR, entryId, clampNumber(req.query.window, 1, 10, 3));
-    if (!context) { res.status(404).json({ error: 'Memory entry not found.' }); return; }
-    res.json(context);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/memory/palace', async (req, res) => {
-  try {
-    const query = typeof req.query.q === 'string' ? req.query.q : '';
-    const palace = await buildMemoryPalace(PROJECT_DIR, query || undefined);
-    res.json(palace);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
 // --- API: Snapshots (skills, memory, config) ---
 // Routes extracted to ./snapshotRoutes.ts. server.ts still imports
 // snapshots for the pre-recovery snapshot call in the chat handler.
@@ -7708,16 +7657,7 @@ app.delete('/api/curator/proposals', async (_req, res) => {
 });
 
 // --- API: Agent Memory ---
-app.get('/api/memory', async (_req, res) => {
-  const memDir = path.join(PROJECT_DIR, '.harness', 'memory');
-  const result: Record<string, string> = {};
-  for (const file of ['decisions.md', 'patterns.md', 'notes.md']) {
-    try {
-      result[file.replace('.md', '')] = await fs.readFile(path.join(memDir, file), 'utf-8');
-    } catch { /* not yet created */ }
-  }
-  res.json(result);
-});
+// Moved to ./memoryRoutes.ts (createMemoryRouter mount above).
 
 // --- API: Learning ---
 app.get('/api/learning', async (_req, res) => {
