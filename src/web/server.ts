@@ -65,6 +65,7 @@ import { createAssetRouter } from './assetRoutes';
 import { createNervousRouter } from './nervousRoutes';
 import { createSynthesisStatsRouter } from './synthesisStatsRoutes';
 import { createAboutRouter } from './aboutRoutes';
+import { createBudgetRouter } from './budgetRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -161,7 +162,6 @@ import * as nodemailer from 'nodemailer';
 import { NervousSystemController } from '../nervous';
 import { listShellCommandAllowlistPresets } from '../automation/runner';
 import { appendCapabilityAuditEvent, readCapabilityAuditEvents } from '../permissions/capabilityAudit';
-import { addOverride, checkBudgetState, getEnvCapUsd, readTodaySpend } from '../budget/dailyBudget';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
 import type { LoopConfig, LoopEvent, PermissionMode, Tool } from '../types';
 import type { EvidenceCard, EvidenceFileSummary, EvidenceMode, EvidenceToolSummary } from '../types/evidence';
@@ -4662,54 +4662,16 @@ app.get('/api/permissions/pending', (_req, res) => {
   res.json({ prompts: permissionPrompts.list() });
 });
 
-// Daily-spend cap routes (Fix #6). Status is read-only; override is escalation-
-// guarded and audit-logged. When HARNESS_DAILY_SPEND_USD is unset or 0, status
-// returns {status:'off'} and overrides still record (so the cap can be enabled
-// later without losing the audit trail).
-app.get('/api/budget/status', async (_req, res) => {
-  try {
-    const cap = getEnvCapUsd();
-    const [state, todayRecord] = await Promise.all([
-      checkBudgetState(PROJECT_DIR, cap),
-      readTodaySpend(PROJECT_DIR),
-    ]);
-    res.json({
-      state,
-      byModel: todayRecord?.byModel ?? {},
-      firstAt: todayRecord?.firstAt ?? null,
-      lastAt: todayRecord?.lastAt ?? null,
-    });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/budget/override', async (req, res) => {
-  try {
-    if (!requireEscalationAuth(req, res, 'daily spend override')) return;
-    const reason = requireAuditReason(req.body?.reason, res, 'Daily spend override');
-    if (!reason) return;
-    const additionalUsd = Number(req.body?.additionalUsd);
-    if (!Number.isFinite(additionalUsd) || additionalUsd <= 0) {
-      res.status(400).json({ error: 'additionalUsd must be a positive number.' });
-      return;
-    }
-    if (additionalUsd > 1000) {
-      res.status(400).json({ error: 'additionalUsd capped at 1000 per request. Issue multiple overrides if intentional.' });
-      return;
-    }
-    const cap = getEnvCapUsd();
-    const state = await addOverride(PROJECT_DIR, additionalUsd, cap);
-    logger.warn('Budget', 'Daily spend override applied', { additionalUsd, newCap: state.effectiveCapUsd, utcDate: state.utcDate });
-    appendCapabilityAuditEvent(PROJECT_DIR, {
-      type: 'budget.override',
-      reason: `${reason} (+$${additionalUsd.toFixed(2)}, new cap $${state.effectiveCapUsd.toFixed(2)} for ${state.utcDate})`,
-    }).catch((err) => recordSwallowed('appendCapabilityAuditEvent', err));
-    res.json({ state });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// ─── Daily-spend cap (Fix #6) ──────────────────────────────────────────
+// Status (read-only) + override (escalation-guarded, audit-logged). All four
+// dailyBudget imports (addOverride/checkBudgetState/getEnvCapUsd/readTodaySpend)
+// were HTTP-only — dropped from server.ts entirely. Router takes the two
+// escalation helpers as callable deps.
+app.use(createBudgetRouter({
+  projectDir: PROJECT_DIR,
+  requireEscalationAuth,
+  requireAuditReason,
+}));
 
 // Audit log: every tool call (PreToolUse + PostToolUse + PostToolUseFailure)
 // gets a JSONL entry in .harness/audit.log. Returns the most recent N entries.
