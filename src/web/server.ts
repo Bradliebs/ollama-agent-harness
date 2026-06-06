@@ -7063,11 +7063,6 @@ function safeLocalId(value: unknown): string | null {
   return id.length > 0 && SAFE_ID_PATTERN.test(id) ? id : null;
 }
 
-function safeEvalExampleId(value: unknown): string | null {
-  const id = String(value ?? '').trim();
-  return id.length > 0 && /^[a-zA-Z0-9:._-]+$/.test(id) ? id : null;
-}
-
 function getCurrentSettings(): WebSettings {
   return {
     model: currentModel,
