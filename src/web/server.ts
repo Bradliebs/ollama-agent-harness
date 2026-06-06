@@ -59,6 +59,7 @@ import { createServiceRouter } from './serviceRoutes';
 import { createSkillRouter } from './skillRoutes';
 import { createWorkflowRouter } from './workflowRoutes';
 import { createWebhookRouter } from './webhookRoutes';
+import { createAgentRouter } from './agentRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -3933,121 +3934,21 @@ app.get('/metrics', (_req, res) => {
 });
 
 // ─── Agents (built-in + custom) ─────────────────────────────────────
-// List, create, and delete custom agent definitions stored under
-// .harness/agents/. Built-in roles are also surfaced so the UI can render
-// the full catalogue in one view.
-
-app.get('/api/agents', async (_req, res) => {
-  try {
-    const customAgents = await loadAgentDefinitions(PROJECT_DIR);
-    const builtins = BUILTIN_AGENT_ROLES.map((agent) => ({
-      id: agent.id,
-      name: agent.name,
-      description: agent.description,
-      role: agent.role,
-      preset: agent.preset,
-      personality: agent.personality,
-      goal: agent.goal,
-      strengths: agent.strengths,
-      allowedTools: agent.allowedTools,
-      systemPrompt: agent.systemPrompt,
-      enabled: agent.enabled,
-      filePath: '<builtin>',
-      source: 'builtin',
-    }));
-    const customs = customAgents.map((agent) => ({ ...agent, source: 'custom' }));
-    // Custom agents shadow built-ins of the same id; surface the custom one.
-    const seen = new Set<string>();
-    const merged: Array<Record<string, unknown>> = [];
-    for (const agent of [...customs, ...builtins]) {
-      if (seen.has(agent.id)) continue;
-      seen.add(agent.id);
-      merged.push(agent);
-    }
-    res.json({ agents: merged });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/agents', async (req, res) => {
-  try {
-    const { id, name, description, role, model: agentModel, preset, personality, goal, systemPrompt, allowedTools } = req.body ?? {};
-    if (typeof id !== 'string' || !id.trim()) { res.status(400).json({ error: 'id is required.' }); return; }
-    if (typeof name !== 'string' || !name.trim()) { res.status(400).json({ error: 'name is required.' }); return; }
-    if (typeof systemPrompt !== 'string' || !systemPrompt.trim()) { res.status(400).json({ error: 'systemPrompt is required.' }); return; }
-    const { writeCustomAgent } = await import('../agents/agentLoader');
-    const filePath = await writeCustomAgent(PROJECT_DIR, {
-      id: id.trim(),
-      name: name.trim(),
-      description: typeof description === 'string' ? description.trim() : '',
-      role: typeof role === 'string' ? role : undefined,
-      model: typeof agentModel === 'string' ? agentModel : undefined,
-      preset: typeof preset === 'string' ? preset as never : undefined,
-      personality: typeof personality === 'string' ? personality : undefined,
-      goal: typeof goal === 'string' ? goal : undefined,
-      systemPrompt,
-      allowedTools: Array.isArray(allowedTools) ? allowedTools.filter((tool: unknown): tool is string => typeof tool === 'string') : undefined,
-    });
-    res.json({ id: id.trim(), filePath });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete('/api/agents/:id', async (req, res) => {
-  try {
-    const id = String(req.params.id || '').trim();
-    if (!/^[a-z0-9][a-z0-9-_]*$/i.test(id)) { res.status(400).json({ error: 'Invalid agent id.' }); return; }
-    const fp = path.join(PROJECT_DIR, '.harness', 'agents', `${id}.md`);
-    try {
-      await fs.unlink(fp);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      if (msg.includes('ENOENT') || msg.includes('no such file')) { res.status(404).json({ error: 'Agent not found.' }); return; }
-      throw error;
-    }
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Run an agent directly from the More→Agents UI. Mirrors the squad/concierge
-// auto-route path: same parent client, same enabled tool set (minus the
-// recursive `agent` tool), same custom-agents snapshot. The run registers
-// in /api/subagents so the global active-subagents bar shows it and the
-// existing cancel endpoint can stop it.
-app.post('/api/agents/:id/run', async (req, res) => {
-  try {
-    const id = String(req.params.id || '').trim();
-    if (!/^[a-z0-9][a-z0-9-_]*$/i.test(id)) { res.status(400).json({ error: 'Invalid agent id.' }); return; }
-    const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
-    if (!prompt) { res.status(400).json({ error: 'prompt is required.' }); return; }
-    await refreshCustomAgentsIfStale();
-    const customAgents = getCachedCustomAgentsSnapshot();
-    const isKnown = customAgents.some((agent) => agent.id === id)
-      || BUILTIN_AGENT_ROLES.some((agent) => agent.id === id);
-    if (!isKnown) { res.status(404).json({ error: 'Agent not found.' }); return; }
-    if (!currentModel) {
-      res.status(400).json({ error: 'No model selected. Pick a model in the Chat tab before running an agent.' });
-      return;
-    }
-    const parentClient = webRuntime.createClient(currentModel, ollamaHost);
-    const baseTools = applyToolDisables(getRuntimeTools(PROJECT_DIR)).filter((tool) => tool.name !== 'agent');
-    const { runSubagent } = await import('../agents/subagent');
-    const runId = `agent-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const summary = await runSubagent(
-      { name: id, systemPrompt: '', agentId: id, customAgents, runId },
-      prompt,
-      parentClient,
-      baseTools,
-    );
-    res.json({ success: true, runId, summary });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// 4 routes (GET /api/agents, POST /api/agents, DELETE /api/agents/:id,
+// POST /api/agents/:id/run) extracted to ./agentRoutes.ts. server.ts keeps
+// BUILTIN_AGENT_ROLES + loadAgentDefinitions + refreshCustomAgentsIfStale +
+// getCachedCustomAgentsSnapshot (chat handler + concierge use them); router
+// takes callable deps so it sees mutable currentModel/ollamaHost/webRuntime/
+// runtime-tool state at request time.
+app.use(createAgentRouter({
+  projectDir: PROJECT_DIR,
+  getCurrentModel: () => currentModel,
+  getOllamaHost: () => ollamaHost,
+  refreshCustomAgentsIfStale,
+  getCachedCustomAgentsSnapshot,
+  createParentClient: (model, host) => webRuntime.createClient(model, host),
+  getBaseTools: () => applyToolDisables(getRuntimeTools(PROJECT_DIR)),
+}));
 
 // ─── Squads ─────────────────────────────────────────────────────────
 // Persistent agent rosters with regex-based routing rules. Routes
