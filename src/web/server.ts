@@ -55,6 +55,7 @@ import { createSubagentRouter } from './subagentRoutes';
 import { createSessionRouter } from './sessionRoutes';
 import { createMemoryRouter } from './memoryRoutes';
 import { createRagRouter } from './ragRoutes';
+import { createServiceRouter } from './serviceRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -111,14 +112,13 @@ import { createAutomationJob, deleteAutomationJob, executeDueJobs, listAutomatio
 import { auditAutomationJobSafety } from '../automation/jobSafety';
 import { prepareAutomationRun } from '../automation/runner';
 import { AutomationScheduler } from '../automation/scheduler';
-import { exportAgenticServices, getAgenticService, handleOperateModeRequest, importAgenticServices, listAgenticServices } from '../services/agenticServiceMode';
+import { handleOperateModeRequest, listAgenticServices } from '../services/agenticServiceMode';
 import { classifyMode, type HarnessMode } from '../services/modeClassifier';
 import { createDefaultCapabilityRegistry, type CapabilityRegistry } from '../services/capabilityRegistry';
 import { evaluateCapabilityTemplates, type ConnectorReadinessInput } from '../services/capabilityTemplates';
 import { getCapabilityTemplateStarter, getMessageIngressPolicy, listCapabilityTemplateStarters, listConnectorContractFixtures, listConnectorReadinessContracts, validateConnectorReadinessContracts, type CapabilityTemplateStarter } from '../services/capabilityTemplateStarters';
 import { WorkerQueue } from '../services/workerQueue';
 import { createPromise, listPromises, updatePromise, checkObligations, fulfilPromise, failPromise, detectCommitments, type PromiseStatus } from '../services/promiseLedger';
-import { getServiceLifecycle, initServiceLifecycle, transitionService, probeServiceHealth, SERVICE_TEMPLATES, type ServiceLifecycleStatus } from '../services/serviceLifecycle';
 import { emitEvent, queryEvents, summarizeEventStore } from '../persistence/eventStore';
 import { attachWsServer } from './wsServer';
 import { tryDeterministicShortcut } from '../core/deterministicShortcuts';
@@ -2703,27 +2703,6 @@ function summarizeForEvidence(value: unknown, maxLength = 220): string {
   return raw.replace(/\s+/g, ' ').slice(0, maxLength);
 }
 
-function summarizeServiceState(state: unknown): Record<string, number | boolean | string> {
-  const source = typeof state === 'object' && state !== null ? state as Record<string, unknown> : {};
-  const count = (key: string): number => Array.isArray(source[key]) ? (source[key] as unknown[]).length : 0;
-  return {
-    tasks: count('tasks'),
-    notes: count('notes'),
-    observations: count('observations'),
-    reminders: count('reminders'),
-    reviews: count('reviews'),
-    enabled: source.enabled !== false,
-    reminders_paused: source.reminders_paused === true,
-    updated_at: typeof source.updated_at === 'string' ? source.updated_at : '',
-  };
-}
-
-function parseNonNegativeInteger(value: unknown, fallback: number, max = 100): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
-  return Math.min(Math.floor(parsed), max);
-}
-
 function operatingServiceLifecycleAudit() {
   return {
     capture_points: ['chat_operate_intercept', 'run_evidence', 'automation_runs', 'service_state', 'discovery_detail'],
@@ -3806,110 +3785,17 @@ app.get('/api/modes/classify', (req, res) => {
   res.json(classifyMode(message));
 });
 
-app.get('/api/services', async (req, res) => {
-  try {
-    const limit = parseNonNegativeInteger(req.query.limit, 50, 200);
-    const offset = parseNonNegativeInteger(req.query.offset, 0, Number.MAX_SAFE_INTEGER);
-    const services = await listAgenticServices(PROJECT_DIR);
-    const page = services.slice(offset, offset + limit);
-    res.json({ total: services.length, limit, offset, lifecycle: operatingServiceLifecycleAudit(), services: page.map((item) => ({ service: item.service, stateSummary: summarizeServiceState(item.state) })) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/services/export', async (req, res) => {
-  try {
-    const ids = typeof req.query.ids === 'string' ? req.query.ids.split(',').map((id) => id.trim()).filter(Boolean) : undefined;
-    const payload = await exportAgenticServices(PROJECT_DIR, ids);
-    await recordOperatingServiceEvidence('export', payload.services.map((item) => item.service.service_id), `Exported ${payload.services.length} operating service(s).`).catch((error) => logger.warn('Services', 'Failed to record service export evidence', { error: error instanceof Error ? error.message : String(error) }));
-    res.setHeader('Content-Disposition', `attachment; filename="operating-services-${new Date().toISOString().slice(0, 10)}.json"`);
-    res.json(payload);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/services/import', async (req, res) => {
-  try {
-    const overwrite = req.query.overwrite === 'true' || req.body?.overwrite === true;
-    const payload = req.body?.payload ?? req.body;
-    const result = await importAgenticServices(PROJECT_DIR, payload, { overwrite });
-    await recordOperatingServiceEvidence('import', [...result.imported, ...result.skipped], `Imported ${result.imported.length} and skipped ${result.skipped.length} operating service(s).`).catch((error) => logger.warn('Services', 'Failed to record service import evidence', { error: error instanceof Error ? error.message : String(error) }));
-    res.json({ ok: true, ...result });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ error: msg });
-  }
-});
-
-app.get('/api/services/:id', async (req, res) => {
-  try {
-    const serviceId = safeLocalId(req.params.id);
-    if (!serviceId) { res.status(400).json({ error: 'Invalid service id.' }); return; }
-    const service = await getAgenticService(PROJECT_DIR, serviceId);
-    if (!service) { res.status(404).json({ error: 'Service not found.' }); return; }
-    res.json(service);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// ─── Service Templates (must come before :id route) ─────────────────
-app.get('/api/services/templates', async (_req, res) => {
-  res.json(SERVICE_TEMPLATES);
-});
-
-// ─── Service Lifecycle ──────────────────────────────────────────────
-
-app.get('/api/services/:id/lifecycle', async (req, res) => {
-  try {
-    const serviceId = safeLocalId(req.params.id);
-    if (!serviceId) { res.status(400).json({ error: 'Invalid service id.' }); return; }
-    const lifecycle = await getServiceLifecycle(PROJECT_DIR, serviceId);
-    if (!lifecycle) { res.status(404).json({ error: 'No lifecycle found. Use POST to initialize.' }); return; }
-    res.json(lifecycle);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/services/:id/lifecycle', async (req, res) => {
-  try {
-    const serviceId = safeLocalId(req.params.id);
-    if (!serviceId) { res.status(400).json({ error: 'Invalid service id.' }); return; }
-    const targetStatus = req.body?.status as ServiceLifecycleStatus | undefined;
-    if (!targetStatus) { res.status(400).json({ error: 'status is required.' }); return; }
-    const existing = await getServiceLifecycle(PROJECT_DIR, serviceId);
-    if (!existing) {
-      const state = await initServiceLifecycle(PROJECT_DIR, serviceId, targetStatus);
-      await emitEvent(PROJECT_DIR, 'service', 'lifecycle_initialized', { service_id: serviceId, status: targetStatus }, 'user', serviceId).catch((err) => recordSwallowed('emitEvent', err));
-      res.json({ success: true, state });
-      return;
-    }
-    const result = await transitionService(PROJECT_DIR, serviceId, targetStatus, req.body?.error_message);
-    if (result.success) {
-      await emitEvent(PROJECT_DIR, 'service', 'lifecycle_transitioned', { service_id: serviceId, from: result.from, to: result.to }, 'user', serviceId).catch((err) => recordSwallowed('emitEvent', err));
-    }
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/services/:id/health', async (req, res) => {
-  try {
-    const serviceId = safeLocalId(req.params.id);
-    if (!serviceId) { res.status(400).json({ error: 'Invalid service id.' }); return; }
-    const health = await probeServiceHealth(PROJECT_DIR, serviceId);
-    res.json(health);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// ─── Agentic services + lifecycle + templates + health ──────────────
+// All /api/services/* routes extracted to ./serviceRoutes.ts. server.ts
+// still imports listAgenticServices (system-overview + system-health),
+// keeps recordOperatingServiceEvidence + operatingServiceLifecycleAudit
+// here because they read server.ts module state (currentModel,
+// permissionMode, capabilityGrants).
+app.use(createServiceRouter({
+  projectDir: PROJECT_DIR,
+  getOperatingServiceLifecycleAudit: () => operatingServiceLifecycleAudit(),
+  recordOperatingServiceEvidence,
+}));
 
 // ─── Tasks + Kanban ─────────────────────────────────────────────────
 // Structured task lifecycle and the Kanban board over them. Routes
