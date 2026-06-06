@@ -24,7 +24,7 @@ import { SelfLearningHeartbeat, createCleanupAgentOutputsAction, createIdentityG
 import { TriggerScheduler } from '../services/triggerScheduler';
 import { SchedulerRegistry } from '../services/schedulerRegistry';
 import { TeammateScheduler, sanitizeTeammateSettings, defaultTeammateSettings, type TeammateSettings, type TeammateChannel } from '../automation/teammateScheduler';
-import { cancelSubagent, listActiveSubagents, subscribeSubagentRegistry } from '../services/subagentRegistry';
+import { listActiveSubagents, subscribeSubagentRegistry } from '../services/subagentRegistry';
 import { createToolFailureAlerts, type ToolFailureAlertTracker } from '../services/toolFailureAlerts';
 import { formatPrometheusMetrics, type PrometheusMetric } from '../observability/prometheus';
 import { recordSwallowed, getSwallowedFailures, getSwallowedFailureCount } from '../observability/silentFailureSink';
@@ -51,6 +51,7 @@ import { createSquadRouter } from './squadRoutes';
 import { createRuntimeCostRouter } from './runtimeCostRoutes';
 import { createTriggerRouter } from './triggerRoutes';
 import { createArtifactRouter } from './artifactRoutes';
+import { createSubagentRouter } from './subagentRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -3930,57 +3931,13 @@ app.use(createTriggerRouter({
 app.use(createArtifactRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Active sub-agents ─────────────────────────────────
-app.get('/api/subagents', async (_req, res) => {
-  try {
-    const records = listActiveSubagents().map((record) => ({
-      id: record.id,
-      name: record.name,
-      promptSnippet: record.promptSnippet,
-      startedAtMs: record.startedAtMs,
-      durationMs: Date.now() - record.startedAtMs,
-      lastActivity: record.lastActivity,
-      updatedAtMs: record.updatedAtMs,
-      activityHistory: record.activityHistory ?? [],
-    }));
-    res.json({ count: records.length, subagents: records });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Persistent history of every sub-agent run. Powers the "what has my
-// agent done?" panel in the Agents tab.
-app.get('/api/subagent-runs', async (req, res) => {
-  try {
-    const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
-    const { listSubagentRuns } = await import('../services/subagentRuns');
-    const runs = await listSubagentRuns(PROJECT_DIR, limit);
-    res.json({ runs, outputDir: process.env.HARNESS_AGENT_OUTPUT_DIR || agentOutputDir || '' });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/subagent-runs/:runId', async (req, res) => {
-  try {
-    const { getSubagentRun } = await import('../services/subagentRuns');
-    const run = await getSubagentRun(PROJECT_DIR, String(req.params.runId));
-    if (!run) { res.status(404).json({ error: 'Run not found.' }); return; }
-    res.json({ run });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/subagents/:id/cancel', async (req, res) => {
-  try {
-    const ok = cancelSubagent(req.params.id);
-    if (!ok) { res.status(404).json({ error: 'Sub-agent not found.' }); return; }
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Routes extracted to ./subagentRoutes.ts. The WS bridge below
+// (subscribeSubagentRegistry) still lives here because it wires
+// the in-process registry onto the event store.
+app.use(createSubagentRouter({
+  projectDir: PROJECT_DIR,
+  getAgentOutputDirOverride: () => agentOutputDir,
+}));
 
 // Bridge registry mutations onto the event store so live WebSocket
 // clients can react to start / end / cancel without polling. Server
