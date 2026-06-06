@@ -252,6 +252,9 @@ const OUTPUT_VALIDATION_PROFILES_PATH = path.join(PROJECT_DIR, '.harness', 'outp
 // redirected to an isolated user workspace; src/web/server.ts and
 // dist/web/server.js both sit two levels below the harness root.
 const HARNESS_ROOT = path.resolve(__dirname, '..', '..');
+export function resolveJarvisWhisperBridgePath(): string {
+  return path.join(HARNESS_ROOT, 'scripts', 'jarvis_whisper.py');
+}
 const WORKFLOWS_DIR = path.join(PROJECT_DIR, '.harness', 'workflows');
 const workflowRegistry = new WorkflowRegistry(WORKFLOWS_DIR);
 const ALLOWED_PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'dontAsk'];
@@ -3253,7 +3256,7 @@ app.post('/api/jarvis/voice/transcribe', express.raw({ type: '*/*', limit: '50mb
     let args: string[];
     if (usePython) {
       cmd = pythonExe!;
-      args = [path.join(PROJECT_DIR, 'scripts', 'jarvis_whisper.py'), wavPath];
+      args = [resolveJarvisWhisperBridgePath(), wavPath];
     } else {
       cmd = binary!;
       args = ['-m', model!, '-f', wavPath, '--no-timestamps', '--no-prints'];

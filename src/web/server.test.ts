@@ -4,7 +4,7 @@ import * as fsSync from 'fs';
 import http from 'http';
 import * as os from 'os';
 import * as path from 'path';
-import { app, inferModelCapabilities, parseExplicitSkillInvocation, resetSettingsLoadedForTest, resolveChatModelForRequest, setWebRuntimeOverrides, startupConnectorsEnabled, stopUploadsAutoPrune } from './server';
+import { app, inferModelCapabilities, parseExplicitSkillInvocation, resetSettingsLoadedForTest, resolveChatModelForRequest, resolveJarvisWhisperBridgePath, setWebRuntimeOverrides, startupConnectorsEnabled, stopUploadsAutoPrune } from './server';
 import { runtimeTracer } from '../core/tracing';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { appendLearningCandidate, extractLearningCandidate } from '../learning/sessionLearning';
@@ -1127,6 +1127,13 @@ describe('web server API validation', () => {
 
   it('classifies Minimax M3 as image-capable', () => {
     expect(inferModelCapabilities('minimax-m3:cloud').image).toBe(true);
+  });
+
+  it('resolves the Jarvis Whisper bridge from the harness root', () => {
+    const bridgePath = resolveJarvisWhisperBridgePath();
+
+    expect(bridgePath).toBe(path.join(process.cwd(), 'scripts', 'jarvis_whisper.py'));
+    expect(fsSync.existsSync(bridgePath)).toBe(true);
   });
 
   it('classifies every agentic-fallback routing target as strong', () => {
