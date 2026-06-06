@@ -8,6 +8,7 @@ import { compressToolResult, type CompressionConfig } from './outputCompression'
 import { prepareSideEffectRecording, type SideEffectRecorder } from '../persistence/sideEffectRecording';
 import type { ToolInspectionManager, InspectorContext } from '../safety/toolInspectors';
 import { maybeSpoolLargeResponse, type LargeResponseConfig } from './largeResponseHandler';
+import { classifyError } from '../core/retryClass';
 
 export interface DispatchResult {
   call: ToolCall;
@@ -369,6 +370,17 @@ export class ToolDispatcher {
       return { call, result };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
+      const classified = classifyError(error);
+      // Surface the retry class on a dedicated annotation span so callers
+      // (UI, telemetry, schedulers) can distinguish transient blips from
+      // auth/policy failures without parsing error strings.
+      options.tracer
+        ?.startSpan('tool.failure.classified', { tool: call.name })
+        ?.end('ok', {
+          retryClass: classified.class,
+          reason: classified.reason,
+          ...(classified.retryAfterMs !== undefined ? { retryAfterMs: classified.retryAfterMs } : {}),
+        });
       dispatchSpan?.fail(error);
       if (options.trackUsage) {
         const recorder = options.learningRecorder;

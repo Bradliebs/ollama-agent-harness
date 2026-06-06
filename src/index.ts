@@ -6,6 +6,8 @@ export { RuntimeTracer, runtimeTracer } from './core/tracing';
 export { describeOutputValidationProfileSuggestion, getOutputValidationInstructions, normalizeCustomOutputValidationProfiles, OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, parseOutputValidationProfile, suggestOutputValidationProfile, validateOutput, withOutputValidationInstructions } from './core/outputValidation';
 export type { BuiltInOutputValidationProfile, CustomOutputValidationCheck, CustomOutputValidationProfile, OutputValidationFinding, OutputValidationProfile, OutputValidationProfileInfo, OutputValidationProfileTemplate, OutputValidationResult, OutputValidationStatus } from './core/outputValidation';
 export { HarnessError, OllamaConnectionError, ContextOverflowError, ToolExecutionError, PermissionDeniedError, withRetry, errorToToolResult } from './core/errors';
+export { classifyError, isRetryable, computeRetryDelayMs } from './core/retryClass';
+export type { RetryClass, ClassifiedError } from './core/retryClass';
 export { ToolDispatcher, getBuiltinTools, FileReadTool, FileWriteTool, FileEditTool, ListFilesTool, MakeDirectoryTool, BashTool, WebFetchTool, ImageAnalyzeTool, AudioTranscribeTool, PdfReadTool, PdfMetadataTool, PdfRenderPageTool, PdfExtractTablesTool, ToolRegistry, createBuiltinToolRegistry } from './tools';
 export { PermissionEngine } from './permissions/engine';
 export { assembleSystemContext, assembleToolSchemas, assembleUserContext, buildInitialMessages, estimateTokenCount } from './context/assembly';
