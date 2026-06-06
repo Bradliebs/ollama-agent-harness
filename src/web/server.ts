@@ -52,6 +52,7 @@ import { createRuntimeCostRouter } from './runtimeCostRoutes';
 import { createTriggerRouter } from './triggerRoutes';
 import { createArtifactRouter } from './artifactRoutes';
 import { createSubagentRouter } from './subagentRoutes';
+import { createSessionRouter } from './sessionRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -65,7 +66,6 @@ import { PermissionPromptBroker } from '../permissions/promptBroker';
 import { KillSwitch } from '../permissions/killSwitch';
 import { createCapabilityGrant, evaluateCapabilityGrant, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, summarizeCapabilityAlignment, autoGrantGatedCapabilities, type CapabilityGrant } from '../permissions/capabilities';
 import { SessionStorage } from '../persistence/sessionStorage';
-import { forkSession, resumeSession } from '../persistence/resume';
 import { buildMemoryPalace, getSemanticMemoryContext, getSemanticMemoryEntry, rebuildSemanticMemory, searchSemanticMemory } from '../persistence/semanticMemory';
 import * as snapshots from '../persistence/snapshots';
 import * as ragIndex from '../persistence/ragIndex';
@@ -3939,6 +3939,15 @@ app.use(createSubagentRouter({
   getAgentOutputDirOverride: () => agentOutputDir,
 }));
 
+// ─── Sessions, recovery, forking, import/export ───────
+// All /api/sessions/* routes extracted to ./sessionRoutes.ts.
+// Router takes a getCurrentModel callable so resume/fork/import
+// continue to see server.ts's live `currentModel` selection.
+app.use(createSessionRouter({
+  projectDir: PROJECT_DIR,
+  getCurrentModel: () => currentModel || '',
+}));
+
 // Bridge registry mutations onto the event store so live WebSocket
 // clients can react to start / end / cancel without polling. Server
 // startup wires this once; the unsubscribe handle is stored on the
@@ -4577,16 +4586,7 @@ app.post('/api/models/catalog/refresh', async (_req, res) => {
   }
 });
 
-app.post('/api/sessions/search-index/rebuild', async (_req, res) => {
-  try {
-    const index = await rebuildSessionSearchIndexWithMetadata(PROJECT_DIR);
-    const status = await getSessionSearchIndexStatus(PROJECT_DIR);
-    res.json({ index, status });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// /api/sessions/search-index/rebuild moved to ./sessionRoutes.ts.
 
 app.get('/api/pdf/extract', async (req, res) => {
   const rawPath = typeof req.query.path === 'string' ? req.query.path : '';
@@ -6917,15 +6917,8 @@ CONTEXT HYGIENE (critical for long tasks):
 });
 
 // --- API: Sessions, Recovery, Forking, Semantic Recall ---
-app.get('/api/sessions', async (_req, res) => {
-  try {
-    const sessions = await SessionStorage.listSessions(PROJECT_DIR);
-    res.json({ sessions });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// All /api/sessions/* routes moved to ./sessionRoutes.ts (see the
+// createSessionRouter mount near the other extracted routers).
 
 // Runs view: same source as /api/sessions but enriched with derived fields
 // (duration, age) the dashboard renders without per-row computation.
@@ -6956,84 +6949,6 @@ app.get('/api/runs', async (_req, res) => {
     const counts: Record<string, number> = {};
     for (const run of runs) counts[run.status] = (counts[run.status] ?? 0) + 1;
     res.json({ runs, total: runs.length, counts, evidence });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/sessions/recover', async (_req, res) => {
-  try {
-    const sessions = await SessionStorage.listRecoverableSessions(PROJECT_DIR);
-    res.json({ sessions });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/sessions/:id', async (req, res) => {
-  try {
-    const sessionId = safeLocalId(req.params.id);
-    if (!sessionId) { res.status(400).json({ error: 'Invalid session id.' }); return; }
-    const activeModel = currentModel || req.query.model?.toString() || 'unknown';
-    const result = await resumeSession(PROJECT_DIR, sessionId, activeModel);
-    res.json(result);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/sessions/:id/fork', async (req, res) => {
-  try {
-    const sessionId = safeLocalId(req.params.id);
-    if (!sessionId) { res.status(400).json({ error: 'Invalid session id.' }); return; }
-    const activeModel = req.body.model || currentModel;
-    if (!activeModel) { res.status(400).json({ error: 'No model selected.' }); return; }
-    const result = await forkSession(PROJECT_DIR, sessionId, activeModel);
-    res.json({ sessionId: result.newStorage.getSessionId(), messageCount: result.messages.length });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/sessions/:id/export', async (req, res) => {
-  try {
-    const sessionId = safeLocalId(req.params.id);
-    if (!sessionId) { res.status(400).json({ error: 'Invalid session id.' }); return; }
-    const storage = new SessionStorage(PROJECT_DIR, '', sessionId);
-    const [meta, events] = await Promise.all([storage.getMeta(), storage.readAll()]);
-    const exportData = { meta, events, exportedAt: new Date().toISOString() };
-    res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Content-Disposition', `attachment; filename="session-${sessionId.slice(0, 8)}.json"`);
-    res.json(exportData);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/sessions/import', async (req, res) => {
-  try {
-    const body = req.body;
-    if (!body?.meta || !Array.isArray(body?.events)) {
-      res.status(400).json({ error: 'Invalid session export: must have meta and events array.' });
-      return;
-    }
-    const model = body.meta.model || currentModel || 'imported';
-    const storage = new SessionStorage(PROJECT_DIR, model);
-    await storage.initialize();
-    if (body.meta.title) storage.setMeta('title', body.meta.title);
-    for (const event of body.events) {
-      if (event.type && event.data) {
-        await storage.append(event.type, event.data);
-      }
-    }
-    await storage.markStatus(body.meta.status || 'completed');
-    await rebuildSessionSearchIndexWithMetadata(PROJECT_DIR);
-    res.json({ sessionId: storage.getSessionId(), eventCount: body.events.length });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
