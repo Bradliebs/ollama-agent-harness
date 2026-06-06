@@ -72,6 +72,7 @@ import { createMiscRouter } from './miscRoutes';
 import { createRunsRouter } from './runsRoutes';
 import { createLearningRouter } from './learningRoutes';
 import { createMcpRouter } from './mcpRoutes';
+import { createUploadsRouter } from './uploadsRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -6596,53 +6597,12 @@ function inferMediaKind(fileName: string, mimeType: string): 'image' | 'audio' |
 // the getAgentOutputDir import moved into ./saveOutputRoutes.ts.
 app.use(createSaveOutputRouter({ projectDir: PROJECT_DIR }));
 
-app.get('/api/uploads', async (_req, res) => {
-  const uploadsDir = getUploadsDir();
-  try {
-    await fs.mkdir(uploadsDir, { recursive: true });
-    const entries = await fs.readdir(uploadsDir, { withFileTypes: true });
-    const files = [];
-    let totalBytes = 0;
-    let oldestMs: number | null = null;
-    for (const e of entries.filter(e => e.isFile())) {
-      const stat = await fs.stat(path.join(uploadsDir, e.name));
-      const mtime = stat.mtime.getTime();
-      totalBytes += stat.size;
-      if (oldestMs === null || mtime < oldestMs) oldestMs = mtime;
-      files.push({ name: e.name, path: path.join(uploadsDir, e.name), size: stat.size, modified: stat.mtime.toISOString() });
-    }
-    res.json({
-      files,
-      directory: uploadsDir,
-      totalBytes,
-      oldest: oldestMs !== null ? new Date(oldestMs).toISOString() : null,
-    });
-  } catch { res.json({ files: [], directory: uploadsDir, totalBytes: 0, oldest: null }); }
-});
+// Uploads listing / delete / manual cleanup. pruneUploads stays in server.ts
+// because the auto-prune timer also calls it; router invokes it via a
+// callable dep.
+app.use(createUploadsRouter({ getUploadsDir, pruneUploads }));
 
-app.delete('/api/uploads/:name', async (req, res) => {
-  const safe = safeLocalId(path.basename(req.params.name));
-  if (!safe) { res.status(400).json({ error: 'Invalid upload name.' }); return; }
-  try {
-    await fs.unlink(path.join(getUploadsDir(), safe));
-    res.json({ ok: true });
-  } catch { res.status(404).json({ error: 'Not found' }); }
-});
-
-app.post('/api/uploads/cleanup', async (req, res) => {
-  const days = clampNumber(req.body?.olderThanDays, 0, 3650, 30);
-  if (days <= 0) {
-    res.status(400).json({ error: 'olderThanDays must be greater than 0 for manual cleanup.' });
-    return;
-  }
-  try {
-    const result = await pruneUploads(days);
-    res.json(result);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// Uploads routes moved to ./uploadsRoutes.ts (createUploadsRouter mount above).
 
 async function pruneUploads(olderThanDays: number): Promise<{ removed: Array<{ name: string; size: number; modified: string }>; removedBytes: number; olderThanDays: number; lastPrunedAt: string }> {
   const cutoffMs = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
