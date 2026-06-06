@@ -1908,10 +1908,11 @@ function renderInboxStrip(host, items, total) {
   const cardsHtml = items.map((item) => {
     const meta = INBOX_KIND_META[item.kind] || { icon: '•', tone: 'med' };
     const cls = 'inbox-item' + (meta.tone === 'high' ? ' priority-high' : '');
-    return '<button type="button" class="' + cls + '" data-id="' + escAttr(item.id) + '" title="' + escAttr(item.detail || '') + '">'
+    return '<div class="' + cls + '" data-id="' + escAttr(item.id) + '" data-kind="' + escAttr(item.kind) + '" title="' + escAttr(item.detail || '') + '">'
       + '<div class="inbox-row"><span class="inbox-kind-icon">' + meta.icon + '</span><span class="inbox-title">' + esc(item.title) + '</span></div>'
       + (item.detail ? '<div class="inbox-detail">' + esc(item.detail) + '</div>' : '')
-      + '</button>';
+      + inboxActionsHtml(item)
+      + '</div>';
   }).join('');
   host.innerHTML = ''
     + '<div class="inbox-strip-summary">'
@@ -1923,21 +1924,93 @@ function renderInboxStrip(host, items, total) {
     + '<div class="inbox-strip-list' + (collapsed ? ' collapsed' : '') + '" id="inboxStripList">' + cardsHtml + '</div>';
   const toggleBtn = document.getElementById('inboxStripToggle');
   if (toggleBtn) toggleBtn.onclick = () => toggleInboxStrip();
-  // Wire each card to its action. Permissions → open Tools tab so the
-  // user can see what is queued; plan tasks → Autonomy; runs → Runs.
-  // Falls back to chat input population so unknown actions still help.
-  for (const btn of host.querySelectorAll('.inbox-item')) {
-    const id = btn.getAttribute('data-id');
-    const item = items.find((i) => i.id === id);
-    if (!item) continue;
-    btn.onclick = () => {
-      if (item.action?.kind === 'open_tab') {
-        try { openLeftTabByName(item.action.payload); } catch (e) { console.warn('inbox open failed', e); }
-      } else if (item.action?.kind === 'chat') {
-        const inp = document.getElementById('chatInput');
-        if (inp) { inp.value = item.action.payload; inp.focus(); try { autoSize(inp); } catch(e){} }
-      }
-    };
+  // Wire each card's inline action buttons. Cards are no longer
+  // whole-card clickable — every verb is an explicit button so the user
+  // never has to guess "what now" after a navigation. Action handlers
+  // call the matching server endpoint, toast the outcome, and refresh
+  // the inbox so resolved items vanish immediately.
+  for (const btn of host.querySelectorAll('.inbox-action-btn[data-action]')) {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const action = btn.getAttribute('data-action');
+      const cardId = btn.getAttribute('data-card-id') || '';
+      handleInboxAction(action, cardId, btn).catch((err) => {
+        try { showToast('⚠️ ' + (err?.message || err), 3500, 'warning'); } catch(_){}
+      });
+    });
+  }
+}
+
+// Per-kind action row. Returns HTML for the buttons that should appear
+// underneath the card body. Each button carries data-action and the
+// card's full id so handleInboxAction can route without re-finding the
+// item. Verbs picked for "what would the user actually want to DO with
+// this?" rather than "where could we send them to think about it?".
+function inboxActionsHtml(item) {
+  const cardId = escAttr(item.id);
+  if (item.kind === 'permission') {
+    return '<div class="inbox-actions">'
+      + '<button type="button" class="inbox-action-btn primary" data-action="permission_allow" data-card-id="' + cardId + '">✓ Approve</button>'
+      + '<button type="button" class="inbox-action-btn danger" data-action="permission_deny" data-card-id="' + cardId + '">✕ Deny</button>'
+      + '<button type="button" class="inbox-action-btn" data-action="open_tools" data-card-id="' + cardId + '">Open Tools</button>'
+      + '</div>';
+  }
+  if (item.kind === 'plan_task') {
+    return '<div class="inbox-actions">'
+      + '<button type="button" class="inbox-action-btn primary" data-action="task_complete" data-card-id="' + cardId + '">✓ Mark done</button>'
+      + '<button type="button" class="inbox-action-btn danger" data-action="task_delete" data-card-id="' + cardId + '">✕ Delete</button>'
+      + '<button type="button" class="inbox-action-btn" data-action="open_autonomy" data-card-id="' + cardId + '">Open Plan</button>'
+      + '</div>';
+  }
+  if (item.kind === 'automation_run') {
+    return '<div class="inbox-actions">'
+      + '<button type="button" class="inbox-action-btn" data-action="open_runs" data-card-id="' + cardId + '">View in Runs</button>'
+      + '</div>';
+  }
+  return '';
+}
+
+async function handleInboxAction(action, cardId, btn) {
+  // cardId encodes both the kind prefix and the resource id, e.g.
+  // "plan_task:abc-123" or "automation_run:job-7:2026-06-06T...".
+  // Strip the first segment to get the underlying resource id.
+  const colonAt = cardId.indexOf(':');
+  const resourceId = colonAt >= 0 ? cardId.slice(colonAt + 1) : cardId;
+  const setBusy = (busy) => { try { btn.disabled = busy; } catch(_){} };
+  setBusy(true);
+  try {
+    if (action === 'permission_allow' || action === 'permission_deny') {
+      const allowed = action === 'permission_allow';
+      const res = await fetch('/api/permissions/' + encodeURIComponent(resourceId) + '/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allowed }),
+      });
+      if (!res.ok) throw new Error((await res.text()) || 'Permission resolve failed');
+      showToast(allowed ? '✓ Approved' : '✕ Denied', 2200, 'success');
+    } else if (action === 'task_complete') {
+      const res = await fetch('/api/autonomy/tasks/' + encodeURIComponent(resourceId) + '/complete', { method: 'POST' });
+      if (!res.ok) throw new Error((await res.text()) || 'Mark done failed');
+      showToast('✓ Task marked done', 2200, 'success');
+    } else if (action === 'task_delete') {
+      if (!confirm('Delete this task from IMPLEMENTATION_PLAN.md?')) { setBusy(false); return; }
+      const res = await fetch('/api/autonomy/tasks/' + encodeURIComponent(resourceId), { method: 'DELETE' });
+      if (!res.ok) throw new Error((await res.text()) || 'Delete failed');
+      showToast('✕ Task deleted', 2200, 'success');
+    } else if (action === 'open_tools') {
+      openLeftTabByName('tools');
+    } else if (action === 'open_autonomy') {
+      openLeftTabByName('autonomy');
+    } else if (action === 'open_runs') {
+      openLeftTabByName('runs');
+    }
+  } finally {
+    setBusy(false);
+    // Refresh the inbox after any mutation so resolved/completed/deleted
+    // items disappear. Cheap because /api/inbox is just an aggregator.
+    if (action !== 'open_tools' && action !== 'open_autonomy' && action !== 'open_runs') {
+      try { await loadInbox(); } catch(_){}
+    }
   }
 }
 
