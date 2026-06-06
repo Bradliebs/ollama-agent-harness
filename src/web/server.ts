@@ -71,6 +71,7 @@ import { createSaveOutputRouter } from './saveOutputRoutes';
 import { createMiscRouter } from './miscRoutes';
 import { createRunsRouter } from './runsRoutes';
 import { createLearningRouter } from './learningRoutes';
+import { createMcpRouter } from './mcpRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -87,8 +88,7 @@ import { SessionStorage } from '../persistence/sessionStorage';
 import { rebuildSemanticMemory, searchSemanticMemory } from '../persistence/semanticMemory';
 import * as snapshots from '../persistence/snapshots';
 import * as ragIndex from '../persistence/ragIndex';
-import { MCP_CATALOG } from '../extensibility/mcpCatalog';
-import { discoverMcpServerTools, invokeMcpServerTool, listMcpServers, removeMcpServer, startMcpServer, stopMcpServer, upsertMcpServer } from '../extensibility/mcpRuntime';
+
 import { assembleSystemContext, estimateTokenCount } from '../context/assembly';
 import { HookPipeline } from '../extensibility/hookPipeline';
 import { createAuditHooks, readAuditLog, renderRecentAuditForPrompt } from '../permissions/audit';
@@ -6374,110 +6374,18 @@ app.use(createSnapshotRouter({ projectDir: PROJECT_DIR }));
 // listIndexes() in the system-overview/registry paths.
 app.use(createRagRouter({ projectDir: PROJECT_DIR, getOllamaHost: () => ollamaHost }));
 
-app.get('/api/mcp/catalog', (_req, res) => {
-  res.json({ catalog: MCP_CATALOG });
-});
+// MCP runtime + catalog routes \u2014 extracted to ./mcpRoutes.ts. Mutable
+// capabilityGrants + killSwitchActive bridged via read-only callables;
+// ensureSettingsLoaded passed in so the start route still hydrates settings
+// before evaluating capability grants.
+app.use(createMcpRouter({
+  projectDir: PROJECT_DIR,
+  getCapabilityGrants: () => capabilityGrants,
+  isKillSwitchActive: () => killSwitchActive,
+  ensureSettingsLoaded,
+}));
 
-app.get('/api/mcp/runtime', async (_req, res) => {
-  try {
-    res.json({ servers: await listMcpServers(PROJECT_DIR) });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/mcp/runtime/servers', async (req, res) => {
-  try {
-    const server = await upsertMcpServer(PROJECT_DIR, req.body ?? {});
-    res.json({ server, servers: await listMcpServers(PROJECT_DIR) });
-  } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/mcp/runtime/from-catalog', async (req, res) => {
-  try {
-    const catalogName = safeLocalId(req.body?.name);
-    if (!catalogName) { res.status(400).json({ error: 'Invalid MCP catalog name.' }); return; }
-    const entry = MCP_CATALOG.find((item) => item.name === catalogName);
-    if (!entry) { res.status(404).json({ error: 'MCP catalog entry not found.' }); return; }
-    const existing = (await listMcpServers(PROJECT_DIR)).find((server) => server.id === catalogName);
-    if (existing && req.body?.overwrite !== true) {
-      res.status(409).json({ error: 'MCP runtime server already exists. Pass overwrite=true to replace it.' });
-      return;
-    }
-    const parsed = parseMcpInstallCommand(entry.install);
-    const server = await upsertMcpServer(PROJECT_DIR, {
-      id: catalogName,
-      catalogName: entry.name,
-      command: parsed.command,
-      args: parsed.args,
-      env: Object.fromEntries((entry.requiresEnv || []).map((key) => [key, ''])),
-      tools: [],
-      enabled: true,
-    });
-    res.json({ server, servers: await listMcpServers(PROJECT_DIR), requiresEnv: entry.requiresEnv });
-  } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete('/api/mcp/runtime/servers/:id', async (req, res) => {
-  try {
-    const removed = await removeMcpServer(PROJECT_DIR, req.params.id);
-    if (!removed) { res.status(404).json({ error: 'MCP server not found.' }); return; }
-    res.json({ ok: true, servers: await listMcpServers(PROJECT_DIR) });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/mcp/runtime/servers/:id/start', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const evaluation = evaluateCapabilityGrant('arbitrary-shell', capabilityGrants, { killSwitchActive });
-    if (evaluation.decision !== 'allow') {
-      res.status(403).json({ error: `MCP server start blocked by arbitrary-shell: ${evaluation.reason}`, evaluation });
-      return;
-    }
-    const server = await startMcpServer(PROJECT_DIR, req.params.id);
-    await appendCapabilityAuditEvent(PROJECT_DIR, { type: 'mcp_server.started', serverId: server.id, command: server.command });
-    res.json({ server, servers: await listMcpServers(PROJECT_DIR) });
-  } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/mcp/runtime/servers/:id/stop', async (req, res) => {
-  try {
-    const stopped = await stopMcpServer(req.params.id);
-    await appendCapabilityAuditEvent(PROJECT_DIR, { type: 'mcp_server.stopped', serverId: String(req.params.id ?? '') });
-    res.json({ stopped, servers: await listMcpServers(PROJECT_DIR) });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/mcp/runtime/servers/:id/discover-tools', async (req, res) => {
-  try {
-    if (killSwitchActive) { res.status(403).json({ error: 'Kill switch is active.' }); return; }
-    const server = await discoverMcpServerTools(PROJECT_DIR, req.params.id);
-    res.json({ server, servers: await listMcpServers(PROJECT_DIR) });
-  } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/mcp/runtime/servers/:id/tools/:toolName/invoke', async (req, res) => {
-  try {
-    if (killSwitchActive) { res.status(403).json({ error: 'Kill switch is active.' }); return; }
-    const input = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body as Record<string, unknown> : {};
-    const result = await invokeMcpServerTool(PROJECT_DIR, req.params.id, req.params.toolName, input);
-    res.json({ result });
-  } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// MCP routes moved to ./mcpRoutes.ts (createMcpRouter mount above).
 
 // Pull a model from Ollama
 app.post('/api/models/pull', async (req, res) => {
@@ -7841,43 +7749,7 @@ function suggestionReason(profile: OutputValidationProfile, matched = true, mode
   }
 }
 
-function parseMcpInstallCommand(install: string): { command: string; args: string[] } {
-  const parts = splitShellLikeArgs(install).map((part) => part === '${PWD}' ? '.' : part);
-  const command = parts[0]?.trim();
-  if (!command) throw new Error('MCP catalog entry is missing an install command.');
-  return { command, args: parts.slice(1) };
-}
 
-function splitShellLikeArgs(input: string): string[] {
-  const args: string[] = [];
-  let current = '';
-  let quote: 'single' | 'double' | null = null;
-  for (let index = 0; index < input.length; index++) {
-    const char = input[index];
-    if (quote === 'single') {
-      if (char === "'") quote = null;
-      else current += char;
-      continue;
-    }
-    if (quote === 'double') {
-      if (char === '"') quote = null;
-      else current += char;
-      continue;
-    }
-    if (char === "'") { quote = 'single'; continue; }
-    if (char === '"') { quote = 'double'; continue; }
-    if (/\s/.test(char)) {
-      if (current) {
-        args.push(current);
-        current = '';
-      }
-      continue;
-    }
-    current += char;
-  }
-  if (current) args.push(current);
-  return args;
-}
 
 function sanitizeModelCatalogSettings(value: unknown): ModelCatalogSettings {
   const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
