@@ -1125,6 +1125,10 @@ describe('web server API validation', () => {
     expect(inferModelCapabilities('gemma4:e4b').toolUse).toBe('weak');
   });
 
+  it('classifies Minimax M3 as image-capable', () => {
+    expect(inferModelCapabilities('minimax-m3:cloud').image).toBe(true);
+  });
+
   it('classifies every agentic-fallback routing target as strong', () => {
     // Sweep guard: every model the auto-router will pick MUST classify as
     // strong-tools, otherwise we would route a weak Gemma turn into another

@@ -1,6 +1,6 @@
 export function isVisionCapableModelName(name: string, details: Record<string, unknown> = {}): boolean {
   const haystack = `${name} ${Object.values(details).join(' ')}`.toLowerCase();
-  return /llava|bakllava|moondream|vision|qwen\d*(?:\.\d+)?vl|qwen.*vl|minicpm-v|granite.*vision|gemma.*vision|glm-(4v|5)/.test(haystack);
+  return /llava|bakllava|moondream|vision|qwen\d*(?:\.\d+)?vl|qwen.*vl|minicpm-v|granite.*vision|gemma.*vision|glm-(4v|5)|minimax[-_]?m3/.test(haystack);
 }
 
 export function findInstalledVisionModel(modelNames: string[]): string | undefined {

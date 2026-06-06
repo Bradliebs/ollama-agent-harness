@@ -76,6 +76,18 @@ describe('multimodal tools', () => {
     expect(mockChat).toHaveBeenCalledWith(expect.objectContaining({ model: 'llava:latest' }));
   });
 
+  it('auto-detects Minimax M3 as an installed vision model', async () => {
+    const imagePath = path.join(fixtureDir, 'sample.png');
+    await fs.writeFile(imagePath, Buffer.from([8, 9, 10]));
+    mockList.mockResolvedValue({ models: [{ name: 'qwen2.5-coder:7b' }, { name: 'minimax-m3:cloud' }] });
+    mockChat.mockResolvedValue({ message: { content: 'A license document photo.' } });
+
+    const result = await ImageAnalyzeTool.execute({ path: imagePath, prompt: 'Read this.' });
+
+    expect(result).toMatchObject({ success: true, output: 'A license document photo.' });
+    expect(mockChat).toHaveBeenCalledWith(expect.objectContaining({ model: 'minimax-m3:cloud' }));
+  });
+
   it('reports a clear audio transcription setup error when no command is configured', async () => {
     const audioPath = path.join(fixtureDir, 'voice.wav');
     await fs.writeFile(audioPath, Buffer.from([1, 2, 3]));
