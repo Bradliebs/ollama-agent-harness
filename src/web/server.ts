@@ -24,7 +24,6 @@ import { SelfLearningHeartbeat, createCleanupAgentOutputsAction, createIdentityG
 import { TriggerScheduler } from '../services/triggerScheduler';
 import { SchedulerRegistry } from '../services/schedulerRegistry';
 import { TeammateScheduler, sanitizeTeammateSettings, defaultTeammateSettings, type TeammateSettings, type TeammateChannel } from '../automation/teammateScheduler';
-import { listArtifacts, readArtifact, type ArtifactCategory } from '../services/artifactCatalog';
 import { cancelSubagent, listActiveSubagents, subscribeSubagentRegistry } from '../services/subagentRegistry';
 import { createToolFailureAlerts, type ToolFailureAlertTracker } from '../services/toolFailureAlerts';
 import { formatPrometheusMetrics, type PrometheusMetric } from '../observability/prometheus';
@@ -51,6 +50,7 @@ import { createBenchmarkRouter } from './benchmarkRoutes';
 import { createSquadRouter } from './squadRoutes';
 import { createRuntimeCostRouter } from './runtimeCostRoutes';
 import { createTriggerRouter } from './triggerRoutes';
+import { createArtifactRouter } from './artifactRoutes';
 import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -3925,40 +3925,9 @@ app.use(createTriggerRouter({
 }));
 
 // ─── Artifacts catalog ───────────────────────────────────
-// Cross-session view of files written by the agent into agent-outputs/.
-// Read-only; the artifact root is the same directory file_write redirects
-// new bare-filename writes to, honouring HARNESS_AGENT_OUTPUT_DIR.
-function artifactRoot(): string {
-  const override = (process.env.HARNESS_AGENT_OUTPUT_DIR ?? '').trim();
-  if (override) {
-    return path.isAbsolute(override) ? override : path.resolve(PROJECT_DIR, override);
-  }
-  return path.join(PROJECT_DIR, 'agent-outputs');
-}
-
-app.get('/api/artifacts', async (req, res) => {
-  try {
-    const limit = req.query.limit ? Math.max(1, Math.min(1000, Number(req.query.limit))) : undefined;
-    const category = typeof req.query.category === 'string' ? req.query.category as ArtifactCategory : undefined;
-    const search = typeof req.query.search === 'string' ? req.query.search : undefined;
-    const root = artifactRoot();
-    const records = await listArtifacts(root, { limit, category, search });
-    res.json({ root, count: records.length, artifacts: records });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/artifacts/content', async (req, res) => {
-  try {
-    const relative = typeof req.query.path === 'string' ? req.query.path : '';
-    if (!relative) { res.status(400).json({ error: 'path query parameter required.' }); return; }
-    const result = await readArtifact(artifactRoot(), relative);
-    res.json(result);
-  } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Read-only cross-session view of agent-outputs/ (honours
+// HARNESS_AGENT_OUTPUT_DIR). Routes extracted to ./artifactRoutes.ts.
+app.use(createArtifactRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Active sub-agents ─────────────────────────────────
 app.get('/api/subagents', async (_req, res) => {
