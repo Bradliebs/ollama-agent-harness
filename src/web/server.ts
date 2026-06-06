@@ -66,6 +66,7 @@ import { createNervousRouter } from './nervousRoutes';
 import { createSynthesisStatsRouter } from './synthesisStatsRoutes';
 import { createAboutRouter } from './aboutRoutes';
 import { createBudgetRouter } from './budgetRoutes';
+import { createConnectorRouter } from './connectorRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { applyFileWriteRedirect, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
@@ -126,7 +127,7 @@ import { handleOperateModeRequest, listAgenticServices } from '../services/agent
 import { classifyMode, type HarnessMode } from '../services/modeClassifier';
 import { createDefaultCapabilityRegistry, type CapabilityRegistry } from '../services/capabilityRegistry';
 import { evaluateCapabilityTemplates, type ConnectorReadinessInput } from '../services/capabilityTemplates';
-import { getCapabilityTemplateStarter, getMessageIngressPolicy, listCapabilityTemplateStarters, listConnectorContractFixtures, listConnectorReadinessContracts, validateConnectorReadinessContracts, type CapabilityTemplateStarter } from '../services/capabilityTemplateStarters';
+import { getCapabilityTemplateStarter, listCapabilityTemplateStarters, type CapabilityTemplateStarter } from '../services/capabilityTemplateStarters';
 import { WorkerQueue } from '../services/workerQueue';
 import { createPromise, listPromises, updatePromise, checkObligations, fulfilPromise, failPromise, detectCommitments, type PromiseStatus } from '../services/promiseLedger';
 import { emitEvent, queryEvents, summarizeEventStore } from '../persistence/eventStore';
@@ -3410,21 +3411,28 @@ app.post('/api/whatsapp/setup', async (req, res) => {
   res.json({ ok: true, status: getWhatsAppConnectorStatus({ accessToken: connectorSecretValue('HARNESS_WHATSAPP_ACCESS_TOKEN'), phoneNumberId: whatsappPhoneNumberId, allowedRecipients: whatsappAllowedRecipients }) });
 });
 
-app.get('/api/connectors/status', (_req, res) => {
-  const smtpHost = process.env.HARNESS_SMTP_HOST?.trim();
-  const smtpUser = process.env.HARNESS_SMTP_USER?.trim();
-  const smtpPass = process.env.HARNESS_SMTP_PASS?.trim();
-  res.json({
-    connectors: {
+// ─── Connector status / contracts / ingress policy ───────────────────────
+// 3 read-only routes (GET /api/connectors/status, GET /api/connectors/contracts,
+// GET /api/message-ingress/policy) extracted to ./connectorRoutes.ts. The
+// status route reads server.ts mutable connector module state (telegram/
+// discord/whatsapp tokens + bot running flags); we pass it as a single
+// callable so the router stays decoupled. Contracts + ingress policy use
+// only services/capabilityTemplateStarters and were dropped from server.ts
+// import entirely (4 symbols).
+app.use(createConnectorRouter({
+  getConnectorStatusSnapshot: () => {
+    const smtpHost = process.env.HARNESS_SMTP_HOST?.trim();
+    const smtpUser = process.env.HARNESS_SMTP_USER?.trim();
+    const smtpPass = process.env.HARNESS_SMTP_PASS?.trim();
+    return {
       telegram: { connector: 'telegram', configured: Boolean(telegramBotToken), running: isTelegramBotRunning(), hasAllowedChatIds: Boolean(telegramAllowedChatIds), mode: 'chat-bridge' },
       discord: { connector: 'discord', configured: Boolean(connectorSecretValue('HARNESS_DISCORD_BOT_TOKEN')), running: isDiscordBotRunning(), hasAllowedChannelIds: Boolean(discordAllowedChannelIds), mode: 'chat-bridge' },
       slack: getSlackConnectorStatus(connectorSecretValue('HARNESS_SLACK_WEBHOOK_URL')),
       whatsapp: getWhatsAppConnectorStatus({ accessToken: connectorSecretValue('HARNESS_WHATSAPP_ACCESS_TOKEN'), phoneNumberId: whatsappPhoneNumberId || process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID, allowedRecipients: whatsappAllowedRecipients || process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS }),
       smtp: { connector: 'smtp', configured: Boolean(smtpHost && smtpUser && smtpPass), mode: 'outbound' },
-    },
-  });
-});
-
+    };
+  },
+}));
 app.get('/api/capability-templates', async (_req, res) => {
   try {
     await ensureSettingsLoaded();
@@ -3485,16 +3493,6 @@ app.get('/api/capability-templates/:id/starter', (req, res) => {
   }
 });
 
-app.get('/api/connectors/contracts', (_req, res) => {
-  try {
-    const contracts = listConnectorReadinessContracts();
-    res.json({ contracts, fixtures: listConnectorContractFixtures(), findings: validateConnectorReadinessContracts(contracts) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
 app.post('/api/capability-templates/:id/actions', async (req, res) => {
   try {
     await ensureSettingsLoaded();
@@ -3534,15 +3532,6 @@ app.post('/api/capability-templates/:id/actions', async (req, res) => {
       return;
     }
     res.status(400).json({ error: `Unsupported starter kind: ${starter.kind}` });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/message-ingress/policy', (_req, res) => {
-  try {
-    res.json({ policy: getMessageIngressPolicy() });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
