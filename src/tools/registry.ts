@@ -23,6 +23,7 @@ import { SlackNotifyTool } from './slackTools';
 import { TelegramNotifyTool } from './telegramTools';
 import { createRecallTool } from './recallTool';
 import { createCodeGraphTool } from './codeGraphTool';
+import { createShoppingListTool } from './shoppingListTool';
 import { CalendarReadTool, CalendarWriteTool } from './calendarTools';
 import { createMcpToolEntries } from './mcpTools';
 import { TaskManageTool, TaskProgressTool } from './taskTools';
@@ -86,6 +87,7 @@ export function createToolRegistry(projectDir?: string): ToolRegistry {
     for (const entry of createMcpToolEntries(projectDir)) registry.register(entry);
     registry.register({ tool: createRecallTool(projectDir), toolset: 'memory', source: 'runtime', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false });
     registry.register({ tool: createCodeGraphTool(projectDir), toolset: 'code-graph', source: 'runtime', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false });
+    registry.register({ tool: createShoppingListTool(projectDir), toolset: 'personal', source: 'runtime', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false });
   }
   return registry;
 }
