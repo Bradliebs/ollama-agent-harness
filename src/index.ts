@@ -123,6 +123,8 @@ export { clearSquadForSession, getSquadForSession, resolveSessionSquad, setSquad
 // ─── Identity Layer ─────────────────────────────────────────────────
 export { deleteStructuredEntry, exportIdentity, importIdentity, queryStructured, readIdentityFile, readIdentitySnapshot, readStructuredStore, renderIdentityForPrompt, runIdentityGc, upsertStructuredEntry, writeIdentityFile } from './services/identity';
 export type { IdentityExport, IdentityFileName, IdentityGcOptions, IdentityGcSummary, IdentitySnapshot, ImportIdentityOptions, ImportIdentitySummary, StructuredEntry, StructuredStore, UpsertStructuredInput } from './services/identity';
+export { captureIdentitySnapshot, listIdentityHistory, loadIdentityHistory, restoreIdentityFromHistory } from './services/identityHistory';
+export type { IdentitySnapshotMeta, IdentitySnapshotRecord } from './services/identityHistory';
 
 // ─── Subagent Orchestrator ──────────────────────────────────────────
 export { orchestrate, mergeResults, mergeVerified, attachVerification, verifyCodeBranch, getAgentRoleDefaults } from './agents/orchestrator';
