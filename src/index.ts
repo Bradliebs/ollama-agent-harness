@@ -125,6 +125,10 @@ export { deleteStructuredEntry, exportIdentity, importIdentity, queryStructured,
 export type { IdentityExport, IdentityFileName, IdentityGcOptions, IdentityGcSummary, IdentitySnapshot, ImportIdentityOptions, ImportIdentitySummary, StructuredEntry, StructuredStore, UpsertStructuredInput } from './services/identity';
 export { captureIdentitySnapshot, listIdentityHistory, loadIdentityHistory, restoreIdentityFromHistory } from './services/identityHistory';
 export type { IdentitySnapshotMeta, IdentitySnapshotRecord } from './services/identityHistory';
+export { acceptSoulProposal, applyUserProposal, discardSoulProposal, parseProposalResponse, proposeSoulUpdate, proposeUserUpdate, readSoulProposal } from './services/identityProposals';
+export type { IdentityProposal, SoulProposalRecord } from './services/identityProposals';
+export { readIdentityAutoUpdateConfig, runIdentityAutoUpdateTick, writeIdentityAutoUpdateConfig } from './services/identityAutoUpdate';
+export type { IdentityAutoUpdateConfig, IdentityAutoUpdateDeps, IdentityAutoUpdateResult } from './services/identityAutoUpdate';
 
 // ─── Subagent Orchestrator ──────────────────────────────────────────
 export { orchestrate, mergeResults, mergeVerified, attachVerification, verifyCodeBranch, getAgentRoleDefaults } from './agents/orchestrator';
