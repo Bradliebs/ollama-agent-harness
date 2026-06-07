@@ -129,6 +129,14 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     requiresEnv: ['GOOGLE_OAUTH_CREDENTIALS'],
   },
   {
+    name: 'gmail',
+    description: 'Read, search, send, and manage Gmail messages and labels. Uses the same Google Cloud OAuth keys file as google-calendar.',
+    tags: ['mail', 'gmail', 'google', 'community'],
+    install: 'npx -y @gongrzhe/server-gmail-autoauth-mcp',
+    homepage: 'https://github.com/GongRzhe/Gmail-MCP-Server',
+    requiresEnv: [],
+  },
+  {
     name: 'ms-365',
     description: 'Microsoft 365 / Outlook: mail, calendar, OneDrive, contacts, To Do. Device-code login on first run — no Azure setup needed for personal accounts.',
     tags: ['calendar', 'mail', 'microsoft', 'outlook', 'community'],
