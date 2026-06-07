@@ -1,0 +1,2334 @@
+PASS src/web/autonomyState.test.ts (13.387 s)
+PASS src/automation/taskLoopSnapshotE2E.test.ts (13.955 s)
+PASS src/goal/loop.test.ts (14.139 s)
+PASS src/services/identityAutoUpdateScheduler.test.ts
+  ΓùÅ Console
+
+    console.log
+      [2026-06-07T11:40:03.034Z] [INFO ] [IdentityAutoUpdate] Scheduled run completed {"user":"disabled","soul":"disabled"}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:03.074Z] [INFO ] [IdentityAutoUpdate] Scheduled run completed {"user":"disabled","soul":"disabled"}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:03.163Z] [INFO ] [IdentityAutoUpdate] Scheduled run completed {"user":"applied","soul":"disabled"}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:03.213Z] [INFO ] [IdentityAutoUpdate] Scheduled run completed {"user":"disabled","soul":"disabled"}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:03.222Z] [INFO ] [IdentityAutoUpdate] Scheduler started {"intervalHours":1,"idleThresholdMinutes":1}
+
+      at log (src/core/logger.ts:32:15)
+
+PASS src/persistence/eventStore.test.ts (15.023 s)
+PASS src/services/identityHistory.test.ts
+PASS src/automation/taskLoopBudget.test.ts (16.103 s)
+PASS src/services/identityObservations.test.ts
+PASS src/services/slashCommandRouter.test.ts (16.542 s)
+PASS src/jarvis/mcpStdioSubprocess.test.ts (18.963 s)
+PASS src/tools/browserTools.test.ts (5.738 s)
+PASS src/web/wsServer.test.ts
+PASS src/automation/memoryWikiRunner.test.ts
+PASS src/tools/documentTools.test.ts
+PASS src/setup/health.test.ts
+PASS src/core/outputValidation.test.ts (6.456 s)
+PASS src/tools/fileTools.test.ts
+PASS src/automation/jobs.test.ts
+PASS src/tools/bashTool.test.ts
+PASS src/goal/verification.test.ts
+PASS src/workflows/workflowRegistry.test.ts
+  ΓùÅ Console
+
+    console.warn
+      [2026-06-07T11:40:10.822Z] [WARN ] [Workflow] Failed to restore workflow run {"file":"broken.json","error":"Expected property name or '}' in JSON at position 2 (line 1 column 3)"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at WorkflowRegistry.restoreRuns (src/workflows/workflowRegistry.ts:182:16)
+      at Object.<anonymous> (src/workflows/workflowRegistry.test.ts:352:22)
+
+    console.warn
+      [2026-06-07T11:40:10.854Z] [WARN ] [Workflow] Skipping malformed run file {"file":"wrong-shape.json"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at WorkflowRegistry.restoreRuns (src/workflows/workflowRegistry.ts:152:18)
+      at Object.<anonymous> (src/workflows/workflowRegistry.test.ts:352:22)
+
+PASS src/automation/headlessSmokeWrapper.test.ts
+PASS src/integrations/discord.test.ts
+  ΓùÅ Console
+
+    console.log
+      [2026-06-07T11:40:10.103Z] [INFO ] [Discord] Bot stopped
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:11.678Z] [INFO ] [Discord] Bot stopped
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:11.680Z] [INFO ] [Discord] Bot stopped
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:11.681Z] [INFO ] [Discord] Bot stopped
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:11.684Z] [INFO ] [Discord] Bot stopped
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:11.685Z] [INFO ] [Discord] Bot stopped
+
+      at log (src/core/logger.ts:32:15)
+
+PASS src/cli/index.test.ts
+PASS src/automation/taskLoopSnapshot.test.ts
+PASS src/services/agenticServiceMode.test.ts
+PASS src/extensibility/mcpRuntime.test.ts
+PASS src/core/openaiClientRetryAfter.test.ts
+  ΓùÅ Console
+
+    console.warn
+      [OpenAIClient] openai-compatible HTTP 429 (rate limited); waiting 1000ms then retrying (2 attempts left, key 1/1).
+
+      335 |         lastError = new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
+      336 |         if (remaining <= 0) throw lastError;
+    > 337 |         console.warn(`[OpenAIClient] ${this.providerLabel} HTTP ${response.status} (${detail.slice(0, 80) || response.statusText}); waiting ${Math.round(backoff)}ms then retrying (${remaining} attempts left, key ${this.keyIndex + 1}/${this.apiKeys.length}).`);
+          |                 ^
+      338 |         // Rotate key before next attempt ΓÇö useful when 429 is account-scoped
+      339 |         // and the user has provisioned multiple keys for round-robin.
+      340 |         this.rotateKey();
+
+      at OpenAIClient.invoke (src/core/openaiClient.ts:337:17)
+      at OpenAIClient.chat (src/core/openaiClient.ts:117:20)
+      at Object.<anonymous> (src/core/openaiClientRetryAfter.test.ts:79:7)
+
+    console.warn
+      [OpenAIClient] openai-compatible HTTP 429 (rate limited); waiting 0ms then retrying (2 attempts left, key 1/3).
+
+      335 |         lastError = new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
+      336 |         if (remaining <= 0) throw lastError;
+    > 337 |         console.warn(`[OpenAIClient] ${this.providerLabel} HTTP ${response.status} (${detail.slice(0, 80) || response.statusText}); waiting ${Math.round(backoff)}ms then retrying (${remaining} attempts left, key ${this.keyIndex + 1}/${this.apiKeys.length}).`);
+          |                 ^
+      338 |         // Rotate key before next attempt ΓÇö useful when 429 is account-scoped
+      339 |         // and the user has provisioned multiple keys for round-robin.
+      340 |         this.rotateKey();
+
+      at OpenAIClient.invoke (src/core/openaiClient.ts:337:17)
+      at OpenAIClient.chat (src/core/openaiClient.ts:117:20)
+      at Object.<anonymous> (src/core/openaiClientRetryAfter.test.ts:104:7)
+
+    console.warn
+      [OpenAIClient] openai-compatible HTTP 429 (rate limited); waiting 0ms then retrying (1 attempts left, key 2/3).
+
+      335 |         lastError = new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
+      336 |         if (remaining <= 0) throw lastError;
+    > 337 |         console.warn(`[OpenAIClient] ${this.providerLabel} HTTP ${response.status} (${detail.slice(0, 80) || response.statusText}); waiting ${Math.round(backoff)}ms then retrying (${remaining} attempts left, key ${this.keyIndex + 1}/${this.apiKeys.length}).`);
+          |                 ^
+      338 |         // Rotate key before next attempt ΓÇö useful when 429 is account-scoped
+      339 |         // and the user has provisioned multiple keys for round-robin.
+      340 |         this.rotateKey();
+
+      at OpenAIClient.invoke (src/core/openaiClient.ts:337:17)
+      at OpenAIClient.chat (src/core/openaiClient.ts:117:20)
+      at Object.<anonymous> (src/core/openaiClientRetryAfter.test.ts:104:7)
+
+    console.warn
+      [OpenAIClient] IntegrationProv HTTP 429 (rate limited); waiting 0ms then retrying (1 attempts left, key 1/1).
+
+      335 |         lastError = new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
+      336 |         if (remaining <= 0) throw lastError;
+    > 337 |         console.warn(`[OpenAIClient] ${this.providerLabel} HTTP ${response.status} (${detail.slice(0, 80) || response.statusText}); waiting ${Math.round(backoff)}ms then retrying (${remaining} attempts left, key ${this.keyIndex + 1}/${this.apiKeys.length}).`);
+          |                 ^
+      338 |         // Rotate key before next attempt ΓÇö useful when 429 is account-scoped
+      339 |         // and the user has provisioned multiple keys for round-robin.
+      340 |         this.rotateKey();
+
+      at OpenAIClient.invoke (src/core/openaiClient.ts:337:17)
+      at OpenAIClient.chat (src/core/openaiClient.ts:117:20)
+      at Object.<anonymous> (src/core/openaiClientRetryAfter.test.ts:127:7)
+
+PASS src/web/goalRoutes.test.ts
+PASS src/services/selfLearningHeartbeat.test.ts
+  ΓùÅ Console
+
+    console.log
+      [2026-06-07T11:40:12.694Z] [INFO ] [Heartbeat] Tick complete {"actions":2,"ok":2,"durationMs":17}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.warn
+      [2026-06-07T11:40:12.720Z] [WARN ] [Heartbeat] Action boom threw {"error":"explode"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at SelfLearningHeartbeat.tick (src/services/selfLearningHeartbeat.ts:108:18)
+      at Object.<anonymous> (src/services/selfLearningHeartbeat.test.ts:75:20)
+
+    console.log
+      [2026-06-07T11:40:12.726Z] [INFO ] [Heartbeat] Tick complete {"actions":2,"ok":1,"durationMs":6}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:12.795Z] [INFO ] [Heartbeat] Tick complete {"actions":4,"ok":4,"durationMs":38}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:12.844Z] [INFO ] [Heartbeat] Tick complete {"actions":1,"ok":1,"durationMs":28}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:13.038Z] [INFO ] [Heartbeat] Tick complete {"actions":1,"ok":0,"durationMs":142}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:13.090Z] [INFO ] [Heartbeat] Tick complete {"actions":1,"ok":1,"durationMs":11}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:13.153Z] [INFO ] [Heartbeat] Tick complete {"actions":2,"ok":2,"durationMs":46}
+
+      at log (src/core/logger.ts:32:15)
+
+PASS src/web/myceliumRoutes.test.ts
+  ΓùÅ Console
+
+    console.log
+      [2026-06-07T11:40:12.296Z] [INFO ] [Mycelium] Graph reset
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:12.375Z] [INFO ] [Mycelium] Graph reset
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:12.391Z] [INFO ] [Mycelium] Graph reset
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:12.425Z] [INFO ] [Automation] Scheduler started {"idleThresholdMinutes":2}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:12.558Z] [INFO ] [Automation] Scheduler started {"idleThresholdMinutes":2}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:12.562Z] [INFO ] [Settings] Updated {"model":"persist-test","permissionMode":"default","temperature":0.2,"topP":0.9}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:12.933Z] [INFO ] [Mycelium] Route selected {"taskType":"planning","highRisk":false,"activated":37,"selected":39,"edges":16,"protectedRequired":6,"exploration":2,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:12.939Z] [INFO ] [NervousSystem] Query inspected {"taskType":"planning","riskLevel":"low","reflexes":1,"signals":1}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:13.138Z] [INFO ] [Chat] User: Plan a workflow for code review with the verifier agent {"model":"test-model","historyTurns":0,"droppedForTokens":0,"historyTokenBudget":754}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.warn
+      [2026-06-07T11:40:13.145Z] [WARN ] [Mycelium] Heuristic verifier failed hard safety check {"notes":["Response is very short.","Output validation: fail (score 0.10)."],"blockReason":"Output validation: fail (score 0.10)."}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/web/server.ts:6019:18
+
+    console.warn
+      [2026-06-07T11:40:13.146Z] [WARN ] [NervousSystem] VERIFIER_FAIL: Verifier failed (score 0.5050000000000001). {"severity":"high","source":"sensory.verifier"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.onVerifierResult (src/nervous/controller.ts:138:14)
+      at src/web/server.ts:6024:47
+
+    console.log
+      [2026-06-07T11:40:13.155Z] [INFO ] [Learning] Reflection: 0 tools, 100% success, 0 insights
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:13.234Z] [INFO ] [Learning] Detected 232 patterns from 1079 sessions
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:13.236Z] [INFO ] [Learning] 232 patterns ready for skill promotion
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:13.268Z] [INFO ] [Learning] Memory consolidated into digest
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:13.269Z] [INFO ] [Learning] 232 patterns ready for skill promotion
+
+      at log (src/core/logger.ts:32:15)
+
+PASS src/automation/researchRunner.test.ts
+PASS src/tools/newTools.test.ts
+PASS src/automation/blueprintPdfToWiki.test.ts
+PASS src/goal/shellRunner.test.ts
+PASS src/persistence/snapshots.test.ts
+PASS src/persistence/evidenceStore.test.ts
+PASS src/agents/orchestrator.orchestrate.test.ts
+PASS src/agents/subAgentComposition.test.ts
+PASS src/curator/curator.test.ts
+PASS src/services/agenticOS.integration.test.ts
+PASS src/jarvis/ambientDaemon.test.ts
+PASS src/services/versionedPrompts.test.ts
+PASS src/goal/store.test.ts
+PASS src/context/assembly.test.ts
+PASS src/automation/jobs.race.test.ts
+PASS src/tools/readingListTool.test.ts
+  ΓùÅ Console
+
+    console.warn
+      [reading_list] failed to read C:\Users\bradl\AppData\Local\Temp\harness-reading-Y90CO7\.harness\reading\list.json: Expected property name or '}' in JSON at position 1 (line 1 column 2); treating as empty
+
+      61 |     if (code === 'ENOENT') return [];
+      62 |     // eslint-disable-next-line no-console
+    > 63 |     console.warn(`[reading_list] failed to read ${listPath(projectDir)}: ${(err as Error).message}; treating as empty`);
+         |             ^
+      64 |     return [];
+      65 |   }
+      66 | }
+
+      at readList (src/tools/readingListTool.ts:63:13)
+      at opList (src/tools/readingListTool.ts:182:17)
+      at Object.execute (src/tools/readingListTool.ts:161:20)
+      at Object.<anonymous> (src/tools/readingListTool.test.ts:168:20)
+
+    console.warn
+      [reading_list] failed to read C:\Users\bradl\AppData\Local\Temp\harness-reading-Y90CO7\.harness\reading\list.json: Expected property name or '}' in JSON at position 1 (line 1 column 2); treating as empty
+
+      61 |     if (code === 'ENOENT') return [];
+      62 |     // eslint-disable-next-line no-console
+    > 63 |     console.warn(`[reading_list] failed to read ${listPath(projectDir)}: ${(err as Error).message}; treating as empty`);
+         |             ^
+      64 |     return [];
+      65 |   }
+      66 | }
+
+      at readList (src/tools/readingListTool.ts:63:13)
+      at opAdd (src/tools/readingListTool.ts:199:17)
+
+PASS src/core/synthesisStats.test.ts
+PASS src/learning/engine.test.ts
+  ΓùÅ Console
+
+    console.log
+      [2026-06-07T11:40:15.674Z] [INFO ] [Learning] Reflection: 3 tools, 67% success, 1 insights
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:15.695Z] [INFO ] [Learning] Reflection: 5 tools, 0% success, 2 insights
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:15.719Z] [INFO ] [Learning] Reflection: 6 tools, 100% success, 1 insights
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:15.802Z] [INFO ] [Learning] Detected 232 patterns from 1083 sessions
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:15.846Z] [INFO ] [Learning] Memory consolidated into digest
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:15.878Z] [INFO ] [Learning] Reflection: 1 tools, 100% success, 0 insights
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:15.939Z] [INFO ] [Learning] Detected 232 patterns from 1084 sessions
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:15.940Z] [INFO ] [Learning] 232 patterns ready for skill promotion
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:15.969Z] [INFO ] [Learning] Memory consolidated into digest
+
+      at log (src/core/logger.ts:32:15)
+
+PASS src/tools/desktopInputTools.test.ts
+PASS src/automation/sundayBriefing.test.ts
+PASS src/tools/pdfTool.test.ts
+PASS src/tools/skillImportTool.test.ts
+PASS src/mycelium/v2.test.ts
+  ΓùÅ Console
+
+    console.log
+      [2026-06-07T11:40:16.214Z] [INFO ] [Mycelium] Route selected {"taskType":"coding","highRisk":false,"activated":3,"selected":4,"edges":3,"protectedRequired":0,"exploration":0,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.220Z] [INFO ] [Mycelium] Route selected {"taskType":"safety_critical","highRisk":true,"activated":2,"selected":2,"edges":1,"protectedRequired":0,"exploration":0,"dryRun":true}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.224Z] [INFO ] [Mycelium] Route selected {"taskType":"coding","highRisk":false,"activated":3,"selected":4,"edges":2,"protectedRequired":1,"exploration":0,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.229Z] [INFO ] [Mycelium] Route selected {"taskType":"planning","highRisk":false,"activated":8,"selected":11,"edges":7,"protectedRequired":3,"exploration":1,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.234Z] [INFO ] [Mycelium] Route selected {"taskType":"coding","highRisk":false,"activated":1,"selected":1,"edges":0,"protectedRequired":0,"exploration":0,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.237Z] [INFO ] [Mycelium] Route selected {"taskType":"coding","highRisk":false,"activated":1,"selected":1,"edges":0,"protectedRequired":0,"exploration":0,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.240Z] [INFO ] [Mycelium] Route selected {"taskType":"coding","highRisk":false,"activated":1,"selected":1,"edges":0,"protectedRequired":0,"exploration":0,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.243Z] [INFO ] [Mycelium] Route selected {"taskType":"coding","highRisk":false,"activated":1,"selected":1,"edges":0,"protectedRequired":0,"exploration":0,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.245Z] [INFO ] [Mycelium] Route selected {"taskType":"coding","highRisk":false,"activated":1,"selected":1,"edges":0,"protectedRequired":0,"exploration":0,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.248Z] [INFO ] [Mycelium] Route selected {"taskType":"coding","highRisk":false,"activated":1,"selected":1,"edges":0,"protectedRequired":0,"exploration":0,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.250Z] [INFO ] [Mycelium] Route selected {"taskType":"coding","highRisk":false,"activated":1,"selected":1,"edges":0,"protectedRequired":0,"exploration":0,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.252Z] [INFO ] [Mycelium] Route selected {"taskType":"coding","highRisk":false,"activated":1,"selected":1,"edges":0,"protectedRequired":0,"exploration":0,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.256Z] [INFO ] [Mycelium] Route selected {"taskType":"coding","highRisk":false,"activated":1,"selected":1,"edges":0,"protectedRequired":0,"exploration":0,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.259Z] [INFO ] [Mycelium] Route selected {"taskType":"research","highRisk":false,"activated":5,"selected":6,"edges":3,"protectedRequired":0,"exploration":0,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.262Z] [INFO ] [Mycelium] Route selected {"taskType":"safety_critical","highRisk":true,"activated":1,"selected":1,"edges":0,"protectedRequired":0,"exploration":0,"dryRun":true}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.414Z] [INFO ] [Mycelium] Route selected {"taskType":"research","highRisk":false,"activated":2,"selected":2,"edges":1,"protectedRequired":0,"exploration":0,"dryRun":true}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.627Z] [INFO ] [Mycelium] Route selected {"taskType":"coding","highRisk":false,"activated":1,"selected":1,"edges":0,"protectedRequired":0,"exploration":0,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.629Z] [INFO ] [Mycelium] Route selected {"taskType":"coding","highRisk":false,"activated":1,"selected":1,"edges":0,"protectedRequired":0,"exploration":0,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.634Z] [INFO ] [Mycelium] Route selected {"taskType":"planning","highRisk":false,"activated":20,"selected":23,"edges":14,"protectedRequired":6,"exploration":4,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+PASS src/core/openaiClient.test.ts
+  ΓùÅ Console
+
+    console.warn
+      [OpenAIClient] openai-compatible HTTP 429 (rate limited); waiting 0ms then retrying (2 attempts left, key 1/1).
+
+      335 |         lastError = new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
+      336 |         if (remaining <= 0) throw lastError;
+    > 337 |         console.warn(`[OpenAIClient] ${this.providerLabel} HTTP ${response.status} (${detail.slice(0, 80) || response.statusText}); waiting ${Math.round(backoff)}ms then retrying (${remaining} attempts left, key ${this.keyIndex + 1}/${this.apiKeys.length}).`);
+          |                 ^
+      338 |         // Rotate key before next attempt ΓÇö useful when 429 is account-scoped
+      339 |         // and the user has provisioned multiple keys for round-robin.
+      340 |         this.rotateKey();
+
+      at OpenAIClient.invoke (src/core/openaiClient.ts:337:17)
+      at OpenAIClient.chat (src/core/openaiClient.ts:117:20)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:271:20)
+
+    console.warn
+      [OpenAIClient] TestProv HTTP 429 (rate limited); waiting 0ms then retrying (1 attempts left, key 1/1).
+
+      335 |         lastError = new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
+      336 |         if (remaining <= 0) throw lastError;
+    > 337 |         console.warn(`[OpenAIClient] ${this.providerLabel} HTTP ${response.status} (${detail.slice(0, 80) || response.statusText}); waiting ${Math.round(backoff)}ms then retrying (${remaining} attempts left, key ${this.keyIndex + 1}/${this.apiKeys.length}).`);
+          |                 ^
+      338 |         // Rotate key before next attempt ΓÇö useful when 429 is account-scoped
+      339 |         // and the user has provisioned multiple keys for round-robin.
+      340 |         this.rotateKey();
+
+      at OpenAIClient.invoke (src/core/openaiClient.ts:337:17)
+      at OpenAIClient.chat (src/core/openaiClient.ts:117:20)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:283:5)
+
+    console.warn
+      [OpenAIClient] openai-compatible HTTP 429 (rate limited); waiting 0ms then retrying (2 attempts left, key 1/3).
+
+      335 |         lastError = new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
+      336 |         if (remaining <= 0) throw lastError;
+    > 337 |         console.warn(`[OpenAIClient] ${this.providerLabel} HTTP ${response.status} (${detail.slice(0, 80) || response.statusText}); waiting ${Math.round(backoff)}ms then retrying (${remaining} attempts left, key ${this.keyIndex + 1}/${this.apiKeys.length}).`);
+          |                 ^
+      338 |         // Rotate key before next attempt ΓÇö useful when 429 is account-scoped
+      339 |         // and the user has provisioned multiple keys for round-robin.
+      340 |         this.rotateKey();
+
+      at OpenAIClient.invoke (src/core/openaiClient.ts:337:17)
+      at OpenAIClient.chat (src/core/openaiClient.ts:117:20)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:298:5)
+
+    console.warn
+      [OpenAIClient] openai-compatible HTTP 429 (rate limited); waiting 0ms then retrying (1 attempts left, key 2/3).
+
+      335 |         lastError = new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
+      336 |         if (remaining <= 0) throw lastError;
+    > 337 |         console.warn(`[OpenAIClient] ${this.providerLabel} HTTP ${response.status} (${detail.slice(0, 80) || response.statusText}); waiting ${Math.round(backoff)}ms then retrying (${remaining} attempts left, key ${this.keyIndex + 1}/${this.apiKeys.length}).`);
+          |                 ^
+      338 |         // Rotate key before next attempt ΓÇö useful when 429 is account-scoped
+      339 |         // and the user has provisioned multiple keys for round-robin.
+      340 |         this.rotateKey();
+
+      at OpenAIClient.invoke (src/core/openaiClient.ts:337:17)
+      at OpenAIClient.chat (src/core/openaiClient.ts:117:20)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:298:5)
+
+    console.warn
+      [OpenAIClient] openai-compatible HTTP 429 (rate limited); waiting 0ms then retrying (2 attempts left, key 1/1).
+
+      335 |         lastError = new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
+      336 |         if (remaining <= 0) throw lastError;
+    > 337 |         console.warn(`[OpenAIClient] ${this.providerLabel} HTTP ${response.status} (${detail.slice(0, 80) || response.statusText}); waiting ${Math.round(backoff)}ms then retrying (${remaining} attempts left, key ${this.keyIndex + 1}/${this.apiKeys.length}).`);
+          |                 ^
+      338 |         // Rotate key before next attempt ΓÇö useful when 429 is account-scoped
+      339 |         // and the user has provisioned multiple keys for round-robin.
+      340 |         this.rotateKey();
+
+      at OpenAIClient.invoke (src/core/openaiClient.ts:337:17)
+      at OpenAIClient.chat (src/core/openaiClient.ts:117:20)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:321:20)
+
+    console.warn
+      [OpenAIClient] TestProv HTTP 429 (rate limited); waiting 0ms then retrying (2 attempts left, key 1/1).
+
+      335 |         lastError = new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
+      336 |         if (remaining <= 0) throw lastError;
+    > 337 |         console.warn(`[OpenAIClient] ${this.providerLabel} HTTP ${response.status} (${detail.slice(0, 80) || response.statusText}); waiting ${Math.round(backoff)}ms then retrying (${remaining} attempts left, key ${this.keyIndex + 1}/${this.apiKeys.length}).`);
+          |                 ^
+      338 |         // Rotate key before next attempt ΓÇö useful when 429 is account-scoped
+      339 |         // and the user has provisioned multiple keys for round-robin.
+      340 |         this.rotateKey();
+
+      at OpenAIClient.invoke (src/core/openaiClient.ts:337:17)
+      at OpenAIClient.chat (src/core/openaiClient.ts:117:20)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:351:5)
+
+    console.warn
+      [OpenAIClient] TestProv HTTP 429 (rate limited); waiting 0ms then retrying (1 attempts left, key 1/1).
+
+      335 |         lastError = new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
+      336 |         if (remaining <= 0) throw lastError;
+    > 337 |         console.warn(`[OpenAIClient] ${this.providerLabel} HTTP ${response.status} (${detail.slice(0, 80) || response.statusText}); waiting ${Math.round(backoff)}ms then retrying (${remaining} attempts left, key ${this.keyIndex + 1}/${this.apiKeys.length}).`);
+          |                 ^
+      338 |         // Rotate key before next attempt ΓÇö useful when 429 is account-scoped
+      339 |         // and the user has provisioned multiple keys for round-robin.
+      340 |         this.rotateKey();
+
+      at OpenAIClient.invoke (src/core/openaiClient.ts:337:17)
+      at OpenAIClient.chat (src/core/openaiClient.ts:117:20)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:351:5)
+
+    console.warn
+      [FallbackChatClient] limited hit a limit; trying backup. Cooldown 30s. Limited HTTP 429: rate limit exceeded
+
+      200 |       cooldownSec: Math.round(FALLBACK_COOLDOWN_MS / 1000),
+      201 |     });
+    > 202 |     console.warn(`[FallbackChatClient] ${entry.backend} hit a limit; trying ${next.backend}. Cooldown ${Math.round(FALLBACK_COOLDOWN_MS / 1000)}s. ${reason}`);
+          |             ^
+      203 |   }
+      204 | }
+      205 |
+
+      at FallbackChatClient.warnFallback (src/core/fallbackChatClient.ts:202:13)
+      at FallbackChatClient.tryClients (src/core/fallbackChatClient.ts:133:24)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:491:20)
+
+    console.warn
+      [FallbackChatClient] limited hit a limit; trying tools. Cooldown 30s. Limited HTTP 429: rate limit exceeded
+
+      200 |       cooldownSec: Math.round(FALLBACK_COOLDOWN_MS / 1000),
+      201 |     });
+    > 202 |     console.warn(`[FallbackChatClient] ${entry.backend} hit a limit; trying ${next.backend}. Cooldown ${Math.round(FALLBACK_COOLDOWN_MS / 1000)}s. ${reason}`);
+          |             ^
+      203 |   }
+      204 | }
+      205 |
+
+      at FallbackChatClient.warnFallback (src/core/fallbackChatClient.ts:202:13)
+      at FallbackChatClient.tryClients (src/core/fallbackChatClient.ts:133:24)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:528:20)
+
+    console.warn
+      [FallbackChatClient] primary hit a limit; trying backup. Cooldown 30s. Primary HTTP 413: Request too large for model llama-3.1-8b-instant
+
+      200 |       cooldownSec: Math.round(FALLBACK_COOLDOWN_MS / 1000),
+      201 |     });
+    > 202 |     console.warn(`[FallbackChatClient] ${entry.backend} hit a limit; trying ${next.backend}. Cooldown ${Math.round(FALLBACK_COOLDOWN_MS / 1000)}s. ${reason}`);
+          |             ^
+      203 |   }
+      204 | }
+      205 |
+
+      at FallbackChatClient.warnFallback (src/core/fallbackChatClient.ts:202:13)
+      at FallbackChatClient.tryClients (src/core/fallbackChatClient.ts:133:24)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:547:20)
+
+    console.warn
+      [FallbackChatClient] limited hit a limit; trying backup. Cooldown 30s. Limited HTTP 429: rate limit exceeded
+
+      200 |       cooldownSec: Math.round(FALLBACK_COOLDOWN_MS / 1000),
+      201 |     });
+    > 202 |     console.warn(`[FallbackChatClient] ${entry.backend} hit a limit; trying ${next.backend}. Cooldown ${Math.round(FALLBACK_COOLDOWN_MS / 1000)}s. ${reason}`);
+          |             ^
+      203 |   }
+      204 | }
+      205 |
+
+      at FallbackChatClient.warnFallback (src/core/fallbackChatClient.ts:202:13)
+      at FallbackChatClient.tryClients (src/core/fallbackChatClient.ts:133:24)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:564:5)
+
+    console.warn
+      [FallbackChatClient] primary hit a limit; trying secondary. Cooldown 30s. Primary HTTP 429: rate limit exceeded
+
+      200 |       cooldownSec: Math.round(FALLBACK_COOLDOWN_MS / 1000),
+      201 |     });
+    > 202 |     console.warn(`[FallbackChatClient] ${entry.backend} hit a limit; trying ${next.backend}. Cooldown ${Math.round(FALLBACK_COOLDOWN_MS / 1000)}s. ${reason}`);
+          |             ^
+      203 |   }
+      204 | }
+      205 |
+
+      at FallbackChatClient.warnFallback (src/core/fallbackChatClient.ts:202:13)
+      at FallbackChatClient.tryClients (src/core/fallbackChatClient.ts:133:24)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:597:16)
+
+    console.warn
+      [FallbackChatClient] secondary hit a limit; trying tertiary. Cooldown 30s. Secondary HTTP 429: rate limit exceeded
+
+      200 |       cooldownSec: Math.round(FALLBACK_COOLDOWN_MS / 1000),
+      201 |     });
+    > 202 |     console.warn(`[FallbackChatClient] ${entry.backend} hit a limit; trying ${next.backend}. Cooldown ${Math.round(FALLBACK_COOLDOWN_MS / 1000)}s. ${reason}`);
+          |             ^
+      203 |   }
+      204 | }
+      205 |
+
+      at FallbackChatClient.warnFallback (src/core/fallbackChatClient.ts:202:13)
+      at FallbackChatClient.tryClients (src/core/fallbackChatClient.ts:133:24)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:597:16)
+
+    console.warn
+      [FallbackChatClient] primary hit a limit; trying tertiary. Cooldown 30s. Primary HTTP 429: rate limit exceeded
+
+      200 |       cooldownSec: Math.round(FALLBACK_COOLDOWN_MS / 1000),
+      201 |     });
+    > 202 |     console.warn(`[FallbackChatClient] ${entry.backend} hit a limit; trying ${next.backend}. Cooldown ${Math.round(FALLBACK_COOLDOWN_MS / 1000)}s. ${reason}`);
+          |             ^
+      203 |   }
+      204 | }
+      205 |
+
+      at FallbackChatClient.warnFallback (src/core/fallbackChatClient.ts:202:13)
+      at FallbackChatClient.tryClients (src/core/fallbackChatClient.ts:133:24)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:606:16)
+
+    console.warn
+      [FallbackChatClient] primary hit a limit; trying secondary. Cooldown 30s. Primary HTTP 429: rate limit exceeded
+
+      200 |       cooldownSec: Math.round(FALLBACK_COOLDOWN_MS / 1000),
+      201 |     });
+    > 202 |     console.warn(`[FallbackChatClient] ${entry.backend} hit a limit; trying ${next.backend}. Cooldown ${Math.round(FALLBACK_COOLDOWN_MS / 1000)}s. ${reason}`);
+          |             ^
+      203 |   }
+      204 | }
+      205 |
+
+      at FallbackChatClient.warnFallback (src/core/fallbackChatClient.ts:202:13)
+      at FallbackChatClient.tryClients (src/core/fallbackChatClient.ts:133:24)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:627:5)
+
+    console.warn
+      [FallbackChatClient] primary hit a limit; trying backupA. Cooldown 30s. Primary HTTP 429: rate limit exceeded
+
+      200 |       cooldownSec: Math.round(FALLBACK_COOLDOWN_MS / 1000),
+      201 |     });
+    > 202 |     console.warn(`[FallbackChatClient] ${entry.backend} hit a limit; trying ${next.backend}. Cooldown ${Math.round(FALLBACK_COOLDOWN_MS / 1000)}s. ${reason}`);
+          |             ^
+      203 |   }
+      204 | }
+      205 |
+
+      at FallbackChatClient.warnFallback (src/core/fallbackChatClient.ts:202:13)
+      at FallbackChatClient.tryClients (src/core/fallbackChatClient.ts:133:24)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:660:7)
+
+    console.warn
+      [FallbackChatClient] primary hit a limit; trying backupB. Cooldown 30s. Primary HTTP 429: rate limit exceeded
+
+      200 |       cooldownSec: Math.round(FALLBACK_COOLDOWN_MS / 1000),
+      201 |     });
+    > 202 |     console.warn(`[FallbackChatClient] ${entry.backend} hit a limit; trying ${next.backend}. Cooldown ${Math.round(FALLBACK_COOLDOWN_MS / 1000)}s. ${reason}`);
+          |             ^
+      203 |   }
+      204 | }
+      205 |
+
+      at FallbackChatClient.warnFallback (src/core/fallbackChatClient.ts:202:13)
+      at FallbackChatClient.tryClients (src/core/fallbackChatClient.ts:133:24)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:660:7)
+
+    console.warn
+      [FallbackChatClient] primary hit a limit; trying backupA. Cooldown 30s. Primary HTTP 429: rate limit exceeded
+
+      200 |       cooldownSec: Math.round(FALLBACK_COOLDOWN_MS / 1000),
+      201 |     });
+    > 202 |     console.warn(`[FallbackChatClient] ${entry.backend} hit a limit; trying ${next.backend}. Cooldown ${Math.round(FALLBACK_COOLDOWN_MS / 1000)}s. ${reason}`);
+          |             ^
+      203 |   }
+      204 | }
+      205 |
+
+      at FallbackChatClient.warnFallback (src/core/fallbackChatClient.ts:202:13)
+      at FallbackChatClient.tryClients (src/core/fallbackChatClient.ts:133:24)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:660:7)
+
+    console.warn
+      [FallbackChatClient] primary hit a limit; trying backupB. Cooldown 30s. Primary HTTP 429: rate limit exceeded
+
+      200 |       cooldownSec: Math.round(FALLBACK_COOLDOWN_MS / 1000),
+      201 |     });
+    > 202 |     console.warn(`[FallbackChatClient] ${entry.backend} hit a limit; trying ${next.backend}. Cooldown ${Math.round(FALLBACK_COOLDOWN_MS / 1000)}s. ${reason}`);
+          |             ^
+      203 |   }
+      204 | }
+      205 |
+
+      at FallbackChatClient.warnFallback (src/core/fallbackChatClient.ts:202:13)
+      at FallbackChatClient.tryClients (src/core/fallbackChatClient.ts:133:24)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:672:20)
+
+    console.warn
+      [FallbackChatClient] primary hit a limit; trying backup. Cooldown 30s. Primary HTTP 429: rate limit exceeded
+
+      200 |       cooldownSec: Math.round(FALLBACK_COOLDOWN_MS / 1000),
+      201 |     });
+    > 202 |     console.warn(`[FallbackChatClient] ${entry.backend} hit a limit; trying ${next.backend}. Cooldown ${Math.round(FALLBACK_COOLDOWN_MS / 1000)}s. ${reason}`);
+          |             ^
+      203 |   }
+      204 | }
+      205 |
+
+      at FallbackChatClient.warnFallback (src/core/fallbackChatClient.ts:202:13)
+      at FallbackChatClient.tryClients (src/core/fallbackChatClient.ts:133:24)
+      at Object.<anonymous> (src/core/openaiClient.test.ts:707:20)
+
+PASS src/automation/scheduler.test.ts
+  ΓùÅ Console
+
+    console.log
+      [2026-06-07T11:40:16.895Z] [INFO ] [Automation] Skipped opportunistic jobs (system not idle) {"skipped":1,"idleMs":0,"idleThresholdMs":600000}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.917Z] [INFO ] [Automation] Scheduled execution completed {"executed":1,"cron":1,"opportunistic":0}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:16.950Z] [INFO ] [Automation] Scheduled execution completed {"executed":1,"cron":0,"opportunistic":1}
+
+      at log (src/core/logger.ts:32:15)
+
+PASS src/tools/learningTools.test.ts
+PASS src/services/taskStore.test.ts
+PASS src/services/identityAutoUpdate.test.ts
+PASS src/budget/dailyBudget.test.ts
+PASS src/eval/goldenTraces.test.ts
+PASS src/tools/shoppingListTool.test.ts
+  ΓùÅ Console
+
+    console.warn
+      [shopping_list] failed to read C:\Users\bradl\AppData\Local\Temp\harness-shopping-5Z1hLI\.harness\shopping\list.json: Expected property name or '}' in JSON at position 1 (line 1 column 2); treating as empty
+
+      62 |     // Corrupt file ΓÇö log and recover; never crash the agent loop.
+      63 |     // eslint-disable-next-line no-console
+    > 64 |     console.warn(`[shopping_list] failed to read ${listPath(projectDir)}: ${(err as Error).message}; treating as empty`);
+         |             ^
+      65 |     return [];
+      66 |   }
+      67 | }
+
+      at readList (src/tools/shoppingListTool.ts:64:13)
+      at opList (src/tools/shoppingListTool.ts:177:17)
+      at Object.execute (src/tools/shoppingListTool.ts:156:20)
+      at Object.<anonymous> (src/tools/shoppingListTool.test.ts:151:20)
+
+    console.warn
+      [shopping_list] failed to read C:\Users\bradl\AppData\Local\Temp\harness-shopping-5Z1hLI\.harness\shopping\list.json: Expected property name or '}' in JSON at position 1 (line 1 column 2); treating as empty
+
+      62 |     // Corrupt file ΓÇö log and recover; never crash the agent loop.
+      63 |     // eslint-disable-next-line no-console
+    > 64 |     console.warn(`[shopping_list] failed to read ${listPath(projectDir)}: ${(err as Error).message}; treating as empty`);
+         |             ^
+      65 |     return [];
+      66 |   }
+      67 | }
+
+      at readList (src/tools/shoppingListTool.ts:64:13)
+      at opAdd (src/tools/shoppingListTool.ts:189:17)
+
+PASS src/tools/multimodalTools.test.ts
+PASS src/persistence/atomicFile.test.ts
+PASS src/services/memoryIntelligence.test.ts
+PASS src/persistence/sideEffectRecording.test.ts
+PASS src/services/modelProfiles.test.ts
+PASS src/services/triggerScheduler.test.ts
+PASS src/agents/orchestrator.mergeVerified.test.ts
+PASS src/core/repoMap.test.ts
+PASS src/automation/uiSmokeFreshWrapper.test.ts
+PASS src/services/squad.test.ts
+PASS src/setup/doctorFix.test.ts
+PASS src/tools/agentManagementTools.test.ts
+PASS src/tools/registry.test.ts
+PASS src/goal/queryLoopRunner.sideEffects.test.ts
+PASS src/agents/subagent.sideEffects.test.ts
+PASS src/tools/squadTools.test.ts
+PASS src/services/identityProposals.test.ts
+PASS src/core/subsystemIntegration.test.ts
+PASS src/agents/agentLoader.test.ts
+PASS src/services/identity.test.ts
+PASS src/tools/dispatcher.test.ts
+PASS src/core/queryLoop.test.ts
+PASS src/automation/runner.test.ts
+PASS src/permissions/audit.test.ts
+PASS src/nervous/nervous.test.ts
+  ΓùÅ Console
+
+    console.log
+      [2026-06-07T11:40:18.617Z] [INFO ] [NervousSystem] Query inspected {"taskType":"general","riskLevel":"low","reflexes":1,"signals":1}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.warn
+      [2026-06-07T11:40:18.627Z] [WARN ] [NervousSystem] IRREVERSIBLE_ACTION: Request may involve irreversible actions. {"severity":"critical","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at Object.<anonymous> (src/nervous/nervous.test.ts:266:25)
+
+    console.warn
+      [2026-06-07T11:40:18.629Z] [WARN ] [NervousSystem] DRY_RUN_REQUIRED: Dry-run recommended for irreversible action. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at Object.<anonymous> (src/nervous/nervous.test.ts:266:25)
+
+    console.warn
+      [2026-06-07T11:40:18.630Z] [WARN ] [NervousSystem] CONFIRMATION_REQUIRED: Confirmation recommended before irreversible action. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at Object.<anonymous> (src/nervous/nervous.test.ts:266:25)
+
+    console.warn
+      [2026-06-07T11:40:18.633Z] [WARN ] [NervousSystem] TASK_RISK: Query touches a high-risk domain. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at Object.<anonymous> (src/nervous/nervous.test.ts:266:25)
+
+    console.log
+      [2026-06-07T11:40:18.633Z] [INFO ] [NervousSystem] Query inspected {"taskType":"safety_critical","riskLevel":"critical","reflexes":2,"signals":5}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:18.635Z] [INFO ] [NervousSystem] Query inspected {"taskType":"coding","riskLevel":"low","reflexes":1,"signals":1}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.warn
+      [2026-06-07T11:40:18.636Z] [WARN ] [NervousSystem] TOOL_ERROR: Tool bash failed. {"severity":"high","source":"sensory.tool"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.onToolResult (src/nervous/controller.ts:105:14)
+      at Object.<anonymous> (src/nervous/nervous.test.ts:277:10)
+
+    console.warn
+      [2026-06-07T11:40:18.636Z] [WARN ] [NervousSystem] REPEATED_FAILURE: Tool bash has failed 3 times. {"severity":"high","source":"sensory.tool"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.onToolResult (src/nervous/controller.ts:105:14)
+      at Object.<anonymous> (src/nervous/nervous.test.ts:277:10)
+
+    console.log
+      [2026-06-07T11:40:18.638Z] [INFO ] [NervousSystem] Query inspected {"taskType":"writing","riskLevel":"low","reflexes":1,"signals":1}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.warn
+      [2026-06-07T11:40:18.640Z] [WARN ] [NervousSystem] IRREVERSIBLE_ACTION: Request may involve irreversible actions. {"severity":"critical","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at Object.<anonymous> (src/nervous/nervous.test.ts:292:25)
+
+    console.warn
+      [2026-06-07T11:40:18.640Z] [WARN ] [NervousSystem] DRY_RUN_REQUIRED: Dry-run recommended for irreversible action. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at Object.<anonymous> (src/nervous/nervous.test.ts:292:25)
+
+    console.warn
+      [2026-06-07T11:40:18.641Z] [WARN ] [NervousSystem] CONFIRMATION_REQUIRED: Confirmation recommended before irreversible action. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at Object.<anonymous> (src/nervous/nervous.test.ts:292:25)
+
+    console.warn
+      [2026-06-07T11:40:18.642Z] [WARN ] [NervousSystem] TASK_RISK: Query touches a high-risk domain. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at Object.<anonymous> (src/nervous/nervous.test.ts:292:25)
+
+    console.log
+      [2026-06-07T11:40:18.642Z] [INFO ] [NervousSystem] Query inspected {"taskType":"safety_critical","riskLevel":"critical","reflexes":2,"signals":5}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.warn
+      [2026-06-07T11:40:18.645Z] [WARN ] [NervousSystem] VERIFIER_FAIL: Verifier failed (score 0.2). {"severity":"high","source":"sensory.verifier"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.onVerifierResult (src/nervous/controller.ts:138:14)
+      at Object.<anonymous> (src/nervous/nervous.test.ts:301:27)
+
+    console.log
+      [2026-06-07T11:40:18.646Z] [INFO ] [NervousSystem] Safety signals correctly fired {"count":3}
+
+      at log (src/core/logger.ts:32:15)
+
+PASS src/permissions/engine.test.ts
+PASS src/testSupport/harnessCleanup.test-support.test.ts
+PASS src/automation/blueprintPersonalWiki.test.ts
+PASS src/services/artifactCatalog.test.ts
+PASS src/goal/resume.test.ts
+PASS src/services/serviceLifecycle.test.ts
+PASS src/eval/confidenceCalibration.test.ts
+PASS src/automation/teammateScheduler.test.ts
+  ΓùÅ Console
+
+    console.log
+      [2026-06-07T11:40:19.079Z] [INFO ] [Teammate] Brief delivered {"channels":["file","telegram","discord"],"failed":0,"snapshotPath":"H:\\ollama-agent-harness-master\\.harness\\documents\\daily-brief-2026-06-07T11-40-19-076Z.md"}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:19.088Z] [INFO ] [Teammate] Brief delivered {"channels":["discord"],"failed":1,"snapshotPath":"H:\\ollama-agent-harness-master\\.harness\\documents\\daily-brief-2026-06-07T11-40-19-086Z.md"}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:19.091Z] [INFO ] [Teammate] Brief delivered {"channels":["file"],"failed":0,"snapshotPath":"H:\\ollama-agent-harness-master\\.harness\\documents\\daily-brief-2026-06-07T11-40-19-089Z.md"}
+
+      at log (src/core/logger.ts:32:15)
+
+PASS src/persistence/runReverter.test.ts
+PASS src/permissions/capabilities.test.ts
+PASS src/agents/subagent.sandboxInheritance.test.ts
+PASS src/core/ollamaClient.test.ts
+PASS src/persistence/recordingFileOps.test.ts
+PASS src/agents/subagent.test.ts
+PASS src/goal/bootResume.test.ts
+PASS src/tui/client.test.ts
+PASS src/tools/skillTools.test.ts
+PASS src/services/promiseLedger.test.ts
+PASS src/persistence/ragIndex.test.ts
+PASS src/services/configProfiles.test.ts
+PASS src/core/chatClientFactory.test.ts
+PASS src/agents/orchestrator.attachVerification.test.ts
+PASS src/budget/budgetEnforcingClient.test.ts
+PASS src/permissions/capabilitiesDockerGate.test.ts
+PASS src/persistence/sessionSearchIndex.test.ts
+PASS src/learning/evalTrace.test.ts
+PASS src/jarvis/permissionFeedback.test.ts
+PASS src/tools/fileToolsCrlf.test.ts
+PASS src/services/squadSessions.test.ts
+PASS src/services/triggerSchedulerSeed.test.ts
+PASS src/jarvis/mcpStdio.test.ts
+PASS src/mycelium/graphStore.test.ts
+PASS src/learning/promotionGate.test.ts
+PASS src/core/codeIntelligence.test.ts
+PASS src/tools/calendarTools.test.ts
+PASS src/services/memoryConflictDetector.test.ts
+PASS src/extensibility/skillLoader.test.ts
+PASS src/jarvis/evidenceIngester.test.ts
+PASS src/web/uiWiring.test.ts
+PASS src/integrations/telegram.test.ts
+PASS src/persistence/sessionStorage.test.ts
+PASS src/persistence/semanticMemory.test.ts
+PASS src/services/morningPriority.test.ts
+PASS src/core/errors.test.ts
+PASS src/services/workerQueuePersistence.test.ts
+PASS src/jarvis/briefScheduler.test.ts
+PASS src/mycelium/router.test.ts
+  ΓùÅ Console
+
+    console.log
+      [2026-06-07T11:40:20.394Z] [INFO ] [Mycelium] Route selected {"taskType":"general","highRisk":false,"activated":3,"selected":3,"edges":2,"protectedRequired":0,"exploration":0,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+    console.log
+      [2026-06-07T11:40:20.403Z] [INFO ] [Mycelium] Route selected {"taskType":"general","highRisk":false,"activated":1,"selected":1,"edges":0,"protectedRequired":0,"exploration":0,"dryRun":false}
+
+      at log (src/core/logger.ts:32:15)
+
+PASS src/eval/simulator.test.ts
+PASS src/persistence/sideEffectLedger.test.ts
+PASS src/tools/ragTools.test.ts
+PASS src/core/pathClaims.test.ts
+PASS src/services/schedulerRegistry.test.ts
+PASS src/tools/sandboxGuards.test.ts
+PASS src/learning/sessionLearning.test.ts
+PASS src/persistence/resume.test.ts
+PASS src/reports/comparisonReport.test.ts
+PASS src/core/taskContractBuilder.test.ts
+PASS src/goal/queryLoopRunner.test.ts
+PASS src/core/replicateClient.test.ts
+PASS src/models/modelCatalog.test.ts
+PASS src/services/conceptMemoryClient.test.ts
+PASS src/tools/dockerExecTool.test.ts
+PASS src/automation/ratchetDecision.test.ts
+PASS src/automation/taskLoopShouldStop.test.ts
+  ΓùÅ Console
+
+    console.log
+      [Ralph] ≡ƒ¢æ Stop signal detected (.forge-stop file). Shutting down gracefully.
+
+      at console.Object.<anonymous>.console.log (cookbook/task-loop.ts:75:47)
+
+    console.log
+      [Ralph] ≡ƒ¢æ Stop signal detected (FORGE_STOP env). Shutting down gracefully.
+
+      at console.Object.<anonymous>.console.log (cookbook/task-loop.ts:75:47)
+
+    console.log
+      [Ralph] ≡ƒ¢æ Stop signal detected (FORGE_STOP env). Shutting down gracefully.
+
+      at console.Object.<anonymous>.console.log (cookbook/task-loop.ts:75:47)
+
+    console.log
+      [Ralph] ≡ƒ¢æ Stop signal detected (.forge-stop file). Shutting down gracefully.
+
+      at console.Object.<anonymous>.console.log (cookbook/task-loop.ts:75:47)
+
+PASS src/tools/grepTool.test.ts
+PASS src/tools/curatorTools.test.ts
+PASS src/jarvis/knowledgeGraph.test.ts
+PASS src/core/emptyResult.test.ts
+PASS src/safety/toolInspectors/inspectors.test.ts
+PASS src/core/queryLoop.locality.test.ts
+PASS src/tools/readBeforeWriteGate.test.ts
+PASS src/safety/injectionDefence.test.ts
+PASS src/tools/dispatcherInspectors.test.ts
+PASS src/services/goalExpander.test.ts
+PASS src/jarvis/modelCouncil.test.ts
+PASS src/core/retryClass.test.ts
+PASS src/permissions/promptBroker.test.ts
+PASS src/core/deterministicShortcuts.test.ts
+PASS src/tools/outputCompression.test.ts
+PASS src/observability/offlineGuarantee.test.ts
+PASS src/core/selfCertification.test.ts
+PASS src/extensibility/mcpCapabilityCache.test.ts
+PASS src/agents/agentId.test.ts
+PASS src/automation/taskLoopKind.test.ts
+  ΓùÅ Console
+
+    console.log
+      [Ralph] ≡ƒôô Wrote external-task runbook: .forge-runbooks\look-outside-repo.md
+
+      at console.Object.<anonymous>.console.log (cookbook/task-loop.ts:75:47)
+
+PASS src/tools/pdfRenderTool.test.ts
+PASS src/services/modeClassifier.test.ts
+PASS src/automation/jobSafety.test.ts
+PASS src/tools/webFetchTool.test.ts
+PASS src/jarvis/trustLadder.test.ts
+PASS src/safety/toolInspectors/llmJudge.test.ts
+PASS src/observability/costProvenance.test.ts
+PASS src/goal/verificationKernel.test.ts
+PASS src/observability/openinference.test.ts
+PASS src/core/structuredOutputValidator.test.ts
+PASS src/services/comparisonSchema.test.ts
+PASS src/tools/largeResponseHandler.test.ts
+PASS src/jarvis/predictiveAdapter.test.ts
+PASS src/observability/answerConfidence.test.ts
+PASS src/web/uiChatHistory.test.ts
+PASS src/jarvis/ambientActions.test.ts
+PASS src/jarvis/knowledgeGraphViz.test.ts
+PASS src/services/goalSlashCommand.test.ts
+PASS src/safety/toolInspectors/buildFromEnv.test.ts
+PASS src/jarvis/runtimeRegistry.test.ts
+PASS src/services/subagentRegistry.test.ts
+PASS src/permissions/capabilityAudit.test.ts
+PASS src/context/compaction.test.ts
+PASS src/tui/render.test.ts
+PASS src/tools/webSearchTool.test.ts
+PASS src/tools/recallTool.test.ts
+PASS src/tools/pathResolution.test.ts
+PASS src/models/modelRegistryRouter.test.ts
+PASS src/setup/toolCallProbe.test.ts
+PASS src/eval/probes.test.ts
+PASS src/services/workerQueue.test.ts
+PASS src/observability/silentFailureSink.test.ts
+PASS src/observability/prometheus.test.ts
+PASS src/goal/judge.test.ts
+PASS src/eval/benchmark.test.ts
+PASS src/eval/abCompare.test.ts
+PASS src/jarvis/briefDiff.test.ts
+PASS src/jarvis/knowledgeGraphCompaction.test.ts
+PASS src/services/kanbanBridge.test.ts
+PASS src/services/concierge.test.ts
+PASS src/permissions/killSwitch.test.ts
+PASS src/observability/runProvenance.test.ts
+PASS src/curator/scheduler.test.ts
+  ΓùÅ Console
+
+    console.log
+      [2026-06-07T11:40:22.642Z] [INFO ] [Curator] Scheduled run completed {"archived":0,"candidates":0,"candidatePressure":true}
+
+      at log (src/core/logger.ts:32:15)
+
+PASS src/automation/blueprintResearch.test.ts
+PASS src/services/commandExtractor.test.ts
+PASS src/permissions/commandClassifier.test.ts
+PASS src/services/capabilityTemplateStarters.test.ts
+PASS src/jarvis/permissionGate.test.ts
+PASS src/integrations/slack.test.ts
+PASS src/prompts/template.test.ts
+PASS src/observability/otlpExporter.test.ts
+PASS src/jarvis/ladderImport.test.ts
+PASS src/permissions/sandboxSwitch.test.ts
+PASS src/extensibility/extensionManifest.test.ts
+PASS src/goal/runRegistry.test.ts
+PASS src/services/capabilityTemplates.test.ts
+PASS src/jarvis/morningBriefing.test.ts
+PASS src/goal/loopConfig.test.ts
+PASS src/safety/secretRedactor.test.ts
+PASS src/jarvis/grantBridge.test.ts
+PASS src/integrations/whatsapp.test.ts
+PASS src/web/toolActivity.test.ts
+PASS src/agents/modelRouting.test.ts
+PASS src/web/permissionRecoveryUiContract.test.ts
+PASS src/services/capabilityRegistry.test.ts
+PASS src/jarvis/briefTrigger.test.ts
+PASS src/releaseProvenance.test.ts
+PASS src/safety/untrustedWrap.test.ts
+PASS src/services/toolFailureAlerts.test.ts
+PASS src/persistence/continuity.test.ts
+PASS src/core/readinessGate.test.ts
+PASS src/core/rateLimiter.test.ts
+  ΓùÅ Console
+
+    console.warn
+      [2026-06-07T11:40:23.463Z] [WARN ] [RateLimiter] Rate limit exceeded {"tokens":0,"maxTokens":3}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at RateLimiter.tryConsume (src/core/rateLimiter.ts:24:25)
+      at Object.<anonymous> (src/core/rateLimiter.test.ts:10:24)
+
+    console.warn
+      [2026-06-07T11:40:23.473Z] [WARN ] [RateLimiter] Rate limit exceeded {"tokens":0,"maxTokens":1}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at RateLimiter.tryConsume (src/core/rateLimiter.ts:24:25)
+      at Object.<anonymous> (src/core/rateLimiter.test.ts:15:24)
+
+    console.warn
+      [2026-06-07T11:40:23.475Z] [WARN ] [RateLimiter] Rate limit exceeded {"tokens":0,"maxTokens":1}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at RateLimiter.tryConsume (src/core/rateLimiter.ts:24:25)
+      at Object.<anonymous> (src/core/rateLimiter.test.ts:16:24)
+
+    console.warn
+      [2026-06-07T11:40:23.477Z] [WARN ] [RateLimiter] Rate limit exceeded {"tokens":0,"maxTokens":2}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at RateLimiter.tryConsume (src/core/rateLimiter.ts:24:25)
+      at Object.<anonymous> (src/core/rateLimiter.test.ts:24:24)
+
+    console.warn
+      [2026-06-07T11:40:23.479Z] [WARN ] [RateLimiter] Rate limit exceeded {"tokens":0,"maxTokens":2}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at RateLimiter.tryConsume (src/core/rateLimiter.ts:24:25)
+      at Object.<anonymous> (src/core/rateLimiter.test.ts:37:24)
+
+    console.warn
+      [2026-06-07T11:40:23.485Z] [WARN ] [RateLimiter] Rate limit exceeded {"tokens":0.009999999999999787,"maxTokens":10}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at RateLimiter.tryConsume (src/core/rateLimiter.ts:24:25)
+      at Object.<anonymous> (src/core/rateLimiter.test.ts:45:24)
+
+PASS src/agents/verifiedMerge.test.ts
+PASS src/cli/commands.test.ts
+PASS src/tools/slackTools.test.ts
+PASS src/models/visionModels.test.ts
+PASS src/jarvis/councilAdapter.test.ts
+PASS src/jarvis/predictiveEngine.test.ts
+PASS src/core/chatClientConformance.test.ts
+PASS src/core/tracing.test.ts
+PASS src/eval/costTracker.test.ts
+PASS src/web/server.test.ts (41.471 s)
+  ΓùÅ Console
+
+    console.warn
+      [2026-06-07T11:40:10.788Z] [WARN ] [Settings] Retrying settings save after transient rename failure {"code":"EPERM","attempt":1}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at renameSettingsFileWithRetry (src/web/server.ts:7835:14)
+      at _doSaveSettings (src/web/server.ts:7824:3)
+
+    console.warn
+      [2026-06-07T11:40:15.931Z] [WARN ] [NervousSystem] USER_CORRECTION: User rejected or corrected previous output. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5448:43
+
+    console.warn
+      [2026-06-07T11:40:21.592Z] [WARN ] [Permissions] Kill switch engaged {"reason":"preflight test"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/web/server.ts:4698:14
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at next (node_modules/router/lib/route.js:157:13)
+      at Route.dispatch (node_modules/router/lib/route.js:117:3)
+      at handle (node_modules/router/index.js:435:11)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at node_modules/router/index.js:295:15
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+
+    console.warn
+      [2026-06-07T11:40:24.243Z] [WARN ] [Permissions] Kill switch engaged {"reason":"test stop"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/web/server.ts:4698:14
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at next (node_modules/router/lib/route.js:157:13)
+      at Route.dispatch (node_modules/router/lib/route.js:117:3)
+      at handle (node_modules/router/index.js:435:11)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at node_modules/router/index.js:295:15
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+
+    console.warn
+      [2026-06-07T11:40:24.269Z] [WARN ] [Permissions] Kill switch engaged {"reason":"persistence test"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/web/server.ts:4698:14
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at next (node_modules/router/lib/route.js:157:13)
+      at Route.dispatch (node_modules/router/lib/route.js:117:3)
+      at handle (node_modules/router/index.js:435:11)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at node_modules/router/index.js:295:15
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+
+    console.warn
+      [2026-06-07T11:40:24.402Z] [WARN ] [Permissions] Kill switch engaged {"reason":"health-endpoint regression check"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/web/server.ts:4698:14
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at next (node_modules/router/lib/route.js:157:13)
+      at Route.dispatch (node_modules/router/lib/route.js:117:3)
+      at handle (node_modules/router/index.js:435:11)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at node_modules/router/index.js:295:15
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+
+    console.warn
+      [2026-06-07T11:40:24.671Z] [WARN ] [Permissions] Kill switch engaged {"reason":"test cleanup"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/web/server.ts:4698:14
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at next (node_modules/router/lib/route.js:157:13)
+      at Route.dispatch (node_modules/router/lib/route.js:117:3)
+      at handle (node_modules/router/index.js:435:11)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at node_modules/router/index.js:295:15
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+
+    console.warn
+      [2026-06-07T11:40:34.570Z] [WARN ] [NervousSystem] TASK_RISK: Query touches a high-risk domain. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5448:43
+
+    console.warn
+      [2026-06-07T11:40:36.363Z] [WARN ] [NervousSystem] IRREVERSIBLE_ACTION: Request may involve irreversible actions. {"severity":"critical","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5448:43
+
+    console.warn
+      [2026-06-07T11:40:36.363Z] [WARN ] [NervousSystem] DRY_RUN_REQUIRED: Dry-run recommended for irreversible action. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5448:43
+
+    console.warn
+      [2026-06-07T11:40:36.364Z] [WARN ] [NervousSystem] CONFIRMATION_REQUIRED: Confirmation recommended before irreversible action. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5448:43
+
+    console.warn
+      [2026-06-07T11:40:36.429Z] [WARN ] [Mycelium] Heuristic verifier failed hard safety check {"notes":["High-risk task: response references irreversible action without dry-run / refusal."],"blockReason":"High-risk task: response references irreversible action without dry-run / refusal."}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/web/server.ts:6019:18
+
+    console.warn
+      [2026-06-07T11:40:36.430Z] [WARN ] [NervousSystem] VERIFIER_FAIL: Verifier failed (score 0.475). {"severity":"high","source":"sensory.verifier"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.onVerifierResult (src/nervous/controller.ts:138:14)
+      at src/web/server.ts:6024:47
+
+    console.warn
+      [2026-06-07T11:40:36.667Z] [WARN ] [NervousSystem] USER_CORRECTION: User rejected or corrected previous output. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5448:43
+
+    console.warn
+      [2026-06-07T11:40:36.955Z] [WARN ] [NervousSystem] IRREVERSIBLE_ACTION: Request may involve irreversible actions. {"severity":"critical","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5448:43
+
+    console.warn
+      [2026-06-07T11:40:36.955Z] [WARN ] [NervousSystem] DRY_RUN_REQUIRED: Dry-run recommended for irreversible action. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5448:43
+
+    console.warn
+      [2026-06-07T11:40:36.955Z] [WARN ] [NervousSystem] CONFIRMATION_REQUIRED: Confirmation recommended before irreversible action. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5448:43
+
+    console.warn
+      [2026-06-07T11:40:37.223Z] [WARN ] [NervousSystem] IRREVERSIBLE_ACTION: Request may involve irreversible actions. {"severity":"critical","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5448:43
+
+    console.warn
+      [2026-06-07T11:40:37.223Z] [WARN ] [NervousSystem] DRY_RUN_REQUIRED: Dry-run recommended for irreversible action. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5448:43
+
+    console.warn
+      [2026-06-07T11:40:37.223Z] [WARN ] [NervousSystem] CONFIRMATION_REQUIRED: Confirmation recommended before irreversible action. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5448:43
+
+
+Test Suites: 253 passed, 253 total
+Tests:       2983 passed, 2983 total
+Snapshots:   0 total
+Time:        58.194 s
+Ran all test suites.

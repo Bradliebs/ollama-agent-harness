@@ -69,10 +69,13 @@ export function createIdentityRouter(deps: IdentityRoutesDeps): express.Router {
     }
   });
 
-  router.put('/api/identity/:file', async (req, res) => {
+  router.put('/api/identity/:file', async (req, res, next) => {
     try {
       const fileName = req.params.file as IdentityFileName;
-      if (!VALID_IDENTITY_FILES.has(fileName)) { res.status(400).json({ error: 'file must be SOUL.md or USER.md.' }); return; }
+      // Fall through to more specific routes (e.g. /auto-update) when the
+      // path segment isn't an identity file name. Otherwise this generic
+      // handler would shadow them since it's registered first.
+      if (!VALID_IDENTITY_FILES.has(fileName)) { next(); return; }
       const content = typeof req.body?.content === 'string' ? req.body.content : '';
       await writeIdentityFile(projectDir, fileName, content);
       const reread = await readIdentityFile(projectDir, fileName);

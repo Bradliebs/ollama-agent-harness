@@ -1,0 +1,849 @@
+PASS src/web/server.test.ts (30.376 s)
+  ΓùÅ Console
+
+    console.warn
+      [2026-06-07T09:49:55.492Z] [WARN ] [Settings] Retrying settings save after transient rename failure {"code":"EPERM","attempt":1}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at renameSettingsFileWithRetry (src/web/server.ts:7783:14)
+      at _doSaveSettings (src/web/server.ts:7772:3)
+
+    console.warn
+      [2026-06-07T09:49:57.980Z] [WARN ] [NervousSystem] USER_CORRECTION: User rejected or corrected previous output. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5404:43
+
+    console.warn
+      [2026-06-07T09:50:00.376Z] [WARN ] [Permissions] Kill switch engaged {"reason":"preflight test"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/web/server.ts:4680:14
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at next (node_modules/router/lib/route.js:157:13)
+      at Route.dispatch (node_modules/router/lib/route.js:117:3)
+      at handle (node_modules/router/index.js:435:11)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at node_modules/router/index.js:295:15
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+
+    console.warn
+      [2026-06-07T09:50:01.679Z] [WARN ] [Permissions] Kill switch engaged {"reason":"test stop"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/web/server.ts:4680:14
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at next (node_modules/router/lib/route.js:157:13)
+      at Route.dispatch (node_modules/router/lib/route.js:117:3)
+      at handle (node_modules/router/index.js:435:11)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at node_modules/router/index.js:295:15
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+
+    console.warn
+      [2026-06-07T09:50:01.694Z] [WARN ] [Permissions] Kill switch engaged {"reason":"persistence test"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/web/server.ts:4680:14
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at next (node_modules/router/lib/route.js:157:13)
+      at Route.dispatch (node_modules/router/lib/route.js:117:3)
+      at handle (node_modules/router/index.js:435:11)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at node_modules/router/index.js:295:15
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+
+    console.warn
+      [2026-06-07T09:50:01.858Z] [WARN ] [Permissions] Kill switch engaged {"reason":"health-endpoint regression check"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/web/server.ts:4680:14
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at next (node_modules/router/lib/route.js:157:13)
+      at Route.dispatch (node_modules/router/lib/route.js:117:3)
+      at handle (node_modules/router/index.js:435:11)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at node_modules/router/index.js:295:15
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+
+    console.warn
+      [2026-06-07T09:50:02.129Z] [WARN ] [Permissions] Kill switch engaged {"reason":"test cleanup"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/web/server.ts:4680:14
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at next (node_modules/router/lib/route.js:157:13)
+      at Route.dispatch (node_modules/router/lib/route.js:117:3)
+      at handle (node_modules/router/index.js:435:11)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at node_modules/router/index.js:295:15
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+      at node_modules/router/index.js:297:9
+      at processParams (node_modules/router/index.js:582:12)
+      at next (node_modules/router/index.js:291:5)
+      at node_modules/router/index.js:688:15
+      at next (node_modules/router/index.js:276:14)
+      at router.handle (node_modules/router/index.js:186:3)
+      at router (node_modules/router/index.js:60:12)
+      at Layer.handleRequest (node_modules/router/lib/layer.js:152:17)
+      at trimPrefix (node_modules/router/index.js:342:13)
+
+    console.warn
+      [2026-06-07T09:50:12.054Z] [WARN ] [NervousSystem] TASK_RISK: Query touches a high-risk domain. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5404:43
+
+    console.warn
+      [2026-06-07T09:50:14.001Z] [WARN ] [NervousSystem] IRREVERSIBLE_ACTION: Request may involve irreversible actions. {"severity":"critical","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5404:43
+
+    console.warn
+      [2026-06-07T09:50:14.001Z] [WARN ] [NervousSystem] DRY_RUN_REQUIRED: Dry-run recommended for irreversible action. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5404:43
+
+    console.warn
+      [2026-06-07T09:50:14.002Z] [WARN ] [NervousSystem] CONFIRMATION_REQUIRED: Confirmation recommended before irreversible action. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5404:43
+
+    console.warn
+      [2026-06-07T09:50:14.074Z] [WARN ] [Mycelium] Heuristic verifier failed hard safety check {"notes":["High-risk task: response references irreversible action without dry-run / refusal."],"blockReason":"High-risk task: response references irreversible action without dry-run / refusal."}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/web/server.ts:5975:18
+
+    console.warn
+      [2026-06-07T09:50:14.075Z] [WARN ] [NervousSystem] VERIFIER_FAIL: Verifier failed (score 0.475). {"severity":"high","source":"sensory.verifier"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.onVerifierResult (src/nervous/controller.ts:138:14)
+      at src/web/server.ts:5980:47
+
+    console.warn
+      [2026-06-07T09:50:14.331Z] [WARN ] [NervousSystem] USER_CORRECTION: User rejected or corrected previous output. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5404:43
+
+    console.warn
+      [2026-06-07T09:50:14.658Z] [WARN ] [NervousSystem] IRREVERSIBLE_ACTION: Request may involve irreversible actions. {"severity":"critical","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5404:43
+
+    console.warn
+      [2026-06-07T09:50:14.658Z] [WARN ] [NervousSystem] DRY_RUN_REQUIRED: Dry-run recommended for irreversible action. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5404:43
+
+    console.warn
+      [2026-06-07T09:50:14.658Z] [WARN ] [NervousSystem] CONFIRMATION_REQUIRED: Confirmation recommended before irreversible action. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5404:43
+
+    console.warn
+      [2026-06-07T09:50:14.981Z] [WARN ] [NervousSystem] IRREVERSIBLE_ACTION: Request may involve irreversible actions. {"severity":"critical","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5404:43
+
+    console.warn
+      [2026-06-07T09:50:14.981Z] [WARN ] [NervousSystem] DRY_RUN_REQUIRED: Dry-run recommended for irreversible action. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5404:43
+
+    console.warn
+      [2026-06-07T09:50:14.981Z] [WARN ] [NervousSystem] CONFIRMATION_REQUIRED: Confirmation recommended before irreversible action. {"severity":"high","source":"sensory.user"}
+
+      27 |       break;
+      28 |     case 'warn':
+    > 29 |       console.warn(line);
+         |               ^
+      30 |       break;
+      31 |     default:
+      32 |       console.log(line);
+
+      at log (src/core/logger.ts:29:15)
+      at Object.warn (src/core/logger.ts:39:77)
+      at src/nervous/controller.ts:43:16
+      at SignalBus.publish (src/nervous/signals.ts:90:45)
+      at SignalBus.publishMany (src/nervous/signals.ts:97:40)
+      at NervousSystemController.inspectQuery (src/nervous/controller.ts:56:14)
+      at src/web/server.ts:5404:43
+
+PASS src/core/queryLoop.test.ts
+PASS src/agents/subagent.sideEffects.test.ts
+PASS src/agents/orchestrator.attachVerification.test.ts
+PASS src/agents/orchestrator.orchestrate.test.ts
+PASS src/agents/subagent.test.ts
+PASS src/agents/orchestrator.mergeVerified.test.ts
+PASS src/agents/subAgentComposition.test.ts
+PASS src/agents/agentLoader.test.ts
+PASS src/agents/agentId.test.ts
+PASS src/agents/verifiedMerge.test.ts
+PASS src/agents/modelRouting.test.ts
+
+Test Suites: 12 passed, 12 total
+Tests:       354 passed, 354 total
+Snapshots:   0 total
+Time:        32.155 s, estimated 38 s
+Ran all test suites matching /src\\agents|src\\web\\server.test.ts|src\\core\\queryLoop.test.ts/i.
+Force exiting Jest: Have you considered using `--detectOpenHandles` to detect async operations that kept running after all tests finished?
