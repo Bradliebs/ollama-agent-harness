@@ -58,6 +58,12 @@ release/release-notes.md
 .forge-history.jsonl
 .forge-prompt.txt
 
+# Jest output spool from `npm test -- ... > jest-out.txt` etc.
+# Three of these files were committed in 5c3f4b1; pattern stops it recurring.
+jest-out.txt
+jest-full.log
+jest_full_output.log
+
 # Defensive: prior agent sessions dropped non-Harness lottery scripts
 # into the repo root. They have been relocated to C:\AI\Lottery-Toolkit\.
 # These patterns prevent re-creation from being silently committed.

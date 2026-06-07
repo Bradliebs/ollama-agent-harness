@@ -86,3 +86,18 @@ Internet marketplace execution stays blocked until source trust, malware scannin
 ### Multi-agent swarm
 
 Multi-agent swarm behavior is gated. Fan-out execution needs role boundaries, per-agent budgets, parent-controlled tool access, and aggregate run logging.
+
+## Tool-call inspectors
+
+Inspectors run inside the dispatcher between the model's tool-call decision and tool execution. They can deny, approve, or pause a call. All inspectors are off by default — opt in per environment variable. Source of truth: [`src/safety/toolInspectors/buildFromEnv.ts`](../src/safety/toolInspectors/buildFromEnv.ts).
+
+| Env var | Effect when set | Notes |
+| --- | --- | --- |
+| `HARNESS_INSPECTOR_REPETITION_MAX=<n>` | Blocks the same `(tool, args)` call after `n` consecutive repeats within a turn. | Catches stuck loops. `n` must be a positive finite number; invalid values silently disable. |
+| `HARNESS_INSPECTOR_EGRESS=approve` | Requires human approval before any shell tool runs a command that looks like network egress (curl, wget, npm install, etc.). | Approval prompt goes through the standard permission UI. |
+| `HARNESS_INSPECTOR_EGRESS=deny` | Same detection, denies the call outright. | Use for hardened sessions. |
+| `HARNESS_INSPECTOR_EGRESS_ALLOW=a.com,b.org` | Domain allowlist consulted before approve/deny fires. | CSV, applies to both `approve` and `deny` modes. |
+| `HARNESS_INSPECTOR_EGRESS_TOOLS=bash,custom_shell` | Override the set of tool names treated as "shell" for egress detection. | CSV. Default covers builtin shell-ish tools. |
+| `HARNESS_INSPECTOR_ADVERSARY=1` | Adds the LLM-graded adversary judge. Each tool call is scored against `.harness/adversary.md`; high-risk calls get blocked or surfaced for approval. | **Cost:** one extra model call per inspected tool call. Requires `.harness/adversary.md` to exist; otherwise the inspector no-ops at construction time. Same-model adjudication risk applies — pair with a stronger judge model when possible. |
+| `HARNESS_TOOL_RESPONSE_SPOOL_THRESHOLD=<n>` | Tool responses larger than `n` characters get spooled to disk and replaced with a pointer in the conversation. | Keeps context windows healthy on tools that return large blobs. Off when unset; invalid values silently disable. |
+

@@ -173,21 +173,44 @@ export function createIdentityRouter(deps: IdentityRoutesDeps): express.Router {
         user: Boolean(body.user),
         soul: Boolean(body.soul),
       };
+      // Pattern matches /api/settings permissionMode handling: any change goes
+      // through escalation auth, audit reason is only required when *enabling*
+      // adaptive identity. Turning auto-update OFF is de-escalation and should
+      // never be blocked by missing creds.
+      if (!requireAuth(req, res, 'identity auto-update toggle')) return;
+      const enabling = config.user || config.soul;
+      let auditNote = '';
+      if (enabling) {
+        const reason = requireAuditReason(req.body?.reason, res, 'Enabling identity auto-update');
+        if (!reason) return;
+        auditNote = reason;
+      }
       await writeIdentityAutoUpdateConfig(projectDir, config);
-      logger.info('Identity', 'Auto-update config changed', { user: config.user, soul: config.soul });
+      logger.info('Identity', 'Auto-update config changed', {
+        user: config.user,
+        soul: config.soul,
+        reason: auditNote || undefined,
+      });
       res.json({ config });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 
-  router.post('/api/identity/auto-update/run', async (_req, res) => {
+  router.post('/api/identity/auto-update/run', async (req, res) => {
     if (!deps.runAutoUpdateNow) {
       res.status(503).json({ error: 'Auto-update scheduler is not wired in this server.' });
       return;
     }
+    // Manually triggering a tick can write to USER.md (or stage a SOUL
+    // proposal) depending on the current config, so gate it the same way
+    // we gate enabling the toggle.
+    if (!requireAuth(req, res, 'identity auto-update manual run')) return;
+    const reason = requireAuditReason(req.body?.reason, res, 'Manual identity auto-update tick');
+    if (!reason) return;
     try {
       const outcome = await deps.runAutoUpdateNow();
+      logger.info('Identity', 'Auto-update manual run', { reason, ran: outcome.ran });
       res.json(outcome);
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
