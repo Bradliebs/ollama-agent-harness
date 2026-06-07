@@ -17,6 +17,21 @@ import {
   writeIdentityFile,
   type IdentityFileName,
 } from '../services/identity';
+import {
+  readIdentityAutoUpdateConfig,
+  writeIdentityAutoUpdateConfig,
+  type IdentityAutoUpdateConfig,
+  type IdentityAutoUpdateResult,
+} from '../services/identityAutoUpdate';
+import {
+  acceptSoulProposal,
+  discardSoulProposal,
+  readSoulProposal,
+} from '../services/identityProposals';
+import {
+  listIdentityHistory,
+  restoreIdentityFromHistory,
+} from '../services/identityHistory';
 
 export interface IdentityRoutesDeps {
   projectDir: string;
@@ -29,6 +44,14 @@ export interface IdentityRoutesDeps {
   requireAuditReason: (value: unknown, res: express.Response, actionLabel: string) => string | null;
   /** Logger surface for the one place identity code logs (overwrite import). */
   logger: { info: (component: string, message: string, meta?: Record<string, unknown>) => void };
+  /**
+   * Optional: force-run the auto-update scheduler tick. When provided, the
+   * `/api/identity/auto-update/run` endpoint is enabled. Without it the
+   * endpoint returns 503 — useful when the scheduler isn't wired yet.
+   */
+  runAutoUpdateNow?: () => Promise<{ ran: boolean; reason?: string; result?: IdentityAutoUpdateResult }>;
+  /** Optional: returns whether the auto-update scheduler is currently active. */
+  isAutoUpdateSchedulerRunning?: () => boolean;
 }
 
 const VALID_IDENTITY_FILES = new Set<IdentityFileName>(['SOUL.md', 'USER.md']);
@@ -125,6 +148,98 @@ export function createIdentityRouter(deps: IdentityRoutesDeps): express.Router {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       res.status(400).json({ error: message });
+    }
+  });
+
+  // ─── Adaptive identity — auto-update config + scheduler controls ─────
+  router.get('/api/identity/auto-update', async (_req, res) => {
+    try {
+      const config = await readIdentityAutoUpdateConfig(projectDir);
+      const schedulerRunning = deps.isAutoUpdateSchedulerRunning ? deps.isAutoUpdateSchedulerRunning() : false;
+      res.json({ config, schedulerRunning });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.put('/api/identity/auto-update', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as Partial<IdentityAutoUpdateConfig>;
+      const config: IdentityAutoUpdateConfig = {
+        version: 1,
+        user: Boolean(body.user),
+        soul: Boolean(body.soul),
+      };
+      await writeIdentityAutoUpdateConfig(projectDir, config);
+      logger.info('Identity', 'Auto-update config changed', { user: config.user, soul: config.soul });
+      res.json({ config });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.post('/api/identity/auto-update/run', async (_req, res) => {
+    if (!deps.runAutoUpdateNow) {
+      res.status(503).json({ error: 'Auto-update scheduler is not wired in this server.' });
+      return;
+    }
+    try {
+      const outcome = await deps.runAutoUpdateNow();
+      res.json(outcome);
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  // ─── Adaptive identity — SOUL proposal review ────────────────────────
+  router.get('/api/identity/soul-proposal', async (_req, res) => {
+    try {
+      const proposal = await readSoulProposal(projectDir);
+      res.json({ proposal });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.post('/api/identity/soul-proposal/accept', async (_req, res) => {
+    try {
+      const accepted = await acceptSoulProposal(projectDir);
+      if (!accepted) { res.status(404).json({ error: 'No SOUL proposal to accept.' }); return; }
+      res.json({ ok: true, snapshotId: accepted.snapshotId });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.post('/api/identity/soul-proposal/discard', async (_req, res) => {
+    try {
+      const discarded = await discardSoulProposal(projectDir);
+      res.json({ discarded });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  // ─── Adaptive identity — snapshot history + restore ──────────────────
+  router.get('/api/identity/history', async (_req, res) => {
+    try {
+      const snapshots = await listIdentityHistory(projectDir);
+      res.json({ snapshots });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.post('/api/identity/history/:id/restore', async (req, res) => {
+    try {
+      const id = String(req.params.id ?? '').trim();
+      if (!id) { res.status(400).json({ error: 'snapshot id is required.' }); return; }
+      const restored = await restoreIdentityFromHistory(projectDir, id);
+      if (!restored) { res.status(404).json({ error: 'Snapshot not found.' }); return; }
+      logger.info('Identity', 'Restored from history', { id, backup: restored.backup.id });
+      res.json({ ok: true, restored: restored.restored, backup: restored.backup });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
   });
 

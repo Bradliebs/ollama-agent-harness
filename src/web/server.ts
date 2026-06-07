@@ -127,6 +127,7 @@ import { getSquad, listSquads, routeMessage } from '../services/squad';
 import { resolveSessionSquad } from '../services/squadSessions';
 import { renderIdentityForPrompt } from '../services/identity';
 import { createIdentityRouter } from './identityRoutes';
+import { IdentityAutoUpdateScheduler } from '../services/identityAutoUpdateScheduler';
 import { checkSetupHealth } from '../setup/health';
 import { probeToolCalling, type ToolCallProbeResult } from '../setup/toolCallProbe';
 import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCatalog';
@@ -706,6 +707,11 @@ let modelDebugLog: ModelDebugLogSettings = sanitizeModelDebugLogSettings({
 applyModelDebugLogEnvironment(modelDebugLog);
 let lastUserActivityMs = Date.now();
 let curatorScheduler: CuratorScheduler | null = null;
+// Identity auto-update scheduler. Always-on once configured: per-tick
+// behaviour is governed by .harness/identity/auto-update.json (default
+// both targets off), so wiring it in never causes identity to change
+// on its own. Kill switch and idle-gate still apply.
+let identityAutoUpdateScheduler: IdentityAutoUpdateScheduler | null = null;
 // Self-learning heartbeat. Disabled unless HARNESS_HEARTBEAT_ENABLED=1 so
 // existing installs keep the same behavior. Survives restarts via in-memory
 // timestamp; the scheduler internally gates on interval + kill switch.
@@ -3900,6 +3906,15 @@ app.use(createIdentityRouter({
   requireAuth: requireEscalationAuth,
   requireAuditReason,
   logger,
+  isAutoUpdateSchedulerRunning: () => identityAutoUpdateScheduler !== null,
+  runAutoUpdateNow: async () => {
+    if (!identityAutoUpdateScheduler) {
+      throw new Error('Identity auto-update scheduler is not running.');
+    }
+    // Use a far-future clock so the maintenance-window + interval gates
+    // do not suppress the manual run. Kill switch and config still apply.
+    return identityAutoUpdateScheduler.tick(new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
+  },
 }));
 
 // ─── System Health ──────────────────────────────────────────────────
@@ -6516,6 +6531,37 @@ export function stopCuratorScheduler(): void {
   schedulerRegistry.unregister('curator');
 }
 
+// Adaptive identity scheduler. Always-on once started: per-tick behaviour
+// is governed by the on-disk auto-update.json config (default: both flags
+// off, so the tick is a no-op model-call-free read). Kill switch wins.
+function configureIdentityAutoUpdateScheduler(): void {
+  if (identityAutoUpdateScheduler) {
+    identityAutoUpdateScheduler.stop();
+    identityAutoUpdateScheduler = null;
+  }
+  schedulerRegistry.unregister('identity-auto-update');
+  identityAutoUpdateScheduler = new IdentityAutoUpdateScheduler({
+    projectDir: PROJECT_DIR,
+    callModel: curatorDeps().callModel,
+    getLastUserActivityMs: () => lastUserActivityMs,
+    isEnabled: () => !killSwitch.isActive(),
+  });
+  identityAutoUpdateScheduler.start();
+  schedulerRegistry.register({
+    name: 'identity-auto-update',
+    stop: () => stopIdentityAutoUpdateScheduler(),
+    isRunning: () => identityAutoUpdateScheduler !== null,
+  });
+}
+
+export function stopIdentityAutoUpdateScheduler(): void {
+  if (identityAutoUpdateScheduler) {
+    identityAutoUpdateScheduler.stop();
+    identityAutoUpdateScheduler = null;
+  }
+  schedulerRegistry.unregister('identity-auto-update');
+}
+
 function heartbeatEnabled(): boolean {
   return resolveFeatureFlag('HARNESS_HEARTBEAT_ENABLED', 'heartbeatEnabled');
 }
@@ -8052,6 +8098,15 @@ export async function startServer(): Promise<void> {
       if (teammateSettings.enabled) console.log(`  Teammate brief:        on at ${teammateSettings.scheduleTime}`);
     } catch (error) {
       logger.warn('Startup', 'Failed to start teammate scheduler', { error: error instanceof Error ? error.message : String(error) });
+    }
+
+    // Start the identity auto-update scheduler. Always-on once started;
+    // .harness/identity/auto-update.json governs whether the tick does anything.
+    try {
+      configureIdentityAutoUpdateScheduler();
+      console.log(`  Identity heartbeat:    on`);
+    } catch (error) {
+      logger.warn('Startup', 'Failed to start identity auto-update scheduler', { error: error instanceof Error ? error.message : String(error) });
     }
 
     // Attach OTLP exporter (no-op unless HARNESS_OTEL_EXPORT_ENABLED + endpoint set).
