@@ -129,6 +129,10 @@ export { acceptSoulProposal, applyUserProposal, discardSoulProposal, parsePropos
 export type { IdentityProposal, SoulProposalRecord } from './services/identityProposals';
 export { readIdentityAutoUpdateConfig, runIdentityAutoUpdateTick, writeIdentityAutoUpdateConfig } from './services/identityAutoUpdate';
 export type { IdentityAutoUpdateConfig, IdentityAutoUpdateDeps, IdentityAutoUpdateResult } from './services/identityAutoUpdate';
+export { gatherIdentityObservations } from './services/identityObservations';
+export type { ObservationsOptions, ObservationsResult } from './services/identityObservations';
+export { IdentityAutoUpdateScheduler } from './services/identityAutoUpdateScheduler';
+export type { IdentityAutoUpdateSchedulerOptions } from './services/identityAutoUpdateScheduler';
 
 // ─── Subagent Orchestrator ──────────────────────────────────────────
 export { orchestrate, mergeResults, mergeVerified, attachVerification, verifyCodeBranch, getAgentRoleDefaults } from './agents/orchestrator';
