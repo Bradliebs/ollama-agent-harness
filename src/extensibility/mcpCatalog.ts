@@ -120,4 +120,20 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     homepage: 'https://github.com/modelcontextprotocol/servers/tree/main/src/google-maps',
     requiresEnv: ['GOOGLE_MAPS_API_KEY'],
   },
+  {
+    name: 'google-calendar',
+    description: 'Read, create, update, delete Google Calendar events across multiple accounts. Needs Google Cloud OAuth (one-time setup).',
+    tags: ['calendar', 'google', 'community'],
+    install: 'npx -y @cocal/google-calendar-mcp',
+    homepage: 'https://github.com/nspady/google-calendar-mcp',
+    requiresEnv: ['GOOGLE_OAUTH_CREDENTIALS'],
+  },
+  {
+    name: 'ms-365',
+    description: 'Microsoft 365 / Outlook: mail, calendar, OneDrive, contacts, To Do. Device-code login on first run — no Azure setup needed for personal accounts.',
+    tags: ['calendar', 'mail', 'microsoft', 'outlook', 'community'],
+    install: 'npx -y @softeria/ms-365-mcp-server --preset outlook',
+    homepage: 'https://github.com/Softeria/ms-365-mcp-server',
+    requiresEnv: [],
+  },
 ];
