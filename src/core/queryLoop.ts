@@ -348,7 +348,9 @@ export async function* queryLoop(
       // (e.g. gemma4 which chats instead of calling tools).
       const toolCapableRun = totalToolCalls > 0 || autoContinueCount === 0;
       if (config.autoContinue && !isHighRisk && toolCapableRun && autoContinueCount < autoContinueLimit && turn < maxTurns) {
-        const text = assistantMessage.content ?? '';
+        // content may be null or an array of content blocks (reasoning/multimodal
+        // shapes from some providers); detectPartialResult expects a plain string.
+        const text = typeof assistantMessage.content === 'string' ? assistantMessage.content : '';
         const reason = detectPartialResult(text);
         if (reason) {
           autoContinueCount++;
@@ -538,7 +540,8 @@ export async function* queryLoop(
           // web_fetch. Killing the loop here was the #1 cause of premature
           // stops on research-heavy queries where one site rate-limits.
           const warning = `⚠️ ${call.name} has failed ${failureCount} times in this run (last error: ${String(result.output ?? result.error ?? 'unknown error').slice(0, 300)}). Try a different tool or site instead.`;
-          messages.push({ role: 'system', content: warning } as Message);
+          // Use 'user' role: Mistral and Anthropic reject 'system' after 'tool'.
+          messages.push({ role: 'user', content: warning } as Message);
           yield { type: 'error', message: warning, recoverable: true };
           // Reset the counter so the model gets another chance if it
           // switches sites. If it keeps hitting the same broken tool
@@ -588,8 +591,9 @@ export async function* queryLoop(
       const lastToolOutput = toolResults.length > 0 ? String(toolResults[toolResults.length - 1].result.output ?? '') : '';
       const emptyResultReason = detectEmptyResult(lastToolOutput);
       if (emptyResultReason) {
+        // Use 'user' role: Mistral and Anthropic reject 'system' after 'tool'.
         messages.push({
-          role: 'system',
+          role: 'user',
           content: `⚠️ The last tool returned empty or zero results (${emptyResultReason}). Do NOT present this to the user as a final answer. Instead: widen filters, relax thresholds, try alternative data sources, or explain why no results are available and suggest next steps.`,
         } as Message);
         tracer?.recordEvent('empty_result.nudge', { turn, reason: emptyResultReason });

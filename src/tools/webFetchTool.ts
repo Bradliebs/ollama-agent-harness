@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { extractPdfText } from './pdfTool';
 import { wrapUntrusted } from '../safety/untrustedWrap';
+import { evaluateSandboxNetworkUrl } from './sandboxGuards';
 import type { Tool, ToolResult } from '../types';
 
 const MAX_RESPONSE_SIZE = 50_000;
@@ -34,6 +35,15 @@ export const WebFetchTool: Tool = {
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
     const url = input.url as string;
     const method = (input.method as string) ?? 'GET';
+
+    // Sandbox guard: block private / loopback / link-local hosts and
+    // non-http schemes before opening any socket. Failing closed here is
+    // cheaper than failing closed after a partial fetch.
+    const netDecision = evaluateSandboxNetworkUrl(url);
+    if (!netDecision.ok) {
+      const reason = netDecision.reason ?? 'sandbox: blocked';
+      return { success: false, output: reason, error: reason };
+    }
 
     try {
       const response = await fetch(url, { method, signal: AbortSignal.timeout(30_000) });

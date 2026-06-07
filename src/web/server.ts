@@ -90,6 +90,8 @@ import { setCuratorToolRuntime } from '../tools/curatorTools';
 import { PermissionEngine } from '../permissions/engine';
 import { PermissionPromptBroker } from '../permissions/promptBroker';
 import { KillSwitch } from '../permissions/killSwitch';
+import { SandboxSwitch } from '../permissions/sandboxSwitch';
+import { setSandboxStateProvider } from '../tools/sandboxGuards';
 import { createCapabilityGrant, evaluateCapabilityGrant, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, summarizeCapabilityAlignment, autoGrantGatedCapabilities, type CapabilityGrant } from '../permissions/capabilities';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { rebuildSemanticMemory, searchSemanticMemory } from '../persistence/semanticMemory';
@@ -433,6 +435,8 @@ interface WebSettings {
   autonomyPreviousMode: PermissionMode;
   /** Last known kill switch state. Restored on startup so a stop persists across restarts. */
   killSwitch: { active: boolean; reason: string };
+  /** Last known sandbox state. Restored on startup so containment persists across restarts. */
+  sandbox: { active: boolean; reason: string };
   /** Time-limited capability grants for gated high-power surfaces. */
   capabilityGrants: CapabilityGrant[];
   allowedExternalPaths: string[];
@@ -569,6 +573,19 @@ let agentPersonality = '';
 let agentName = '';
 let agentAvatar = '';
 let agentProfiles: Record<string, { name: string; avatar: string; personality: string; model: string }> = {};
+
+/**
+ * Build the "Your name is X. <personality>" preamble injected ahead of the
+ * base system prompt. Shared between the main chat path and delegated
+ * sub-agents so a configured persona carries through to delegations.
+ * Returns '' when neither field is set.
+ */
+function buildAgentIdentityPrefix(): string {
+  return [
+    agentName ? `Your name is ${agentName}.` : '',
+    agentPersonality || '',
+  ].filter(Boolean).join(' ');
+}
 let summarizerModel = '';
 const DEFAULT_CONTEXT_MAX_TOKENS = 8192;
 const MYCELIUM_CONTEXT_MAX_CHARS = 4_000;
@@ -619,6 +636,19 @@ let settingsLoaded = false;
  * they always see live state instead of a construction-time snapshot.
  */
 const killSwitch = new KillSwitch();
+/**
+ * Shared sandbox-mode state. Soft containment that narrows the blast
+ * radius of every tool call (path confinement, shell allowlist, network
+ * denylist) without disabling the agent outright. Lives at the module
+ * level so per-session PermissionEngine instances and subagents both
+ * observe the SAME switch — sandbox is process-wide by design, so a
+ * subagent cannot exit sandbox the parent is in.
+ *
+ * Tools consult this via `setSandboxStateProvider` (wired below) so the
+ * dependency edge stays one-way (tools → permissions has no import).
+ */
+const sandboxSwitch = new SandboxSwitch();
+setSandboxStateProvider(() => sandboxSwitch.isActive());
 /** Process-wide scheduler lifecycle registry (curator, heartbeat, etc.). */
 const schedulerRegistry = new SchedulerRegistry();
 let killSwitchActive = false;
@@ -824,6 +854,7 @@ function buildChatTools(parentClient: import('../core/chatClient').IChatClient):
     getParentClient: () => parentClient,
     getAvailableTools: () => baseTools,
     getCustomAgents: getCachedCustomAgentsSnapshot,
+    getIdentityPrefix: buildAgentIdentityPrefix,
     // Jarvis: share the project's knowledge graph with delegated subagents.
     async getRecallContext(prompt: string): Promise<string | undefined> {
       try {
@@ -2920,7 +2951,7 @@ app.get('/api/readiness', async (_req, res) => {
         { id: 'autonomy.kill.switch', label: 'Kill switch clear', status: killSnapshot.active ? 'blocked' : 'ready', message: killSnapshot.active ? `Kill switch active: ${killSnapshot.reason}` : 'Kill switch is clear.' },
       ]),
     ];
-    res.json({ generatedAt: new Date().toISOString(), workspace: PROJECT_DIR, model: currentModel, permissionMode, killSwitch: { active: killSnapshot.active, reason: killSnapshot.reason }, grants: activeGrants.length, sections, nervousSystem: { available: true, modules: ['signals', 'sensory', 'reflexes', 'attention', 'motor', 'pain', 'recovery'] } });
+    res.json({ generatedAt: new Date().toISOString(), workspace: PROJECT_DIR, model: currentModel, permissionMode, killSwitch: { active: killSnapshot.active, reason: killSnapshot.reason }, sandbox: sandboxSwitch.snapshot(), grants: activeGrants.length, sections, nervousSystem: { available: true, modules: ['signals', 'sensory', 'reflexes', 'attention', 'motor', 'pain', 'recovery'] } });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -4593,6 +4624,7 @@ app.get('/api/permissions/state', (_req, res) => {
     mode: permissionMode,
     allowedModes: ALLOWED_PERMISSION_MODES,
     killSwitch: { active: killSwitchActive, reason: killSwitchReason },
+    sandbox: sandboxSwitch.snapshot(),
     pendingCount: permissionPrompts.list().length,
     autonomyExpiresAt: autonomyExpiresAt > Date.now() ? new Date(autonomyExpiresAt).toISOString() : null,
     autonomyPreviousMode: autonomyExpiresAt > 0 ? autonomyPreviousMode : null,
@@ -4672,6 +4704,32 @@ app.post('/api/permissions/kill-switch', (req, res) => {
     }
     saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
     res.json({ killSwitch: { active: killSwitchActive, reason: killSwitchReason } });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Engage or release the sandbox-mode switch. Soft containment that
+// narrows path / shell / network behaviour without disabling tools.
+// Mirrors the kill-switch endpoint structure intentionally so operators
+// can reason about the two controls the same way.
+app.post('/api/permissions/sandbox', (req, res) => {
+  try {
+    const desired = Boolean(req.body?.active);
+    if (desired) {
+      const reason = typeof req.body?.reason === 'string' && req.body.reason.trim()
+        ? String(req.body.reason).trim().slice(0, 500)
+        : 'Sandbox engaged from dashboard.';
+      sandboxSwitch.engage(reason);
+      logger.warn('Permissions', 'Sandbox engaged', { reason });
+      runtimeTracer.recordEvent('permission.sandbox_engaged', { reason });
+    } else {
+      sandboxSwitch.release();
+      logger.info('Permissions', 'Sandbox released');
+      runtimeTracer.recordEvent('permission.sandbox_released', {});
+    }
+    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
+    res.json({ sandbox: sandboxSwitch.snapshot() });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
@@ -5322,10 +5380,7 @@ app.post('/api/chat', async (req, res) => {
     '\n9. Treat configured external folders as user-owned data and tools. For existing apps under allowed external folders, use their CLI commands and data files for routine requests. Do not rewrite scripts, setup files, notification formatters, or skill implementations there unless the user explicitly asks you to modify that tool\'s code. For bullet journal task requests, prefer the journal CLI or task data over file_write/file_edit on journal.py, telegram_sender.py, or related program files.';
 
   // Inject name and personality before the base prompt
-  const identityPrefix = [
-    agentName ? `Your name is ${agentName}.` : '',
-    agentPersonality || '',
-  ].filter(Boolean).join(' ');
+  const identityPrefix = buildAgentIdentityPrefix();
   const promptWithPersonality = identityPrefix
     ? `${identityPrefix}\n\n${basePrompt}`
     : basePrompt;
@@ -7024,6 +7079,7 @@ function getCurrentSettings(): WebSettings {
     autonomyExpiresAt: autonomyExpiresAt > Date.now() ? new Date(autonomyExpiresAt).toISOString() : '',
     autonomyPreviousMode,
     killSwitch: { active: killSwitchActive, reason: killSwitchReason },
+    sandbox: sandboxSwitch.snapshot(),
     capabilityGrants,
     allowedExternalPaths: getAllowedExternalPaths(),
     agentOutputDir,
@@ -7299,6 +7355,13 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   if (settings.killSwitch !== undefined && typeof settings.killSwitch === 'object' && settings.killSwitch !== null) {
     const ks = settings.killSwitch as { active?: unknown; reason?: unknown };
     restoreKillSwitchState(ks);
+  }
+  if (settings.sandbox !== undefined && typeof settings.sandbox === 'object' && settings.sandbox !== null) {
+    const sb = settings.sandbox as { active?: unknown; reason?: unknown };
+    sandboxSwitch.restore({
+      active: Boolean(sb?.active),
+      reason: typeof sb?.reason === 'string' ? sb.reason : '',
+    });
   }
   if (settings.capabilityGrants !== undefined) capabilityGrants = sanitizeCapabilityGrants(settings.capabilityGrants);
   if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 0, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);

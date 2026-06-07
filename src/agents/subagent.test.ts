@@ -118,6 +118,42 @@ describe('subagent presets', () => {
     expect(caught!.available).toContain('researcher');
     expect(caught!.available).toContain('developer');
   });
+
+  it('prepends identityPrefix to a resolved built-in agent system prompt', () => {
+    const config: SubagentConfig = {
+      name: '',
+      systemPrompt: '',
+      agentId: 'researcher',
+      identityPrefix: 'Your name is Oracle. Be imaginative and bold.',
+    };
+    const resolved = resolveSubagentConfig(config, 'find docs');
+    expect(resolved.systemPrompt.startsWith('Your name is Oracle.')).toBe(true);
+    // Role definition is still intact after the persona preamble.
+    expect(resolved.systemPrompt).toContain('Researcher');
+  });
+
+  it('identityPrefix is a no-op when empty', () => {
+    const config: SubagentConfig = {
+      name: '',
+      systemPrompt: '',
+      agentId: 'researcher',
+      identityPrefix: '',
+    };
+    const resolved = resolveSubagentConfig(config, 'find docs');
+    expect(resolved.systemPrompt.startsWith('You are a Researcher')).toBe(true);
+  });
+
+  it('identityPrefix is not double-prepended on repeated resolves', () => {
+    const config: SubagentConfig = {
+      name: '',
+      systemPrompt: '',
+      agentId: 'researcher',
+      identityPrefix: 'Your name is Oracle.',
+    };
+    const once = resolveSubagentConfig(config, 'x');
+    const twice = resolveSubagentConfig(once, 'x');
+    expect(twice.systemPrompt).toBe(once.systemPrompt);
+  });
 });
 
 describe('createSubagentTool', () => {

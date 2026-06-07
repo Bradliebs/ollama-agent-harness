@@ -54,6 +54,13 @@ export interface SubagentConfig {
   parentChain?: string[];
   /** Maximum sub-agent invocation depth before the chain is rejected. Default 5. */
   maxDepth?: number;
+  /**
+   * Optional identity preamble (e.g. "Your name is Oracle. Be imaginative,
+   * bold and creatively adventurous...") prepended to the resolved system
+   * prompt so a sub-agent inherits the parent chat's configured persona
+   * while keeping its own role definition. Empty string is a no-op.
+   */
+  identityPrefix?: string;
 }
 
 export interface SubagentRoutingMetric {
@@ -109,6 +116,13 @@ export interface SubagentToolDeps {
    * project memory as the parent chat.
    */
   getRecallContext?: (prompt: string) => Promise<string | undefined>;
+  /**
+   * Optional identity-prefix provider. Returns a single string (name +
+   * personality) that gets prepended to the resolved sub-agent system
+   * prompt so delegated runs inherit the parent chat's persona. Return
+   * an empty string to disable.
+   */
+  getIdentityPrefix?: () => string;
 }
 
 export function createSubagentTool(deps: SubagentToolDeps): Tool {
@@ -139,12 +153,14 @@ export function createSubagentTool(deps: SubagentToolDeps): Tool {
       // Generate a runId so the run is visible in /api/subagents and the
       // active sub-agents UI bar.
       const runId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const identityPrefix = deps.getIdentityPrefix ? deps.getIdentityPrefix() : '';
       const config: SubagentConfig = {
         name: agentId ?? legacyType ?? 'general',
         systemPrompt: '',
         agentId,
         customAgents,
         runId,
+        ...(identityPrefix ? { identityPrefix } : {}),
       };
       try {
         let effectivePrompt = prompt;
@@ -357,7 +373,7 @@ export function resolveSubagentConfig(config: SubagentConfig, prompt: string): S
 
   // Step 2: apply preset routing if a preset is set.
   if (!working.preset) {
-    return working;
+    return applyIdentityPrefix(working);
   }
 
   const helper = createHelperAgentConfig({
@@ -366,7 +382,7 @@ export function resolveSubagentConfig(config: SubagentConfig, prompt: string): S
     ...working.routingInput,
   }, working.routingPolicy);
 
-  return {
+  const resolved: SubagentConfig = {
     ...working,
     name: working.name || helper.name,
     systemPrompt: working.systemPrompt || helper.systemPrompt,
@@ -374,6 +390,21 @@ export function resolveSubagentConfig(config: SubagentConfig, prompt: string): S
     maxTurns: working.maxTurns ?? helper.maxTurns,
     routingDecision: helper.routing,
   };
+
+  return applyIdentityPrefix(resolved);
+}
+
+/**
+ * Prepend the parent chat's identity preamble to the resolved system prompt
+ * so delegated sub-agents inherit the configured persona (name + tone)
+ * while preserving their role definition. No-op when identityPrefix is
+ * empty or the system prompt is empty.
+ */
+function applyIdentityPrefix(config: SubagentConfig): SubagentConfig {
+  const prefix = config.identityPrefix?.trim();
+  if (!prefix || !config.systemPrompt.trim()) return config;
+  if (config.systemPrompt.startsWith(prefix)) return config;
+  return { ...config, systemPrompt: `${prefix}\n\n${config.systemPrompt}` };
 }
 
 export async function appendSubagentRoutingMetric(

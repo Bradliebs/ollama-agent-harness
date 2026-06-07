@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
 import { getAgentOutputDir } from './pathResolution';
+import { isSandboxActive, isShellBinaryAllowed } from './sandboxGuards';
 
 const MAX_OUTPUT_SIZE = 50_000;
 const MAX_COMMAND_LENGTH = 2000;
@@ -416,6 +417,14 @@ export const BashTool: Tool = {
 
     return new Promise((resolve) => {
       const executable = argv[0]!;
+      // Sandbox: only the curated read/test/build binaries are permitted.
+      // Checked here (after argv parsing) rather than during isSafeCommand
+      // because sandbox state is a runtime predicate, not a static rule.
+      if (isSandboxActive() && !isShellBinaryAllowed(executable)) {
+        const msg = `Blocked by sandbox: '${executable}' is not in the sandbox shell allowlist. Disengage sandbox to run this command.`;
+        resolve({ success: false, output: msg, error: msg });
+        return;
+      }
       const blockedBuiltin = unsupportedWindowsBuiltin(executable);
       if (blockedBuiltin) {
         resolve({ success: false, output: blockedBuiltin, error: blockedBuiltin });

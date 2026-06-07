@@ -78,8 +78,14 @@ Section "Install"
   File "..\start.bat"
   File "..\start-background.bat"
   File "..\stop-server.bat"
+  File "..\start-tray.bat"
   File "..\START-HERE.md"
   File "..\README.md"
+
+  ; System tray client (PowerShell)
+  SetOutPath "$INSTDIR\scripts"
+  File "..\scripts\tray.ps1"
+  SetOutPath "$INSTDIR"
 
   ; Install production dependencies
   SetOutPath "$INSTDIR"
@@ -102,8 +108,14 @@ Section "Install"
   CreateDirectory "$SMPROGRAMS\Ollama Agent Harness"
   CreateShortcut "$SMPROGRAMS\Ollama Agent Harness\Ollama Agent Harness.lnk" \
     "$INSTDIR\launch.bat"
+  CreateShortcut "$SMPROGRAMS\Ollama Agent Harness\Harness Tray.lnk" \
+    "$INSTDIR\start-tray.bat" "" "$INSTDIR\start-tray.bat" 0 SW_SHOWMINNOACTIVE
   CreateShortcut "$SMPROGRAMS\Ollama Agent Harness\Uninstall.lnk" \
     "$INSTDIR\uninstall.exe"
+
+  ; Auto-launch tray on login (places shortcut in user's Startup folder)
+  CreateShortcut "$SMSTARTUP\Ollama Agent Harness Tray.lnk" \
+    "$INSTDIR\start-tray.bat" "" "$INSTDIR\start-tray.bat" 0 SW_SHOWMINNOACTIVE
 
   ; Registry and uninstaller
   WriteRegStr HKCU "Software\OllamaAgentHarness" "InstallDir" "$INSTDIR"
@@ -143,16 +155,21 @@ Section "Uninstall"
   Delete "$INSTDIR\start.bat"
   Delete "$INSTDIR\start-background.bat"
   Delete "$INSTDIR\stop-server.bat"
+  Delete "$INSTDIR\start-tray.bat"
   Delete "$INSTDIR\START-HERE.md"
   Delete "$INSTDIR\README.md"
   Delete "$INSTDIR\launch.bat"
   Delete "$INSTDIR\uninstall.exe"
+  Delete "$INSTDIR\scripts\tray.ps1"
+  RMDir "$INSTDIR\scripts"
   RMDir "$INSTDIR"
 
   ; Remove shortcuts
   Delete "$DESKTOP\Ollama Agent Harness.lnk"
   Delete "$SMPROGRAMS\Ollama Agent Harness\Ollama Agent Harness.lnk"
+  Delete "$SMPROGRAMS\Ollama Agent Harness\Harness Tray.lnk"
   Delete "$SMPROGRAMS\Ollama Agent Harness\Uninstall.lnk"
+  Delete "$SMSTARTUP\Ollama Agent Harness Tray.lnk"
   RMDir "$SMPROGRAMS\Ollama Agent Harness"
 
   ; Remove registry

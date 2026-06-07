@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { logger } from '../core/logger';
+import { isSandboxActive } from './sandboxGuards';
 
 // ─── Project root override ──────────────────────────────────────────
 // When the server detects workspace isolation (HARNESS_PROJECT_DIR or
@@ -366,6 +367,12 @@ function recordFallback(requested: string, resolved: string): void {
 /**
  * Resolve a tool path against the project root. Returns the absolute path
  * when it is inside the project directory, or null when it would escape.
+ *
+ * Sandbox mode (see `tools/sandboxGuards`) tightens this: when sandbox is
+ * active the operator's pre-approved external paths are IGNORED, so the
+ * only valid resolution is inside the workspace. This guarantees a
+ * sandboxed agent cannot write to a previously-whitelisted external
+ * directory.
  */
 export function resolveProjectPath(value: unknown): string | null {
   const raw = String(value ?? '');
@@ -373,6 +380,8 @@ export function resolveProjectPath(value: unknown): string | null {
   const resolved = path.resolve(root, raw);
   const relative = path.relative(root, resolved);
   if (!relative.startsWith('..') && !path.isAbsolute(relative)) return resolved;
+  // Sandbox mode: never permit the allowed-external escape hatch.
+  if (isSandboxActive()) return null;
   // Check allowed external paths
   for (const allowed of allowedExternalPaths) {
     if (isInside(resolved, allowed) || resolved === allowed) return resolved;
