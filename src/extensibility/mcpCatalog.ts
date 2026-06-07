@@ -144,4 +144,28 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     homepage: 'https://github.com/Softeria/ms-365-mcp-server',
     requiresEnv: [],
   },
+  {
+    name: 'playwright',
+    description: 'Modern browser automation — handles JS-heavy sites, screenshots, scraping, form-fill. Better than puppeteer for current web.',
+    tags: ['browser', 'automation', 'scraping', 'community'],
+    install: 'npx -y @executeautomation/playwright-mcp-server',
+    homepage: 'https://github.com/executeautomation/mcp-playwright',
+    requiresEnv: [],
+  },
+  {
+    name: 'duckduckgo',
+    description: 'Web search via DuckDuckGo — no API key required. Complements brave-search.',
+    tags: ['search', 'web', 'community'],
+    install: 'npx -y duckduckgo-mcp-server',
+    homepage: 'https://github.com/zhsama/duckduckgo-mpc-server',
+    requiresEnv: [],
+  },
+  {
+    name: 'youtube',
+    description: 'Fetch YouTube transcripts and video metadata. Useful for "summarize this video" workflows.',
+    tags: ['youtube', 'video', 'transcript', 'community'],
+    install: 'npx -y @anaisbetts/mcp-youtube',
+    homepage: 'https://github.com/anaisbetts/mcp-youtube',
+    requiresEnv: [],
+  },
 ];
