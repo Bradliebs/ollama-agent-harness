@@ -710,47 +710,9 @@ export async function* queryLoop(
     // the user gets useful signal instead of either an empty turn or a
     // raw page-dump wall. Mirrors the brevity of the UI buildToolOnlyFallback.
     let synthesisText = typeof synthMessage.content === 'string' ? synthMessage.content.trim() : '';
+    const { pairs, writes } = buildSynthesisToolLedger(messages);
     if (!synthesisText) {
-      const toolMsgs = messages.filter((m) => m.role === 'tool' && typeof m.content === 'string');
-      const writeNames = new Set(['file_write', 'file_create', 'write_file', 'write']);
-
-      type CallPair = { name: string; input: Record<string, unknown>; result: string; success: boolean };
-      const pairs: CallPair[] = [];
-      const pending: Array<{ name: string; input: Record<string, unknown>; id?: string }> = [];
-      for (const m of messages) {
-        if (m.role === 'assistant' && m.tool_calls?.length) {
-          for (const tc of m.tool_calls) {
-            const args = (tc.function.arguments && typeof tc.function.arguments === 'object' ? tc.function.arguments : {}) as Record<string, unknown>;
-            pending.push({ name: tc.function.name, input: args, id: (tc as { id?: string }).id });
-          }
-          continue;
-        }
-        if (m.role === 'tool' && typeof m.content === 'string') {
-          const tid = (m as { tool_call_id?: string }).tool_call_id;
-          let idx = -1;
-          if (tid) idx = pending.findIndex((p) => p.id === tid);
-          if (idx < 0) idx = 0;
-          const match = pending[idx];
-          if (!match) continue;
-          pending.splice(idx, 1);
-          const resultText = m.content;
-          const failed = /^(permission denied|error|failed|❌)/i.test(resultText.trim()) && !/saved to:/i.test(resultText);
-          pairs.push({ name: match.name, input: match.input, result: resultText, success: !failed });
-        }
-      }
-
-      const writes: Array<{ path: string; bytes?: number }> = [];
-      for (const p of pairs) {
-        if (!writeNames.has(p.name) || !p.success) continue;
-        const inputPath = typeof p.input.path === 'string' ? p.input.path : (typeof p.input.file === 'string' ? p.input.file : '');
-        const inputContent = typeof p.input.content === 'string' ? p.input.content : '';
-        const savedMatch = p.result.match(/Saved to:\s*([^\r\n]+)/i);
-        const finalPath = (savedMatch ? savedMatch[1].trim() : inputPath).trim();
-        if (!finalPath) continue;
-        writes.push({ path: finalPath, bytes: inputContent ? inputContent.length : undefined });
-      }
-
-      const summarise = (p: CallPair): string => {
+      const summarise = (p: SynthesisCallPair): string => {
         const collapsed = p.result.replace(/\s+/g, ' ').trim();
         if (!collapsed) return '';
         const target = typeof p.input.query === 'string' ? p.input.query
@@ -771,7 +733,7 @@ export async function* queryLoop(
         // No artifact — give 4 short labelled bullets from non-trivial results.
         const bullets = Array.from(new Set(
           pairs
-            .filter((p) => p.success && !writeNames.has(p.name))
+            .filter((p) => p.success && !SYNTHESIS_WRITE_TOOL_NAMES.has(p.name))
             .map(summarise)
             .filter(Boolean)
         )).slice(-4);
@@ -781,6 +743,26 @@ export async function* queryLoop(
         } else {
           synthesisText = `${lead}\n\nNo readable tool results remain in context. ${switchHint}`;
         }
+      }
+    } else if (writes.length > 0) {
+      // Grounding guard: the model produced a non-empty summary, but if it
+      // never references the file(s) it actually wrote this run, the summary
+      // is ungrounded — a known confabulation mode where the tool-stripped
+      // synthesis turn (fed only a truncated slice of context) invents a
+      // narrative disconnected from what really happened (e.g. claiming an
+      // empty/failed result when an .xlsx was in fact written). Prepend the
+      // factual artifact list so the hallucination can't be shown as if no
+      // deliverable exists. Additive — the model's text still appears below.
+      const mentionsArtifact = writes.some((w) => {
+        const base = (w.path.split(/[\\/]/).pop() ?? w.path).trim();
+        return base.length > 0 && synthesisText.includes(base);
+      });
+      if (!mentionsArtifact) {
+        const fileList = writes.map((w) => `- \`${w.path}\`${w.bytes ? ` — ${w.bytes.toLocaleString()} chars` : ''}`).join('\n');
+        const noun = writes.length === 1 ? 'file' : 'files';
+        const pron = writes.length === 1 ? 'it' : 'them';
+        synthesisText = `**✅ The model wrote ${writes.length} ${noun} this run — the summary below does not mention ${pron}, so treat it with caution and open ${pron} directly:**\n\n${fileList}\n\n---\n\n${synthesisText}`;
+        tracer?.recordEvent('synthesis.ungrounded_summary', { writes: writes.length, totalToolCalls });
       }
     }
 
@@ -862,6 +844,55 @@ export async function* queryLoop(
     await appendStatus(session, sessionStatus, undefined, tracer);
   }
   yield { type: 'done', reason: emptyFinalAfterTools ? 'empty_after_tools_synthesized' : repetitionExceeded ? 'repetition_synthesized' : timeBudgetExceeded ? 'time_budget_synthesized' : 'max_turns', turns: turn };
+}
+
+type SynthesisCallPair = { name: string; input: Record<string, unknown>; result: string; success: boolean };
+
+const SYNTHESIS_WRITE_TOOL_NAMES = new Set(['file_write', 'file_create', 'write_file', 'write']);
+
+/**
+ * Reconstruct an ordered ledger of (tool call → result) pairs from the message
+ * history, plus the subset that successfully wrote files. Used by the synthesis
+ * turn both to build a deterministic fallback when the model emits no text AND
+ * to detect an ungrounded summary that ignores files the model actually wrote.
+ */
+function buildSynthesisToolLedger(messages: Message[]): { pairs: SynthesisCallPair[]; writes: Array<{ path: string; bytes?: number }> } {
+  const pairs: SynthesisCallPair[] = [];
+  const pending: Array<{ name: string; input: Record<string, unknown>; id?: string }> = [];
+  for (const m of messages) {
+    if (m.role === 'assistant' && m.tool_calls?.length) {
+      for (const tc of m.tool_calls) {
+        const args = (tc.function.arguments && typeof tc.function.arguments === 'object' ? tc.function.arguments : {}) as Record<string, unknown>;
+        pending.push({ name: tc.function.name, input: args, id: (tc as { id?: string }).id });
+      }
+      continue;
+    }
+    if (m.role === 'tool' && typeof m.content === 'string') {
+      const tid = (m as { tool_call_id?: string }).tool_call_id;
+      let idx = -1;
+      if (tid) idx = pending.findIndex((p) => p.id === tid);
+      if (idx < 0) idx = 0;
+      const match = pending[idx];
+      if (!match) continue;
+      pending.splice(idx, 1);
+      const resultText = m.content;
+      const failed = /^(permission denied|error|failed|❌)/i.test(resultText.trim()) && !/saved to:/i.test(resultText);
+      pairs.push({ name: match.name, input: match.input, result: resultText, success: !failed });
+    }
+  }
+
+  const writes: Array<{ path: string; bytes?: number }> = [];
+  for (const p of pairs) {
+    if (!SYNTHESIS_WRITE_TOOL_NAMES.has(p.name) || !p.success) continue;
+    const inputPath = typeof p.input.path === 'string' ? p.input.path : (typeof p.input.file === 'string' ? p.input.file : '');
+    const inputContent = typeof p.input.content === 'string' ? p.input.content : '';
+    const savedMatch = p.result.match(/Saved to:\s*([^\r\n]+)/i);
+    const finalPath = (savedMatch ? savedMatch[1].trim() : inputPath).trim();
+    if (!finalPath) continue;
+    writes.push({ path: finalPath, bytes: inputContent ? inputContent.length : undefined });
+  }
+
+  return { pairs, writes };
 }
 
 function normalizeWebToolUrl(call: ToolCall): string | null {

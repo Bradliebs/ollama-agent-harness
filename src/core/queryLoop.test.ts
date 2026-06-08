@@ -550,6 +550,43 @@ describe('queryLoop runtime behavior', () => {
       expect(synth).toEqual({ type: 'synthesis_fired', model: 'test-model', maxTurns: 2, toolCallsTotal: 2 });
     });
 
+    it('prepends a factual artifact header when the synthesis summary ignores a file it wrote', async () => {
+      // Confabulation guard: the model writes a real file, then the
+      // tool-stripped synthesis turn invents a "no data / it failed" summary
+      // that never references the artifact. The user must not be shown the
+      // hallucination as if no deliverable exists.
+      const fileWrite = makeTool('file_write', false, async () => ({ success: true, output: 'Saved to: report.xlsx' }));
+      const client = makeClient([
+        { role: 'assistant', content: '', tool_calls: [{ function: { name: 'file_write', arguments: { path: 'report.xlsx', content: 'data' } } }] } as Message,
+        { role: 'assistant', content: 'The query returned a header-only table with no data rows.' },
+      ]);
+
+      const events = await collectEvents(client, [fileWrite], { config: { maxTurns: 1 } });
+
+      const text = events.find((e) => e.type === 'text') as { content: string } | undefined;
+      expect(text).toBeDefined();
+      // Factual header naming the real artifact is prepended...
+      expect(text!.content).toContain('report.xlsx');
+      expect(text!.content).toContain('does not mention');
+      // ...and the model's original (wrong) text is preserved below it.
+      expect(text!.content).toContain('header-only table with no data rows');
+    });
+
+    it('does not alter a synthesis summary that already names the file it wrote', async () => {
+      const fileWrite = makeTool('file_write', false, async () => ({ success: true, output: 'Saved to: report.xlsx' }));
+      const client = makeClient([
+        { role: 'assistant', content: '', tool_calls: [{ function: { name: 'file_write', arguments: { path: 'report.xlsx', content: 'data' } } }] } as Message,
+        { role: 'assistant', content: 'I built the dashboard and saved it to report.xlsx with all sheets populated.' },
+      ]);
+
+      const events = await collectEvents(client, [fileWrite], { config: { maxTurns: 1 } });
+
+      const text = events.find((e) => e.type === 'text') as { content: string } | undefined;
+      expect(text).toBeDefined();
+      expect(text!.content).toBe('I built the dashboard and saved it to report.xlsx with all sheets populated.');
+      expect(text!.content).not.toContain('does not mention');
+    });
+
     it('routes an empty final turn into synthesis when tools ran (does not stop as completed)', async () => {
       // Regression: small local models (e.g. Gemma) sometimes run tools then
       // end the run with an empty text turn instead of writing an answer.
