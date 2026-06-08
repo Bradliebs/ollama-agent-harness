@@ -34,7 +34,7 @@ These show up everywhere in the code:
 
 ```mermaid
 flowchart LR
-    A[Install Node + Ollama] -->|pull a model| B[Start harness<br/>start.bat / npm run ui]
+    A[Install Node + Ollama] -->|pull a model| B[Start harness<br/>start.bat / ./start.sh]
     B -->|opens browser| C[Chat UI<br/>127.0.0.1:4300]
     C -->|message| D[Local model responds]
     D -->|needs a tool?| E[Tools: read/write/search/run]

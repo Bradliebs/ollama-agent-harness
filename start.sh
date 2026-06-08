@@ -3,6 +3,12 @@ set -e
 
 cd "$(dirname "$0")"
 
+# Unified launcher: run the assistant profile by default so voice, ambient
+# awareness and chat channels are on without a separate launcher. Override by
+# exporting HARNESS_PROFILE or individual HARNESS_* flags before launching.
+: "${HARNESS_PROFILE:=assistant}"
+export HARNESS_PROFILE
+
 echo ""
 echo "  ============================================"
 echo "  🤖  Ollama Agent Harness — Setup & Launch"

@@ -550,6 +550,49 @@ describe('queryLoop runtime behavior', () => {
       expect(synth).toEqual({ type: 'synthesis_fired', model: 'test-model', maxTurns: 2, toolCallsTotal: 2 });
     });
 
+    it('routes an empty final turn into synthesis when tools ran (does not stop as completed)', async () => {
+      // Regression: small local models (e.g. Gemma) sometimes run tools then
+      // end the run with an empty text turn instead of writing an answer.
+      // That must NOT be accepted as `completed` with empty text — it should
+      // fall into the tool-stripped synthesis turn so the gathered results
+      // get turned into a reply.
+      const search = makeTool('web_search', true, async () => ({ success: true, output: 'Results: BBC headline, Sky headline' }));
+      const client = makeClient([
+        makeToolCallMessage('web_search'),
+        { role: 'assistant', content: '' }, // empty final turn after tools
+        { role: 'assistant', content: 'Here are the headlines I found.' }, // synthesis
+      ]);
+
+      const events = await collectEvents(client, [search], {
+        config: { maxTurns: 10 },
+      });
+
+      const done = events.find((e) => e.type === 'done');
+      expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'empty_after_tools_synthesized' }));
+      const text = events.find((e) => e.type === 'text');
+      expect(text).toEqual({ type: 'text', content: 'Here are the headlines I found.' });
+      // Synthesis turn must be called with tools stripped.
+      const lastCall = client.chat.mock.calls[client.chat.mock.calls.length - 1];
+      expect(lastCall[1]).toEqual([]);
+      // synthesis_fired should be emitted exactly once (not double-emitted).
+      const synthEvents = events.filter((e) => e.type === 'synthesis_fired');
+      expect(synthEvents).toHaveLength(1);
+    });
+
+    it('does not route an empty final turn into synthesis when no tools ran', async () => {
+      // An empty reply with no prior tool use is a genuinely empty model
+      // response, not a dropped synthesis — keep the existing `completed`
+      // behaviour so we don't burn an extra turn on a model that said nothing.
+      const client = makeClient([{ role: 'assistant', content: '' }]);
+
+      const events = await collectEvents(client, []);
+
+      const done = events.find((e) => e.type === 'done');
+      expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'completed' }));
+      const synthEvents = events.filter((e) => e.type === 'synthesis_fired');
+      expect(synthEvents).toHaveLength(0);
+    });
+
     it('emits max_turns with error when synthesis turn fails', async () => {
       const echo = makeTool('echo', true, async () => ({ success: true, output: 'ok' }));
       const client = {

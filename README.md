@@ -42,7 +42,7 @@ A small family of end-to-end experiences composed from existing harness primitiv
 
 ```mermaid
 flowchart LR
-    A["🖥️ Install\nNode.js + Ollama"] -->|pull a model| B["🤖 Start Harness\nstart.bat or npm run ui"]
+    A["🖥️ Install\nNode.js + Ollama"] -->|pull a model| B["🤖 Start Harness\nstart.bat / ./start.sh"]
     B -->|opens browser| C["🌐 Chat UI\nhttp://127.0.0.1:4300"]
     C -->|type a message| D["💬 AI Responds\nusing local model"]
     D -->|needs a file?| E["🔧 Tools\nread, write, search, run"]
@@ -64,7 +64,7 @@ flowchart LR
 graph TD
     S1["① Install Node.js<br/><i>nodejs.org → LTS → Next through everything</i>"] --> S2
     S2["② Install Ollama<br/><i>ollama.com → Download → ollama pull llama3.2</i>"] --> S3
-    S3["③ Start the Harness<br/><i>Double-click start.bat or npm run ui</i>"] --> S4
+    S3["③ Start the Harness<br/><i>Double-click start.bat or run ./start.sh</i>"] --> S4
     S4["④ Pick a model<br/><i>Choose llama3.2 from the dropdown</i>"] --> S5
     S5["⑤ Start chatting!<br/><i>Try: 'List the files in this project'</i>"]
 
@@ -97,6 +97,10 @@ Download **Harness-Setup.exe** from the [latest release](https://github.com/Brad
 2. Double-click `start.bat` (Windows) or run `./start.sh` (Mac/Linux)
 3. Open **http://127.0.0.1:4300** in your browser
 
+These launchers run the **assistant profile** (`HARNESS_PROFILE=assistant`) — the
+same harness with its proactive "Jarvis" features (ambient daily brief, voice,
+chat channels) on by default.
+
 ### Option C — Terminal (from source)
 
 ```powershell
@@ -104,7 +108,7 @@ npm install
 npm run ui
 ```
 
-Open **http://127.0.0.1:4300** in your browser. That is the full UI — start chatting in the main panel.
+Open **http://127.0.0.1:4300** in your browser. That is the full UI — start chatting in the main panel. This dev path runs a plain harness; set `HARNESS_PROFILE=assistant` first to turn the proactive assistant features on.
 
 ### CLI mode
 

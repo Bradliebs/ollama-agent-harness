@@ -111,7 +111,7 @@ If you want to know "what is the agent actually doing right now?" — open **⋯
 
 ### What is "Jarvis"?
 
-Jarvis is the harness's ambient background loop. When it's running, it produces a short **daily brief** (recent activity, things to look at) and can poke you with reminders. You'll see "Jarvis live" and "Jarvis voice controls" panels on the welcome screen. It's optional — ignore those panels until you want a proactive assistant.
+Jarvis is not a separate app — it's the same harness with its **assistant features turned on**: an ambient background loop that produces a short **daily brief** (recent activity, things to look at), optional voice in/out, and chat channels like Telegram. When you launch with `start.bat` / `./start.sh`, these run by default (the "assistant profile"), and you'll see "Jarvis live" and "Jarvis voice controls" panels on the welcome screen. It's all optional — ignore those panels until you want a proactive assistant, or start a plain server with `HARNESS_PROFILE=` (empty) to keep them off.
 
 ### Right panel (Settings)
 

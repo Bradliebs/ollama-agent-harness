@@ -13,7 +13,8 @@ const sections = [
   {
     title: 'Most common',
     items: [
-      ['npm run ui', 'Start the web UI (then open http://localhost:3000)'],
+      ['start.bat / ./start.sh', 'Start the full app (assistant profile: voice + ambient + chat)'],
+      ['npm run ui', 'Start the web UI in dev mode (then open http://localhost:3000)'],
       ['npm test', 'Run the test suite'],
       ['npm run build', 'Compile TypeScript to JavaScript'],
     ],
@@ -24,7 +25,7 @@ const sections = [
       ['npm run dev', 'Run the CLI directly via ts-node (no build needed)'],
       ['npm start', 'Run the compiled CLI (run `npm run build` first)'],
       ['npm run typecheck', 'Type-check the project without emitting files'],
-      ['npm run serve', 'Run the compiled web server'],
+      ['npm run serve', 'Run the compiled web server (set HARNESS_PROFILE=assistant for the full app)'],
     ],
   },
   {
@@ -39,7 +40,7 @@ const sections = [
 
 console.log('');
 console.log(bold(cyan('Ollama Agent Harness — common commands')));
-console.log(dim('First time here? Run:  ') + green('npm run ui'));
+console.log(dim('First time here? Run:  ') + green('start.bat') + dim('  (Windows)  or  ') + green('./start.sh') + dim('  (macOS/Linux)'));
 console.log('');
 
 for (const section of sections) {

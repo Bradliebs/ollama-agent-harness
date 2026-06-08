@@ -26,6 +26,7 @@ del /f /q ".harness\telegram-poller.lock.json" >nul 2>nul
 
 set PORT=4300
 set NO_OPEN=1
+if not defined HARNESS_PROFILE set "HARNESS_PROFILE=assistant"
 
 :RESTART
 echo.

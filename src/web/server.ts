@@ -751,6 +751,49 @@ function resolveFeatureFlag(envName: string, settingKey: keyof SystemFeatureFlag
   return systemFeatureFlags[settingKey] === true;
 }
 
+/**
+ * The "assistant" runtime profile. When HARNESS_PROFILE=assistant (or
+ * HARNESS_ASSISTANT is truthy), the personal-assistant features that used to
+ * require a separate launcher (start-jarvis.bat) default ON, so a single
+ * entry point runs the unified product. Explicit env vars still win, because
+ * each caller checks its own env flag before consulting the profile.
+ *
+ * HARNESS_PROFILE=assistant-proactive is a superset: it also enables the
+ * proactive-autonomy subsystems (see proactiveProfileEnabled). It still
+ * satisfies the base assistant profile so voice/ambient/channels stay on.
+ */
+export function assistantProfileEnabled(): boolean {
+  const profile = (process.env.HARNESS_PROFILE ?? '').trim().toLowerCase();
+  if (profile === 'assistant' || profile === 'assistant-proactive') return true;
+  return readEnvFlag('HARNESS_ASSISTANT') === true;
+}
+
+/**
+ * The "assistant-proactive" runtime profile. This is an explicit, deliberate
+ * opt-in for standing autonomy: the self-learning heartbeat (timer-driven,
+ * model-backed) and the trigger scheduler (autonomous event reactions) default
+ * ON. It is intentionally NOT implied by the plain `assistant` profile, because
+ * those subsystems spend compute on a timer and act without prompting — that
+ * should never start as a side effect of launching the app. Concierge
+ * auto-route stays opt-in regardless (silent chat rerouting is its own choice).
+ */
+export function proactiveProfileEnabled(): boolean {
+  const profile = (process.env.HARNESS_PROFILE ?? '').trim().toLowerCase();
+  return profile === 'assistant-proactive';
+}
+
+/**
+ * Whether the Jarvis ambient daemon should start on boot. An explicit
+ * HARNESS_AMBIENT_ENABLED value always wins; otherwise the assistant profile
+ * enables it. This preserves the old start-jarvis.bat behaviour (which set
+ * HARNESS_AMBIENT_ENABLED=1 directly) under the unified launcher.
+ */
+export function ambientEnabled(): boolean {
+  const fromEnv = readEnvFlag('HARNESS_AMBIENT_ENABLED');
+  if (fromEnv !== undefined) return fromEnv;
+  return assistantProfileEnabled();
+}
+
 /** Check whether a tool is effectively enabled right now, considering timed enables. */
 function isToolEnabled(name: string): boolean {
   if (!disabledTools.has(name)) return true;
@@ -2997,7 +3040,9 @@ app.get('/api/jarvis/status', async (_req, res) => {
       inbound: getInboundTriageStatus(),
       runtime: getRuntimeRegistryStatus(),
       mcpServer: mcp,
-      ambient: { ready: true, running: jarvisAmbientHandle?.isRunning() ?? false, watchers: jarvisAmbientHandle?.watchersActive() ?? [], note: 'Set HARNESS_AMBIENT_ENABLED=1 to start on boot.' },
+      assistantProfile: { enabled: assistantProfileEnabled(), ambient: ambientEnabled(), proactive: proactiveProfileEnabled() },
+      schedulers: schedulerRegistry.list(),
+      ambient: { ready: true, running: jarvisAmbientHandle?.isRunning() ?? false, watchers: jarvisAmbientHandle?.watchersActive() ?? [], note: 'Runs by default under HARNESS_PROFILE=assistant; set HARNESS_AMBIENT_ENABLED=1/0 to force.' },
       predictive: { ready: true, note: 'Predictive engine is pure; feed it ActionEvent[] from sessions.' },
       modelCouncil: { ready: true, note: 'Council is transport-agnostic; wire to OllamaClient or OpenAIClient at the call site.' },
     });
@@ -3159,6 +3204,47 @@ app.post('/api/jarvis/ambient/stop', (_req, res) => {
     jarvisAmbientHandle = null;
     schedulerRegistry.unregister('jarvis-ambient');
     res.json({ running: false });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Stop a single registered scheduler by name. Surfaces the SchedulerRegistry's
+// per-entry stop control in the Jarvis Live panel so an operator can halt one
+// noisy subsystem without the global kill switch (which only no-ops ticks) or a
+// full server restart. Stopping is reversible by restarting the server or, for
+// schedulers with their own toggle (ambient, curator), re-enabling them there.
+app.post('/api/jarvis/schedulers/:name/stop', async (req, res) => {
+  try {
+    const name = String(req.params.name ?? '');
+    if (!schedulerRegistry.list().some((entry) => entry.name === name)) {
+      res.status(404).json({ error: `Unknown scheduler: ${name}` });
+      return;
+    }
+    const result = await schedulerRegistry.stop(name);
+    res.json({ ok: result?.ok !== false, result, schedulers: schedulerRegistry.list() });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Restart a single registered scheduler by name. Complements the stop control
+// so an operator can bring a scheduler back without a full server restart.
+// Only schedulers that expose a restart() hook (the ones backed by an
+// idempotent configureX()) are restartable; the rest return 409.
+app.post('/api/jarvis/schedulers/:name/restart', async (req, res) => {
+  try {
+    const name = String(req.params.name ?? '');
+    if (!schedulerRegistry.list().some((entry) => entry.name === name)) {
+      res.status(404).json({ error: `Unknown scheduler: ${name}` });
+      return;
+    }
+    const result = await schedulerRegistry.restart(name);
+    if (result && result.ok === false) {
+      res.status(409).json({ error: result.error ?? `Scheduler ${name} is not restartable`, schedulers: schedulerRegistry.list() });
+      return;
+    }
+    res.json({ ok: true, result, schedulers: schedulerRegistry.list() });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
@@ -6447,6 +6533,7 @@ function configureUploadsAutoPrune(): void {
     name: 'uploads-auto-prune',
     stop: () => stopUploadsAutoPrune(),
     isRunning: () => uploadsAutoPruneTimer !== null,
+    restart: () => configureUploadsAutoPrune(),
   });
 }
 
@@ -6520,6 +6607,7 @@ function configureCuratorScheduler(): void {
     name: 'curator',
     stop: () => stopCuratorScheduler(),
     isRunning: () => curatorScheduler !== null,
+    restart: () => configureCuratorScheduler(),
   });
 }
 
@@ -6551,6 +6639,7 @@ function configureIdentityAutoUpdateScheduler(): void {
     name: 'identity-auto-update',
     stop: () => stopIdentityAutoUpdateScheduler(),
     isRunning: () => identityAutoUpdateScheduler !== null,
+    restart: () => configureIdentityAutoUpdateScheduler(),
   });
 }
 
@@ -6563,7 +6652,10 @@ export function stopIdentityAutoUpdateScheduler(): void {
 }
 
 function heartbeatEnabled(): boolean {
-  return resolveFeatureFlag('HARNESS_HEARTBEAT_ENABLED', 'heartbeatEnabled');
+  const fromEnv = readEnvFlag('HARNESS_HEARTBEAT_ENABLED');
+  if (fromEnv !== undefined) return fromEnv;
+  if (systemFeatureFlags.heartbeatEnabled === true) return true;
+  return proactiveProfileEnabled();
 }
 
 function configureSelfLearningHeartbeat(): void {
@@ -6571,6 +6663,7 @@ function configureSelfLearningHeartbeat(): void {
     selfLearningHeartbeat.stop();
     selfLearningHeartbeat = null;
   }
+  schedulerRegistry.unregister('self-learning-heartbeat');
   if (!heartbeatEnabled()) return;
   const intervalMinutes = Number(process.env.HARNESS_HEARTBEAT_INTERVAL_MIN ?? '15') || 15;
   // Default action set plus a work_assigned_tasks action that delegates to
@@ -6631,6 +6724,7 @@ function configureSelfLearningHeartbeat(): void {
     name: 'self-learning-heartbeat',
     stop: () => stopSelfLearningHeartbeat(),
     isRunning: () => selfLearningHeartbeat !== null,
+    restart: () => configureSelfLearningHeartbeat(),
   });
 }
 
@@ -6643,7 +6737,10 @@ export function stopSelfLearningHeartbeat(): void {
 }
 
 function triggersEnabled(): boolean {
-  return resolveFeatureFlag('HARNESS_TRIGGERS_ENABLED', 'triggersEnabled');
+  const fromEnv = readEnvFlag('HARNESS_TRIGGERS_ENABLED');
+  if (fromEnv !== undefined) return fromEnv;
+  if (systemFeatureFlags.triggersEnabled === true) return true;
+  return proactiveProfileEnabled();
 }
 
 function configureTriggerScheduler(): void {
@@ -6663,6 +6760,7 @@ function configureTriggerScheduler(): void {
     name: 'triggers',
     stop: () => stopTriggerScheduler(),
     isRunning: () => triggerScheduler !== null,
+    restart: () => configureTriggerScheduler(),
   });
 }
 
@@ -6711,6 +6809,7 @@ function configureOtlpExporter(): void {
     name: 'otlp-exporter',
     stop: () => stopOtlpExporter(),
     isRunning: () => otlpExporterHandle !== null,
+    restart: () => configureOtlpExporter(),
   });
 }
 
@@ -6747,6 +6846,7 @@ function configureAutomationScheduler(): void {
     name: 'automation',
     stop: () => stopAutomationScheduler(),
     isRunning: () => automationScheduler !== null,
+    restart: () => configureAutomationScheduler(),
   });
 }
 
@@ -6852,6 +6952,7 @@ function configureTeammateScheduler(): void {
     name: 'teammate',
     stop: () => stopTeammateScheduler(),
     isRunning: () => teammateScheduler !== null,
+    restart: () => configureTeammateScheduler(),
   });
   // Refresh nextRunAt so the UI's status card is accurate even before the
   // first tick fires.
@@ -8038,6 +8139,12 @@ export async function startServer(): Promise<void> {
     console.log(`  Ollama host:           ${ollamaHost}`);
     console.log(`  WebSocket:             ws://${LOCAL_HOST}:${port}/ws`);
     console.log(`  API auth:              ${API_AUTH_REQUIRED ? (API_AUTH_TOKEN ? 'required' : 'required (token missing)') : 'disabled'}`);
+    if (assistantProfileEnabled()) {
+      console.log(`  Profile:               assistant (voice + ambient + channels on by default)`);
+    }
+    if (proactiveProfileEnabled()) {
+      console.log(`  Proactive autonomy:    on (heartbeat + triggers default on; set HARNESS_HEARTBEAT_ENABLED=0 / HARNESS_TRIGGERS_ENABLED=0 to force off)`);
+    }
     if (API_AUTH_INSECURE_OVERRIDE) {
       console.log('  Security warning:      HARNESS_API_AUTH_REQUIRED=0 while HARNESS_API_AUTH_TOKEN is set');
       logger.warn('Security', 'API auth explicitly disabled despite configured token', {
@@ -8121,7 +8228,7 @@ export async function startServer(): Promise<void> {
     // Watches IMPLEMENTATION_PLAN.md + git working tree and emits NervousSignals
     // onto an isolated bus exposed via /api/jarvis/status and /api/jarvis/brief.
     try {
-      if (process.env.HARNESS_AMBIENT_ENABLED === '1') {
+      if (ambientEnabled()) {
         jarvisAmbientHandle = startAmbientDaemon(jarvisAmbientBus, {
           watchDir: PROJECT_DIR,
           fileFilters: ['IMPLEMENTATION_PLAN.md', 'src/', 'cookbook/', '.harness/'],

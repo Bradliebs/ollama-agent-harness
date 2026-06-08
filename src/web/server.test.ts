@@ -4,7 +4,7 @@ import * as fsSync from 'fs';
 import http from 'http';
 import * as os from 'os';
 import * as path from 'path';
-import { app, drainChatBackgroundTasksForTest, inferModelCapabilities, parseExplicitSkillInvocation, resetSettingsLoadedForTest, resolveChatModelForRequest, resolveHarnessSourceDistFreshnessPaths, resolveJarvisWhisperBridgePath, setWebRuntimeOverrides, startupConnectorsEnabled, stopUploadsAutoPrune } from './server';
+import { app, ambientEnabled, assistantProfileEnabled, drainChatBackgroundTasksForTest, inferModelCapabilities, parseExplicitSkillInvocation, proactiveProfileEnabled, resetSettingsLoadedForTest, resolveChatModelForRequest, resolveHarnessSourceDistFreshnessPaths, resolveJarvisWhisperBridgePath, setWebRuntimeOverrides, startupConnectorsEnabled, stopUploadsAutoPrune } from './server';
 import { runtimeTracer } from '../core/tracing';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { appendLearningCandidate, extractLearningCandidate } from '../learning/sessionLearning';
@@ -1082,6 +1082,91 @@ describe('web server API validation', () => {
     } finally {
       if (previous === undefined) delete process.env.HARNESS_DISABLE_STARTUP_CONNECTORS;
       else process.env.HARNESS_DISABLE_STARTUP_CONNECTORS = previous;
+    }
+  });
+
+  it('treats HARNESS_PROFILE=assistant (or HARNESS_ASSISTANT=1) as the assistant profile', () => {
+    const prevProfile = process.env.HARNESS_PROFILE;
+    const prevAssistant = process.env.HARNESS_ASSISTANT;
+    try {
+      delete process.env.HARNESS_PROFILE;
+      delete process.env.HARNESS_ASSISTANT;
+      expect(assistantProfileEnabled()).toBe(false);
+
+      process.env.HARNESS_PROFILE = 'assistant';
+      expect(assistantProfileEnabled()).toBe(true);
+
+      process.env.HARNESS_PROFILE = 'Assistant';
+      expect(assistantProfileEnabled()).toBe(true);
+
+      delete process.env.HARNESS_PROFILE;
+      process.env.HARNESS_ASSISTANT = '1';
+      expect(assistantProfileEnabled()).toBe(true);
+    } finally {
+      if (prevProfile === undefined) delete process.env.HARNESS_PROFILE;
+      else process.env.HARNESS_PROFILE = prevProfile;
+      if (prevAssistant === undefined) delete process.env.HARNESS_ASSISTANT;
+      else process.env.HARNESS_ASSISTANT = prevAssistant;
+    }
+  });
+
+  it('lets HARNESS_AMBIENT_ENABLED override the profile, else follows it', () => {
+    const prevProfile = process.env.HARNESS_PROFILE;
+    const prevAmbient = process.env.HARNESS_AMBIENT_ENABLED;
+    try {
+      // Neither set: ambient off.
+      delete process.env.HARNESS_PROFILE;
+      delete process.env.HARNESS_AMBIENT_ENABLED;
+      expect(ambientEnabled()).toBe(false);
+
+      // Profile on, no explicit flag: ambient follows the profile.
+      process.env.HARNESS_PROFILE = 'assistant';
+      expect(ambientEnabled()).toBe(true);
+
+      // Explicit flag always wins over the profile.
+      process.env.HARNESS_AMBIENT_ENABLED = '0';
+      expect(ambientEnabled()).toBe(false);
+
+      delete process.env.HARNESS_PROFILE;
+      process.env.HARNESS_AMBIENT_ENABLED = '1';
+      expect(ambientEnabled()).toBe(true);
+    } finally {
+      if (prevProfile === undefined) delete process.env.HARNESS_PROFILE;
+      else process.env.HARNESS_PROFILE = prevProfile;
+      if (prevAmbient === undefined) delete process.env.HARNESS_AMBIENT_ENABLED;
+      else process.env.HARNESS_AMBIENT_ENABLED = prevAmbient;
+    }
+  });
+
+  it('treats HARNESS_PROFILE=assistant-proactive as a superset that also opts into proactive autonomy', () => {
+    const prevProfile = process.env.HARNESS_PROFILE;
+    const prevAssistant = process.env.HARNESS_ASSISTANT;
+    try {
+      // Plain assistant: base profile on, proactive autonomy stays off.
+      delete process.env.HARNESS_ASSISTANT;
+      process.env.HARNESS_PROFILE = 'assistant';
+      expect(assistantProfileEnabled()).toBe(true);
+      expect(proactiveProfileEnabled()).toBe(false);
+
+      // Proactive: base profile still on (superset) and proactive on.
+      process.env.HARNESS_PROFILE = 'assistant-proactive';
+      expect(assistantProfileEnabled()).toBe(true);
+      expect(proactiveProfileEnabled()).toBe(true);
+
+      // Case-insensitive.
+      process.env.HARNESS_PROFILE = 'Assistant-Proactive';
+      expect(proactiveProfileEnabled()).toBe(true);
+
+      // Opting into the base assistant via HARNESS_ASSISTANT does not grant proactive.
+      delete process.env.HARNESS_PROFILE;
+      process.env.HARNESS_ASSISTANT = '1';
+      expect(assistantProfileEnabled()).toBe(true);
+      expect(proactiveProfileEnabled()).toBe(false);
+    } finally {
+      if (prevProfile === undefined) delete process.env.HARNESS_PROFILE;
+      else process.env.HARNESS_PROFILE = prevProfile;
+      if (prevAssistant === undefined) delete process.env.HARNESS_ASSISTANT;
+      else process.env.HARNESS_ASSISTANT = prevAssistant;
     }
   });
 
@@ -2408,6 +2493,46 @@ describe('web server API validation', () => {
     // would mean the registry shape itself drifted.
     const names = body.schedulers.map((s) => s.name);
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  // Pin the Phase 2/3 additions to /api/jarvis/status: the assistant-profile
+  // resolution and the unified scheduler registry are surfaced here so the UI
+  // (refreshJarvisLive) can render one identity. A regression that dropped
+  // either field would silently blank those rows.
+  it('GET /api/jarvis/status exposes assistantProfile and the scheduler registry', async () => {
+    const response = await request('/api/jarvis/status');
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      assistantProfile: { enabled: boolean; ambient: boolean; proactive: boolean };
+      schedulers: Array<{ name: string; running: boolean; restartable: boolean }>;
+    };
+    expect(body.assistantProfile).toBeDefined();
+    expect(typeof body.assistantProfile.enabled).toBe('boolean');
+    expect(typeof body.assistantProfile.ambient).toBe('boolean');
+    expect(typeof body.assistantProfile.proactive).toBe('boolean');
+    expect(Array.isArray(body.schedulers)).toBe(true);
+    for (const entry of body.schedulers) {
+      expect(typeof entry.name).toBe('string');
+      expect(entry.name.length).toBeGreaterThan(0);
+      expect(typeof entry.running).toBe('boolean');
+      expect(typeof entry.restartable).toBe('boolean');
+    }
+    const names = body.schedulers.map((s) => s.name);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('POST /api/jarvis/schedulers/:name/stop returns 404 for an unknown scheduler', async () => {
+    const response = await request('/api/jarvis/schedulers/does-not-exist/stop', { method: 'POST' });
+    expect(response.status).toBe(404);
+    const body = await response.json() as { error: string };
+    expect(body.error).toMatch(/Unknown scheduler/);
+  });
+
+  it('POST /api/jarvis/schedulers/:name/restart returns 404 for an unknown scheduler', async () => {
+    const response = await request('/api/jarvis/schedulers/does-not-exist/restart', { method: 'POST' });
+    expect(response.status).toBe(404);
+    const body = await response.json() as { error: string };
+    expect(body.error).toMatch(/Unknown scheduler/);
   });
 
   it('GET /api/system/health.kill_switch reflects KillSwitch engagement directly', async () => {

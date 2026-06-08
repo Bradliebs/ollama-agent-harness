@@ -4927,13 +4927,17 @@ async function sendMessage(opts) {
               toolBox = ensureToolBox(toolBox);
               appendToolItem(toolBox, '🔁', 'repetition detected', 'model was repeating itself — forced synthesis to break the loop', false);
             }
+            if (ev.reason === 'empty_after_tools_synthesized') {
+              toolBox = ensureToolBox(toolBox);
+              appendToolItem(toolBox, '📝', 'empty final turn recovered', 'model ran tools then returned no answer — forced synthesis to write one', false);
+            }
             break;
         }
       }
     }
     if (thinkEl.parentNode) thinkEl.remove();
     if (!assistantText && toolOnlyResultCount > 0) {
-      if (doneReason === 'max_turns_synthesized' || doneReason === 'time_budget_synthesized' || doneReason === 'repetition_synthesized') {
+      if (doneReason === 'max_turns_synthesized' || doneReason === 'time_budget_synthesized' || doneReason === 'repetition_synthesized' || doneReason === 'empty_after_tools_synthesized') {
         // Bonus synthesis turn fired but produced empty text — rare edge case.
         assistantText = buildToolOnlyFallback(toolOnlyFailureCount, toolOnlySummaries, 'The model synthesized a response, but it came back empty.');
       } else {
@@ -13033,12 +13037,30 @@ async function refreshJarvisLive() {
     const ambient = status.ambient || {};
     const kg = status.knowledgeGraph || {};
     const trustCount = ((status.trustLadder && status.trustLadder.capabilities) || []).length;
+    const profile = status.assistantProfile || {};
+    const schedulers = status.schedulers || [];
 
     const lines = [];
+    lines.push(row('🧩 Assistant profile', profile.enabled ? (profile.proactive ? 'proactive · voice + ambient + channels + autonomy' : 'on · voice + ambient + channels') : 'off (run start.bat / ./start.sh, or set HARNESS_PROFILE=assistant)'));
     lines.push(row('🎤 Voice (mic)', runtime.voice.stt ? 'ready · ' + (runtime.voice.sttAdapter || '') : 'not ready'));
     lines.push(row('🔊 Voice (speak)', runtime.voice.tts ? 'ready · ' + (runtime.voice.ttsAdapter || '') : 'not ready'));
     lines.push(row('💬 Telegram', telegram.running ? 'connected' + (telegram.hasAllowedChatIds ? ' · allowlist on' : '') : (telegram.configured ? 'configured but not running' : 'not configured')));
-    lines.push(row('👁️ Ambient daemon', ambient.running ? 'running · watchers: ' + ((ambient.watchers || []).join(', ') || 'none') : 'off (set HARNESS_AMBIENT_ENABLED=1 or click Start ambient in Daily Brief)'));
+    lines.push(row('👁️ Ambient daemon', ambient.running ? 'running · watchers: ' + ((ambient.watchers || []).join(', ') || 'none') : (profile.enabled ? 'off (click Start ambient in Daily Brief)' : 'off (assistant profile is off; set HARNESS_AMBIENT_ENABLED=1 to force)')));
+    if (schedulers.length) {
+      const runningCount = schedulers.filter((s) => s.running).length;
+      const cells = schedulers.map((s) => {
+        let control;
+        if (s.running) {
+          control = ' <button class="btn-sm" style="padding:0 6px" onclick="jarvisStopScheduler(\'' + escAttr(s.name) + '\')" title="Stop this scheduler">Stop</button>';
+        } else if (s.restartable) {
+          control = ' <button class="btn-sm" style="padding:0 6px" onclick="jarvisRestartScheduler(\'' + escAttr(s.name) + '\')" title="Start this scheduler">Start</button>';
+        } else {
+          control = ' <span style="color:var(--muted)">(idle)</span>';
+        }
+        return '<span style="display:inline-block">' + esc(s.name) + control + '</span>';
+      }).join('<br>');
+      lines.push('<tr><td style="padding:2px 8px;color:var(--muted);vertical-align:top">' + esc('🗓️ Schedulers') + '</td><td style="padding:2px 8px">' + runningCount + '/' + schedulers.length + ' running<br>' + cells + '</td></tr>');
+    }
     lines.push(row('🧠 Knowledge graph', kg.records ? (kg.records + ' records · ' + kg.entities + ' entities · ' + kg.facts + ' facts') : 'empty (run jarvis:seed to backfill)'));
     lines.push(row('📊 Trust ladder', trustCount + ' tracked capability(s)'));
     lines.push(row('🛰️ MCP server', (status.mcpServer && status.mcpServer.toolCount) ? (status.mcpServer.toolCount + ' tool(s) catalogued · run jarvis:mcp to expose') : 'not exposed'));
@@ -13049,6 +13071,38 @@ async function refreshJarvisLive() {
   }
   function row(label, value) {
     return '<tr><td style="padding:2px 8px;color:var(--muted)">' + esc(label) + '</td><td style="padding:2px 8px">' + esc(value) + '</td></tr>';
+  }
+}
+
+// Stop one registered scheduler from the Jarvis Live panel. This is the
+// per-subsystem control that complements the global kill switch: the kill
+// switch only makes ticks no-op, whereas this fully stops the named
+// scheduler. Restartable schedulers can be brought back via the Start
+// button (jarvisRestartScheduler); the rest stay stopped until a server
+// restart.
+async function jarvisStopScheduler(name) {
+  if (!await confirmToast('Stop the "' + name + '" scheduler?\n\nIt halts only this one subsystem (this is not the kill switch). You can bring it back with the Start button if it is restartable, otherwise it stays stopped until the next server restart.')) return;
+  try {
+    const response = await fetch('/api/jarvis/schedulers/' + encodeURIComponent(name) + '/stop', { method: 'POST' });
+    await readApiJson(response, 'Stop scheduler');
+    showToast('Stopped scheduler: ' + name, 2500, 'success');
+    refreshJarvisLive();
+  } catch (error) {
+    showToast('Stop failed: ' + (error.message || error), 4000, 'error');
+  }
+}
+
+// Restart (start) one registered scheduler from the Jarvis Live panel. Starting
+// is benign — it re-runs the scheduler's own configure path, which respects the
+// same enabled guards — so no confirmation is required.
+async function jarvisRestartScheduler(name) {
+  try {
+    const response = await fetch('/api/jarvis/schedulers/' + encodeURIComponent(name) + '/restart', { method: 'POST' });
+    await readApiJson(response, 'Start scheduler');
+    showToast('Started scheduler: ' + name, 2500, 'success');
+    refreshJarvisLive();
+  } catch (error) {
+    showToast('Start failed: ' + (error.message || error), 4000, 'error');
   }
 }
 

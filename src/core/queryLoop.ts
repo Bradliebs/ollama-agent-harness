@@ -149,6 +149,9 @@ export async function* queryLoop(
   let lastAssistantFingerprint = '';
   let consecutiveRepeats = 0;
   const REPETITION_LIMIT = 2;
+  // Set when the model ends a turn with empty text after tools ran this run.
+  // Routes into the synthesis path instead of accepting an empty `completed`.
+  let emptyFinalAfterTools = false;
   const blockedWebUrls = new Map<string, string>();
 
   if (session) {
@@ -369,6 +372,21 @@ export async function* queryLoop(
           }
           continue;
         }
+      }
+
+      // Empty-final-turn guard: some local models (e.g. Gemma) end a run by
+      // returning an empty text turn after tools have already produced data,
+      // instead of writing an answer. Accepting that as `completed` leaves the
+      // UI to show a "model did not write a final answer" fallback. Route into
+      // the existing synthesis path (tools stripped, "write your answer") so
+      // the gathered tool results are actually turned into a reply.
+      const finalContentIsEmpty = assistantMessage.content == null
+        || (typeof assistantMessage.content === 'string' && assistantMessage.content.trim() === '');
+      if (finalContentIsEmpty && totalToolCalls > 0) {
+        emptyFinalAfterTools = true;
+        yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
+        tracer?.recordEvent('synthesis.empty_after_tools', { model: config.model, turn, totalToolCalls });
+        break;
       }
 
       let validationFailed = false;
@@ -606,12 +624,16 @@ export async function* queryLoop(
   // summarising its work.
   const timeBudgetExceeded = timeBudgetMs > 0 && (Date.now() - loopStarted) >= timeBudgetMs;
   const repetitionExceeded = consecutiveRepeats >= REPETITION_LIMIT;
-  const synthesisReason: 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' =
-    repetitionExceeded ? 'repetition_synthesized' : timeBudgetExceeded ? 'time_budget_synthesized' : 'max_turns_synthesized';
-  const sessionStatus = repetitionExceeded ? 'error' : timeBudgetExceeded ? 'time_budget' : 'max_turns';
+  const synthesisReason: 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' | 'empty_after_tools_synthesized' =
+    emptyFinalAfterTools ? 'empty_after_tools_synthesized'
+      : repetitionExceeded ? 'repetition_synthesized'
+        : timeBudgetExceeded ? 'time_budget_synthesized'
+          : 'max_turns_synthesized';
+  const sessionStatus = emptyFinalAfterTools ? 'completed' : repetitionExceeded ? 'error' : timeBudgetExceeded ? 'time_budget' : 'max_turns';
 
-  if (!timeBudgetExceeded && !repetitionExceeded) {
-    // Only emit synthesis_fired for max-turns (time budget and repetition already emitted it above).
+  if (!timeBudgetExceeded && !repetitionExceeded && !emptyFinalAfterTools) {
+    // Only emit synthesis_fired for max-turns (time budget, repetition, and
+    // empty-after-tools already emitted it above before breaking).
     yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
     tracer?.recordEvent('synthesis.fired', { model: config.model, maxTurns, totalToolCalls });
   }
@@ -625,9 +647,12 @@ export async function* queryLoop(
     .map((m) => (m.content as string).slice(0, 500))
     .join('\n---\n');
 
+  const synthesisPreamble = emptyFinalAfterTools
+    ? 'You ran tools but ended your last turn without writing an answer.'
+    : 'You have used all available tool turns.';
   const synthesisInstruction = recentToolResults
-    ? `You have used all available tool turns. Here is a summary of recent tool results:\n\n${recentToolResults}\n\nUsing the information above, write a helpful answer to the user's question. Do NOT call any tools. Just write your answer as plain text.`
-    : 'You have used all available tool turns. Provide a complete, useful text response now. Summarise everything you found. Do NOT call any tools.';
+    ? `${synthesisPreamble} Here is a summary of recent tool results:\n\n${recentToolResults}\n\nUsing the information above, write a helpful answer to the user's question. Do NOT call any tools. Just write your answer as plain text.`
+    : `${synthesisPreamble} Provide a complete, useful text response now. Summarise everything you found. Do NOT call any tools.`;
 
   messages.push({
     role: 'system',
@@ -836,7 +861,7 @@ export async function* queryLoop(
   if (session) {
     await appendStatus(session, sessionStatus, undefined, tracer);
   }
-  yield { type: 'done', reason: repetitionExceeded ? 'repetition_synthesized' : timeBudgetExceeded ? 'time_budget_synthesized' : 'max_turns', turns: turn };
+  yield { type: 'done', reason: emptyFinalAfterTools ? 'empty_after_tools_synthesized' : repetitionExceeded ? 'repetition_synthesized' : timeBudgetExceeded ? 'time_budget_synthesized' : 'max_turns', turns: turn };
 }
 
 function normalizeWebToolUrl(call: ToolCall): string | null {

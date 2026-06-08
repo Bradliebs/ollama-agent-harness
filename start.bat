@@ -3,6 +3,12 @@ setlocal enabledelayedexpansion
 title Ollama Agent Harness
 cd /d "%~dp0"
 
+REM Unified launcher: run the assistant profile by default so voice, ambient
+REM awareness and chat channels are on without a separate start-jarvis.bat.
+REM Override by setting HARNESS_PROFILE or the individual HARNESS_* flags before
+REM launching.
+if not defined HARNESS_PROFILE set "HARNESS_PROFILE=assistant"
+
 echo.
 echo   ============================================
 echo   Ollama Agent Harness - Setup and Launch

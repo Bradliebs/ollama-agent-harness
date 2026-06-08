@@ -44,6 +44,23 @@ more reliable when running autonomously, plus trustworthier output.
 - Honor the `OLLAMA_HOST` environment variable so the harness can talk to a
   non-default Ollama endpoint.
 
+### Unified assistant profile
+
+- **One product surface**: the personal assistant (Jarvis) and the harness now
+  share a single engine, launcher, and config profile instead of two
+  parallel entry points. `HARNESS_PROFILE=assistant` turns on the assistant
+  identity (voice, ambient watchers, inbound channels) on top of the harness.
+- **Opt-in proactive tier**: `HARNESS_PROFILE=assistant-proactive` adds standing
+  autonomy — the self-learning heartbeat and trigger scheduler default on — for
+  users who want the assistant to act without being prompted. The plain
+  `assistant` profile stays reactive.
+- **Scheduler visibility and control**: the Jarvis Live panel lists every
+  registered scheduler with its running state and per-scheduler **Stop** and
+  **Start** buttons, backed by `POST /api/jarvis/schedulers/:name/stop` and
+  `/restart`. Stopping halts one noisy subsystem without the global kill switch
+  or a full restart; Start brings a stopped scheduler back in place. Schedulers
+  without a clean re-create path show Stop only.
+
 ## Ollama Agent Harness v0.6.4
 
 Concept Cells Memory (`ccmem`) ships in-tree. The harness now writes every

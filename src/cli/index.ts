@@ -660,6 +660,7 @@ export function buildConsoleToolOnlyResponse(input: { toolCalls: number; toolSum
   if (input.errors.length > 0) return `Harness reported an error:\n${input.errors.slice(-2).join('\n')}`;
   if (input.toolSummaries.length > 0) return `Done.\n${input.toolSummaries.slice(-4).join('\n')}`;
   if (input.doneReason === 'max_turns_synthesized') return 'Done (synthesis turn produced no visible text).';
+  if (input.doneReason === 'empty_after_tools_synthesized') return 'Done (model ran tools then returned no answer; synthesis produced no visible text).';
   if (input.toolCalls > 0) return 'Done. The model used tools, but did not return a readable final message.';
   return 'No response from the model.';
 }
