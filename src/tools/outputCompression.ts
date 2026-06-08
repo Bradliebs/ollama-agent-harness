@@ -19,7 +19,9 @@ import type { ToolResult } from '../types';
  * - Grapheme-safe: the length clamp splits on code-point boundaries,
  *   never mid-surrogate, preserving emoji / CJK / multi-byte text.
  *
- * Gated OFF by default via `HARNESS_TOOL_COMPRESSION_ENABLED`.
+ * On by default in the harness; set `HARNESS_TOOL_COMPRESSION_ENABLED=0`
+ * to disable. (The dispatcher option itself defaults off; the caller in
+ * `queryLoop.ts` decides.)
  */
 
 export interface CompressionRule {

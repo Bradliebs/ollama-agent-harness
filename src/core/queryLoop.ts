@@ -524,7 +524,7 @@ export async function* queryLoop(
       }
     }
 
-    const compressOutput = process.env.HARNESS_TOOL_COMPRESSION_ENABLED === '1';
+    const compressOutput = process.env.HARNESS_TOOL_COMPRESSION_ENABLED !== '0';
     const compressionConfig = process.env.HARNESS_TOOL_COMPRESSION_MAX_CHARS
       ? { maxChars: Number(process.env.HARNESS_TOOL_COMPRESSION_MAX_CHARS) || undefined }
       : undefined;
