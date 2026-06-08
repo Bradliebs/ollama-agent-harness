@@ -336,3 +336,30 @@ describe('buildWindowsCmdInvocation', () => {
       .toBe('npm run "build & deploy"');
   });
 });
+
+import * as os from 'os';
+import { getProjectRoot, setProjectRoot } from './pathResolution';
+
+describe('BashTool subprocess working directory', () => {
+  it('spawns children in the project root, not the harness launch dir', async () => {
+    // Regression: subprocess outputs (e.g. Python wb.save('x.xlsx'),
+    // shell redirects) inherited process.cwd() — the harness repo root —
+    // and polluted it. The spawn must set cwd to getProjectRoot() so a
+    // relative write lands in the resolved workspace. Override the root to
+    // a temp dir so this differs from process.cwd() and the assertion is
+    // meaningful.
+    const original = getProjectRoot();
+    const tmp = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'bash-cwd-')));
+    try {
+      setProjectRoot(tmp);
+      const result = await BashTool.execute({
+        command: 'node -e "process.stdout.write(process.cwd())"',
+      });
+      expect(result.success).toBe(true);
+      expect(result.output).toContain(tmp);
+    } finally {
+      setProjectRoot(original);
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
+  });
+});

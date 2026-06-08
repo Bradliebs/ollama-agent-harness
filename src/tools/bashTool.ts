@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
-import { getAgentOutputDir } from './pathResolution';
+import { getAgentOutputDir, getProjectRoot } from './pathResolution';
 import { isSandboxActive, isShellBinaryAllowed } from './sandboxGuards';
 
 const MAX_OUTPUT_SIZE = 50_000;
@@ -468,6 +468,7 @@ export const BashTool: Tool = {
       }
 
       const child = spawn(spawnExecutable, spawnArgs, {
+        cwd: getProjectRoot(),
         shell: false,
         windowsHide: true,
         windowsVerbatimArguments: useVerbatim,
