@@ -798,6 +798,16 @@
     .task-first-input-row textarea{width:100%;min-height:58px;resize:vertical;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:7px;padding:9px 10px;font-family:inherit;font-size:13px;line-height:1.4;outline:none}
     .task-first-input-row textarea:focus{border-color:var(--accent)}
     .task-first-actions{display:flex;flex-direction:column;gap:6px;min-width:120px}
+    .codex-run-panel{border:1px solid var(--border);background:var(--surface2);border-radius:7px;padding:9px;display:flex;flex-direction:column;gap:7px}
+    .codex-run-top{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:var(--text)}
+    .codex-run-top span{color:var(--text-dim);white-space:nowrap}
+    .codex-run-progress{height:6px;background:var(--surface);border:1px solid var(--border);border-radius:999px;overflow:hidden}
+    .codex-run-progress>div{height:100%;width:0;background:var(--accent);transition:width .2s ease}
+    .codex-run-log{max-height:104px;overflow:auto;font-size:11px;color:var(--text-dim);line-height:1.4;display:flex;flex-direction:column;gap:3px}
+    .codex-run-log div{overflow-wrap:anywhere}
+    .codex-run-diff{border-top:1px solid var(--border);padding-top:7px}
+    .codex-run-diff>summary{cursor:pointer;font-size:11px;color:var(--text);font-weight:600}
+    .codex-run-diff pre{margin-top:6px;max-height:220px;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px;font-family:'Cascadia Code','Fira Code',monospace;font-size:10.5px;line-height:1.45;color:var(--text-dim);white-space:pre-wrap}
     .task-first-presets{display:flex;flex-wrap:wrap;gap:6px}
     .task-first-preset{background:var(--surface2);border:1px solid var(--border);border-radius:999px;color:var(--text-dim);padding:4px 9px;font-size:11px;cursor:pointer}
     .task-first-preset:hover{border-color:var(--accent);color:var(--accent)}

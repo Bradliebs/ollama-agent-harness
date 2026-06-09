@@ -54,6 +54,7 @@ async function ensureApiAuthReady() {
 }
 
 let isSending = false;
+let activeCodexTaskRun = null;
 // Reply-to-message state. When set, the next outbound user message is
 // prefixed with a markdown blockquote of the referenced assistant reply
 // so the model knows which earlier turn the user is responding to.
@@ -1448,7 +1449,8 @@ function renderTaskFirstPanel(data, summary) {
     + '<div class="task-first-top"><div><div class="task-first-title">Tell Harness the job</div><div class="task-first-subtitle">' + esc(attention) + '</div></div>'
     + '<div class="task-first-status-col"><div class="task-first-status"><span class="task-first-pill" title="' + escAttr(workspace) + '">' + esc(workspaceLabel) + '</span><span class="task-first-pill">' + esc(modelLabel) + '</span><span class="task-first-pill ' + readinessClass + '">' + esc(readinessLabel) + '</span></div>' + (summary.headerActions ? '<div class="inline-actions">' + summary.headerActions + '</div>' : '') + '</div></div>'
     + '<div class="task-first-input-row"><textarea id="missionTaskInput" placeholder="Example: Fix the failing test, update the report, or review the current changes."></textarea>'
-    + '<div class="task-first-actions"><button class="btn-sm primary" onclick="sendTaskFirstPrompt()">Use task</button><button class="btn-sm" onclick="openLeftTabByName(\'runs\')">Runs</button></div></div>'
+    + '<div class="task-first-actions"><button class="btn-sm primary" id="codexRunTaskBtn" onclick="startCodexTaskFromMission()">Run task</button><button class="btn-sm" onclick="sendTaskFirstPrompt()">Draft chat</button><button class="btn-sm" onclick="openLeftTabByName(\'runs\')">Runs</button></div></div>'
+    + '<div class="codex-run-panel hidden-by-default" id="codexRunPanel"><div class="codex-run-top"><strong id="codexRunTitle">Codex task</strong><span id="codexRunStatus">Idle</span></div><div class="codex-run-progress"><div id="codexRunProgressBar"></div></div><div class="codex-run-log" id="codexRunLog"></div><details class="codex-run-diff hidden-by-default" id="codexRunDiffWrap"><summary>Diff preview</summary><pre id="codexRunDiff"></pre></details></div>'
     + renderCodingLoopRail()
     + '<div class="task-first-presets">' + presets.map(([label, prompt]) => '<button class="task-first-preset" onclick="useTaskFirstPreset(\'' + escAttr(prompt) + '\')">' + esc(label) + '</button>').join('') + '</div>'
     + '</div>';
@@ -1490,6 +1492,145 @@ function startCodingLoopPrompt() {
   const currentTask = String(taskInput?.value || '').trim();
   const task = currentTask || 'Pick the safest useful coding task in this repo.';
   useTaskFirstPreset(task + ' Work in this loop: restate the task, make a short plan, edit only the needed files, run the smallest useful validation, then show the diff, evidence, and what needs accepting.');
+}
+
+async function startCodexTaskFromMission() {
+  if (activeCodexTaskRun) {
+    showToast('A Codex task is already running.', 3000, 'info');
+    return;
+  }
+  const taskInput = document.getElementById('missionTaskInput');
+  const task = String(taskInput?.value || '').trim() || 'Inspect this workspace and complete the safest useful coding task.';
+  const button = document.getElementById('codexRunTaskBtn');
+  const panel = ensureCodexRunPanel();
+  if (!panel) return;
+  const controller = new AbortController();
+  activeCodexTaskRun = controller;
+  if (button) button.disabled = true;
+  updateCodexRunPanel({ title: 'Creating task', status: 'Starting', progressPercent: 2, reset: true });
+  try {
+    const createResponse = await fetch('/api/codex/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: task }),
+      signal: controller.signal,
+    });
+    const created = await readApiJson(createResponse, 'Codex task create API');
+    const taskId = created?.task?.id;
+    if (!taskId) throw new Error('Codex task create API did not return a task id.');
+    updateCodexRunPanel({ title: created.task.title || task, status: 'Task ' + taskId + ' running', progressPercent: 5 });
+    const runResponse = await fetch('/api/codex/tasks/' + encodeURIComponent(taskId) + '/run', { method: 'POST', signal: controller.signal });
+    if (!runResponse.ok) {
+      if ((runResponse.headers.get('content-type') || '').includes('application/json')) await readApiJson(runResponse, 'Codex task run API');
+      throw new Error('Codex task run API failed: ' + runResponse.status + ' ' + runResponse.statusText);
+    }
+    await readCodexRunStream(runResponse, (event) => handleCodexRunEvent(event));
+    await refreshCodexTaskStatus(taskId);
+    showToast('Codex task ready for review.', 3000, 'success');
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      updateCodexRunPanel({ status: 'Cancelled', log: 'Run cancelled.' });
+    } else {
+      updateCodexRunPanel({ status: 'Failed', progressPercent: 100, log: error.message || String(error) });
+      showToast(error.message || String(error), 6000, 'error');
+    }
+  } finally {
+    activeCodexTaskRun = null;
+    if (button) button.disabled = false;
+  }
+}
+
+function ensureCodexRunPanel() {
+  const panel = document.getElementById('codexRunPanel');
+  if (panel) panel.classList.remove('hidden-by-default');
+  return panel;
+}
+
+function updateCodexRunPanel(update) {
+  const panel = ensureCodexRunPanel();
+  if (!panel) return;
+  const title = document.getElementById('codexRunTitle');
+  const status = document.getElementById('codexRunStatus');
+  const progressBar = document.getElementById('codexRunProgressBar');
+  const log = document.getElementById('codexRunLog');
+  const diffWrap = document.getElementById('codexRunDiffWrap');
+  const diff = document.getElementById('codexRunDiff');
+  if (update.reset && log) log.innerHTML = '';
+  if (update.reset && diff) diff.textContent = '';
+  if (update.reset && diffWrap) diffWrap.classList.add('hidden-by-default');
+  if (update.title && title) title.textContent = update.title;
+  if (update.status && status) status.textContent = update.status;
+  if (typeof update.progressPercent === 'number' && progressBar) progressBar.style.width = Math.max(0, Math.min(100, update.progressPercent)) + '%';
+  if (update.log && log) {
+    const row = document.createElement('div');
+    row.textContent = update.log;
+    log.appendChild(row);
+    log.scrollTop = log.scrollHeight;
+  }
+  if (typeof update.diff === 'string' && diff && diffWrap) {
+    diff.textContent = update.diff || 'No diff reported.';
+    diffWrap.classList.remove('hidden-by-default');
+  }
+}
+
+async function readCodexRunStream(response, onEvent) {
+  const reader = response.body?.getReader ? response.body.getReader() : null;
+  if (!reader) throw new Error('Codex task run API did not return a readable stream.');
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    let splitAt;
+    while ((splitAt = buffer.indexOf('\n\n')) >= 0) {
+      const frame = buffer.slice(0, splitAt);
+      buffer = buffer.slice(splitAt + 2);
+      const dataLines = frame.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart());
+      if (!dataLines.length) continue;
+      const data = dataLines.join('\n');
+      if (data === '[DONE]') return;
+      try { onEvent(JSON.parse(data)); } catch { onEvent({ type: 'log', message: data }); }
+    }
+    if (done) break;
+  }
+}
+
+function handleCodexRunEvent(event) {
+  if (!event || typeof event !== 'object') return;
+  if (event.type === 'task_status') {
+    updateCodexRunPanel({ status: String(event.status || 'Running'), progressPercent: Number(event.progressPercent || 10) });
+  } else if (event.type === 'model') {
+    updateCodexRunPanel({ log: 'Model: ' + event.model });
+  } else if (event.type === 'plan') {
+    const steps = Array.isArray(event.plan?.steps) ? event.plan.steps.length : 0;
+    updateCodexRunPanel({ status: 'Plan ready', progressPercent: 15, log: steps ? 'Plan ready: ' + steps + ' step(s).' : 'Plan ready.' });
+  } else if (event.type === 'step_start') {
+    const index = Number(event.index || 0) + 1;
+    const total = Number(event.total || index);
+    const pct = Math.min(85, 15 + Math.round((index / Math.max(total, 1)) * 60));
+    updateCodexRunPanel({ status: 'Step ' + index + ' of ' + total, progressPercent: pct, log: event.step?.intent || 'Running step ' + index + '.' });
+  } else if (event.type === 'verify') {
+    updateCodexRunPanel({ status: 'Validating', progressPercent: 86, log: 'Validation: ' + (event.result?.overall || 'complete') });
+  } else if (event.type === 'capability_gap') {
+    updateCodexRunPanel({ log: 'Capability needed: ' + (event.gap?.need || 'unknown') });
+  } else if (event.type === 'run_result') {
+    const diffText = event.diff?.patchPreview || event.diff?.stat || '';
+    updateCodexRunPanel({ status: 'Review ready', progressPercent: 95, log: 'Run ended: ' + (event.result?.status || 'done'), diff: diffText });
+  } else if (event.type === 'error') {
+    updateCodexRunPanel({ status: 'Failed', progressPercent: 100, log: event.message || 'Run failed.' });
+  } else if (event.type === 'done') {
+    updateCodexRunPanel({ status: 'Done', progressPercent: 100 });
+  }
+}
+
+async function refreshCodexTaskStatus(taskId) {
+  const response = await fetch('/api/codex/tasks/' + encodeURIComponent(taskId) + '/status');
+  const data = await readApiJson(response, 'Codex task status API');
+  const status = data?.task?.status || 'unknown';
+  const progressPercent = typeof data?.task?.progressPercent === 'number' ? data.task.progressPercent : undefined;
+  const diffText = data?.diff?.patchPreview || data?.diff?.stat || '';
+  updateCodexRunPanel({ status: 'Task status: ' + status, progressPercent, diff: diffText });
+  loadReadiness();
 }
 
 function renderReadinessSection(section) {

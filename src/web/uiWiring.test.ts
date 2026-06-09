@@ -209,6 +209,17 @@ describe('web UI wiring', () => {
     expect(appJs).not.toContain('Done. The model used tools, but did not return a readable final message.');
   });
 
+  it('keeps Codex task run controls wired to task APIs', () => {
+    expect(appJs).toContain('id="codexRunTaskBtn"');
+    expect(appJs).toContain('onclick="startCodexTaskFromMission()"');
+    expect(appJs).toContain('id="codexRunPanel"');
+    expect(appJs).toContain('function startCodexTaskFromMission');
+    expect(appJs).toContain("fetch('/api/codex/tasks'");
+    expect(appJs).toContain("'/api/codex/tasks/' + encodeURIComponent(taskId) + '/run'");
+    expect(appJs).toContain('function readCodexRunStream');
+    expect(indexHtml).toContain('.codex-run-panel');
+  });
+
   it('opens to a fresh chat instead of auto-restoring the previous one', () => {
     expect(appJs).toContain('let chatMessages = [];');
     expect(appJs).toContain('let currentChatId = null;');
