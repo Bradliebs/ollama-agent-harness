@@ -150,6 +150,56 @@ The harness has multiple safety layers:
 
 For maximum autonomy, click **⚡ Full Autonomy** in Settings. This unlocks everything but keeps the kill switch as your emergency stop.
 
+## Connecting email, calendars & other services
+
+You can let the agent read and send email, look at your calendar, and plug in to other services. There are three levels — start at the top, it's the easiest.
+
+### Email (Gmail & Outlook) — works today
+
+The agent can **send email** and **read your inbox** for both Gmail and Outlook right away. No developer setup needed.
+
+The one catch: you can't use your normal password. You need an **App Password** — a special 16-character password just for this app. This is normal and how Google and Microsoft want apps to log in.
+
+1. **Get an App Password:**
+   - **Gmail:** Google Account → Security → turn on **2-Step Verification** → then **App passwords** → create one → copy the 16 characters.
+   - **Outlook:** Microsoft account → Security → **Advanced security options** → turn on two-step → **App passwords** → create one → copy it.
+2. **Put it in the app:** open **Settings → Remote API Keys & Services** (the SMTP section) and fill in three boxes:
+
+   | Box | Gmail | Outlook |
+   |-----|-------|---------|
+   | SMTP host | `smtp.gmail.com` | `smtp-mail.outlook.com` |
+   | User | your full email address | your full email address |
+   | Password | the **App Password** | the **App Password** |
+
+That's it. Reading your inbox turns on automatically using the same login. Now you can say *"check my inbox"* or *"draft an email to…"*. Sending always asks you to approve first.
+
+### Calendars
+
+- **Simple (read-only, today):** the morning briefing can read a calendar **`.ics` file**. Export your calendar to an `.ics` file and the agent can list your upcoming events. It can read events, not create them.
+- **Full calendar (create/edit events):** use an MCP server (next section) such as `google-calendar` or `ms-365`.
+
+### The Connectors panel
+
+Open **Settings → 🔌 Connectors** to see every service as a card. Each card tells you its honest state:
+
+- **"Email live · OAuth planned"** — the email part works now (set up SMTP above).
+- **"Connected"** — the live integration is running.
+- **"Design stage"** — the full version is planned; use an MCP server for it now.
+
+### Adding more services (MCP servers)
+
+Anything not covered above — full Gmail, Outlook calendar, Spotify, Jira, your own API — is added as an **MCP server**: a small helper program that plugs in extra tools. Three ways, easiest first:
+
+1. **Paste a command.** In the MCP panel, click **Manual setup**. Take an MCP server's install command from its README (e.g. `npx -y @softeria/ms-365-mcp-server`) and split it: the first word (`npx`) goes in **command**, the rest goes in **args**. Give it a short **server id**, add any keys it needs under **env**, then **Save**.
+2. **Let the agent handle it.** In the same panel, **Find one** or **Create one** drafts a chat message asking the agent to locate or build a server for your need.
+3. **Build your own.** Ask in chat: *"use the mcp-builder skill to build an MCP server for &lt;your thing&gt;"*.
+
+After saving, click **Start**, then **Discover tools** — the new tools become available to the agent.
+
+> **One safety step (on purpose):** the first time you **Start** an MCP server, the app asks for an **arbitrary-shell** grant. Starting a server runs a real program on your computer, so the harness will not do it silently — you allow it once in the capability settings. The kill switch (Ctrl+Shift+K) blocks all MCP servers instantly if you ever need it.
+
+The gentlest one to try first is **`ms-365`** (Outlook mail *and* calendar) — it logs in by having you type a code on a webpage, with no key files to set up.
+
 ## Common issues
 
 ### "Node.js was not found"
