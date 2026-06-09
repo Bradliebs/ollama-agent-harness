@@ -243,6 +243,20 @@
     .connector-badge .cb-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
     .connector-badge.cb-on .cb-dot{background:var(--success)}
     .connector-badge.cb-off .cb-dot{background:var(--text-dim);opacity:.4}
+    .connector-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin:6px 0}
+    .connector-card{border:1px solid var(--border);border-radius:8px;background:var(--surface2);padding:10px;display:flex;flex-direction:column;gap:6px}
+    .connector-card .conn-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+    .connector-card .conn-icon{font-size:15px}
+    .connector-card .conn-label{font-weight:600;font-size:12px}
+    .connector-card .conn-pill{margin-left:auto;font-size:9px;padding:1px 6px;border-radius:999px;border:1px solid var(--border);white-space:nowrap}
+    .connector-card .conn-pill.conn-on{color:var(--success);border-color:var(--success)}
+    .connector-card .conn-pill.conn-partial{color:var(--warning,#c79b1e)}
+    .connector-card .conn-pill.conn-off{color:var(--text-dim)}
+    .connector-card .conn-purpose{font-size:11px;color:var(--text-dim);line-height:1.35}
+    .connector-card .conn-ops{display:flex;flex-wrap:wrap;gap:3px}
+    .connector-card .conn-op{font-size:9px;padding:1px 5px;border-radius:4px;background:var(--surface);border:1px solid var(--border);color:var(--text-dim)}
+    .connector-card .conn-secrets,.connector-card .conn-note{font-size:10px;color:var(--text-dim)}
+    .connector-card .conn-actions{margin-top:2px}
     .status-center{display:flex;align-items:center;gap:8px;padding:4px 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface2);min-width:220px;max-width:360px}
     .status-center-summary{display:flex;flex-direction:column;gap:1px;min-width:0}
     .status-center-state{font-size:11px;color:var(--text)}
@@ -1431,6 +1445,19 @@
       <div class="setting-row">
         <label>Ollama Host</label>
         <input type="text" id="ollamaHost" title="Where Ollama is running (default localhost:11434 — leave alone unless you know you've moved it)" value="http://localhost:11434" onchange="updateSetting('ollamaHost',this.value)" />
+      </div>
+    </div>
+    <div class="settings-section" id="settingsConnectors">
+      <h4>🔌 Connectors</h4>
+      <div class="setting-row settings-note">
+        Services the agent can connect to. Live connectors show real status; others are design-stage
+        (the contract — required secrets, scopes, and safety controls — is defined but the live integration is not built yet).
+        Email send/read already works today for Gmail and Outlook via SMTP/IMAP below.
+      </div>
+      <div id="connectorGallery" class="connector-gallery"></div>
+      <div class="setting-row settings-row-spaced">
+        <button class="btn-sm" onclick="loadConnectorGallery()">🔄 Refresh</button>
+        <span id="connectorGalleryStatus" class="settings-status-inline"></span>
       </div>
     </div>
     <div class="settings-section" id="settingsSmtp">

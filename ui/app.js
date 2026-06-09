@@ -9679,7 +9679,7 @@ async function stopTelegram() {
 }
 
 async function loadConnectorStatuses() {
-  await Promise.allSettled([loadDiscordStatus(), loadSlackStatus(), loadWhatsAppStatus(), loadConnectorBadges()]);
+  await Promise.allSettled([loadDiscordStatus(), loadSlackStatus(), loadWhatsAppStatus(), loadConnectorBadges(), loadConnectorGallery()]);
 }
 
 async function loadConnectorBadges() {
@@ -9716,6 +9716,77 @@ async function loadConnectorBadges() {
   } catch (_e) {
     // Silently skip badges on error — not critical.
   }
+}
+
+// Renders the connector gallery (Settings → 🔌 Connectors) as cards built from
+// the design-stage connector contracts (/api/connectors/contracts) merged with
+// live status (/api/connectors/status). Cards honestly distinguish live
+// connectors, email-backed providers (Gmail/Outlook work now via SMTP/IMAP),
+// and design-stage contracts whose live integration is not built yet.
+async function loadConnectorGallery() {
+  var container = document.getElementById('connectorGallery');
+  if (!container) return;
+  var statusEl = document.getElementById('connectorGalleryStatus');
+  try {
+    var results = await Promise.all([
+      fetch('/api/connectors/contracts'),
+      fetch('/api/connectors/status'),
+    ]);
+    var contractsData = await results[0].json();
+    var statusData = await results[1].json();
+    var contracts = (contractsData && contractsData.contracts) || [];
+    var statuses = (statusData && statusData.connectors) || {};
+
+    // Presentation metadata per connector id: icon, the settings section to
+    // jump to when configurable, and whether email is already live for it.
+    var meta = {
+      google: { icon: '✉️', section: 'settingsSmtp', emailLive: true, note: 'Gmail send/read works now via SMTP/IMAP. OAuth + calendar is design-stage.' },
+      microsoft: { icon: '📅', section: 'settingsSmtp', emailLive: true, note: 'Outlook send/read works now via SMTP/IMAP. OAuth + calendar is design-stage.' },
+      github: { icon: '🐙', section: null, emailLive: false, note: '' },
+      notion: { icon: '📝', section: null, emailLive: false, note: '' },
+      telegram: { icon: '📱', section: 'settingsTelegram', emailLive: false, note: '' },
+      slack: { icon: '💬', section: 'settingsSlack', emailLive: false, note: '' },
+    };
+
+    var html = '';
+    for (var i = 0; i < contracts.length; i++) {
+      var c = contracts[i];
+      var m = meta[c.id] || { icon: '🔌', section: null, emailLive: false, note: '' };
+      var live = statuses[c.id];
+      var pill;
+      if (live && (live.ready || live.configured || live.running)) {
+        pill = '<span class="conn-pill conn-on">● Connected</span>';
+      } else if (m.emailLive) {
+        pill = '<span class="conn-pill conn-partial">◐ Email live · OAuth planned</span>';
+      } else {
+        pill = '<span class="conn-pill conn-off">○ Design stage</span>';
+      }
+      var ops = (c.operations || []).map(function (o) { return '<span class="conn-op">' + esc(o.name) + '</span>'; }).join('');
+      var secrets = (c.requiredSecrets || []).join(', ');
+      var configBtn = m.section
+        ? '<button class="btn-sm" data-section="' + m.section + '" onclick="scrollToConnectorSection(this)">Configure</button>'
+        : '';
+      html += '<div class="connector-card">'
+        + '<div class="conn-head"><span class="conn-icon">' + m.icon + '</span><span class="conn-label">' + esc(c.label) + '</span>' + pill + '</div>'
+        + '<div class="conn-purpose">' + esc(c.purpose || '') + '</div>'
+        + (ops ? '<div class="conn-ops">' + ops + '</div>' : '')
+        + (secrets ? '<div class="conn-secrets">Needs: ' + esc(secrets) + '</div>' : '')
+        + (m.note ? '<div class="conn-note">' + esc(m.note) + '</div>' : '')
+        + (configBtn ? '<div class="conn-actions">' + configBtn + '</div>' : '')
+        + '</div>';
+    }
+    container.innerHTML = html || '<div class="settings-note">No connectors available.</div>';
+    if (statusEl) statusEl.textContent = '';
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'Could not load connectors: ' + (e.message || e);
+  }
+}
+
+function scrollToConnectorSection(btn) {
+  var sectionId = btn.getAttribute('data-section');
+  if (!sectionId) return;
+  var section = document.getElementById(sectionId);
+  if (section) section.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 async function loadDiscordStatus() {

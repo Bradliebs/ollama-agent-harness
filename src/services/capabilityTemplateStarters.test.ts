@@ -43,6 +43,20 @@ describe('capabilityTemplateStarters', () => {
     expect(telegram?.operations).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'message.ingest', mode: 'ingest' })]));
   });
 
+  it('exposes a Microsoft 365 mail and calendar contract alongside Google', () => {
+    const contracts = listConnectorReadinessContracts();
+    const microsoft = contracts.find((contract) => contract.id === 'microsoft');
+
+    expect(microsoft?.label).toBe('Microsoft 365 Mail and Calendar');
+    expect(microsoft?.operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'mail.search', mode: 'read' }),
+      expect.objectContaining({ name: 'calendar.list', mode: 'read' }),
+      expect.objectContaining({ name: 'mail.draft', mode: 'draft' }),
+    ]));
+    // The new contract must still satisfy its fixture so the registry stays valid.
+    expect(validateConnectorReadinessContracts()).toEqual([]);
+  });
+
   it('keeps message ingress behind sender allowlists and approval prompts', () => {
     const policy = getMessageIngressPolicy();
     const telegram = policy.channels.find((channel) => channel.connector === 'telegram');
