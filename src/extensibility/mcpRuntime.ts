@@ -4,6 +4,7 @@ import * as fsSync from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
+import { auditMcpServerDefinition, formatAuditFindings } from './contentAudit';
 import { McpStdioClient, type McpProtocolTool, type McpToolCallResult } from './mcpClient';
 import {
   globalMcpCapabilityCache,
@@ -55,6 +56,10 @@ export async function listMcpServers(projectDir: string): Promise<McpServerStatu
 
 export async function upsertMcpServer(projectDir: string, input: Record<string, unknown>): Promise<McpServerStatus> {
   const definition = sanitizeMcpServerDefinition(input);
+  const auditFindings = auditMcpServerDefinition(definition);
+  if (auditFindings.length > 0) {
+    throw new Error(`MCP server rejected by content audit (hidden or control characters are not allowed): ${formatAuditFindings(auditFindings)}`);
+  }
   await withFileLock(path.join(projectDir, MCP_SERVERS_PATH), async () => {
     const definitions = await readMcpServerDefinitions(projectDir);
     const existingIndex = definitions.findIndex((item) => item.id === definition.id);

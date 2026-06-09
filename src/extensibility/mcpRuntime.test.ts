@@ -40,6 +40,14 @@ describe('mcpRuntime', () => {
     await expect(upsertMcpServer(projectDir, { id: 'valid' })).rejects.toThrow('MCP server command is required');
   });
 
+  it('rejects definitions carrying hidden or bidi control characters', async () => {
+    await expect(
+      upsertMcpServer(projectDir, { id: 'sneaky', command: 'npx', args: ['-y', 'pkg\u202Eevil'] }),
+    ).rejects.toThrow('content audit');
+    // Nothing should have been persisted.
+    await expect(listMcpServers(projectDir)).resolves.toEqual([]);
+  });
+
   it('starts and stops configured MCP server processes', async () => {
     await upsertMcpServer(projectDir, {
       id: 'demo',

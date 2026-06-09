@@ -1,6 +1,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
+import { auditSkillContent } from './contentAudit';
+
 export type SkillRiskLevel = 'low' | 'medium' | 'high';
 
 export interface SkillDefinition {
@@ -31,7 +33,7 @@ export interface SkillDefinition {
 export interface SkillLoadDiagnostic {
   name: string;
   filePath: string;
-  reason: 'missing-skill-file' | 'unreadable-skill-file' | 'missing-frontmatter';
+  reason: 'missing-skill-file' | 'unreadable-skill-file' | 'missing-frontmatter' | 'suspicious-content';
   message: string;
 }
 
@@ -61,6 +63,16 @@ export async function scanSkillsDir(skillsDir: string): Promise<SkillDirectorySc
         const skill = parseSkillFile(content, skillFile);
         if (skill) {
           skills.push(skill);
+          // Non-blocking: flag hidden/control characters in skill text (these
+          // would otherwise reach the model prompt unseen) but still load it.
+          for (const finding of auditSkillContent(skill.name, content)) {
+            diagnostics.push({
+              name: entry.name,
+              filePath: skillFile,
+              reason: 'suspicious-content',
+              message: finding.message,
+            });
+          }
         } else {
           diagnostics.push({
             name: entry.name,
