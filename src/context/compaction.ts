@@ -2,6 +2,7 @@ import type { Message } from 'ollama';
 import { OllamaClient } from '../core/ollamaClient';
 import type { IChatClient } from '../core/chatClient';
 import { estimateTokenCount } from './assembly';
+import { compactToolOutput } from './toolOutputCompaction';
 
 /**
  * Closed set of compaction strategies the runtime can emit. Anything tracking
@@ -85,10 +86,9 @@ export function applyBudgetReduction(
   let freed = 0;
   const updated = messages.map((msg) => {
     if (msg.role === 'tool' && msg.content && msg.content.length > maxCharsPerResult) {
-      const original = msg.content.length;
-      const truncated = msg.content.slice(0, maxCharsPerResult) + '\n...(truncated)';
-      freed += Math.ceil((original - truncated.length) / 4);
-      return { ...msg, content: truncated };
+      const { content, freedChars } = compactToolOutput(msg.content, maxCharsPerResult);
+      freed += Math.ceil(freedChars / 4);
+      return { ...msg, content };
     }
     return msg;
   });
