@@ -23,6 +23,7 @@ export type EventCategory =
   | 'tool'
   | 'model'
   | 'route'
+  | 'experiment'
   | 'approval'
   | 'file'
   | 'schedule'

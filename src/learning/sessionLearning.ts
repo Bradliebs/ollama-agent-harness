@@ -6,6 +6,7 @@ import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { evaluatePromotionGate, loadSafetyRules, type PromotionGateConfig, type PromotionGateResult } from './promotionGate';
 import { listEvalTraceRuns } from './evalTrace';
 import { recordSwallowed } from '../observability/silentFailureSink';
+import { listExperimentEvents } from '../experiments/persistence';
 
 export interface LearningCandidateOptions {
   minToolSuccessRate?: number;
@@ -246,12 +247,46 @@ export async function evaluatePromotionGateForCandidate(
   }
   const recentEvalRuns = await listEvalTraceRuns(projectDir, 50).catch(() => []);
   const safetyRules = await loadSafetyRules(projectDir).catch(() => undefined);
+  const mergedConfig = mergePromotionGateConfigFromEnv(config);
+  const experimentEvents = mergedConfig.requireExperimentConfirmation
+    ? await listExperimentEvents(projectDir, mergedConfig.experimentId).catch(() => [])
+    : [];
   const verdict = evaluatePromotionGate({
     candidate,
     recentEvalRuns,
-    config: { ...config, safetyRules: safetyRules ?? config?.safetyRules },
+    experimentEvidence: experimentEvents.map((event) => {
+      const data = event.data as {
+        id?: string;
+        manifest?: { id?: string };
+        promotionEvidence?: {
+          status?: string;
+          candidateVariantId?: string;
+          automaticPromotionAllowed?: boolean;
+        };
+        safety?: { candidateViolations?: number; baselineViolations?: number };
+      };
+      return {
+        experimentId: data.manifest?.id ?? event.subject_id,
+        runId: data.id,
+        candidateVariantId: data.promotionEvidence?.candidateVariantId,
+        status: data.promotionEvidence?.status,
+        automaticPromotionAllowed: data.promotionEvidence?.automaticPromotionAllowed,
+        safetyCandidateViolations: data.safety?.candidateViolations,
+        safetyBaselineViolations: data.safety?.baselineViolations,
+      };
+    }),
+    config: { ...mergedConfig, safetyRules: safetyRules ?? mergedConfig.safetyRules },
   });
   return { candidateId, candidateFound: true, ...verdict };
+}
+
+function mergePromotionGateConfigFromEnv(config?: PromotionGateConfig): PromotionGateConfig {
+  return {
+    ...config,
+    requireExperimentConfirmation: config?.requireExperimentConfirmation ?? process.env.HARNESS_PROMOTION_REQUIRE_EXPERIMENT === '1',
+    experimentId: config?.experimentId ?? process.env.HARNESS_PROMOTION_EXPERIMENT_ID,
+    candidateVariantId: config?.candidateVariantId ?? process.env.HARNESS_PROMOTION_CANDIDATE_VARIANT_ID,
+  };
 }
 
 export async function getLearningCandidateProvenance(

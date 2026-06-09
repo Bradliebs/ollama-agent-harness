@@ -174,12 +174,30 @@ export interface PromotionGateConfig {
   safetyRules?: SafetyRule[];
   /** Highest severity that does NOT block promotion. Default 'low' so 'medium' and 'high' are blocking. */
   maxAllowedSeverity?: SafetyViolationSeverity;
+  /** When true, promotion also requires confirmed experiment evidence. */
+  requireExperimentConfirmation?: boolean;
+  /** Optional experiment manifest id to match when requiring experiment confirmation. */
+  experimentId?: string;
+  /** Optional candidate variant id to match when requiring experiment confirmation. Defaults to candidate.id. */
+  candidateVariantId?: string;
+}
+
+export interface PromotionExperimentEvidence {
+  experimentId?: string;
+  runId?: string;
+  candidateVariantId?: string;
+  status?: 'experiment_confirmed' | 'experiment_inconclusive' | 'experiment_regressed' | string;
+  automaticPromotionAllowed?: boolean;
+  safetyCandidateViolations?: number;
+  safetyBaselineViolations?: number;
 }
 
 export interface PromotionGateInput {
   candidate: SessionLearningCandidate;
   /** Recent eval runs the gate considers (oldest → newest is fine; we just count). */
   recentEvalRuns: EvalTraceRun[];
+  /** Recent experiment outcomes available as evidence for this candidate. */
+  experimentEvidence?: PromotionExperimentEvidence[];
   /** Optional extra strings the gate should scan for safety violations beyond candidate.prompt/outcome (e.g. recent assistant messages). */
   extraScannedContent?: Array<{ source: 'prompt' | 'outcome' | 'tool_name'; text: string }>;
   config?: PromotionGateConfig;
@@ -198,6 +216,8 @@ export interface PromotionGateResult {
   safetyViolations: SafetyViolation[];
   /** Pass^k metric (Claw-Eval style): every considered trial passed. */
   passAtAll: boolean;
+  /** Experiment evidence that satisfied the optional experiment gate, if any. */
+  experimentEvidence?: PromotionExperimentEvidence;
 }
 
 const SEVERITY_RANK: Record<SafetyViolationSeverity, number> = { low: 1, medium: 2, high: 3 };
@@ -329,6 +349,31 @@ export function evaluatePromotionGate(input: PromotionGateInput): PromotionGateR
     };
   }
 
+  if (config.requireExperimentConfirmation) {
+    const matchingExperiment = findConfirmedExperimentEvidence(input.candidate.id, input.experimentEvidence ?? [], config);
+    if (!matchingExperiment) {
+      return {
+        allowed: false,
+        reason: 'Need confirmed experiment evidence before promotion.',
+        passCount: passing,
+        consideredRuns: considered,
+        requiredPasses,
+        safetyViolations: violations,
+        passAtAll,
+      };
+    }
+    return {
+      allowed: true,
+      reason: `Eligible: ${passing}/${considered} recent runs passed; confirmed experiment evidence is present.`,
+      passCount: passing,
+      consideredRuns: considered,
+      requiredPasses,
+      safetyViolations: violations,
+      passAtAll,
+      experimentEvidence: matchingExperiment,
+    };
+  }
+
   return {
     allowed: true,
     reason: `Eligible: ${passing}/${considered} recent runs passed; no blocking safety violations.`,
@@ -338,6 +383,23 @@ export function evaluatePromotionGate(input: PromotionGateInput): PromotionGateR
     safetyViolations: violations,
     passAtAll,
   };
+}
+
+function findConfirmedExperimentEvidence(
+  candidateId: string,
+  evidence: PromotionExperimentEvidence[],
+  config: PromotionGateConfig,
+): PromotionExperimentEvidence | undefined {
+  const expectedExperimentId = config.experimentId;
+  const expectedCandidateVariantId = config.candidateVariantId ?? candidateId;
+  return [...evidence].reverse().find((entry) => {
+    if (expectedExperimentId && entry.experimentId !== expectedExperimentId) return false;
+    if (entry.candidateVariantId !== expectedCandidateVariantId) return false;
+    if (entry.status !== 'experiment_confirmed') return false;
+    if (entry.automaticPromotionAllowed !== true) return false;
+    if ((entry.safetyCandidateViolations ?? 0) > (entry.safetyBaselineViolations ?? 0)) return false;
+    return true;
+  });
 }
 
 // ─── User-defined safety rules ─────────────────────────────────────

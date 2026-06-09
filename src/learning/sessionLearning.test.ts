@@ -1,8 +1,10 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { appendLearningCandidate, extractLearningCandidate, getLearningCandidateProvenance, listLearningCandidates, listReviewedLearningCandidates, promoteLearningCandidate, reviewLearningCandidate } from './sessionLearning';
+import { appendLearningCandidate, evaluatePromotionGateForCandidate, extractLearningCandidate, getLearningCandidateProvenance, listLearningCandidates, listReviewedLearningCandidates, promoteLearningCandidate, reviewLearningCandidate } from './sessionLearning';
 import type { SessionEvent } from '../types';
+import { emitEvent } from '../persistence/eventStore';
+import { recordOutputValidationEvalRun } from './evalTrace';
 
 function event(id: string, data: SessionEvent['data']): SessionEvent {
   return { id, timestamp: '2026-04-29T00:00:00.000Z', type: 'system', data };
@@ -92,5 +94,41 @@ describe('session learning', () => {
     expect(provenance.candidate).toMatchObject({ id: candidate.id, reviewStatus: 'pending' });
     expect(provenance.events).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'u1', summary: expect.stringContaining('Review this source workflow') })]));
     expect(provenance.missingEventIds).toEqual([]);
+  });
+
+  it('uses confirmed experiment events when the promotion gate requires them', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-experiment-gate-'));
+    const candidate = extractLearningCandidate('session-1', [
+      event('u1', { kind: 'message', message: { role: 'user', content: 'Capture this model routing pattern' } }),
+      event('a1', { kind: 'message', message: { role: 'assistant', content: 'Use the coder model for code edits after focused eval confirmation' } }),
+    ]);
+    const gateCandidate = { ...candidate, id: 'candidate' };
+    await appendLearningCandidate(projectDir, gateCandidate);
+    await recordOutputValidationEvalRun(projectDir, {
+      profile: 'coding-answer',
+      status: 'pass',
+      score: 1,
+      findings: [],
+      missingSections: [],
+    }, 'promotion prerequisite');
+    await emitEvent(projectDir, 'experiment', 'experiment_completed', {
+      id: 'run-1',
+      manifest: { id: 'exp-1' },
+      promotionEvidence: {
+        status: 'experiment_confirmed',
+        candidateVariantId: 'candidate',
+        automaticPromotionAllowed: true,
+      },
+      safety: { baselineViolations: 0, candidateViolations: 0 },
+    }, 'system', 'exp-1');
+
+    const verdict = await evaluatePromotionGateForCandidate(projectDir, 'candidate', {
+      requiredPasses: 1,
+      requireExperimentConfirmation: true,
+      experimentId: 'exp-1',
+    });
+
+    expect(verdict.allowed).toBe(true);
+    expect(verdict.experimentEvidence).toMatchObject({ experimentId: 'exp-1', runId: 'run-1' });
   });
 });

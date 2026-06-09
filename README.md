@@ -163,6 +163,17 @@ npm run build
 npm run smoke:mycelium
 ```
 
+Run a paired AutoResearch experiment when you want to compare a baseline model,
+prompt, skill, or routing configuration against a candidate with frozen
+benchmark evidence:
+
+```powershell
+npm run experiment:run -- --manifest cookbook/auto-research.manifest.example.json --dry-run
+```
+
+See [AutoResearch experiments](docs/AUTORESEARCH-EXPERIMENTS.md) for the
+manifest shape, execution command, history views, and promotion-evidence rules.
+
 Tests and smoke scripts that need `.harness/**` state should create the fixture
 inside the test or script and restore the prior state before exiting. Do not
 depend on ignored local files already existing in a developer checkout.

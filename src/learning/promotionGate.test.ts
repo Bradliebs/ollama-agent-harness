@@ -204,6 +204,51 @@ describe('promotionGate · evaluatePromotionGate', () => {
     expect(verdict.allowed).toBe(true);
     expect(verdict.passAtAll).toBe(false);
   });
+
+  it('blocks when experiment confirmation is required but absent', () => {
+    const verdict = evaluatePromotionGate({
+      candidate: candidate(),
+      recentEvalRuns: [run(2, 0), run(2, 0), run(2, 0)],
+      config: { requiredPasses: 3, requireExperimentConfirmation: true },
+    });
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.reason).toMatch(/confirmed experiment evidence/);
+  });
+
+  it('allows when matching confirmed experiment evidence is present', () => {
+    const verdict = evaluatePromotionGate({
+      candidate: candidate({ id: 'candidate' }),
+      recentEvalRuns: [run(2, 0), run(2, 0), run(2, 0)],
+      experimentEvidence: [{
+        experimentId: 'exp-1',
+        runId: 'run-1',
+        candidateVariantId: 'candidate',
+        status: 'experiment_confirmed',
+        automaticPromotionAllowed: true,
+        safetyBaselineViolations: 0,
+        safetyCandidateViolations: 0,
+      }],
+      config: { requiredPasses: 3, requireExperimentConfirmation: true, experimentId: 'exp-1' },
+    });
+    expect(verdict.allowed).toBe(true);
+    expect(verdict.experimentEvidence).toMatchObject({ experimentId: 'exp-1', runId: 'run-1' });
+  });
+
+  it('rejects regressed or unsafe experiment evidence', () => {
+    const verdict = evaluatePromotionGate({
+      candidate: candidate({ id: 'candidate' }),
+      recentEvalRuns: [run(2, 0), run(2, 0), run(2, 0)],
+      experimentEvidence: [{
+        candidateVariantId: 'candidate',
+        status: 'experiment_confirmed',
+        automaticPromotionAllowed: true,
+        safetyBaselineViolations: 0,
+        safetyCandidateViolations: 1,
+      }],
+      config: { requiredPasses: 3, requireExperimentConfirmation: true },
+    });
+    expect(verdict.allowed).toBe(false);
+  });
 });
 
 describe('promotionGate · expanded built-in rules', () => {

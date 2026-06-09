@@ -42,6 +42,7 @@ in depth (where one exists).
 | Operating services | [src/services](../src/services) | Long-running service lifecycle | [Operating services](OPERATING-SERVICES.md) |
 | Goal mode | [src/goal](../src/goal) | Goal-directed query loop and judge | [System breakdown](SYSTEM-BREAKDOWN.md) |
 | Evaluation | [src/eval](../src/eval) | Output validation and eval runs | [Validation profiles](VALIDATION-PROFILES.md) |
+| AutoResearch experiments | [src/experiments](../src/experiments) | Paired baseline-vs-candidate benchmark experiments and promotion evidence | [AutoResearch experiments](AUTORESEARCH-EXPERIMENTS.md) |
 | Jarvis layer | [src/jarvis](../src/jarvis) | Voice and knowledge-graph recall | [Apex features](APEX-FEATURES.md) |
 | Persistence | [src/persistence](../src/persistence) | Chat history and append-only state | [System overview](SYSTEM-OVERVIEW.md) |
 | CLI | [src/cli](../src/cli) | Command-line entry and system-prompt build | [Getting started](GETTING-STARTED.md) |
