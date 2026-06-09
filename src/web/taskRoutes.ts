@@ -27,10 +27,40 @@ import {
   type KanbanColumn,
 } from '../services/kanbanBridge';
 import type { TaskContract } from '../types/taskContract';
+import type { Task } from '../services/taskStore';
 
 export interface TaskRoutesDeps {
   projectDir: string;
+  runCodexTask?: CodexTaskRunner;
 }
+
+export type CodexTaskRunnerEvent =
+  | { type: 'model'; model: string }
+  | { type: 'plan'; plan: unknown }
+  | { type: 'step_start'; step: unknown; index: number; total: number }
+  | { type: 'step_result'; step: unknown; result: unknown }
+  | { type: 'verify'; step: unknown; result: unknown }
+  | { type: 'remediation'; failedStep: unknown; attempt: number }
+  | { type: 'capability_gap'; gap: unknown }
+  | { type: 'loop_event'; event: unknown }
+  | { type: 'done'; status: string; steps: number };
+
+export interface CodexTaskRunResult {
+  status: string;
+  assistantText: string;
+  toolCallCount: number;
+  toolSuccessCount: number;
+  verifications: unknown[];
+  capabilityGaps: unknown[];
+}
+
+export type CodexTaskRunner = (input: {
+  task: Task;
+  contract: TaskContract;
+  prompt: string;
+  onEvent: (event: CodexTaskRunnerEvent) => void;
+  abortSignal?: AbortSignal;
+}) => Promise<CodexTaskRunResult>;
 
 const VALID_TASK_STATUSES = new Set<TaskStatus>(['pending', 'assigned', 'in_progress', 'blocked', 'review', 'done', 'failed', 'cancelled']);
 const VALID_TASK_PRIORITIES = new Set<TaskPriority>(['low', 'normal', 'high']);
@@ -224,6 +254,61 @@ export function createTaskRoutesRouter(deps: TaskRoutesDeps): express.Router {
       res.json({ taskId: task.id, diff: await collectGitDiff(projectDir, maxPatchChars) });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.post('/api/codex/tasks/:id/run', async (req, res) => {
+    if (!deps.runCodexTask) { res.status(501).json({ error: 'Codex task runner is not configured.' }); return; }
+    const task = await getTask(projectDir, req.params.id).catch(() => undefined);
+    if (!task) { res.status(404).json({ error: 'Task not found.' }); return; }
+    const contract = extractCodexContract(task.metadata);
+    if (!contract) { res.status(400).json({ error: 'Task is missing Codex contract metadata.' }); return; }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'close');
+    res.flushHeaders?.();
+
+    const abortController = new AbortController();
+    res.on('close', () => {
+      if (!res.writableEnded) abortController.abort();
+    });
+    const send = (event: unknown): void => {
+      if (!res.writableEnded) res.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+
+    try {
+      await updateTask(projectDir, task.id, { status: 'in_progress', checkedOutBy: 'codex-runner', checkedOutAt: new Date().toISOString() });
+      await recordCheckIn(projectDir, task.id, { progressPercent: 5, message: 'Codex task run started.', status: 'in_progress' });
+      send({ type: 'task_status', status: 'in_progress', progressPercent: 5 });
+      const result = await deps.runCodexTask({
+        task,
+        contract,
+        prompt: task.description || contract.goal,
+        abortSignal: abortController.signal,
+        onEvent: (event) => send(event),
+      });
+      const finalStatus: TaskStatus = result.status === 'completed' ? 'review' : result.status === 'stopped' ? 'blocked' : 'failed';
+      const progressPercent = finalStatus === 'review' ? 95 : 100;
+      const updated = await recordCheckIn(projectDir, task.id, {
+        progressPercent,
+        status: finalStatus,
+        message: finalStatus === 'review'
+          ? 'Codex task run completed; ready for human review.'
+          : `Codex task run ended with status ${result.status}.`,
+      });
+      const diff = await collectGitDiff(projectDir, 12_000);
+      send({ type: 'task_status', status: updated.status, progressPercent: updated.progressPercent });
+      send({ type: 'run_result', result, diff });
+      send({ type: 'done', status: result.status });
+      res.write('data: [DONE]\n\n');
+      res.end();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await recordCheckIn(projectDir, task.id, { progressPercent: 100, status: 'failed', message: `Codex task run failed: ${message}` }).catch(() => undefined);
+      send({ type: 'error', message });
+      res.write('data: [DONE]\n\n');
+      res.end();
     }
   });
 

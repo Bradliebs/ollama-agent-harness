@@ -13,6 +13,7 @@ import { createChatClient, OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiK
 import { drainRemoteProviderFallbackEvents } from '../core/fallbackChatClient';
 import type { IChatClient } from '../core/chatClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
+import { createCodeVerifier, createLlmPlanner, createQueryLoopExecutor, runConductor, type ConductorEvent } from '../core/taskConductor';
 import { createLlmAdversaryJudge } from '../safety/toolInspectors';
 import { buildMorningBriefing, type BriefingCalendarEvent } from '../jarvis/morningBriefing';
 import { parseIcsEvents } from '../tools/calendarTools';
@@ -31,7 +32,7 @@ import { formatPrometheusMetrics, type PrometheusMetric } from '../observability
 import { recordSwallowed } from '../observability/silentFailureSink';
 import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { summarizeTasks } from '../services/taskStore';
-import { createTaskRoutesRouter } from './taskRoutes';
+import { createTaskRoutesRouter, type CodexTaskRunner, type CodexTaskRunnerEvent } from './taskRoutes';
 import { createPromiseRouter } from './promiseRoutes';
 import { createProfileRouter } from './profileRoutes';
 import { createEvalRouter } from './evalRoutes';
@@ -3823,7 +3824,108 @@ app.use(createServiceRouter({
 // ─── Tasks + Kanban ─────────────────────────────────────────────────
 // Structured task lifecycle and the Kanban board over them. Routes
 // extracted to ./taskRoutes.ts so server.ts holds wiring, not handlers.
-app.use(createTaskRoutesRouter({ projectDir: PROJECT_DIR }));
+const runCodexTaskWithConductor: CodexTaskRunner = async ({ task, contract, prompt, onEvent, abortSignal }) => {
+  await ensureSettingsLoaded();
+  const requestedModel = currentModel || 'llama3.1:8b';
+  const routed = await resolveChatModelForRequest(requestedModel, prompt);
+  const activeModel = routed.model;
+  onEvent({ type: 'model', model: activeModel });
+
+  const activeContextMaxTokens = await resolveContextMaxTokens(activeModel);
+  const client = webRuntime.createClient(activeModel, ollamaHost, activeContextMaxTokens);
+  const tools = webRuntime.getTools();
+  const permissions = webRuntime.createPermissionEngine(permissionMode);
+  const session = webRuntime.createSession(PROJECT_DIR, activeModel);
+  await session.initialize();
+  const learningRecorder = new LearningRecorder(PROJECT_DIR);
+  const systemPrompt = await webRuntime.assembleSystemContext({
+    systemPrompt: [
+      'You are running Codex Task Mode for a single tracked coding task.',
+      'Work against the task contract. Keep changes scoped. Validate before declaring completion.',
+      'Report concise progress at the end of each step.',
+    ].join('\n'),
+    projectDir: PROJECT_DIR,
+    skillsDir: SKILLS_DIR,
+    recallProjectDir: PROJECT_DIR,
+    recallQuery: prompt.slice(0, 240),
+    ragProjectDir: PROJECT_DIR,
+    ragQuery: prompt.slice(0, 240),
+    ragOllamaHost: ollamaHost,
+    palaceProjectDir: PROJECT_DIR,
+    sessionSearchProjectDir: PROJECT_DIR,
+    sessionSearchQuery: prompt.slice(0, 240),
+    ccmemUrl: ccmemUrl || undefined,
+    ccmemQuery: prompt.slice(0, 240),
+  });
+
+  const config: LoopConfig = {
+    model: activeModel,
+    systemPrompt,
+    maxTurns: contract.max_turns,
+    taskContract: contract,
+    verify: { enabled: true, quick: true, timeout: 60_000 },
+    readBeforeWrite: { mode: 'warn', allowNewFiles: true },
+    repeatedToolFailureLimit: 3,
+    unproductiveTurnLimit: 5,
+    context: { enabled: true, maxTokens: activeContextMaxTokens, summarizerModel: summarizerModel || undefined },
+    outputValidation: { enabled: true, profile: 'coding-answer', customProfiles: customOutputValidationProfiles },
+    autoContinue: true,
+    taskType: contract.intent_type,
+    abortSignal,
+  };
+  const deps: QueryLoopDeps = {
+    client,
+    tools,
+    permissionCheck: async (call) => {
+      const result = permissions.evaluate(call);
+      if (result.decision === 'allow') return { allowed: true, reason: result.reason };
+      if (result.decision === 'deny') return { allowed: false, reason: result.reason };
+      return permissionPrompts.request(call, result.reason);
+    },
+    hooks: hookPipeline,
+    session,
+    summarizerClient: summarizerModel ? webRuntime.createClient(summarizerModel, ollamaHost, activeContextMaxTokens) : undefined,
+    tracer: runtimeTracer,
+    learningRecorder,
+    adversaryJudge: createLlmAdversaryJudge(client),
+  };
+
+  const outcome = await runConductor({
+    task: prompt,
+    planner: createLlmPlanner(client),
+    executor: createQueryLoopExecutor(config, deps, {
+      onLoopEvent: (event) => onEvent({ type: 'loop_event', event }),
+    }),
+    verifier: createCodeVerifier(PROJECT_DIR, { quick: true, timeout: 60_000 }),
+    persistDir: path.join(PROJECT_DIR, '.harness', 'conductor'),
+    runId: task.id,
+    abortSignal,
+    onEvent: (event) => onEvent(toCodexRunnerEvent(event)),
+  });
+
+  return {
+    status: outcome.status,
+    assistantText: outcome.assistantText,
+    toolCallCount: outcome.toolCallCount,
+    toolSuccessCount: outcome.toolSuccessCount,
+    verifications: outcome.verifications,
+    capabilityGaps: outcome.capabilityGaps,
+  };
+};
+
+function toCodexRunnerEvent(event: ConductorEvent): CodexTaskRunnerEvent {
+  switch (event.type) {
+    case 'plan': return { type: 'plan', plan: event.plan };
+    case 'step_start': return { type: 'step_start', step: event.step, index: event.index, total: event.total };
+    case 'step_result': return { type: 'step_result', step: event.step, result: event.result };
+    case 'verify': return { type: 'verify', step: event.step, result: event.result };
+    case 'remediation': return { type: 'remediation', failedStep: event.failedStep, attempt: event.attempt };
+    case 'capability_gap': return { type: 'capability_gap', gap: event.gap };
+    case 'done': return { type: 'done', status: event.status, steps: event.steps };
+  }
+}
+
+app.use(createTaskRoutesRouter({ projectDir: PROJECT_DIR, runCodexTask: runCodexTaskWithConductor }));
 
 // ─── Triggers ───────────────────────────────────────────────────────
 // Persisted in .harness/triggers/triggers.json. Routes extracted to
