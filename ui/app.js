@@ -14933,10 +14933,24 @@ async function setIdentityAutoUpdate(field, value) {
     const currentData = await currentRes.json();
     const cfg = currentData.config || { user: false, soul: false };
     cfg[field] = !!value;
+    // The server audit-gates any config where adaptive identity stays enabled
+    // (user || soul). Collect a reason then, mirroring the dontAsk escalation.
+    const enabling = !!cfg.user || !!cfg.soul;
+    let reason;
+    if (enabling) {
+      const reasonInput = await promptToast('Enabling adaptive identity lets the scheduler rewrite USER.md and propose SOUL edits. Enter a reason (minimum 8 characters):', 'Enabling adaptive identity for this workspace');
+      if (reasonInput === null) { refreshIdentityAutoUpdatePanel(); return; }
+      reason = String(reasonInput).trim();
+      if (reason.length < 8) {
+        showToast('Reason must be at least 8 characters.');
+        refreshIdentityAutoUpdatePanel();
+        return;
+      }
+    }
     const response = await fetch('/api/identity/auto-update', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user: !!cfg.user, soul: !!cfg.soul }),
+      body: JSON.stringify({ user: !!cfg.user, soul: !!cfg.soul, reason }),
     });
     const data = await response.json();
     if (data.error) throw new Error(data.error);
@@ -14948,9 +14962,19 @@ async function setIdentityAutoUpdate(field, value) {
 }
 
 async function runIdentityAutoUpdateNow() {
+  // A manual tick can rewrite USER.md or stage a SOUL proposal, so the server
+  // requires an audit reason just like enabling the toggle.
+  const reasonInput = await promptToast('Running a tick can rewrite USER.md or stage a SOUL proposal. Enter a reason (minimum 8 characters):', 'Manual identity auto-update tick');
+  if (reasonInput === null) return;
+  const reason = String(reasonInput).trim();
+  if (reason.length < 8) { showToast('Reason must be at least 8 characters.'); return; }
   showToast('Running identity auto-update tick…');
   try {
-    const response = await fetch('/api/identity/auto-update/run', { method: 'POST' });
+    const response = await fetch('/api/identity/auto-update/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    });
     const data = await response.json();
     if (data.error) throw new Error(data.error);
     if (data.ran === false) {

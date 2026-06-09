@@ -29,6 +29,7 @@ import {
   readSoulProposal,
 } from '../services/identityProposals';
 import {
+  captureIdentitySnapshot,
   listIdentityHistory,
   restoreIdentityFromHistory,
 } from '../services/identityHistory';
@@ -184,6 +185,17 @@ export function createIdentityRouter(deps: IdentityRoutesDeps): express.Router {
         const reason = requireAuditReason(req.body?.reason, res, 'Enabling identity auto-update');
         if (!reason) return;
         auditNote = reason;
+        // Capture a labelled pre-arm baseline of SOUL/USER/structured so the
+        // user can roll back to the moment before the scheduler was allowed
+        // to rewrite identity. Best-effort: never block arming on a snapshot
+        // failure (it surfaces in the existing identity-history UI).
+        try {
+          await captureIdentitySnapshot(projectDir, `Adaptive identity armed: ${auditNote}`);
+        } catch (snapshotError) {
+          logger.info('Identity', 'Pre-arm baseline snapshot failed', {
+            error: snapshotError instanceof Error ? snapshotError.message : String(snapshotError),
+          });
+        }
       }
       await writeIdentityAutoUpdateConfig(projectDir, config);
       logger.info('Identity', 'Auto-update config changed', {
