@@ -2086,8 +2086,8 @@ const REMOTE_MODEL_CATALOG: Record<string, Array<{ id: string; label: string }>>
     { id: 'Phi-3.5-MoE-instruct', label: 'Phi 3.5 MoE' },
   ],
   openrouter: [
-    { id: 'google/gemini-2.0-flash-exp:free', label: 'Gemini 2.0 Flash (free)' },
     { id: 'meta-llama/llama-3.3-70b-instruct:free', label: 'Llama 3.3 70B (free)' },
+    { id: 'google/gemma-4-31b-it:free', label: 'Gemma 4 31B (free)' },
   ],
   openai: [
     { id: 'gpt-4o', label: 'GPT-4o' },
