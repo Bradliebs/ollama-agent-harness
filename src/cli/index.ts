@@ -20,13 +20,20 @@ import type { ModelRoutingPolicy } from '../agents/modelRouting';
 import { OUTPUT_VALIDATION_PROFILES, parseOutputValidationProfile, type OutputValidationProfile, type OutputValidationResult } from '../core/outputValidation';
 import { formatCliHelp, resolveCliCommand } from './commands';
 import { runMyceliumCli } from '../mycelium/cli';
-import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
+import { createMycelialRouter, deriveToolShortlist, toolNamesFromRoute, type MycelialContextRouter } from '../mycelium/router';
 import { heuristicVerifier } from '../mycelium/verifier';
 import type { ContextPackage } from '../mycelium/contextPackage';
 import { loadSkillsDir } from '../extensibility/skillLoader';
 import { searchSemanticMemory } from '../persistence/semanticMemory';
 import { recordSwallowed } from '../observability/silentFailureSink';
-import type { LoopConfig, PermissionMode } from '../types';
+import type { LoopConfig, LoopEvent, PermissionMode, Tool } from '../types';
+import {
+  runConductor,
+  createLlmPlanner,
+  createQueryLoopExecutor,
+  createCodeVerifier,
+  type ConductorEvent,
+} from '../core/taskConductor';
 import { configureWebReadTool, DEFAULT_WEB_READ_MAX_CHARS, sanitizeWebReadMaxChars } from '../tools/webSearchTool';
 import { getAgentOutputDir, getAllowedExternalPaths, setAllowedExternalPaths } from '../tools/pathResolution';
 
@@ -530,7 +537,9 @@ export async function main(): Promise<void> {
   // --prompt-file lets callers pass large prompts (e.g. inline file contents)
   // that would otherwise overflow shell command-line size limits.
   if (headlessPrompt) {
-    const outcome = await runHeadless(config, deps, session, headlessPrompt);
+    const outcome = process.env.HARNESS_CONDUCTOR === '1'
+      ? await runHeadlessConductor(config, deps, projectDir, headlessPrompt, myceliumRouter)
+      : await runHeadless(config, deps, session, headlessPrompt);
     if (myceliumRouter) {
       try {
         await reinforceHeadlessMycelium(myceliumRouter, myceliumContextPackage, outcome);
@@ -888,6 +897,125 @@ async function runHeadless(
     validationScore,
     validationStatus,
   };
+}
+
+/**
+ * Conductor-driven headless run (opt-in via HARNESS_CONDUCTOR=1). Plans the
+ * task into ordered steps, runs each through queryLoop, and verifies code steps
+ * by actually running the toolchain — self-correcting on failure. Returns the
+ * same HeadlessOutcome shape so mycelium reinforcement is unchanged.
+ */
+async function runHeadlessConductor(
+  config: LoopConfig,
+  deps: QueryLoopDeps,
+  projectDir: string,
+  prompt: string,
+  myceliumRouter: MycelialContextRouter | null,
+): Promise<HeadlessOutcome> {
+  const toolStats = new Map<string, { success: number; total: number }>();
+  let validationScore: number | undefined;
+  let validationStatus: OutputValidationResult['status'] | undefined;
+
+  const onLoopEvent = (event: LoopEvent): void => {
+    switch (event.type) {
+      case 'text':
+        if (event.content) console.log(event.content);
+        break;
+      case 'tool_call':
+        console.error(`🔧 ${event.call.name}(${JSON.stringify(event.call.input).slice(0, 100)})`);
+        break;
+      case 'tool_result': {
+        if (MYCELIUM_FAILURE_PRONE_TOOL.test(event.call.name)) {
+          const stats = toolStats.get(event.call.name) ?? { success: 0, total: 0 };
+          stats.total++;
+          if (event.result.success) stats.success++;
+          toolStats.set(event.call.name, stats);
+        }
+        const icon = event.result.success ? '✅' : '❌';
+        console.error(`  ${icon} ${event.result.output.slice(0, 200)}`);
+        break;
+      }
+      case 'output_validation':
+        validationScore = event.validation.score;
+        validationStatus = event.validation.status;
+        console.error(`🧪 output validation ${event.validation.status}: score ${event.validation.score}`);
+        break;
+      case 'error':
+        console.error(`⚠️ ${event.message}`);
+        break;
+    }
+  };
+
+  // Phase 2 — promote Mycelium routing from advisory to an actual per-step
+  // tool shortlist. Remediation steps escalate to the full tool set so a stuck
+  // step is never starved of a tool it needs. Routing failures fall back to the
+  // full set (deriveToolShortlist returns all tools when there is no signal).
+  const allTools = deps.tools;
+  const selectTools = myceliumRouter
+    ? (step: { intent: string; remediationFor?: number }): Tool[] | undefined => {
+        if (step.remediationFor != null) return undefined;
+        try {
+          const route = myceliumRouter.routeQueryRich(step.intent);
+          return deriveToolShortlist(toolNamesFromRoute(route), allTools);
+        } catch (err) {
+          recordSwallowed('cli.conductor.shortlist', err);
+          return undefined;
+        }
+      }
+    : undefined;
+
+  const outcome = await runConductor({
+    task: prompt,
+    planner: createLlmPlanner(deps.client),
+    executor: createQueryLoopExecutor(config, deps, { onLoopEvent, selectTools }),
+    verifier: createCodeVerifier(projectDir),
+    persistDir: path.join(projectDir, '.harness', 'conductor'),
+    runId: String(Date.now()),
+    onEvent: logConductorEvent,
+  });
+
+  if (!outcome.assistantText.trim()) console.log(outcome.assistantText);
+
+  const toolSuccessRatios: Record<string, number> = {};
+  for (const [name, stats] of toolStats) {
+    if (stats.total > 0) toolSuccessRatios[name] = stats.success / stats.total;
+  }
+  return {
+    assistantText: outcome.assistantText,
+    toolCallCount: outcome.toolCallCount,
+    toolSuccessCount: outcome.toolSuccessCount,
+    toolSuccessRatios,
+    toolCallSequence: outcome.toolCallSequence,
+    validationScore,
+    validationStatus,
+  };
+}
+
+function logConductorEvent(e: ConductorEvent): void {
+  switch (e.type) {
+    case 'plan':
+      console.error(`🗺️ plan: ${e.plan.steps.length} step(s)`);
+      for (const s of e.plan.steps) {
+        console.error(`   ${s.id}. ${s.intent}${s.verify.kind === 'code' ? ' [verify]' : ''}`);
+      }
+      break;
+    case 'step_start':
+      console.error(`\n▶️ step ${e.index + 1}/${e.total}: ${e.step.intent}`);
+      break;
+    case 'verify':
+      console.error(`🔍 verify ${e.result.overall}: ${e.result.checks.map((c) => `${c.name}=${c.status}`).join(', ')}`);
+      break;
+    case 'remediation':
+      console.error(`🔧 remediation #${e.attempt} for step ${e.failedStep.id} (verification failed)`);
+      break;
+    case 'capability_gap':
+      console.error(`🧩 capability gap: ${e.gap.reason}`);
+      console.error(`   To unblock, add a tool/MCP server that provides "${e.gap.need}" via the MCP panel (Settings → MCP servers), then re-run.`);
+      break;
+    case 'done':
+      console.error(`\n--- conductor ${e.status} (${e.steps} step executions) ---`);
+      break;
+  }
 }
 
 async function runCompactRemoteSmoke(client: IChatClient, prompt: string): Promise<void> {

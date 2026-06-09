@@ -17,6 +17,13 @@ export interface Tool {
   permissionCategory?: ToolPermissionCategory;
   /** When true, the tool implements a meaningful dry-run mode via `dryRun: true` in input. */
   canDryRun?: boolean;
+  /**
+   * Optional short usage example surfaced to the model on demand (e.g. when the
+   * tool is shortlisted for a conductor step). One or two lines showing how to
+   * call the tool correctly. Not sent in the tool schema — injected into the
+   * prompt only when relevant, to keep the default tool list lean.
+   */
+  usageHint?: string;
   execute(input: Record<string, unknown>): Promise<ToolResult>;
 }
 

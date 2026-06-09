@@ -373,6 +373,60 @@ export async function createMycelialRouter(projectDir: string, config?: Mycelial
   return new MycelialContextRouter(projectDir, graph, config);
 }
 
+// ─── Tool shortlisting (Mycelium advisory → actual selection) ───────
+
+/**
+ * Tools always exposed regardless of routing — the safety floor. Without these
+ * the agent could lose the ability to read or write files, recall memory, or
+ * author a skill, which would strand it mid-task. The floor guarantees a tool
+ * is *offered*; it does not bypass the permission engine, which still gates
+ * execution.
+ */
+export const DEFAULT_TOOL_FLOOR = ['file_read', 'file_write', 'file_edit', 'list_files', 'recall', 'skill', 'create_skill'];
+
+export interface ToolShortlistOptions {
+  /** Tool names always kept regardless of routing. Defaults to DEFAULT_TOOL_FLOOR. */
+  floor?: string[];
+  /** Max routed tools to keep (excludes floor). 0 / undefined = unlimited. */
+  maxTools?: number;
+}
+
+/** Pull the labels of routed nodes that are tools out of a rich route result. */
+export function toolNamesFromRoute(route: { nodes: Array<{ type: string; label: string }> }): string[] {
+  return route.nodes.filter((n) => n.type === 'tool').map((n) => n.label);
+}
+
+/**
+ * Promote Mycelium's advisory route into an actual tool shortlist for a turn.
+ *
+ * - When `routedToolNames` is empty (cold graph / no signal), returns ALL tools
+ *   so the shortlist degrades to today's send-everything behaviour rather than
+ *   starving the model. This is the escalation floor.
+ * - Otherwise returns the routed subset of `allTools`, always unioned with any
+ *   floor tool present, capped by `maxTools`.
+ * - Never returns an empty list: if nothing matched, falls back to all tools.
+ */
+export function deriveToolShortlist<T extends { name: string }>(
+  routedToolNames: string[],
+  allTools: T[],
+  options: ToolShortlistOptions = {},
+): T[] {
+  const routed = routedToolNames.filter(Boolean);
+  if (routed.length === 0) return allTools;
+
+  const floor = new Set(options.floor ?? DEFAULT_TOOL_FLOOR);
+  const cap = options.maxTools && options.maxTools > 0 ? options.maxTools : Infinity;
+
+  const routedSet = new Set<string>();
+  for (const name of routed) {
+    if (routedSet.size >= cap) break;
+    routedSet.add(name);
+  }
+
+  const keep = allTools.filter((t) => routedSet.has(t.name) || floor.has(t.name));
+  return keep.length > 0 ? keep : allTools;
+}
+
 // ─── Simple keyword-based relevance (no embeddings needed) ──────────
 
 function estimateRelevance(query: string, node: MyceliumNode): number {
