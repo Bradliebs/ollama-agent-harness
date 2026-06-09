@@ -5100,6 +5100,71 @@ describe('web server API validation', () => {
       }
     });
   });
+
+  describe('Codex task mode API', () => {
+    it('creates a contract-backed coding task and exposes status', async () => {
+      const createResponse = await request('/api/codex/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: 'Fix the parser bug in src/core/parser.ts without touching config files.',
+          validation: ['npm run typecheck'],
+          allowedPaths: ['src/core/parser.ts'],
+          priority: 'high',
+        }),
+      });
+      expect(createResponse.status).toBe(200);
+      const created = await createResponse.json() as { task: { id: string; tags: string[]; metadata: { codex: { contract: unknown } } }; contract: { mode: string; validation: string[]; blocked_paths: string[]; allowed_paths: string[] }; next: { statusUrl: string; diffUrl: string } };
+      expect(created.task.tags).toEqual(expect.arrayContaining(['codex', 'mode:debug']));
+      expect(created.contract).toMatchObject({ mode: 'debug', validation: ['npm run typecheck'], allowed_paths: ['src/core/parser.ts'] });
+      expect(created.contract.blocked_paths).toEqual(expect.arrayContaining(['.env', '.git/']));
+      expect(created.next.statusUrl).toContain('/api/codex/tasks/');
+
+      try {
+        const statusResponse = await request(created.next.statusUrl);
+        expect(statusResponse.status).toBe(200);
+        const status = await statusResponse.json() as { task: { id: string }; contract: { mode: string }; lifecycle: { phase: string; terminal: boolean }; diff: { available: boolean; status: string[]; changedFiles: string[] } };
+        expect(status.task.id).toBe(created.task.id);
+        expect(status.contract.mode).toBe('debug');
+        expect(status.lifecycle).toMatchObject({ phase: 'ready', terminal: false });
+        expect(status.diff).toMatchObject({ available: true });
+        expect(Array.isArray(status.diff.status)).toBe(true);
+        expect(Array.isArray(status.diff.changedFiles)).toBe(true);
+      } finally {
+        await request('/api/tasks/' + encodeURIComponent(created.task.id), { method: 'DELETE' });
+      }
+    });
+
+    it('rejects Codex task creation without a prompt', async () => {
+      const response = await request('/api/codex/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: '' }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it('returns bounded diff previews for Codex tasks', async () => {
+      const createResponse = await request('/api/codex/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Review the current repository diff.' }),
+      });
+      expect(createResponse.status).toBe(200);
+      const created = await createResponse.json() as { task: { id: string }; next: { diffUrl: string } };
+      try {
+        const diffResponse = await request(`${created.next.diffUrl}?maxPatchChars=25`);
+        expect(diffResponse.status).toBe(200);
+        const body = await diffResponse.json() as { taskId: string; diff: { available: boolean; patchPreview: string; truncated: boolean } };
+        expect(body.taskId).toBe(created.task.id);
+        expect(body.diff.available).toBe(true);
+        expect(body.diff.patchPreview.length).toBeLessThanOrEqual(25);
+        expect(typeof body.diff.truncated).toBe('boolean');
+      } finally {
+        await request('/api/tasks/' + encodeURIComponent(created.task.id), { method: 'DELETE' });
+      }
+    });
+  });
 });
 
 function buildMinimalPdf(text: string): Buffer {
