@@ -281,17 +281,42 @@ function checkNodeVersion(): LocalHealthCheck {
 }
 
 async function checkPackage(packagePath: string): Promise<LocalHealthCheck> {
+  let raw: string;
   try {
-    const parsed = JSON.parse(await fs.readFile(packagePath, 'utf-8')) as { name?: string; scripts?: Record<string, string> };
-    const hasValidation = Boolean(parsed.scripts?.test && (parsed.scripts.typecheck || parsed.scripts.lint));
-    return {
-      ok: hasValidation,
-      message: hasValidation ? `${parsed.name ?? 'package'} has test and typecheck scripts.` : 'package.json is missing test or typecheck scripts.',
-    };
+    raw = await fs.readFile(packagePath, 'utf-8');
   } catch (error) {
+    // No package.json at all: the workspace is not a Node/JS project (it may
+    // be a Python, docs, data, or general-purpose folder). Validation scripts
+    // simply do not apply, so this is not a failure. Any other read error
+    // (e.g. EACCES) is surfaced as a real problem.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { ok: true, message: 'No package.json — not a Node project, so validation scripts do not apply.' };
+    }
     const message = error instanceof Error ? error.message : String(error);
     return { ok: false, message: `Cannot read package.json: ${message}` };
   }
+  let parsed: { name?: string; scripts?: Record<string, string> };
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, message: `package.json is present but is not valid JSON: ${message}` };
+  }
+  const scripts = parsed.scripts ?? {};
+  // A package.json with no scripts block is not set up for npm-based
+  // validation; `npm test`/`npm run typecheck` cannot exist regardless.
+  // Treat as not applicable rather than nagging the user for scripts that
+  // would have no meaning in this workspace.
+  if (Object.keys(scripts).length === 0) {
+    return { ok: true, message: `${parsed.name ?? 'package.json'} defines no scripts — validation scripts do not apply.` };
+  }
+  const hasValidation = Boolean(scripts.test && (scripts.typecheck || scripts.lint));
+  return {
+    ok: hasValidation,
+    message: hasValidation
+      ? `${parsed.name ?? 'package'} has test and typecheck scripts.`
+      : `${parsed.name ?? 'package.json'} is a Node project but is missing a test and a typecheck/lint script — add them so the agent can self-validate edits.`,
+  };
 }
 
 async function checkWritableDirectory(dirPath: string, okMessage: string): Promise<LocalHealthCheck> {
