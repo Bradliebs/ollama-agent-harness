@@ -3570,6 +3570,18 @@ async function saveAgentProfile() {
     model,
     accentColor: localStorage.getItem('harness-accent') || '',
   };
+  // Persona bundle: also record the names of the currently-pinned skills and
+  // configured MCP servers so the profile captures a whole use-case. Names
+  // only — applying a profile never auto-pins or auto-starts anything.
+  if (typeof HarnessPersonaBundle !== 'undefined') {
+    const skillRows = (skillsState.runtime || []).map((s) => ({
+      name: s.name,
+      pinned: !!(skillsState.usageMap.get(s.name) || {}).pinned,
+    }));
+    const mcpRows = Array.from(window._mcpRuntimeServerIds || []).map((id) => ({ id }));
+    agentProfiles[name].skills = HarnessPersonaBundle.extractPinnedSkillNames(skillRows);
+    agentProfiles[name].mcp = HarnessPersonaBundle.extractMcpServerNames(mcpRows);
+  }
   updateSetting('agentProfiles', agentProfiles);
   hydrateAgentProfiles(agentProfiles);
   showToast('Profile "' + name + '" saved.');
@@ -3591,6 +3603,20 @@ function loadAgentProfile(profileName) {
     if (sel) { sel.value = profile.model; updateSetting('model', profile.model); }
   }
   if (profile.accentColor) setAccentColor(profile.accentColor);
+  // Persona bundle: surface (never auto-apply) the skills/MCP servers this
+  // profile expects but the current environment lacks. Pinning and starting
+  // stay manual so capability grants and the curator are never bypassed.
+  if (typeof HarnessPersonaBundle !== 'undefined' && (profile.skills || profile.mcp)) {
+    const pinnedSkills = (skillsState.runtime || [])
+      .filter((s) => (skillsState.usageMap.get(s.name) || {}).pinned)
+      .map((s) => s.name);
+    const plan = HarnessPersonaBundle.computeStagingPlan(
+      { skills: profile.skills, mcp: profile.mcp },
+      { pinnedSkills, mcpServers: Array.from(window._mcpRuntimeServerIds || []) },
+    );
+    const hint = HarnessPersonaBundle.summarizeStagingPlan(plan);
+    if (hint) showToast(hint, 7000);
+  }
 }
 
 async function deleteAgentProfile() {
