@@ -4606,6 +4606,7 @@ async function sendMessage(opts) {
   // pill on a 250ms interval so the user sees real-time speed.
   const streamStartedAt = Date.now();
   let streamedChars = 0;
+  let firstTokenAtMs = 0;
   let tokRateTimer = null;
   let assistantText = '';
   let msgEl = null;
@@ -4667,6 +4668,7 @@ async function sendMessage(opts) {
         switch (ev.type) {
           case 'text':
             thinkEl.remove();
+            if (!firstTokenAtMs && (ev.content || '').length > 0) firstTokenAtMs = Date.now();
             if (!msgEl) msgEl = addMsg('assistant', '');
             assistantText += ev.content;
             streamedChars += (ev.content || '').length;
@@ -4952,6 +4954,8 @@ async function sendMessage(opts) {
     // so an empty payload is safe.
     try { document.dispatchEvent(new CustomEvent('jarvis-assistant-message', { detail: { text: assistantText || '' } })); } catch { /* noop */ }
     if (msgEl && currentTurnUsage) {
+      if (firstTokenAtMs) currentTurnUsage.firstTokenLatencyMs = firstTokenAtMs - streamStartedAt;
+      currentTurnUsage.toolCallCount = toolOnlyResultCount;
       attachMessageMeta(msgEl, currentTurnUsage);
       currentTurnUsage = null;
     }
@@ -6647,7 +6651,8 @@ function attachMessageMeta(msgEl, usage) {
     + '<span>' + formatDurationCompact(usage.totalDurationMs || 0) + '</span>'
     + timingInline
     + (usage.turnDurationMs ? '<span class="meta-sep">·</span><span title="Wall-clock turn time (model + tools)">' + formatDurationCompact(usage.turnDurationMs) + ' turn</span>' : '')
-    + (usage.loadDurationMs > 500 ? '<span class="meta-sep">·</span><span title="Time spent loading model into VRAM">🔥 ' + formatDurationCompact(usage.loadDurationMs) + ' load</span>' : '');
+    + (usage.loadDurationMs > 500 ? '<span class="meta-sep">·</span><span title="Time spent loading model into VRAM">🔥 ' + formatDurationCompact(usage.loadDurationMs) + ' load</span>' : '')
+    + (typeof HarnessExecMetrics !== 'undefined' ? HarnessExecMetrics.formatExecMetrics(usage) : '');
   body.appendChild(meta);
 }
 
