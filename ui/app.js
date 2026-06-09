@@ -6794,7 +6794,8 @@ function attachCitations(msgEl, citations, originalText) {
  * intent, and offer the 3 most likely next moves.
  */
 function renderFollowUpChips(userText, assistantText) {
-  const suggestions = computeFollowUps(userText, assistantText);
+  if (typeof HarnessFollowUps === 'undefined') return;
+  const suggestions = HarnessFollowUps.computeFollowUps(userText, assistantText);
   if (!suggestions.length) return;
   const area = document.getElementById('chatArea');
   if (!area) return;
@@ -6889,35 +6890,6 @@ async function renderMyceliumContextCards(userText) {
   }
   area.appendChild(wrap);
   scrollBottom();
-}
-
-function computeFollowUps(userText, assistantText) {
-  const out = [];
-  const ut = (userText || '').toLowerCase();
-  const at = assistantText || '';
-  const hasCode = /```[\s\S]+?```/.test(at);
-  const hasFiles = /(?:[\w./-]+\.(?:ts|tsx|js|jsx|py|md|json|yml|yaml|sh|html|css|sql))/.test(at);
-  const hasError = /(error|failed|exception|stack trace)/i.test(at);
-  const hasNumbers = /\d{2,}/.test(at);
-  const askedHow = /\b(how|why|explain|what)\b/.test(ut);
-  if (hasError) out.push('Diagnose the error and propose a fix.');
-  if (hasCode && !hasError) out.push('Add tests for that code.');
-  if (hasFiles) out.push('Show a diff of the changes.');
-  if (askedHow) out.push('Give me a worked example.');
-  if (hasNumbers) out.push('Where do those numbers come from?');
-  // Generic fallbacks always offered last.
-  out.push('Summarize this in 3 bullets.');
-  out.push('What would you do differently next?');
-  // Dedup + cap at 3.
-  const seen = new Set();
-  const final = [];
-  for (const s of out) {
-    if (seen.has(s)) continue;
-    seen.add(s);
-    final.push(s);
-    if (final.length >= 3) break;
-  }
-  return final;
 }
 
 // ─── Slash command palette ─────────────────────────────────────────────
