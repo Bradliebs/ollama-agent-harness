@@ -19,6 +19,10 @@ export interface ModelRoutingPolicy {
   promptLengthEscalationThreshold?: number;
   failureEscalationThreshold?: number;
   confidenceEscalationThreshold?: number;
+  /** When true, a low-readiness turn queues a stronger model for the next
+   * turn in the same session (requires a client-supplied sessionId). Default
+   * off: the readiness gate stays advisory-only. */
+  autoEscalateOnLowReadiness?: boolean;
 }
 
 export interface ModelRoutingInput {

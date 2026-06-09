@@ -63,6 +63,7 @@ release/release-notes.md
 jest-out.txt
 jest-full.log
 jest_full_output.log
+test_output.txt
 
 # Defensive: prior agent sessions dropped non-Harness lottery scripts
 # into the repo root. They have been relocated to C:\AI\Lottery-Toolkit\.

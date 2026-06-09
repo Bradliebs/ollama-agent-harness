@@ -34,6 +34,9 @@ export interface EvidenceMyceliumSummary {
   route?: string[];
   protectedEdges?: number;
   selectionReasons?: Record<string, string>;
+  /** Stable id of the episode recorded for this turn. Lets the client bind
+   * a thumbs vote to the exact route it rated (see /api/mycelium/feedback). */
+  episodeId?: string;
 }
 
 export interface EvidenceRecoverySummary {

@@ -641,10 +641,14 @@ export async function* queryLoop(
   // Build a concrete synthesis prompt with the last few tool results
   // so small models (gemma4:e4b, etc.) have the data right in front
   // of them instead of needing to recall it from deep context.
+  // Keep enough of each result (2500 chars) that the actual payload —
+  // headlines, prices, article body — survives. A 500-char cut often
+  // showed only a page's nav/boilerplate prefix (e.g. "Skip to content"),
+  // leaving the model to synthesise from chrome instead of content.
   const recentToolResults = messages
     .filter((m) => m.role === 'tool' && typeof m.content === 'string')
     .slice(-5)
-    .map((m) => (m.content as string).slice(0, 500))
+    .map((m) => (m.content as string).slice(0, 2500))
     .join('\n---\n');
 
   const synthesisPreamble = emptyFinalAfterTools

@@ -262,6 +262,13 @@ export class MyceliumGraph {
     return this.episodes.slice(-limit);
   }
 
+  /** Look up a single episode by its stable id. Used by the feedback
+   * endpoint to attach user votes to the exact route they rated, rather
+   * than whatever episode happens to be most recent. */
+  getEpisodeById(id: string): MyceliumEpisode | undefined {
+    return this.episodes.find((e) => e.id === id);
+  }
+
   // ─── Activation ───────────────────────────────────────────
 
   resetActivations(): void {

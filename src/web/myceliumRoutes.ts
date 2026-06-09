@@ -50,6 +50,19 @@ export function createMyceliumRouter(deps: MyceliumRoutesDeps): express.Router {
     }
   });
 
+  // Reward learning curve: did the reinforcement loop actually improve over
+  // time? Computed from the durable reward ledger, not the rolling episode cap.
+  router.get('/api/mycelium/learning-curve', async (_req, res) => {
+    try {
+      const { readRewardEntries, summarizeLearningCurve } = await import('../core/rewardLedger');
+      const entries = await readRewardEntries(projectDir);
+      res.json(summarizeLearningCurve(entries));
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: msg });
+    }
+  });
+
   router.delete('/api/mycelium', async (_req, res) => {
     try {
       const { MyceliumGraph, saveMyceliumGraph: save } = await import('../mycelium/graph');
@@ -68,22 +81,30 @@ export function createMyceliumRouter(deps: MyceliumRoutesDeps): express.Router {
   router.post('/api/mycelium/feedback', async (req, res) => {
     const vote = req.body?.vote;
     const note = typeof req.body?.note === 'string' ? req.body.note : undefined;
+    const episodeId = typeof req.body?.episodeId === 'string' ? req.body.episodeId : undefined;
     if (vote !== 'up' && vote !== 'down' && vote !== 'neutral') {
       res.status(400).json({ error: 'vote must be "up", "down", or "neutral"' });
       return;
     }
     try {
       const mycelialRouter = await createMycelialRouter(projectDir);
-      // Re-hydrate lastRoute from the most recent episode so feedback works
-      // across requests (the chat handler's router instance is per-request).
-      const lastEpisode = mycelialRouter.getGraph().listEpisodes(1)[0];
-      if (!lastEpisode) {
-        res.status(404).json({ error: 'no recent episode to apply feedback to' });
+      // Attach the vote to the exact episode the user rated when an episodeId
+      // is supplied; otherwise fall back to the most recent episode (legacy
+      // clients). Without this, a vote on response A can land on a concurrent
+      // response B that finished first and became "most recent".
+      const graph = mycelialRouter.getGraph();
+      const targetEpisode = episodeId
+        ? graph.getEpisodeById(episodeId)
+        : graph.listEpisodes(1)[0];
+      if (!targetEpisode) {
+        res.status(404).json({
+          error: episodeId ? 'episode not found' : 'no recent episode to apply feedback to',
+        });
         return;
       }
       // The router doesn't expose setLastRoute; reconstruct via a private cast.
-      (mycelialRouter as unknown as { lastRoute: string[] }).lastRoute = lastEpisode.route;
-      (mycelialRouter as unknown as { lastQuery: string }).lastQuery = lastEpisode.query;
+      (mycelialRouter as unknown as { lastRoute: string[] }).lastRoute = targetEpisode.route;
+      (mycelialRouter as unknown as { lastQuery: string }).lastQuery = targetEpisode.query;
       const result = mycelialRouter.applyUserFeedback(vote, note);
       await mycelialRouter.save();
       res.json(result);

@@ -114,6 +114,8 @@ import { buildRunProvenance } from '../observability/runProvenance';
 import { assessOfflineGuarantee } from '../observability/offlineGuarantee';
 import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, describeOutputValidationProfileSuggestion, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
 import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, adaptiveTimeBudget, recordAvgTurnDuration, recordToolUseStats } from '../core/synthesisStats';
+import { loadModelReliability, recordModelOutcome, modelReliabilityScore } from '../core/modelReliability';
+import { appendRewardEntry } from '../core/rewardLedger';
 import { startNewSession, onSessionEnd, getEvolvedPrompt, recordSessionAutoContinue, LearningRecorder } from '../learning/engine';
 import { listEvalTraceRuns, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun } from '../learning/evalTrace';
 import { appendLearningCandidate, extractLearningCandidate, listLearningCandidates, listReviewedLearningCandidates } from '../learning/sessionLearning';
@@ -597,6 +599,10 @@ let timeBudgetMs = 0; // 0 = auto-detect (180s local, 600s cloud)
 let temperature = 0.7;
 let topP = 0.9;
 let modelRouting: ModelRoutingPolicy = {};
+// Per-session one-shot model escalations queued by the readiness gate. Keyed
+// by client-supplied sessionId. Consumed (and cleared) on the next turn when
+// modelRouting.autoEscalateOnLowReadiness is enabled.
+const pendingReadinessEscalations = new Map<string, string>();
 let mediaTools: MediaToolSettings = {
   visionModel: process.env.HARNESS_VISION_MODEL ?? '',
   audioTranscribeCommand: process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND ?? '',
@@ -5385,7 +5391,18 @@ app.post('/api/chat', async (req, res) => {
   const requestedModel = model || currentModel;
   if (!requestedModel) { res.status(400).json({ error: 'No model selected.' }); return; }
   const routedModel = await resolveChatModelForRequest(requestedModel, messageText);
-  const activeModel = routedModel.model;
+  let activeModel = routedModel.model;
+  // One-shot readiness escalation: a prior low-readiness turn in this session
+  // may have queued a stronger model (only when the opt-in policy flag and a
+  // sessionId are both present). Honor it once, then clear it.
+  if (modelRouting.autoEscalateOnLowReadiness && sessionIdHint) {
+    const queuedModel = pendingReadinessEscalations.get(sessionIdHint);
+    if (queuedModel && queuedModel !== activeModel) {
+      pendingReadinessEscalations.delete(sessionIdHint);
+      activeModel = queuedModel;
+      emitEvent(PROJECT_DIR, 'model', 'escalation_applied', { applied: queuedModel, requested: requestedModel, sessionId: sessionIdHint }, 'system').catch((err) => recordSwallowed('emitEvent', err));
+    }
+  }
 
   const skipValidationThisTurn = req.body?.skipValidation === true;
   if (process.env.NODE_ENV !== 'test' && !rateLimiter.tryConsume()) {
@@ -6078,6 +6095,7 @@ CONTEXT HYGIENE (critical for long tasks):
   // Mycelium reinforcement: strengthen or weaken routes based on outcome.
   // Run a heuristic verifier first so the reward reflects safety + tool reliability.
   let nsPainMultiplier = 1.0;
+  let myceliumEpisodeId: string | undefined;
   if (myceliumRouter) {
     const hasOutput = assistantTextBuffer.trim().length > 0;
     const toolSuccessRate = toolCallCount > 0 ? toolSuccessCount / toolCallCount : 0.5;
@@ -6130,6 +6148,16 @@ CONTEXT HYGIENE (critical for long tasks):
     const nsPainResult = nervousVerifier.painMultiplier;
     nsPainMultiplier = nsPainResult;
 
+    // Per-(model, taskType) reliability: record whether this turn produced a
+    // usable result so the readiness gate can supply a real model_reliability
+    // signal on future turns. Historical-only; this turn already read priors.
+    queueChatBackgroundTask('recordModelOutcome', recordModelOutcome(
+      PROJECT_DIR,
+      activeModel,
+      myceliumClassification?.type ?? 'general',
+      hasOutput && !verifierBlocked,
+    ));
+
     myceliumRouter.reinforce({
       taskSuccess: (hasOutput ? 0.7 : 0.2) * nsPainMultiplier,
       correctness: (hasOutput ? 0.6 + toolSuccessRate * 0.3 : 0.1) * nsPainMultiplier,
@@ -6160,6 +6188,23 @@ CONTEXT HYGIENE (critical for long tasks):
       await myceliumRouter.save();
     } catch (error) {
       logger.warn('Mycelium', 'Failed to save graph', { error: error instanceof Error ? error.message : String(error) });
+    }
+    // Bind this turn's recorded episode id so a later thumbs vote attaches to
+    // exactly this route, not whatever episode is most recent at vote time.
+    // Also append the reward to the durable ledger so the learning curve
+    // (is the system improving?) can be computed from real history.
+    if (myceliumRouter.getLastRoute().length > 0) {
+      const recordedEpisode = graph.listEpisodes(1)[0];
+      myceliumEpisodeId = recordedEpisode?.id;
+      if (recordedEpisode) {
+        queueChatBackgroundTask('appendRewardEntry', appendRewardEntry(PROJECT_DIR, {
+          ts: recordedEpisode.timestamp,
+          taskType: recordedEpisode.taskType,
+          reward: recordedEpisode.reward,
+          components: recordedEpisode.rewardComponents,
+          model: activeModel,
+        }));
+      }
     }
   }
 
@@ -6195,6 +6240,7 @@ CONTEXT HYGIENE (critical for long tasks):
       route: myceliumRouter.getLastRoute(),
       protectedEdges: myceliumRouter.getLastExplanation()?.protectedRequired.length,
       selectionReasons: myceliumRouter.getLastExplanation()?.whySelected.reduce<Record<string, string>>((acc, reason, index) => ({ ...acc, [`reason${index + 1}`]: reason }), {}),
+      episodeId: myceliumEpisodeId,
     } : undefined,
     artifacts: [],
     recovery: {
@@ -6266,10 +6312,21 @@ CONTEXT HYGIENE (critical for long tasks):
   }, 'agent', session.getSessionId()).catch((err) => recordSwallowed('server.ts:6748', err));
 
   // Execution Readiness Gate: compute and emit readiness score for this turn.
+  // Reliability is historical (prior turns); this turn's outcome is recorded
+  // asynchronously above and feeds future turns.
+  const readinessReliability = await loadModelReliability(PROJECT_DIR);
+  const readinessTaskType = myceliumClassification?.type ?? 'general';
   const readinessInput: ReadinessInput = {
-    model_confidence: lastValidationScore !== undefined ? lastValidationScore : undefined,
+    // Output-validation score is genuinely a schema/output-validity signal, so
+    // it feeds schema_validity (its true home) rather than double-counting as
+    // model_confidence, which we have no honest source for.
+    schema_validity: lastValidationScore !== undefined ? lastValidationScore : undefined,
     verifier_score: typeof nsPainMultiplier === 'number' ? Math.max(0, 1 - (1 - nsPainMultiplier)) : undefined,
+    ambiguity_score: myceliumClassification
+      ? (myceliumClassification.matchedKeywords.length > 0 ? 0.2 : 0.6)
+      : undefined,
     risk_score: myceliumClassification?.highRisk ? 0.8 : 0.2,
+    model_reliability: modelReliabilityScore(readinessReliability, activeModel, readinessTaskType),
     tool_reliability: toolCallCount > 0 ? toolSuccessCount / toolCallCount : undefined,
   };
   const readiness = calculateReadiness(readinessInput);
@@ -6288,6 +6345,13 @@ CONTEXT HYGIENE (critical for long tasks):
         const suggested = `${strongBackends[0]}/${OPENAI_COMPATIBLE_PRESETS[strongBackends[0]].defaultModel}`;
         res.write(`data: ${JSON.stringify({ type: 'escalation_advisory', currentModel: activeModel, suggestedModel: suggested, readinessScore: readiness.score, reason: 'Readiness score below threshold. Consider switching to a stronger model.' })}\n\n`);
         emitEvent(PROJECT_DIR, 'model', 'escalation_suggested', { current: activeModel, suggested, readiness_score: readiness.score }, 'system').catch((err) => recordSwallowed('emitEvent', err));
+        // When the opt-in policy enables auto-escalation and the client passed a
+        // sessionId, queue the stronger model so the NEXT turn in this session
+        // runs on it. Default-off: advisory-only otherwise.
+        if (modelRouting.autoEscalateOnLowReadiness && sessionIdHint) {
+          pendingReadinessEscalations.set(sessionIdHint, suggested);
+          emitEvent(PROJECT_DIR, 'model', 'escalation_queued', { current: activeModel, queued: suggested, readiness_score: readiness.score, sessionId: sessionIdHint }, 'system').catch((err) => recordSwallowed('emitEvent', err));
+        }
       }
     }
   }
@@ -7571,6 +7635,7 @@ function sanitizeModelRoutingPolicy(value: unknown): ModelRoutingPolicy {
   if (source.promptLengthEscalationThreshold !== undefined) policy.promptLengthEscalationThreshold = Math.floor(clampNumber(source.promptLengthEscalationThreshold, 1000, 200_000, 6000));
   if (source.failureEscalationThreshold !== undefined) policy.failureEscalationThreshold = Math.floor(clampNumber(source.failureEscalationThreshold, 1, 20, 2));
   if (source.confidenceEscalationThreshold !== undefined) policy.confidenceEscalationThreshold = clampNumber(source.confidenceEscalationThreshold, 0, 1, 0.45);
+  if (source.autoEscalateOnLowReadiness !== undefined) policy.autoEscalateOnLowReadiness = source.autoEscalateOnLowReadiness === true;
   return policy;
 }
 
