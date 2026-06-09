@@ -1045,6 +1045,10 @@ describe('web server API validation', () => {
   });
 
   it('auto-routes Gemma current-information turns to an available agentic model', async () => {
+    const previousOpenRouter = process.env.OPENROUTER_API_KEY;
+    const previousAnthropic = process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
     const restore = setWebRuntimeOverrides({
       listModels: jest.fn().mockResolvedValue(['gemma4:e4b', 'gpt-oss:20b-cloud']),
     });
@@ -1054,12 +1058,66 @@ describe('web server API validation', () => {
       expect(decision).toMatchObject({ routed: true, from: 'gemma4:e4b', model: 'gpt-oss:20b-cloud' });
     } finally {
       restore();
+      if (previousOpenRouter === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previousOpenRouter;
+      if (previousAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previousAnthropic;
+    }
+  });
+
+  it('routes coding turns to paid OpenRouter Sonnet when OpenRouter is configured', async () => {
+    const previous = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = 'test-key';
+    const restore = setWebRuntimeOverrides({
+      listModels: jest.fn().mockResolvedValue(['llama3.1:8b']),
+    });
+    try {
+      const decision = await resolveChatModelForRequest('llama3.1:8b', 'Fix the bug, edit the code, and run tests.');
+
+      expect(decision).toMatchObject({
+        routed: true,
+        from: 'llama3.1:8b',
+        model: 'openrouter/anthropic/claude-sonnet-4.5',
+        tier: 'strong',
+        taskType: 'coding',
+        risk: 'high',
+      });
+    } finally {
+      restore();
+      if (previous === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previous;
+    }
+  });
+
+  it('uses OpenRouter Gemini Flash for current-information research turns', async () => {
+    const previous = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = 'test-key';
+    const restore = setWebRuntimeOverrides({
+      listModels: jest.fn().mockResolvedValue(['llama3.1:8b']),
+    });
+    try {
+      const decision = await resolveChatModelForRequest('llama3.1:8b', 'Research the latest Azure AI Search updates today.');
+
+      expect(decision).toMatchObject({
+        routed: true,
+        model: 'openrouter/google/gemini-2.5-flash',
+        tier: 'default',
+        taskType: 'research',
+      });
+    } finally {
+      restore();
+      if (previous === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previous;
     }
   });
 
   it('routes Gemma to glm-5.1:cloud when no higher-priority cloud model is available', async () => {
     // Pin the contract that glm-5.1:cloud is in the agentic fallback list and
     // gets selected when GPT-OSS variants are not pulled locally.
+    const previousOpenRouter = process.env.OPENROUTER_API_KEY;
+    const previousAnthropic = process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
     const restore = setWebRuntimeOverrides({
       listModels: jest.fn().mockResolvedValue(['gemma4:e4b', 'glm-5.1:cloud']),
     });
@@ -1069,6 +1127,10 @@ describe('web server API validation', () => {
       expect(decision).toMatchObject({ routed: true, from: 'gemma4:e4b', model: 'glm-5.1:cloud' });
     } finally {
       restore();
+      if (previousOpenRouter === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previousOpenRouter;
+      if (previousAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previousAnthropic;
     }
   });
 

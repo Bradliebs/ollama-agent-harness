@@ -175,7 +175,7 @@ import * as nodemailer from 'nodemailer';
 import { NervousSystemController } from '../nervous';
 import { listShellCommandAllowlistPresets } from '../automation/runner';
 import { appendCapabilityAuditEvent, readCapabilityAuditEvents } from '../permissions/capabilityAudit';
-import type { ModelRoutingPolicy } from '../agents/modelRouting';
+import { selectModelForChatTurn, type ChatModelCandidatePool, type ChatRoutingMode, type ModelRoutingPolicy } from '../agents/modelRouting';
 import type { LoopConfig, LoopEvent, PermissionMode, Tool } from '../types';
 import type { EvidenceCard, EvidenceFileSummary, EvidenceMode, EvidenceToolSummary } from '../types/evidence';
 import type { Message } from 'ollama';
@@ -5429,7 +5429,7 @@ app.post('/api/chat', async (req, res) => {
     res.write(`data: ${JSON.stringify({ type: 'mode_classification', ...modeClassification })}\n\n`);
   }
   if (routedModel.routed) {
-    res.write(`data: ${JSON.stringify({ type: 'model_routed', from: routedModel.from, to: routedModel.model, reason: routedModel.reason })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'model_routed', from: routedModel.from, to: routedModel.model, tier: routedModel.tier, taskType: routedModel.taskType, risk: routedModel.risk, reason: routedModel.reason, reasons: routedModel.reasons })}\n\n`);
   }
 
   const abortController = new AbortController();
@@ -7117,8 +7117,12 @@ function sanitizeModelName(value: unknown): string {
 interface ChatModelRoutingDecision {
   model: string;
   routed: boolean;
+  tier?: string;
+  taskType?: string;
+  risk?: string;
   from?: string;
   reason?: string;
+  reasons?: string[];
 }
 
 const PREFERRED_AGENTIC_FALLBACK_MODELS = [
@@ -7131,37 +7135,81 @@ const PREFERRED_AGENTIC_FALLBACK_MODELS = [
 ];
 
 export async function resolveChatModelForRequest(requestedModel: string, messageText: string): Promise<ChatModelRoutingDecision> {
-  if (!shouldAutoRouteFromModel(requestedModel, messageText)) return { model: requestedModel, routed: false };
   const available = await webRuntime.listModels(ollamaHost).catch(() => []);
-  const fallback = chooseAgenticFallbackModel(requestedModel, available, modelRouting);
-  if (!fallback) return { model: requestedModel, routed: false };
-  return {
-    model: fallback,
-    routed: true,
-    from: requestedModel,
-    reason: `${requestedModel} is not reliable for tool/current-information turns; routed to available agentic model ${fallback}.`,
-  };
-}
-
-function shouldAutoRouteFromModel(modelName: string, messageText: string): boolean {
-  return isKnownWeakAgenticModel(modelName) && promptNeedsAgenticTools(messageText);
+  const candidates = buildChatModelCandidatePool(requestedModel, available, modelRouting);
+  return selectModelForChatTurn({
+    requestedModel,
+    message: messageText,
+    candidates,
+    requestedModelWeak: isKnownWeakAgenticModel(requestedModel),
+  }, modelRouting);
 }
 
 function isKnownWeakAgenticModel(modelName: string): boolean {
   return /^gemma4:(e4b|26b)$/i.test(modelName.trim());
 }
 
-function promptNeedsAgenticTools(messageText: string): boolean {
-  const text = messageText.toLowerCase();
-  return /\b(news|today|latest|current|recent|weather|price|prices|score|scores|search|web|browse|look up|read file|write file|edit file|run command|repo|codebase)\b/.test(text);
+function buildChatModelCandidatePool(requestedModel: string, availableModels: string[], policy: ModelRoutingPolicy = {}): ChatModelCandidatePool {
+  const localAgentic = preferredLocalAgenticModels(requestedModel, availableModels, policy);
+  const available = new Set(availableModels.map((name) => name.toLowerCase()));
+  return {
+    small: firstConfiguredChatModel([
+      policyChatModel(policy.smallModel, available),
+      providerModel('openrouter', 'openai/gpt-5-mini'),
+      providerModel('openrouter', 'meta-llama/llama-3.3-70b-instruct:free'),
+      providerModel('gemini', 'gemini-2.0-flash-lite'),
+    ]),
+    default: firstConfiguredChatModel([
+      policyChatModel(policy.defaultModel, available),
+      providerModel('openrouter', 'google/gemini-2.5-flash'),
+      providerModel('gemini', 'gemini-2.5-flash'),
+      providerModel('openai', 'gpt-4o-mini'),
+      ...localAgentic,
+    ]),
+    strong: firstConfiguredChatModel([
+      policyChatModel(policy.strongModel, available),
+      providerModel('openrouter', 'anthropic/claude-sonnet-4.5'),
+      providerModel('anthropic', 'claude-sonnet-4-20250514'),
+      providerModel('openrouter', 'openai/gpt-5-mini'),
+      providerModel('openai', 'gpt-4o'),
+      ...localAgentic,
+    ]),
+    fallback: firstConfiguredChatModel([
+      policyChatModel(policy.fallbackModel, available),
+      providerModel('openrouter', 'meta-llama/llama-3.3-70b-instruct:free'),
+      ...localAgentic,
+    ]),
+    localAgentic,
+  };
 }
 
-function chooseAgenticFallbackModel(requestedModel: string, availableModels: string[], policy: ModelRoutingPolicy = {}): string | undefined {
+function policyChatModel(model: string | undefined, availableLocalModels: Set<string>): string | undefined {
+  const name = sanitizeModelName(model);
+  if (!name) return undefined;
+  const slash = name.indexOf('/');
+  if (slash > 0) {
+    const backend = name.slice(0, slash).toLowerCase();
+    const preset = OPENAI_COMPATIBLE_PRESETS[backend];
+    return preset && readApiKey(preset) ? name : undefined;
+  }
+  return availableLocalModels.has(name.toLowerCase()) ? name : undefined;
+}
+
+function providerModel(backend: string, model: string): string | undefined {
+  const preset = OPENAI_COMPATIBLE_PRESETS[backend];
+  return preset && readApiKey(preset) ? `${backend}/${model}` : undefined;
+}
+
+function firstConfiguredChatModel(candidates: Array<string | undefined>): string | undefined {
+  return candidates.map((name) => sanitizeModelName(name)).find((name) => name.length > 0);
+}
+
+function preferredLocalAgenticModels(requestedModel: string, availableModels: string[], policy: ModelRoutingPolicy = {}): string[] {
   const available = new Set(availableModels.map((name) => name.toLowerCase()));
   const candidates = [policy.strongModel, policy.defaultModel, policy.fallbackModel, ...PREFERRED_AGENTIC_FALLBACK_MODELS]
     .map((name) => sanitizeModelName(name))
     .filter((name) => name && name.toLowerCase() !== requestedModel.toLowerCase());
-  return candidates.find((name) => available.has(name.toLowerCase()));
+  return candidates.filter((name) => available.has(name.toLowerCase()));
 }
 
 /**
@@ -7639,7 +7687,15 @@ function sanitizeModelRoutingPolicy(value: unknown): ModelRoutingPolicy {
   if (source.failureEscalationThreshold !== undefined) policy.failureEscalationThreshold = Math.floor(clampNumber(source.failureEscalationThreshold, 1, 20, 2));
   if (source.confidenceEscalationThreshold !== undefined) policy.confidenceEscalationThreshold = clampNumber(source.confidenceEscalationThreshold, 0, 1, 0.45);
   if (source.autoEscalateOnLowReadiness !== undefined) policy.autoEscalateOnLowReadiness = source.autoEscalateOnLowReadiness === true;
+  if (source.chatRoutingMode !== undefined) policy.chatRoutingMode = sanitizeChatRoutingMode(source.chatRoutingMode);
   return policy;
+}
+
+function sanitizeChatRoutingMode(value: unknown): ChatRoutingMode {
+  const mode = String(value ?? '').trim();
+  return mode === 'off' || mode === 'costSaver' || mode === 'balanced' || mode === 'quality'
+    ? mode
+    : 'balanced';
 }
 
 function sanitizeMediaToolSettings(value: unknown): MediaToolSettings {
