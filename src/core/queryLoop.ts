@@ -127,6 +127,16 @@ export async function* queryLoop(
     ...initialMessages,
   ];
 
+  // The user's active instruction: the last genuine user message present
+  // before the loop starts injecting its own continuation/nudge messages.
+  // Pinning it keeps the real objective in front of the model across
+  // auto-continue relaunches and in the trimmed synthesis context — without
+  // it, a loop-injected stub becomes the "last user message" and the goal
+  // silently evaporates (the cause of goal-drift on resumed/continued runs).
+  const originalGoal = [...initialMessages].reverse().find(
+    (m) => m.role === 'user' && typeof m.content === 'string' && m.content.trim().length > 0,
+  )?.content as string | undefined;
+
   let turn = 0;
 
   // ── Injection defence scan ──────────────────────────────────────────
@@ -380,9 +390,12 @@ export async function* queryLoop(
           yield { type: 'text', content: text };
           yield { type: 'auto_continue', turn, continuationCount: autoContinueCount, reason };
           tracer?.recordEvent('auto_continue', { turn, count: autoContinueCount, reason, taskType: config.taskType });
+          const continuationBody = 'Continue with all suggestions. Do not stop to ask — complete everything autonomously. Read all relevant files, do all analysis steps, and provide a comprehensive final result.';
           messages.push({
             role: 'user',
-            content: 'Continue with all suggestions. Do not stop to ask — complete everything autonomously. Read all relevant files, do all analysis steps, and provide a comprehensive final result.',
+            content: originalGoal
+              ? `${continuationBody}\n\nReminder — the original task you must complete is:\n${originalGoal}`
+              : continuationBody,
           } as Message);
           if (session) {
             await appendSession(session, 'user_message', {
@@ -690,7 +703,13 @@ export async function* queryLoop(
   // Keep: system prompt, last user message, and synthesis instruction.
   // The synthesis instruction already contains the tool results.
   const systemMsg = messages.find((m) => m.role === 'system' && m !== messages[messages.length - 1]);
-  const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+  // Prefer the pinned original goal over a reverse-scan: after auto-continue
+  // or empty-result nudges, the most recent 'user' message is a loop-injected
+  // stub, not the task. Synthesising against the stub is exactly how the goal
+  // gets lost. Fall back to the reverse-scan only when no goal was captured.
+  const lastUserMsg: Message | undefined = originalGoal
+    ? ({ role: 'user', content: originalGoal } as Message)
+    : [...messages].reverse().find((m) => m.role === 'user');
   const synthInstructionMsg = messages[messages.length - 1];
   const synthMessages: Message[] = [];
   if (systemMsg) synthMessages.push(systemMsg);
@@ -991,41 +1010,29 @@ export function detectPartialResult(text: string): string | null {
     return 'numbered suggestions at end of response';
   }
 
-  // Explicit continuation prompts
+  // Explicit continuation prompts: phrases where the model is STOPPING to ask
+  // permission to do more pending work, instead of just doing it. These are
+  // the only legitimate auto-continue triggers.
+  //
+  // Polite sign-offs of a COMPLETED answer ("if you want", "let me know if
+  // you", "anything else", "i can also", "alternatively", "happy to help"…)
+  // are deliberately NOT here: they appear on finished work and previously
+  // caused goal-losing relaunches. A done task should stop cleanly.
   const continuationPhrases = [
     'would you like me to',
     'shall i continue',
     'shall i proceed',
     'want me to continue',
     'want me to proceed',
-    'let me know if you',
-    'let me know which',
     'would you like to proceed',
     'should i go ahead',
     'should i continue',
-    'do you want me to',
-    'i can also',
-    'i could also',
+    'should i proceed',
+    'do you want me to continue',
+    'do you want me to proceed',
     'what would you like me to do next',
-    'which option would you prefer',
+    'let me know which',
     'ready to proceed',
-    'if you want',
-    'if you\'d like',
-    'would you prefer',
-    'just let me know',
-    'happy to help with',
-    'i\'d recommend',
-    'here are some options',
-    'here are a few options',
-    'you could also',
-    'another option would be',
-    'alternatively',
-    'what do you think',
-    'does that sound good',
-    'any questions',
-    'need anything else',
-    'anything else you',
-    'is there anything else',
   ];
   for (const phrase of continuationPhrases) {
     if (lower.includes(phrase)) {
@@ -1033,16 +1040,18 @@ export function detectPartialResult(text: string): string | null {
     }
   }
 
-  // Question mark at the very end (model is asking something instead of doing)
+  // Question mark at the very end (model is asking instead of doing). Tightened
+  // to require BOTH a user-directed subject AND a continuation-intent verb, so
+  // offers of optional extras ("Want me to also generate the code?") on a
+  // finished answer do not trigger a relaunch — only genuine "should I keep
+  // going with the pending work?" questions do.
   const trimmed = text.trim();
   if (trimmed.endsWith('?') && trimmed.length > 50) {
-    // Only trigger if the last sentence is a question directed at the user
-    const lastLine = trimmed.split('\n').pop() ?? '';
-    const questionLower = lastLine.toLowerCase();
-    if (questionLower.includes('you') || questionLower.includes('shall') ||
-        questionLower.includes('should') || questionLower.includes('want') ||
-        questionLower.includes('prefer') || questionLower.includes('like me')) {
-      return 'ends with question directed at user';
+    const lastLine = (trimmed.split('\n').pop() ?? '').toLowerCase();
+    const directedAtUser = /\b(you|shall|should|want|like me)\b/.test(lastLine);
+    const continuationIntent = /\b(continue|proceed|go ahead|keep going|next step|move on|carry on)\b/.test(lastLine);
+    if (directedAtUser && continuationIntent) {
+      return 'ends with question asking to continue pending work';
     }
   }
 

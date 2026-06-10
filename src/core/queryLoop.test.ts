@@ -1009,5 +1009,30 @@ describe('queryLoop runtime behavior', () => {
       expect(detectPartialResult('')).toBeNull();
       expect(detectPartialResult('OK')).toBeNull();
     });
+
+    // Regression: polite sign-offs of a COMPLETED answer must NOT trigger a
+    // relaunch. These phrases previously fired auto-continue, which then
+    // dropped the original goal and caused goal-drift on the next turn.
+    it('returns null for polite sign-offs on a finished answer', () => {
+      expect(detectPartialResult('Phase 0 passed: top-1 12.8%, perplexity 1161. Let me know if you need anything else.')).toBeNull();
+      expect(detectPartialResult('The build is complete and all tests pass. If you want, I can take it further another time.')).toBeNull();
+      expect(detectPartialResult('Done — results saved to results.json. I can also tidy the logs later.')).toBeNull();
+      expect(detectPartialResult('Revenue was £45,000. Alternatively the figure excluding VAT is £37,500.')).toBeNull();
+      expect(detectPartialResult('All wired up. Happy to help with the next phase whenever you like.')).toBeNull();
+    });
+
+    // Regression: an offer of an optional extra phrased as a trailing question
+    // is a finished answer, not pending work — it must not relaunch.
+    it('returns null for trailing questions that merely offer optional extras', () => {
+      expect(detectPartialResult('The experiment passed and the report is written. Want me to also generate a chart of the results?')).toBeNull();
+      expect(detectPartialResult('Here is the full analysis with all figures. Would you like a PDF export of this too?')).toBeNull();
+    });
+
+    // Genuine "should I keep going with the pending work?" must still fire.
+    it('still fires on genuine continuation questions', () => {
+      expect(detectPartialResult('I finished step 1 of 3. Should I continue with the remaining steps?')).toContain('should i continue');
+      expect(detectPartialResult('Setup is staged. Want me to proceed with running it?')).toContain('want me to proceed');
+      expect(detectPartialResult('I have a plan ready. Shall I go ahead and run the migration now to continue?')).toBeTruthy();
+    });
   });
 });
