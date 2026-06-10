@@ -4,6 +4,12 @@ module.exports = {
   testEnvironment: 'node',
   roots: ['<rootDir>/src'],
   testMatch: ['**/*.test.ts'],
+  // Bound parallelism so IO/network-bound tests (e.g. the optional-service
+  // health probes that abort after 5s) don't starve each other for CPU/IO
+  // under full-suite load. Unbounded workers caused intermittent single-test
+  // timeouts that never reproduced in isolation. 50% keeps runs fast while
+  // leaving headroom so a slow-but-correct test isn't killed by contention.
+  maxWorkers: '50%',
   setupFilesAfterEnv: ['<rootDir>/src/test/envIsolation.setup.ts'],
   moduleNameMapper: {
     '^@core/(.*)$': '<rootDir>/src/core/$1',

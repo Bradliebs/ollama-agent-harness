@@ -135,7 +135,7 @@ describe('slashCommandRouter', () => {
     const r = await routeSlashCommand('/memory-wiki', projectDir);
     expect(r.handled).toBe(true);
     expect(r.reason).toMatch(/memory_wiki/);
-  });
+  }, 20000); // real filesystem scan; ~3s alone but can exceed the 5s default under full-suite I/O load
 
   it('/kanban with no args shows the board', async () => {
     const r = await routeSlashCommand('/kanban', projectDir);

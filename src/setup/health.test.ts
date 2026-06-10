@@ -4,6 +4,13 @@ import * as path from 'path';
 import { checkSetupHealth } from './health';
 
 describe('setup health', () => {
+  // checkSetupHealth probes the optional ccmem service via fetch('/health')
+  // with a 5s internal abort (REQUEST_TIMEOUT_MS in conceptMemoryClient). When
+  // that service is offline, the probe can run right up to 5s, colliding with
+  // Jest's 5s default under full-suite parallel load. Give these IO-bound tests
+  // headroom above that probe so the suite is deterministic, not load-dependent.
+  jest.setTimeout(20_000);
+
   let fixtureDir: string;
 
   beforeEach(async () => {
