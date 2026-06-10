@@ -51,6 +51,28 @@ Create a JSON manifest with these sections:
 The starter manifest lives at
 [cookbook/auto-research.manifest.example.json](../cookbook/auto-research.manifest.example.json).
 
+### Held-out battery
+
+The built-in catalog ([src/eval/benchmarkTasks.ts](../src/eval/benchmarkTasks.ts))
+carries an extended `ext.*` battery: 21 development format/reasoning tasks plus a
+12-task adversarial/calibration holdout. The holdout tasks are tagged `holdout`
+and are *content-disjoint from but capability-matched to* the development
+adversarial tasks (for example, development checks `∛`-style confident-wrong on
+one item while the holdout checks the same axis on a different item). They were
+authored specifically **not** to be used to design any candidate, so directional
+agreement there is a genuine generalisation test rather than a memorised win.
+
+A ready-to-run arm over the full 58-task non-tool battery lives at
+[cookbook/auto-research.holdout-battery.manifest.json](../cookbook/auto-research.holdout-battery.manifest.json)
+(46 development tasks, 12 reserved holdout tasks, trust gates on). Requires
+`HARNESS_EXPERIMENT_PROMPT_OVERRIDE=1` on the daemon.
+
+> [!WARNING]
+> 58 paired tasks and a 12-task holdout are a real improvement over the prior
+> 25/6 split, but they remain **modest** for a McNemar gate — a holdout net-win
+> of two has a wide confidence interval. Treat any keep as provisional and
+> re-confirm on a larger battery before changing production policy.
+
 ## Dry-run first
 
 Dry runs validate the manifest, resolve benchmark tasks, freeze the evaluator
