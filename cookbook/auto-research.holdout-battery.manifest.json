@@ -101,7 +101,7 @@
     "maxTasks": 60,
     "maxCostUnits": 130,
     "maxDurationMs": 7200000,
-    "maxToolCalls": 120
+    "maxToolCalls": 500
   },
   "guardrails": {
     "minPairedTasksForKeep": 36,
