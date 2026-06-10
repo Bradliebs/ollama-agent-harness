@@ -159,4 +159,163 @@ describe('scorePairedExperiment', () => {
     expect(scorecard.mcnemar.candidateOnlyPasses).toBe(20);
     expect(scorecard.mcnemar.significantAt95).toBe(true);
   });
+
+  it('reports the paired delta standard error and confidence interval', () => {
+    // Numeric trace: n=6, b=1, c=3, delta=(3-1)/6=0.3333.
+    // variance = (b+c - (c-b)^2/n)/n^2 = (4 - 4/6)/36 = 3.3333/36 = 0.092593.
+    // SE = sqrt(0.092593) = 0.30429.
+    const baseline = run('baseline', [
+      result('both-pass', 'pass'),
+      result('candidate-win-1', 'fail'),
+      result('candidate-win-2', 'fail'),
+      result('candidate-win-3', 'fail'),
+      result('baseline-win', 'pass'),
+      result('both-fail', 'fail'),
+    ]);
+    const candidate = run('candidate', [
+      result('both-pass', 'pass'),
+      result('candidate-win-1', 'pass'),
+      result('candidate-win-2', 'pass'),
+      result('candidate-win-3', 'pass'),
+      result('baseline-win', 'fail'),
+      result('both-fail', 'fail'),
+    ]);
+
+    const scorecard = scorePairedExperiment({
+      baselineVariantId: 'baseline',
+      candidateVariantId: 'candidate',
+      baselineRun: baseline,
+      candidateRun: candidate,
+      guardrails: { minPairedTasksForKeep: 6, minCandidateNetWins: 2, rejectOnFailureCategoryIncrease: [] },
+    });
+
+    expect(scorecard.passRateDeltaStdErr).toBeCloseTo(0.30429, 4);
+    expect(scorecard.passRateDeltaCi95.lower).toBeCloseTo(0.3333 - 1.96 * 0.30429, 3);
+    expect(scorecard.passRateDeltaCi95.upper).toBeCloseTo(0.3333 + 1.96 * 0.30429, 3);
+  });
+
+  it('scores a held-out subset as a separate confirmation scorecard', () => {
+    const baseline = run('baseline', [
+      result('both-pass', 'pass'),
+      result('candidate-win-1', 'fail'),
+      result('candidate-win-2', 'fail'),
+      result('candidate-win-3', 'fail'),
+      result('baseline-win', 'pass'),
+      result('both-fail', 'fail'),
+    ]);
+    const candidate = run('candidate', [
+      result('both-pass', 'pass'),
+      result('candidate-win-1', 'pass'),
+      result('candidate-win-2', 'pass'),
+      result('candidate-win-3', 'pass'),
+      result('baseline-win', 'fail'),
+      result('both-fail', 'fail'),
+    ]);
+
+    // Holdout = one candidate win + one baseline win => net 0 on the held-out split.
+    const scorecard = scorePairedExperiment({
+      baselineVariantId: 'baseline',
+      candidateVariantId: 'candidate',
+      baselineRun: baseline,
+      candidateRun: candidate,
+      guardrails: { minPairedTasksForKeep: 6, minCandidateNetWins: 2, rejectOnFailureCategoryIncrease: [] },
+      holdoutTaskIds: ['candidate-win-1', 'baseline-win'],
+    });
+
+    expect(scorecard.holdout).toBeDefined();
+    expect(scorecard.holdout?.pairedTasks).toBe(2);
+    expect(scorecard.holdout?.paired.candidateOnlyPass).toBe(1);
+    expect(scorecard.holdout?.paired.baselineOnlyPass).toBe(1);
+    expect(scorecard.holdout?.paired.netCandidateWins).toBe(0);
+    // Full-set decision is unaffected when no holdout guardrail is set.
+    expect(scorecard.decision.status).toBe('keep');
+  });
+
+  it('blocks a keep when the holdout split does not confirm', () => {
+    const baseline = run('baseline', [
+      result('both-pass', 'pass'),
+      result('candidate-win-1', 'fail'),
+      result('candidate-win-2', 'fail'),
+      result('candidate-win-3', 'fail'),
+      result('baseline-win', 'pass'),
+      result('both-fail', 'fail'),
+    ]);
+    const candidate = run('candidate', [
+      result('both-pass', 'pass'),
+      result('candidate-win-1', 'pass'),
+      result('candidate-win-2', 'pass'),
+      result('candidate-win-3', 'pass'),
+      result('baseline-win', 'fail'),
+      result('both-fail', 'fail'),
+    ]);
+
+    const scorecard = scorePairedExperiment({
+      baselineVariantId: 'baseline',
+      candidateVariantId: 'candidate',
+      baselineRun: baseline,
+      candidateRun: candidate,
+      guardrails: { minPairedTasksForKeep: 6, minCandidateNetWins: 2, minHoldoutNetWins: 1, rejectOnFailureCategoryIncrease: [] },
+      holdoutTaskIds: ['candidate-win-1', 'baseline-win'],
+    });
+
+    // Full set net +2 would keep, but holdout net 0 < required 1.
+    expect(scorecard.paired.netCandidateWins).toBe(2);
+    expect(scorecard.decision.status).toBe('inconclusive');
+    expect(scorecard.decision.reasons[0]).toContain('Holdout split did not confirm');
+  });
+
+  it('downgrades a keep to inconclusive when requireSignificance is set and the win is in the noise floor', () => {
+    // Numeric trace: b=1, c=3 => McNemar = (|3-1|-1)^2/(3+1) = 1/4 = 0.25 < 3.841, not significant.
+    const baseline = run('baseline', [
+      result('both-pass', 'pass'),
+      result('candidate-win-1', 'fail'),
+      result('candidate-win-2', 'fail'),
+      result('candidate-win-3', 'fail'),
+      result('baseline-win', 'pass'),
+      result('both-fail', 'fail'),
+    ]);
+    const candidate = run('candidate', [
+      result('both-pass', 'pass'),
+      result('candidate-win-1', 'pass'),
+      result('candidate-win-2', 'pass'),
+      result('candidate-win-3', 'pass'),
+      result('baseline-win', 'fail'),
+      result('both-fail', 'fail'),
+    ]);
+
+    const scorecard = scorePairedExperiment({
+      baselineVariantId: 'baseline',
+      candidateVariantId: 'candidate',
+      baselineRun: baseline,
+      candidateRun: candidate,
+      guardrails: { minPairedTasksForKeep: 6, minCandidateNetWins: 2, requireSignificance: true, rejectOnFailureCategoryIncrease: [] },
+    });
+
+    expect(scorecard.mcnemar.significantAt95).toBe(false);
+    expect(scorecard.decision.status).toBe('inconclusive');
+    expect(scorecard.decision.reasons[0]).toContain('not significant at 95%');
+  });
+
+  it('keeps a significant candidate even when requireSignificance is set', () => {
+    const baselineResults = [
+      ...Array.from({ length: 4 }, (_, index) => result(`baseline-win-${index}`, 'pass')),
+      ...Array.from({ length: 20 }, (_, index) => result(`candidate-win-${index}`, 'fail')),
+    ];
+    const candidateResults = [
+      ...Array.from({ length: 4 }, (_, index) => result(`baseline-win-${index}`, 'fail')),
+      ...Array.from({ length: 20 }, (_, index) => result(`candidate-win-${index}`, 'pass')),
+    ];
+
+    const scorecard = scorePairedExperiment({
+      baselineVariantId: 'baseline',
+      candidateVariantId: 'candidate',
+      baselineRun: run('baseline', baselineResults),
+      candidateRun: run('candidate', candidateResults),
+      guardrails: { minPairedTasksForKeep: 20, minCandidateNetWins: 1, requireSignificance: true, rejectOnFailureCategoryIncrease: [] },
+    });
+
+    expect(scorecard.mcnemar.significantAt95).toBe(true);
+    expect(scorecard.decision.status).toBe('keep');
+    expect(scorecard.decision.automaticPromotionAllowed).toBe(true);
+  });
 });

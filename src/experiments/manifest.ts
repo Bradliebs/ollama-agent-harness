@@ -52,6 +52,23 @@ export function validateExperimentManifest(manifest: ExperimentManifest): Manife
   if (manifest.evaluation?.perTaskTimeoutMs !== undefined && manifest.evaluation.perTaskTimeoutMs <= 0) {
     errors.push('evaluation.perTaskTimeoutMs must be positive when provided.');
   }
+  const holdout = manifest.evaluation?.holdout;
+  if (holdout) {
+    const hasTaskIds = holdout.taskIds !== undefined;
+    const hasFraction = holdout.fraction !== undefined;
+    if (hasTaskIds && hasFraction) {
+      errors.push('evaluation.holdout cannot set both fraction and taskIds.');
+    }
+    if (!hasTaskIds && !hasFraction) {
+      errors.push('evaluation.holdout must set either fraction or taskIds.');
+    }
+    if (hasTaskIds && (holdout.taskIds!.length === 0)) {
+      errors.push('evaluation.holdout.taskIds cannot be empty when provided.');
+    }
+    if (hasFraction && !(holdout.fraction! > 0 && holdout.fraction! < 1)) {
+      errors.push('evaluation.holdout.fraction must be between 0 and 1 (exclusive) when provided.');
+    }
+  }
   if (manifest.budget?.maxTasks !== undefined && manifest.budget.maxTasks <= 0) {
     errors.push('budget.maxTasks must be positive when provided.');
   }

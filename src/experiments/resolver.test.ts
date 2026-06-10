@@ -74,4 +74,48 @@ describe('resolveExperimentPlan', () => {
       tasks,
     })).rejects.toThrow(/budget.maxCostUnits/);
   });
+
+  it('resolves an explicit holdout subset against the selected tasks', async () => {
+    const plan = await resolveExperimentPlan({
+      projectDir: process.cwd(),
+      manifest: manifest({ evaluation: { datasetId: 'fixture', scorerVersion: 'v1', holdout: { taskIds: ['task-b'] } } }),
+      tasks,
+    });
+    expect(plan.holdoutTaskIds).toEqual(['task-b']);
+  });
+
+  it('rejects an explicit holdout that matches no selected task', async () => {
+    await expect(resolveExperimentPlan({
+      projectDir: process.cwd(),
+      manifest: manifest({ evaluation: { datasetId: 'fixture', scorerVersion: 'v1', taskIds: ['task-b'], holdout: { taskIds: ['task-a'] } } }),
+      tasks,
+    })).rejects.toThrow(/holdout\.taskIds matched none/);
+  });
+
+  it('partitions a deterministic, stable holdout fraction', async () => {
+    const manyTasks: BenchmarkTask[] = Array.from({ length: 8 }, (_, index) => ({
+      id: `frac-task-${index}`,
+      tier: 'canned' as const,
+      description: `t${index}`,
+      input: `t${index}`,
+    }));
+    const opts = {
+      projectDir: process.cwd(),
+      manifest: manifest({ evaluation: { datasetId: 'fixture', scorerVersion: 'v1', holdout: { fraction: 0.5 } } }),
+      tasks: manyTasks,
+    };
+    const first = await resolveExperimentPlan(opts);
+    const second = await resolveExperimentPlan(opts);
+    expect(first.holdoutTaskIds).toEqual(second.holdoutTaskIds);
+    expect(first.holdoutTaskIds!.length).toBeGreaterThan(0);
+    expect(first.holdoutTaskIds!.length).toBeLessThan(manyTasks.length);
+    for (const id of first.holdoutTaskIds!) {
+      expect(first.selectedTaskIds).toContain(id);
+    }
+  });
+
+  it('leaves holdoutTaskIds undefined when no holdout is configured', async () => {
+    const plan = await resolveExperimentPlan({ projectDir: process.cwd(), manifest: manifest(), tasks });
+    expect(plan.holdoutTaskIds).toBeUndefined();
+  });
 });

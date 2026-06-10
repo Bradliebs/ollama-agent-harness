@@ -42,10 +42,11 @@ Create a JSON manifest with these sections:
 * `rollbackTarget` records the state you can return to if the candidate loses
 * `baseline` and `candidate` define the paired variants
 * `evaluation` selects the frozen benchmark dataset, scorer version, task IDs,
-  tiers, and timeout
+  tiers, timeout, and an optional held-out confirmation split (`holdout`)
 * `budget` limits selected tasks, estimated paired cost units, elapsed duration,
   and total tool calls
-* `guardrails` controls keep, discard, and inconclusive decisions
+* `guardrails` controls keep, discard, and inconclusive decisions, including the
+  optional `requireSignificance` and `minHoldoutNetWins` trust gates
 
 The starter manifest lives at
 [cookbook/auto-research.manifest.example.json](../cookbook/auto-research.manifest.example.json).
@@ -120,6 +121,49 @@ Promotion evidence maps these decisions to durable statuses:
 Automatic promotion evidence is still evidence, not a direct write to memory,
 skills, model routing, or Mycelium policy. Human review and the existing safety
 gates remain in control.
+
+## Held-out confirmation and the noise floor
+
+A win on a small task set can be a sampling artifact: both the size of the
+effect and the specific tasks it won on can be noise. Two mechanisms guard
+against shipping such a win.
+
+**Noise floor.** Every scorecard reports `passRateDeltaStdErr` and
+`passRateDeltaCi95`, the standard error and 95% confidence interval of the
+paired pass-rate delta (McNemar paired-proportion formula). When the interval
+straddles zero, the observed win sits inside the noise floor. These fields are
+always present and never gate a decision on their own — they describe how much
+to trust the delta.
+
+**Held-out split.** Set `evaluation.holdout` to carve a confirmation subset out
+of the selected tasks. Tasks are still evaluated; the scorer simply reports a
+separate `holdout` sub-scorecard (paired counts, net wins, significance) for
+them. Provide either:
+
+* `taskIds` — an explicit subset of the selected task IDs, or
+* `fraction` — a value in `(0, 1)`; tasks are partitioned by a stable SHA-256
+  hash of the task ID, so the same split is reproduced on every run and machine.
+
+Use a held-out split to detect a candidate that was iterated against the visible
+task set: if the gain does not reproduce on tasks that were not used to tune it,
+treat it as overfitting.
+
+**Trust gates (opt-in).** Two guardrails turn the measurements above into keep
+requirements. Both default off, so existing manifests are unaffected:
+
+* `requireSignificance: true` downgrades a would-be `keep` to `inconclusive`
+  unless the paired McNemar test is significant at 95%. This needs enough
+  discordant pairs to clear the noise floor — a handful of canned tasks can
+  never be significant (the maximum McNemar statistic on four paired tasks is
+  2.25, below the 3.841 threshold), so this gate is meant for a larger battery.
+* `minHoldoutNetWins: N` downgrades a would-be `keep` to `inconclusive` unless
+  the held-out subset shows at least `N` net candidate wins. It requires a
+  `holdout` split to be configured.
+
+Release-grade evidence therefore combines a larger task set (enough paired tasks
+to clear `requireSignificance`), a `holdout` split, and both trust gates. The
+starter manifest keeps these gates off because it is a four-task smoke test; it
+includes a one-task `holdout` only to demonstrate the split syntax.
 
 ## Promotion gate integration
 

@@ -63,6 +63,43 @@ describe('validateExperimentManifest', () => {
       'budget.maxToolCalls cannot be negative when provided.',
     ]));
   });
+
+  it('rejects a holdout that sets both fraction and taskIds', () => {
+    const result = validateExperimentManifest(manifest({
+      evaluation: { datasetId: 'benchmarks:v1', scorerVersion: 'benchmark.ts:v1', holdout: { fraction: 0.3, taskIds: ['task-a'] } },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual(expect.arrayContaining([
+      'evaluation.holdout cannot set both fraction and taskIds.',
+    ]));
+  });
+
+  it('rejects a holdout fraction outside the open interval (0,1)', () => {
+    const result = validateExperimentManifest(manifest({
+      evaluation: { datasetId: 'benchmarks:v1', scorerVersion: 'benchmark.ts:v1', holdout: { fraction: 1 } },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual(expect.arrayContaining([
+      'evaluation.holdout.fraction must be between 0 and 1 (exclusive) when provided.',
+    ]));
+  });
+
+  it('rejects an empty holdout that sets neither fraction nor taskIds', () => {
+    const result = validateExperimentManifest(manifest({
+      evaluation: { datasetId: 'benchmarks:v1', scorerVersion: 'benchmark.ts:v1', holdout: {} },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors).toEqual(expect.arrayContaining([
+      'evaluation.holdout must set either fraction or taskIds.',
+    ]));
+  });
+
+  it('accepts a valid holdout fraction', () => {
+    const result = validateExperimentManifest(manifest({
+      evaluation: { datasetId: 'benchmarks:v1', scorerVersion: 'benchmark.ts:v1', taskIds: ['task-a'], holdout: { fraction: 0.25 } },
+    }));
+    expect(result).toEqual({ ok: true, errors: [] });
+  });
 });
 
 describe('buildEvaluatorIdentity', () => {

@@ -24,6 +24,22 @@ export interface ExperimentEvaluationSpec {
   taskIds?: string[];
   tiers?: BenchmarkTier[];
   perTaskTimeoutMs?: number;
+  /**
+   * Optional held-out split. Tasks carved out here are still evaluated, but
+   * the scorer reports a separate holdout sub-scorecard and (when the
+   * guardrail `minHoldoutNetWins` is set) a keep decision must also be
+   * confirmed on these tasks. Use this to guard against a candidate that was
+   * iterated against the visible task set. Provide EITHER an explicit task-id
+   * list OR a deterministic fraction (hash-partitioned, stable across runs).
+   */
+  holdout?: ExperimentHoldoutSpec;
+}
+
+export interface ExperimentHoldoutSpec {
+  /** Explicit task ids to hold out. Must be a subset of the selected tasks. */
+  taskIds?: string[];
+  /** Fraction (0,1) of selected tasks to hold out via a stable hash partition. */
+  fraction?: number;
 }
 
 export interface ExperimentBudgetPolicy {
@@ -40,6 +56,19 @@ export interface ExperimentGuardrails {
   maxToolCallRegressionRatio?: number;
   rejectOnFailureCategoryIncrease?: FailureCategory[];
   requireNoSafetyRegressions?: boolean;
+  /**
+   * When true, a keep decision additionally requires the paired McNemar test
+   * to be significant at 95%. Guards against keeping wins that sit inside the
+   * noise floor. Opt-in (default off) to preserve existing behaviour.
+   */
+  requireSignificance?: boolean;
+  /**
+   * When set (and a holdout split is configured), a keep decision additionally
+   * requires the holdout subset to show at least this many net candidate wins.
+   * Confirms the improvement generalises to tasks not used to tune the
+   * candidate. Opt-in (default off).
+   */
+  minHoldoutNetWins?: number;
 }
 
 export interface ExperimentManifest {
@@ -112,6 +141,36 @@ export interface McNemarSummary {
   significantAt95: boolean;
 }
 
+/** Two-sided 95% confidence interval for a paired pass-rate delta. */
+export interface ConfidenceInterval {
+  lower: number;
+  upper: number;
+}
+
+/**
+ * Paired scorecard for a held-out subset of tasks. Lighter than the full
+ * scorecard: it only carries the paired confirmation signal (net wins,
+ * significance, noise floor), since latency / tool-call / failure-category
+ * guardrails are global properties evaluated on the full set.
+ */
+export interface ExperimentHoldoutScorecard {
+  taskIds: string[];
+  pairedTasks: number;
+  paired: {
+    bothPass: number;
+    bothFail: number;
+    candidateOnlyPass: number;
+    baselineOnlyPass: number;
+    netCandidateWins: number;
+  };
+  /** Paired marginal pass-rate delta (candidateOnlyPass - baselineOnlyPass) / pairedTasks. */
+  passRateDelta: number;
+  /** Standard error of the paired delta (McNemar paired-proportion formula). */
+  passRateDeltaStdErr: number;
+  passRateDeltaCi95: ConfidenceInterval;
+  mcnemar: McNemarSummary;
+}
+
 export interface ExperimentScorecard {
   baselineVariantId: string;
   candidateVariantId: string;
@@ -130,6 +189,12 @@ export interface ExperimentScorecard {
   averageDurationRatio: number | null;
   averageToolCallRatio: number | null;
   mcnemar: McNemarSummary;
+  /** Standard error of the paired pass-rate delta (noise floor). */
+  passRateDeltaStdErr: number;
+  /** Two-sided 95% confidence interval for the paired pass-rate delta. */
+  passRateDeltaCi95: ConfidenceInterval;
+  /** Present only when evaluation.holdout is configured. */
+  holdout?: ExperimentHoldoutScorecard;
   taskDiffs: PairedTaskDiff[];
   decision: ExperimentDecision;
 }
@@ -139,6 +204,8 @@ export interface ResolvedExperimentPlan {
   evaluator: EvaluatorIdentity;
   selectedTaskCount: number;
   selectedTaskIds: string[];
+  /** Subset of selectedTaskIds held out for confirmation. Empty when no holdout is configured. */
+  holdoutTaskIds?: string[];
   dryRun: boolean;
 }
 

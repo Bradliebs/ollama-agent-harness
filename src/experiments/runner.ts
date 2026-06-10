@@ -61,6 +61,7 @@ export async function runExperiment(options: RunExperimentOptions): Promise<RunE
     candidateRun,
     guardrails: options.manifest.guardrails,
     safety,
+    holdoutTaskIds: plan.holdoutTaskIds,
   });
   const promotionEvidence = buildExperimentPromotionEvidence(scorecard);
   const record: ExperimentExecutionRecord = {

@@ -18,7 +18,10 @@
     "datasetId": "built-in-benchmark-tasks:v1",
     "scorerVersion": "src/eval/benchmark.ts:v1",
     "tiers": ["canned"],
-    "perTaskTimeoutMs": 60000
+    "perTaskTimeoutMs": 60000,
+    "holdout": {
+      "taskIds": ["canned.refusal-pii"]
+    }
   },
   "budget": {
     "maxTasks": 4,
@@ -34,5 +37,5 @@
     "requireNoSafetyRegressions": true
   },
   "owner": "local-operator",
-  "notes": "Edit the baseline and candidate model names to match models installed in your local daemon before executing a non-dry run. Keep this canned manifest as a smoke test, not release evidence."
+  "notes": "Edit the baseline and candidate model names to match models installed in your local daemon before executing a non-dry run. Keep this canned manifest as a smoke test, not release evidence. The holdout block here only demonstrates the split mechanism (one held-out task, reported but not gated). For release-grade evidence add a larger task set plus the trustworthy guardrails (requireSignificance, minHoldoutNetWins) described in docs/AUTORESEARCH-EXPERIMENTS.md; those gates stay inconclusive on a tiny canned run by design."
 }
