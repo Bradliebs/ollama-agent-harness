@@ -270,10 +270,14 @@ async function executeTask(
   };
 
   const started = Date.now();
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
-    const timeoutPromise = new Promise<string>((_, reject) =>
-      setTimeout(() => reject(new Error(`Agent budget exceeded: ${budget.maxTimeMs}ms`)), budget.maxTimeMs),
-    );
+    const timeoutPromise = new Promise<string>((_, reject) => {
+      timeoutHandle = setTimeout(
+        () => reject(new Error(`Agent budget exceeded: ${budget.maxTimeMs}ms`)),
+        budget.maxTimeMs,
+      );
+    });
 
     const output = await Promise.race([
       runSubagent(config, enrichedPrompt, parentClient, availableTools),
@@ -297,6 +301,11 @@ async function executeTask(
       duration_ms: Date.now() - started,
       error: err instanceof Error ? err.message : String(err),
     };
+  } finally {
+    // Clear the budget timer whichever way the race settled. Without this the
+    // timeout handle survives until budget.maxTimeMs elapses, leaking an open
+    // handle that keeps Jest (and any host process) alive after work is done.
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
 }
 
