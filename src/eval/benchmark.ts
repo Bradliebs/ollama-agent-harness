@@ -214,6 +214,12 @@ export interface BenchmarkRunOptions {
   /** Per-task timeout in ms. Default 60_000. */
   perTaskTimeoutMs?: number;
   /**
+   * Optional system-prompt override sent with each /api/chat request. Used by
+   * the experiment runner to evaluate prompt-scope mutations (the daemon only
+   * honors it when HARNESS_EXPERIMENT_PROMPT_OVERRIDE=1).
+   */
+  systemPrompt?: string;
+  /**
    * Project directory for persisting run results and regression tasks.
    * When set, results are written to <projectDir>/.harness/benchmarks/.
    */
@@ -262,7 +268,11 @@ export async function runBenchmarkTask(task: BenchmarkTask, options: BenchmarkRu
     const response = await fetchImpl(`${baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-      body: JSON.stringify({ message: task.input, model: options.model }),
+      body: JSON.stringify({
+        message: task.input,
+        model: options.model,
+        ...(options.systemPrompt ? { systemPrompt: options.systemPrompt } : {}),
+      }),
     });
     obs = await consumeChatStream(response, timeoutMs);
   } catch (error) {

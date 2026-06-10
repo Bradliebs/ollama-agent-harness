@@ -1,5 +1,11 @@
 import type { HarnessEvent } from '../persistence/eventStore';
-import type { ExperimentExecutionRecord, ResolvedExperimentPlan } from './types';
+import type {
+  ConfidenceInterval,
+  ExperimentExecutionRecord,
+  ExperimentScorecard,
+  PairedTaskDiff,
+  ResolvedExperimentPlan,
+} from './types';
 
 export interface ExperimentEventSummary {
   eventId: string;
@@ -60,4 +66,94 @@ export function summarizeExperimentHistory(events: HarnessEvent[]): ExperimentHi
     inconclusive: summaries.filter((event) => event.promotionStatus === 'experiment_inconclusive').length,
     latestEventAt: summaries.map((event) => event.timestamp).sort().at(-1),
   };
+}
+
+/** Per-task pairing outcome, flagged when the candidate and baseline diverged. */
+export interface ExperimentTaskDetail {
+  taskId: string;
+  outcome: PairedTaskDiff['outcome'];
+  baselineStatus: PairedTaskDiff['baselineStatus'];
+  candidateStatus: PairedTaskDiff['candidateStatus'];
+  baselineFailureCategory?: PairedTaskDiff['baselineFailureCategory'];
+  candidateFailureCategory?: PairedTaskDiff['candidateFailureCategory'];
+  /** True when the two arms differ on pass/fail or on failure category. */
+  changed: boolean;
+}
+
+/**
+ * Task-level detail for a single completed experiment run. This resolves the
+ * gap where the compact history summary (and the `experiment_completed` event
+ * payload) drops `scorecard.taskDiffs`, so `--show` had no way to surface which
+ * tasks actually moved without re-querying the wrong record.
+ */
+export interface ExperimentEventDetail {
+  eventId: string;
+  timestamp: string;
+  experimentId?: string;
+  runId?: string;
+  decisionStatus?: string;
+  promotionStatus?: string;
+  pairedTasks?: number;
+  paired?: ExperimentScorecard['paired'];
+  passRateDelta?: number;
+  passRateDeltaCi95?: ConfidenceInterval;
+  significantAt95?: boolean;
+  holdout?: {
+    pairedTasks: number;
+    netCandidateWins: number;
+    significantAt95: boolean;
+  };
+  changedTaskCount: number;
+  taskDiffs: ExperimentTaskDetail[];
+}
+
+function taskChanged(diff: PairedTaskDiff): boolean {
+  return diff.outcome === 'candidate_only_pass'
+    || diff.outcome === 'baseline_only_pass'
+    || diff.baselineFailureCategory !== diff.candidateFailureCategory;
+}
+
+export function detailExperimentEvent(event: HarnessEvent): ExperimentEventDetail | undefined {
+  if (event.type !== 'experiment_completed') return undefined;
+  const data = event.data as ExperimentEventData;
+  const scorecard = data.scorecard;
+  if (!scorecard) return undefined;
+  const taskDiffs: ExperimentTaskDetail[] = (scorecard.taskDiffs ?? []).map((diff) => ({
+    taskId: diff.taskId,
+    outcome: diff.outcome,
+    baselineStatus: diff.baselineStatus,
+    candidateStatus: diff.candidateStatus,
+    baselineFailureCategory: diff.baselineFailureCategory,
+    candidateFailureCategory: diff.candidateFailureCategory,
+    changed: taskChanged(diff),
+  }));
+  return {
+    eventId: event.event_id,
+    timestamp: event.timestamp,
+    experimentId: data.manifest?.id ?? event.subject_id,
+    runId: data.id,
+    decisionStatus: scorecard.decision?.status,
+    promotionStatus: data.promotionEvidence?.status,
+    pairedTasks: scorecard.pairedTasks,
+    paired: scorecard.paired,
+    passRateDelta: scorecard.passRateDelta,
+    passRateDeltaCi95: scorecard.passRateDeltaCi95,
+    significantAt95: scorecard.mcnemar?.significantAt95,
+    holdout: scorecard.holdout
+      ? {
+          pairedTasks: scorecard.holdout.pairedTasks,
+          netCandidateWins: scorecard.holdout.paired.netCandidateWins,
+          significantAt95: scorecard.holdout.mcnemar.significantAt95,
+        }
+      : undefined,
+    changedTaskCount: taskDiffs.filter((diff) => diff.changed).length,
+    taskDiffs,
+  };
+}
+
+/** Detail views for every completed run in the event list (dry runs skipped). */
+export function detailExperimentEvents(events: HarnessEvent[]): ExperimentEventDetail[] {
+  return events
+    .map(detailExperimentEvent)
+    .filter((detail): detail is ExperimentEventDetail => detail !== undefined);
 }

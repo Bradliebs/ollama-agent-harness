@@ -5258,6 +5258,17 @@ app.post('/api/chat', async (req, res) => {
   const { message, model } = req.body;
   if (!message) { res.status(400).json({ error: 'message is required' }); return; }
 
+  // Experiment prompt-mutation lever: when explicitly enabled, a request may
+  // supply its own system prompt so the experiment runner can evaluate
+  // prompt-scope variants. Gated behind an env flag because overriding the
+  // system prompt from request bodies is a privilege a normal chat client
+  // must not have.
+  const requestPromptOverride = (process.env.HARNESS_EXPERIMENT_PROMPT_OVERRIDE === '1'
+    && typeof req.body?.systemPrompt === 'string'
+    && req.body.systemPrompt.length > 0)
+    ? String(req.body.systemPrompt).slice(0, 20_000)
+    : '';
+
   // Best-effort: if the user message contains a trigger phrase from any
   // installed skill, record a use event for that skill so the curator can
   // see real-world relevance, not just explicit `skill` tool calls.
@@ -5590,7 +5601,7 @@ app.post('/api/chat', async (req, res) => {
   const writableNote = writableExternals.length > 0
     ? `\n6. file_read, file_write, file_edit, file_move, file_delete, and list_files work in the project directory AND in these user-allowed external folders: ${writableExternals.join(', ')}.${outputNote} You can write directly to any path inside those folders when the user asks for that location. Use file_move when the user asks you to move files; do NOT emulate moves with read+write (that leaves the original behind).`
     : `\n6. file_read, file_write, file_edit, file_move, file_delete, and list_files work inside the project directory. To access files outside the project, ask the user to set an Agent Files folder in Settings (it gets auto-added to the allowed-write list); only fall back to bash/dir/cat/type when the user has not configured a folder.`;
-  const basePrompt = systemPromptOverride ||
+  const basePrompt = requestPromptOverride || systemPromptOverride ||
     'You are a self-learning AI assistant with full web access and local tool use. IMPORTANT RULES:\n' +
     '1. When the user asks about something on the web (weather, news, docs, prices, etc.), ALWAYS use web_search to find it, then web_read to fetch the actual content. NEVER just suggest links — fetch the data yourself and show the results.\n' +
     '2. You can read files, write files, edit code, move files, delete files, run commands, search files with grep, search the web, and read web pages.\n' +

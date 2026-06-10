@@ -2,7 +2,7 @@
 import { loadExperimentManifest } from './resolver';
 import { runExperiment } from './runner';
 import { listExperimentEvents } from './persistence';
-import { summarizeExperimentEvents, summarizeExperimentHistory } from './report';
+import { detailExperimentEvents, summarizeExperimentEvents, summarizeExperimentHistory } from './report';
 
 interface CliArgs {
   manifestPath?: string;
@@ -24,6 +24,9 @@ async function main(argv: string[]): Promise<number> {
       count: events.length,
       summary: summarizeExperimentHistory(events),
       events: summarizeExperimentEvents(events),
+      // --show targets one experiment: surface task-level diffs the compact
+      // summary drops, so callers can see which tasks actually moved.
+      ...(args.showExperimentId ? { details: detailExperimentEvents(events) } : {}),
     }, null, 2));
     return 0;
   }

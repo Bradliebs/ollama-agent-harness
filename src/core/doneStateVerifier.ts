@@ -44,15 +44,37 @@ interface CodeVerifyOptions {
   timeout?: number;
 }
 
-async function runCommand(cwd: string, cmd: string, args: string[], timeout = 60_000): Promise<{ ok: boolean; output: string; duration_ms: number }> {
+interface CommandRun {
+  ok: boolean;
+  output: string;
+  duration_ms: number;
+  /** True when the command was killed by its timeout rather than exiting on its own. */
+  timedOut: boolean;
+}
+
+async function runCommand(cwd: string, cmd: string, args: string[], timeout = 60_000): Promise<CommandRun> {
   const start = Date.now();
   try {
     const { stdout, stderr } = await execFileAsync(cmd, args, { cwd, timeout, windowsHide: true });
-    return { ok: true, output: (stdout + '\n' + stderr).trim(), duration_ms: Date.now() - start };
+    return { ok: true, output: (stdout + '\n' + stderr).trim(), duration_ms: Date.now() - start, timedOut: false };
   } catch (err: unknown) {
-    const e = err as { stdout?: string; stderr?: string; message?: string };
-    return { ok: false, output: (e.stdout ?? '') + '\n' + (e.stderr ?? e.message ?? ''), duration_ms: Date.now() - start };
+    const e = err as { stdout?: string; stderr?: string; message?: string; killed?: boolean };
+    // execFile sets killed=true when it terminates the child due to the timeout.
+    return { ok: false, output: (e.stdout ?? '') + '\n' + (e.stderr ?? e.message ?? ''), duration_ms: Date.now() - start, timedOut: e.killed === true };
   }
+}
+
+// A timed-out check means "could not verify within budget", not "verification
+// failed" — so it maps to warn, never fail. This keeps default-on verification
+// from spuriously failing on repos whose suite is slower than the timeout.
+function checkStatus(r: CommandRun): VerificationStatus {
+  if (r.ok) return 'pass';
+  return r.timedOut ? 'warn' : 'fail';
+}
+
+function checkDetail(r: CommandRun): string | undefined {
+  if (r.ok) return undefined;
+  return r.timedOut ? 'Timed out before completing \u2014 could not verify within budget' : r.output.slice(0, 500);
 }
 
 export async function verifyCode(options: CodeVerifyOptions): Promise<VerificationResult> {
@@ -63,7 +85,7 @@ export async function verifyCode(options: CodeVerifyOptions): Promise<Verificati
   const tsconfigExists = await fileExists(path.join(projectDir, 'tsconfig.json'));
   if (tsconfigExists) {
     const tsc = await runCommand(projectDir, 'npx', ['tsc', '--noEmit', '--pretty'], timeout);
-    checks.push({ name: 'typecheck', domain: 'code', status: tsc.ok ? 'pass' : 'fail', detail: tsc.ok ? undefined : tsc.output.slice(0, 500), duration_ms: tsc.duration_ms });
+    checks.push({ name: 'typecheck', domain: 'code', status: checkStatus(tsc), detail: checkDetail(tsc), duration_ms: tsc.duration_ms });
   } else {
     checks.push({ name: 'typecheck', domain: 'code', status: 'skip', detail: 'No tsconfig.json found' });
   }
@@ -73,7 +95,7 @@ export async function verifyCode(options: CodeVerifyOptions): Promise<Verificati
     const eslintConfig = await hasAnyFile(projectDir, ['.eslintrc', '.eslintrc.js', '.eslintrc.json', '.eslintrc.yml', 'eslint.config.js', 'eslint.config.mjs']);
     if (eslintConfig) {
       const lint = await runCommand(projectDir, 'npx', ['eslint', '.', '--max-warnings=0'], timeout);
-      checks.push({ name: 'lint', domain: 'code', status: lint.ok ? 'pass' : 'fail', detail: lint.ok ? undefined : lint.output.slice(0, 500), duration_ms: lint.duration_ms });
+      checks.push({ name: 'lint', domain: 'code', status: checkStatus(lint), detail: checkDetail(lint), duration_ms: lint.duration_ms });
     } else {
       checks.push({ name: 'lint', domain: 'code', status: 'skip', detail: 'No ESLint config found' });
     }
@@ -84,7 +106,7 @@ export async function verifyCode(options: CodeVerifyOptions): Promise<Verificati
     const packageJson = await readPackageJson(projectDir);
     if (packageJson?.scripts?.test) {
       const test = await runCommand(projectDir, 'npm', ['test', '--', '--passWithNoTests'], timeout * 2);
-      checks.push({ name: 'tests', domain: 'code', status: test.ok ? 'pass' : 'fail', detail: test.ok ? undefined : test.output.slice(0, 500), duration_ms: test.duration_ms });
+      checks.push({ name: 'tests', domain: 'code', status: checkStatus(test), detail: checkDetail(test), duration_ms: test.duration_ms });
     } else {
       checks.push({ name: 'tests', domain: 'code', status: 'skip', detail: 'No test script in package.json' });
     }

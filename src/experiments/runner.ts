@@ -43,11 +43,13 @@ export async function runExperiment(options: RunExperimentOptions): Promise<RunE
   const baselineRun = await runBenchmark({
     ...commonOptions,
     model: options.manifest.baseline.model,
+    systemPrompt: options.manifest.baseline.systemPrompt,
   });
   enforceElapsedBudget(options.manifest, startedAt, now());
   const candidateRun = await runBenchmark({
     ...commonOptions,
     model: options.manifest.candidate.model,
+    systemPrompt: options.manifest.candidate.systemPrompt,
   });
   const finishedAt = now();
   enforceElapsedBudget(options.manifest, startedAt, finishedAt);

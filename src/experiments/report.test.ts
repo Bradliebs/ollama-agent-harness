@@ -1,5 +1,5 @@
 import type { HarnessEvent } from '../persistence/eventStore';
-import { summarizeExperimentEvent, summarizeExperimentHistory } from './report';
+import { detailExperimentEvents, summarizeExperimentEvent, summarizeExperimentHistory } from './report';
 
 function event(overrides: Partial<HarnessEvent> = {}): HarnessEvent {
   return {
@@ -70,5 +70,49 @@ describe('experiment report summaries', () => {
       inconclusive: 0,
       latestEventAt: '2026-06-09T00:02:00.000Z',
     });
+  });
+});
+describe('experiment task-level detail (--show)', () => {
+  function completedWithDiffs(): HarnessEvent {
+    return event({
+      data: {
+        id: 'run-9',
+        manifest: { id: 'exp-1', hypothesis: 'h' },
+        promotionEvidence: { status: 'experiment_confirmed' },
+        scorecard: {
+          decision: { status: 'keep' },
+          pairedTasks: 3,
+          passRateDelta: 0.3333333333333333,
+          passRateDeltaCi95: { lower: 0.1, upper: 0.56 },
+          paired: { bothPass: 1, bothFail: 1, candidateOnlyPass: 1, baselineOnlyPass: 0, netCandidateWins: 1 },
+          mcnemar: { baselineOnlyPasses: 0, candidateOnlyPasses: 1, statisticWithContinuityCorrection: null, significantAt95: false },
+          taskDiffs: [
+            { taskId: 'a', outcome: 'both_pass', baselineStatus: 'pass', candidateStatus: 'pass' },
+            { taskId: 'b', outcome: 'both_fail', baselineStatus: 'fail', candidateStatus: 'fail', baselineFailureCategory: 'WRONG_ANSWER', candidateFailureCategory: 'WRONG_ANSWER' },
+            { taskId: 'c', outcome: 'candidate_only_pass', baselineStatus: 'fail', candidateStatus: 'pass', baselineFailureCategory: 'WRONG_ANSWER' },
+          ],
+        },
+      } as HarnessEvent['data'],
+    });
+  }
+
+  it('surfaces per-task diffs and flags which tasks moved', () => {
+    const [detail] = detailExperimentEvents([completedWithDiffs()]);
+    expect(detail.runId).toBe('run-9');
+    expect(detail.decisionStatus).toBe('keep');
+    expect(detail.pairedTasks).toBe(3);
+    expect(detail.significantAt95).toBe(false);
+    expect(detail.changedTaskCount).toBe(1);
+    expect(detail.taskDiffs.map((diff) => [diff.taskId, diff.changed])).toEqual([
+      ['a', false],
+      ['b', false],
+      ['c', true],
+    ]);
+  });
+
+  it('skips dry-run and scorecard-less events', () => {
+    expect(detailExperimentEvents([
+      event({ type: 'experiment_dry_run', data: { manifest: { id: 'exp-2' }, selectedTaskCount: 3 } }),
+    ])).toEqual([]);
   });
 });

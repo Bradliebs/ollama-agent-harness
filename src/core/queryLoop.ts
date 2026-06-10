@@ -1,4 +1,6 @@
 import type { Message } from 'ollama';
+import { existsSync } from 'fs';
+import * as path from 'path';
 import { OllamaClient } from './ollamaClient';
 import type { IChatClient } from './chatClient';
 import type { Tool, ToolCall, LoopConfig, LoopEvent } from '../types';
@@ -22,6 +24,24 @@ import type { OutputValidationProfile } from './outputValidation';
 import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
 import { verifyCode } from './doneStateVerifier';
 import { classifyModelLocality } from '../observability/costProvenance';
+
+/**
+ * Resolve whether post-completion code verification should run.
+ * Precedence: HARNESS_VERIFY env override > explicit config.verify.enabled >
+ * auto-detect (only when `cwd` is supplied). The shared loop calls this WITHOUT
+ * a cwd, so the primitive stays off unless a caller opts in — keeping unit tests
+ * and non-coding sessions untouched. The CLI coding-task runner passes its
+ * project directory so real coding tasks are verified by default (a directory
+ * with package.json counts as a code project). Callers force it off with
+ * verify.enabled=false or HARNESS_VERIFY=0.
+ */
+export function resolveVerifyEnabled(explicit: boolean | undefined, cwd?: string): boolean {
+  const env = process.env.HARNESS_VERIFY?.toLowerCase();
+  if (env === '0' || env === 'off' || env === 'false') return false;
+  if (env === '1' || env === 'on' || env === 'true') return true;
+  if (explicit !== undefined) return explicit;
+  return cwd !== undefined && existsSync(path.join(cwd, 'package.json'));
+}
 
 export interface QueryLoopDeps {
   client: IChatClient;
@@ -456,17 +476,19 @@ export async function* queryLoop(
         await appendStatus(session, 'completed', undefined, tracer);
       }
 
-      // Post-completion code verification: runs tsc / eslint / npm test
-      // when the agent mutated files and the caller opted in via config.verify.
-      // This is Gap 1 — the harness previously had no way to catch regressions
-      // introduced by agent edits.
+      // Post-completion code verification: runs tsc / eslint / npm test when
+      // the agent mutated files. The shared loop defaults off (env override or
+      // explicit config required); the CLI coding-task runner opts in via
+      // verify.enabled so real coding tasks are verified by default. This is
+      // Gap 1 — catching regressions introduced by agent edits instead of
+      // trusting that files merely changed.
       let testsFailed = false;
-      if (config.verify?.enabled && anyProductiveToolSucceeded) {
+      if (resolveVerifyEnabled(config.verify?.enabled) && anyProductiveToolSucceeded) {
         try {
           const verifyResult = await verifyCode({
             projectDir: process.cwd(),
-            quick: config.verify.quick ?? false,
-            timeout: config.verify.timeout ?? 60_000,
+            quick: config.verify?.quick ?? false,
+            timeout: config.verify?.timeout ?? 60_000,
           });
           tracer?.recordEvent('verification.complete', {
             overall: verifyResult.overall,

@@ -6,7 +6,7 @@ import { readFile } from 'fs/promises';
 import { OllamaClient } from '../core/ollamaClient';
 import { createChatClient } from '../core/chatClientFactory';
 import type { IChatClient } from '../core/chatClient';
-import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
+import { queryLoop, resolveVerifyEnabled, type QueryLoopDeps } from '../core/queryLoop';
 import { getBuiltinTools } from '../tools';
 import { PermissionEngine } from '../permissions/engine';
 import { SessionStorage } from '../persistence/sessionStorage';
@@ -521,6 +521,10 @@ export async function main(): Promise<void> {
     maxTurns: options.maxTurns,
     unproductiveTurnLimit: options.unproductiveTurnLimit,
     outputValidation: options.outputValidation ? { enabled: true, profile: options.outputValidation } : undefined,
+    // Verify coding output by default: when the project looks like a code
+    // project (has package.json), run tsc / eslint / npm test after the agent
+    // mutates files. Override with HARNESS_VERIFY=0 (or =1 to force on).
+    verify: { enabled: resolveVerifyEnabled(undefined, projectDir) },
   };
 
   const deps: QueryLoopDeps = {

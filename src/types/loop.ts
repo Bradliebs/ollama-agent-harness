@@ -63,10 +63,15 @@ export interface LoopConfig {
   systemPrompt: string;
   maxTurns: number;
   /**
-   * When enabled, run tsc / eslint / npm test after any coding turn that
-   * produced file mutations. Surfaces the result as a `verification` event
-   * and promotes the done reason to `completed_with_test_failures` when
-   * tests fail. Off by default to avoid blocking non-coding sessions.
+   * Run tsc / eslint / npm test after any coding turn that produced file
+   * mutations. Surfaces the result as a `verification` event and promotes the
+   * done reason to `completed_with_test_failures` when a check fails.
+   *
+   * `enabled` is tri-state: leave it unset to auto-enable for code projects
+   * (working directory has a package.json) while non-code sessions stay
+   * untouched; set `false` to force off, `true` to force on. The
+   * `HARNESS_VERIFY` env var (0/off or 1/on) overrides this entirely.
+   * A check that exceeds its timeout surfaces as `warn`, not `fail`.
    */
   verify?: {
     enabled?: boolean;
