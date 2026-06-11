@@ -57,6 +57,27 @@ describe('review-queue route API', () => {
     expect(body.metrics.staged).toBe(1);
   });
 
+  it('exposes replay history with before/after diff', async () => {
+    // A replay re-enters the queue carrying the original drained text.
+    enqueueReviewItem({ kind: 'needs-review', content: 'old answer', reason: 'flagged' }); // not a replay
+    enqueueReviewItem({
+      kind: 'needs-review',
+      content: 'corrected answer',
+      reason: 'inferred: replay of orig-1 (changed)',
+      replayOf: 'orig-1',
+      priorContent: 'old answer',
+    });
+
+    const res = await fetch(`${baseUrl}/api/replay-history`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { history: Array<{ replayOf: string; changed: boolean; priorContent: string; content: string }> };
+    expect(body.history).toHaveLength(1);
+    expect(body.history[0].replayOf).toBe('orig-1');
+    expect(body.history[0].changed).toBe(true);
+    expect(body.history[0].priorContent).toBe('old answer');
+    expect(body.history[0].content).toBe('corrected answer');
+  });
+
   it('approves a brain-update and 404s an unknown or resolved id', async () => {
     const item = enqueueReviewItem({ kind: 'brain-update', content: 'fact', reason: 'web' });
 

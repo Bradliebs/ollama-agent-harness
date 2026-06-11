@@ -177,6 +177,7 @@ import { initWebhookStore, loadWebhooksFromEnv, sendWebhookNotification } from '
 import { initReviewQueue, enqueueFromGoverned } from '../governed/reviewQueue';
 import { initReplayConsumer, type ReplayCandidate } from '../governed/replayConsumer';
 import { runReplayCandidates } from '../governed/replayRunner';
+import { initReplayLedger, appendReplayLedgerEntry } from '../governed/replayLedger';
 import type { GovernedAnswer } from '../governed/governedAnswer';
 import * as nodemailer from 'nodemailer';
 import { NervousSystemController } from '../nervous';
@@ -7115,7 +7116,13 @@ function configureAutomationScheduler(): void {
     // replayed answers re-enter the same human-gated queue (shadow-first).
     onIdle: () => {
       runReplayCandidates({ runOne: runReplayQuery })
-        .then((r) => { if (r.replayed > 0) logger.info('Governed', 'Idle replay completed', { ...r }); })
+        .then((r) => {
+          if (r.consumed > 0) {
+            logger.info('Governed', 'Idle replay completed', { ...r });
+            // Persist an audit trail so a human can see what the loop did unattended.
+            appendReplayLedgerEntry({ at: new Date().toISOString(), ...r }).catch((err) => recordSwallowed('scheduler.idleReplayLedger', err));
+          }
+        })
         .catch((err) => recordSwallowed('scheduler.idleReplay', err));
     },
   });
@@ -8673,6 +8680,8 @@ export async function startServer(): Promise<void> {
     initReviewQueue(PROJECT_DIR);
     // Point the replay consumer at the same project's drained-answer seam.
     initReplayConsumer(PROJECT_DIR);
+    // Durable audit trail for idle replays that run while the user is away.
+    initReplayLedger(PROJECT_DIR);
 
     // ccmem auth: env var wins; otherwise pick up the token persisted by
     // start.bat / start.sh so a harness launched on its own (e.g. `npm run

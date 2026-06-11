@@ -30,12 +30,15 @@ export {
   listReviewItems,
   resolveReviewItem,
   enqueueFromGoverned,
+  getGovernanceMetrics,
 } from './governed/reviewQueue';
-export type { ReviewItem, ReviewItemKind, ReviewItemStatus, EnqueueReviewInput } from './governed/reviewQueue';
+export type { ReviewItem, ReviewItemKind, ReviewItemStatus, EnqueueReviewInput, GovernanceMetrics } from './governed/reviewQueue';
 export { initReplayConsumer, readReplayCandidates, consumeReplayCandidates } from './governed/replayConsumer';
 export type { ReplayCandidate } from './governed/replayConsumer';
 export { runReplayCandidates } from './governed/replayRunner';
 export type { ReplayRunResult, RunReplayOptions } from './governed/replayRunner';
+export { initReplayLedger, appendReplayLedgerEntry, readReplayLedger } from './governed/replayLedger';
+export type { ReplayLedgerEntry } from './governed/replayLedger';
 export { rebuildSemanticMemory, searchSemanticMemory } from './persistence/semanticMemory';
 export { getSessionSearchIndexStatus, rebuildSessionSearchIndex, rebuildSessionSearchIndexWithMetadata, searchSessions } from './persistence/sessionSearchIndex';
 export type { SessionSearchEntry, SessionSearchIndexFile, SessionSearchIndexMetadata, SessionSearchIndexStatus, SessionSearchResult } from './persistence/sessionSearchIndex';

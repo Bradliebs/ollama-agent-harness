@@ -81,19 +81,22 @@ describe('review queue store', () => {
     expect(brain).not.toContain('wrong fact');
   });
 
-  it('de-duplicates an approved fact already present in the durable brain', async () => {
+  it('merges provenance into an approved fact already present in the durable brain', async () => {
     const first = enqueueReviewItem({ kind: 'brain-update', content: 'Paris is the capital of France', reason: 'web' });
     resolveReviewItem(first.id, 'approved');
     await flushReviewQueueWritesForTest();
 
-    // Same fact, different casing/spacing → treated as a duplicate, not re-written.
+    // Same fact, different casing/spacing → merged, not re-written as a new block.
     const dup = enqueueReviewItem({ kind: 'brain-update', content: '  paris  is the CAPITAL of france ', reason: 'web again' });
     resolveReviewItem(dup.id, 'approved');
     await flushReviewQueueWritesForTest();
 
     const brain = fs.readFileSync(path.join(dir, '.harness', 'memory', 'patterns.md'), 'utf-8');
-    const occurrences = (brain.match(/## Approved fact/g) || []).length;
-    expect(occurrences).toBe(1);
+    const headers = (brain.match(/## Approved fact/g) || []).length;
+    const origins = (brain.match(/Origin: approved brain-update/g) || []).length;
+    expect(headers).toBe(1); // one fact block
+    expect(origins).toBe(2); // two corroborating provenance lines
+    expect(brain).toContain('web again');
   });
 
   it('appends a replay candidate to the durable seam only when a needs-review item is drained', async () => {

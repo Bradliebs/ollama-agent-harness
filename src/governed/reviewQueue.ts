@@ -245,13 +245,25 @@ function appendToBrain(item: ReviewItem): void {
       await withFileLock(target, async () => {
         const existing = await fs.promises.readFile(target, 'utf-8').catch(() => '# Learned Patterns\n');
         // De-duplicate on approve: if the durable brain already holds this exact
-        // fact (case/whitespace-insensitive), skip the write so repeated
-        // approvals of the same claim do not bloat patterns.md. Conservative by
-        // design — only a literal-text match is treated as a duplicate.
+        // fact (case/whitespace-insensitive), MERGE rather than skip — append
+        // the new provenance line under the existing fact so repeated approvals
+        // strengthen the entry (more corroborating sources) instead of either
+        // bloating patterns.md with a duplicate or silently no-opping.
         const factText = (item.content || '').trim();
-        if (factText && normalizeFact(existing).includes(normalizeFact(factText))) {
-          logger.info('ReviewQueue', 'Skipped duplicate brain fact', { id: item.id });
-          return;
+        const newOrigin = `Origin: approved brain-update ${item.id} — ${item.reason || 'no reason given'} · ${item.resolvedAt}`;
+        if (factText) {
+          const normFact = normalizeFact(factText);
+          // Split into sections on the "## Approved fact" header (kept with its
+          // block); the leading block holds the "# Learned Patterns" seed.
+          const blocks = existing.split(/(?=^## Approved fact$)/m);
+          for (let i = 0; i < blocks.length; i++) {
+            if (blocks[i].includes('## Approved fact') && normalizeFact(blocks[i]).includes(normFact)) {
+              blocks[i] = blocks[i].trimEnd() + '\n' + newOrigin + '\n';
+              logger.info('ReviewQueue', 'Merged provenance into existing brain fact', { id: item.id });
+              await atomicWriteFile(target, blocks.join('').trimEnd() + '\n', { encoding: 'utf-8' });
+              return;
+            }
+          }
         }
         await atomicWriteFile(target, existing.trimEnd() + '\n' + entry, { encoding: 'utf-8' });
       });

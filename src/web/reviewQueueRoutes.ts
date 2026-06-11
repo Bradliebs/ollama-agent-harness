@@ -27,6 +27,25 @@ export function createReviewQueueRouter(): express.Router {
     res.json({ metrics: getGovernanceMetrics() });
   });
 
+  // Replay history: the items that re-entered the queue as the result of a
+  // replay, exposing the before/after so "what changed on re-investigation" is
+  // queryable rather than only visible transiently in the pending list.
+  router.get('/api/replay-history', (_req, res) => {
+    const history = listReviewItems()
+      .filter((i) => i.replayOf !== undefined)
+      .map((i) => ({
+        id: i.id,
+        replayOf: i.replayOf,
+        priorContent: i.priorContent ?? '',
+        content: i.content,
+        changed: (i.priorContent ?? '').trim() !== i.content.trim(),
+        reason: i.reason,
+        status: i.status,
+        resolvedAt: i.resolvedAt,
+      }));
+    res.json({ history });
+  });
+
   router.post('/api/review-queue/:id/approve', (req, res) => {
     resolveAndRespond(String(req.params.id), 'approved', res);
   });

@@ -4966,6 +4966,7 @@ async function sendMessage(opts) {
             // any newly staged items appear without a manual reload.
             renderGovernedShadow(msgEl, ev.governed);
             if (typeof loadReviewQueue === 'function') loadReviewQueue();
+            if (typeof loadGovernanceMetrics === 'function') loadGovernanceMetrics();
             break;
           case 'offline':
             // Honest offline guarantee (server-side): a 🔒 Offline badge only
@@ -10334,9 +10335,30 @@ async function loadGovernanceMetrics() {
       + ' · drained ' + (m.drained || 0)
       + ' · rejected ' + (m.rejected || 0)
       + ' · re-queued ' + (m.reQueued || 0) + '</div>';
+    renderLoopMetrics(m);
   } catch (e) {
     box.textContent = 'Could not load loop metrics: ' + (e.message || e);
   }
+}
+
+// Compact loop-throughput badge in the session HUD, beside the review badge:
+// ✅ approved facts and ↻ replay re-queues. Stays hidden until the loop has
+// actually approved or re-queued something, so the HUD stays uncluttered.
+function renderLoopMetrics(m) {
+  const el = document.getElementById('sessionHudLoop');
+  const sepEl = document.getElementById('sessionHudLoopSep');
+  if (!el || !sepEl) return;
+  const approved = Number(m && m.approved) || 0;
+  const reQueued = Number(m && m.reQueued) || 0;
+  if (approved <= 0 && reQueued <= 0) {
+    el.style.display = 'none';
+    sepEl.style.display = 'none';
+    return;
+  }
+  el.textContent = '✅ ' + approved + ' · ↻ ' + reQueued;
+  el.title = approved + ' approved fact(s), ' + reQueued + ' replay re-queue(s)';
+  el.style.display = '';
+  sepEl.style.display = '';
 }
 
 async function runReplayNow() {
