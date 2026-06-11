@@ -63,6 +63,20 @@ export function createMyceliumRouter(deps: MyceliumRoutesDeps): express.Router {
     }
   });
 
+  // Build-gate trend: are the agent's code changes passing validation more
+  // often over time? Read from the same reward ledger but as a clean
+  // execution-pass-rate signal, separate from the blended reward.
+  router.get('/api/mycelium/build-gate-trend', async (_req, res) => {
+    try {
+      const { readRewardEntries, summarizeGateTrend } = await import('../core/rewardLedger');
+      const entries = await readRewardEntries(projectDir);
+      res.json(summarizeGateTrend(entries));
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: msg });
+    }
+  });
+
   router.delete('/api/mycelium', async (_req, res) => {
     try {
       const { MyceliumGraph, saveMyceliumGraph: save } = await import('../mycelium/graph');

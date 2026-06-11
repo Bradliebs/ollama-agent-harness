@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { appendRewardEntry, readRewardEntries, summarizeLearningCurve } from './rewardLedger';
+import { appendRewardEntry, readRewardEntries, summarizeLearningCurve, summarizeGateTrend } from './rewardLedger';
 
 describe('rewardLedger', () => {
   let projectDir: string;
@@ -72,5 +72,45 @@ describe('rewardLedger', () => {
   it('returns zeroed summary for an empty ledger', () => {
     const summary = summarizeLearningCurve([]);
     expect(summary).toMatchObject({ totalEpisodes: 0, overallAvgReward: 0, improvement: 0, byDay: [] });
+  });
+});
+
+describe('summarizeGateTrend', () => {
+  it('ignores entries where the gate did not run', () => {
+    const summary = summarizeGateTrend([
+      { ts: '2026-03-01T00:00:00.000Z', reward: 0.5, model: 'm' },
+      { ts: '2026-03-01T01:00:00.000Z', reward: 0.5, model: 'm', gatePassed: true },
+    ]);
+    expect(summary.totalGated).toBe(1);
+    expect(summary.totalPassed).toBe(1);
+    expect(summary.overallPassRate).toBe(1);
+  });
+
+  it('reports rising pass rate as positive improvement', () => {
+    const summary = summarizeGateTrend([
+      { ts: '2026-03-01T00:00:00.000Z', reward: 0.4, model: 'm', gatePassed: false },
+      { ts: '2026-03-01T01:00:00.000Z', reward: 0.4, model: 'm', gatePassed: false },
+      { ts: '2026-03-02T00:00:00.000Z', reward: 1.0, model: 'm', gatePassed: true },
+      { ts: '2026-03-02T01:00:00.000Z', reward: 1.0, model: 'm', gatePassed: true },
+    ]);
+    expect(summary.firstHalfPassRate).toBe(0);
+    expect(summary.secondHalfPassRate).toBe(1);
+    expect(summary.improvement).toBe(1);
+  });
+
+  it('buckets pass rate by day', () => {
+    const summary = summarizeGateTrend([
+      { ts: '2026-03-01T08:00:00.000Z', reward: 0, model: 'm', gatePassed: true },
+      { ts: '2026-03-01T20:00:00.000Z', reward: 0, model: 'm', gatePassed: false },
+      { ts: '2026-03-02T09:00:00.000Z', reward: 0, model: 'm', gatePassed: true },
+    ]);
+    expect(summary.byDay).toEqual([
+      { bucket: '2026-03-01', ran: 2, passed: 1, passRate: 0.5 },
+      { bucket: '2026-03-02', ran: 1, passed: 1, passRate: 1 },
+    ]);
+  });
+
+  it('returns a zeroed summary when nothing was gated', () => {
+    expect(summarizeGateTrend([])).toMatchObject({ totalGated: 0, totalPassed: 0, overallPassRate: 0, improvement: 0, byDay: [] });
   });
 });

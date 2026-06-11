@@ -1,8 +1,9 @@
 import express from 'express';
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'child_process';
+import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { watch as fsWatch, existsSync, mkdirSync, readFileSync } from 'fs';
+import { watch as fsWatch, existsSync, mkdirSync, readFileSync, readdirSync } from 'fs';
 import * as net from 'net';
 import * as crypto from 'crypto';
 import * as os from 'os';
@@ -157,6 +158,7 @@ import { parseJestSummary } from '../goal/verification';
 import { parsePrioritySetCommand, setPriorityForToday } from '../services/morningPriority';
 import { routeSlashCommand, registerYoloHooks, registerResearchHooks } from '../services/slashCommandRouter';
 import { calculateReadiness, type ReadinessInput } from '../core/readinessGate';
+import { planBuildGate, runBuildGate, buildGateVerifierScore, type BuildGateResult, type GateCommand, type ProjectProbe } from '../core/buildGate';
 import { buildTaskContract } from '../core/taskContractBuilder';
 import { BUILTIN_PROFILES, applyProfile, filterToolsByProfile } from '../services/configProfiles';
 import { renderDriftReport } from '../eval/goldenTraces';
@@ -283,6 +285,108 @@ export function resolveHarnessSourceDistFreshnessPaths(): { sourceKey: string; d
     distKey: path.join(HARNESS_ROOT, 'dist', 'web', 'server.js'),
   };
 }
+
+// ─── Chat build gate ──────────────────────────────────────────────────────
+// Advisory test-and-learn validation: after a chat turn writes source files,
+// detect the project type and run a cheap validation (Node typecheck/test,
+// Python py_compile + import smoke) so the readiness gate and the learning
+// signal reflect whether the code the agent wrote actually works. Never
+// blocks the response; any failure is reported and fed back, not thrown.
+const execFileAsync = promisify(execFile);
+const GATE_COMMAND_TIMEOUT_MS = 60_000;
+
+/** True when `dir` is the harness's own source tree (we must never build it). */
+function isInsideHarnessRoot(dir: string): boolean {
+  const rel = path.relative(HARNESS_ROOT, path.resolve(dir));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/** Gather the filesystem facts the pure planner needs (best-effort, never throws). */
+function probeProjectForGate(workingDir: string, changedPyFiles: string[]): ProjectProbe {
+  let hasPackageJson = false;
+  let packageScripts: Record<string, string> = {};
+  try {
+    const pkgPath = path.join(workingDir, 'package.json');
+    if (existsSync(pkgPath)) {
+      hasPackageJson = true;
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { scripts?: Record<string, string> };
+      if (pkg.scripts && typeof pkg.scripts === 'object') packageScripts = pkg.scripts;
+    }
+  } catch { /* unreadable package.json — treat as none */ }
+
+  // Importable top-level python packages: a changed .py file's nearest ancestor
+  // chain of `__init__.py` dirs whose top dir sits directly under workingDir.
+  const pythonPackages = new Set<string>();
+  for (const file of changedPyFiles) {
+    try {
+      let dir = path.dirname(path.resolve(workingDir, file));
+      let topPackage: string | undefined;
+      while (dir.startsWith(path.resolve(workingDir)) && existsSync(path.join(dir, '__init__.py'))) {
+        topPackage = path.basename(dir);
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+      // Only keep it when the top package's parent is the working dir, so
+      // `python -c "import <name>"` resolves from cwd=workingDir.
+      if (topPackage && path.resolve(dir) === path.resolve(workingDir)) {
+        pythonPackages.add(topPackage);
+      }
+    } catch { /* skip unresolvable path */ }
+  }
+
+  // Detect pytest-discoverable tests so a Python project is validated against
+  // its own tests, symmetric with running a Node project's `test` script.
+  let pythonHasTests = false;
+  try {
+    if (changedPyFiles.length > 0) {
+      if (existsSync(path.join(workingDir, 'tests'))) {
+        pythonHasTests = true;
+      } else {
+        pythonHasTests = readdirSync(workingDir).some((name) => /^test_.*\.py$/.test(name) || /.*_test\.py$/.test(name));
+      }
+    }
+  } catch { /* unreadable working dir — assume no tests */ }
+
+  return { hasPackageJson, packageScripts, pythonPackages: [...pythonPackages], pythonHasTests };
+}
+
+/**
+ * Run the advisory build gate for a chat turn. Returns a non-run result for any
+ * skip condition (harness repo, test env, no source files changed, no validation
+ * detected) and never throws — a gate failure is data, not an exception.
+ */
+async function runChatBuildGate(workingDir: string, changedFiles: string[]): Promise<BuildGateResult> {
+  const notRun = (reason: string): BuildGateResult => ({ ran: false, passed: true, kind: 'none', results: [], score: undefined, summary: reason });
+  try {
+    if (process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID) return notRun('skipped under test');
+    if (process.env.HARNESS_DISABLE_BUILD_GATE === '1') return notRun('disabled via HARNESS_DISABLE_BUILD_GATE');
+    if (isInsideHarnessRoot(workingDir)) return notRun('skipped: harness source tree');
+
+    const sourceFiles = changedFiles.filter((f) => /\.(ts|tsx|js|jsx|mjs|cjs|py)$/i.test(f));
+    if (sourceFiles.length === 0) return notRun('no source files changed');
+
+    const pyFiles = sourceFiles.filter((f) => /\.py$/i.test(f));
+    const probe = probeProjectForGate(workingDir, pyFiles);
+    const plan = planBuildGate({ changedFiles: sourceFiles, workingDir, probe });
+
+    return await runBuildGate(plan, async (cmd: GateCommand) => {
+      const bin = cmd.command === 'npm' && process.platform === 'win32' ? 'npm.cmd' : cmd.command;
+      try {
+        const { stdout, stderr } = await execFileAsync(bin, cmd.args, { cwd: cmd.cwd, timeout: GATE_COMMAND_TIMEOUT_MS, windowsHide: true });
+        return { exitCode: 0, output: `${stdout}\n${stderr}`.trim().slice(0, 2000) };
+      } catch (err) {
+        const e = err as { stdout?: string; stderr?: string; code?: number; message?: string };
+        const exitCode = typeof e.code === 'number' ? e.code : 1;
+        return { exitCode, output: `${e.stdout ?? ''}\n${e.stderr ?? ''}\n${e.message ?? ''}`.trim().slice(0, 2000) };
+      }
+    });
+  } catch (err) {
+    logger.warn('BuildGate', 'Gate execution failed (advisory, ignored)', { error: err instanceof Error ? err.message : String(err) });
+    return notRun('gate error');
+  }
+}
+
 const WORKFLOWS_DIR = path.join(PROJECT_DIR, '.harness', 'workflows');
 const workflowRegistry = new WorkflowRegistry(WORKFLOWS_DIR);
 const ALLOWED_PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'dontAsk'];
@@ -6299,6 +6403,53 @@ CONTEXT HYGIENE (critical for long tasks):
   queueChatBackgroundTask('persistSessionLearning', persistSessionLearning(session, projectDir));
   queueChatBackgroundTask('webRuntime.rebuildSemanticMemory', webRuntime.rebuildSemanticMemory(projectDir));
 
+  // Build gate (advisory test-and-learn): if this turn wrote source files,
+  // run a cheap validation and feed the REAL pass/fail into the readiness
+  // score and the learning signal below. Runs before the mycelium block so
+  // both consume it. Never blocks the response.
+  const gateChangedFiles = evidenceFiles
+    .filter((f) => f.action === 'write' || f.action === 'edit')
+    .map((f) => f.path);
+  const buildGateResult = await runChatBuildGate(PROJECT_DIR, gateChangedFiles);
+  const gateFailed = buildGateResult.ran && !buildGateResult.passed;
+  if (buildGateResult.ran) {
+    res.write(`data: ${JSON.stringify({ type: 'validation_gate', ran: true, passed: buildGateResult.passed, kind: buildGateResult.kind, summary: buildGateResult.summary, checks: buildGateResult.results.map((r) => ({ label: r.label, passed: r.passed })) })}\n\n`);
+    emitEvent(PROJECT_DIR, 'system', 'validation_gate', {
+      session_id: session.getSessionId(),
+      passed: buildGateResult.passed,
+      kind: buildGateResult.kind,
+      summary: buildGateResult.summary,
+      checks: buildGateResult.results.map((r) => ({ label: r.label, passed: r.passed, exitCode: r.exitCode })),
+    }, 'agent', session.getSessionId()).catch((err) => recordSwallowed('chat.validationGate', err));
+    if (gateFailed) {
+      logger.warn('BuildGate', `Validation failed for chat turn: ${buildGateResult.summary}`);
+      // The harness already has a real test-and-learn loop that iterates the
+      // agent to convergence (runGoalLoop + the 'queryloop' runner, reachable
+      // at POST /api/goals/:id/start). When a multi-file build fails its gate,
+      // surface that loop as a ready-to-launch fix — advisory only, mirroring
+      // escalation_advisory. We never auto-start it: the gate is advisory by
+      // design, and auto-iterating spends tokens without the user asking.
+      const sourceFileCount = gateChangedFiles.filter((f) => /\.(ts|tsx|js|jsx|mjs|cjs|py)$/i.test(f)).length;
+      if (sourceFileCount >= 2) {
+        res.write(`data: ${JSON.stringify({
+          type: 'fix_loop_advisory',
+          reason: `Build validation failed (${buildGateResult.summary}). A fix loop can iterate the agent until it passes.`,
+          failedChecks: buildGateResult.results.filter((r) => !r.passed).map((r) => r.label),
+          goal: {
+            target: `Fix the failing build validation: ${buildGateResult.summary}`,
+            validation: buildGateResult.results.filter((r) => !r.passed).map((r) => r.label),
+          },
+          launch: { method: 'POST', path: '/api/goals (create) then /api/goals/:id/start', runner: 'queryloop' },
+        })}\n\n`);
+        emitEvent(PROJECT_DIR, 'system', 'fix_loop_suggested', {
+          session_id: session.getSessionId(),
+          summary: buildGateResult.summary,
+          failed_checks: buildGateResult.results.filter((r) => !r.passed).map((r) => r.label),
+        }, 'agent', session.getSessionId()).catch((err) => recordSwallowed('chat.fixLoopAdvisory', err));
+      }
+    }
+  }
+
   // Mycelium reinforcement: strengthen or weaken routes based on outcome.
   // Run a heuristic verifier first so the reward reflects safety + tool reliability.
   let nsPainMultiplier = 1.0;
@@ -6355,6 +6506,11 @@ CONTEXT HYGIENE (critical for long tasks):
     const nsPainResult = nervousVerifier.painMultiplier;
     nsPainMultiplier = nsPainResult;
 
+    // A failed build gate is strong evidence the turn's code does not work,
+    // even when the model produced confident prose. Pull the reward down so the
+    // router learns from execution, not just from emitting output.
+    const gateRewardFactor = gateFailed ? 0.4 : 1.0;
+
     // Per-(model, taskType) reliability: record whether this turn produced a
     // usable result so the readiness gate can supply a real model_reliability
     // signal on future turns. Historical-only; this turn already read priors.
@@ -6362,15 +6518,15 @@ CONTEXT HYGIENE (critical for long tasks):
       PROJECT_DIR,
       activeModel,
       myceliumClassification?.type ?? 'general',
-      hasOutput && !verifierBlocked,
+      hasOutput && !verifierBlocked && !gateFailed,
     ));
 
     myceliumRouter.reinforce({
-      taskSuccess: (hasOutput ? 0.7 : 0.2) * nsPainMultiplier,
-      correctness: (hasOutput ? 0.6 + toolSuccessRate * 0.3 : 0.1) * nsPainMultiplier,
+      taskSuccess: (hasOutput ? 0.7 : 0.2) * nsPainMultiplier * gateRewardFactor,
+      correctness: (hasOutput ? 0.6 + toolSuccessRate * 0.3 : 0.1) * nsPainMultiplier * gateRewardFactor,
       usefulness: (hasOutput ? 0.5 + toolSuccessRate * 0.3 : 0.1) * nsPainMultiplier,
       costEfficiency: toolCallCount <= 5 ? 0.8 : toolCallCount <= 15 ? 0.5 : 0.2,
-      userSatisfaction: verifierScore * nsPainMultiplier,
+      userSatisfaction: verifierScore * nsPainMultiplier * gateRewardFactor,
     }, {
       blocked: verifierBlocked,
       blockReason: verifierBlockReason,
@@ -6410,6 +6566,7 @@ CONTEXT HYGIENE (critical for long tasks):
           reward: recordedEpisode.reward,
           components: recordedEpisode.rewardComponents,
           model: activeModel,
+          gatePassed: buildGateResult.ran ? buildGateResult.passed : undefined,
         }));
       }
     }
@@ -6528,7 +6685,10 @@ CONTEXT HYGIENE (critical for long tasks):
     // it feeds schema_validity (its true home) rather than double-counting as
     // model_confidence, which we have no honest source for.
     schema_validity: lastValidationScore !== undefined ? lastValidationScore : undefined,
-    verifier_score: typeof nsPainMultiplier === 'number' ? Math.max(0, 1 - (1 - nsPainMultiplier)) : undefined,
+    // Prefer the build gate's real execution result when it ran (ground truth:
+    // did the code the agent wrote actually compile/import/test?). Fall back to
+    // the nervous-system pain proxy only when no validation was run this turn.
+    verifier_score: buildGateVerifierScore(buildGateResult) ?? (typeof nsPainMultiplier === 'number' ? Math.max(0, 1 - (1 - nsPainMultiplier)) : undefined),
     ambiguity_score: myceliumClassification
       ? (myceliumClassification.matchedKeywords.length > 0 ? 0.2 : 0.6)
       : undefined,
