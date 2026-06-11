@@ -269,6 +269,24 @@ export async function scanFileForConflicts(
 }
 
 /**
+ * Default confidence at or above which a conflict is treated as blocking when
+ * enforce mode is on. Chosen so only high-confidence conflicts block: exact
+ * duplicates (≥0.80 token overlap), strong supersessions, and strong negations.
+ */
+export const DEFAULT_CONFLICT_BLOCK_THRESHOLD = 0.8;
+
+/**
+ * Pure policy helper: select the conflicts whose confidence meets `threshold`.
+ * Used by enforce mode to decide which conflicts should block a memory write.
+ */
+export function selectBlockingConflicts(
+  conflicts: ConflictResult[],
+  threshold: number = DEFAULT_CONFLICT_BLOCK_THRESHOLD,
+): ConflictResult[] {
+  return conflicts.filter((c) => c.confidence >= threshold);
+}
+
+/**
  * Read `<projectDir>/.harness/memory/<fileName>` and return all sections
  * whose `createdAt` puts them in the `stale` or `very_stale` tier.
  */

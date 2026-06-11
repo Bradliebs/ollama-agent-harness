@@ -1,7 +1,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
-import { scanFileForConflicts } from '../services/memoryConflictDetector';
+import { scanFileForConflicts, selectBlockingConflicts, DEFAULT_CONFLICT_BLOCK_THRESHOLD } from '../services/memoryConflictDetector';
+import { getCurrentSessionId } from './sessionContext';
 import * as ccmem from '../services/conceptMemoryClient';
 
 // Match the resolution used by web/server.ts so the model's `remember`
@@ -11,6 +12,29 @@ function memoryProjectDir(): string {
   return process.env.HARNESS_PROJECT_DIR && process.env.HARNESS_PROJECT_DIR.trim()
     ? process.env.HARNESS_PROJECT_DIR
     : process.cwd();
+}
+
+// Active session, when known. Prefers the async-context binding set around
+// tool dispatch (correct under concurrent sessions); falls back to the
+// HARNESS_SESSION_ID env var for hosts that set it process-wide. Best-effort
+// provenance: absent => the section simply records no session (never a wrong
+// one). Read per-call so a long-lived process picks up the current value.
+function currentSessionId(): string | undefined {
+  const ctx = getCurrentSessionId();
+  if (ctx) return ctx;
+  const id = process.env.HARNESS_SESSION_ID?.trim();
+  return id ? id : undefined;
+}
+
+// Opt-in: block a write when it conflicts (>= threshold) with existing memory.
+// Default OFF preserves the advisory warn-then-write behaviour.
+function conflictEnforceEnabled(): boolean {
+  return process.env.HARNESS_MEMORY_CONFLICT_ENFORCE === '1';
+}
+
+function conflictBlockThreshold(): number {
+  const raw = Number.parseFloat(process.env.HARNESS_MEMORY_CONFLICT_THRESHOLD ?? '');
+  return Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : DEFAULT_CONFLICT_BLOCK_THRESHOLD;
 }
 
 /**
@@ -44,21 +68,29 @@ export const MemoryWriteTool: Tool = {
     await fs.mkdir(memoryDir, { recursive: true });
 
     const date = new Date().toISOString().split('T')[0];
+    // Provenance metadata line, recorded as the first body line so parseMemoryFile
+    // can recover which session/tool produced this entry. created-by is always
+    // known; source-session only when the host set HARNESS_SESSION_ID.
+    const sessionId = currentSessionId();
+    const metaParts = ['importance: medium', `created: ${date}`];
+    if (sessionId) metaParts.push(`source-session: ${sessionId}`);
+    metaParts.push('created-by: remember');
+    const meta = `<!-- ${metaParts.join(' | ')} -->`;
     let filePath: string;
     let entry: string;
 
     switch (category) {
       case 'decision':
         filePath = path.join(memoryDir, 'decisions.md');
-        entry = `\n### ${date}: ${title}\n${content}\n`;
+        entry = `\n### ${date}: ${title}\n${meta}\n${content}\n`;
         break;
       case 'pattern':
         filePath = path.join(memoryDir, 'patterns.md');
-        entry = `\n### ${title}\n${content}\n`;
+        entry = `\n### ${title}\n${meta}\n${content}\n`;
         break;
       default:
         filePath = path.join(memoryDir, 'notes.md');
-        entry = `\n### ${date}: ${title}\n${content}\n`;
+        entry = `\n### ${date}: ${title}\n${meta}\n${content}\n`;
         break;
     }
 
@@ -69,6 +101,24 @@ export const MemoryWriteTool: Tool = {
         : 'notes.md';
       const conflictBody = `${title}\n${content}`;
       const conflicts = await scanFileForConflicts(memoryProjectDir(), fileName, conflictBody);
+
+      // Enforce mode (opt-in): block the write when a high-confidence conflict
+      // exists, returning the offending sections instead of writing through.
+      if (conflictEnforceEnabled()) {
+        const blocking = selectBlockingConflicts(conflicts, conflictBlockThreshold());
+        if (blocking.length > 0) {
+          const detail = blocking
+            .map((c) => `  - "${c.existingSection.title}" (${c.conflictType}, confidence ${Math.round(c.confidence * 100)}%): ${c.reason}`)
+            .join('\n');
+          return {
+            success: false,
+            error: 'memory-conflict',
+            output: `🚫 Memory write blocked: "${title}" conflicts with ${blocking.length} existing section(s):\n${detail}\n` +
+              `Revise the entry or resolve the existing section(s). (Set HARNESS_MEMORY_CONFLICT_ENFORCE=0 to allow.)`,
+          };
+        }
+      }
+
       const conflictWarning = conflicts.length > 0
         ? `\n⚠️  Conflict warning: This entry may contradict ${conflicts.length} existing section(s):\n` +
           conflicts.map((c) => `  - "${c.existingSection.title}" (${c.conflictType}, confidence ${Math.round(c.confidence * 100)}%): ${c.reason}`).join('\n') + '\n'
@@ -89,7 +139,8 @@ export const MemoryWriteTool: Tool = {
 
       // Dual-write to concept memory for semantic recall across sessions.
       // Best-effort — never fail the remember call if ccmem is offline.
-      void ccmem.store(`${title}\n${content}`, `${category}: ${title}`).catch(() => undefined);
+      const ccmemLabel = sessionId ? `${category}: ${title} (session ${sessionId})` : `${category}: ${title}`;
+      void ccmem.store(`${title}\n${content}`, ccmemLabel).catch(() => undefined);
 
       return {
         success: true,

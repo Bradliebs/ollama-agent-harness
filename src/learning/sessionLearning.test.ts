@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { appendLearningCandidate, evaluatePromotionGateForCandidate, extractLearningCandidate, getLearningCandidateProvenance, listLearningCandidates, listReviewedLearningCandidates, promoteLearningCandidate, reviewLearningCandidate } from './sessionLearning';
 import type { SessionEvent } from '../types';
-import { emitEvent } from '../persistence/eventStore';
+import { emitEvent, queryEvents } from '../persistence/eventStore';
 import { recordOutputValidationEvalRun } from './evalTrace';
 
 function event(id: string, data: SessionEvent['data']): SessionEvent {
@@ -76,6 +76,27 @@ describe('session learning', () => {
 
     expect(review).toMatchObject({ candidateId: candidate.id, action: 'reject', reason: 'too generic' });
     expect(reviewed[0]).toMatchObject({ id: candidate.id, reviewStatus: 'reject' });
+  });
+
+  it('emits a queryable approval event when a candidate is reviewed', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-approval-'));
+    const candidate = extractLearningCandidate('session-1', [
+      event('u1', { kind: 'message', message: { role: 'user', content: 'Capture this workflow' } }),
+      event('a1', { kind: 'message', message: { role: 'assistant', content: 'Run focused validation before full validation' } }),
+    ]);
+    await appendLearningCandidate(projectDir, candidate);
+
+    await reviewLearningCandidate(projectDir, candidate.id, 'reject', 'too generic');
+
+    const approvals = await queryEvents(projectDir, { category: 'approval', subject_id: candidate.id });
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]).toMatchObject({
+      category: 'approval',
+      type: 'learning_candidate_rejected',
+      subject_id: candidate.id,
+      actor: 'user',
+    });
+    expect(approvals[0].data).toMatchObject({ action: 'reject', reason: 'too generic' });
   });
 
   it('returns candidate provenance from source session events', async () => {

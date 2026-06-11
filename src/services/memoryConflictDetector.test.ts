@@ -9,6 +9,9 @@ import {
   findAllStaleEntries,
   extractContentWords,
   extractNegatedWords,
+  selectBlockingConflicts,
+  DEFAULT_CONFLICT_BLOCK_THRESHOLD,
+  type ConflictResult,
   type MemorySection,
 } from './memoryConflictDetector';
 
@@ -383,5 +386,35 @@ describe('findAllStaleEntries', () => {
 
     const results = await findAllStaleEntries(tmpDir);
     expect(Object.keys(results)).toHaveLength(0);
+  });
+});
+
+// ─── selectBlockingConflicts ─────────────────────────────────
+
+describe('selectBlockingConflicts', () => {
+  function conflict(confidence: number): ConflictResult {
+    return {
+      existingSection: makeSection('S', 'body'),
+      reason: 'r',
+      conflictType: 'contradiction',
+      confidence,
+      sharedTopics: [],
+    };
+  }
+
+  it('keeps only conflicts at or above the threshold', () => {
+    const blocking = selectBlockingConflicts([conflict(0.95), conflict(0.5), conflict(0.8)], 0.8);
+    expect(blocking.map((c) => c.confidence)).toEqual([0.95, 0.8]);
+  });
+
+  it('uses the default threshold when none is given', () => {
+    expect(DEFAULT_CONFLICT_BLOCK_THRESHOLD).toBe(0.8);
+    const blocking = selectBlockingConflicts([conflict(0.79), conflict(0.81)]);
+    expect(blocking).toHaveLength(1);
+    expect(blocking[0].confidence).toBe(0.81);
+  });
+
+  it('returns empty when nothing meets the threshold', () => {
+    expect(selectBlockingConflicts([conflict(0.4), conflict(0.6)], 0.8)).toHaveLength(0);
   });
 });

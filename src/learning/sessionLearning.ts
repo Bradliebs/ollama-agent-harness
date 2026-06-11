@@ -6,6 +6,7 @@ import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { evaluatePromotionGate, loadSafetyRules, type PromotionGateConfig, type PromotionGateResult } from './promotionGate';
 import { listEvalTraceRuns } from './evalTrace';
 import { recordSwallowed } from '../observability/silentFailureSink';
+import { appendEvent } from '../persistence/eventStore';
 import { listExperimentEvents } from '../experiments/persistence';
 
 export interface LearningCandidateOptions {
@@ -218,6 +219,19 @@ export async function reviewLearningCandidate(
   const filePath = candidateReviewsPath(projectDir);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.appendFile(filePath, JSON.stringify(review) + '\n', 'utf-8');
+  // Governance trail: record the human decision as a queryable approval event.
+  // Best-effort — a failure to log must not undo the review that already landed.
+  try {
+    await appendEvent(projectDir, {
+      category: 'approval',
+      type: action === 'promote' ? 'learning_candidate_promoted' : 'learning_candidate_rejected',
+      subject_id: candidateId,
+      actor: 'user',
+      data: { candidateId, action, reason, memoryPath, sessionId: candidate.sessionId },
+    });
+  } catch (err) {
+    recordSwallowed('sessionLearning.reviewApprovalEvent', err, { candidateId });
+  }
   return review;
 }
 

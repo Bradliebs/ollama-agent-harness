@@ -1,5 +1,6 @@
 import type { HarnessEvent } from '../persistence/eventStore';
-import { detailExperimentEvents, summarizeExperimentEvent, summarizeExperimentHistory } from './report';
+import { detailExperimentEvents, renderScorecardReport, summarizeExperimentEvent, summarizeExperimentHistory } from './report';
+import type { ExperimentScorecard } from './types';
 
 function event(overrides: Partial<HarnessEvent> = {}): HarnessEvent {
   return {
@@ -114,5 +115,65 @@ describe('experiment task-level detail (--show)', () => {
     expect(detailExperimentEvents([
       event({ type: 'experiment_dry_run', data: { manifest: { id: 'exp-2' }, selectedTaskCount: 3 } }),
     ])).toEqual([]);
+  });
+});
+
+describe('renderScorecardReport (grounded markdown)', () => {
+  function scorecard(): ExperimentScorecard {
+    return {
+      baselineVariantId: 'baseline-v1',
+      candidateVariantId: 'candidate-v2',
+      pairedTasks: 4,
+      baselinePassRate: 0.5,
+      candidatePassRate: 0.75,
+      passRateDelta: 0.25,
+      paired: { bothPass: 2, bothFail: 1, candidateOnlyPass: 1, baselineOnlyPass: 0, netCandidateWins: 1 },
+      failureCategoryDeltas: { WRONG_ANSWER: -1 },
+      averageDurationRatio: 1.1,
+      averageToolCallRatio: null,
+      mcnemar: { baselineOnlyPasses: 0, candidateOnlyPasses: 1, statisticWithContinuityCorrection: 0, significantAt95: false },
+      passRateDeltaStdErr: 0.12,
+      passRateDeltaCi95: { lower: 0.01, upper: 0.49 },
+      taskDiffs: [
+        { taskId: 'a', outcome: 'both_pass', baselineStatus: 'pass', candidateStatus: 'pass' },
+        { taskId: 'b', outcome: 'candidate_only_pass', baselineStatus: 'fail', candidateStatus: 'pass', baselineFailureCategory: 'WRONG_ANSWER' },
+      ],
+      decision: { status: 'keep', reasons: ['net candidate wins positive', 'no safety regressions'], automaticPromotionAllowed: true },
+    };
+  }
+
+  it('grounds every headline claim in a scorecard field', () => {
+    const md = renderScorecardReport(scorecard());
+    // Decision + verbatim reasons.
+    expect(md).toContain('# Experiment report: KEEP');
+    expect(md).toContain('net candidate wins positive');
+    expect(md).toContain('no safety regressions');
+    expect(md).toContain('Automatic promotion allowed: yes');
+    // Pass rates + CI + SE.
+    expect(md).toContain('Baseline pass rate: 50.0%');
+    expect(md).toContain('Candidate pass rate: 75.0%');
+    expect(md).toContain('Delta: +25.0% ± 12.0% (SE), 95% CI [+1.0%, +49.0%]');
+    // Paired breakdown.
+    expect(md).toContain('net +1.000 (both-pass 2, both-fail 1, candidate-only 1, baseline-only 0)');
+    // McNemar.
+    expect(md).toContain('not significant at 95%');
+    // Cost ratios (one null).
+    expect(md).toContain('Average duration ratio (candidate ÷ baseline): 1.10×');
+    expect(md).toContain('Average tool-call ratio (candidate ÷ baseline): n/a');
+    // Failure-category delta that moved.
+    expect(md).toContain('WRONG_ANSWER: -1.000');
+    // Decisive task that drove the net win.
+    expect(md).toContain('`b`: candidate won (loser failure: WRONG_ANSWER)');
+  });
+
+  it('notes the absence of discordant pairs and category changes', () => {
+    const flat = scorecard();
+    flat.failureCategoryDeltas = {};
+    flat.taskDiffs = [
+      { taskId: 'a', outcome: 'both_pass', baselineStatus: 'pass', candidateStatus: 'pass' },
+    ];
+    const md = renderScorecardReport(flat);
+    expect(md).toContain('No net change in any failure category.');
+    expect(md).toContain('No discordant task pairs');
   });
 });

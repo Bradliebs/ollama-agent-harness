@@ -12,6 +12,7 @@ import { estimateTokenCount } from '../context/assembly';
 import type { SessionStorage } from '../persistence/sessionStorage';
 import { createContinuityCheckpoint } from '../persistence/continuity';
 import { ToolDispatcher } from '../tools/dispatcher';
+import { runWithSessionId } from '../tools/sessionContext';
 import { ReadBeforeWriteGate } from '../tools/readBeforeWriteGate';
 import { buildInspectorsFromEnv, type AdversaryJudge } from '../safety/toolInspectors';
 import { renderRepoMapBlock } from './repoMap';
@@ -564,7 +565,8 @@ export async function* queryLoop(
       ? { maxChars: Number(process.env.HARNESS_TOOL_COMPRESSION_MAX_CHARS) || undefined }
       : undefined;
     const { manager: inspectors, largeResponseConfig } = buildInspectorsFromEnv({ adversaryJudge });
-    const dispatchedToolResults = await dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer, learningRecorder, readBeforeWriteGate, compressOutput, compressionConfig, sideEffectRecorder, inspectors, largeResponseConfig, onApprovalRequired });
+    const dispatchedToolResults = await runWithSessionId(session?.getSessionId(), () =>
+      dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer, learningRecorder, readBeforeWriteGate, compressOutput, compressionConfig, sideEffectRecorder, inspectors, largeResponseConfig, onApprovalRequired }));
     const toolResults = [...skippedToolResults, ...dispatchedToolResults];
     let producedFileChange = false;
     for (const { call, result } of toolResults) {
