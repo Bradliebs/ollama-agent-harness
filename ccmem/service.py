@@ -24,10 +24,25 @@ Endpoints:
 
 Usage:
   pip install -r ccmem/requirements.txt
-  python -m uvicorn ccmem.service:app --host 0.0.0.0 --port 8765
+  python -m uvicorn ccmem.service:app --host 127.0.0.1 --port 8765
+
+Binds to loopback (127.0.0.1) by default so the local memory bank is never
+reachable from other machines on the network. The harness talks to it over
+localhost, so local agent memory keeps working identically. Only override the
+host if you understand the exposure (the service is unauthenticated unless you
+set HARNESS_CCMEM_TOKEN).
+
+Optional auth: when the HARNESS_CCMEM_TOKEN env var is set, every endpoint
+except GET /health requires `Authorization: Bearer <token>`. This closes
+same-host access by other local processes/users while leaving an unauthenticated
+liveness probe for start scripts and monitors. When unset (the default) auth is
+disabled and the service behaves exactly as before, so the harness's best-effort
+memory needs zero configuration. start.bat / start.sh generate and export a
+token automatically so the supported launch path is authenticated out of the box.
 """
 from __future__ import annotations
 
+import hmac
 import os
 import sqlite3
 import threading
@@ -35,7 +50,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 # ---------------------------------------------------------------------------
@@ -193,7 +208,32 @@ def _all_cells():
 # FastAPI app
 # ---------------------------------------------------------------------------
 
+# Optional shared-secret auth. Read once at import. When empty, auth is OFF and
+# every request is allowed (best-effort default — harness memory works with no
+# configuration). When set, every endpoint requires a matching bearer token.
+_CCMEM_TOKEN = os.environ.get("HARNESS_CCMEM_TOKEN", "").strip()
+
+
+def _require_token(authorization: Optional[str] = Header(default=None)) -> None:
+    """Gate every endpoint behind a shared bearer token when one is configured.
+
+    Constant-time compared to avoid leaking the token via timing. Disabled
+    entirely when HARNESS_CCMEM_TOKEN is unset so the default experience and
+    the harness's best-effort memory are unchanged.
+    """
+    if not _CCMEM_TOKEN:
+        return
+    expected = f"Bearer {_CCMEM_TOKEN}"
+    if not authorization or not hmac.compare_digest(authorization, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized: missing or invalid ccmem token")
+
+
 app = FastAPI(title="ccmem — Concept Cells Memory Service")
+
+# Protect content endpoints individually so GET /health stays an open liveness
+# probe (used by start.bat readiness polling and external monitors). _AUTH is
+# spread into each decorator's `dependencies`.
+_AUTH = [Depends(_require_token)]
 
 
 class WriteRequest(BaseModel):
@@ -227,13 +267,13 @@ def health():
     return {"status": "ok", "cells": _db().execute("SELECT COUNT(*) FROM cells").fetchone()[0]}
 
 
-@app.get("/cells")
+@app.get("/cells", dependencies=_AUTH)
 def list_cells():
     rows = _db().execute("SELECT id, label, source, theta FROM cells ORDER BY id").fetchall()
     return [{"id": r[0], "label": r[1], "source": r[2], "theta": r[3]} for r in rows]
 
 
-@app.post("/write")
+@app.post("/write", dependencies=_AUTH)
 def write(req: WriteRequest):
     label = req.label or req.text[:80]
     emb = _raw_embed([req.text])[0]
@@ -241,7 +281,7 @@ def write(req: WriteRequest):
     return {"id": cell_id, "label": label}
 
 
-@app.post("/write_many")
+@app.post("/write_many", dependencies=_AUTH)
 def write_many(req: WriteManyRequest):
     if not req.items:
         return {"ids": []}
@@ -254,7 +294,7 @@ def write_many(req: WriteManyRequest):
     return {"ids": ids}
 
 
-@app.post("/query")
+@app.post("/query", dependencies=_AUTH)
 def query(req: QueryRequest):
     ws, thetas, ids, labels, sources = _all_cells()
     if len(ids) == 0:
@@ -281,7 +321,7 @@ def query(req: QueryRequest):
     return {"hits": [h.dict() for h in hits]}
 
 
-@app.post("/bind")
+@app.post("/bind", dependencies=_AUTH)
 def bind(req: BindRequest):
     if len(req.texts) < 2:
         raise HTTPException(400, "Need at least 2 texts to bind")

@@ -25,6 +25,13 @@ export interface AutomationSchedulerOptions {
   idleThresholdMinutes: number;
   /** Optional callback to send breach notifications via configured channels. */
   onBreachDetected?: (breaches: Array<{ breach_type: string; detail: string }>) => void;
+  /**
+   * Optional opportunistic-idle hook. Fired once per tick when the system has
+   * been idle long enough, for background work that should only run while the
+   * user is away (e.g. replaying drained governed answers). Fire-and-forget;
+   * failures are swallowed so they never break the tick.
+   */
+  onIdle?: () => void | Promise<void>;
 }
 
 const HEARTBEAT_MS = 60_000;
@@ -104,6 +111,12 @@ export class AutomationScheduler {
         }
       } else if (opportunisticDue.length > 0) {
         logger.info('Automation', 'Skipped opportunistic jobs (system not idle)', { skipped: opportunisticDue.length, idleMs, idleThresholdMs });
+      }
+
+      // Opportunistic-idle hook: background work that should only run while the
+      // user is away. Fire-and-forget so a slow hook never blocks the tick.
+      if (idleEnough && this.opts.onIdle) {
+        Promise.resolve(this.opts.onIdle()).catch((err) => recordSwallowed('scheduler.onIdle', err));
       }
 
       if (results.length > 0) {

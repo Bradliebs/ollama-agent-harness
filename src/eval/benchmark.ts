@@ -84,6 +84,14 @@ export interface BenchmarkTaskResult {
   toolCalls: string[];
   durationMs: number;
   tags: string[];
+  /**
+   * How many stochastic replicates were run for this task (1 = single run,
+   * the default). Present only when `replicates > 1` so existing single-run
+   * results are unchanged.
+   */
+  replicateCount?: number;
+  /** How many of those replicates passed (the k in a k/N majority vote). */
+  passReplicates?: number;
 }
 
 export interface BenchmarkRun {
@@ -220,6 +228,17 @@ export interface BenchmarkRunOptions {
    */
   systemPrompt?: string;
   /**
+   * Number of stochastic replicates to run per task (default 1). When > 1,
+   * each task is run this many times and the replicates are aggregated into a
+   * single majority-vote verdict, with the k/N pass count recorded on the
+   * result. This does NOT change how scoring pairs tasks (still one verdict
+   * per task, so the McNemar test keeps the same number of cells — no
+   * pseudoreplication); it only makes each per-task verdict less sensitive to
+   * sampling noise. Requires the daemon to sample at temperature > 0, or every
+   * replicate is identical and the aggregation is a no-op.
+   */
+  replicates?: number;
+  /**
    * Project directory for persisting run results and regression tasks.
    * When set, results are written to <projectDir>/.harness/benchmarks/.
    */
@@ -325,6 +344,64 @@ export async function runBenchmarkTask(task: BenchmarkTask, options: BenchmarkRu
 }
 
 /**
+ * Aggregate N stochastic replicates of the same task into a single verdict.
+ *
+ * The verdict is a strict majority vote on pass/fail (a task passes iff more
+ * than half its replicates passed). This keeps scoring at one verdict per task
+ * — the McNemar test sees the same number of cells whether replicates is 1 or
+ * 20, so replicates buy reliability (less coin-flip on borderline tasks), NOT
+ * extra statistical observations. Cost fields (toolCalls, durationMs) are the
+ * honest totals across all replicates so budget gates see the real spend.
+ */
+export function aggregateReplicates(replicas: BenchmarkTaskResult[]): BenchmarkTaskResult {
+  if (replicas.length === 0) {
+    throw new Error('aggregateReplicates requires at least one replicate.');
+  }
+  const n = replicas.length;
+  const passCount = replicas.filter((r) => r.status === 'pass').length;
+  const errorCount = replicas.filter((r) => r.status === 'error').length;
+  const passes = passCount * 2 > n;
+  const allErrored = errorCount === n;
+  const status: BenchmarkTaskResult['status'] = allErrored ? 'error' : passes ? 'pass' : 'fail';
+  const representative = status === 'pass'
+    ? (replicas.find((r) => r.status === 'pass') ?? replicas[0])
+    : (replicas.find((r) => r.status !== 'pass') ?? replicas[0]);
+  const failureCategory = status === 'pass' ? undefined : modalFailureCategory(replicas);
+  return {
+    taskId: representative.taskId,
+    tier: representative.tier,
+    description: representative.description,
+    status,
+    failureCategory,
+    reason: `${passCount}/${n} replicates passed — ${representative.reason}`,
+    responsePreview: representative.responsePreview,
+    toolCalls: replicas.flatMap((r) => r.toolCalls),
+    durationMs: replicas.reduce((sum, r) => sum + r.durationMs, 0),
+    tags: representative.tags,
+    replicateCount: n,
+    passReplicates: passCount,
+  };
+}
+
+function modalFailureCategory(replicas: BenchmarkTaskResult[]): FailureCategory | undefined {
+  const counts = new Map<FailureCategory, number>();
+  for (const replica of replicas) {
+    if (replica.status !== 'pass' && replica.failureCategory) {
+      counts.set(replica.failureCategory, (counts.get(replica.failureCategory) ?? 0) + 1);
+    }
+  }
+  let best: FailureCategory | undefined;
+  let bestCount = 0;
+  for (const [category, count] of counts) {
+    if (count > bestCount) {
+      best = category;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+/**
  * Run all selected tasks sequentially and return a structured run record.
  */
 export async function runBenchmark(options: BenchmarkRunOptions = {}): Promise<BenchmarkRun> {
@@ -334,8 +411,17 @@ export async function runBenchmark(options: BenchmarkRunOptions = {}): Promise<B
   const results: BenchmarkTaskResult[] = [];
   const startedAt = new Date();
 
+  const replicates = Math.max(1, Math.floor(options.replicates ?? 1));
   for (const task of tasks) {
-    results.push(await runBenchmarkTask(task, options));
+    if (replicates <= 1) {
+      results.push(await runBenchmarkTask(task, options));
+    } else {
+      const replicas: BenchmarkTaskResult[] = [];
+      for (let i = 0; i < replicates; i += 1) {
+        replicas.push(await runBenchmarkTask(task, options));
+      }
+      results.push(aggregateReplicates(replicas));
+    }
   }
 
   const finishedAt = new Date();

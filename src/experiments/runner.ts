@@ -38,6 +38,7 @@ export async function runExperiment(options: RunExperimentOptions): Promise<RunE
     tasks,
     filterIds: plan.selectedTaskIds,
     perTaskTimeoutMs: options.manifest.evaluation.perTaskTimeoutMs,
+    replicates: options.manifest.evaluation.replicates,
   };
 
   const baselineRun = await runBenchmark({

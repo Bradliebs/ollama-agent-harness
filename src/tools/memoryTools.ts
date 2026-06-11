@@ -233,7 +233,7 @@ export const SemanticRecallTool: Tool = {
     if (!available) {
       return {
         success: false,
-        output: `Concept memory service is not running. It is auto-started by start.bat; if launching the harness manually, run:\n  python -m uvicorn ccmem.service:app --host 0.0.0.0 --port 8765`,
+        output: `Concept memory service is not running. It is auto-started by start.bat; if launching the harness manually, run:\n  python -m uvicorn ccmem.service:app --host 127.0.0.1 --port 8765`,
         error: 'ccmem unavailable',
       };
     }

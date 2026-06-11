@@ -1229,6 +1229,8 @@
         <span class="session-hud-val" id="sessionHudProv" style="display:none"></span>
         <span class="meta-sep" id="sessionHudOfflineSep" style="display:none">·</span>
         <span class="session-hud-val" id="sessionHudOffline" style="display:none"></span>
+        <span class="meta-sep" id="sessionHudReviewSep" style="display:none">·</span>
+        <span class="session-hud-val" id="sessionHudReview" style="display:none"></span>
       </div>
       <div class="session-hud autonomy-hud-action hidden-by-default" id="autonomyHud" title="Autonomy loop progress (.forge-state.json)" onclick="toggleAutonomyLog()">
         <span>🤖 Autonomy</span>
@@ -1607,6 +1609,37 @@
       </div>
       <div id="slackStatus" class="settings-status-line">Loading...</div>
     </div>
+    <div class="settings-section" id="settingsWebhooks">
+      <h4>Outgoing Webhooks</h4>
+      <div class="setting-row settings-note">
+        POST a JSON payload to your own endpoints when jobs and autonomy runs finish. Failed deliveries retry with backoff and land in a dead-letter queue you can redeliver or discard.
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="text" id="webhookUrlInput" placeholder="https://your-endpoint.example/hook" class="settings-flex-input">
+        <button class="btn-sm primary" onclick="addWebhook()">Add</button>
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="password" id="webhookSecretInput" placeholder="Optional HMAC secret" class="settings-flex-input">
+        <input type="text" id="webhookEventsInput" placeholder="Events (comma-separated, blank = all)" class="settings-flex-input">
+      </div>
+      <div id="webhookList" class="settings-status-line">Loading...</div>
+      <div id="webhookDeadLetters"></div>
+    </div>
+    <div class="settings-section" id="settingsGovernedLoop">
+      <h4>Governed Agent Loop</h4>
+      <div class="setting-row settings-note">
+        Shadow telemetry from the governed pass: the current working memory, plus a human-gated review queue of staged brain-updates and answers flagged for review. Approving a brain-update is the only thing that writes a fact.
+      </div>
+      <div id="governedWorkingMemory" class="settings-status-line">Loading...</div>
+      <div id="governedReviewQueue"></div>
+      <div class="setting-row settings-action-row" style="margin-top:8px">
+        <button class="btn-sm" id="governedReplayBtn" onclick="runReplayNow()">Replay drained answers</button>
+        <span id="governedReplayStatus" class="muted"></span>
+      </div>
+      <div id="governedReplayCandidates"></div>
+      <div id="governedMetrics"></div>
+    </div>
+
     <div class="settings-section" id="settingsWhatsapp">
       <h4>WhatsApp Status</h4>
       <div class="setting-row settings-note">

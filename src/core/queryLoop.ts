@@ -25,6 +25,7 @@ import type { OutputValidationProfile } from './outputValidation';
 import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
 import { verifyCode } from './doneStateVerifier';
 import { classifyModelLocality } from '../observability/costProvenance';
+import { governAnswer } from '../governed/governedAnswer';
 
 /**
  * Resolve whether post-completion code verification should run.
@@ -42,6 +43,16 @@ export function resolveVerifyEnabled(explicit: boolean | undefined, cwd?: string
   if (env === '1' || env === 'on' || env === 'true') return true;
   if (explicit !== undefined) return explicit;
   return cwd !== undefined && existsSync(path.join(cwd, 'package.json'));
+}
+
+/**
+ * Resolve whether the opt-in governance shadow pass runs. Default OFF: with
+ * HARNESS_GOVERNED_SHADOW unset the loop emits no `governed_shadow` event and
+ * the answer contract is unchanged. Set to 1/on/true to receive the telemetry.
+ */
+export function resolveGovernedShadowEnabled(): boolean {
+  const env = process.env.HARNESS_GOVERNED_SHADOW?.toLowerCase();
+  return env === '1' || env === 'on' || env === 'true';
 }
 
 export interface QueryLoopDeps {
@@ -424,6 +435,7 @@ export async function* queryLoop(
       }
 
       let validationFailed = false;
+      let validationScore: number | undefined;
       if (config.outputValidation?.enabled) {
         // Auto-promote oracle-prime → coding-answer when the run actually
         // edited files. oracle-prime is the default fallback for ambiguous
@@ -455,9 +467,64 @@ export async function* queryLoop(
         });
         yield { type: 'output_validation', validation };
         validationFailed = validation.status === 'fail';
+        validationScore = validation.score;
       }
       yield { type: 'turn_complete', turn, durationMs: Date.now() - turnStarted, toolCalls: 0 };
       yield { type: 'text', content: assistantMessage.content };
+
+      // Opt-in governance shadow pass. Runs BESIDE the answer above (which is
+      // already emitted unchanged) and only when HARNESS_GOVERNED_SHADOW is on,
+      // so the default contract stays identical. Signals are derived honestly
+      // from loop state the way it actually knows them: the loop does not track
+      // brain/web citations, so this mainly reflects abstention and validation.
+      if (resolveGovernedShadowEnabled()) {
+        const answerText = typeof assistantMessage.content === 'string' ? assistantMessage.content : '';
+        // Derive HOW the answer knows what it says from the tool calls the loop
+        // actually made this run. Matching is conservative and reflects real
+        // usage (not a guess): a memory/brain read counts as a brain citation, a
+        // web/search/fetch call counts as an unsaved web source (brain wins ties,
+        // so semantic_search/rag_search read as brain). Shadow-only, so the
+        // default contract is untouched.
+        let unsavedWebSources = 0;
+        let brainCitations = 0;
+        for (const name of allToolCallNames) {
+          if (/(memory|recall|brain|rag|semantic|knowledge|palace|notes?)/i.test(name)) brainCitations += 1;
+          else if (/(web|search|fetch|browse|url|http|crawl|scrape)/i.test(name)) unsavedWebSources += 1;
+        }
+        // Real source conflict, derived honestly from what the loop knows: the
+        // model read at least two web sources AND its own answer flags a
+        // disagreement between them. Conservative on purpose (high precision) —
+        // a single source cannot conflict, and corroborating sources without a
+        // disagreement marker are not a conflict. Drives the needs-review mode.
+        const sourceConflict =
+          unsavedWebSources >= 2 &&
+          /(conflict|contradict|disagree|inconsistent|sources?\s+(?:vary|differ)|differing\s+(?:reports|sources|figures|numbers|accounts))/i.test(answerText);
+        // When fresh web findings backed a non-empty answer that is not already
+        // grounded in the brain, stage ONE brain-update candidate for human
+        // approval. Staged only — never written here (shadow-first).
+        const brainUpdateCandidates = unsavedWebSources > 0 && brainCitations === 0 && answerText.trim().length > 0
+          ? [{
+            content: answerText.trim().slice(0, 280),
+            reason: `found online via ${unsavedWebSources} web tool call(s); not yet in brain`,
+          }]
+          : undefined;
+        const governed = governAnswer({
+          answer: answerText,
+          signals: {
+            confidence: validationScore,
+            abstained: finalContentIsEmpty,
+            unsavedWebSources,
+            brainCitations,
+            conflict: sourceConflict,
+          },
+          brainUpdateCandidates,
+        });
+        tracer?.recordEvent('governed.shadow', {
+          mode: governed.confidence.mode,
+          critique: governed.critique.overall,
+        });
+        yield { type: 'governed_shadow', governed };
+      }
 
       // Self-certification check: detect claims the agent makes that
       // have no supporting tool evidence. E.g. "email sent ✅" without

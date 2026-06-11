@@ -5,6 +5,7 @@ import type { ReadBeforeWriteMode } from '../tools/readBeforeWriteGate';
 import type { RepoMap } from '../core/repoMap';
 import type { InjectionDefenceMode } from '../safety/injectionDefence';
 import type { ModelLocality } from '../observability/costProvenance';
+import type { GovernedAnswer } from '../governed/governedAnswer';
 
 export interface LoopConfig {
   /**
@@ -163,7 +164,8 @@ export type LoopEvent =
   | AutoContinueEvent
   | TimeBudgetStatusEvent
   | TurnCompleteEvent
-  | VerificationEvent;
+  | VerificationEvent
+  | GovernedShadowEvent;
 
 export interface TextEvent {
   type: 'text';
@@ -341,4 +343,15 @@ export interface VerificationEvent {
     detail?: string;
     duration_ms?: number;
   }>;
+}
+
+/**
+ * Opt-in governance telemetry, emitted only when HARNESS_GOVERNED_SHADOW is on.
+ * The governed pass runs BESIDE the answer (the `text` event is unchanged), so
+ * with the flag off no `governed_shadow` event is produced and the default
+ * answer contract is byte-for-byte identical — shadow first, behavior later.
+ */
+export interface GovernedShadowEvent {
+  type: 'governed_shadow';
+  governed: GovernedAnswer;
 }

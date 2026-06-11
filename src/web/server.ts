@@ -2,7 +2,7 @@ import express from 'express';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { watch as fsWatch, existsSync, mkdirSync } from 'fs';
+import { watch as fsWatch, existsSync, mkdirSync, readFileSync } from 'fs';
 import * as net from 'net';
 import * as crypto from 'crypto';
 import * as os from 'os';
@@ -61,6 +61,8 @@ import { createServiceRouter } from './serviceRoutes';
 import { createSkillRouter } from './skillRoutes';
 import { createWorkflowRouter } from './workflowRoutes';
 import { createWebhookRouter } from './webhookRoutes';
+import { createWorkingMemoryRouter } from './workingMemoryRoutes';
+import { createReviewQueueRouter } from './reviewQueueRoutes';
 import { createAgentRouter } from './agentRoutes';
 import { createFileBrowseRouter } from './fileBrowseRoutes';
 import { createAssetRouter } from './assetRoutes';
@@ -158,7 +160,7 @@ import { calculateReadiness, type ReadinessInput } from '../core/readinessGate';
 import { buildTaskContract } from '../core/taskContractBuilder';
 import { BUILTIN_PROFILES, applyProfile, filterToolsByProfile } from '../services/configProfiles';
 import { renderDriftReport } from '../eval/goldenTraces';
-import { setCcmemUrl } from '../services/conceptMemoryClient';
+import { setCcmemToken, setCcmemUrl } from '../services/conceptMemoryClient';
 import { validateStructuredOutput, parseAndValidate, detectSchema, BUILTIN_SCHEMAS } from '../core/structuredOutputValidator';
 import { buildRepoGraph, summarizeRepo, saveRepoGraph, loadRepoGraph } from '../core/codeIntelligence';
 import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
@@ -171,7 +173,11 @@ import { startDiscordBot, stopDiscordBot, isDiscordBotRunning } from '../integra
 import { getSlackConnectorStatus, sanitizeSlackWebhookUrl } from '../integrations/slack';
 import { getWhatsAppConnectorStatus, sanitizeWhatsAppSetup } from '../integrations/whatsapp';
 import { configureWebReadTool, DEFAULT_WEB_READ_MAX_CHARS, sanitizeWebReadMaxChars } from '../tools/webSearchTool';
-import { loadWebhooksFromEnv, sendWebhookNotification } from '../integrations/webhooks';
+import { initWebhookStore, loadWebhooksFromEnv, sendWebhookNotification } from '../integrations/webhooks';
+import { initReviewQueue, enqueueFromGoverned } from '../governed/reviewQueue';
+import { initReplayConsumer, type ReplayCandidate } from '../governed/replayConsumer';
+import { runReplayCandidates } from '../governed/replayRunner';
+import type { GovernedAnswer } from '../governed/governedAnswer';
 import * as nodemailer from 'nodemailer';
 import { NervousSystemController } from '../nervous';
 import { listShellCommandAllowlistPresets } from '../automation/runner';
@@ -239,6 +245,13 @@ function resolveProjectDir(): string {
 
 const PROJECT_DIR = resolveProjectDir();
 setProjectRoot(PROJECT_DIR);
+// LOCAL_HOST controls the bind interface. Defaults to loopback (127.0.0.1) so
+// the dashboard is reachable only from this machine. If you set HOST to a
+// non-loopback address (e.g. 0.0.0.0) to share the UI on your network, you
+// MUST also set HARNESS_API_AUTH_TOKEN — API auth flips on automatically in
+// that case, and requests without the token are rejected. The UI is otherwise
+// unauthenticated and can drive shell/file tools, so never expose it without
+// the token.
 const LOCAL_HOST = process.env.HOST ?? '127.0.0.1';
 const API_AUTH_TOKEN = (process.env.HARNESS_API_AUTH_TOKEN ?? '').trim();
 const HISTORY_DIR = path.join(PROJECT_DIR, '.harness', 'chat-history');
@@ -1251,6 +1264,49 @@ app.use('/api', (req, res, next) => {
   if (!HOST_HEADER_ALLOWED_NAMES.has(hostname)) {
     res.status(421).json({ error: 'Misdirected request: Host header not in allow-list.' });
     return;
+  }
+  next();
+});
+
+// ── Cross-origin / CSRF defense (defense-in-depth) ──────────────────────
+// On loopback the API auth token is optional, so a malicious web page the
+// user happens to visit could try to drive the local agent through the
+// browser (classic CSRF). Auth here is a bearer token (not cookies) and we
+// emit no CORS headers (cross-origin JSON reads are preflight-blocked), so
+// the practical risk is already low — but state-changing requests get an
+// explicit belt-and-braces check:
+//   - reject when the browser flags the request as cross-site, and
+//   - reject when an Origin header is present but its host is off-allowlist.
+// Non-browser clients (CLI, Telegram bridge, the in-process autonomy loop)
+// send no Origin / Sec-Fetch-Site headers and pass through untouched, so the
+// loop / learn / continue-until-done paths are unaffected. Only enforced on
+// loopback; non-loopback relies on the auth token as the gate.
+const CSRF_GUARDED_METHODS = new Set<string>(['POST', 'PUT', 'PATCH', 'DELETE']);
+app.use('/api', (req, res, next) => {
+  if (!HOST_HEADER_ENFORCED || !CSRF_GUARDED_METHODS.has(req.method)) {
+    next();
+    return;
+  }
+  const secFetchSite = req.headers['sec-fetch-site'];
+  if (typeof secFetchSite === 'string' && secFetchSite.toLowerCase() === 'cross-site') {
+    res.status(403).json({ error: 'Cross-site request rejected.' });
+    return;
+  }
+  const origin = req.headers.origin;
+  if (typeof origin === 'string' && origin.length > 0) {
+    let originHost: string;
+    try {
+      // new URL('http://[::1]:4300').hostname === '[::1]', which matches the
+      // bracketed entry in HOST_HEADER_ALLOWED_NAMES.
+      originHost = new URL(origin).hostname.toLowerCase();
+    } catch {
+      res.status(403).json({ error: 'Malformed Origin header.' });
+      return;
+    }
+    if (!HOST_HEADER_ALLOWED_NAMES.has(originHost)) {
+      res.status(403).json({ error: 'Cross-origin request rejected: Origin not in allow-list.' });
+      return;
+    }
   }
   next();
 });
@@ -3707,6 +3763,29 @@ app.use(createAssetRouter({ projectDir: PROJECT_DIR }));
 // loadWebhooksFromEnv + sendWebhookNotification (non-HTTP boot/notify paths).
 app.use(createWebhookRouter());
 
+// Governed Agent Loop working-memory surface: GET /api/working-memory returns
+// the latest session's most recent continuity checkpoint as a unified
+// WorkingMemory object (read-only).
+app.use(createWorkingMemoryRouter({ projectDir: PROJECT_DIR }));
+
+// Governed Agent Loop review queue: human-gated list/approve/reject/drain for
+// staged brain-updates and needs-review answers (GET /api/review-queue,
+// POST /api/review-queue/:id/{approve,reject,drain}).
+app.use(createReviewQueueRouter());
+
+// Replay execution: consume the drained needs-review answers and re-ask each
+// one through the harness, re-enqueuing the fresh governed answer for review.
+// This closes the loop (drain -> replay -> re-review) and auto-approves
+// nothing. With governance off it is a no-op (runReplayQuery yields null).
+app.post('/api/replay-candidates/run', async (_req, res) => {
+  try {
+    const result = await runReplayCandidates({ runOne: runReplayQuery });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 // ─── Nervous-system snapshot API ─────────────────────────────────────
 // /api/nervous (live snapshot of last chat-handler controller) + /api/nervous/
 // history (persisted signal log). Extracted to ./nervousRoutes.ts. server.ts
@@ -6080,6 +6159,17 @@ CONTEXT HYGIENE (critical for long tasks):
           completionTokens: event.completionTokens,
         });
       }
+      if (event.type === 'governed_shadow') {
+        // Live producer for the governed review queue. The event only fires
+        // when HARNESS_GOVERNED_SHADOW is on, so this stays dormant by default.
+        // Enqueue is fire-and-forget and never blocks or alters the stream;
+        // nothing is written to the brain here — items wait for human approval.
+        try {
+          enqueueFromGoverned(event.governed);
+        } catch (err) {
+          recordSwallowed('enqueueFromGoverned', err);
+        }
+      }
       for (const fallbackEvent of drainRemoteProviderFallbackEvents()) {
         res.write(`data: ${JSON.stringify(fallbackEvent)}\n\n`);
       }
@@ -7020,6 +7110,14 @@ function configureAutomationScheduler(): void {
       sendTelegramNotification('Promise breach', msg).catch((err) => recordSwallowed('sendTelegramNotification', err));
       sendWebhookNotification('promise.breach', { breaches }).catch((err) => recordSwallowed('sendWebhookNotification', err));
     },
+    // While the user is away, re-investigate any drained needs-review answers
+    // and re-enqueue the results for human review. Auto-approves nothing —
+    // replayed answers re-enter the same human-gated queue (shadow-first).
+    onIdle: () => {
+      runReplayCandidates({ runOne: runReplayQuery })
+        .then((r) => { if (r.replayed > 0) logger.info('Governed', 'Idle replay completed', { ...r }); })
+        .catch((err) => recordSwallowed('scheduler.idleReplay', err));
+    },
   });
   automationScheduler.start();
   schedulerRegistry.register({
@@ -7068,6 +7166,33 @@ async function runBriefingChat(prompt: string): Promise<string> {
     if (event.type === 'text') text += event.content;
   }
   return text.trim();
+}
+
+// Re-asks a single drained needs-review answer through the harness on the same
+// non-interactive, read-only-web path as the briefing runner, and returns the
+// governed shadow answer if governance is enabled (else null). Auto-approves
+// nothing — the caller re-enqueues the result for human review.
+async function runReplayQuery(candidate: ReplayCandidate): Promise<GovernedAnswer | null> {
+  const model = currentModel || 'llama3.1:8b';
+  const client = webRuntime.createClient(model, ollamaHost);
+  const webTools = webRuntime.getTools().filter((t) => t.name === 'web_search' || t.name === 'web_read');
+  const config: LoopConfig = {
+    model,
+    systemPrompt: 'You are re-investigating a previously low-confidence answer. Use the web tools to verify or correct it. Never fabricate facts you have not looked up.',
+    maxTurns: 6,
+    maxTimeMs: 120_000,
+  };
+  const deps: QueryLoopDeps = {
+    client,
+    tools: webTools,
+    permissionCheck: async () => ({ allowed: true }),
+  };
+  const prompt = `Re-investigate and verify this claim, correcting it if it is wrong:\n\n${candidate.content}`;
+  let governed: GovernedAnswer | null = null;
+  for await (const event of webRuntime.runQueryLoop(config, deps, [{ role: 'user', content: prompt }])) {
+    if (event.type === 'governed_shadow') governed = event.governed;
+  }
+  return governed;
 }
 
 // Best-effort calendar source for the briefing: reads a local .ics file and
@@ -8540,8 +8665,27 @@ export async function startServer(): Promise<void> {
       logger.warn('Startup', 'Failed to start Jarvis ambient action subscriber', { error: error instanceof Error ? error.message : String(error) });
     }
 
-    // Load webhooks from env.
+    // Load webhooks: persisted registry first, then any env-configured webhook.
+    initWebhookStore(PROJECT_DIR);
     loadWebhooksFromEnv();
+
+    // Load the governed-loop review queue from disk.
+    initReviewQueue(PROJECT_DIR);
+    // Point the replay consumer at the same project's drained-answer seam.
+    initReplayConsumer(PROJECT_DIR);
+
+    // ccmem auth: env var wins; otherwise pick up the token persisted by
+    // start.bat / start.sh so a harness launched on its own (e.g. `npm run
+    // serve`) can still talk to an authenticated memory sidecar. Best-effort:
+    // if there is no token file, ccmem simply runs unauthenticated.
+    if (!process.env.HARNESS_CCMEM_TOKEN?.trim()) {
+      try {
+        const tokenFromFile = readFileSync(path.join(PROJECT_DIR, '.harness', 'ccmem', 'token'), 'utf-8').trim();
+        if (tokenFromFile) setCcmemToken(tokenFromFile);
+      } catch {
+        // No persisted token — leave the client unauthenticated.
+      }
+    }
 
     // Auto-build code intelligence graph (non-blocking).
     loadRepoGraph(PROJECT_DIR).then((existing) => {

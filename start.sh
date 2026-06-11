@@ -82,6 +82,26 @@ else
   echo "  ✅ Workspace: $HARNESS_PROJECT_DIR"
 fi
 
+# Shared auth token for the local memory bank (ccmem). Generated once and
+# persisted under the workspace so restarts reuse it; exported so a ccmem
+# sidecar launched from this environment and the harness share it. Best-effort:
+# if ccmem runs without this token it simply stays unauthenticated and the
+# harness still works, just without same-host access protection.
+CCMEM_DIR="$HARNESS_PROJECT_DIR/.harness/ccmem"
+mkdir -p "$CCMEM_DIR" 2>/dev/null || true
+CCMEM_TOKEN_FILE="$CCMEM_DIR/token"
+if [ ! -f "$CCMEM_TOKEN_FILE" ]; then
+  if command -v openssl &>/dev/null; then
+    openssl rand -hex 16 > "$CCMEM_TOKEN_FILE" 2>/dev/null || true
+  elif [ -r /dev/urandom ]; then
+    head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$CCMEM_TOKEN_FILE" 2>/dev/null || true
+  fi
+  chmod 600 "$CCMEM_TOKEN_FILE" 2>/dev/null || true
+fi
+if [ -s "$CCMEM_TOKEN_FILE" ]; then
+  export HARNESS_CCMEM_TOKEN="$(tr -d ' \r\n' < "$CCMEM_TOKEN_FILE")"
+fi
+
 # Step 7: Launch
 PORT="${PORT:-4300}"
 echo ""

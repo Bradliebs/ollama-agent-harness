@@ -17,6 +17,25 @@ describe('assembleSystemContext', () => {
     expect(context.length).toBeLessThan(8_000);
   });
 
+  it('reads an approved brain-update back into the system prompt (closes the learn loop)', async () => {
+    // The review queue appends approved facts to .harness/memory/patterns.md.
+    // This proves the round-trip: an approved fact re-enters the next session's
+    // prompt as Agent Memory, so approving a brain-update actually teaches.
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-brain-readback-'));
+    await fs.mkdir(path.join(projectDir, '.harness', 'memory'), { recursive: true });
+    const fact = 'The staging API base URL is https://staging.example.test/v2';
+    await fs.writeFile(
+      path.join(projectDir, '.harness', 'memory', 'patterns.md'),
+      `# Learned Patterns\n\n## Approved Brain Update abc123\n\n${fact}\n`,
+      'utf-8',
+    );
+
+    const context = await assembleSystemContext({ systemPrompt: 'base prompt', projectDir });
+
+    expect(context).toContain('Agent Memory: patterns.md');
+    expect(context).toContain(fact);
+  });
+
   it('keeps capped prompt sources under the baseline context budget', async () => {
     const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-context-budget-'));
     const skillsDir = path.join(projectDir, '.harness', 'skills');

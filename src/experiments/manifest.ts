@@ -52,6 +52,10 @@ export function validateExperimentManifest(manifest: ExperimentManifest): Manife
   if (manifest.evaluation?.perTaskTimeoutMs !== undefined && manifest.evaluation.perTaskTimeoutMs <= 0) {
     errors.push('evaluation.perTaskTimeoutMs must be positive when provided.');
   }
+  if (manifest.evaluation?.replicates !== undefined
+    && (!Number.isInteger(manifest.evaluation.replicates) || manifest.evaluation.replicates < 1)) {
+    errors.push('evaluation.replicates must be a positive integer when provided.');
+  }
   const holdout = manifest.evaluation?.holdout;
   if (holdout) {
     const hasTaskIds = holdout.taskIds !== undefined;

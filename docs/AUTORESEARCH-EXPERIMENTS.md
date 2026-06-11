@@ -187,6 +187,40 @@ to clear `requireSignificance`), a `holdout` split, and both trust gates. The
 starter manifest keeps these gates off because it is a four-task smoke test; it
 includes a one-task `holdout` only to demonstrate the split syntax.
 
+## Stochastic replicates
+
+A single run of a task at a sampling temperature above zero is one draw from a
+distribution: a borderline task can pass on one run and fail on the next purely
+by chance, which makes the keep/discard decision a coin toss. Set
+`evaluation.replicates: N` (default `1`) to run each task `N` times per arm and
+aggregate the runs into a single **majority-vote** verdict — a task passes only
+if strictly more than half its replicates passed. The aggregated result records
+`replicateCount` and `passReplicates` (the `k` in a `k/N` vote) for transparency,
+and its `toolCalls`/`durationMs` are the honest totals across all replicates so
+budget gates see the real spend.
+
+> [!IMPORTANT]
+> Replicates do **not** increase the statistical sample. Aggregation collapses
+> the runs back to one verdict per task, so the McNemar test sees the same
+> number of cells whether `replicates` is `1` or `20`. Counting each replicate
+> as its own paired observation would be pseudoreplication — manufactured
+> significance from correlated draws. What replicates actually buy is lower
+> per-task variance, so genuinely borderline tasks stop flipping the decision on
+> sampling noise; they do not let a thin win clear `requireSignificance`.
+
+Two practical constraints:
+
+* Replicates only vary if the daemon samples at temperature `> 0` (the default
+  `0.2` is fine). At temperature `0` every replicate is identical and the run is
+  equivalent to `replicates: 1` at `N×` the cost.
+* A run with `N` replicates spends roughly `N×` the duration and tool-call
+  budget, so scale `budget.maxCostUnits`, `budget.maxDurationMs`, and
+  `budget.maxToolCalls` accordingly.
+
+A ready-to-run replicated arm (`replicates: 3` over the same 58-task hardened
+battery, budget scaled ~3×) lives at
+[cookbook/auto-research.holdout-battery-replicated.manifest.json](../cookbook/auto-research.holdout-battery-replicated.manifest.json).
+
 ## Promotion gate integration
 
 Learning-candidate promotion can require confirmed experiment evidence in

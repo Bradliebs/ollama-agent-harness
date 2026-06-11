@@ -29,6 +29,10 @@ const HEALTH_CACHE_MS = 30_000;
 const REQUEST_TIMEOUT_MS = 5_000;
 
 let _configuredUrl: string = process.env.HARNESS_CCMEM_URL?.trim() || DEFAULT_URL;
+// Optional shared-secret token. When set, sent as `Authorization: Bearer <token>`
+// on every request so an authenticated ccmem accepts us. Empty by default so
+// behaviour is unchanged when ccmem runs without auth.
+let _token: string = process.env.HARNESS_CCMEM_TOKEN?.trim() || '';
 let _lastHealthCheckMs = 0;
 let _lastHealthOk = false;
 
@@ -40,6 +44,21 @@ export function setCcmemUrl(url: string): void {
 
 export function getCcmemUrl(): string {
   return _configuredUrl;
+}
+
+export function setCcmemToken(token: string): void {
+  _token = token.trim();
+  // Re-probe health on next call: an auth change can flip reachability.
+  _lastHealthCheckMs = 0;
+}
+
+export function getCcmemToken(): string {
+  return _token;
+}
+
+// Returns the auth header object (or empty) to spread into a fetch headers map.
+function authHeaders(): Record<string, string> {
+  return _token ? { Authorization: `Bearer ${_token}` } : {};
 }
 
 // ── Types matching ccmem/service.py schema ────────────────────────────────────
@@ -70,7 +89,7 @@ async function post<T>(path: string, body: unknown): Promise<T | null> {
   try {
     const res = await fetch(`${_configuredUrl}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -95,7 +114,7 @@ export async function isAvailable(): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetch(`${_configuredUrl}/health`, { signal: controller.signal });
+    const res = await fetch(`${_configuredUrl}/health`, { headers: authHeaders(), signal: controller.signal });
     _lastHealthOk = res.ok;
   } catch {
     _lastHealthOk = false;

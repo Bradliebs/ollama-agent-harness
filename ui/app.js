@@ -4131,7 +4131,7 @@ async function checkSettingsHealth() {
     const data = await response.json();
     if (data.error) throw new Error(data.error);
     setVisionReadinessStatus(data.vision);
-    if (detail) detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio) + (data.pdfOcr ? renderSetupHealthRow('PDF OCR', data.pdfOcr) : '') + (data.ccmem ? renderSetupHealthRow('Long-term memory', data.ccmem) : '');
+    if (detail) detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio) + (data.pdfOcr ? renderSetupHealthRow('PDF OCR', data.pdfOcr) : '') + (data.ccmem ? renderSetupHealthRow('Long-term memory', data.ccmem) : '') + (data.webhooks ? renderSetupHealthRow('Webhooks', data.webhooks) : '');
   } catch (error) {
     if (detail) detail.innerHTML = '<div><strong>Setup</strong> ' + esc(error.message || error) + '</div>';
   }
@@ -4958,6 +4958,14 @@ async function sendMessage(opts) {
             // produced the run, when, and from what sources. Stays silent
             // when nothing beyond a timestamp is provable.
             renderRunProvenance(ev);
+            break;
+          case 'governed_shadow':
+            // Opt-in governed pass (HARNESS_GOVERNED_SHADOW). Surfaces HOW the
+            // answer knows (confidence mode) plus the self-critique findings
+            // inline under the answer, and refreshes the review queue panel so
+            // any newly staged items appear without a manual reload.
+            renderGovernedShadow(msgEl, ev.governed);
+            if (typeof loadReviewQueue === 'function') loadReviewQueue();
             break;
           case 'offline':
             // Honest offline guarantee (server-side): a 🔒 Offline badge only
@@ -6765,6 +6773,33 @@ function renderRunProvenance(verdict) {
   provEl.title = verdict.reason || '';
   provEl.style.display = '';
   sepEl.style.display = '';
+}
+
+// Opt-in governed pass surfaced inline under the assistant message. Renders the
+// confidence mode (HOW the answer knows) and the self-critique findings. Stays
+// quiet if there is no message element or no governed payload.
+function renderGovernedShadow(msgEl, governed) {
+  if (!msgEl || !governed) return;
+  const body = msgEl.querySelector('.msg-body') || msgEl;
+  let box = msgEl.querySelector('.governed-shadow');
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'governed-shadow';
+    box.style.cssText = 'margin-top:6px;padding:6px 8px;border-left:2px solid var(--accent,#69c);font-size:0.85em;opacity:0.9';
+    body.appendChild(box);
+  }
+  const mode = governed.confidence && governed.confidence.mode ? governed.confidence.mode : 'unknown';
+  const reason = governed.confidence && governed.confidence.reason ? governed.confidence.reason : '';
+  const overall = governed.critique && governed.critique.overall ? governed.critique.overall : 'ok';
+  const badge = overall === 'review' ? '⚠️ needs review' : '✓ ok';
+  const findings = (governed.critique && Array.isArray(governed.critique.findings)) ? governed.critique.findings : [];
+  const icon = function (status) { return status === 'flag' ? '🚩' : status === 'warn' ? '⚠️' : '✓'; };
+  const findingRows = findings.map(function (f) {
+    return '<div>' + icon(f.status) + ' <strong>' + esc(String(f.check)) + ':</strong> ' + esc(String(f.detail)) + '</div>';
+  }).join('');
+  box.innerHTML = '<div><strong>Governed:</strong> <code>' + esc(mode) + '</code> · ' + esc(badge)
+    + (reason ? ' <span class="muted">(' + esc(reason) + ')</span>' : '') + '</div>'
+    + findingRows;
 }
 
 function renderOffline(verdict) {
@@ -9823,7 +9858,7 @@ async function stopTelegram() {
 }
 
 async function loadConnectorStatuses() {
-  await Promise.allSettled([loadDiscordStatus(), loadSlackStatus(), loadWhatsAppStatus(), loadConnectorBadges(), loadConnectorGallery()]);
+  await Promise.allSettled([loadDiscordStatus(), loadSlackStatus(), loadWhatsAppStatus(), loadWebhooks(), loadGovernedLoop(), loadConnectorBadges(), loadConnectorGallery()]);
 }
 
 async function loadConnectorBadges() {
@@ -10005,6 +10040,319 @@ async function saveSlackWebhook() {
     loadConnectorBadges();
   } catch (e) {
     status.textContent = 'Slack setup failed: ' + (e.message || e);
+  }
+}
+
+// ── Outgoing webhooks (generic) ──────────────────────────────────────────────
+
+async function loadWebhooks() {
+  const list = document.getElementById('webhookList');
+  if (!list) return;
+  try {
+    const [hooksRes, deadRes] = await Promise.all([fetch('/api/webhooks'), fetch('/api/webhooks/dead-letter')]);
+    const hooks = (await readApiJson(hooksRes, 'Webhooks API')).webhooks || [];
+    const dead = (await readApiJson(deadRes, 'Dead-letter API')).deadLetters || [];
+    if (hooks.length === 0) {
+      list.innerHTML = '<em>No webhooks configured.</em>';
+    } else {
+      list.innerHTML = hooks.map(function (w) {
+        const d = w.lastDelivery;
+        let badge = '<span class="muted">no deliveries yet</span>';
+        if (d) {
+          const when = new Date(d.at).toLocaleString();
+          badge = d.ok
+            ? '<span style="color:var(--ok,#3a3)">✓ delivered' + (d.status ? ' (' + d.status + ')' : '') + ' · ' + esc(when) + '</span>'
+            : '<span style="color:var(--err,#c33)">✗ failed' + (d.status ? ' (' + d.status + ')' : '') + ' after ' + d.attempts + ' attempt(s) · ' + esc(when) + '</span>';
+        }
+        const history = w.recentDeliveries || [];
+        let timeline = '';
+        if (history.length > 0) {
+          const dots = history.map(function (h) {
+            const label = (h.ok ? 'ok' : 'failed') + (h.status ? ' ' + h.status : '') + ' · ' + new Date(h.at).toLocaleString();
+            return '<span title="' + esc(label) + '" style="color:' + (h.ok ? 'var(--ok,#3a3)' : 'var(--err,#c33)') + '">●</span>';
+          }).join('');
+          const failures = history.filter(function (h) { return !h.ok; }).length;
+          const flap = (failures > 0 && failures < history.length) ? ' <span style="color:var(--err,#c33)" title="mixed success/failure">⚠ flapping</span>' : '';
+          timeline = '<br><span class="muted" style="letter-spacing:2px">' + dots + '</span>' + flap;
+        }
+        const eventsLabel = (w.events && w.events.length > 0) ? esc(w.events.join(', ')) : 'all events';
+        return '<div class="setting-row" style="justify-content:space-between;gap:8px;align-items:center">'
+          + '<div style="overflow:hidden;text-overflow:ellipsis"><code>' + esc(w.url) + '</code>' + (w.enabled === false ? ' <span class="muted">(disabled)</span>' : '') + '<br><span class="muted">events: ' + eventsLabel + '</span><br>' + badge + timeline + '</div>'
+          + '<span style="white-space:nowrap"><button class="btn-sm" onclick="toggleWebhook(\'' + esc(w.id) + '\',' + (w.enabled === false) + ')">' + (w.enabled === false ? 'Enable' : 'Disable') + '</button> '
+          + '<button class="btn-sm" onclick="editWebhookEvents(\'' + esc(w.id) + '\',\'' + esc((w.events || []).join(',')) + '\')">Events</button> '
+          + '<button class="btn-sm" onclick="testWebhook(\'' + esc(w.id) + '\')">Test</button> '
+          + '<button class="btn-sm" onclick="removeWebhook(\'' + esc(w.id) + '\')">Delete</button></span></div>';
+      }).join('');
+    }
+    renderDeadLetters(dead);
+  } catch (e) {
+    list.textContent = 'Could not load webhooks: ' + (e.message || e);
+  }
+}
+
+function renderDeadLetters(dead) {
+  const box = document.getElementById('webhookDeadLetters');
+  if (!box) return;
+  if (!dead || dead.length === 0) { box.innerHTML = ''; return; }
+  box.innerHTML = '<div class="settings-note" style="margin-top:8px"><strong>Failed deliveries awaiting action (' + dead.length + ')</strong></div>'
+    + dead.map(function (e) {
+      const when = new Date(e.failedAt).toLocaleString();
+      const reason = e.error ? esc(e.error) : (e.status ? 'HTTP ' + e.status : 'unknown');
+      return '<div class="setting-row" style="justify-content:space-between;gap:8px;align-items:center">'
+        + '<div style="overflow:hidden;text-overflow:ellipsis"><code>' + esc(e.event) + '</code> → <code>' + esc(e.url) + '</code><br>'
+        + '<span style="color:var(--err,#c33)">' + reason + ' · ' + esc(when) + '</span></div>'
+        + '<span style="white-space:nowrap"><button class="btn-sm primary" onclick="redeliverDeadLetter(\'' + esc(e.id) + '\')">Redeliver</button> '
+        + '<button class="btn-sm" onclick="discardDeadLetter(\'' + esc(e.id) + '\')">Discard</button></span></div>';
+    }).join('');
+}
+
+async function addWebhook() {
+  const urlInput = document.getElementById('webhookUrlInput');
+  const secretInput = document.getElementById('webhookSecretInput');
+  const eventsInput = document.getElementById('webhookEventsInput');
+  const list = document.getElementById('webhookList');
+  if (!urlInput || !urlInput.value.trim()) { if (list) list.textContent = 'A webhook URL is required.'; return; }
+  const events = (eventsInput?.value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  try {
+    const res = await fetch('/api/webhooks', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: urlInput.value.trim(), secret: secretInput?.value.trim() || undefined, events }),
+    });
+    await readApiJson(res, 'Webhooks API');
+    urlInput.value = ''; if (secretInput) secretInput.value = ''; if (eventsInput) eventsInput.value = '';
+    loadWebhooks();
+  } catch (e) {
+    if (list) list.textContent = 'Could not add webhook: ' + (e.message || e);
+  }
+}
+
+async function removeWebhook(id) {
+  try {
+    await fetch('/api/webhooks/' + encodeURIComponent(id), { method: 'DELETE' });
+    loadWebhooks();
+  } catch (e) {
+    const list = document.getElementById('webhookList');
+    if (list) list.textContent = 'Could not delete webhook: ' + (e.message || e);
+  }
+}
+
+async function editWebhookEvents(id, currentCsv) {
+  const input = window.prompt('Comma-separated event filter (leave blank for all events):', currentCsv || '');
+  if (input === null) return; // cancelled
+  const events = input.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  const list = document.getElementById('webhookList');
+  try {
+    const res = await fetch('/api/webhooks/' + encodeURIComponent(id), {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: events }),
+    });
+    await readApiJson(res, 'Webhooks API');
+    loadWebhooks();
+  } catch (e) {
+    if (list) list.textContent = 'Could not update webhook events: ' + (e.message || e);
+  }
+}
+
+async function toggleWebhook(id, enable) {
+  const list = document.getElementById('webhookList');
+  try {
+    const res = await fetch('/api/webhooks/' + encodeURIComponent(id), {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: !!enable }),
+    });
+    await readApiJson(res, 'Webhooks API');
+    loadWebhooks();
+  } catch (e) {
+    if (list) list.textContent = 'Could not update webhook: ' + (e.message || e);
+  }
+}
+
+async function testWebhook(id) {
+  const list = document.getElementById('webhookList');
+  try {
+    const res = await fetch('/api/webhooks/' + encodeURIComponent(id) + '/test', { method: 'POST' });
+    const data = await res.json().catch(function () { return {}; });
+    if (res.ok) {
+      if (list) list.insertAdjacentHTML('afterbegin', '<div class="settings-note" style="color:var(--ok,#3a3)">Test ping delivered' + (data.status ? ' (' + esc(String(data.status)) + ')' : '') + '.</div>');
+    } else if (list) {
+      list.insertAdjacentHTML('afterbegin', '<div class="settings-note" style="color:var(--err,#c33)">Test ping failed: ' + esc(data.error || data.status || res.status) + '</div>');
+    }
+  } catch (e) {
+    if (list) list.textContent = 'Test ping failed: ' + (e.message || e);
+  }
+}
+
+async function redeliverDeadLetter(id) {
+  const box = document.getElementById('webhookDeadLetters');
+  try {
+    const res = await fetch('/api/webhooks/dead-letter/' + encodeURIComponent(id) + '/redeliver', { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json().catch(function () { return {}; });
+      if (box) box.insertAdjacentHTML('afterbegin', '<div class="settings-note" style="color:var(--err,#c33)">Redelivery failed: ' + esc(data.error || res.status) + '</div>');
+    }
+    loadWebhooks();
+  } catch (e) {
+    if (box) box.textContent = 'Redelivery failed: ' + (e.message || e);
+  }
+}
+
+async function discardDeadLetter(id) {
+  try {
+    await fetch('/api/webhooks/dead-letter/' + encodeURIComponent(id), { method: 'DELETE' });
+    loadWebhooks();
+  } catch (e) {
+    const box = document.getElementById('webhookDeadLetters');
+    if (box) box.textContent = 'Could not discard: ' + (e.message || e);
+  }
+}
+
+// ── Governed Agent Loop (working memory + review queue) ───────────────────────
+async function loadGovernedLoop() {
+  await Promise.allSettled([loadWorkingMemory(), loadReviewQueue(), loadReplayCandidates(), loadGovernanceMetrics()]);
+}
+
+async function loadWorkingMemory() {
+  const box = document.getElementById('governedWorkingMemory');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/working-memory');
+    const data = await readApiJson(res, 'Working-memory API');
+    const wm = data.workingMemory;
+    if (!wm) { box.innerHTML = '<em>No working memory yet (no session checkpoint).</em>'; return; }
+    function listRows(label, arr) {
+      if (!arr || arr.length === 0) return '';
+      return '<div class="setting-row"><strong>' + label + ':</strong> ' + arr.map(function (s) { return esc(String(s)); }).join('; ') + '</div>';
+    }
+    box.innerHTML = '<div class="setting-row"><strong>Goal:</strong> ' + esc(wm.currentGoal || '(none)') + '</div>'
+      + '<div class="setting-row"><strong>Next action:</strong> ' + esc(wm.nextAction || '(none)') + '</div>'
+      + listRows('Assumptions', wm.assumptions)
+      + listRows('Open questions', wm.openQuestions)
+      + listRows('Decisions', wm.decisions)
+      + listRows('Blocked', wm.blocked);
+  } catch (e) {
+    box.textContent = 'Could not load working memory: ' + (e.message || e);
+  }
+}
+
+async function loadReviewQueue() {
+  const box = document.getElementById('governedReviewQueue');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/review-queue?status=pending');
+    const data = await readApiJson(res, 'Review-queue API');
+    const items = data.items || [];
+    renderReviewCount(items.length);
+    if (items.length === 0) { box.innerHTML = '<div class="settings-note">Review queue is empty.</div>'; return; }
+    box.innerHTML = '<div class="settings-note" style="margin-top:8px"><strong>Pending review (' + items.length + ')</strong></div>'
+      + items.map(function (it) {
+        const isBrain = it.kind === 'brain-update';
+        const tag = isBrain ? 'brain-update' : 'needs-review';
+        const primary = isBrain
+          ? '<button class="btn-sm primary" onclick="resolveReviewItem(\'' + esc(it.id) + '\',\'approve\')">Approve</button> '
+            + '<button class="btn-sm" onclick="resolveReviewItem(\'' + esc(it.id) + '\',\'reject\')">Reject</button>'
+          : '<button class="btn-sm" onclick="resolveReviewItem(\'' + esc(it.id) + '\',\'drain\')">Drain</button> '
+            + '<button class="btn-sm" onclick="resolveReviewItem(\'' + esc(it.id) + '\',\'reject\')">Dismiss</button>';
+        return '<div class="setting-row" style="justify-content:space-between;gap:8px;align-items:center">'
+          + '<div style="overflow:hidden;text-overflow:ellipsis"><code>' + esc(tag) + '</code> ' + esc(it.content)
+          + (it.priorContent ? '<br><span class="muted">was: ' + esc(it.priorContent) + '</span>' : '')
+          + '<br><span class="muted">' + esc(it.reason) + '</span></div>'
+          + '<span style="white-space:nowrap">' + primary + '</span></div>';
+      }).join('');
+  } catch (e) {
+    box.textContent = 'Could not load review queue: ' + (e.message || e);
+  }
+}
+
+// Pending-review count badge in the session HUD. Stays silent at zero so the
+// HUD is uncluttered until the governed loop actually stages something for
+// human review. Refreshed live from loadReviewQueue (called on each
+// governed_shadow chat event).
+function renderReviewCount(count) {
+  const el = document.getElementById('sessionHudReview');
+  const sepEl = document.getElementById('sessionHudReviewSep');
+  if (!el || !sepEl) return;
+  const n = Number(count) || 0;
+  if (n <= 0) {
+    el.style.display = 'none';
+    sepEl.style.display = 'none';
+    return;
+  }
+  el.textContent = '🔍 ' + n + ' review';
+  el.title = n + ' governed-loop item(s) awaiting your approval';
+  el.style.display = '';
+  sepEl.style.display = '';
+}
+
+async function resolveReviewItem(id, action) {
+  const box = document.getElementById('governedReviewQueue');
+  try {
+    const res = await fetch('/api/review-queue/' + encodeURIComponent(id) + '/' + encodeURIComponent(action), { method: 'POST' });
+    await readApiJson(res, 'Review-queue API');
+    loadReviewQueue();
+  } catch (e) {
+    if (box) box.textContent = 'Could not update review item: ' + (e.message || e);
+  }
+}
+
+// Drained needs-review answers staged for re-investigation. The list is a
+// non-destructive peek at the replay seam; "Replay drained answers" re-asks
+// each one through the harness and re-enqueues the fresh governed answer for
+// review (it auto-approves nothing).
+async function loadReplayCandidates() {
+  const box = document.getElementById('governedReplayCandidates');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/replay-candidates');
+    const data = await readApiJson(res, 'Replay-candidates API');
+    const items = data.candidates || [];
+    const btn = document.getElementById('governedReplayBtn');
+    if (btn) btn.disabled = items.length === 0;
+    if (items.length === 0) { box.innerHTML = '<div class="settings-note">No drained answers waiting to replay.</div>'; return; }
+    box.innerHTML = '<div class="settings-note" style="margin-top:8px"><strong>Drained, awaiting replay (' + items.length + ')</strong></div>'
+      + items.map(function (c) {
+        return '<div class="setting-row" style="gap:8px;align-items:center">'
+          + '<div style="overflow:hidden;text-overflow:ellipsis"><code>replay</code> ' + esc(c.content)
+          + '<br><span class="muted">' + esc(c.reason) + '</span></div></div>';
+      }).join('');
+  } catch (e) {
+    box.textContent = 'Could not load replay candidates: ' + (e.message || e);
+  }
+}
+
+// Small lifetime readout of the governed-loop review queue: staged → approved /
+// drained → re-queued. Stays quiet on failure so it never blocks the panel.
+async function loadGovernanceMetrics() {
+  const box = document.getElementById('governedMetrics');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/governed-metrics');
+    const data = await readApiJson(res, 'Governed-metrics API');
+    const m = data.metrics || {};
+    box.innerHTML = '<div class="settings-note" style="margin-top:8px">'
+      + '<strong>Loop metrics</strong> · staged ' + (m.staged || 0)
+      + ' · approved ' + (m.approved || 0)
+      + ' · drained ' + (m.drained || 0)
+      + ' · rejected ' + (m.rejected || 0)
+      + ' · re-queued ' + (m.reQueued || 0) + '</div>';
+  } catch (e) {
+    box.textContent = 'Could not load loop metrics: ' + (e.message || e);
+  }
+}
+
+async function runReplayNow() {
+  const statusEl = document.getElementById('governedReplayStatus');
+  const btn = document.getElementById('governedReplayBtn');
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.textContent = 'Replaying…';
+  try {
+    const res = await fetch('/api/replay-candidates/run', { method: 'POST' });
+    const data = await readApiJson(res, 'Replay-run API');
+    if (statusEl) statusEl.textContent = 'Replayed ' + (data.replayed || 0) + ', re-queued ' + (data.reQueued || 0) + '.';
+    loadReviewQueue();
+    loadReplayCandidates();
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'Replay failed: ' + (e.message || e);
+    if (btn) btn.disabled = false;
   }
 }
 

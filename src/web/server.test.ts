@@ -167,6 +167,48 @@ describe('web server API validation', () => {
     }
   });
 
+  // Raw HTTP request so we can set Origin / Sec-Fetch-Site, which undici's
+  // fetch() strips as forbidden header names. Used by the CSRF guard test.
+  function rawApiPost(route: string, headers: Record<string, string>): Promise<number> {
+    const url = new URL(`${baseUrl}${route}`);
+    const body = '{}';
+    return new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: url.pathname + url.search,
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...headers },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
+  }
+
+  it('rejects cross-origin/cross-site state-changing /api requests but allows same-origin and non-browser clients', async () => {
+    // Off-allowlist Origin → blocked.
+    expect(await rawApiPost('/api/settings', { Origin: 'http://evil.example' })).toBe(403);
+    // Browser-flagged cross-site → blocked.
+    expect(await rawApiPost('/api/settings', { 'Sec-Fetch-Site': 'cross-site' })).toBe(403);
+    // Malformed Origin → blocked.
+    expect(await rawApiPost('/api/settings', { Origin: 'not a url' })).toBe(403);
+
+    // Same-origin (allow-listed host) Origin → reaches the handler.
+    expect(await rawApiPost('/api/settings', { Origin: 'http://127.0.0.1' })).not.toBe(403);
+    // Non-browser client (no Origin / Sec-Fetch-Site) → passes through, so the
+    // CLI, Telegram bridge, and in-process autonomy loop are unaffected.
+    expect(await rawApiPost('/api/settings', {})).not.toBe(403);
+    // Same-site browsers are explicitly allowed.
+    expect(await rawApiPost('/api/settings', { 'Sec-Fetch-Site': 'same-origin' })).not.toBe(403);
+  });
+
   async function withTokenConfiguredServer(
     token: string,
     run: (
@@ -1391,6 +1433,58 @@ describe('web server API validation', () => {
       expect(body).toContain('data: [DONE]');
       expect(createClient).not.toHaveBeenCalled();
       expect(runQueryLoop).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('enqueues governed review items from a governed_shadow event during chat', async () => {
+    const uniqueFact = `governed-live-${Date.now()}`;
+    const governed = {
+      answer: 'A governed answer.',
+      confidence: { mode: 'found-online-unsaved', reason: 'web source, not yet saved' },
+      critique: { findings: [{ check: 'sourced', status: 'ok', detail: 'cited' }], overall: 'ok' },
+      workingMemory: null,
+      proposedBrainUpdates: [{ content: uniqueFact, reason: 'staged by shadow pass' }],
+    };
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('governed-live-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (): AsyncGenerator<LoopEvent> {
+        yield { type: 'text', content: 'A governed answer.' };
+        yield { type: 'governed_shadow', governed } as unknown as LoopEvent;
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'Please give me a brief governed answer.', model: 'test-model' }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain('"type":"governed_shadow"');
+
+      const queue = await request('/api/review-queue?kind=brain-update');
+      expect(queue.status).toBe(200);
+      const queueBody = await queue.json() as { items: Array<{ kind: string; content: string }> };
+      expect(queueBody.items.some((item) => item.kind === 'brain-update' && item.content === uniqueFact)).toBe(true);
     } finally {
       restore();
     }

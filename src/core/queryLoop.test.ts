@@ -75,6 +75,91 @@ describe('queryLoop runtime behavior', () => {
     expect(events[1]).toEqual({ type: 'text', content: 'All done.' });
   });
 
+  describe('governance shadow pass (HARNESS_GOVERNED_SHADOW)', () => {
+    const original = process.env.HARNESS_GOVERNED_SHADOW;
+    afterEach(() => {
+      if (original === undefined) delete process.env.HARNESS_GOVERNED_SHADOW;
+      else process.env.HARNESS_GOVERNED_SHADOW = original;
+    });
+
+    it('emits no governed_shadow event and leaves the default contract unchanged when off', async () => {
+      delete process.env.HARNESS_GOVERNED_SHADOW;
+      const client = makeClient([{ role: 'assistant', content: 'All done.' }]);
+
+      const events = await collectEvents(client, []);
+
+      expect(events.map((event) => event.type)).toEqual(['turn_complete', 'text', 'done']);
+      expect(events.some((e) => e.type === 'governed_shadow')).toBe(false);
+    });
+
+    it('emits governed_shadow after the unchanged text event when on', async () => {
+      process.env.HARNESS_GOVERNED_SHADOW = '1';
+      const client = makeClient([{ role: 'assistant', content: 'All done.' }]);
+
+      const events = await collectEvents(client, []);
+
+      // The text and done events are byte-for-byte identical to the off case;
+      // the shadow event is purely additive, between text and done.
+      expect(events.map((event) => event.type)).toEqual(['turn_complete', 'text', 'governed_shadow', 'done']);
+      expect(events[1]).toEqual({ type: 'text', content: 'All done.' });
+      const shadow = events.find((e) => e.type === 'governed_shadow');
+      expect(shadow).toBeDefined();
+      if (shadow && shadow.type === 'governed_shadow') {
+        expect(shadow.governed.answer).toBe('All done.');
+        expect(shadow.governed.confidence.mode).toBeDefined();
+      }
+    });
+
+    it('derives web-source signals from tool calls and stages a brain-update candidate', async () => {
+      process.env.HARNESS_GOVERNED_SHADOW = '1';
+      const webSearch = makeTool('web_search', true, async () => ({ success: true, output: 'fresh result' }));
+      const client = makeClient([
+        { role: 'assistant', content: '', tool_calls: [{ function: { name: 'web_search', arguments: { q: 'price' } } }] } as Message,
+        { role: 'assistant', content: 'The price is $42.' },
+      ]);
+
+      const events = await collectEvents(client, [webSearch]);
+
+      const shadow = events.find((e) => e.type === 'governed_shadow');
+      expect(shadow).toBeDefined();
+      if (shadow && shadow.type === 'governed_shadow') {
+        // A web/search call with no brain read is an unsaved web source.
+        expect(shadow.governed.confidence.mode).toBe('found-online-unsaved');
+        // Fresh web findings stage exactly one brain-update candidate (never written here).
+        expect(shadow.governed.proposedBrainUpdates).toHaveLength(1);
+        expect(shadow.governed.proposedBrainUpdates[0].content).toBe('The price is $42.');
+      }
+    });
+
+    it('flags needs-review when two web sources disagree in the answer', async () => {
+      process.env.HARNESS_GOVERNED_SHADOW = '1';
+      const webSearch = makeTool('web_search', true, async () => ({ success: true, output: 'source one' }));
+      const webRead = makeTool('web_read', true, async () => ({ success: true, output: 'source two' }));
+      const client = makeClient([
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            { function: { name: 'web_search', arguments: { q: 'price' } } },
+            { function: { name: 'web_read', arguments: { url: 'http://x' } } },
+          ],
+        } as Message,
+        { role: 'assistant', content: 'The two sources conflict: one says $42, the other says $58.' },
+      ]);
+
+      const events = await collectEvents(client, [webSearch, webRead]);
+
+      const shadow = events.find((e) => e.type === 'governed_shadow');
+      expect(shadow).toBeDefined();
+      if (shadow && shadow.type === 'governed_shadow') {
+        // Two web reads plus a disagreement marker in the answer = real conflict.
+        expect(shadow.governed.confidence.mode).toBe('needs-review');
+        expect(shadow.governed.confidence.reason).toBe('sources conflicted');
+        expect(shadow.governed.critique.overall).toBe('review');
+      }
+    });
+  });
+
   it('emits output validation before final text when validation is enabled', async () => {
     const client = makeClient([{ role: 'assistant', content: 'All done.' }]);
 

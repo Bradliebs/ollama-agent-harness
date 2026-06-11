@@ -72,6 +72,8 @@ export interface SetupHealthResult {
   smtp: { ok: boolean; message: string };
   /** Concept memory (ccmem) service reachability. Optional; reports not-running when the service is offline. */
   ccmem: { ok: boolean; message: string };
+  /** Webhook delivery health. Optional; present only when ≥1 webhook is configured. */
+  webhooks?: { ok: boolean; message: string };
   /** Per-model synthesis turn statistics (optional, populated when stats file exists). */
   synthesisStats?: Record<string, { fired: number; total: number; adaptiveMaxTurns: number }>;
 }
@@ -95,6 +97,7 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
   const fallback = checkFallbackConfig(backends);
   const smtp = checkSmtpConfig();
   const ccmem = await checkCcmemHealth();
+  const webhooks = await checkWebhookHealth();
   const rawStats = await loadSynthesisStats(input.projectDir ?? process.cwd());
   const synthesisStats: Record<string, { fired: number; total: number; adaptiveMaxTurns: number }> = {};
   for (const [model, record] of Object.entries(rawStats)) {
@@ -128,6 +131,7 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
       fallback,
       smtp,
       ccmem,
+      ...(webhooks ? { webhooks } : {}),
       ...(Object.keys(synthesisStats).length > 0 ? { synthesisStats } : {}),
     };
   } catch (error) {
@@ -142,6 +146,7 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
       fallback,
       smtp,
       ccmem,
+      ...(webhooks ? { webhooks } : {}),
       ...(Object.keys(synthesisStats).length > 0 ? { synthesisStats } : {}),
     };
   }
@@ -223,15 +228,46 @@ function checkSmtpConfig(): { ok: boolean; message: string } {
  */
 async function checkCcmemHealth(): Promise<{ ok: boolean; message: string }> {
   try {
-    const { isAvailable, getCcmemUrl } = await import('../services/conceptMemoryClient');
+    const { isAvailable, getCcmemUrl, getCcmemToken } = await import('../services/conceptMemoryClient');
     const url = getCcmemUrl();
+    const authNote = getCcmemToken().length > 0 ? ' Bearer auth is active.' : ' No auth token set (open on loopback).';
     const ok = await isAvailable();
     return ok
-      ? { ok: true, message: `Long-term memory service is reachable at ${url}.` }
-      : { ok: false, message: `Long-term memory service is not running at ${url} (optional). Start it with: python ccmem/service.py` };
+      ? { ok: true, message: `Long-term memory service is reachable at ${url}.${authNote}` }
+      : { ok: false, message: `Long-term memory service is not running at ${url} (optional).${authNote} Start it with: python ccmem/service.py` };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { ok: false, message: `Long-term memory check failed: ${message}` };
+  }
+}
+
+/**
+ * Summarize webhook delivery health for the doctor. Returns undefined when no
+ * webhooks are configured so the doctor only shows the row to users who use
+ * them. Lazy-imports the registry to avoid loading it unless health runs.
+ */
+async function checkWebhookHealth(): Promise<{ ok: boolean; message: string } | undefined> {
+  try {
+    const { listWebhooks, listDeadLetters } = await import('../integrations/webhooks');
+    const hooks = listWebhooks();
+    if (hooks.length === 0) return undefined;
+    const recentFailures = hooks.filter((w) => w.lastDelivery && !w.lastDelivery.ok).length;
+    // A webhook is "flapping" when its recent history holds both successes and
+    // failures — an intermittently reachable endpoint that a single last-delivery
+    // status would hide.
+    const flapping = hooks.filter((w) => {
+      const h = w.recentDeliveries ?? [];
+      return h.length > 1 && h.some((d) => d.ok) && h.some((d) => !d.ok);
+    }).length;
+    const deadLetterCount = listDeadLetters().length;
+    const parts = [`${hooks.length} configured`];
+    if (recentFailures > 0) parts.push(`${recentFailures} with a failed last delivery`);
+    if (flapping > 0) parts.push(`${flapping} flapping`);
+    if (deadLetterCount > 0) parts.push(`${deadLetterCount} awaiting redelivery`);
+    if (recentFailures === 0 && flapping === 0 && deadLetterCount === 0) parts.push('recent deliveries ok');
+    return { ok: recentFailures === 0 && flapping === 0 && deadLetterCount === 0, message: `${parts.join(' · ')}.` };
+  } catch (error) {
+    return { ok: false, message: `Webhook health check failed: ${error instanceof Error ? error.message : String(error)}` };
   }
 }
 

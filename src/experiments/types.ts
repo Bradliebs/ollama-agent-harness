@@ -25,6 +25,18 @@ export interface ExperimentEvaluationSpec {
   tiers?: BenchmarkTier[];
   perTaskTimeoutMs?: number;
   /**
+   * Number of stochastic replicates to run per task (default 1). When > 1,
+   * each task is run this many times and aggregated into a single majority-vote
+   * verdict (the k/N pass count is recorded). This keeps one verdict per task —
+   * the McNemar test sees the same number of cells regardless of replicate
+   * count, so this is NOT pseudoreplication; it reduces per-task sampling noise
+   * so borderline tasks stop flipping the keep/discard decision on a coin toss.
+   * Requires the daemon to sample at temperature > 0, otherwise every replicate
+   * is identical and the aggregation is a no-op. Note that a run with R
+   * replicates spends roughly R× the tool/duration budget.
+   */
+  replicates?: number;
+  /**
    * Optional held-out split. Tasks carved out here are still evaluated, but
    * the scorer reports a separate holdout sub-scorecard and (when the
    * guardrail `minHoldoutNetWins` is set) a keep decision must also be

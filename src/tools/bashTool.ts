@@ -8,6 +8,20 @@ import { isSandboxActive, isShellBinaryAllowed } from './sandboxGuards';
 const MAX_OUTPUT_SIZE = 50_000;
 const MAX_COMMAND_LENGTH = 2000;
 
+// NOTE: BLOCKED_PATTERNS is a footgun hint, NOT a security boundary. It is a
+// deny-list and deny-lists are inherently incomplete (it catches `rm -rf /`
+// but not `rm -rf ~` or `rm -rf /home/user`, etc.). Do NOT treat a clean
+// pass here as "safe to run", and do not grow this list expecting it to
+// become containment — that reinforces a false mental model.
+//
+// The actual containment for this tool is, in order of importance:
+//   1. `shell: false` on spawn (no shell metacharacter interpretation),
+//   2. single-command-only enforcement (findUnquotedShellOperator rejects
+//      ;, |, &&, ||, redirects, command substitution outside quotes), and
+//   3. the deny-first PermissionEngine, which asks before bash runs in
+//      default mode.
+// These patterns only exist to short-circuit the most obvious self-inflicted
+// disasters with a clearer message; they are not the safety perimeter.
 const BLOCKED_PATTERNS = [
   /\brm\s+(-[a-zA-Z]*)?r[a-zA-Z]*f\b.*\/\s*$/,   // rm -rf /
   /\bmkfs\b/,

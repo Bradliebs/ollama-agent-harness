@@ -301,4 +301,43 @@ describe('setup health', () => {
       expect(pkg.message).toContain('not valid JSON');
     });
   });
+
+  describe('ccmem auth status', () => {
+    it('reports auth state in the long-term memory message', async () => {
+      const { setCcmemToken } = await import('../services/conceptMemoryClient');
+      setCcmemToken('test-token');
+      try {
+        const result = await checkSetupHealth({ host: 'http://127.0.0.1:1', visionModel: '', audioTranscribeCommand: '', projectDir: fixtureDir });
+        expect(result.ccmem.message).toContain('Bearer auth is active');
+      } finally {
+        setCcmemToken('');
+      }
+    });
+
+    it('notes when no auth token is set', async () => {
+      const { setCcmemToken } = await import('../services/conceptMemoryClient');
+      setCcmemToken('');
+      const result = await checkSetupHealth({ host: 'http://127.0.0.1:1', visionModel: '', audioTranscribeCommand: '', projectDir: fixtureDir });
+      expect(result.ccmem.message).toContain('No auth token set');
+    });
+  });
+
+  describe('webhook delivery health', () => {
+    it('omits the webhooks field when none are configured', async () => {
+      const { initWebhookStore } = await import('../integrations/webhooks');
+      initWebhookStore(fixtureDir); // resets the shared registry to empty
+      const result = await checkSetupHealth({ host: 'http://127.0.0.1:1', visionModel: '', audioTranscribeCommand: '', projectDir: fixtureDir });
+      expect(result.webhooks).toBeUndefined();
+    });
+
+    it('summarizes configured webhooks when present', async () => {
+      const { initWebhookStore, addWebhook } = await import('../integrations/webhooks');
+      initWebhookStore(fixtureDir);
+      addWebhook({ url: 'https://example.test/hook', events: [], enabled: true });
+      const result = await checkSetupHealth({ host: 'http://127.0.0.1:1', visionModel: '', audioTranscribeCommand: '', projectDir: fixtureDir });
+      expect(result.webhooks).toBeDefined();
+      expect(result.webhooks!.ok).toBe(true);
+      expect(result.webhooks!.message).toContain('1 configured');
+    });
+  });
 });

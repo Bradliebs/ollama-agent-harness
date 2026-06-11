@@ -3,16 +3,21 @@ import { BUILT_IN_TASKS } from '../eval/benchmarkTasks';
 import { validateExperimentManifest } from './manifest';
 import { loadExperimentManifest, resolveExperimentPlan } from './resolver';
 
-const MANIFEST_PATH = path.resolve(
-  __dirname,
-  '../../cookbook/auto-research.holdout-battery.manifest.json',
-);
+const MANIFEST_PATHS: ReadonlyArray<readonly [label: string, file: string]> = [
+  ['original', 'auto-research.holdout-battery.manifest.json'],
+  ['hardened', 'auto-research.holdout-battery-hardened.manifest.json'],
+  ['overconfident-baseline', 'auto-research.holdout-battery-overconfident-baseline.manifest.json'],
+];
 
 // Guards the held-out benchmark battery: the manifest must resolve cleanly
 // against the real built-in task catalog, every selected id must exist, and
 // the development set and holdout must be a clean, content-disjoint partition.
-// If these break, an experiment "keep" decision can no longer be trusted.
-describe('holdout battery manifest', () => {
+// If these break, an experiment "keep" decision can no longer be trusted. Both
+// the original and the hardened-candidate arm share the same battery, so the
+// same invariants must hold for each.
+describe.each(MANIFEST_PATHS)('holdout battery manifest (%s)', (_label, file) => {
+  const MANIFEST_PATH = path.resolve(__dirname, '../../cookbook', file);
+
   it('is a structurally valid experiment manifest', async () => {
     const manifest = await loadExperimentManifest(MANIFEST_PATH);
     const validation = validateExperimentManifest(manifest);

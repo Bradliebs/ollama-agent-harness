@@ -124,6 +124,20 @@ echo   [OK] Workspace: !HARNESS_PROJECT_DIR!
 
 :WORKSPACE_OK
 
+:: Shared auth token for the local memory bank (ccmem). Generated once and
+:: persisted under the workspace so every restart reuses the same value; both
+:: the ccmem sidecar and the harness inherit it via the environment set here.
+:: This makes the supported launch path authenticated by default. Memory stays
+:: best-effort: if any step is skipped, ccmem simply runs unauthenticated and
+:: the harness still works, just without same-host access protection.
+set "CCMEM_DIR=!HARNESS_PROJECT_DIR!\.harness\ccmem"
+if not exist "!CCMEM_DIR!" mkdir "!CCMEM_DIR!" >nul 2>nul
+set "CCMEM_TOKEN_FILE=!CCMEM_DIR!\token"
+if not exist "!CCMEM_TOKEN_FILE!" (
+  for /f "usebackq delims=" %%t in (`powershell -NoProfile -Command "[guid]::NewGuid().ToString('N')"`) do >"!CCMEM_TOKEN_FILE!" echo %%t
+)
+if exist "!CCMEM_TOKEN_FILE!" set /p HARNESS_CCMEM_TOKEN=<"!CCMEM_TOKEN_FILE!"
+
 :: Step 6: Launch ccmem (Concept Cells semantic memory — built-in, optional)
 python --version >nul 2>nul
 if errorlevel 1 (
@@ -152,7 +166,7 @@ if not errorlevel 1 (
 )
 
 echo   Starting ccmem ^(semantic memory^) on port 8765...
-start "ccmem" /min cmd /c "cd /d "%~dp0" && python -m uvicorn ccmem.service:app --host 0.0.0.0 --port 8765"
+start "ccmem" /min cmd /c "cd /d "%~dp0" && python -m uvicorn ccmem.service:app --host 127.0.0.1 --port 8765"
 
 :: Poll /health for up to 30s before declaring ready (single PowerShell process
 :: avoids spawning 30 sub-shells; uvicorn typically binds in ~2s)

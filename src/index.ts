@@ -16,6 +16,26 @@ export type { CompactionStrategy } from './context/compaction';
 export { SessionStorage } from './persistence/sessionStorage';
 export { resumeSession, forkSession, getLatestSession } from './persistence/resume';
 export { createContinuityCheckpoint } from './persistence/continuity';
+export { classifyConfidenceMode, DEFAULT_REVIEW_THRESHOLD } from './governed/confidenceMode';
+export type { ConfidenceMode, ConfidenceModeSignals, ConfidenceModeResult } from './governed/confidenceMode';
+export { buildWorkingMemory } from './governed/workingMemory';
+export type { WorkingMemory, WorkingMemoryExtras } from './governed/workingMemory';
+export { selfCritique, DEFAULT_STALE_SOURCE_MS } from './governed/selfCritique';
+export type { SelfCritiqueInput, SelfCritiqueResult, SelfCritiqueFinding, SelfCritiqueStatus } from './governed/selfCritique';
+export { governAnswer } from './governed/governedAnswer';
+export type { GovernedAnswer, GovernedAnswerInput, BrainUpdateProposal } from './governed/governedAnswer';
+export {
+  initReviewQueue,
+  enqueueReviewItem,
+  listReviewItems,
+  resolveReviewItem,
+  enqueueFromGoverned,
+} from './governed/reviewQueue';
+export type { ReviewItem, ReviewItemKind, ReviewItemStatus, EnqueueReviewInput } from './governed/reviewQueue';
+export { initReplayConsumer, readReplayCandidates, consumeReplayCandidates } from './governed/replayConsumer';
+export type { ReplayCandidate } from './governed/replayConsumer';
+export { runReplayCandidates } from './governed/replayRunner';
+export type { ReplayRunResult, RunReplayOptions } from './governed/replayRunner';
 export { rebuildSemanticMemory, searchSemanticMemory } from './persistence/semanticMemory';
 export { getSessionSearchIndexStatus, rebuildSessionSearchIndex, rebuildSessionSearchIndexWithMetadata, searchSessions } from './persistence/sessionSearchIndex';
 export type { SessionSearchEntry, SessionSearchIndexFile, SessionSearchIndexMetadata, SessionSearchIndexStatus, SessionSearchResult } from './persistence/sessionSearchIndex';

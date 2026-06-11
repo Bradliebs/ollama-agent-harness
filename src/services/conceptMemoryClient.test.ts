@@ -178,4 +178,46 @@ describe('conceptMemoryClient', () => {
       } finally { mock.restore(); }
     });
   });
+
+  describe('auth token', () => {
+    function lastHeaders(calls: FetchCall[]): Record<string, string> {
+      const last = calls[calls.length - 1];
+      return (last?.init?.headers ?? {}) as Record<string, string>;
+    }
+
+    afterEach(() => {
+      // Clear the module-level token so it cannot leak into other suites.
+      ccmem.setCcmemToken('');
+    });
+
+    it('sends Authorization: Bearer <token> on writes when configured', async () => {
+      ccmem.setCcmemToken('secret-token');
+      const mock = installFetchMock(() => ({ ok: true, body: { id: 1, label: '' } }));
+      try {
+        await ccmem.store('hello');
+        expect(lastHeaders(mock.calls).Authorization).toBe('Bearer secret-token');
+      } finally { mock.restore(); }
+    });
+
+    it('omits the Authorization header when no token is set', async () => {
+      ccmem.setCcmemToken('');
+      const mock = installFetchMock(() => ({ ok: true, body: { id: 1, label: '' } }));
+      try {
+        await ccmem.store('hello');
+        expect(lastHeaders(mock.calls).Authorization).toBeUndefined();
+      } finally { mock.restore(); }
+    });
+
+    it('sends the bearer token on the health probe too', async () => {
+      ccmem.setCcmemToken('secret-token');
+      const mock = installFetchMock(({ url }) => {
+        expect(url).toContain('/health');
+        return { ok: true, body: { status: 'ok' } };
+      });
+      try {
+        await ccmem.isAvailable();
+        expect(lastHeaders(mock.calls).Authorization).toBe('Bearer secret-token');
+      } finally { mock.restore(); }
+    });
+  });
 });
