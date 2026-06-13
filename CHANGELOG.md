@@ -2,7 +2,7 @@
 title: Ollama Agent Harness Changelog
 description: Release notes generated from local RPI changes logs for Ollama Agent Harness
 author: Bradliebs
-ms.date: 2026-06-05
+ms.date: 2026-06-13
 ms.topic: reference
 keywords:
 	- ollama
@@ -10,6 +10,86 @@ keywords:
 	- changelog
 estimated_reading_time: 18
 ---
+
+## Ollama Agent Harness v0.6.6 (unreleased)
+
+A governance pass beside the product path, plus operator surfaces for what the
+agent learned while you were away. Shadow-first end-to-end: no default behaviour
+changes until a human approves.
+
+### Governed Agent Loop v1
+
+A new `src/governed/` subsystem (8 files) wraps an already-produced answer with
+one deterministic governance pass and stages any proposed memory updates as
+review artifacts. See [`docs/GOVERNED-LOOP.md`](docs/GOVERNED-LOOP.md) for the
+full tour.
+
+- **Confidence modes** (`src/governed/confidenceMode.ts`): every answer is
+  labelled `settled`, `reasoned`, `web-fresh`, or `distrust` based on signals
+  the harness already computes.
+- **Per-answer self-critique** (`src/governed/selfCritique.ts`): structured
+  findings against the four reviewer questions (cited? old? fact or judgement?
+  what would make this wrong?). Surfaces only — never blocks.
+- **Working memory snapshot** (`src/governed/workingMemory.ts`): one
+  inspectable object for current goal, open questions, decisions, next action,
+  and blocked items.
+- **Governed answer composition** (`src/governed/governedAnswer.ts`): pure,
+  model-free wrapper. The original `answer` string is passed through untouched
+  so the function runs shadow-first beside the product path.
+- **Human-gated review queue** (`src/governed/reviewQueue.ts`): one durable
+  queue for two lifecycles — `brain-update` (writes to `.harness/memory/patterns.md`
+  on approval) and `needs-review` (drains onto a replay seam on approval).
+  Writes happen only on explicit human approval; rejection and timeout drop the
+  item with an audit entry.
+- **Idle-replay loop** (`replayLedger.ts` + `replayConsumer.ts` + `replayRunner.ts`):
+  consumes drained `needs-review` candidates, re-asks each one through an
+  injected harness runner, and re-enqueues the fresh governed answer for human
+  review. Auto-approves nothing. Writes a per-run audit entry to
+  `.harness/idle-replay-log.jsonl`.
+
+### New HTTP surface
+
+Registered by `src/web/reviewQueueRoutes.ts`, `src/web/workingMemoryRoutes.ts`,
+`src/web/webhookRoutes.ts`, and `src/web/myceliumRoutes.ts`:
+
+- `GET /api/working-memory` — current goal, open questions, next action.
+- `GET /api/review-queue`, `POST /api/review-queue/:id/{approve,reject,drain}` —
+  human-gated approval surface for brain updates and needs-review answers.
+- `GET /api/replay-candidates`, `POST /api/replay-candidates/consume`,
+  `GET /api/replay-history`, `GET /api/governed-metrics` — idle-replay control
+  and audit endpoints.
+- `GET /api/webhooks`, `POST/PATCH/DELETE /api/webhooks/...`,
+  `GET /api/webhooks/dead-letter`, `POST /api/webhooks/dead-letter/:id/redeliver`,
+  `DELETE /api/webhooks/dead-letter/:id` — webhook registry, manual test,
+  dead-letter inspection, and replay.
+- `GET /api/mycelium`, `GET /api/mycelium/{last-route,learning-curve,build-gate-trend}`,
+  `DELETE /api/mycelium`, `POST /api/mycelium/feedback` — Mycelium router
+  inspection, learning-curve telemetry, and feedback intake.
+
+### Core and tool changes
+
+- `src/core/queryLoop.ts`, `src/core/rewardLedger.ts`, `src/core/buildGate.ts` —
+  loop changes feeding the governed pass and the Mycelium build-gate trend.
+- `src/tools/bashTool.ts`, `src/tools/memoryTools.ts` — refinements to bash
+  invocation safety and memory write semantics.
+- `src/setup/health.ts` — additional readiness checks.
+- `src/integrations/webhooks.ts`, `src/automation/scheduler.ts` — webhook
+  delivery hardening and scheduler hooks.
+- `src/services/conceptMemoryClient.ts` — ccmem client refinements.
+
+### Documentation
+
+- New [`docs/GOVERNED-LOOP.md`](docs/GOVERNED-LOOP.md) — confidence modes,
+  self-critique, review queue, and idle replay.
+- README updated with **Workspace vs install** guidance for `HARNESS_PROJECT_DIR`
+  so user-wide credentials (e.g. SMTP) can be promoted to OS env vars and stop
+  going stale per workspace.
+
+### Known gaps
+
+- The review queue and working-memory endpoints are live; UI panels for them
+  are partial. Until they ship, the seam is driven by direct API calls or by
+  an operator working from `.harness/review-queue.jsonl`.
 
 ## Ollama Agent Harness v0.6.5
 

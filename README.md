@@ -24,6 +24,14 @@ You chat with a model, it can call tools (read/write files, run bash, search the
 
 **v0.6.4** brings semantic memory via the bundled `ccmem` concept-cell service (auto-started on port 8765), the **Apex** family of autonomous experiences (`/goal` natural-language expander, PDF → wiki blueprint, Kanban bridge, competitor-research renderer, personal memory wiki, daily morning-priority prompt), persistent workspace path so `start.bat` only asks once, and a smarter empty-synthesis fallback that leads with any files the model wrote and falls back to short labelled bullets instead of raw page dumps. See the [CHANGELOG](CHANGELOG.md) for the full history.
 
+### What's new since v0.6.5 (in development)
+
+Landed on `main` but not yet cut into a numbered release:
+
+* **Governed Agent Loop v1** — a shadow-first governance pass beside the product path: confidence-mode labels, per-answer self-critique, a working-memory snapshot, and a human-gated review queue that writes to durable memory only on explicit approval. Idle replays re-ask drained answers and re-enter the same review queue. See [`docs/GOVERNED-LOOP.md`](docs/GOVERNED-LOOP.md).
+* **New HTTP surface** for the loop and supporting subsystems: `/api/working-memory`, `/api/review-queue/*`, `/api/replay-*`, `/api/governed-metrics`, plus `/api/webhooks/*` (including dead-letter redelivery) and `/api/mycelium/*` (router inspection, learning curve, feedback).
+* **Workspace vs install** clarification — set `HARNESS_PROJECT_DIR` to keep user data out of the install dir, and promote user-wide credentials (e.g. SMTP) to OS env vars so they stop going stale per workspace. See [Workspace vs install](#workspace-vs-install).
+
 ### What's new in v0.6.5
 
 Shipped since the v0.6.4 release:
@@ -353,6 +361,7 @@ When the agent writes to a bare filename (e.g. `notes.md`, no directory), the ha
 
 ### Environment knobs
 
+* `HARNESS_PROJECT_DIR` — where the harness stores user data (`.harness/`, sessions, memory, API keys). Defaults to the cwd; auto-redirects to `~/apex-workspace` if the cwd is the install dir. See [Workspace vs install](#workspace-vs-install).
 * `HARNESS_AGENT_OUTPUT_DIR` — override the agent-outputs directory (absolute or project-relative).
 * `HARNESS_PERMISSION_PROMPT_TIMEOUT_MS` — change the default permission-prompt timeout (default 5 minutes). Lower it for autonomous runs; pair with **Allowed External Paths** to avoid prompts entirely.
 * `HARNESS_VERIFY_PATH_CLAIMS` — set to `1` to append an `⚠️ Unverified file references:` footer to assistant text whenever it cites a file path that does not exist on disk. Off by default.
@@ -484,6 +493,14 @@ scripts/        Build, smoke, and release scripts
 ```
 
 ## Storage
+
+### Workspace vs install
+
+The harness separates the **install directory** (where the code lives, e.g. `H:\ollama-agent-harness-master`) from the **project directory** (where your data lives, e.g. `D:\Brad\Downloads\AI`). Set `HARNESS_PROJECT_DIR` to point at the project directory; if you launch from inside the install dir without setting it, the server auto-redirects to `~/apex-workspace` so user data never lands next to source code.
+
+One consequence: `.harness/api-keys.json` is **per workspace**. Credentials you want to share across every workspace (SMTP, third-party API keys) should be set as OS environment variables instead — the harness reads env vars whenever a key is absent from `api-keys.json`, so promoting a credential to an env var and removing it from per-workspace files prevents drift.
+
+### Runtime state
 
 All runtime state goes under `.harness/` in your project directory:
 
