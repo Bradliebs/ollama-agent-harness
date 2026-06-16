@@ -1,16 +1,22 @@
 import { HarnessError, PermissionDeniedError } from './errors';
+import { resolveLoopHardeningEnabled } from './iterationBudget';
 
 /**
  * Coarse retry classification for an error returned by a tool call, an LLM
  * call, or an internal subsystem. Callers decide policy from the class; the
  * class itself is purely descriptive.
  *
- * - `transient`    network blip / DNS hiccup / EAI_AGAIN / 5xx — retry with backoff.
- * - `rateLimited`  429 / explicit "rate limit" / quota — retry, honour Retry-After.
- * - `auth`         401 / 403 / invalid key — do NOT retry; surface immediately.
- * - `policyDenied` permission or safety inspector denied — do NOT retry.
- * - `permanent`    4xx other than auth/rate-limit / ENOENT / EACCES / bad input — do NOT retry.
- * - `unknown`      could not classify — caller defaults conservatively (no retry).
+ * - `transient`           network blip / DNS hiccup / EAI_AGAIN / 5xx — retry with backoff.
+ * - `rateLimited`         429 / explicit "rate limit" / quota — retry, honour Retry-After.
+ * - `auth`                401 / 403 / invalid key — do NOT retry; surface immediately.
+ * - `policyDenied`        permission or safety inspector denied — do NOT retry.
+ * - `permanent`           4xx other than auth/rate-limit / ENOENT / EACCES / bad input — do NOT retry.
+ * - `unknown`             could not classify — caller defaults conservatively (no retry).
+ * - `contextOverflow`     413 / "context too long" / "maximum context" — retry only after compression.
+ * - `formatError`         malformed JSON / tool-format mismatch — retry once with reformat.
+ * - `thinkingSignature`   stale reasoning/thinking signature — retry after stripping signature.
+ * - `contentPolicyBlocked` provider safety filter rejected the prompt — do NOT retry.
+ * - `providerOverloaded`  529 / "overloaded"/"server busy" — retry after backoff or fallback model.
  */
 export type RetryClass =
   | 'transient'
@@ -18,7 +24,12 @@ export type RetryClass =
   | 'auth'
   | 'policyDenied'
   | 'permanent'
-  | 'unknown';
+  | 'unknown'
+  | 'contextOverflow'
+  | 'formatError'
+  | 'thinkingSignature'
+  | 'contentPolicyBlocked'
+  | 'providerOverloaded';
 
 export interface ClassifiedError {
   /** The retry class. */
@@ -31,6 +42,18 @@ export interface ClassifiedError {
    * class is `rateLimited` or `transient` with a server-supplied hint.
    */
   retryAfterMs?: number;
+  /**
+   * Recovery hints for callers participating in the loop-hardening retry
+   * branches. Each hint suggests a one-shot recovery action; the caller
+   * is responsible for gating the action via {@link TurnRetryState}. All
+   * hints are optional — older callers ignore them and fall through to
+   * the existing retry/abort decision.
+   */
+  shouldCompress?: boolean;
+  shouldRotateCredential?: boolean;
+  shouldFallbackModel?: boolean;
+  shouldStripThinkingSignature?: boolean;
+  shouldShrinkImages?: boolean;
 }
 
 const TRANSIENT_NODE_CODES = new Set([
@@ -113,11 +136,20 @@ function parseRetryAfter(headers: Record<string, string | string[] | undefined> 
 }
 
 function classifyByStatus(status: number, retryAfterMs: number | undefined, message: string): ClassifiedError | null {
+  const hardened = resolveLoopHardeningEnabled();
   if (status === 429) {
     return { class: 'rateLimited', reason: `HTTP 429 ${message || 'rate limited'}`.trim(), retryAfterMs };
   }
   if (status === 401 || status === 403) {
-    return { class: 'auth', reason: `HTTP ${status} ${message || (status === 401 ? 'unauthorised' : 'forbidden')}`.trim() };
+    const base: ClassifiedError = { class: 'auth', reason: `HTTP ${status} ${message || (status === 401 ? 'unauthorised' : 'forbidden')}`.trim() };
+    if (hardened) base.shouldRotateCredential = true;
+    return base;
+  }
+  if (hardened && status === 413) {
+    return { class: 'contextOverflow', reason: `HTTP 413 ${message || 'payload too large'}`.trim(), shouldCompress: true };
+  }
+  if (hardened && status === 529) {
+    return { class: 'providerOverloaded', reason: `HTTP 529 ${message || 'overloaded'}`.trim(), retryAfterMs, shouldFallbackModel: true };
   }
   if (status === 408 || status === 502 || status === 503 || status === 504) {
     return { class: 'transient', reason: `HTTP ${status} ${message || 'service unavailable'}`.trim(), retryAfterMs };
@@ -188,6 +220,30 @@ export function classifyError(err: unknown): ClassifiedError {
     return { class: 'transient', reason: shape.message };
   }
 
+  // Loop-hardening substring fallbacks (additive, gated by
+  // HARNESS_LOOP_HARDENING). Each branch attaches the recovery hint that
+  // names the one-shot remediation appropriate to the failure mode.
+  // Caller (TurnRetryState-aware retry loop) decides whether to honour
+  // the hint; with the flag off we fall through to the legacy unknown
+  // classification so legacy callers see byte-identical behaviour.
+  if (resolveLoopHardeningEnabled()) {
+    if (/(content[_\s-]?policy|policy[_\s-]?violation|safety[_\s-]?(?:filter|policy)|prohibited content)/i.test(shape.message)) {
+      return { class: 'contentPolicyBlocked', reason: shape.message };
+    }
+    if (/(thinking[_\s.\- ]?signature|encrypted[_\s-]?content|reasoning[_\s.\- ]?signature)/i.test(shape.message)) {
+      return { class: 'thinkingSignature', reason: shape.message, shouldStripThinkingSignature: true };
+    }
+    if (/(context.*(?:too long|length|window)|maximum.*context|exceeds.*token|prompt.*too long|reduce.*length|too many tokens)/i.test(shape.message)) {
+      return { class: 'contextOverflow', reason: shape.message, shouldCompress: true };
+    }
+    if (/(overloaded|capacity|server.*busy|model.*unavailable|service.*degraded)/i.test(shape.message)) {
+      return { class: 'providerOverloaded', reason: shape.message, retryAfterMs, shouldFallbackModel: true };
+    }
+    if (/(invalid format|tool.*format|json.*parse error|malformed (?:tool|response)|unexpected token in json)/i.test(shape.message)) {
+      return { class: 'formatError', reason: shape.message };
+    }
+  }
+
   // HarnessError defaults to recoverable=true ⇒ treat as transient.
   if (err instanceof HarnessError) {
     return { class: 'transient', reason: err.message };
@@ -200,9 +256,27 @@ export function classifyError(err: unknown): ClassifiedError {
  * Whether an error class should be retried at all. Auth and policy-denied
  * never retry; permanent never retries. Transient and rate-limited retry.
  * Unknown does NOT retry by default — caller can override.
+ *
+ * Loop-hardening additions:
+ * - `providerOverloaded` retries (with fallback-model hint).
+ * - `formatError` retries once with a reformat (caller's TurnRetryState
+ *   ensures one-shot).
+ * - `thinkingSignature` retries once after stripping the signature.
+ * - `contextOverflow` retries only after the caller compresses; without
+ *   compression, the same overlong request will fail again, so it is
+ *   classified retryable HERE and the caller is expected to gate the
+ *   actual retry on `shouldCompress`.
+ * - `contentPolicyBlocked` does NOT retry.
  */
 export function isRetryable(cls: RetryClass): boolean {
-  return cls === 'transient' || cls === 'rateLimited';
+  return (
+    cls === 'transient' ||
+    cls === 'rateLimited' ||
+    cls === 'providerOverloaded' ||
+    cls === 'formatError' ||
+    cls === 'thinkingSignature' ||
+    cls === 'contextOverflow'
+  );
 }
 
 /**

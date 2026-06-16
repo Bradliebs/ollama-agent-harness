@@ -45,8 +45,11 @@ const PROTECTED_EXTERNAL_EXTENSIONS = new Set(['.bat', '.cmd', '.cjs', '.js', '.
  * harmless to auto-approve under `acceptEdits`, and blocking them wastes
  * autonomous turns when an agent tries to record reflections or consolidate
  * memory between substantive tool calls.
+ *
+ * Exported (read-only by convention) so the IterationBudget refund logic
+ * in `queryLoop.ts` can recognise meta-only turns without forking the list.
  */
-const META_TOOLS = new Set([
+export const META_TOOLS = new Set([
   'reflect',
   'analyze_patterns',
   'promote_pattern',

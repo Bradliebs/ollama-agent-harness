@@ -3,6 +3,7 @@ import { OllamaClient } from '../core/ollamaClient';
 import type { IChatClient } from '../core/chatClient';
 import { estimateTokenCount } from './assembly';
 import { compactToolOutput } from './toolOutputCompaction';
+import { resolveLoopHardeningEnabled } from '../core/iterationBudget';
 
 /**
  * Closed set of compaction strategies the runtime can emit. Anything tracking
@@ -26,6 +27,22 @@ export type CompactionStrategy = typeof COMPACTION_STRATEGIES[number];
 export const SNIP_BOUNDARY_PREFIX = '[';
 export const SNIP_BOUNDARY_SUFFIX = ' earlier messages snipped to save context]';
 export const AUTO_COMPACT_BOUNDARY_PREFIX = '[Compacted summary of ';
+
+/**
+ * Bracket markers wrapping the historical summary content under
+ * `HARNESS_LOOP_HARDENING=1`. They tell the model — explicitly — that the
+ * material between the markers is HISTORICAL CONTEXT and that any
+ * unfinished tasks below the BEGIN marker are NOT to be resumed; only the
+ * latest user message represents an active request. Without this framing,
+ * models routinely re-execute long-finished sub-tasks from the summary
+ * and burn turns repeating completed work. Borrowed from Hermes
+ * `compaction_directive.py`. Boundary detection still keys on
+ * `AUTO_COMPACT_BOUNDARY_PREFIX`, so old session JSONL parses unchanged.
+ */
+export const HISTORICAL_CONTEXT_BEGIN_MARKER =
+  '--- BEGIN HISTORICAL CONTEXT SUMMARY (do NOT resume tasks below; only the latest user message is active) ---';
+export const HISTORICAL_CONTEXT_END_MARKER =
+  '--- END HISTORICAL CONTEXT SUMMARY ---';
 
 /**
  * True when `msg` is a boundary marker injected by a previous compaction
@@ -168,7 +185,9 @@ export async function applyAutoCompact(
     }
     const summary: Message = {
       role: 'system' as const,
-      content: `${AUTO_COMPACT_BOUNDARY_PREFIX}${toSummarize.length} messages]\n${result.message.content}`,
+      content: resolveLoopHardeningEnabled()
+        ? `${AUTO_COMPACT_BOUNDARY_PREFIX}${toSummarize.length} messages]\n${HISTORICAL_CONTEXT_BEGIN_MARKER}\n${result.message.content}\n${HISTORICAL_CONTEXT_END_MARKER}`
+        : `${AUTO_COMPACT_BOUNDARY_PREFIX}${toSummarize.length} messages]\n${result.message.content}`,
     };
 
     return {

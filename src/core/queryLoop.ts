@@ -26,6 +26,9 @@ import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
 import { verifyCode } from './doneStateVerifier';
 import { classifyModelLocality } from '../observability/costProvenance';
 import { governAnswer } from '../governed/governedAnswer';
+import { META_TOOLS } from '../permissions/engine';
+import { resolveLoopHardeningEnabled } from './iterationBudget';
+import { sanitizeMessages } from './messageSanitization';
 
 /**
  * Resolve whether post-completion code verification should run.
@@ -306,7 +309,14 @@ export async function* queryLoop(
     let assistantMessage: Message;
     const modelSpan = tracer?.startSpan('model.chat', { model: config.model, turn });
     try {
-      const result = await client.chat(messages, ollamaTools, abortSignal);
+      // Surrogate sanitisation: under HARNESS_LOOP_HARDENING strip any lone
+      // UTF-16 surrogates from the outgoing message array so JSON.stringify
+      // on the wire cannot blow up the entire turn over one corrupt
+      // reasoning byte. No-op when the flag is off.
+      const outboundMessages = resolveLoopHardeningEnabled()
+        ? sanitizeMessages(messages)
+        : messages;
+      const result = await client.chat(outboundMessages, ollamaTools, abortSignal);
       assistantMessage = result.message;
       modelSpan?.end('ok', {
         toolCalls: assistantMessage.tool_calls?.length ?? 0,
@@ -682,6 +692,30 @@ export async function* queryLoop(
     const turnToolCalls = assistantMessage.tool_calls?.length ?? 0;
     yield { type: 'turn_complete', turn, durationMs: Date.now() - turnStarted, toolCalls: turnToolCalls };
 
+    // IterationBudget refund (HARNESS_LOOP_HARDENING): when the turn's
+    // entire tool activity was harness-internal meta tools (memory_write,
+    // reflect, analyze_patterns, etc.) the turn produced no user-facing
+    // work and burning a real budget slot on it makes long autonomous
+    // runs feel artificially short. Refund by decrementing `turn`, which
+    // gives the next iteration its slot back. The refund only fires when
+    // the turn HAD tool calls (not on plain assistant text turns) and
+    // EVERY call was a meta tool (mixing meta + non-meta consumes the
+    // turn). Bounded: refund cannot push `turn` below 0.
+    if (resolveLoopHardeningEnabled() && turnToolCalls > 0 && turn > 0) {
+      const allMetaOnly = (assistantMessage.tool_calls ?? []).every((tc) => {
+        const name = tc.function?.name;
+        return typeof name === 'string' && META_TOOLS.has(name);
+      });
+      if (allMetaOnly) {
+        turn -= 1;
+        tracer?.recordEvent('iteration_budget.refund', {
+          reason: 'meta_tool_only',
+          turnAfterRefund: turn,
+          metaToolCalls: turnToolCalls,
+        });
+      }
+    }
+
     // Tool-quality kill: terminate when the agent loops on non-productive
     // tools (reflect/consolidate/grep/list_files) without ever editing a
     // file. Bounded by `unproductiveTurnLimit` from LoopConfig.
@@ -788,7 +822,10 @@ export async function* queryLoop(
   turn++;
   const synthSpan = tracer?.startSpan('model.chat', { model: config.model, turn, synthesis: true });
   try {
-    const synthResult = await client.chat(synthMessages, [], abortSignal);
+    const outboundSynth = resolveLoopHardeningEnabled()
+      ? sanitizeMessages(synthMessages)
+      : synthMessages;
+    const synthResult = await client.chat(outboundSynth, [], abortSignal);
     const synthMessage = synthResult.message;
     synthSpan?.end('ok', {
       toolCalls: 0,

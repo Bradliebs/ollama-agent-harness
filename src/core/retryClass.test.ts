@@ -193,3 +193,124 @@ describe('computeRetryDelayMs', () => {
     expect(d).toBeGreaterThanOrEqual(24_000);
   });
 });
+
+describe('classifyError — HARNESS_LOOP_HARDENING extensions', () => {
+  const original = process.env.HARNESS_LOOP_HARDENING;
+  afterEach(() => {
+    if (original === undefined) delete process.env.HARNESS_LOOP_HARDENING;
+    else process.env.HARNESS_LOOP_HARDENING = original;
+  });
+
+  describe('with HARNESS_LOOP_HARDENING=0 (default)', () => {
+    beforeEach(() => {
+      delete process.env.HARNESS_LOOP_HARDENING;
+    });
+
+    it('413 still classifies as permanent (legacy behaviour preserved)', () => {
+      const err = Object.assign(new Error('payload too large'), { status: 413 });
+      expect(classifyError(err).class).toBe('permanent');
+    });
+
+    it('529 still classifies as transient (legacy behaviour preserved)', () => {
+      const err = Object.assign(new Error('overloaded'), { status: 529 });
+      expect(classifyError(err).class).toBe('transient');
+    });
+
+    it('“context too long” substring still classifies as unknown', () => {
+      // Without the flag, the new contextOverflow pattern is dormant and
+      // the caller falls through to the unknown bucket.
+      expect(classifyError(new Error('the context is too long for this model')).class).toBe('unknown');
+    });
+
+    it('401 does NOT carry shouldRotateCredential hint', () => {
+      const err = Object.assign(new Error('unauth'), { status: 401 });
+      const out = classifyError(err);
+      expect(out.class).toBe('auth');
+      expect(out.shouldRotateCredential).toBeUndefined();
+    });
+  });
+
+  describe('with HARNESS_LOOP_HARDENING=1', () => {
+    beforeEach(() => {
+      process.env.HARNESS_LOOP_HARDENING = '1';
+    });
+
+    it('413 → contextOverflow with shouldCompress=true', () => {
+      const err = Object.assign(new Error('payload too large'), { status: 413 });
+      const out = classifyError(err);
+      expect(out.class).toBe('contextOverflow');
+      expect(out.shouldCompress).toBe(true);
+    });
+
+    it('529 → providerOverloaded with shouldFallbackModel=true', () => {
+      const err = Object.assign(new Error('overloaded'), { status: 529 });
+      const out = classifyError(err);
+      expect(out.class).toBe('providerOverloaded');
+      expect(out.shouldFallbackModel).toBe(true);
+    });
+
+    it('401 carries shouldRotateCredential=true', () => {
+      const err = Object.assign(new Error('unauth'), { status: 401 });
+      const out = classifyError(err);
+      expect(out.class).toBe('auth');
+      expect(out.shouldRotateCredential).toBe(true);
+    });
+
+    it('“context too long” → contextOverflow with shouldCompress', () => {
+      const out = classifyError(new Error('error: the context is too long for this model'));
+      expect(out.class).toBe('contextOverflow');
+      expect(out.shouldCompress).toBe(true);
+    });
+
+    it('“maximum context length” → contextOverflow', () => {
+      expect(classifyError(new Error('exceeds maximum context length')).class).toBe('contextOverflow');
+    });
+
+    it('“thinking signature” → thinkingSignature with shouldStripThinkingSignature', () => {
+      const out = classifyError(new Error('thinking_signature mismatch on retry'));
+      expect(out.class).toBe('thinkingSignature');
+      expect(out.shouldStripThinkingSignature).toBe(true);
+    });
+
+    it('“encrypted_content invalid” → thinkingSignature', () => {
+      expect(classifyError(new Error('encrypted_content invalid for this turn')).class).toBe('thinkingSignature');
+    });
+
+    it('“content policy violation” → contentPolicyBlocked', () => {
+      expect(classifyError(new Error('blocked: content_policy violation')).class).toBe('contentPolicyBlocked');
+    });
+
+    it('“server overloaded” → providerOverloaded with shouldFallbackModel', () => {
+      const out = classifyError(new Error('the model is overloaded, try again later'));
+      expect(out.class).toBe('providerOverloaded');
+      expect(out.shouldFallbackModel).toBe(true);
+    });
+
+    it('“json parse error” → formatError', () => {
+      expect(classifyError(new Error('json parse error in tool call')).class).toBe('formatError');
+    });
+
+    it('legacy “rate limit” pattern still wins over new patterns', () => {
+      // "rate limit" is a more specific legacy-fallback match and runs
+      // BEFORE the new patterns.
+      expect(classifyError(new Error('rate limit exceeded — overloaded')).class).toBe('rateLimited');
+    });
+
+    it('genuinely unknown text remains unknown', () => {
+      expect(classifyError(new Error('asdf qwerty')).class).toBe('unknown');
+    });
+  });
+});
+
+describe('isRetryable — extended classes', () => {
+  it('providerOverloaded, formatError, thinkingSignature, contextOverflow are retryable', () => {
+    expect(isRetryable('providerOverloaded')).toBe(true);
+    expect(isRetryable('formatError')).toBe(true);
+    expect(isRetryable('thinkingSignature')).toBe(true);
+    expect(isRetryable('contextOverflow')).toBe(true);
+  });
+
+  it('contentPolicyBlocked is NOT retryable', () => {
+    expect(isRetryable('contentPolicyBlocked')).toBe(false);
+  });
+});

@@ -6,6 +6,8 @@ import {
   COMPACTION_STRATEGIES,
   isCompactionBoundary,
   AUTO_COMPACT_BOUNDARY_PREFIX,
+  HISTORICAL_CONTEXT_BEGIN_MARKER,
+  HISTORICAL_CONTEXT_END_MARKER,
 } from './compaction';
 import { estimateTokenCount } from './assembly';
 import type { Message } from 'ollama';
@@ -117,6 +119,70 @@ describe('Context Compaction', () => {
       expect(result.summary).toBe('summary text');
       expect(result.compactedCount).toBe(3);
       expect(result.messages.some((m) => m.content?.includes('summary text'))).toBe(true);
+    });
+
+    describe('historical-context directive (HARNESS_LOOP_HARDENING)', () => {
+      const original = process.env.HARNESS_LOOP_HARDENING;
+      afterEach(() => {
+        if (original === undefined) delete process.env.HARNESS_LOOP_HARDENING;
+        else process.env.HARNESS_LOOP_HARDENING = original;
+      });
+
+      const buildMessages = (): Message[] => [
+        { role: 'user', content: 'first decision' },
+        { role: 'assistant', content: 'first answer' },
+        { role: 'user', content: 'second decision' },
+        { role: 'assistant', content: 'second answer' },
+        { role: 'user', content: 'latest request' },
+      ];
+      const buildClient = () => ({
+        chat: jest.fn().mockResolvedValue({
+          message: { role: 'assistant', content: 'summary text' },
+        }),
+      });
+
+      it('with flag OFF, summary content has NO historical-context markers (legacy shape)', async () => {
+        delete process.env.HARNESS_LOOP_HARDENING;
+        const result = await applyAutoCompact(buildMessages(), buildClient() as never);
+        const summaryMsg = result.messages.find((m) =>
+          typeof m.content === 'string' && m.content.startsWith(AUTO_COMPACT_BOUNDARY_PREFIX),
+        );
+        expect(summaryMsg).toBeDefined();
+        expect(summaryMsg!.content).not.toContain(HISTORICAL_CONTEXT_BEGIN_MARKER);
+        expect(summaryMsg!.content).not.toContain(HISTORICAL_CONTEXT_END_MARKER);
+        // Legacy shape: prefix + count + newline + raw summary text.
+        expect(summaryMsg!.content).toBe(
+          `${AUTO_COMPACT_BOUNDARY_PREFIX}3 messages]\nsummary text`,
+        );
+      });
+
+      it('with flag ON, summary content is wrapped in BEGIN/END historical markers', async () => {
+        process.env.HARNESS_LOOP_HARDENING = '1';
+        const result = await applyAutoCompact(buildMessages(), buildClient() as never);
+        const summaryMsg = result.messages.find((m) =>
+          typeof m.content === 'string' && m.content.startsWith(AUTO_COMPACT_BOUNDARY_PREFIX),
+        );
+        expect(summaryMsg).toBeDefined();
+        expect(summaryMsg!.content).toContain(HISTORICAL_CONTEXT_BEGIN_MARKER);
+        expect(summaryMsg!.content).toContain(HISTORICAL_CONTEXT_END_MARKER);
+        expect(summaryMsg!.content).toContain('summary text');
+        // Boundary detector must still match the prefix-based shape so old
+        // session JSONL stays parseable.
+        expect(isCompactionBoundary(summaryMsg!)).toBe(true);
+      });
+
+      it('boundary detector accepts both legacy and hardened shapes', () => {
+        const legacy: Message = {
+          role: 'system',
+          content: `${AUTO_COMPACT_BOUNDARY_PREFIX}3 messages]\nsummary`,
+        };
+        const hardened: Message = {
+          role: 'system',
+          content: `${AUTO_COMPACT_BOUNDARY_PREFIX}3 messages]\n${HISTORICAL_CONTEXT_BEGIN_MARKER}\nsummary\n${HISTORICAL_CONTEXT_END_MARKER}`,
+        };
+        expect(isCompactionBoundary(legacy)).toBe(true);
+        expect(isCompactionBoundary(hardened)).toBe(true);
+      });
     });
   });
 
