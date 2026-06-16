@@ -165,7 +165,7 @@ import { renderDriftReport } from '../eval/goldenTraces';
 import { setCcmemToken, setCcmemUrl } from '../services/conceptMemoryClient';
 import { validateStructuredOutput, parseAndValidate, detectSchema, BUILTIN_SCHEMAS } from '../core/structuredOutputValidator';
 import { buildRepoGraph, summarizeRepo, saveRepoGraph, loadRepoGraph } from '../core/codeIntelligence';
-import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
+import { createMycelialRouter, deriveToolShortlist, toolNamesFromRoute, type MycelialContextRouter } from '../mycelium/router';
 import { heuristicVerifier } from '../mycelium/verifier';
 import { seedCodeIntelligence } from '../mycelium/seeds';
 import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
@@ -5744,7 +5744,7 @@ app.post('/api/chat', async (req, res) => {
     ? { ...outputValidation, enabled: false, selectionSource: 'manual-selected' as const, selectionReason: 'Validation skipped for this turn by user request.' }
     : effectiveOutputValidationForMessage(message, stashedModeClassification?.mode);
   const client = webRuntime.createClient(activeModel, ollamaHost, activeContextMaxTokens);
-  const tools = webRuntime.getTools();
+  let tools = webRuntime.getTools();
   const permissions = webRuntime.createPermissionEngine(permissionMode);
   const projectDir = PROJECT_DIR;
 
@@ -5822,7 +5822,6 @@ app.post('/api/chat', async (req, res) => {
     // Seed the generic safety / agent / verifier / workflow / prompt nodes
     // exactly once. seedGeneric() is idempotent so this is cheap on repeat.
     myceliumRouter.seedGeneric();
-    const tools = webRuntime.getTools();
     myceliumRouter.seedToolNodes(tools.map((t) => ({ name: t.name, description: t.description })));
     // Seed skills from runtime and repo directories
     try {
@@ -5853,6 +5852,16 @@ app.post('/api/chat', async (req, res) => {
         `[Task type: ${myceliumResult.classification.type}; high_risk: ${myceliumResult.classification.highRisk}; exploration: ${myceliumResult.classification.explorationRate}]\n` +
         formatMyceliumContextText(myceliumResult.contextText, MYCELIUM_CONTEXT_MAX_CHARS) +
         safetyBlock;
+    }
+    // Promote the advisory route into an actual tool shortlist for this
+    // turn. Off by default; opt in with HARNESS_CHAT_MYCELIUM_SHORTLIST=1.
+    // deriveToolShortlist returns the full set when routedToolNames is
+    // empty, so cold-graph turns degrade to today's behaviour.
+    if (process.env.HARNESS_CHAT_MYCELIUM_SHORTLIST === '1' && myceliumResult.nodes.length > 0) {
+      try {
+        const shortlist = deriveToolShortlist(toolNamesFromRoute(myceliumResult), tools);
+        if (shortlist.length > 0) tools = shortlist;
+      } catch (err) { recordSwallowed('mycelium.chatShortlist', err); }
     }
   } catch (error) {
     logger.warn('Mycelium', 'Context routing failed', { error: error instanceof Error ? error.message : String(error) });
