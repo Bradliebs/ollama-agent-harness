@@ -29,6 +29,18 @@ import { governAnswer } from '../governed/governedAnswer';
 import { META_TOOLS } from '../permissions/engine';
 import { resolveLoopHardeningEnabled } from './iterationBudget';
 import { sanitizeMessages } from './messageSanitization';
+import {
+  createConsecutiveCallTracker,
+  createDuplicateResultTracker,
+  trackConsecutiveCall,
+  trackResult,
+  resetConsecutiveCallTracker,
+  buildConsecutiveCallNudge,
+  buildDuplicateResultNudge,
+  stableArgsKey,
+  DEFAULT_CONSECUTIVE_CALL_LIMIT,
+  DEFAULT_DUPLICATE_RESULT_LIMIT,
+} from './toolLoopGuards';
 
 /**
  * Resolve whether post-completion code verification should run.
@@ -179,6 +191,10 @@ export async function* queryLoop(
   const PRODUCTIVE_TOOLS = new Set(['file_write', 'file_edit']);
   const unproductiveLimit = config.unproductiveTurnLimit ?? 0;
   const repeatedToolFailureLimit = config.repeatedToolFailureLimit ?? 3;
+  // Tool-loop guardrails (HARNESS_LOOP_HARDENING): catch successful-but-redundant
+  // tool loops the existing `repeatedToolFailureLimit` cannot see. Default-OFF.
+  const consecutiveCallTracker = createConsecutiveCallTracker();
+  const duplicateResultTracker = createDuplicateResultTracker();
   // Tracks whether tools succeeded across the whole run. Used to
   // auto-promote the validation profile away from oracle-prime at the
   // end when the response is summarizing concrete tool work rather than
@@ -686,6 +702,40 @@ export async function* queryLoop(
         anyProductiveToolSucceeded = true;
       }
       if (result.success) anyToolSucceeded = true;
+
+      // Tool-loop guardrails (HARNESS_LOOP_HARDENING). Flag-gated so default
+      // behaviour is byte-identical to pre-Phase-2.
+      if (resolveLoopHardeningEnabled()) {
+        const consecutiveCount = trackConsecutiveCall(consecutiveCallTracker, call);
+        if (consecutiveCount >= DEFAULT_CONSECUTIVE_CALL_LIMIT) {
+          const nudge = buildConsecutiveCallNudge(call, consecutiveCount);
+          messages.push({ role: 'user', content: nudge } as Message);
+          yield { type: 'error', message: nudge, recoverable: true };
+          tracer?.recordEvent('tool_loop_guard.consecutive_call', {
+            tool: call.name,
+            count: consecutiveCount,
+          });
+          // Reset so the model gets a fair chance after the nudge — same
+          // pattern as the existing repeatedToolFailureLimit warning.
+          resetConsecutiveCallTracker(consecutiveCallTracker);
+        }
+        if (result.success) {
+          const dupCount = trackResult(duplicateResultTracker, call, result.output);
+          if (dupCount >= DEFAULT_DUPLICATE_RESULT_LIMIT) {
+            const nudge = buildDuplicateResultNudge(call, dupCount);
+            messages.push({ role: 'user', content: nudge } as Message);
+            yield { type: 'error', message: nudge, recoverable: true };
+            tracer?.recordEvent('tool_loop_guard.duplicate_result', {
+              tool: call.name,
+              count: dupCount,
+            });
+            // Reset just this key's count so a subsequent identical call must
+            // accumulate again before re-firing. lastByKey stays intact so a
+            // changed output is still recognized as different next time.
+            duplicateResultTracker.countByKey.set(`${call.name}:${stableArgsKey(call.input)}`, 0);
+          }
+        }
+      }
     }
 
     // Emit per-turn wall-clock timing covering model call + tool execution.
