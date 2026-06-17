@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { ToolDispatcher } from './dispatcher';
 import { ToolInspectionManager, RepetitionInspector, EgressInspector } from '../safety/toolInspectors';
+import { getSwallowedFailures } from '../observability/silentFailureSink';
 import type { Tool, ToolCall, ToolResult } from '../types';
 
 function makeTool(name: string, isReadOnly: boolean, handler?: (input: Record<string, unknown>) => Promise<ToolResult>): Tool {
@@ -65,7 +66,7 @@ describe('ToolDispatcher inspector integration', () => {
     expect(results[0].result.success).toBe(true);
   });
 
-  it('treats requireApproval as allow when no approval hook is wired', async () => {
+  it('treats requireApproval as allow when no approval hook is wired, but records the dropped decision', async () => {
     const dispatcher = new ToolDispatcher([makeTool('bash', false)]);
     const inspectors = new ToolInspectionManager();
     inspectors.add(new EgressInspector());
@@ -77,6 +78,14 @@ describe('ToolDispatcher inspector integration', () => {
       { inspectors },
     );
     expect(results[0].result.success).toBe(true);
+
+    // F2: the dropped requireApproval must be post-hoc visible in the
+    // silent-failure sink rather than silently passing through.
+    const dropped = getSwallowedFailures().filter(
+      (f) => f.label === 'dispatcher.inspector.requireApproval.dropped',
+    );
+    expect(dropped.length).toBeGreaterThan(0);
+    expect(dropped[dropped.length - 1].meta?.tool).toBe('bash');
   });
 
   it('runs the inspector chain only after the permission gate passes', async () => {

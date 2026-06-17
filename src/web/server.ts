@@ -4048,6 +4048,7 @@ const runCodexTaskWithConductor: CodexTaskRunner = async ({ task, contract, prom
     maxTurns: contract.max_turns,
     taskContract: contract,
     verify: { enabled: true, quick: true, timeout: 60_000 },
+    validateToolInput: true,
     readBeforeWrite: { mode: 'warn', allowNewFiles: true },
     repeatedToolFailureLimit: 3,
     unproductiveTurnLimit: 5,

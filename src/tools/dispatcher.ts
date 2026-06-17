@@ -8,6 +8,7 @@ import { compressToolResult, type CompressionConfig } from './outputCompression'
 import { prepareSideEffectRecording, type SideEffectRecorder } from '../persistence/sideEffectRecording';
 import type { ToolInspectionManager, InspectorContext } from '../safety/toolInspectors';
 import { maybeSpoolLargeResponse, type LargeResponseConfig } from './largeResponseHandler';
+import { validateToolInput } from './validateToolInput';
 import { classifyError } from '../core/retryClass';
 
 export interface DispatchResult {
@@ -53,7 +54,8 @@ export interface DispatchOptions {
    * Borrowed from goose's `ToolInspectionManager`. `deny` halts the call;
    * `requireApproval` is surfaced via `onApprovalRequired` for the host to
    * decide. When the host does not wire `onApprovalRequired`, `requireApproval`
-   * is treated as a soft pass (the reason is appended to the tool span only).
+   * is treated as a soft pass (allowed), but the dropped decision is recorded
+   * to the silent-failure sink so it stays post-hoc visible via diagnostics.
    */
   inspectors?: ToolInspectionManager;
   /** Context passed to inspectors (recent messages, session id, ...). */
@@ -61,7 +63,8 @@ export interface DispatchOptions {
   /**
    * Called when an inspector requests human confirmation. Return `true` to
    * proceed, `false` to abort. If omitted, `requireApproval` is treated as
-   * `allow` (matches goose's CLI when no confirmation channel is wired).
+   * `allow` (matches goose's CLI when no confirmation channel is wired), and
+   * the dropped decision is recorded to the silent-failure sink for visibility.
    */
   onApprovalRequired?: (info: {
     call: ToolCall;
@@ -75,6 +78,14 @@ export interface DispatchOptions {
    * `large_response_handler`. Runs before `compressOutput`.
    */
   largeResponseConfig?: LargeResponseConfig;
+  /**
+   * When true, a tool call's input is checked against the tool's declared
+   * parameter schema before execution. Only missing `required` parameters are
+   * rejected (no type-checking, extra keys allowed); a violation returns a
+   * correctable error result instead of executing on malformed input. Off by
+   * default so the dispatch contract is unchanged unless a caller opts in.
+   */
+  validateInput?: boolean;
 }
 
 /**
@@ -239,6 +250,17 @@ export class ToolDispatcher {
           },
         };
       }
+      if (decision.action.kind === 'requireApproval' && !options.onApprovalRequired) {
+        // No confirmation channel wired: the call is allowed to proceed
+        // (matches goose's CLI), but record the dropped safety decision to the
+        // silent-failure sink so it is post-hoc visible via diagnostics instead
+        // of silently passing through. See audit finding F2.
+        recordSwallowed(
+          'dispatcher.inspector.requireApproval.dropped',
+          `requireApproval not honored (no onApprovalRequired wired): ${decision.action.reason}`,
+          { tool: call.name, inspector: decision.inspectorName, reason: decision.action.reason },
+        );
+      }
       if (decision.action.kind === 'requireApproval' && options.onApprovalRequired) {
         const approvalSpan = options.tracer?.startSpan('inspector.approval', { tool: call.name });
         let approved = false;
@@ -279,6 +301,26 @@ export class ToolDispatcher {
           error: `Tool '${call.name}' not found in tool pool`,
         },
       };
+    }
+
+    // Inbound argument validation (after tool lookup, before execution).
+    // Catches calls missing a declared-required parameter and returns a
+    // correctable error so the loop can retry rather than executing on
+    // malformed input.
+    if (options.validateInput) {
+      const validation = validateToolInput(tool, call.input);
+      if (!validation.valid) {
+        const reason = validation.errors.join(' ');
+        dispatchSpan?.end('ok', { invalidInput: true });
+        return {
+          call,
+          result: {
+            success: false,
+            output: `Invalid arguments for '${call.name}': ${reason}`,
+            error: reason,
+          },
+        };
+      }
     }
 
     // Read-before-write gate (after permission check, before execution)

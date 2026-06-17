@@ -682,7 +682,7 @@ export async function* queryLoop(
       : undefined;
     const { manager: inspectors, largeResponseConfig } = buildInspectorsFromEnv({ adversaryJudge });
     const dispatchedToolResults = await runWithSessionId(session?.getSessionId(), () =>
-      dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer, learningRecorder, readBeforeWriteGate, compressOutput, compressionConfig, sideEffectRecorder, inspectors, largeResponseConfig, onApprovalRequired }));
+      dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer, learningRecorder, readBeforeWriteGate, compressOutput, compressionConfig, sideEffectRecorder, inspectors, largeResponseConfig, onApprovalRequired, validateInput: config.validateToolInput === true }));
     const toolResults = [...skippedToolResults, ...dispatchedToolResults];
     let producedFileChange = false;
     for (const { call, result } of toolResults) {

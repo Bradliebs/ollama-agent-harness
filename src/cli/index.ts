@@ -525,6 +525,8 @@ export async function main(): Promise<void> {
     // project (has package.json), run tsc / eslint / npm test after the agent
     // mutates files. Override with HARNESS_VERIFY=0 (or =1 to force on).
     verify: { enabled: resolveVerifyEnabled(undefined, projectDir) },
+    // Reject tool calls missing a declared-required parameter before they run.
+    validateToolInput: true,
   };
 
   const deps: QueryLoopDeps = {

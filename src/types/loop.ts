@@ -82,6 +82,14 @@ export interface LoopConfig {
     timeout?: number;
   };
   /**
+   * When true, each tool call's input is validated against the tool's declared
+   * parameter schema before execution. Only missing `required` parameters are
+   * rejected (no type-checking, extra keys allowed); a violation returns a
+   * correctable error so the agent can retry instead of executing on malformed
+   * input. Off by default so existing loop behaviour is unchanged.
+   */
+  validateToolInput?: boolean;
+  /**
    * Wall-clock budget in milliseconds. When elapsed time exceeds this
    * budget the loop triggers a synthesis turn (tools stripped, model
    * summarises its work) instead of continuing. This naturally throttles

@@ -111,4 +111,4 @@ Routes registered by [reviewQueueRoutes.ts](../src/web/reviewQueueRoutes.ts) and
 
 ## Status
 
-The loop landed on 2026-06-11. The HTTP surface is live; UI integration is partial. Until a UI panel for the review queue ships, the seam is driven by direct API calls or by an operator working from `.harness/review-queue.jsonl`.
+The loop landed on 2026-06-11. The HTTP surface is live and the UI panel ships in the settings **Governed Agent Loop** section: it renders the working-memory snapshot, the pending review queue (approve/reject brain-updates, drain/dismiss needs-review answers), the drained-replay seam with a "Replay drained answers" trigger, and the lifetime loop metrics, with pending-count and throughput badges in the session HUD. The seam can still be driven by direct API calls or by an operator working from `.harness/review-queue.jsonl`.
