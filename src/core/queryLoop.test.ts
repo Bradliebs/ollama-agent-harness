@@ -1203,3 +1203,74 @@ describe('queryLoop runtime behavior', () => {
     });
   });
 });
+
+describe('queryLoop inactivity timeout', () => {
+  const originalEnv = process.env.HARNESS_LOOP_INACTIVITY_MS;
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env.HARNESS_LOOP_INACTIVITY_MS;
+    else process.env.HARNESS_LOOP_INACTIVITY_MS = originalEnv;
+  });
+
+  it('emits inactivity_timeout and done(inactivity_timeout) when client.chat hangs past the configured budget', async () => {
+    delete process.env.HARNESS_LOOP_INACTIVITY_MS;
+    const hangingClient = {
+      chat: jest.fn().mockImplementation(() => new Promise(() => { /* never resolves */ })),
+    };
+
+    const events = await collectEvents(hangingClient as never, [], {
+      config: { inactivityTimeoutMs: 60 },
+    });
+
+    const timeout = events.find((e) => e.type === 'inactivity_timeout');
+    expect(timeout).toEqual(expect.objectContaining({
+      type: 'inactivity_timeout',
+      phase: 'model_call',
+      turn: 1,
+      inactivityMs: 60,
+    }));
+    const done = events.find((e) => e.type === 'done');
+    expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'inactivity_timeout', turns: 1 }));
+  });
+
+  it('does not fire when chat resolves before the budget', async () => {
+    delete process.env.HARNESS_LOOP_INACTIVITY_MS;
+    const client = makeClient([{ role: 'assistant', content: 'fast reply' }]);
+
+    const events = await collectEvents(client, [], {
+      config: { inactivityTimeoutMs: 5_000 },
+    });
+
+    expect(events.some((e) => e.type === 'inactivity_timeout')).toBe(false);
+    expect(events.find((e) => e.type === 'done')).toEqual(
+      expect.objectContaining({ type: 'done', reason: 'completed' }),
+    );
+  });
+
+  it('honours HARNESS_LOOP_INACTIVITY_MS when no explicit config is given', async () => {
+    process.env.HARNESS_LOOP_INACTIVITY_MS = '50';
+    const hangingClient = {
+      chat: jest.fn().mockImplementation(() => new Promise(() => { /* never */ })),
+    };
+
+    const events = await collectEvents(hangingClient as never, []);
+
+    const timeout = events.find((e) => e.type === 'inactivity_timeout');
+    expect(timeout).toEqual(expect.objectContaining({
+      type: 'inactivity_timeout',
+      phase: 'model_call',
+      inactivityMs: 50,
+    }));
+  });
+
+  it('preserves current behavior when neither config nor env is set', async () => {
+    delete process.env.HARNESS_LOOP_INACTIVITY_MS;
+    const client = makeClient([{ role: 'assistant', content: 'ok' }]);
+
+    const events = await collectEvents(client, []);
+
+    expect(events.some((e) => e.type === 'inactivity_timeout')).toBe(false);
+    expect(events.find((e) => e.type === 'done')).toEqual(
+      expect.objectContaining({ type: 'done', reason: 'completed' }),
+    );
+  });
+});

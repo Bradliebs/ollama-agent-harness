@@ -134,6 +134,22 @@ export type { ConciergeLogEntry, TriageOptions, TriageResult } from './services/
 export { appendAuditEntry, auditFilePath, createAuditHooks, readAuditLog, renderRecentAuditForPrompt } from './permissions/audit';
 export type { AuditEntry, AuditHookOptions, RenderRecentAuditOptions } from './permissions/audit';
 
+// ─── Shell Risk Classifier ──────────────────────────────────────────
+export { classifyShellCommand, mergeRules, splitCommandSegments } from './permissions/shellRiskClassifier';
+export type { RiskClassification, RiskTier } from './permissions/shellRiskClassifier';
+export { DEFAULT_DANGEROUS_RULES, DEFAULT_SAFE_RULES, DEFAULT_SHELL_RULES } from './permissions/defaultShellRules';
+export type { ShellRule } from './permissions/defaultShellRules';
+export { createShellRiskHooks, resolveShellRules } from './permissions/shellRiskHook';
+export type { ShellRiskHookOptions } from './permissions/shellRiskHook';
+
+// ─── Job Ledger ─────────────────────────────────────────────────────
+export { collectRunningEntries, completeJob, DEFAULT_STALE_AFTER_MS, heartbeatJob, jobLedgerPath, listOrphanedRuns, readLedger, recoverOrphanedJobs, startJob } from './automation/jobLedger';
+export type { LedgerEvent, LedgerJobKind, LedgerJobStatus, OrphanedEntry, RecoverOrphanedJobsOptions, RunningEntry, StartedJob, StartJobInput } from './automation/jobLedger';
+
+// ─── Session View Snapshot ──────────────────────────────────────────
+export { createSessionViewEmitter, DEFAULT_RECENT_EVENT_LIMIT, DEFAULT_SESSION_VIEW_THROTTLE_MS, resolveSessionViewThrottleMs } from './web/snapshotEmitter';
+export type { BroadcastFn, RecentEvent, SessionView, SessionViewEmitter, SessionViewEmitterOptions, SubscribeFn } from './web/snapshotEmitter';
+
 // ─── Docker Sandbox ─────────────────────────────────────────────────
 export { createDockerExecTool } from './tools/dockerExecTool';
 export type { DockerExecOptions, DockerSpawnFn } from './tools/dockerExecTool';

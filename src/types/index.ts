@@ -1,6 +1,6 @@
 export { Tool, ToolResult, ToolCall, OllamaToolSchema, toolToSchema } from './tool';
 export type { Message, ToolRiskLevel, ToolPermissionCategory } from './tool';
-export { LoopConfig, LoopEvent, TextEvent, OutputValidationEvent, ToolCallEvent, ToolResultEvent, ProviderFallbackEvent, ContextEvent, ErrorEvent, DoneEvent, TimeBudgetStatusEvent, TurnCompleteEvent, VerificationEvent } from './loop';
+export { LoopConfig, LoopEvent, TextEvent, OutputValidationEvent, ToolCallEvent, ToolResultEvent, ProviderFallbackEvent, ContextEvent, ErrorEvent, DoneEvent, TimeBudgetStatusEvent, TurnCompleteEvent, VerificationEvent, InactivityTimeoutEvent } from './loop';
 export type { TaskContract, TaskContractMode } from './taskContract';
 export { renderTaskContractBlock } from './taskContract';
 export type { RepoMap } from '../core/repoMap';

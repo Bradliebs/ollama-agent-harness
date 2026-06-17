@@ -29,6 +29,7 @@ import { governAnswer } from '../governed/governedAnswer';
 import { META_TOOLS } from '../permissions/engine';
 import { resolveLoopHardeningEnabled } from './iterationBudget';
 import { sanitizeMessages } from './messageSanitization';
+import { withTimeout, InactivityTimeoutError } from './rollingTimeout';
 import {
   createConsecutiveCallTracker,
   createDuplicateResultTracker,
@@ -68,6 +69,19 @@ export function resolveVerifyEnabled(explicit: boolean | undefined, cwd?: string
 export function resolveGovernedShadowEnabled(): boolean {
   const env = process.env.HARNESS_GOVERNED_SHADOW?.toLowerCase();
   return env === '1' || env === 'on' || env === 'true';
+}
+
+/**
+ * Resolve the per-model-call inactivity budget in ms. Explicit config wins,
+ * then `HARNESS_LOOP_INACTIVITY_MS`, otherwise 0 (= disabled, current
+ * behavior). A non-positive resolved value disables the guard.
+ */
+export function resolveInactivityTimeoutMs(explicit: number | undefined): number {
+  if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0) return explicit;
+  const env = process.env.HARNESS_LOOP_INACTIVITY_MS;
+  if (!env) return 0;
+  const parsed = Number(env);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
 export interface QueryLoopDeps {
@@ -332,7 +346,11 @@ export async function* queryLoop(
       const outboundMessages = resolveLoopHardeningEnabled()
         ? sanitizeMessages(messages)
         : messages;
-      const result = await client.chat(outboundMessages, ollamaTools, abortSignal);
+      const inactivityMs = resolveInactivityTimeoutMs(config.inactivityTimeoutMs);
+      const chatPromise = client.chat(outboundMessages, ollamaTools, abortSignal);
+      const result = inactivityMs > 0
+        ? await withTimeout(inactivityMs, chatPromise)
+        : await chatPromise;
       assistantMessage = result.message;
       modelSpan?.end('ok', {
         toolCalls: assistantMessage.tool_calls?.length ?? 0,
@@ -365,6 +383,11 @@ export async function* queryLoop(
       modelSpan?.fail(error);
       if (session) {
         await appendStatus(session, 'error', msg, tracer);
+      }
+      if (error instanceof InactivityTimeoutError) {
+        yield { type: 'inactivity_timeout', phase: 'model_call', turn, inactivityMs: error.inactivityMs };
+        yield { type: 'done', reason: 'inactivity_timeout', turns: turn };
+        return;
       }
       yield { type: 'error', message: `Model call failed: ${msg}`, recoverable: true };
       yield { type: 'done', reason: 'error', turns: turn };

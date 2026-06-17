@@ -91,6 +91,19 @@ export interface LoopConfig {
   maxTimeMs?: number;
   abortSignal?: AbortSignal;
   /**
+   * Per-model-call inactivity timeout in milliseconds. When a single
+   * `client.chat()` call exceeds this without resolving, the loop yields an
+   * `inactivity_timeout` event and ends with `done.reason = 'inactivity_timeout'`.
+   *
+   * Falls back to `HARNESS_LOOP_INACTIVITY_MS` env var when unset; 0 or
+   * unset on both = disabled (current behavior preserved).
+   *
+   * Distinct from `maxTimeMs` (whole-run budget that triggers synthesis):
+   * this catches stuck individual calls (network hang, dead provider) and
+   * surfaces the failure cleanly instead of letting the loop hang forever.
+   */
+  inactivityTimeoutMs?: number;
+  /**
    * Terminate the loop early when the agent runs `unproductiveTurnLimit`
    * consecutive turns without invoking a file-mutating tool
    * (file_write / file_edit). Prevents runaway sessions where the model
@@ -165,6 +178,7 @@ export type LoopEvent =
   | TimeBudgetStatusEvent
   | TurnCompleteEvent
   | VerificationEvent
+  | InactivityTimeoutEvent
   | GovernedShadowEvent;
 
 export interface TextEvent {
@@ -248,7 +262,7 @@ export interface ErrorEvent {
 
 export interface DoneEvent {
   type: 'done';
-  reason: 'completed' | 'completed_with_validation_failures' | 'completed_with_test_failures' | 'max_turns' | 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' | 'empty_after_tools_synthesized' | 'aborted' | 'error' | 'unproductive' | 'repeated_tool_failure';
+  reason: 'completed' | 'completed_with_validation_failures' | 'completed_with_test_failures' | 'max_turns' | 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' | 'empty_after_tools_synthesized' | 'aborted' | 'error' | 'unproductive' | 'repeated_tool_failure' | 'inactivity_timeout';
   turns: number;
   /** Extra metadata when the done event follows a synthesis turn (timeout/max-turns). */
   synthesisMetadata?: {
@@ -343,6 +357,20 @@ export interface VerificationEvent {
     detail?: string;
     duration_ms?: number;
   }>;
+}
+
+/**
+ * Emitted when a single model call exceeds `inactivityTimeoutMs` (or
+ * `HARNESS_LOOP_INACTIVITY_MS`) without resolving. The loop terminates
+ * immediately afterwards with a `done` event whose reason is
+ * `'inactivity_timeout'`. Lets the UI distinguish a stuck provider from a
+ * manual abort or a generic model error.
+ */
+export interface InactivityTimeoutEvent {
+  type: 'inactivity_timeout';
+  phase: 'model_call';
+  turn: number;
+  inactivityMs: number;
 }
 
 /**

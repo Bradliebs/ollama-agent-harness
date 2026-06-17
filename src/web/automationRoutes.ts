@@ -14,6 +14,7 @@ import {
 } from '../automation/jobs';
 import { auditAutomationJobSafety } from '../automation/jobSafety';
 import { prepareAutomationRun } from '../automation/runner';
+import { listOrphanedRuns } from '../automation/jobLedger';
 import { appendRunEvidence, readRunEvidence, type StoredRunEvidence } from '../persistence/evidenceStore';
 
 type PolicyContext = Parameters<typeof executeDueJobs>[1];
@@ -131,6 +132,18 @@ export function createAutomationRouter(deps: AutomationRouterDeps): express.Rout
       await deps.ensureSettingsLoaded();
       const jobs = await listAutomationJobs(deps.projectDir);
       res.json({ audit: auditAutomationJobSafety(jobs) });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.get('/api/automations/orphaned', async (req, res) => {
+    try {
+      await deps.ensureSettingsLoaded();
+      const rawLimit = Number(req.query.limit);
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(Math.floor(rawLimit), 500) : 100;
+      const orphaned = await listOrphanedRuns(deps.projectDir, { limit });
+      res.json({ orphaned });
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
