@@ -113,4 +113,26 @@ describe('skill tools', () => {
     expect(result.success).toBe(true);
     expect(result.output).not.toContain('--- Bundled resources ---');
   });
+
+  it('expands ${HARNESS_SKILL_DIR} in the skill body on invocation', async () => {
+    const skillDir = path.join(skillsDir, 'templated-skill');
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), [
+      '---',
+      'name: templated-skill',
+      'description: Skill that references its own directory',
+      '---',
+      '',
+      '# Templated',
+      '',
+      'Helper scripts live in ${HARNESS_SKILL_DIR}/scripts.',
+    ].join('\n'), 'utf-8');
+
+    invalidateSkillsCache();
+    const result = await SkillTool.execute({ name: 'templated-skill' });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain(`${skillDir}/scripts`);
+    expect(result.output).not.toContain('${HARNESS_SKILL_DIR}');
+  });
 });

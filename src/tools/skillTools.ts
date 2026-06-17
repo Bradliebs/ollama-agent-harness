@@ -3,6 +3,7 @@ import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
 import { loadSkillsFromDirs, matchSkillTrigger, parseSkillFile, type SkillDefinition } from '../extensibility/skillLoader';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
+import { expandSkillTemplateVars } from '../extensibility/skillTemplate';
 
 let cachedSkills: SkillDefinition[] | null = null;
 let cachedSkillsPromise: Promise<SkillDefinition[]> | null = null;
@@ -90,9 +91,16 @@ export const SkillTool: Tool = {
       ? `\n\n--- Bundled resources ---\nThe following files live alongside SKILL.md. Use file_read to view text/markdown or bash to execute scripts. They are NOT loaded into your context until you read them.\n${bundled.map(b => `📎 ${b.relPath} (${b.sizeLabel})`).join('\n')}`
       : '';
 
+    // Expand allowlisted ${HARNESS_*} path tokens. Byte-identical for skills that
+    // don't use a token; no shell execution is performed.
+    const renderedContent = expandSkillTemplateVars(skill.content, {
+      skillDir: path.dirname(skill.filePath),
+      projectDir: projectDirForUsage || undefined,
+    });
+
     return {
       success: true,
-      output: `--- Skill: ${skill.name} ---\n${skill.description}\n\n${skill.content}${bundledSection}`,
+      output: `--- Skill: ${skill.name} ---\n${skill.description}\n\n${renderedContent}${bundledSection}`,
     };
   },
 };
