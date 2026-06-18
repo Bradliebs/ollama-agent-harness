@@ -77,6 +77,40 @@ Registered by `src/web/reviewQueueRoutes.ts`, `src/web/workingMemoryRoutes.ts`,
   delivery hardening and scheduler hooks.
 - `src/services/conceptMemoryClient.ts` — ccmem client refinements.
 
+### Browser takeover
+
+- **Execute-time capability enforcement** (`src/tools/browserTools.ts`): the
+  page-acting browser tools (navigate, click, fill, read, screenshot) now check
+  the `browser-page-access` grant inside `execute()` by reading
+  `.harness/settings.json`, so direct, CLI, and cookbook call paths are gated —
+  not only the web chat loop. `browser_close` stays ungated as a resource
+  release. This makes the previously documented execute-time enforcement real.
+- **Real-browser launch modes**: new environment variables select how the
+  browser launches, with default (no env) behaviour unchanged (fresh, headless,
+  bundled Chromium). `HARNESS_BROWSER_CDP_URL` attaches to a running Chrome over
+  CDP and disconnects rather than closing your tabs on `browser_close`;
+  `HARNESS_BROWSER_PROFILE_DIR` launches a persistent profile so logins survive;
+  `HARNESS_BROWSER_HEADFUL` shows a visible window; `HARNESS_BROWSER_CHANNEL`
+  picks an installed `chrome`/`msedge` channel. See
+  [`docs/CAPABILITY-SANDBOX.md`](docs/CAPABILITY-SANDBOX.md) for the full table
+  and the residual gaps.
+- **Browser audit log** (`src/tools/browserAudit.ts`): every navigate, click,
+  fill, read, and screenshot — including capability denials — is appended to
+  `.harness/browser-audit.jsonl` with a timestamp, launch mode, target URL, and
+  outcome. Exposed via `GET /api/browser/audit` and a Settings panel. Page text
+  and cookie values are never written.
+- **Trace/secret redaction** (`browserRedaction` setting): the audit log is
+  redaction-safe by construction; `browser_fill` values are masked by default
+  and URLs can be narrowed to their origin (dropping path/query tokens). Toggled
+  from the Browser Redaction settings panel and persisted to
+  `.harness/settings.json`.
+- **Cookie/session vault** (`src/tools/browserSessions.ts`): save the live
+  browser login as a named Playwright `storageState` snapshot under
+  `.harness/browser-sessions/` (`POST /api/browser/sessions/:name`), list/delete
+  via the Settings panel, and auto-restore with `HARNESS_BROWSER_SESSION=<name>`
+  — an explicit, scoped alternative to raw profile directories. The listing API
+  returns metadata only and never echoes cookie values.
+
 ### Documentation
 
 - New [`docs/GOVERNED-LOOP.md`](docs/GOVERNED-LOOP.md) — confidence modes,

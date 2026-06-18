@@ -64,6 +64,7 @@ import { createWorkflowRouter } from './workflowRoutes';
 import { createWebhookRouter } from './webhookRoutes';
 import { createWorkingMemoryRouter } from './workingMemoryRoutes';
 import { createReviewQueueRouter } from './reviewQueueRoutes';
+import { createBrowserHardeningRouter } from './browserHardeningRoutes';
 import { createAgentRouter } from './agentRoutes';
 import { createFileBrowseRouter } from './fileBrowseRoutes';
 import { createAssetRouter } from './assetRoutes';
@@ -580,6 +581,10 @@ interface WebSettings {
   /** URL of the Concept Cells memory service (ccmem). Empty = disabled.
    *  Default: http://localhost:8765 (override via HARNESS_CCMEM_URL). */
   ccmemUrl: string;
+  /** Browser audit/trace redaction policy. When `redactValues` is on,
+   *  `browser_fill` values are masked in the audit log; `urlMode: 'origin'`
+   *  drops URL paths/query-strings (which can carry tokens) from the log. */
+  browserRedaction: { redactValues: boolean; urlMode: 'full' | 'origin' };
 }
 
 interface ConnectorSecretStatus {
@@ -743,6 +748,16 @@ let whatsappAccessToken: string = process.env.HARNESS_WHATSAPP_ACCESS_TOKEN ?? '
 let whatsappPhoneNumberId: string = process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID ?? '';
 let whatsappAllowedRecipients: string = process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS ?? '';
 let ccmemUrl: string = process.env.HARNESS_CCMEM_URL?.trim() || 'http://localhost:8765';
+let browserRedaction: { redactValues: boolean; urlMode: 'full' | 'origin' } = { redactValues: true, urlMode: 'full' };
+
+/** Coerce arbitrary input into a valid browserRedaction policy (secure defaults). */
+function sanitizeBrowserRedaction(value: unknown): { redactValues: boolean; urlMode: 'full' | 'origin' } {
+  const v = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return {
+    redactValues: v.redactValues !== false,
+    urlMode: v.urlMode === 'origin' ? 'origin' : 'full',
+  };
+}
 let outputValidation: OutputValidationSettings = { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: true };
 let customOutputValidationProfiles: CustomOutputValidationProfile[] = [];
 let modelCatalog: ModelCatalogSettings = { url: '', ttlHours: 24 };
@@ -2738,6 +2753,7 @@ app.post('/api/settings', async (req, res) => {
     ccmemUrl = parsed;
     setCcmemUrl(ccmemUrl || 'http://localhost:8765');
   }
+  if (req.body.browserRedaction !== undefined) browserRedaction = sanitizeBrowserRedaction(req.body.browserRedaction);
   await saveSettingsToDisk();
   logger.info('Settings', 'Updated', {
     model: currentModel,
@@ -3877,6 +3893,11 @@ app.use(createWorkingMemoryRouter({ projectDir: PROJECT_DIR }));
 // staged brain-updates and needs-review answers (GET /api/review-queue,
 // POST /api/review-queue/:id/{approve,reject,drain}).
 app.use(createReviewQueueRouter());
+
+// Browser hardening surface: GET /api/browser/audit (page-action audit log),
+// GET/POST/DELETE /api/browser/sessions (cookie/session vault). Redaction
+// settings flow through POST /api/settings (browserRedaction).
+app.use(createBrowserHardeningRouter());
 
 // Replay execution: consume the drained needs-review answers and re-ask each
 // one through the harness, re-enqueuing the fresh governed answer for review.
@@ -7769,6 +7790,7 @@ function getCurrentSettings(): WebSettings {
     whatsappPhoneNumberId: whatsappPhoneNumberId || process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID || '',
     whatsappAllowedRecipients: whatsappAllowedRecipients || process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS || '',
     ccmemUrl,
+    browserRedaction,
   };
 }
 
@@ -8041,6 +8063,7 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
     });
   }
   if (settings.capabilityGrants !== undefined) capabilityGrants = sanitizeCapabilityGrants(settings.capabilityGrants);
+  if (settings.browserRedaction !== undefined) browserRedaction = sanitizeBrowserRedaction(settings.browserRedaction);
   if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 0, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (settings.webReadMaxChars !== undefined) {
     webReadMaxChars = sanitizeWebReadMaxChars(settings.webReadMaxChars, DEFAULT_WEB_READ_MAX_CHARS);

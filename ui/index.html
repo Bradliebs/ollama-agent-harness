@@ -1642,6 +1642,51 @@
       <div id="governedMetrics"></div>
     </div>
 
+    <div class="settings-section" id="settingsBrowserAudit">
+      <h4>Browser Audit Log</h4>
+      <div class="setting-row settings-note">
+        Every browser navigate, click, fill, read, and screenshot is recorded to
+        .harness/browser-audit.jsonl with a timestamp, launch mode, target URL, and outcome.
+        Page text and cookie values are never written here.
+      </div>
+      <div class="setting-row settings-action-row">
+        <button class="btn-sm" onclick="loadBrowserAuditLog()">Refresh</button>
+      </div>
+      <div id="browserAuditLogList" class="settings-status-line">Loading...</div>
+    </div>
+
+    <div class="settings-section" id="settingsBrowserSessions">
+      <h4>Browser Cookie / Session Vault</h4>
+      <div class="setting-row settings-note">
+        Save the current browser login as a named, scoped session (cookies + storage) under
+        .harness/browser-sessions instead of pointing at a raw profile dir. Set
+        HARNESS_BROWSER_SESSION=&lt;name&gt; to auto-restore it. Listing shows metadata only.
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="text" id="browserSessionNameInput" placeholder="Session name (e.g. github-login)" class="settings-flex-input">
+        <button class="btn-sm primary" onclick="saveBrowserSession()">Save current login</button>
+      </div>
+      <div class="setting-row settings-action-row">
+        <button class="btn-sm" onclick="loadBrowserSessions()">Refresh</button>
+        <span id="browserSessionStatus" class="muted"></span>
+      </div>
+      <div id="browserSessionsList" class="settings-status-line">Loading...</div>
+    </div>
+
+    <div class="settings-section" id="settingsBrowserRedaction">
+      <h4>Browser Redaction</h4>
+      <div class="setting-row settings-note">
+        Keep secrets out of the browser audit log. These apply at write time.
+      </div>
+      <div class="setting-row">
+        <label><input type="checkbox" id="browserRedactValues" onchange="saveBrowserRedaction()"> Redact form-fill values (e.g. passwords)</label>
+      </div>
+      <div class="setting-row">
+        <label><input type="checkbox" id="browserRedactUrlOrigin" onchange="saveBrowserRedaction()"> Log URL origin only (drop path &amp; query string)</label>
+      </div>
+      <div id="browserRedactionStatus" class="settings-status-line"></div>
+    </div>
+
     <div class="settings-section" id="settingsWhatsapp">
       <h4>WhatsApp Status</h4>
       <div class="setting-row settings-note">

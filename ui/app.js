@@ -2975,6 +2975,7 @@ async function loadSettings() {
     if (firstRunAudio) firstRunAudio.value = currentMediaTools.audioTranscribeCommand || '';
     hydrateCuratorSettings(s.curator || {});
     hydrateAutomationSchedulerSettings(s.automationScheduler || {});
+    hydrateBrowserRedaction(s.browserRedaction || {});
     document.querySelectorAll('.permission-mode-option').forEach((option) => option.classList.remove('active'));
     const modeIndex = s.permissionMode === 'dontAsk' ? 0 : s.permissionMode === 'acceptEdits' ? 1 : 2;
     const mode = document.querySelectorAll('.permission-mode-option')[modeIndex];
@@ -9859,7 +9860,7 @@ async function stopTelegram() {
 }
 
 async function loadConnectorStatuses() {
-  await Promise.allSettled([loadDiscordStatus(), loadSlackStatus(), loadWhatsAppStatus(), loadWebhooks(), loadGovernedLoop(), loadConnectorBadges(), loadConnectorGallery()]);
+  await Promise.allSettled([loadDiscordStatus(), loadSlackStatus(), loadWhatsAppStatus(), loadWebhooks(), loadGovernedLoop(), loadBrowserAuditLog(), loadBrowserSessions(), loadConnectorBadges(), loadConnectorGallery()]);
 }
 
 async function loadConnectorBadges() {
@@ -10208,6 +10209,102 @@ async function discardDeadLetter(id) {
 }
 
 // ── Governed Agent Loop (working memory + review queue) ───────────────────────
+async function loadBrowserAuditLog() {
+  const box = document.getElementById('browserAuditLogList');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/browser/audit?limit=100');
+    const data = await readApiJson(res, 'Browser audit API');
+    const entries = data.entries || [];
+    if (entries.length === 0) { box.innerHTML = '<div class="settings-note">No browser actions recorded yet.</div>'; return; }
+    box.innerHTML = entries.map(function (e) {
+      const ok = e.outcome === 'ok';
+      const where = e.url ? esc(e.url) : (e.target ? esc(e.target) : '');
+      const detail = e.detail ? ' <span class="muted">' + esc(e.detail) + '</span>' : '';
+      return '<div class="setting-row">'
+        + '<code>' + esc(e.tool || '') + '</code> '
+        + (ok ? '✓' : '✕') + ' '
+        + where + detail
+        + ' <span class="muted">' + esc(e.ts || '') + ' · ' + esc(e.mode || '') + '</span>'
+        + '</div>';
+    }).join('');
+  } catch (e) {
+    box.textContent = 'Could not load browser audit log: ' + (e.message || e);
+  }
+}
+
+async function loadBrowserSessions() {
+  const box = document.getElementById('browserSessionsList');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/browser/sessions');
+    const data = await readApiJson(res, 'Browser sessions API');
+    const sessions = data.sessions || [];
+    if (sessions.length === 0) { box.innerHTML = '<div class="settings-note">No saved sessions.</div>'; return; }
+    box.innerHTML = sessions.map(function (s) {
+      return '<div class="setting-row">'
+        + '<code>' + esc(s.name) + '</code> '
+        + '<span class="muted">' + (s.cookieCount || 0) + ' cookies · ' + (s.originCount || 0) + ' origins · ' + esc(s.savedAt || '') + '</span> '
+        + '<button class="btn-sm" onclick="deleteBrowserSession(\'' + esc(s.name) + '\')">Delete</button>'
+        + '</div>';
+    }).join('');
+  } catch (e) {
+    box.textContent = 'Could not load browser sessions: ' + (e.message || e);
+  }
+}
+
+async function saveBrowserSession() {
+  const input = document.getElementById('browserSessionNameInput');
+  const status = document.getElementById('browserSessionStatus');
+  const name = input ? input.value.trim() : '';
+  if (!name) { if (status) status.textContent = 'Enter a session name first.'; return; }
+  if (status) status.textContent = 'Saving…';
+  try {
+    const res = await fetch('/api/browser/sessions/' + encodeURIComponent(name), { method: 'POST' });
+    const data = await readApiJson(res, 'Browser session save API');
+    if (status) status.textContent = '✓ Saved ' + (data.session ? data.session.name : name);
+    if (input) input.value = '';
+    loadBrowserSessions();
+  } catch (e) {
+    if (status) status.textContent = '✕ ' + (e.message || e);
+  }
+}
+
+async function deleteBrowserSession(name) {
+  const status = document.getElementById('browserSessionStatus');
+  try {
+    const res = await fetch('/api/browser/sessions/' + encodeURIComponent(name), { method: 'DELETE' });
+    await readApiJson(res, 'Browser session delete API');
+    if (status) status.textContent = 'Deleted ' + name;
+    loadBrowserSessions();
+  } catch (e) {
+    if (status) status.textContent = '✕ ' + (e.message || e);
+  }
+}
+
+function hydrateBrowserRedaction(redaction) {
+  const values = document.getElementById('browserRedactValues');
+  const origin = document.getElementById('browserRedactUrlOrigin');
+  if (values) values.checked = redaction.redactValues !== false;
+  if (origin) origin.checked = redaction.urlMode === 'origin';
+}
+
+async function saveBrowserRedaction() {
+  const values = document.getElementById('browserRedactValues');
+  const origin = document.getElementById('browserRedactUrlOrigin');
+  const status = document.getElementById('browserRedactionStatus');
+  if (status) status.textContent = 'Saving…';
+  try {
+    await updateSetting('browserRedaction', {
+      redactValues: values ? values.checked : true,
+      urlMode: origin && origin.checked ? 'origin' : 'full',
+    });
+    if (status) status.textContent = 'Saved.';
+  } catch (e) {
+    if (status) status.textContent = 'Save failed: ' + (e.message || e);
+  }
+}
+
 async function loadGovernedLoop() {
   await Promise.allSettled([loadWorkingMemory(), loadReviewQueue(), loadReplayCandidates(), loadGovernanceMetrics()]);
 }
