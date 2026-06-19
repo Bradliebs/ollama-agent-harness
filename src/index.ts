@@ -63,6 +63,8 @@ export type { Signal, SignalAxis, SignalContext, SignalResult, PanelConfig, Pane
 export { BUILTIN_SIGNALS, outputValidationSignal, testResultsSignal, lintErrorsSignal, schemaCheckSignal, toolSuccessSignal, safetyHardCheckSignal } from './verification/builtinSignals';
 export { planSurgicalRepair, planSurgicalRepairForChecks } from './verification/critic';
 export type { SurgicalRepairOptions, SurgicalRepairPlan, RepairableCheck } from './verification/critic';
+export { writeMetricsJson, aggregatePanels } from './verification/metrics';
+export type { BenchmarkRunMetrics, BenchmarkTaskMetrics } from './verification/metrics';
 export { BUILTIN_MODEL_CATALOG, getModelCatalog, getModelCatalogCacheStatus, listCatalogModels, readModelCatalogCache, validateModelCatalogManifest, writeModelCatalogCache } from './models/modelCatalog';
 export type { GetModelCatalogOptions, ModelCatalogCacheStatus, ModelCatalogManifest, ModelCatalogModel, ModelCatalogProvider } from './models/modelCatalog';
 export { ModelRegistry, BUILTIN_MODEL_REGISTRY } from './models/modelRegistry';

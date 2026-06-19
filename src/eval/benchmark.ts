@@ -15,6 +15,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { writeMetricsJson, aggregatePanels, type BenchmarkRunMetrics, type BenchmarkTaskMetrics } from '../verification/metrics';
 
 // ─── Schema ──────────────────────────────────────────────────────────
 
@@ -469,6 +470,43 @@ export async function persistBenchmarkRun(projectDir: string, run: BenchmarkRun)
   await fs.mkdir(dir, { recursive: true });
   const file = path.join(dir, `${run.id}.json`);
   await fs.writeFile(file, JSON.stringify(run, null, 2), 'utf-8');
+  await writeMetricsJson(dir, buildRunMetrics(run));
+}
+
+/**
+ * Convert a BenchmarkRun into the standard metrics envelope. Token + cost
+ * fields are only populated when self-reported by upstream (CostTracker
+ * integration is Gap #5); per-signal/per-axis fields are only populated when
+ * tasks carry panel results.
+ */
+function buildRunMetrics(run: BenchmarkRun): BenchmarkRunMetrics {
+  const started = Date.parse(run.startedAt);
+  const finished = Date.parse(run.finishedAt);
+  const tasks: BenchmarkTaskMetrics[] = run.results.map((r) => ({
+    taskId: r.taskId,
+    tier: r.tier,
+    status: r.status,
+    durationMs: r.durationMs,
+    toolCalls: r.toolCalls.length,
+  }));
+  const { perSignal, perAxis } = aggregatePanels(tasks);
+  return {
+    runId: run.id,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    durationMs: Number.isFinite(started) && Number.isFinite(finished) ? Math.max(0, finished - started) : 0,
+    model: run.model,
+    baseUrl: run.baseUrl,
+    tiers: run.tiers,
+    total: run.total,
+    passed: run.passed,
+    failed: run.failed,
+    errored: run.errored,
+    passRate: run.passRate,
+    tasks,
+    ...(perSignal ? { perSignal } : {}),
+    ...(perAxis ? { perAxis } : {}),
+  };
 }
 
 export async function loadBenchmarkRuns(projectDir: string): Promise<BenchmarkRun[]> {
