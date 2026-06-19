@@ -66,3 +66,62 @@ function composePrompt(
   }
   return lines.join('\n');
 }
+
+/**
+ * Duck-typed check shape so this module stays a leaf — anything with
+ * `name + status + optional detail` qualifies, including
+ * `VerificationCheck` from `doneStateVerifier`.
+ */
+export interface RepairableCheck {
+  name: string;
+  status: 'pass' | 'fail' | 'warn' | 'skip';
+  detail?: string;
+}
+
+/**
+ * Sibling of `planSurgicalRepair` for callers (e.g. taskConductor) that have
+ * a list of pass/fail checks rather than a full signal panel. Same output
+ * shape: focus on failing checks, list the passing ones explicitly so the
+ * agent knows what NOT to touch.
+ */
+export function planSurgicalRepairForChecks(
+  checks: RepairableCheck[],
+  opts: SurgicalRepairOptions = {},
+): SurgicalRepairPlan {
+  const maxFocus = opts.maxFocus ?? 3;
+  const failing = checks.filter((c) => c.status === 'fail');
+  const warns = checks.filter((c) => c.status === 'warn');
+  const passing = checks.filter((c) => c.status === 'pass').map((c) => c.name);
+  const focusChecks = [...failing, ...warns].slice(0, maxFocus);
+
+  if (focusChecks.length === 0) {
+    return {
+      focusSignals: [],
+      leaveAlone: passing,
+      prompt: 'All verification checks passed. No surgical repair needed.',
+    };
+  }
+
+  const lines: string[] = [];
+  lines.push('Surgical repair plan. Fix ONLY the checks below; do not touch anything else.');
+  lines.push('');
+  lines.push('Failing checks:');
+  for (const c of focusChecks) {
+    const detail = c.detail ? ` — ${truncate(c.detail, 400)}` : '';
+    lines.push(`- ${c.name} (${c.status})${detail}`);
+  }
+  if (passing.length > 0) {
+    lines.push('');
+    lines.push('Already passing — leave these untouched:');
+    lines.push(`- ${passing.join(', ')}`);
+  }
+  return {
+    focusSignals: focusChecks.map((c) => c.name),
+    leaveAlone: passing,
+    prompt: lines.join('\n'),
+  };
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) + '…' : s;
+}

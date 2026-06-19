@@ -18,6 +18,7 @@ import type { Tool } from '../types/tool';
 import type { LoopConfig, LoopEvent } from '../types/loop';
 import { queryLoop, type QueryLoopDeps } from './queryLoop';
 import { verifyCode, type VerificationResult } from './doneStateVerifier';
+import { planSurgicalRepairForChecks } from '../verification/critic';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -189,7 +190,7 @@ export async function runConductor(options: ConductorOptions): Promise<Conductor
       if (priorAttempts < maxRemediations) {
         queue.splice(i + 1, 0, {
           id: step.id,
-          intent: `A verification check failed after the previous step. Diagnose and fix it. Failure detail:\n${lastFailureDetail(verifications)}`,
+          intent: buildRemediationIntent(verifications),
           suggestedToolsets: step.suggestedToolsets,
           verify: step.verify,
           done: false,
@@ -340,6 +341,18 @@ function lastFailureDetail(verifications: VerificationResult[]): string {
   const failed = last.checks.filter((c) => c.status === 'fail');
   if (failed.length === 0) return '(verification failed without a specific check)';
   return failed.map((c) => `${c.name}: ${c.detail ?? 'failed'}`).join('\n').slice(0, 1500);
+}
+
+// HARNESS_SURGICAL_CRITIC=1 swaps the generic "diagnose and fix it" prompt for
+// a focused critic prompt that names the failing checks and the passing ones
+// to leave alone. Default (env unset) keeps the legacy intent byte-identical.
+function buildRemediationIntent(verifications: VerificationResult[]): string {
+  const last = verifications[verifications.length - 1];
+  if (process.env.HARNESS_SURGICAL_CRITIC === '1' && last) {
+    const plan = planSurgicalRepairForChecks(last.checks);
+    return `A verification check failed after the previous step. ${plan.prompt}`;
+  }
+  return `A verification check failed after the previous step. Diagnose and fix it. Failure detail:\n${lastFailureDetail(verifications)}`;
 }
 
 async function writeJson(persistDir: string, runId: string | undefined, name: string, data: unknown): Promise<void> {

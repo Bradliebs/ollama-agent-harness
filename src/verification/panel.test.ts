@@ -8,7 +8,7 @@ import {
   BUILTIN_SIGNALS,
 } from './builtinSignals';
 import { runPanel, type Signal, type SignalContext } from './panel';
-import { planSurgicalRepair } from './critic';
+import { planSurgicalRepair, planSurgicalRepairForChecks, type RepairableCheck } from './critic';
 
 function ctx(overrides: Partial<SignalContext> = {}): SignalContext {
   return {
@@ -170,5 +170,42 @@ describe('planSurgicalRepair', () => {
     const plan = planSurgicalRepair(panel);
     expect(plan.focusSignals.length).toBe(0);
     expect(plan.prompt).toMatch(/No surgical repair needed/);
+  });
+});
+
+describe('planSurgicalRepairForChecks', () => {
+  const failing: RepairableCheck = { name: 'typecheck', status: 'fail', detail: 'TS2322 type mismatch' };
+  const warning: RepairableCheck = { name: 'tests', status: 'warn', detail: 'timed out' };
+  const passing: RepairableCheck = { name: 'lint', status: 'pass' };
+
+  it('focuses on failing checks first and lists passing ones to leave alone', () => {
+    const plan = planSurgicalRepairForChecks([failing, passing]);
+    expect(plan.focusSignals).toEqual(['typecheck']);
+    expect(plan.leaveAlone).toEqual(['lint']);
+    expect(plan.prompt).toMatch(/Failing checks/);
+    expect(plan.prompt).toMatch(/typecheck/);
+    expect(plan.prompt).toMatch(/TS2322 type mismatch/);
+    expect(plan.prompt).toMatch(/leave these untouched/);
+    expect(plan.prompt).toMatch(/lint/);
+  });
+
+  it('includes warnings after failures, capped at maxFocus', () => {
+    const second: RepairableCheck = { name: 'schema', status: 'fail', detail: 'missing field' };
+    const plan = planSurgicalRepairForChecks([failing, second, warning, passing], { maxFocus: 2 });
+    expect(plan.focusSignals).toEqual(['typecheck', 'schema']);
+    expect(plan.leaveAlone).toEqual(['lint']);
+  });
+
+  it('returns a no-op prompt when nothing failed or warned', () => {
+    const plan = planSurgicalRepairForChecks([passing]);
+    expect(plan.focusSignals).toEqual([]);
+    expect(plan.prompt).toMatch(/No surgical repair needed/);
+  });
+
+  it('truncates long check details so the prompt does not bloat', () => {
+    const noisy: RepairableCheck = { name: 'tests', status: 'fail', detail: 'x'.repeat(2000) };
+    const plan = planSurgicalRepairForChecks([noisy]);
+    expect(plan.prompt.length).toBeLessThan(1000);
+    expect(plan.prompt).toMatch(/…/);
   });
 });
