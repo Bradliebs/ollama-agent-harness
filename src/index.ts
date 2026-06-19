@@ -58,6 +58,11 @@ export { buildContextPackage, buildRouteExplanation, formatRouteExplanation } fr
 export type { ContextPackage, ContextPackageItem, RouteExplanation } from './mycelium/contextPackage';
 export { heuristicVerifier } from './mycelium/verifier';
 export type { VerifierInput, VerifierResult } from './mycelium/verifier';
+export { runPanel } from './verification/panel';
+export type { Signal, SignalAxis, SignalContext, SignalResult, PanelConfig, PanelResult, PerSignalReport, PerAxisReport } from './verification/panel';
+export { BUILTIN_SIGNALS, outputValidationSignal, testResultsSignal, lintErrorsSignal, schemaCheckSignal, toolSuccessSignal, safetyHardCheckSignal } from './verification/builtinSignals';
+export { planSurgicalRepair } from './verification/critic';
+export type { SurgicalRepairOptions, SurgicalRepairPlan } from './verification/critic';
 export { BUILTIN_MODEL_CATALOG, getModelCatalog, getModelCatalogCacheStatus, listCatalogModels, readModelCatalogCache, validateModelCatalogManifest, writeModelCatalogCache } from './models/modelCatalog';
 export type { GetModelCatalogOptions, ModelCatalogCacheStatus, ModelCatalogManifest, ModelCatalogModel, ModelCatalogProvider } from './models/modelCatalog';
 export { ModelRegistry, BUILTIN_MODEL_REGISTRY } from './models/modelRegistry';
