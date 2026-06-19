@@ -67,6 +67,8 @@ export { writeMetricsJson, aggregatePanels } from './verification/metrics';
 export type { BenchmarkRunMetrics, BenchmarkTaskMetrics } from './verification/metrics';
 export { resolveModelByRole, loadModelsConfig, LOOP_ROLES } from './models/roleRouting';
 export type { LoopRole, ModelsConfig, ResolveModelByRoleOptions, ResolveModelByRoleResult } from './models/roleRouting';
+export { createSubagentWorktree } from './agents/worktree';
+export type { CreateSubagentWorktreeOptions, SubagentWorktreeHandle, SubagentWorktreeFailure, SubagentWorktreeResult } from './agents/worktree';
 export { BUILTIN_MODEL_CATALOG, getModelCatalog, getModelCatalogCacheStatus, listCatalogModels, readModelCatalogCache, validateModelCatalogManifest, writeModelCatalogCache } from './models/modelCatalog';
 export type { GetModelCatalogOptions, ModelCatalogCacheStatus, ModelCatalogManifest, ModelCatalogModel, ModelCatalogProvider } from './models/modelCatalog';
 export { ModelRegistry, BUILTIN_MODEL_REGISTRY } from './models/modelRegistry';
