@@ -46,6 +46,20 @@ describe('cookbook/task-loop decideRatchet', () => {
     expect(d.earnedBy).toBe('npm test passed (research task — no file changes required)');
   });
 
+  it('keeps an external task that validated even with 0 in-repo file changes', () => {
+    // External tasks routinely write outside PROJECT_DIR (e.g. into H:\Model),
+    // so requiring an in-repo file change would silently revert genuine work.
+    const d = decideRatchet({
+      errored: false,
+      validated: true,
+      kind: 'external',
+      changedFileCount: 0,
+      validateLabel: 'npm test',
+    });
+    expect(d.outcome).toBe('keep');
+    expect(d.earnedBy).toBe('npm test passed (external task — no file changes required)');
+  });
+
   it('reverts when the implement step threw — nothing earned the keep', () => {
     const d = decideRatchet({ errored: true, validated: false, kind: 'code', changedFileCount: 5 });
     expect(d.outcome).toBe('revert');

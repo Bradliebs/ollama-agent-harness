@@ -76,6 +76,63 @@ console.log = (...args: unknown[]): void => { _origLog(...args); mirrorLine("LOG
 console.warn = (...args: unknown[]): void => { _origWarn(...args); mirrorLine("WARN", args.map(String).join(" ")); };
 console.error = (...args: unknown[]): void => { _origErr(...args); mirrorLine("ERR ", args.map(String).join(" ")); };
 
+// Render a thrown value (including the spawnSync error objects with status/
+// signal/stdout/stderr buffers) into a single human-readable line so the
+// autonomy log dialog never has to display a raw Uint8Array dump.
+function formatThrown(err: unknown): string {
+  if (err instanceof Error) {
+    const ex = err as Error & { status?: number | null; signal?: string | null; stderr?: Buffer | string };
+    const parts: string[] = [ex.message || ex.name];
+    if (typeof ex.status === "number") parts.push(`status=${ex.status}`);
+    if (ex.signal) parts.push(`signal=${ex.signal}`);
+    const stderr = ex.stderr ? (Buffer.isBuffer(ex.stderr) ? ex.stderr.toString("utf8") : String(ex.stderr)) : "";
+    if (stderr.trim()) parts.push(`stderr=${stderr.trim().replace(/\s+/g, " ")}`);
+    return parts.join(" | ");
+  }
+  return String(err);
+}
+
+// Safety net: if anything in this script throws unhandled (ts-node compile
+// errors are the one class this can't catch — those happen before the
+// handler is registered), mirror a readable line to .forge-run.log instead
+// of leaking a raw spawnSync error object to stderr. Only install when
+// running as a script, so unit tests that import ralphLoop directly don't
+// have their own uncaught errors swallowed.
+if (require.main === module) {
+  process.on("uncaughtException", (err) => {
+    try { mirrorLine("FATAL", `uncaughtException: ${formatThrown(err)}`); } catch { /* best-effort */ }
+    _origErr("[Ralph] FATAL uncaughtException:", err);
+    process.exit(1);
+  });
+  process.on("unhandledRejection", (reason) => {
+    try { mirrorLine("FATAL", `unhandledRejection: ${formatThrown(reason)}`); } catch { /* best-effort */ }
+    _origErr("[Ralph] FATAL unhandledRejection:", reason);
+    process.exit(1);
+  });
+}
+
+// Atomic snapshots and per-task commits both require an initialised git
+// repo with at least one commit (so `git rev-parse HEAD` resolves). The
+// loop runs in the user's PROJECT_DIR, which for first-time "Build it"
+// flows is often a plain folder. Auto-init keeps the one-click flow
+// working; if init itself fails (no git binary, permissions), we log the
+// reason and let the caller decide.
+function ensureGitRepoInitialised(): { ok: true } | { ok: false; reason: string } {
+  if (existsSync(".git")) return { ok: true };
+  try {
+    execFileSync("git", ["init", "-q"], { stdio: "pipe" });
+    // git rev-parse HEAD needs at least one commit. Use an empty commit so
+    // we don't drop a stray placeholder file into the user's workspace.
+    try { execFileSync("git", ["config", "user.email", "autonomy@forge.local"], { stdio: "pipe" }); } catch { /* best-effort */ }
+    try { execFileSync("git", ["config", "user.name", "Forge Autonomy"], { stdio: "pipe" }); } catch { /* best-effort */ }
+    execFileSync("git", ["commit", "--allow-empty", "-q", "-m", "chore(autonomy): initial commit"], { stdio: "pipe" });
+    console.log("[Ralph] Initialised git repo in workspace (atomic snapshots require it).");
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: formatThrown(err) };
+  }
+}
+
 // --- Types ---
 
 type TaskStatus = "pending" | "done" | "failed";
@@ -455,6 +512,15 @@ function implementTask(task: Task): void {
  * Override with HARNESS_VALIDATE_CMD (e.g. "npm test" or "npm run typecheck && npm test").
  */
 function validateTask(task: Task): boolean {
+  // External and research tasks are inventory/runbook/discovery work; their
+  // success is judged by the artifact they produced (runbook, external file,
+  // research note), not by whether the workspace's TypeScript compiles. A
+  // user's H:\Model folder has no tsconfig, so running `npm run typecheck`
+  // against it always fails and reverts otherwise-successful work.
+  if (task.kind === "external" || task.kind === "research") {
+    console.log(`[Ralph] Skipping ${HARNESS_VALIDATE_CMD} for ${task.kind} task ${task.id} \u2014 artifact is the verdict.`);
+    return true;
+  }
   if (isBracknellDeliveryTask(task)) {
     const bracknellDir = getBracknellDir();
     const todayMs = startOfToday();
@@ -676,7 +742,10 @@ export function decideRatchet(input: RatchetInput): RatchetDecision {
       earnedBy: null,
     };
   }
-  const requiresFileChanges = (kind ?? "code") !== "research";
+  // External tasks routinely write outside PROJECT_DIR (e.g. into H:\Model)
+  // so the in-repo file count is a misleading proxy for "did real work
+  // happen". Treat external like research: validation alone is the verdict.
+  const requiresFileChanges = (kind ?? "code") === "code";
   if (requiresFileChanges && changedFileCount === 0) {
     return {
       outcome: "revert",
@@ -685,9 +754,10 @@ export function decideRatchet(input: RatchetInput): RatchetDecision {
       earnedBy: null,
     };
   }
+  const kindLabel = kind === "external" ? "external task" : "research task";
   const evidence = requiresFileChanges
     ? `${check} passed with ${changedFileCount} file change(s)`
-    : `${check} passed (research task — no file changes required)`;
+    : `${check} passed (${kindLabel} — no file changes required)`;
   return { outcome: "keep", code: "kept", reason: evidence, earnedBy: evidence };
 }
 
@@ -713,6 +783,19 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
     console.error("[Ralph] Create an IMPLEMENTATION_PLAN.md with tasks like:");
     console.error("  - [ ] task-id \u2014 Task title");
     return;
+  }
+
+  // Git preflight. Atomic snapshots, per-task commits, and rollback all
+  // depend on a working repo. Without this guard, the first execSync
+  // ("git rev-parse HEAD") throws an opaque spawn error and the loop
+  // dies before writing anything readable to .forge-run.log.
+  if (!dryRun) {
+    const repo = ensureGitRepoInitialised();
+    if (!repo.ok) {
+      console.error(`[Ralph] FATAL: cannot use this workspace as a git repo: ${repo.reason}`);
+      console.error("[Ralph] Hint: run `git init` in this folder, or point the harness at a folder you can write to.");
+      return;
+    }
   }
 
   if (dryRun) {
@@ -806,19 +889,30 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
     // Stash includes untracked files so a half-applied edit doesn't leak
     // into the next iteration's beforeFiles set.
     const snapshotEnabled = process.env.HARNESS_AUTONOMY_SNAPSHOT !== "0";
-    const preIterationHead = snapshotEnabled
-      ? execSync("git rev-parse HEAD", { stdio: "pipe" }).toString().trim()
-      : null;
+    let preIterationHead: string | null = null;
+    if (snapshotEnabled) {
+      try {
+        preIterationHead = execSync("git rev-parse HEAD", { stdio: "pipe" }).toString().trim();
+      } catch (err) {
+        console.warn(`[Ralph] ⚠️ git rev-parse HEAD failed: ${formatThrown(err)} — continuing without snapshot.`);
+      }
+    }
 
     // Snapshot the working tree before implementation so we can stage
     // exactly the files this task touched (no `git add -A`).
-    const beforeFiles = new Set(
-      execSync("git status --porcelain", { stdio: "pipe" })
-        .toString()
-        .split("\n")
-        .map((l) => l.slice(3).trim())
-        .filter(Boolean),
-    );
+    let beforeFiles: Set<string>;
+    try {
+      beforeFiles = new Set(
+        execSync("git status --porcelain", { stdio: "pipe" })
+          .toString()
+          .split("\n")
+          .map((l) => l.slice(3).trim())
+          .filter(Boolean),
+      );
+    } catch (err) {
+      console.warn(`[Ralph] ⚠️ git status failed before iteration: ${formatThrown(err)} — assuming clean tree.`);
+      beforeFiles = new Set();
+    }
 
     // Implement
     let implementError: unknown = null;
@@ -837,11 +931,17 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
     }
 
     // Collect files changed during this iteration
-    const afterFiles = execSync("git status --porcelain", { stdio: "pipe" })
-      .toString()
-      .split("\n")
-      .map((l) => l.slice(3).trim())
-      .filter(Boolean);
+    let afterFiles: string[];
+    try {
+      afterFiles = execSync("git status --porcelain", { stdio: "pipe" })
+        .toString()
+        .split("\n")
+        .map((l) => l.slice(3).trim())
+        .filter(Boolean);
+    } catch (err) {
+      console.warn(`[Ralph] ⚠️ git status failed after iteration: ${formatThrown(err)} — treating as no changes.`);
+      afterFiles = [];
+    }
     const repoChangedFiles = afterFiles.filter((f) => !beforeFiles.has(f) && !f.startsWith(".forge-"));
     const externalChangedFiles = isBracknellDeliveryTask(pending)
       ? collectChangedFilesSince(getBracknellDir(), taskStartedAt).map((filePath) => `external:${filePath}`)
@@ -895,9 +995,12 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
       if (snapshotEnabled && preIterationHead) {
         try {
           // Drop any uncommitted edits and untracked files the model may
-          // have created. Keep .forge-* (state, debug logs, history).
+          // have created. Keep .forge-* (state, debug logs, history) AND
+          // IMPLEMENTATION_PLAN.md: the plan is often untracked between
+          // commits, and a clean that wipes it leaves the next iteration
+          // with no plan to read — an ENOENT that crashes the loop.
           execFileSync("git", ["reset", "--hard", preIterationHead], { stdio: "pipe" });
-          execFileSync("git", ["clean", "-fd", "-e", ".forge-*"], { stdio: "pipe" });
+          execFileSync("git", ["clean", "-fd", "-e", ".forge-*", "-e", "IMPLEMENTATION_PLAN.md"], { stdio: "pipe" });
           // Re-apply the failed marker to the plan because git reset wiped
           // the uncommitted plan edit. Without this, the next iteration
           // would pick the same task again and loop forever.

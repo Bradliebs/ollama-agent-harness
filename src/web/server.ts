@@ -1652,7 +1652,18 @@ function buildMinimalWindowsSpawnEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
 }
 
 async function readAutonomyPlanPreview(planPath = path.join(PROJECT_DIR, 'IMPLEMENTATION_PLAN.md')): Promise<{ tasks: PlanPreviewTask[]; total: number; pending: number; done: number; failed: number }> {
-  const raw = await fs.readFile(planPath, 'utf-8');
+  let raw: string;
+  try {
+    raw = await fs.readFile(planPath, 'utf-8');
+  } catch (err) {
+    // A workspace that has never been planned in (or one where a botched
+    // revert wiped the plan) is a legitimate empty state, not a 500. The UI
+    // shows "No tasks yet" and the user can plan via the goal box.
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      return { tasks: [], total: 0, pending: 0, done: 0, failed: 0 };
+    }
+    throw err;
+  }
   const tasks: PlanPreviewTask[] = [];
   let current: PlanPreviewTask | null = null;
   for (const rawLine of raw.split(/\r?\n/)) {
@@ -1930,6 +1941,17 @@ app.post('/api/autonomy/plan-from-goal', async (req, res) => {
       return;
     }
 
+    // If the user's goal mentions paths outside the workspace (drive letters
+    // like H:\Model, or /Users/, /home/, /mnt/, /Volumes/ on POSIX), every
+    // generated step is auto-tagged kind:external. External tasks routinely
+    // write their output outside PROJECT_DIR and have no meaningful in-repo
+    // typecheck signal, so the autonomy loop validates them by artifact
+    // existence + runbook, not by `npm run typecheck`. Without this tag, a
+    // perfectly successful "read H:\Model and write inventory" task fails
+    // validation in any non-TS workspace and gets reverted.
+    const externalPathPattern = /(?:[A-Z]:[\\/]|\/(?:Users|home|mnt|Volumes)\/)/i;
+    const goalMentionsExternalPath = externalPathPattern.test(goal);
+
     const planPath = path.join(PROJECT_DIR, 'IMPLEMENTATION_PLAN.md');
     let existing = '';
     try { existing = await fs.readFile(planPath, 'utf-8'); } catch { existing = '# Implementation Plan\n'; }
@@ -1946,7 +1968,9 @@ app.post('/api/autonomy/plan-from-goal', async (req, res) => {
       while (existingIds.has(uniqueId)) { uniqueId = `${step.id}-${suffix++}`; }
       existingIds.add(uniqueId);
       added.push({ id: uniqueId, title: step.title });
-      entries.push(`\n- [ ] ${uniqueId} — ${step.title}`);
+      const stepIsExternal = goalMentionsExternalPath || externalPathPattern.test(step.title);
+      const kindLine = stepIsExternal ? '\n  - kind: external' : '';
+      entries.push(`\n- [ ] ${uniqueId} — ${step.title}${kindLine}`);
     }
     await fs.writeFile(planPath, existing.replace(/\n*$/, '') + entries.join('') + '\n', 'utf-8');
     const preview = await readAutonomyPlanPreview();
@@ -2061,6 +2085,23 @@ app.post('/api/autonomy/start', async (req, res) => {
       minimalEnv.TS_NODE_PROJECT = path.join(harnessHome, 'tsconfig.json');
       autonomyChild = spawn(process.execPath, loopArgs, { cwd: PROJECT_DIR, env: minimalEnv });
     }
+    // Mirror the child's stdout/stderr into .forge-run.log so failures that
+    // happen before task-loop.ts installs its uncaughtException handler
+    // (e.g. ts-node compile errors, missing modules) still surface in the
+    // autonomy log dialog as readable text instead of being lost on stderr.
+    const autonomyLogPath = path.join(PROJECT_DIR, '.forge-run.log');
+    const mirrorChildChunk = (prefix: 'STDOUT' | 'STDERR', chunk: Buffer): void => {
+      const text = chunk.toString('utf8');
+      for (const line of text.split(/\r?\n/)) {
+        if (!line) continue;
+        fs.appendFile(autonomyLogPath, `[${new Date().toISOString()}] ${prefix} ${line}\n`).catch((err) => recordSwallowed('autonomyChildMirror', err));
+      }
+    };
+    autonomyChild.stdout?.on('data', (chunk: Buffer) => mirrorChildChunk('STDOUT', chunk));
+    autonomyChild.stderr?.on('data', (chunk: Buffer) => mirrorChildChunk('STDERR', chunk));
+    autonomyChild.on('error', (err) => {
+      fs.appendFile(autonomyLogPath, `[${new Date().toISOString()}] FATAL spawn error: ${err.message}\n`).catch((swallowErr) => recordSwallowed('autonomyChildMirror', swallowErr));
+    });
     const evidence = createRunEvidence({ id: `autonomy:${autonomyStartedAt}`, kind: 'autonomy', request: preview.tasks.find((task) => task.status === 'pending')?.title || 'Run next pending implementation task', runName: 'Ralph autonomy loop', command: 'node -r ts-node/register/transpile-only cookbook/task-loop.ts', success: true, summary: `Started with ${preview.pending} pending task(s).` });
     await appendRunEvidence(PROJECT_DIR, evidence);
     autonomyChild.on('exit', () => { autonomyChild = null; autonomyStartedAt = undefined; });
