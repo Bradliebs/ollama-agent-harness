@@ -216,10 +216,11 @@ app.use(express.static(path.join(__dirname, '..', '..', 'ui'), {
 
 /**
  * Workspace isolation: the agent must NEVER write into the harness source tree.
- * If no HARNESS_PROJECT_DIR is set, default to ~/hermes-workspace (created on
- * first run). If someone launches from the harness repo without setting the env
- * var, we detect the repo by the presence of src/web/server.ts and redirect
- * to the safe default.
+ * If no HARNESS_PROJECT_DIR is set and the harness is launched from its own
+ * source repo, we redirect to ~/apex-workspace (created on first run). We detect
+ * the repo by the presence of src/web/server.ts and src/tools/dispatcher.ts.
+ * Set HARNESS_PROJECT_DIR to pin a stable home (recommended) so the data dir
+ * never drifts between launches.
  */
 function resolveProjectDir(): string {
   if (process.env.HARNESS_PROJECT_DIR) {
@@ -249,6 +250,12 @@ function resolveProjectDir(): string {
 
 const PROJECT_DIR = resolveProjectDir();
 setProjectRoot(PROJECT_DIR);
+// Surface the resolved project dir at startup. A silently-moved home is what
+// makes the harness appear to "lose" its memory/identity, so make it visible.
+if (process.env.NODE_ENV !== 'test' && !process.env.JEST_WORKER_ID) {
+  const projectDirSource = process.env.HARNESS_PROJECT_DIR ? 'HARNESS_PROJECT_DIR' : 'auto-detected';
+  console.log(`📁 Harness project dir: ${PROJECT_DIR} (source: ${projectDirSource})`);
+}
 // LOCAL_HOST controls the bind interface. Defaults to loopback (127.0.0.1) so
 // the dashboard is reachable only from this machine. If you set HOST to a
 // non-loopback address (e.g. 0.0.0.0) to share the UI on your network, you
