@@ -2443,12 +2443,49 @@ async function buildIt() {
     window.__buildTimeChoice = 'work';
     applyAutonomyPreset('work');
   }
-  if (window.__buildTimeChoice === 'overnight') {
-    const ok = window.confirm('This will keep working for up to several hours. You can press Stop anytime. Start the overnight build?');
-    if (!ok) { setBuildStatus('Cancelled — nothing started.', 'warn'); return; }
+  // The autonomy run executes as a background process with no UI to answer
+  // permission prompts, so the server's preflight requires supervised-
+  // autonomous (dontAsk) mode plus the shell + background-job grants. Build
+  // Mode never engaged these, so every Build it press was rejected with a 409
+  // that surfaced only in a hidden element — making it look like nothing
+  // happened. Engage a TIMED autonomy window (auto-reverts) sized to the
+  // chosen work length, behind one plain-language consent that covers all
+  // presets, then surface any start failure in the build card itself.
+  const timedMinutes = window.__buildTimeChoice === 'overnight' ? 600
+    : window.__buildTimeChoice === 'work' ? 150
+      : 30;
+  const timeWord = window.__buildTimeChoice === 'overnight' ? 'several hours'
+    : window.__buildTimeChoice === 'work' ? 'up to about 2 hours'
+      : 'a short test run';
+  const consent = window.confirm(
+    'To build this I need permission to create and edit files and run commands on your behalf for ' + timeWord + '.\n\n'
+    + 'I\'ll stop automatically when the work is done or the time is up, and you can press Stop anytime. Continue?');
+  if (!consent) { setBuildStatus('Cancelled — nothing started.', 'warn'); return; }
+  setBuildStatus('Setting up permissions for the build…', 'ok');
+  try {
+    await ensureBuildPermissions(timedMinutes);
+  } catch (error) {
+    setBuildStatus('Could not enable build permissions: ' + (error.message || String(error)), 'warn');
+    return;
   }
   setBuildStatus('Starting your build… watch progress in the banner at the top.', 'ok');
-  await startAutonomyRun();
+  const result = await startAutonomyRun();
+  if (result && result.ok === false) {
+    setBuildStatus('Could not start the build: ' + (result.error || 'unknown error'), 'warn');
+  }
+}
+
+// Engage a timed supervised-autonomous (dontAsk) window so the background
+// build can create/edit files and run commands without a UI prompt. The
+// window auto-reverts after timedMinutes, mirroring the readiness fix-all
+// escalation. Throws (via readApiJson) if the server rejects the request.
+async function ensureBuildPermissions(timedMinutes) {
+  const response = await fetch('/api/permissions/timed-autonomy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expiresInMinutes: timedMinutes, reason: 'Build Mode one-click supervised autonomous build' }),
+  });
+  await readApiJson(response, 'Timed autonomy API');
 }
 
 function renderAutonomyBuilder(data) {
@@ -2571,8 +2608,10 @@ async function startAutonomyRun() {
     const logModal = document.getElementById('autonomyLogModal');
     if (logModal && logModal.classList.contains('hidden-by-default')) toggleAutonomyLog();
     startAutonomyPolling();
+    return { ok: true };
   } catch (error) {
     if (status) status.textContent = error.message || String(error);
+    return { ok: false, error: error.message || String(error) };
   }
 }
 

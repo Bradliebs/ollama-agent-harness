@@ -1917,6 +1917,9 @@ app.post('/api/autonomy/plan-from-goal', async (req, res) => {
       '- 3 to 10 steps. Fewer is better for a small request.',
       '- Each step is one self-contained unit of work with a clear, plain-English title (max ~12 words).',
       '- Order steps so each builds on the previous: scaffold/setup first, then features, then polish.',
+      '- Every step must CREATE or MODIFY real files or code that move the build forward.',
+      '- Never add steps that only read, inspect, analyze, summarize, or document — the agent reads whatever context it needs on its own. Those steps produce no buildable output and stall the run.',
+      '- Prefer concrete deliverables (e.g. "Create the data model in models.py") over vague phases (e.g. "Analyze the requirements").',
       '- Do not include steps about asking the user questions, deployment, or anything outside building the thing.',
       '- Respond with ONLY a JSON array, no prose and no code fences. Each element: {"title": "..."}.',
     ].join('\n');
@@ -1948,9 +1951,20 @@ app.post('/api/autonomy/plan-from-goal', async (req, res) => {
     // typecheck signal, so the autonomy loop validates them by artifact
     // existence + runbook, not by `npm run typecheck`. Without this tag, a
     // perfectly successful "read H:\Model and write inventory" task fails
-    // validation in any non-TS workspace and gets reverted.
+    // validation in any non-TS workspace and gets reverted. We also extract
+    // the specific path and stamp it on every step (as a `target:` sub-
+    // bullet AND inside the step title) so the agent's per-task prompt
+    // anchors every step at the same folder; without this, step 1 says
+    // "read H:\Model" but steps 2-N say generic things like "implement the
+    // model architecture" with no idea WHERE to write, and the model
+    // wanders out of scope.
     const externalPathPattern = /(?:[A-Z]:[\\/]|\/(?:Users|home|mnt|Volumes)\/)/i;
     const goalMentionsExternalPath = externalPathPattern.test(goal);
+    const externalPathExtractPattern = /[A-Z]:[\\/][^\s'"<>|?*]+|\/(?:Users|home|mnt|Volumes)\/[^\s'"<>|?*]+/i;
+    const externalPathMatch = goalMentionsExternalPath ? goal.match(externalPathExtractPattern) : null;
+    const externalTargetPath = externalPathMatch
+      ? externalPathMatch[0].replace(/[.,;:!?)\]]+$/, '')
+      : null;
 
     const planPath = path.join(PROJECT_DIR, 'IMPLEMENTATION_PLAN.md');
     let existing = '';
@@ -1967,10 +1981,18 @@ app.post('/api/autonomy/plan-from-goal', async (req, res) => {
       let suffix = 2;
       while (existingIds.has(uniqueId)) { uniqueId = `${step.id}-${suffix++}`; }
       existingIds.add(uniqueId);
-      added.push({ id: uniqueId, title: step.title });
       const stepIsExternal = goalMentionsExternalPath || externalPathPattern.test(step.title);
+      // Inject the external path into the step title when the model omitted
+      // it. Steps after the first commonly say "implement the model" with
+      // no folder reference; without this, the agent's per-task prompt
+      // (which embeds the title verbatim) gives no hint where to write.
+      const stepTitle = stepIsExternal && externalTargetPath && !step.title.includes(externalTargetPath)
+        ? `${step.title} in ${externalTargetPath}`
+        : step.title;
+      added.push({ id: uniqueId, title: stepTitle });
       const kindLine = stepIsExternal ? '\n  - kind: external' : '';
-      entries.push(`\n- [ ] ${uniqueId} — ${step.title}${kindLine}`);
+      const targetLine = stepIsExternal && externalTargetPath ? `\n  - target: ${externalTargetPath}` : '';
+      entries.push(`\n- [ ] ${uniqueId} — ${stepTitle}${kindLine}${targetLine}`);
     }
     await fs.writeFile(planPath, existing.replace(/\n*$/, '') + entries.join('') + '\n', 'utf-8');
     const preview = await readAutonomyPlanPreview();

@@ -3,12 +3,13 @@ import { BUILTIN_TOOL_ENTRIES } from '../tools/registry';
 import type { PermissionRule } from '../types';
 import * as os from 'os';
 import * as path from 'path';
-import { setAllowedExternalPaths } from '../tools/pathResolution';
+import { setAllowedExternalPaths, setAutonomousBuildTargets } from '../tools/pathResolution';
 import { KillSwitch } from './killSwitch';
 
 describe('PermissionEngine', () => {
   afterEach(() => {
     setAllowedExternalPaths([]);
+    setAutonomousBuildTargets([]);
   });
 
   describe('deny-first rule ordering', () => {
@@ -117,6 +118,30 @@ describe('PermissionEngine', () => {
       const result = engine.evaluate({ name: 'file_write', input: { path: path.join(externalRoot, 'bullet-journal', 'data', 'tasks.json') } });
 
       expect(result.decision).toBe('allow');
+    });
+
+    it('dontAsk mode allows program file writes inside a designated build target', () => {
+      const externalRoot = path.join(os.tmpdir(), 'harness-oracle-external');
+      const buildTarget = path.join(externalRoot, 'bioarn');
+      setAllowedExternalPaths([externalRoot]);
+      setAutonomousBuildTargets([buildTarget]);
+      const engine = new PermissionEngine([], 'dontAsk');
+
+      const result = engine.evaluate({ name: 'file_write', input: { path: path.join(buildTarget, 'model.py') } });
+
+      expect(result.decision).toBe('allow');
+    });
+
+    it('dontAsk mode still asks for program files in allowed external folders outside the build target', () => {
+      const externalRoot = path.join(os.tmpdir(), 'harness-oracle-external');
+      const buildTarget = path.join(externalRoot, 'bioarn');
+      setAllowedExternalPaths([externalRoot]);
+      setAutonomousBuildTargets([buildTarget]);
+      const engine = new PermissionEngine([], 'dontAsk');
+
+      const result = engine.evaluate({ name: 'file_edit', input: { path: path.join(externalRoot, 'bullet-journal', 'journal.py') } });
+
+      expect(result).toMatchObject({ decision: 'ask', reason: 'Protected external program file requires confirmation.' });
     });
 
     it('acceptEdits mode auto-approves file edits', () => {

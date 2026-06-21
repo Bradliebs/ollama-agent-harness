@@ -46,18 +46,104 @@ describe('cookbook/task-loop decideRatchet', () => {
     expect(d.earnedBy).toBe('npm test passed (research task — no file changes required)');
   });
 
-  it('keeps an external task that validated even with 0 in-repo file changes', () => {
-    // External tasks routinely write outside PROJECT_DIR (e.g. into H:\Model),
-    // so requiring an in-repo file change would silently revert genuine work.
+  it('keeps an external task that wrote files into the external target folder', () => {
+    // External tasks may write all their output outside PROJECT_DIR (e.g.
+    // H:\Model). The ratchet keeps them on evidence in the external folder
+    // even when in-repo file count is zero.
     const d = decideRatchet({
       errored: false,
       validated: true,
       kind: 'external',
       changedFileCount: 0,
+      externalChangedFileCount: 5,
       validateLabel: 'npm test',
     });
     expect(d.outcome).toBe('keep');
-    expect(d.earnedBy).toBe('npm test passed (external task — no file changes required)');
+    expect(d.code).toBe('kept');
+    expect(d.earnedBy).toBe('npm test passed with 5 external file change(s) (external task)');
+  });
+
+  it('keeps an external task that wrote in-repo files even with 0 external changes', () => {
+    const d = decideRatchet({
+      errored: false,
+      validated: true,
+      kind: 'external',
+      changedFileCount: 2,
+      externalChangedFileCount: 0,
+      validateLabel: 'npm test',
+    });
+    expect(d.outcome).toBe('keep');
+    expect(d.earnedBy).toBe('npm test passed with 2 in-repo file change(s) (external task)');
+  });
+
+  it('reverts an external task that wrote 0 files anywhere — no rubber-stamping silent agents', () => {
+    // The bug this test guards against: a kind:external task whose agent
+    // aborted after 15 unproductive turns used to be "kept" with zero
+    // evidence of work, because external tasks were exempted from the
+    // file-count check entirely. "Until complete" must not mean "until
+    // every task has been attempted once".
+    const d = decideRatchet({
+      errored: false,
+      validated: true,
+      kind: 'external',
+      changedFileCount: 0,
+      externalChangedFileCount: 0,
+      validateLabel: 'npm test',
+    });
+    expect(d.outcome).toBe('revert');
+    expect(d.code).toBe('no-file-changes');
+    expect(d.reason).toBe('npm test passed but the external task wrote 0 files (in-repo or external) — no work to keep');
+    expect(d.earnedBy).toBeNull();
+  });
+
+  it('reverts a code-requiring external task that wrote only documents', () => {
+    // The bug this guards against: "Create the model implementation file"
+    // satisfied by writing MODEL_STATUS.md when the real .py write was
+    // blocked. A build task must produce code, not just a markdown report.
+    const d = decideRatchet({
+      errored: false,
+      validated: true,
+      kind: 'external',
+      changedFileCount: 0,
+      externalChangedFileCount: 2,
+      requiresCode: true,
+      codeFileCount: 0,
+      validateLabel: 'npm test',
+    });
+    expect(d.outcome).toBe('revert');
+    expect(d.code).toBe('no-code-changes');
+    expect(d.reason).toBe('npm test passed but this build task wrote 2 file(s), none of them code — a build task must produce code, not just documents');
+    expect(d.earnedBy).toBeNull();
+  });
+
+  it('keeps a code-requiring external task once it writes an actual code file', () => {
+    const d = decideRatchet({
+      errored: false,
+      validated: true,
+      kind: 'external',
+      changedFileCount: 0,
+      externalChangedFileCount: 1,
+      requiresCode: true,
+      codeFileCount: 1,
+      validateLabel: 'npm test',
+    });
+    expect(d.outcome).toBe('keep');
+    expect(d.code).toBe('kept');
+  });
+
+  it('keeps a documentation external task with zero code files (code not required)', () => {
+    const d = decideRatchet({
+      errored: false,
+      validated: true,
+      kind: 'external',
+      changedFileCount: 0,
+      externalChangedFileCount: 1,
+      requiresCode: false,
+      codeFileCount: 0,
+      validateLabel: 'npm test',
+    });
+    expect(d.outcome).toBe('keep');
+    expect(d.code).toBe('kept');
   });
 
   it('reverts when the implement step threw — nothing earned the keep', () => {

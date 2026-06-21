@@ -1,7 +1,7 @@
 import type { PermissionRule, PermissionMode, PermissionResult, ToolCall } from '../types';
 import * as path from 'path';
 import { BUILTIN_TOOL_ENTRIES } from '../tools/registry';
-import { getAllowedExternalPaths } from '../tools/pathResolution';
+import { getAllowedExternalPaths, getAutonomousBuildTargets } from '../tools/pathResolution';
 import { KillSwitch } from './killSwitch';
 
 /**
@@ -248,6 +248,12 @@ function isProtectedExternalProgramPath(rawPath: string): boolean {
   if (isInsideOrEqualPath(target, process.cwd())) return false;
   const externalRoot = getAllowedExternalPaths().find((allowedPath) => isInsideOrEqualPath(target, allowedPath));
   if (!externalRoot) return false;
+  // An explicitly-designated autonomous build target authorises program-file
+  // writes inside it — the user chose this folder as the build destination, so
+  // producing code there is the point. Every OTHER allowed-external folder keeps
+  // the confirmation gate, so autonomy still cannot overwrite an unrelated
+  // project's executable files without an answerable confirmation.
+  if (getAutonomousBuildTargets().some((buildRoot) => isInsideOrEqualPath(target, buildRoot))) return false;
   const basename = path.basename(target).toLowerCase();
   if (PROTECTED_EXTERNAL_FILENAMES.has(basename)) return true;
   // Check every dotted suffix so that 'malware.bat.txt' or 'evil.tar.sh' is

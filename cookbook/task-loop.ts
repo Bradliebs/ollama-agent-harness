@@ -56,7 +56,7 @@
  */
 
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, statSync, openSync, closeSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname, extname } from "node:path";
 import { execFileSync, execSync } from "node:child_process";
 
 // --- Log mirror ---
@@ -294,7 +294,7 @@ const HARNESS_VALIDATE_CMD = process.env.HARNESS_VALIDATE_CMD ?? "npm run typech
  * file_write. Without this, even strong agent models (Kimi K2.5,
  * gpt-oss:120b) get stuck in 30-turn read-everything loops.
  */
-function buildTaskPrompt(task: Task): string {
+function buildTaskPrompt(task: Task, attempts: number = 0): string {
   const anchorBlocks: string[] = [];
   for (const anchor of task.anchors) {
     try {
@@ -324,6 +324,15 @@ function buildTaskPrompt(task: Task): string {
     `Task id: ${task.id}`,
     ``,
   ];
+
+  if (attempts > 0) {
+    const writeTarget = task.target ? `under ${task.target}` : "to complete this task";
+    sections.unshift(
+      `\u26a0\ufe0f RETRY ATTEMPT ${attempts + 1} of ${TASK_RETRY_BUDGET}. Previous attempt(s) produced zero file writes.`,
+      `You MUST call file_write or file_edit at least once ${writeTarget}. Do not just describe what you would do.`,
+      ``,
+    );
+  }
 
   if (anchorBlocks.length > 0) {
     sections.push(
@@ -383,6 +392,11 @@ function buildTaskPrompt(task: Task): string {
 
 /** Hard cap per anchor file. Keeps prompts under typical 32K-128K context limits. */
 const MAX_ANCHOR_BYTES = 24_000;
+
+// Per-task retry budget. "Until complete" means push through a transient
+// empty-output run, not silently rubber-stamp it as done. Three attempts is
+// enough to recover from a model flake without burning unlimited tokens.
+const TASK_RETRY_BUDGET = 3;
 const BRACKNELL_REQUIRED_FILES = ["OUTPUT_MANIFEST.md", "READ_ME_FIRST.md"];
 const BRACKNELL_VISUAL_REPORT_FILE = "ROBYN_VISUAL_REPORT.html";
 
@@ -455,8 +469,8 @@ function collectChangedFilesSince(dir: string, sinceMs: number, maxFiles = 100):
  * HARNESS_TASK_TIMEOUT_MS caps wallclock per task so a runaway model that
  * burns its turn budget doing nothing useful cannot stall the autonomy loop.
  */
-function implementTask(task: Task): void {
-  const prompt = buildTaskPrompt(task);
+function implementTask(task: Task, attempts: number = 0): void {
+  const prompt = buildTaskPrompt(task, attempts);
   // Always pass the prompt via a temp file so anchor-file inlining (which
   // can produce 50+ KB prompts) doesn't hit Windows shell command-line
   // length limits. The CLI's --prompt-file flag handles either source.
@@ -492,8 +506,21 @@ function implementTask(task: Task): void {
   let logFd: number | undefined;
   try { logFd = openSync(LOG_PATH, "a"); } catch { logFd = undefined; }
   const childStdio: ("inherit" | number)[] = ["inherit", logFd ?? "inherit", logFd ?? "inherit"];
+  // Authorise program-file writes into THIS external task's target folder so
+  // the headless agent can actually write code there. The permission engine
+  // reads HARNESS_BUILD_TARGETS; every other external folder keeps its gate.
+  const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  if (task.kind === "external" && task.target) {
+    let buildTargetDir = task.target;
+    try {
+      if (!(existsSync(task.target) && statSync(task.target).isDirectory())) {
+        buildTargetDir = dirname(task.target);
+      }
+    } catch { buildTargetDir = dirname(task.target); }
+    childEnv.HARNESS_BUILD_TARGETS = buildTargetDir;
+  }
   try {
-    execFileSync(process.execPath, cliArgs, { stdio: childStdio, timeout: timeoutMs, killSignal: "SIGKILL" });
+    execFileSync(process.execPath, cliArgs, { stdio: childStdio, timeout: timeoutMs, killSignal: "SIGKILL", env: childEnv });
   } catch (err) {
     const e = err as { signal?: string; status?: number; message?: string };
     if (e?.signal === "SIGKILL" || e?.signal === "SIGTERM") {
@@ -614,6 +641,10 @@ interface LoopState {
   totalDone: number;
   totalFailed: number;
   totalPending?: number;
+  // Per-task retry counters. Persisted so a user who hits Stop then Start
+  // does not silently get a fresh retry budget for a task that has already
+  // failed twice.
+  taskAttempts?: Record<string, number>;
 }
 
 function saveCheckpoint(state: LoopState): void {
@@ -692,7 +723,38 @@ function writeHealthSummary(tasks: Task[], startTime: number, reason: string): v
 // so the commit and logs carry honest provenance rather than a bare "done".
 // Mirrors the harness honesty rule — no "done" without proof a check ran.
 
-export type RatchetCode = "errored" | "validation-failed" | "no-file-changes" | "kept";
+export type RatchetCode = "errored" | "validation-failed" | "no-file-changes" | "no-code-changes" | "kept";
+
+// Extensions that count as real source code for the build-task gate below.
+// A status/spec/analysis .md does NOT satisfy a "create the implementation
+// file" task; an actual .py/.ts/etc. does.
+const CODE_FILE_EXTENSIONS = new Set([
+  ".py", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs", ".java", ".go", ".rs",
+  ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".swift", ".kt",
+  ".scala", ".sh", ".bash", ".ps1", ".sql", ".html", ".css", ".scss", ".vue",
+  ".r", ".m", ".lua", ".dart",
+]);
+
+/** True when a changed-file path (optionally `external:`-prefixed) is source code. */
+export function isCodeFilePath(p: string): boolean {
+  const clean = p.replace(/^external:/, "");
+  return CODE_FILE_EXTENSIONS.has(extname(clean).toLowerCase());
+}
+
+const CODE_INTENT = /\b(implement|implementation|code|function|class|module|script|algorithm|data\s*structure|endpoint|api|\.py|\.js|\.ts)\b/i;
+const DOC_INTENT = /\b(document|documentation|readme|spec|specification|notes?|summary|analy[sz]e|analysis|inventory|guide|plan|report|write-?up)\b/i;
+
+/**
+ * True when an external task's phrasing implies it must produce runnable code
+ * (not just a document). Pure documentation tasks (readme/spec/notes/analysis)
+ * are exempt so they can still be satisfied by a markdown artifact. This gate
+ * stops the agent from "completing" a build task by writing MODEL_STATUS.md
+ * when the .py write was blocked or skipped.
+ */
+export function taskRequiresCode(title: string): boolean {
+  if (DOC_INTENT.test(title)) return false;
+  return CODE_INTENT.test(title);
+}
 
 export interface RatchetInput {
   /** Did the implement step throw before producing verifiable work? */
@@ -701,8 +763,14 @@ export interface RatchetInput {
   validated: boolean;
   /** Per-task success contract; "research" tasks may legitimately change 0 files. */
   kind?: TaskKind;
-  /** Number of in-repo + external files the iteration changed. */
+  /** Number of in-repo files the iteration changed. */
   changedFileCount: number;
+  /** Files changed under the external target folder (kind:external only). */
+  externalChangedFileCount?: number;
+  /** True when this external task must produce code, not just any file. */
+  requiresCode?: boolean;
+  /** Code files changed (in-repo + external); gates code-requiring external tasks. */
+  codeFileCount?: number;
   /** Human label of the check that gates the keep (e.g. the validate command). */
   validateLabel?: string;
 }
@@ -725,6 +793,7 @@ export interface RatchetDecision {
  */
 export function decideRatchet(input: RatchetInput): RatchetDecision {
   const { errored, validated, kind, changedFileCount } = input;
+  const externalChangedFileCount = input.externalChangedFileCount ?? 0;
   const check = input.validateLabel?.trim() || "validation";
   if (errored) {
     return {
@@ -742,22 +811,51 @@ export function decideRatchet(input: RatchetInput): RatchetDecision {
       earnedBy: null,
     };
   }
-  // External tasks routinely write outside PROJECT_DIR (e.g. into H:\Model)
-  // so the in-repo file count is a misleading proxy for "did real work
-  // happen". Treat external like research: validation alone is the verdict.
-  const requiresFileChanges = (kind ?? "code") === "code";
-  if (requiresFileChanges && changedFileCount === 0) {
+  // Code tasks must show in-repo evidence. External tasks must show evidence
+  // somewhere — in-repo OR under the external target folder — otherwise a
+  // silent agent abort would rubber-stamp "done" with zero work to show.
+  // Research is the only kind that may legitimately produce no files.
+  if (kind === "research") {
+    const evidence = `${check} passed (research task \u2014 no file changes required)`;
+    return { outcome: "keep", code: "kept", reason: evidence, earnedBy: evidence };
+  }
+  if (kind === "external") {
+    const totalChanges = changedFileCount + externalChangedFileCount;
+    if (totalChanges === 0) {
+      return {
+        outcome: "revert",
+        code: "no-file-changes",
+        reason: `${check} passed but the external task wrote 0 files (in-repo or external) \u2014 no work to keep`,
+        earnedBy: null,
+      };
+    }
+    // A build task ("create the implementation file") must produce actual code.
+    // Without this, the agent can rubber-stamp "done" by writing a status/spec
+    // .md when the real code write was blocked or skipped.
+    if (input.requiresCode && (input.codeFileCount ?? 0) === 0) {
+      return {
+        outcome: "revert",
+        code: "no-code-changes",
+        reason: `${check} passed but this build task wrote ${totalChanges} file(s), none of them code \u2014 a build task must produce code, not just documents`,
+        earnedBy: null,
+      };
+    }
+    const breakdown = externalChangedFileCount > 0
+      ? `${externalChangedFileCount} external file change(s)`
+      : `${changedFileCount} in-repo file change(s)`;
+    const evidence = `${check} passed with ${breakdown} (external task)`;
+    return { outcome: "keep", code: "kept", reason: evidence, earnedBy: evidence };
+  }
+  // kind === "code" (default)
+  if (changedFileCount === 0) {
     return {
       outcome: "revert",
       code: "no-file-changes",
-      reason: `${check} passed but the task changed 0 files — no work to keep`,
+      reason: `${check} passed but the task changed 0 files \u2014 no work to keep`,
       earnedBy: null,
     };
   }
-  const kindLabel = kind === "external" ? "external task" : "research task";
-  const evidence = requiresFileChanges
-    ? `${check} passed with ${changedFileCount} file change(s)`
-    : `${check} passed (${kindLabel} — no file changes required)`;
+  const evidence = `${check} passed with ${changedFileCount} file change(s)`;
   return { outcome: "keep", code: "kept", reason: evidence, earnedBy: evidence };
 }
 
@@ -771,7 +869,7 @@ export function decideRatchet(input: RatchetInput): RatchetDecision {
  * be covered by stubbing both.
  */
 export interface RalphLoopHooks {
-  implementTask?: (task: Task) => void;
+  implementTask?: (task: Task, attempts?: number) => void;
   validateTask?: (task: Task) => boolean;
 }
 
@@ -809,6 +907,7 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
   // Resume from checkpoint if available (skip in dry-run to keep state pristine)
   const checkpoint = dryRun ? null : loadCheckpoint();
   let iteration = checkpoint ? checkpoint.iteration : 0;
+  const taskAttempts: Record<string, number> = checkpoint?.taskAttempts ? { ...checkpoint.taskAttempts } : {};
   if (checkpoint) {
     console.log(`[Ralph] Resuming from checkpoint — iteration ${checkpoint.iteration}, last task: ${checkpoint.lastTaskId}`);
   }
@@ -850,12 +949,35 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
       console.log(`[Ralph] Loaded ${tasks.length} tasks from ${planPath}`);
     }
 
+    // Dependency gate: these plans are sequential — each step builds on the
+    // previous (scaffold, then implement, then test). The first task that
+    // isn't done is the frontier. If the frontier has PERMANENTLY failed
+    // (retry budget exhausted), every later task would be building on a
+    // missing foundation, so halt here instead of skipping ahead to produce
+    // work that rests on a broken scaffold.
+    const frontier = tasks.find((t) => t.status !== "done");
+    if (frontier && frontier.status === "failed") {
+      const doneCount = tasks.filter((t) => t.status === "done").length;
+      console.log(
+        `[Ralph] \u26d4 Blocked: "${frontier.title}" (${frontier.id}) failed after ${TASK_RETRY_BUDGET} attempts. ` +
+        `Downstream tasks depend on it \u2014 halting instead of building on incomplete work. ` +
+        `${doneCount} task(s) completed before the block.`,
+      );
+      writeHealthSummary(tasks, startTime, `blocked by failed prerequisite: ${frontier.id} (retry budget exhausted)`);
+      return;
+    }
+
     const pending = tasks.find((t) => t.status === "pending");
     if (!pending) {
       const done = tasks.filter((t) => t.status === "done").length;
       const failed = tasks.filter((t) => t.status === "failed").length;
-      console.log(`[Ralph] 🏁 All tasks complete. ${done} done, ${failed} failed.`);
-      writeHealthSummary(tasks, startTime, "all tasks complete");
+      if (failed > 0) {
+        console.log(`[Ralph] 🏁 Loop finished: ${done} done, ${failed} failed. NOT all tasks complete.`);
+        writeHealthSummary(tasks, startTime, `finished with ${failed} permanent failure(s) after retry budget exhausted`);
+      } else {
+        console.log(`[Ralph] 🏁 All tasks complete. ${done} done.`);
+        writeHealthSummary(tasks, startTime, "all tasks complete");
+      }
       return;
     }
 
@@ -882,6 +1004,7 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
       totalDone: tasks.filter((t) => t.status === "done").length,
       totalFailed: tasks.filter((t) => t.status === "failed").length,
       totalPending: tasks.filter((t) => t.status === "pending").length,
+      taskAttempts: { ...taskAttempts },
     });
 
     // Snapshot the git HEAD before each iteration so a failed run can be
@@ -916,6 +1039,7 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
 
     // Implement
     let implementError: unknown = null;
+    const attemptCount = taskAttempts[pending.id] ?? 0;
     try {
       // External tasks touch paths outside the repo. Pre-write a runbook
       // so the loop has a tracked artifact regardless of whether the
@@ -924,7 +1048,7 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
       if (pending.kind === "external") {
         ensureRunbook(pending);
       }
-      doImplement(pending);
+      doImplement(pending, attemptCount);
     } catch (err) {
       implementError = err;
       console.error(`[Ralph] implementTask threw for ${pending.id}:`, err instanceof Error ? err.message : err);
@@ -943,9 +1067,28 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
       afterFiles = [];
     }
     const repoChangedFiles = afterFiles.filter((f) => !beforeFiles.has(f) && !f.startsWith(".forge-"));
-    const externalChangedFiles = isBracknellDeliveryTask(pending)
-      ? collectChangedFilesSince(getBracknellDir(), taskStartedAt).map((filePath) => `external:${filePath}`)
-      : [];
+    // Track files the agent wrote to an output folder OUTSIDE the in-repo
+    // git diff. Two cases need this: (a) any `kind: external` task whose
+    // output lives at `pending.target`, and (b) the Bracknell delivery
+    // task family, which writes to a dedicated folder regardless of kind.
+    // Without case (b), git's untracked-dir aggregation (`?? subdir/`)
+    // would report changedFileCount=0 even when 4 files were just created.
+    const externalChangedFiles: string[] = [];
+    if (isBracknellDeliveryTask(pending)) {
+      externalChangedFiles.push(...collectChangedFilesSince(getBracknellDir(), taskStartedAt).map((p) => `external:${p}`));
+    } else if (pending.kind === "external" && pending.target) {
+      let externalDir: string | null = null;
+      try {
+        externalDir = existsSync(pending.target) && statSync(pending.target).isDirectory()
+          ? pending.target
+          : dirname(pending.target);
+      } catch {
+        externalDir = null;
+      }
+      if (externalDir && existsSync(externalDir)) {
+        externalChangedFiles.push(...collectChangedFilesSince(externalDir, taskStartedAt).map((p) => `external:${p}`));
+      }
+    }
     const changedFiles = [...repoChangedFiles, ...externalChangedFiles];
 
     // Validate (skip if implement crashed; treat as failure)
@@ -955,17 +1098,50 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
     // revert everything else, and record WHICH check earned the keep. The
     // no-op guard (a task that changed zero files is almost certainly a
     // failed run) lives inside decideRatchet, with "research" tasks exempt
-    // since they are scored on validation alone.
+    // since they are scored on validation alone, and "external" tasks
+    // requiring evidence in either the repo OR the external target folder.
+    // Bracknell tasks (kind=undefined but with a known output folder) get
+    // their folder scan folded into the code-task count so untracked-dir
+    // git aggregation does not hide their real file output.
+    const codeTaskEvidenceCount = isBracknellDeliveryTask(pending)
+      ? repoChangedFiles.length + externalChangedFiles.length
+      : repoChangedFiles.length;
     const ratchet = decideRatchet({
       errored: Boolean(implementError),
       validated,
       kind: pending.kind,
-      changedFileCount: changedFiles.length,
+      changedFileCount: codeTaskEvidenceCount,
+      externalChangedFileCount: externalChangedFiles.length,
+      requiresCode: pending.kind === "external" ? taskRequiresCode(pending.title) : false,
+      codeFileCount: repoChangedFiles.filter(isCodeFilePath).length + externalChangedFiles.filter(isCodeFilePath).length,
       validateLabel: HARNESS_VALIDATE_CMD,
     });
     const passed = ratchet.outcome === "keep";
+    // Retry-on-revert: when a task fails but its retry budget is not yet
+    // exhausted, leave it as `pending` so the loop picks it again next
+    // iteration with an escalated prompt (see buildTaskPrompt). Only mark
+    // it `failed` once we have spent the budget. Without this, "Until
+    // complete" would silently mean "until each task is tried once".
+    let nextAttempts = attemptCount;
+    let willRetry = false;
+    if (!passed) {
+      nextAttempts = attemptCount + 1;
+      willRetry = nextAttempts < TASK_RETRY_BUDGET;
+    }
+    if (passed) {
+      delete taskAttempts[pending.id];
+    } else {
+      taskAttempts[pending.id] = nextAttempts;
+    }
+    const persistedStatus: TaskStatus = passed
+      ? "done"
+      : willRetry ? "pending" : "failed";
+
     if (ratchet.code === "no-file-changes") {
-      console.warn(`[Ralph] ⚠️ ${pending.id}: ${ratchet.reason} — treating as failed.`);
+      const verdict = willRetry
+        ? `retrying (attempt ${nextAttempts + 1}/${TASK_RETRY_BUDGET})`
+        : "treating as failed";
+      console.warn(`[Ralph] \u26a0\ufe0f ${pending.id}: ${ratchet.reason} \u2014 ${verdict}.`);
       console.warn(`[Ralph]    Hint: if this task is research-only, add "  - kind: research" under it in the plan.`);
     }
 
@@ -973,7 +1149,7 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
     const freshTasks = parsePlan(planPath);
     const target = freshTasks.find((t) => t.id === pending.id);
     if (target) {
-      target.status = passed ? "done" : "failed";
+      target.status = persistedStatus;
       writePlan(planPath, freshTasks);
     }
 
@@ -982,10 +1158,17 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
       console.log(`[Ralph] ✅ Task ${pending.id} kept — ${ratchet.reason}. Committing ${changedFiles.length} file(s).`);
       if (changedFiles.length > 0) console.log(`[Ralph] Changed files: ${changedFiles.join(", ")}`);
       gitCommit(`chore(autonomy): ${pending.id} — ${pending.title}\n\nRatchet: kept — ${ratchet.earnedBy}`, changedFiles);
+    } else if (willRetry) {
+      // Retry-on-revert. The task is still pending; the loop will pick it
+      // up again next iteration with an escalated prompt. Do not bump
+      // consecutiveFailures/totalFailures — those counters track real
+      // halt-worthy failures, not transient empty-output runs.
+      console.log(`[Ralph] ↻ Task ${pending.id} retrying (attempt ${nextAttempts + 1}/${TASK_RETRY_BUDGET}) — ${ratchet.reason}.`);
+      if (changedFiles.length > 0) console.log(`[Ralph] Changed files before restore: ${changedFiles.join(", ")}`);
     } else {
       consecutiveFailures++;
       totalFailures++;
-      console.log(`[Ralph] ❌ Task ${pending.id} reverted — ${ratchet.reason}.`);
+      console.log(`[Ralph] ❌ Task ${pending.id} reverted — ${ratchet.reason} (retry budget exhausted after ${nextAttempts} attempts).`);
       if (changedFiles.length > 0) console.log(`[Ralph] Changed files before restore: ${changedFiles.join(", ")}`);
 
       // Restore the working tree to the pre-iteration snapshot so the next
@@ -993,29 +1176,55 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
       // model edits and untracked files from the failed iteration would
       // bleed into the next iteration's beforeFiles diff.
       if (snapshotEnabled && preIterationHead) {
+        // Capture the full plan BEFORE reset. git reset --hard wipes any
+        // uncommitted plan edits — including tasks the user just added via
+        // /api/autonomy/plan-from-goal — and re-reading after the reset
+        // would silently drop them all. Restore the full snapshot after.
+        let planSnapshot: Task[] | null = null;
         try {
-          // Drop any uncommitted edits and untracked files the model may
-          // have created. Keep .forge-* (state, debug logs, history) AND
-          // IMPLEMENTATION_PLAN.md: the plan is often untracked between
-          // commits, and a clean that wipes it leaves the next iteration
-          // with no plan to read — an ENOENT that crashes the loop.
+          planSnapshot = parsePlan(planPath);
+        } catch {
+          planSnapshot = null;
+        }
+        let resetOk = false;
+        try {
           execFileSync("git", ["reset", "--hard", preIterationHead], { stdio: "pipe" });
-          execFileSync("git", ["clean", "-fd", "-e", ".forge-*", "-e", "IMPLEMENTATION_PLAN.md"], { stdio: "pipe" });
-          // Re-apply the failed marker to the plan because git reset wiped
-          // the uncommitted plan edit. Without this, the next iteration
-          // would pick the same task again and loop forever.
-          const restoredTasks = parsePlan(planPath);
-          const restoredTarget = restoredTasks.find((t) => t.id === pending.id);
-          if (restoredTarget) {
-            restoredTarget.status = "failed";
-          } else {
-            restoredTasks.push({ ...pending, status: "failed" });
-          }
-          writePlan(planPath, restoredTasks);
-          console.log(`[Ralph] ↻ Snapshot restore: working tree reset to ${preIterationHead.slice(0, 8)}.`);
+          resetOk = true;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          console.warn(`[Ralph] ⚠️ Snapshot restore failed: ${msg}`);
+          console.warn(`[Ralph] ⚠️ Snapshot restore reset failed: ${msg}`);
+        }
+        try {
+          // Drop untracked files the model may have created. Keep .forge-*
+          // (state, debug logs, history) AND IMPLEMENTATION_PLAN.md: the
+          // plan is often untracked between commits. Clean is best-effort
+          // — failure here must NOT abort the plan restore below.
+          execFileSync("git", ["clean", "-fd", "-e", ".forge-*", "-e", "IMPLEMENTATION_PLAN.md"], { stdio: "pipe" });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[Ralph] ⚠️ Snapshot restore clean failed (continuing): ${msg}`);
+        }
+        // Re-apply the full pre-reset plan with the pending task's status
+        // updated. Without this, the next iteration would either re-pick
+        // the same task forever (target still pending) or — worse — see
+        // no pending tasks and exit "all complete" while silently losing
+        // every other task the user planned.
+        if (planSnapshot) {
+          const restored = planSnapshot.map((t) =>
+            t.id === pending.id ? { ...t, status: persistedStatus } : t,
+          );
+          if (!restored.some((t) => t.id === pending.id)) {
+            restored.push({ ...pending, status: persistedStatus });
+          }
+          try {
+            writePlan(planPath, restored);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn(`[Ralph] ⚠️ Snapshot restore plan write failed: ${msg}`);
+          }
+        }
+        if (resetOk) {
+          console.log(`[Ralph] ↻ Snapshot restore: working tree reset to ${preIterationHead.slice(0, 8)}.`);
         }
       }
 
@@ -1034,6 +1243,53 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
       }
     }
 
+    // Restore the working tree on retry too. Half-applied model edits or
+    // untracked files from the failed attempt must not bleed into the
+    // next attempt's beforeFiles diff. The persisted plan status (still
+    // `pending` for retries) is re-applied after the reset.
+    if (!passed && willRetry && snapshotEnabled && preIterationHead) {
+      // Capture the full plan BEFORE reset so user-added pending tasks are
+      // not lost when git reset wipes uncommitted plan edits. See the
+      // permanent-fail branch above for the full failure mode this guards.
+      let planSnapshot: Task[] | null = null;
+      try {
+        planSnapshot = parsePlan(planPath);
+      } catch {
+        planSnapshot = null;
+      }
+      let resetOk = false;
+      try {
+        execFileSync("git", ["reset", "--hard", preIterationHead], { stdio: "pipe" });
+        resetOk = true;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[Ralph] ⚠️ Snapshot restore (retry) reset failed: ${msg}`);
+      }
+      try {
+        execFileSync("git", ["clean", "-fd", "-e", ".forge-*", "-e", "IMPLEMENTATION_PLAN.md"], { stdio: "pipe" });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[Ralph] ⚠️ Snapshot restore (retry) clean failed (continuing): ${msg}`);
+      }
+      if (planSnapshot) {
+        const restored = planSnapshot.map((t) =>
+          t.id === pending.id ? { ...t, status: persistedStatus } : t,
+        );
+        if (!restored.some((t) => t.id === pending.id)) {
+          restored.push({ ...pending, status: persistedStatus });
+        }
+        try {
+          writePlan(planPath, restored);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[Ralph] ⚠️ Snapshot restore (retry) plan write failed: ${msg}`);
+        }
+      }
+      if (resetOk) {
+        console.log(`[Ralph] ↻ Snapshot restore (retry): working tree reset to ${preIterationHead.slice(0, 8)}.`);
+      }
+    }
+
     // Save checkpoint after each iteration
     const elapsedMs = Date.now() - taskStartedAt;
     saveCheckpoint({
@@ -1048,6 +1304,7 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
       totalDone: freshTasks.filter((t) => t.status === "done").length,
       totalFailed: freshTasks.filter((t) => t.status === "failed").length,
       totalPending: freshTasks.filter((t) => t.status === "pending").length,
+      taskAttempts: { ...taskAttempts },
     });
 
     // Append an immutable history record so the UI / scripts can chart

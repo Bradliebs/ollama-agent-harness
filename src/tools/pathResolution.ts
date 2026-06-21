@@ -42,6 +42,39 @@ export function getAllowedExternalPaths(): string[] {
   return [...allowedExternalPaths];
 }
 
+// ─── Autonomous build targets ───────────────────────────────────────
+// Folders explicitly designated as the destination of an autonomous build
+// run. Inside these, the permission engine allows the agent to write program
+// files (.py/.js/.sh/...) without the protected-external-file confirmation —
+// the user chose this folder as the build target, so producing code there is
+// the whole point. Every OTHER allowed-external folder keeps the confirmation
+// gate (so autonomy cannot silently overwrite an unrelated project's scripts).
+// Populated two ways:
+//   • setAutonomousBuildTargets() — in-process callers and unit tests.
+//   • HARNESS_BUILD_TARGETS env (path-delimited) — the autonomy task-loop sets
+//     this when spawning the per-task CLI, so the child process inherits the
+//     authorised target without extra startup wiring.
+let autonomousBuildTargets: string[] = [];
+
+function normaliseBuildTargets(paths: string[]): string[] {
+  const resolved = paths
+    .map((p) => path.resolve(p.trim()))
+    .filter((p) => p.split(path.sep).filter(Boolean).length >= 2);
+  return [...new Set(resolved)];
+}
+
+export function setAutonomousBuildTargets(paths: string[]): void {
+  autonomousBuildTargets = normaliseBuildTargets(paths);
+}
+
+export function getAutonomousBuildTargets(): string[] {
+  const fromEnv = (process.env.HARNESS_BUILD_TARGETS ?? '')
+    .split(path.delimiter)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return normaliseBuildTargets([...autonomousBuildTargets, ...fromEnv]);
+}
+
 /**
  * Resolve the uploads directory. Resolution order:
  *   1. `HARNESS_UPLOADS_DIR` (explicit override; absolute or project-relative)
