@@ -1,3 +1,4 @@
+import { load } from 'cheerio';
 import { wrapUntrusted } from '../safety/untrustedWrap';
 import type { Tool, ToolResult } from '../types';
 
@@ -176,30 +177,29 @@ function truncateForWebRead(text: string): string {
 }
 
 function extractReadableText(html: string): string {
-  let text = html;
+  const $ = load(html);
 
-  // Remove scripts, styles, and head
-  text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
-  text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
-  text = text.replace(/<head[\s\S]*?<\/head>/gi, '');
-  text = text.replace(/<nav[\s\S]*?<\/nav>/gi, '');
-  text = text.replace(/<footer[\s\S]*?<\/footer>/gi, '');
-  text = text.replace(/<header[\s\S]*?<\/header>/gi, '');
+  // Remove non-content elements
+  $('script, style, head, nav, footer, header, noscript, iframe, svg, form, aside').remove();
 
-  // Convert common elements to text equivalents
-  text = text.replace(/<br\s*\/?>/gi, '\n');
-  text = text.replace(/<\/p>/gi, '\n\n');
-  text = text.replace(/<\/div>/gi, '\n');
-  text = text.replace(/<\/li>/gi, '\n');
-  text = text.replace(/<\/h[1-6]>/gi, '\n\n');
-  text = text.replace(/<h[1-6][^>]*>/gi, '\n## ');
-  text = text.replace(/<li[^>]*>/gi, '• ');
+  // Preserve structural markers in the extracted text
+  $('br').replaceWith('\n');
+  $('h1, h2, h3, h4, h5, h6').each((_, el) => {
+    $(el).prepend('\n## ').append('\n\n');
+  });
+  $('li').each((_, el) => {
+    $(el).prepend('• ').append('\n');
+  });
+  $('p, div').each((_, el) => {
+    $(el).append('\n');
+  });
 
-  // Remove all remaining HTML tags
-  text = text.replace(/<[^>]*>/g, '');
+  const bodyText = $('body').text();
+  let text = bodyText.length > 0 ? bodyText : $.root().text();
 
-  // Decode HTML entities
-  text = decodeHtmlEntities(text);
+  // Strip null bytes and C0/DEL control chars (preserve tab/newline/CR) so
+  // invisible bytes cannot be smuggled into snippets shown in the UI.
+  text = text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
 
   // Clean up whitespace
   text = text.replace(/[ \t]+/g, ' ');
