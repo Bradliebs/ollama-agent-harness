@@ -58,6 +58,13 @@
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, statSync, openSync, closeSync } from "node:fs";
 import { join, dirname, extname } from "node:path";
 import { execFileSync, execSync } from "node:child_process";
+import {
+  classifyContinuation,
+  recordContinuation,
+  readContinuationState,
+  writeContinuationRequest,
+  type LoopEndReason,
+} from "../src/core/continuation";
 
 // --- Log mirror ---
 //
@@ -739,6 +746,64 @@ function writeHealthSummary(tasks: Task[], startTime: number, reason: string): v
   }
 }
 
+// --- Cross-loop continuation seam (Phase 4) ---
+//
+// Default OFF. When HARNESS_CONTINUATION=1, a non-clean halt with remaining
+// work writes a bounded continuation request (state.json + request.json under
+// .harness/continuation) instead of silently stranding the leftover tasks. An
+// outer runner (or the user) consumes request.json to start the next bounded
+// loop. A meta-budget (HARNESS_MAX_CONTINUATIONS, default 2) caps how many
+// follow-on loops a lineage can ever spawn, so a perpetually-failing task can
+// never drive an unbounded retry chain. Best-effort: never throws into the
+// loop's halt path.
+function maybeRequestContinuation(tasks: Task[], endReason: LoopEndReason, planPath: string): void {
+  if (process.env.HARNESS_CONTINUATION !== "1") return;
+  try {
+    const projectDir = process.cwd();
+    const parsedMax = parseInt(process.env.HARNESS_MAX_CONTINUATIONS ?? "2", 10);
+    const maxContinuations = Number.isFinite(parsedMax) ? Math.max(0, parsedMax) : 2;
+    const state = readContinuationState(projectDir, maxContinuations);
+    const decision = classifyContinuation({
+      endReason,
+      tasks,
+      continuationsUsed: state.continuationsUsed,
+      maxContinuations,
+    });
+    if (decision.action !== "continue") {
+      console.log(`[Ralph] 🔁 Continuation: stop — ${decision.reason}`);
+      return;
+    }
+    // Reset permanently-failed tasks back to pending in the plan file so a
+    // fresh bounded loop actually makes progress on re-run (done tasks are
+    // preserved). Without this the next run would re-halt on the same failed
+    // prerequisite. The meta-budget caps how many times this can happen.
+    const resetPlan = tasks.map((t) =>
+      t.status === "failed" ? { ...t, status: "pending" as const } : t,
+    );
+    try {
+      writePlan(planPath, resetPlan);
+    } catch (err) {
+      console.warn(`[Ralph] ⚠️ Continuation plan reset failed: ${formatThrown(err)}`);
+    }
+    const next = recordContinuation(projectDir, maxContinuations);
+    writeContinuationRequest(projectDir, {
+      createdAt: new Date().toISOString(),
+      endReason,
+      reason: decision.reason,
+      continuationsUsed: next.continuationsUsed,
+      maxContinuations,
+      remainingTaskIds: decision.remainingTasks.map((t) => t.id),
+      followOnTasks: decision.followOnTasks,
+    });
+    console.log(
+      `[Ralph] 🔁 Continuation requested (${next.continuationsUsed}/${maxContinuations}): ` +
+      `${decision.followOnTasks.length} task(s) queued for a follow-on loop. ${decision.reason}`,
+    );
+  } catch (err) {
+    console.warn(`[Ralph] ⚠️ Continuation seam failed (ignored): ${formatThrown(err)}`);
+  }
+}
+
 // --- Ratchet Decision ---
 //
 // AutoResearch-style keep/revert gate for one autonomy iteration. A task is
@@ -973,6 +1038,7 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
       const budgetSec = Math.round(timeBudgetMs / 1000);
       console.warn(`[Ralph] 💰 Time budget exhausted: ${elapsedSec}s > ${budgetSec}s. Halting.`);
       writeHealthSummary(tasks, startTime, `time budget exhausted (${elapsedSec}s of ${budgetSec}s)`);
+      maybeRequestContinuation(tasks, "time-budget-exhausted", planPath);
       return;
     }
 
@@ -998,6 +1064,7 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
         `${doneCount} task(s) completed before the block.`,
       );
       writeHealthSummary(tasks, startTime, `blocked by failed prerequisite: ${frontier.id} (retry budget exhausted)`);
+      maybeRequestContinuation(tasks, "blocked-by-failed-prerequisite", planPath);
       return;
     }
 
@@ -1008,6 +1075,7 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
       if (failed > 0) {
         console.log(`[Ralph] 🏁 Loop finished: ${done} done, ${failed} failed. NOT all tasks complete.`);
         writeHealthSummary(tasks, startTime, `finished with ${failed} permanent failure(s) after retry budget exhausted`);
+        maybeRequestContinuation(tasks, "finished-with-failures", planPath);
       } else {
         console.log(`[Ralph] 🏁 All tasks complete. ${done} done.`);
         writeHealthSummary(tasks, startTime, "all tasks complete");
@@ -1273,6 +1341,7 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
       if (totalFailures >= 5) {
         console.error("[Ralph] 🛑 5+ total failures — halting autonomous execution.");
         writeHealthSummary(freshTasks, startTime, "halted — too many failures");
+        maybeRequestContinuation(freshTasks, "finished-with-failures", planPath);
         return;
       }
     }
@@ -1360,6 +1429,7 @@ export function ralphLoop(planPath: string, maxIterations: number = 10, dryRun: 
   const tasks = parsePlan(planPath);
   console.log(`[Ralph] ⚠️ Reached max iterations (${maxIterations}). Stopping.`);
   writeHealthSummary(tasks, startTime, `max iterations reached (${maxIterations})`);
+  maybeRequestContinuation(tasks, "iteration-budget-exhausted", planPath);
 }
 
 // --- Entry Point ---

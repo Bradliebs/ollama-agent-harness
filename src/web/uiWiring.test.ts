@@ -58,6 +58,7 @@ const automationRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'automa
 const reviewQueueRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'reviewQueueRoutes.ts'), 'utf-8');
 const browserHardeningRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'browserHardeningRoutes.ts'), 'utf-8');
 const workingMemoryRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'workingMemoryRoutes.ts'), 'utf-8');
+const atlasRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'atlasRoutes.ts'), 'utf-8');
 
 const inlineGlobals = new Set([
   'alert',
@@ -278,6 +279,7 @@ describe('web UI wiring', () => {
       rag: 'ragView',
       tools: 'toolsDashboardView',
       runs: 'runsView',
+      atlas: 'atlasView',
       workflows: 'workflowsView',
       mycelium: 'myceliumView',
       promises: 'promisesView',
@@ -357,7 +359,8 @@ describe('web UI wiring', () => {
     const reviewQueueRouterRoutes = [...reviewQueueRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const browserHardeningRouterRoutes = [...browserHardeningRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const workingMemoryRouterRoutes = [...workingMemoryRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
-    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes, ...promptsRouterRoutes, ...eventRouterRoutes, ...doneStateRouterRoutes, ...codeIntelRouterRoutes, ...myceliumRouterRoutes, ...traceRouterRoutes, ...snapshotRouterRoutes, ...historyRouterRoutes, ...fileRedirectRouterRoutes, ...documentRouterRoutes, ...benchmarkRouterRoutes, ...squadRouterRoutes, ...runtimeCostRouterRoutes, ...triggerRouterRoutes, ...artifactRouterRoutes, ...subagentRouterRoutes, ...sessionRouterRoutes, ...memoryRouterRoutes, ...ragRouterRoutes, ...serviceRouterRoutes, ...skillRouterRoutes, ...workflowRouterRoutes, ...webhookRouterRoutes, ...agentRouterRoutes, ...fileBrowseRouterRoutes, ...assetRouterRoutes, ...nervousRouterRoutes, ...synthesisStatsRouterRoutes, ...aboutRouterRoutes, ...budgetRouterRoutes, ...connectorRouterRoutes, ...saveOutputRouterRoutes, ...miscRouterRoutes, ...runsRouterRoutes, ...learningRouterRoutes, ...mcpRouterRoutes, ...uploadsRouterRoutes, ...teammateRouterRoutes, ...toolsRouterRoutes, ...curatorRouterRoutes, ...evalsRouterRoutes, ...automationRouterRoutes, ...reviewQueueRouterRoutes, ...workingMemoryRouterRoutes, ...browserHardeningRouterRoutes]);
+    const atlasRouterRoutes = [...atlasRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes, ...promptsRouterRoutes, ...eventRouterRoutes, ...doneStateRouterRoutes, ...codeIntelRouterRoutes, ...myceliumRouterRoutes, ...traceRouterRoutes, ...snapshotRouterRoutes, ...historyRouterRoutes, ...fileRedirectRouterRoutes, ...documentRouterRoutes, ...benchmarkRouterRoutes, ...squadRouterRoutes, ...runtimeCostRouterRoutes, ...triggerRouterRoutes, ...artifactRouterRoutes, ...subagentRouterRoutes, ...sessionRouterRoutes, ...memoryRouterRoutes, ...ragRouterRoutes, ...serviceRouterRoutes, ...skillRouterRoutes, ...workflowRouterRoutes, ...webhookRouterRoutes, ...agentRouterRoutes, ...fileBrowseRouterRoutes, ...assetRouterRoutes, ...nervousRouterRoutes, ...synthesisStatsRouterRoutes, ...aboutRouterRoutes, ...budgetRouterRoutes, ...connectorRouterRoutes, ...saveOutputRouterRoutes, ...miscRouterRoutes, ...runsRouterRoutes, ...learningRouterRoutes, ...mcpRouterRoutes, ...uploadsRouterRoutes, ...teammateRouterRoutes, ...toolsRouterRoutes, ...curatorRouterRoutes, ...evalsRouterRoutes, ...automationRouterRoutes, ...reviewQueueRouterRoutes, ...workingMemoryRouterRoutes, ...browserHardeningRouterRoutes, ...atlasRouterRoutes]);
     const uiRoutes = [...new Set(extractFetchExpressions(appJs).map(normalizeUiFetchPath).filter((route): route is string => Boolean(route)))].sort();
 
     // A UI route like '/api/foo/:param' is satisfied either by an exact match

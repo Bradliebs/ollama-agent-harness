@@ -27,8 +27,8 @@ export interface GoalRoutesDeps {
   projectDir: string;
   /** Returns true if the request is authorised; should send 401 + return false otherwise. */
   requireAuth?: (req: express.Request, res: express.Response, actionLabel: string) => boolean;
-  /** Builds an IterationRunner from the POST /start body. Throw to reject the request. */
-  makeRunner: (body: unknown, goalId: string) => IterationRunner;
+  /** Builds an IterationRunner from the POST /start body. May be async. Throw to reject the request. */
+  makeRunner: (body: unknown, goalId: string) => IterationRunner | Promise<IterationRunner>;
   /** Override clock for tests. */
   now?: () => Date;
   /** Override the loop generator (for tests). Defaults to runGoalLoop. */
@@ -180,7 +180,7 @@ export function createGoalRouter(deps: GoalRoutesDeps): express.Router {
 
     let runner: IterationRunner;
     try {
-      runner = deps.makeRunner(req.body, goalId);
+      runner = await deps.makeRunner(req.body, goalId);
     } catch (err) {
       sendError(res, 400, err);
       return;

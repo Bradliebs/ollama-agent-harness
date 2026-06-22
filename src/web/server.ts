@@ -71,6 +71,7 @@ import { createAssetRouter } from './assetRoutes';
 import { createNervousRouter } from './nervousRoutes';
 import { createSynthesisStatsRouter } from './synthesisStatsRoutes';
 import { createAboutRouter } from './aboutRoutes';
+import { createAtlasRouter } from './atlasRoutes';
 import { createBudgetRouter } from './budgetRoutes';
 import { createConnectorRouter } from './connectorRoutes';
 import { createSaveOutputRouter } from './saveOutputRoutes';
@@ -122,6 +123,7 @@ import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adapt
 import { loadModelReliability, recordModelOutcome, modelReliabilityScore } from '../core/modelReliability';
 import { appendRewardEntry } from '../core/rewardLedger';
 import { startNewSession, onSessionEnd, getEvolvedPrompt, recordSessionAutoContinue, LearningRecorder } from '../learning/engine';
+import { getApprovedAutonomyPrompt } from '../learning/autonomyPrompt';
 import { listEvalTraceRuns, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun } from '../learning/evalTrace';
 import { appendLearningCandidate, extractLearningCandidate, listLearningCandidates, listReviewedLearningCandidates } from '../learning/sessionLearning';
 import { createSubagentTool } from '../agents/subagent';
@@ -485,7 +487,7 @@ function requireAuditReason(
 app.use(createGoalRouter({
   projectDir: PROJECT_DIR,
   requireAuth: (req, res, label) => requireEscalationAuth(req, res, label),
-  makeRunner: (body: unknown, _goalId: string): IterationRunner => {
+  makeRunner: async (body: unknown, _goalId: string): Promise<IterationRunner> => {
     const b = (body && typeof body === 'object') ? body as Record<string, unknown> : {};
     const kind = typeof b.runner === 'string' ? b.runner : 'shell';
     if (kind === 'shell') {
@@ -505,9 +507,18 @@ app.use(createGoalRouter({
       // selected model unless the request body overrides it.
       const model = typeof b.model === 'string' && b.model.trim().length > 0 ? b.model : currentModel;
       if (!model) throw new Error("'queryloop' runner requires a selected model (no current model set)");
-      const systemPrompt = typeof b.systemPrompt === 'string' && b.systemPrompt.length > 0
+      const baseSystemPrompt = typeof b.systemPrompt === 'string' && b.systemPrompt.length > 0
         ? b.systemPrompt
         : (systemPromptOverride || 'You are an autonomy agent. Make concrete progress on the active goal each iteration. The outer loop will run verification after you stop.');
+      // Phase 2: optionally apply the Phase-3-gated evolved prompt to unattended
+      // runs. Default OFF (env unset) => systemPrompt is byte-identical to
+      // baseSystemPrompt, so the default autonomy path is unchanged.
+      const gated = await getApprovedAutonomyPrompt({
+        projectDir: PROJECT_DIR,
+        basePrompt: baseSystemPrompt,
+        applyEvolvedPrompt: process.env.HARNESS_APPLY_EVOLVED_PROMPT_AUTONOMY === '1',
+      });
+      const systemPrompt = gated.prompt;
       const client = webRuntime.createClient(model, ollamaHost);
       const tools = webRuntime.getTools();
       return makeQueryLoopRunner({
@@ -1462,6 +1473,11 @@ app.use('/api', (req, res, next) => {
 // readReleaseProvenance, readReleaseManifest) + RELEASE_PROVENANCE_PATH were
 // HTTP-only — extracted to ./aboutRoutes.ts. Router only needs harnessRoot.
 app.use(createAboutRouter({ harnessRoot: HARNESS_ROOT }));
+
+// Project Atlas — read-only structural/historical map of the workspace
+// (which task built which file, when it last changed, current plan status).
+// Synthesizes IMPLEMENTATION_PLAN.md + .forge-history.jsonl; never writes.
+app.use(createAtlasRouter({ projectDir: PROJECT_DIR }));
 
 // Surface the autonomy loop's checkpoint so the UI can show a live progress
 // banner. Returns 204 when no autonomy run has occurred (file absent), 200
