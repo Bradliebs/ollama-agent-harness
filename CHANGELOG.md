@@ -2,7 +2,7 @@
 title: Ollama Agent Harness Changelog
 description: Release notes generated from local RPI changes logs for Ollama Agent Harness
 author: Bradliebs
-ms.date: 2026-06-13
+ms.date: 2026-06-22
 ms.topic: reference
 keywords:
 	- ollama
@@ -11,11 +11,38 @@ keywords:
 estimated_reading_time: 18
 ---
 
-## Ollama Agent Harness v0.6.6 (unreleased)
+## Ollama Agent Harness v0.6.6
 
 A governance pass beside the product path, plus operator surfaces for what the
 agent learned while you were away. Shadow-first end-to-end: no default behaviour
 changes until a human approves.
+
+### Autonomy surfaces and verification
+
+The latest additions are additive and default-off, so the product path is
+unchanged until you opt in.
+
+- **Project Atlas** (`src/web/atlasRoutes.ts`): a read-only repository map served
+  from `GET /api/atlas/map`. No write paths.
+- **Prompt auto-gate** (`src/experiments/autoGate.ts`): a fail-closed gate for
+  promoting evolved prompts — a candidate is rejected unless it clears the bar.
+- **Autonomy prompt learning** (`src/learning/autonomyPrompt.ts`,
+  `src/learning/promptApproval.ts`): evolved prompts are applied in the autonomy
+  loop only behind `HARNESS_APPLY_EVOLVED_PROMPT_AUTONOMY` (default off).
+- **Bounded cross-loop continuation** (`src/core/continuation.ts`): opt-in
+  continuation across task-loop halts behind `HARNESS_CONTINUATION` (default
+  off), capped by `HARNESS_MAX_CONTINUATIONS` (default 2).
+- **Pluggable verification panel + surgical critic** (`src/verification/panel.ts`,
+  `src/verification/critic.ts`, `src/verification/builtinSignals.ts`,
+  `src/verification/metrics.ts`): opt-in signal panel attachment on the
+  heuristic verifier and a surgical critic for remediation steps.
+- **Per-role model resolution** (`src/models/roleRouting.ts`): resolve a
+  distinct model per role.
+- **Git-worktree helper** (`src/agents/worktree.ts`): isolate parallel subagents
+  in separate worktrees.
+- **Tool refinements**: `web_read` extracts readable text with cheerio
+  (`src/tools/webSearchTool.ts`), and desktop input replay adds mouse actions
+  (`src/tools/desktopInputTools.ts`).
 
 ### Governed Agent Loop v1
 
