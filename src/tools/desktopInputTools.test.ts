@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { createCapabilityGrant, type CapabilityGrant } from '../permissions/capabilities';
 import * as desktopCapture from './desktopTools';
-import { DesktopInputReplayTool, sanitizeDesktopInputActions } from './desktopInputTools';
+import { DesktopInputReplayTool, sanitizeDesktopInputActions, buildLinuxMouseCommand, buildMacMouseCommand, buildWindowsMouseScript } from './desktopInputTools';
 
 describe('DesktopInputReplayTool', () => {
   let projectDir: string;
@@ -124,6 +124,66 @@ describe('DesktopInputReplayTool', () => {
 
     expect(actions).toHaveLength(10);
     expect(actions[0]).toEqual({ type: 'wait', ms: 2000 });
+  });
+
+  it('sanitizes mouse actions with coordinate, button, and count bounds', () => {
+    const actions = sanitizeDesktopInputActions([
+      { type: 'move', x: 99999, y: -5 },
+      { type: 'click', x: 100, y: 200, button: 'RIGHT', count: 9 },
+      { type: 'click' },
+      { type: 'drag', x: 10, y: 20, x2: 30, y2: 40 },
+      { type: 'scroll', amount: 99 },
+      { type: 'scroll', amount: 0 },
+    ]);
+
+    expect(actions).toEqual([
+      { type: 'move', x: 20000, y: 0 },
+      { type: 'click', x: 100, y: 200, button: 'right', count: 3 },
+      { type: 'click', x: null, y: null, button: 'left', count: 1 },
+      { type: 'drag', x1: 10, y1: 20, x2: 30, y2: 40, button: 'left' },
+      { type: 'scroll', x: null, y: null, amount: 20 },
+    ]);
+  });
+
+  it('previews mouse actions readably', async () => {
+    const result = await DesktopInputReplayTool.execute({
+      actions: [
+        { type: 'move', x: 10, y: 20 },
+        { type: 'click', x: 30, y: 40, button: 'right', count: 2 },
+        { type: 'drag', x: 1, y: 2, x2: 3, y2: 4 },
+        { type: 'scroll', amount: -3 },
+      ],
+    });
+
+    expect(result.output).toContain('1. move to (10, 20)');
+    expect(result.output).toContain('2. 2x right click at (30, 40)');
+    expect(result.output).toContain('3. left drag (1, 2) -> (3, 4)');
+    expect(result.output).toContain('4. scroll down 3');
+  });
+
+  it('executes a granted mouse click and captures evidence', async () => {
+    await writeSettings({ capabilityGrants: [makeDesktopGrant()], killSwitch: { active: false, reason: '' } });
+
+    const result = await DesktopInputReplayTool.execute({ confirm: true, actions: [{ type: 'click', x: 100, y: 200, button: 'right' }] });
+
+    expect(result.success).toBe(true);
+    expect(execSpy).toHaveBeenCalledTimes(1);
+    expect(screenshotSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('builds platform-native mouse commands from sanitized actions', () => {
+    expect(buildLinuxMouseCommand({ type: 'move', x: 10, y: 20 })).toBe('xdotool mousemove 10 20');
+    expect(buildLinuxMouseCommand({ type: 'click', x: 100, y: 200, button: 'right', count: 2 })).toBe('xdotool mousemove 100 200 click --repeat 2 3');
+    expect(buildLinuxMouseCommand({ type: 'click', x: null, y: null, button: 'left', count: 1 })).toBe('xdotool click --repeat 1 1');
+    expect(buildLinuxMouseCommand({ type: 'drag', x1: 1, y1: 2, x2: 3, y2: 4, button: 'left' })).toBe('xdotool mousemove 1 2 mousedown 1 mousemove 3 4 mouseup 1');
+    expect(buildLinuxMouseCommand({ type: 'scroll', x: null, y: null, amount: -3 })).toBe('xdotool click --repeat 3 5');
+
+    expect(buildMacMouseCommand({ type: 'click', x: 5, y: 6, button: 'left', count: 1 })).toBe('cliclick c:5,6');
+    expect(buildMacMouseCommand({ type: 'click', x: 5, y: 6, button: 'left', count: 2 })).toBe('cliclick dc:5,6');
+
+    const winClick = buildWindowsMouseScript({ type: 'click', x: 7, y: 8, button: 'left', count: 1 });
+    expect(winClick).toContain('System.Drawing.Point(7, 8)');
+    expect(winClick).toContain('mouse_event(0x0002,0,0,0,0)');
   });
 
   async function writeSettings(settings: Record<string, unknown>): Promise<void> {
