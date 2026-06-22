@@ -539,14 +539,41 @@ function implementTask(task: Task, attempts: number = 0): void {
  * Override with HARNESS_VALIDATE_CMD (e.g. "npm test" or "npm run typecheck && npm test").
  */
 function validateTask(task: Task): boolean {
-  // External and research tasks are inventory/runbook/discovery work; their
-  // success is judged by the artifact they produced (runbook, external file,
-  // research note), not by whether the workspace's TypeScript compiles. A
-  // user's H:\Model folder has no tsconfig, so running `npm run typecheck`
-  // against it always fails and reverts otherwise-successful work.
-  if (task.kind === "external" || task.kind === "research") {
+  // Research tasks are inventory/runbook/discovery work; their success is
+  // judged by the artifact they produced (research note), not by whether the
+  // workspace's TypeScript compiles.
+  if (task.kind === "research") {
     console.log(`[Ralph] Skipping ${HARNESS_VALIDATE_CMD} for ${task.kind} task ${task.id} \u2014 artifact is the verdict.`);
     return true;
+  }
+  // External tasks write into a folder that usually has no tsconfig, so the
+  // in-repo HARNESS_VALIDATE_CMD cannot judge them. By default their artifact
+  // is the verdict. But if the operator supplies HARNESS_EXTERNAL_VALIDATE_CMD,
+  // run it IN THE TARGET FOLDER so produced code is actually executed (e.g.
+  // "python -m py_compile model.py" or "node --check out.js") instead of being
+  // rubber-stamped just because a file appeared.
+  if (task.kind === "external") {
+    const externalCmd = process.env.HARNESS_EXTERNAL_VALIDATE_CMD?.trim();
+    if (!externalCmd) {
+      console.log(`[Ralph] Skipping validation for external task ${task.id} \u2014 artifact is the verdict (set HARNESS_EXTERNAL_VALIDATE_CMD to execute it).`);
+      return true;
+    }
+    let cwd = process.cwd();
+    if (task.target && existsSync(task.target)) {
+      try {
+        cwd = statSync(task.target).isDirectory() ? task.target : dirname(task.target);
+      } catch {
+        cwd = dirname(task.target);
+      }
+    }
+    console.log(`[Ralph] Validating external task ${task.id} via: ${externalCmd} (cwd: ${cwd})`);
+    try {
+      execSync(externalCmd, { stdio: "inherit", cwd });
+      return true;
+    } catch {
+      console.warn(`[Ralph] External validation failed for ${task.id} \u2014 reverting unproven work.`);
+      return false;
+    }
   }
   if (isBracknellDeliveryTask(task)) {
     const bracknellDir = getBracknellDir();
@@ -743,16 +770,23 @@ export function isCodeFilePath(p: string): boolean {
 
 const CODE_INTENT = /\b(implement|implementation|code|function|class|module|script|algorithm|data\s*structure|endpoint|api|\.py|\.js|\.ts)\b/i;
 const DOC_INTENT = /\b(document|documentation|readme|spec|specification|notes?|summary|analy[sz]e|analysis|inventory|guide|plan|report|write-?up)\b/i;
+// Pure-verification phrasing: "run the suite and confirm", "verify the build",
+// "smoke-test the screener". These tasks legitimately produce no NEW code — the
+// artifact is the run's verdict (a report/log), so they must not be force-failed
+// by the build-task "must produce code" gate.
+const VERIFY_INTENT = /\b(verify|verifies|verified|verification|confirm|confirms|confirmed|smoke[-\s]?test|sanity[-\s]?check|re-?run|rerun)\b/i;
 
 /**
  * True when an external task's phrasing implies it must produce runnable code
  * (not just a document). Pure documentation tasks (readme/spec/notes/analysis)
- * are exempt so they can still be satisfied by a markdown artifact. This gate
- * stops the agent from "completing" a build task by writing MODEL_STATUS.md
- * when the .py write was blocked or skipped.
+ * and pure verification tasks (verify/confirm/smoke-test a run) are exempt so
+ * they can still be satisfied by a markdown/report artifact. This gate stops
+ * the agent from "completing" a build task by writing MODEL_STATUS.md when the
+ * .py write was blocked or skipped.
  */
 export function taskRequiresCode(title: string): boolean {
   if (DOC_INTENT.test(title)) return false;
+  if (VERIFY_INTENT.test(title)) return false;
   return CODE_INTENT.test(title);
 }
 

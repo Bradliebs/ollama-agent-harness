@@ -4,6 +4,13 @@ import type { Tool, ToolResult } from '../types';
 import { loadSkillsFromDirs, matchSkillTrigger, parseSkillFile, type SkillDefinition } from '../extensibility/skillLoader';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
 import { expandSkillTemplateVars } from '../extensibility/skillTemplate';
+import {
+  buildRuntimeSkillFile,
+  sanitizeSkillText,
+  sanitizeSkillBody,
+  sanitizeSkillList,
+  snapshotSkillHistory,
+} from '../extensibility/skillAuthoring';
 
 let cachedSkills: SkillDefinition[] | null = null;
 let cachedSkillsPromise: Promise<SkillDefinition[]> | null = null;
@@ -227,31 +234,25 @@ export const CreateSkillTool: Tool = {
   isReadOnly: false,
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
     const name = input.name as string;
-    const description = input.description as string;
-    const domain = (input.domain as string) ?? 'general';
-    const triggers = (input.triggers as string[]) ?? [];
-    const instructions = input.instructions as string;
 
     // Validate name
     if (!/^[a-z0-9-]+$/.test(name)) {
       return { success: false, output: 'Skill name must be kebab-case (lowercase, hyphens only)', error: 'invalid name' };
     }
 
-    // Build SKILL.md content
-    const triggerYaml = triggers.length > 0
-      ? `triggers:\n${triggers.map(t => `  - "${t}"`).join('\n')}\n`
-      : '';
-
-    const content = `---
-name: "${name}"
-description: "${description}"
-domain: "${domain}"
-confidence: "medium"
-source: "self-created by agent"
-${triggerYaml}---
-
-${instructions}
-`;
+    // Author the SKILL.md through the SAME sanitization, frontmatter escaping,
+    // and length caps the REST/UI path uses (src/extensibility/skillAuthoring),
+    // so a model-authored skill meets the same bar as a hand-edited one — no
+    // YAML injection via unescaped quotes/newlines, and bounded field sizes.
+    const content = buildRuntimeSkillFile({
+      name,
+      description: sanitizeSkillText(input.description, 'Describe what this skill does.', 500),
+      domain: sanitizeSkillText(input.domain, 'general', 120),
+      triggers: sanitizeSkillList(input.triggers, 20, 120),
+      whenToUse: '',
+      requiredTools: [],
+      body: sanitizeSkillBody(input.instructions),
+    });
 
     // Write to skills directory
     const dir = skillsDir || path.join(process.cwd(), '.harness', 'skills');
@@ -260,6 +261,10 @@ ${instructions}
 
     try {
       await fs.mkdir(skillDir, { recursive: true });
+      // Snapshot the previous version before clobbering it, matching the REST
+      // path, so an agent overwrite of an existing skill stays recoverable.
+      const previous = await fs.readFile(skillPath, 'utf-8').catch(() => '');
+      if (previous && previous !== content) await snapshotSkillHistory(dir, name, previous);
       await fs.writeFile(skillPath, content, 'utf-8');
 
       // Invalidate cache so the new skill is available immediately

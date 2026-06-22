@@ -59,6 +59,49 @@ function loadGraph(projectDir: string): CodeGraph | { error: string } {
   }
 }
 
+interface StalenessInfo {
+  status: 'fresh' | 'stale' | 'unknown';
+  changed: number;
+  deleted: number;
+  total: number;
+  builtAt: string;
+}
+
+// Cheap staleness check: compare each tracked file's mtime against the graph's
+// build time. We deliberately use mtime (one stat per file) rather than
+// re-hashing every file on each query — the goal is a fast "this may be out of
+// date" signal, not a precise diff. Over-warning is acceptable: a false stale
+// just prompts a cheap rebuild, whereas a silent stale graph misleads the agent.
+function computeStaleness(projectDir: string, g: CodeGraph): StalenessInfo {
+  const builtAtMs = Date.parse(g.builtAt);
+  const total = g.files?.length ?? 0;
+  if (!Number.isFinite(builtAtMs) || total === 0) {
+    return { status: 'unknown', changed: 0, deleted: 0, total, builtAt: g.builtAt };
+  }
+  let changed = 0;
+  let deleted = 0;
+  for (const f of g.files) {
+    const abs = path.isAbsolute(f.path) ? f.path : path.join(projectDir, f.path);
+    try {
+      const st = fs.statSync(abs);
+      if (st.mtimeMs > builtAtMs) changed++;
+    } catch {
+      deleted++;
+    }
+  }
+  return { status: changed + deleted > 0 ? 'stale' : 'fresh', changed, deleted, total, builtAt: g.builtAt };
+}
+
+function stalenessBanner(s: StalenessInfo): string {
+  if (s.status !== 'stale') return '';
+  const missing = s.deleted ? `, ${s.deleted} missing` : '';
+  return (
+    `⚠️ code-graph may be STALE: ${s.changed} of ${s.total} tracked file(s) changed${missing} ` +
+    `since it was built (${s.builtAt}). Results below may be out of date — ` +
+    `rebuild with \`node scripts/build-code-graph.js\`.\n\n`
+  );
+}
+
 function findNodesByName(g: CodeGraph, name: string): GraphNode[] {
   return g.nodes.filter((n) => n.name === name && n.kind !== 'file');
 }
@@ -216,20 +259,23 @@ export function createCodeGraphTool(projectDir: string): Tool {
         return { success: false, output: `code_graph: ${loaded.error}`, error: loaded.error };
       }
 
+      const banner = stalenessBanner(computeStaleness(projectDir, loaded));
+      const ok = (output: string): ToolResult => ({ success: true, output: banner + output });
+
       switch (operation) {
         case 'callers':
           if (!symbol) return { success: false, output: 'code_graph callers: symbol is required', error: 'missing symbol' };
-          return { success: true, output: opCallers(loaded, symbol, limit) };
+          return ok(opCallers(loaded, symbol, limit));
         case 'callees':
           if (!symbol) return { success: false, output: 'code_graph callees: symbol is required', error: 'missing symbol' };
-          return { success: true, output: opCallees(loaded, symbol, limit) };
+          return ok(opCallees(loaded, symbol, limit));
         case 'exports':
-          return { success: true, output: opExports(loaded, fragment) };
+          return ok(opExports(loaded, fragment));
         case 'around':
           if (!symbol) return { success: false, output: 'code_graph around: symbol is required', error: 'missing symbol' };
-          return { success: true, output: opAround(loaded, symbol, depth, limit) };
+          return ok(opAround(loaded, symbol, depth, limit));
         case 'stats':
-          return { success: true, output: opStats(loaded) };
+          return ok(opStats(loaded));
         default:
           return {
             success: false,

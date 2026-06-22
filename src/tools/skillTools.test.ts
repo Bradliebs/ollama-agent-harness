@@ -37,6 +37,28 @@ describe('skill tools', () => {
     await expect(fs.readFile(path.join(skillsDir, 'fresh-skill', 'SKILL.md'), 'utf-8')).resolves.toContain('Fresh skill for visibility tests');
   });
 
+  it('escapes quotes/newlines in created skill frontmatter so it cannot break YAML or inject keys', async () => {
+    const created = await CreateSkillTool.execute({
+      name: 'injection-skill',
+      description: 'Bad "desc"\ndomain: hijacked',
+      domain: 'testing',
+      triggers: ['line one\nname: evil'],
+      instructions: '## Context\n\nGuard against frontmatter injection.',
+    });
+    expect(created.success).toBe(true);
+
+    const raw = await fs.readFile(path.join(skillsDir, 'injection-skill', 'SKILL.md'), 'utf-8');
+    // The description is JSON-escaped on a single line (no raw newline that
+    // would terminate the value early and let "domain: hijacked" become a key).
+    expect(raw).toContain('description: "Bad \\"desc\\" domain: hijacked"');
+    expect(raw).not.toContain('\ndomain: hijacked\n');
+
+    // And the loader still parses it cleanly with the real name/domain intact.
+    invalidateSkillsCache();
+    const listed = await ListSkillsTool.execute({});
+    expect(listed.output).toContain('injection-skill');
+  });
+
   it('lists skills when malformed frontmatter has scalar triggers', async () => {
     const skillDir = path.join(skillsDir, 'scalar-triggers');
     await fs.mkdir(skillDir, { recursive: true });

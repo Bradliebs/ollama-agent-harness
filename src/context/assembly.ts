@@ -104,6 +104,13 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
     }
   } catch (err) { recordSwallowed('assembly.loadSkills', err); }
 
+  // Track memory sources that FAILED unexpectedly this turn (threw — not the
+  // benign "returned no hits" case) so we can warn the model its recall may be
+  // incomplete instead of letting it silently treat "no hit" as "no such fact".
+  // ccmem is intentionally excluded: its client never throws (returns empty on
+  // error), so flagging its catch would be dead code.
+  const degraded: string[] = [];
+
   // Inject knowledge-graph recall when caller opts in (jarvis layer).
   // Pulls the top hits matching `recallQuery` from `recallProjectDir` as a
   // small memory section. Failure-tolerant: any error means we skip.
@@ -117,7 +124,7 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
       if (lines.length > 0) {
         parts.push(`\n--- Knowledge graph recall: ${config.recallQuery} ---\n${lines.join('\n')}\n_When citing these facts in your answer, reference the source id in parentheses._`);
       }
-    } catch (err) { recordSwallowed('assembly.kgRecall', err); }
+    } catch (err) { recordSwallowed('assembly.kgRecall', err); degraded.push('knowledge-graph'); }
   }
 
   // Auto-consult RAG + memory palace + prior-session search are built into
@@ -150,13 +157,13 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
                 : h.content;
               lines.push(`- [${idx.name}#${h.source}:${h.chunkNo}] (score ${h.score.toFixed(2)}) ${snippet.replace(/\s+/g, ' ').trim()}`);
             }
-          } catch (err) { recordSwallowed(`assembly.ragSearch.${idx.name}`, err); }
+          } catch (err) { recordSwallowed(`assembly.ragSearch.${idx.name}`, err); degraded.push(`rag:${idx.name}`); }
         }
         if (lines.length > 0) {
           recallParts.push(`\n--- RAG recall: ${ragQueryText.slice(0, 120)} ---\n${lines.join('\n')}\n_Cite the index/source/chunk id in parentheses when using these snippets._`);
         }
       }
-    } catch (err) { recordSwallowed('assembly.ragListIndexes', err); }
+    } catch (err) { recordSwallowed('assembly.ragListIndexes', err); degraded.push('rag'); }
   }
 
   // Memory palace summary: surface rooms ranked by relevance to the current
@@ -180,7 +187,7 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
         });
         recallParts.push(`\n--- Memory palace summary (${palace.roomCount} rooms, ${palace.entryCount} entries) ---\n${lines.join('\n')}`);
       }
-    } catch (err) { recordSwallowed('assembly.memoryPalace', err); }
+    } catch (err) { recordSwallowed('assembly.memoryPalace', err); degraded.push('memory-palace'); }
   }
 
   // Prior-session hits: search the cross-session text index for the same
@@ -199,7 +206,7 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
         });
         recallParts.push(`\n--- Prior sessions matching: ${sessionSearchText.slice(0, 120)} ---\n${lines.join('\n')}`);
       }
-    } catch (err) { recordSwallowed('assembly.sessionSearch', err); }
+    } catch (err) { recordSwallowed('assembly.sessionSearch', err); degraded.push('prior-sessions'); }
   }
 
   // Concept memory recall: semantically relevant memories from ccmem.
@@ -226,6 +233,13 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
   if (recallParts.length > 0) {
     const combined = recallParts.join('\n');
     parts.push(trimContextText(combined, RECALL_SECTIONS_COMBINED_MAX_CHARS, 'tail'));
+  }
+
+  // Point-of-use degraded-memory signal. Only appears when a recall source
+  // actually threw, so the default (all sources healthy) prompt is unchanged.
+  if (degraded.length > 0) {
+    const unique = [...new Set(degraded)];
+    parts.push(`\n--- \u26a0\ufe0f Memory degraded ---\n${unique.length} memory source(s) failed this turn (${unique.join(', ')}); recalled context above may be incomplete. Do not treat the absence of a fact here as proof it is not in memory.`);
   }
 
   return parts.join('\n');

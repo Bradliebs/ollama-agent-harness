@@ -8,7 +8,7 @@
  * other path reverts with an honest reason and a null `earnedBy` (nothing
  * earned the keep). On a keep, `earnedBy` names the check that proved it.
  */
-import { decideRatchet } from '../../cookbook/task-loop';
+import { decideRatchet, taskRequiresCode } from '../../cookbook/task-loop';
 
 describe('cookbook/task-loop decideRatchet', () => {
   it('keeps a code task that validated and changed files, naming the check', () => {
@@ -178,5 +178,44 @@ describe('cookbook/task-loop decideRatchet', () => {
   it('falls back to a generic check label when none is supplied', () => {
     const d = decideRatchet({ errored: false, validated: true, kind: 'code', changedFileCount: 2 });
     expect(d.earnedBy).toBe('validation passed with 2 file change(s)');
+  });
+});
+
+describe('cookbook/task-loop taskRequiresCode', () => {
+  it('requires code for a build-shaped external task title', () => {
+    expect(taskRequiresCode('Implement the screener algorithm in model.py')).toBe(true);
+  });
+
+  it('exempts a pure-documentation task title', () => {
+    expect(taskRequiresCode('Write a summary report of the model run')).toBe(false);
+  });
+
+  it('exempts pure-verification task titles so they are not force-failed', () => {
+    expect(taskRequiresCode('Run the test suite and confirm it passes')).toBe(false);
+    expect(taskRequiresCode('Verify the build output is valid')).toBe(false);
+    expect(taskRequiresCode('Smoke-test the screener script')).toBe(false);
+    expect(taskRequiresCode('Re-run the pipeline and confirm output')).toBe(false);
+  });
+});
+
+describe('cookbook/task-loop decideRatchet — pure-verify external task', () => {
+  it('keeps a verify-shaped external task that wrote a report (no code required)', () => {
+    // A "run X and confirm" external task: requiresCode is false (verify
+    // exemption), it writes a verification report (1 external file, 0 code),
+    // so it must KEEP rather than revert as no-code-changes.
+    const requiresCode = taskRequiresCode('Run the screener and confirm output is valid');
+    expect(requiresCode).toBe(false);
+    const d = decideRatchet({
+      errored: false,
+      validated: true,
+      kind: 'external',
+      changedFileCount: 0,
+      externalChangedFileCount: 1,
+      requiresCode,
+      codeFileCount: 0,
+      validateLabel: 'HARNESS_EXTERNAL_VALIDATE_CMD',
+    });
+    expect(d.outcome).toBe('keep');
+    expect(d.code).toBe('kept');
   });
 });

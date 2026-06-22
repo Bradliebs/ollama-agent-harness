@@ -9,6 +9,14 @@ import {
   type SkillDirectoryScan,
 } from '../extensibility/skillLoader';
 import { listSkillUsage, setSkillPinned } from '../extensibility/skillUsage';
+import {
+  buildRuntimeSkillFile,
+  sanitizeSkillText,
+  sanitizeSkillBody,
+  sanitizeSkillList,
+  sanitizeSkillRiskLevel,
+  snapshotSkillHistory,
+} from '../extensibility/skillAuthoring';
 import { invalidateSkillsCache } from '../tools/skillTools';
 import { recordSwallowed } from '../observability/silentFailureSink';
 
@@ -58,93 +66,9 @@ function skillSourceForApi(source: SkillApiSource, label: string, directory: str
   };
 }
 
-function yamlScalar(value: string): string {
-  return JSON.stringify(value.replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
-}
-
-function yamlList(key: string, values: string[]): string[] {
-  if (values.length === 0) return [`${key}: []`];
-  return [`${key}:`, ...values.map((value) => `  - ${yamlScalar(value)}`)];
-}
-
-function buildRuntimeSkillFile(input: {
-  name: string;
-  description: string;
-  domain: string;
-  triggers: string[];
-  whenToUse: string;
-  requiredTools: string[];
-  riskLevel?: 'low' | 'medium' | 'high';
-  body: string;
-}): string {
-  const lines = [
-    '---',
-    `name: ${yamlScalar(input.name)}`,
-    `description: ${yamlScalar(input.description)}`,
-    `domain: ${yamlScalar(input.domain)}`,
-    ...yamlList('triggers', input.triggers),
-  ];
-  if (input.whenToUse) lines.push(`when_to_use: ${yamlScalar(input.whenToUse)}`);
-  if (input.requiredTools.length > 0) lines.push(...yamlList('required_tools', input.requiredTools));
-  if (input.riskLevel) lines.push(`risk_level: ${yamlScalar(input.riskLevel)}`);
-  lines.push('---', '', input.body);
-  return `${lines.join('\n').trimEnd()}\n`;
-}
-
-function sanitizeSkillText(value: unknown, fallback: string, maxLength: number): string {
-  const text = typeof value === 'string' ? value.trim() : '';
-  return (text || fallback).replace(/[\r\n]+/g, ' ').slice(0, maxLength);
-}
-
-function sanitizeSkillBody(value: unknown): string {
-  const body = typeof value === 'string' && value.trim()
-    ? value.trim()
-    : '# Instructions\n\nDescribe when to use this skill, the steps to follow, and how to validate the result.';
-  return body.slice(0, 20_000);
-}
-
-function sanitizeSkillList(value: unknown, maxItems: number, maxLength: number): string[] {
-  const source = Array.isArray(value)
-    ? value
-    : typeof value === 'string'
-      ? value.split(',')
-      : [];
-  const seen = new Set<string>();
-  const output: string[] = [];
-  for (const item of source) {
-    const text = String(item ?? '').trim().replace(/[\r\n]+/g, ' ').slice(0, maxLength);
-    if (!text || seen.has(text.toLowerCase())) continue;
-    seen.add(text.toLowerCase());
-    output.push(text);
-    if (output.length >= maxItems) break;
-  }
-  return output;
-}
-
-function sanitizeSkillRiskLevel(value: unknown): 'low' | 'medium' | 'high' | undefined {
-  const risk = String(value ?? '').trim().toLowerCase();
-  return risk === 'low' || risk === 'medium' || risk === 'high' ? risk : undefined;
-}
-
 export function createSkillRouter(deps: SkillRoutesDeps): express.Router {
   const router = express.Router();
   const { projectDir, skillsDir, repoSkillsDir, globalSkillsDir } = deps;
-
-  async function snapshotSkillHistory(skillName: string, previousContent: string): Promise<void> {
-    try {
-      const dir = path.join(skillsDir, '_history', skillName);
-      await fs.mkdir(dir, { recursive: true });
-      const ts = new Date().toISOString().replace(/[:.]/g, '-');
-      await fs.writeFile(path.join(dir, `${ts}.md`), previousContent, 'utf-8');
-      const files = (await fs.readdir(dir)).filter((name) => name.endsWith('.md')).sort();
-      while (files.length > 20) {
-        const oldest = files.shift();
-        if (oldest) await fs.unlink(path.join(dir, oldest)).catch((err) => recordSwallowed('fs.unlink', err));
-      }
-    } catch {
-      // History writes are best-effort; never block the primary save.
-    }
-  }
 
   router.get('/api/skills', async (_req, res) => {
     try {
@@ -246,7 +170,7 @@ export function createSkillRouter(deps: SkillRoutesDeps): express.Router {
       const existing = await fs.stat(skillFile).catch(() => null);
       if (!existing) { res.status(404).json({ error: 'Skill not found' }); return; }
       const previous = await fs.readFile(skillFile, 'utf-8').catch(() => '');
-      if (previous && previous !== content) await snapshotSkillHistory(skillName, previous);
+      if (previous && previous !== content) await snapshotSkillHistory(skillsDir, skillName, previous);
       await fs.writeFile(skillFile, content, 'utf-8');
       invalidateSkillsCache();
       res.json({ ok: true, name: skillName, filePath: skillFile });

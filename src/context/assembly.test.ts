@@ -98,6 +98,32 @@ describe('assembleSystemContext', () => {
     expect(context).not.toMatch(/pdf-processing.*\(triggers:/);
   });
 
+  describe('degraded memory signal', () => {
+    it('warns at point of use when a recall source throws (no silent gap)', async () => {
+      const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-degraded-'));
+      const sessionMod = await import('../persistence/sessionSearchIndex');
+      const spy = jest.spyOn(sessionMod, 'searchSessions').mockRejectedValue(new Error('index corrupt'));
+      try {
+        const context = await assembleSystemContext({
+          systemPrompt: 'base',
+          projectDir,
+          sessionSearchProjectDir: projectDir,
+          sessionSearchQuery: 'kubernetes ingress',
+        });
+        expect(context).toContain('Memory degraded');
+        expect(context).toContain('prior-sessions');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('adds no degraded note when all recall sources are healthy (default contract unchanged)', async () => {
+      const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-degraded-clean-'));
+      const context = await assembleSystemContext({ systemPrompt: 'base', projectDir });
+      expect(context).not.toContain('Memory degraded');
+    });
+  });
+
   describe('knowledge-graph recall', () => {
     it('skips when recallProjectDir or recallQuery is missing', async () => {
       const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-recall-ctx-'));

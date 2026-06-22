@@ -5,8 +5,8 @@
 // limit, no authentication). New entries land via PR.
 //
 // Each entry is a copy-paste-ready install hint plus a description.
-// The Harness doesn't run MCP servers itself today; this surface is a
-// discovery aid so users know what to wire when an MCP integration ships.
+// The Harness runs stdio MCP servers itself (see src/extensibility/mcpRuntime.ts);
+// this catalog is a discovery aid listing servers users can wire and provision.
 
 export interface McpCatalogEntry {
   /** Stable short name. */

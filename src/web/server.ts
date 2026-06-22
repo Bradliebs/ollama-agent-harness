@@ -1951,6 +1951,26 @@ app.post('/api/autonomy/plan-from-goal', async (req, res) => {
       return;
     }
 
+    // A single un-validated model response occasionally returns a bloated or
+    // repetitive plan (a real run once stalled on a ~38-task list full of
+    // near-duplicates). Dedupe by a normalized title and cap the count so one
+    // over-eager response can't flood IMPLEMENTATION_PLAN.md. First occurrence
+    // wins, so order is preserved.
+    const MAX_PLAN_STEPS = 12;
+    const seenTitles = new Set<string>();
+    const dedupedSteps: typeof steps = [];
+    for (const step of steps) {
+      const normTitle = step.title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      if (!normTitle || seenTitles.has(normTitle)) continue;
+      seenTitles.add(normTitle);
+      dedupedSteps.push(step);
+      if (dedupedSteps.length >= MAX_PLAN_STEPS) break;
+    }
+    if (dedupedSteps.length === 0) {
+      res.status(502).json({ error: 'The model did not return a usable plan. Try rephrasing your idea, or add steps manually below.' });
+      return;
+    }
+
     // If the user's goal mentions paths outside the workspace (drive letters
     // like H:\Model, or /Users/, /home/, /mnt/, /Volumes/ on POSIX), every
     // generated step is auto-tagged kind:external. External tasks routinely
@@ -1983,7 +2003,7 @@ app.post('/api/autonomy/plan-from-goal', async (req, res) => {
     }
     const added: { id: string; title: string }[] = [];
     const entries: string[] = [];
-    for (const step of steps) {
+    for (const step of dedupedSteps) {
       let uniqueId = step.id;
       let suffix = 2;
       while (existingIds.has(uniqueId)) { uniqueId = `${step.id}-${suffix++}`; }
@@ -6072,7 +6092,26 @@ CONTEXT HYGIENE (critical for long tasks):
   const squadNote = await buildSquadRoutingNote(squadId, typeof message === 'string' ? message : '').catch(() => null);
   const identityBlock = await renderIdentityForPrompt(PROJECT_DIR, { maxChars: 4000 }).catch(() => '');
   const recentAuditBlock = await renderRecentAuditForPrompt(PROJECT_DIR).catch(() => '');
-  const systemPrompt = [baseSystemPrompt, identityBlock, attachmentsBlock, explicitSkill.context, myceliumContext, codeIntelContext, nervousContext, recentAuditBlock, squadNote, conciergeNote, toolSynthesisNudge].filter(Boolean).join('\n\n');
+
+  // Skill-gap hint ("if nothing exists, create it"): when the message looks
+  // like a task but NO installed skill matches its triggers, tell the agent it
+  // MAY author one with create_skill. This is a soft, model-initiated nudge —
+  // never a forced auto-write. Without it, a no-match is silently a no-op, so
+  // the harness can never grow a new skill from an unmet need. Kept conservative
+  // (only fires on action-verb messages) to avoid nudging on questions/chat.
+  let skillGapNote = '';
+  try {
+    const msgForSkill = typeof message === 'string' ? message : '';
+    const taskShaped = /\b(build|create|make|implement|write|add|generate|scaffold|set\s?up|automate|scrape|crawl|download|convert|refactor|integrate|deploy|configure|install|parse|extract|monitor|schedule)\b/i.test(msgForSkill);
+    if (msgForSkill && taskShaped) {
+      const installedSkills = await loadSkillsFromDirs([GLOBAL_SKILLS_DIR, REPO_SKILLS_DIR, SKILLS_DIR]).catch(() => []);
+      if (!matchSkillTrigger(installedSkills, msgForSkill)) {
+        skillGapNote = '--- Skill gap ---\nNo installed skill matched this request. If this task is a reusable, repeatable procedure you expect to recur, you MAY capture it as a skill with the create_skill tool after completing the work. Only do this for genuinely reusable workflows — never for a one-off request.';
+      }
+    }
+  } catch (err) { recordSwallowed('skillGapNote', err); }
+
+  const systemPrompt = [baseSystemPrompt, identityBlock, attachmentsBlock, explicitSkill.context, myceliumContext, codeIntelContext, nervousContext, recentAuditBlock, squadNote, conciergeNote, skillGapNote, toolSynthesisNudge].filter(Boolean).join('\n\n');
 
   const synthesisStats = await loadSynthesisStats(PROJECT_DIR);
   const effectiveMaxTurns = adaptiveMaxTurns(synthesisStats, activeModel, 25);
@@ -6912,9 +6951,10 @@ app.use(createHistoryRouter({ projectDir: PROJECT_DIR }));
 // 13 routes extracted to ./skillRoutes.ts. server.ts keeps SKILLS_DIR /
 // REPO_SKILLS_DIR / GLOBAL_SKILLS_DIR + skillFolderId/mapSkillForApi/
 // skillSourceForApi here because /api/system-overview also surfaces the
-// skill source list. The router duplicates those three small helpers and
-// owns buildRuntimeSkillFile + sanitizeSkill* + snapshotSkillHistory
-// (HTTP-only after extraction).
+// skill source list. The router duplicates those three small helpers; the
+// skill-authoring primitives (buildRuntimeSkillFile + sanitizeSkill* +
+// snapshotSkillHistory) live in ../extensibility/skillAuthoring and are
+// shared with the create_skill tool so both paths meet the same bar.
 app.use(createSkillRouter({
   projectDir: PROJECT_DIR,
   skillsDir: SKILLS_DIR,
