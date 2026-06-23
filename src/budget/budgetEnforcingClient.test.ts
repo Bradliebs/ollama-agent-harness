@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import type { Message } from 'ollama';
 import { BudgetEnforcingChatClient, BudgetExceededError } from './budgetEnforcingClient';
-import { recordSpend } from './dailyBudget';
+import { readTodaySpend, recordSpend } from './dailyBudget';
 import type { ChatResult, IChatClient, StreamChunk, TokenUsage } from '../core/chatClient';
 
 class FakeClient implements IChatClient {
@@ -25,6 +25,13 @@ class FakeClient implements IChatClient {
   healthCheck(): Promise<{ ok: boolean }> { return Promise.resolve({ ok: true }); }
   getModel(): string { return this.model; }
   getLocality(): 'cloud' { return 'cloud'; }
+}
+
+class ThrowingClient extends FakeClient {
+  async chat(_m: Message[], _t?: unknown, _a?: AbortSignal): Promise<ChatResult> {
+    this.chatCalls += 1;
+    throw new Error('upstream failed');
+  }
 }
 
 async function tempProject(): Promise<string> {
@@ -63,6 +70,55 @@ describe('BudgetEnforcingChatClient', () => {
       expect(records.length).toBe(1);
       expect(records[0].estimatedCostUsd).toBeCloseTo(0.0125, 6);
       expect(records[0].crossedBlock).toBe(false);
+    } finally { await rm(dir); }
+  });
+
+  it('reconciles the pre-call reservation down to actual usage after chat', async () => {
+    const dir = await tempProject();
+    try {
+      const inner = new FakeClient('custom-model', { promptTokens: 100, completionTokens: 100, totalDurationNs: 0 });
+      const client = new BudgetEnforcingChatClient({
+        inner,
+        projectDir: dir,
+        getCapUsd: () => 1,
+        rateLookup: () => ({ input: 0.01, output: 0.01 }),
+      });
+      await client.chat([{ role: 'user', content: 'hi' }]);
+      const record = await readTodaySpend(dir);
+      expect(record!.spentUsd).toBeCloseTo(0.002, 6);
+    } finally { await rm(dir); }
+  });
+
+  it('blocks before invoking the inner client when the reservation would exceed cap', async () => {
+    const dir = await tempProject();
+    try {
+      const inner = new FakeClient('custom-model');
+      const client = new BudgetEnforcingChatClient({
+        inner,
+        projectDir: dir,
+        getCapUsd: () => 0.01,
+        rateLookup: () => ({ input: 0, output: 0.01 }),
+      });
+      await expect(client.chat([{ role: 'user', content: 'hi' }])).rejects.toBeInstanceOf(BudgetExceededError);
+      expect(inner.chatCalls).toBe(0);
+    } finally { await rm(dir); }
+  });
+
+  it('releases a reservation when the inner chat call fails', async () => {
+    const dir = await tempProject();
+    try {
+      const inner = new ThrowingClient('custom-model');
+      const client = new BudgetEnforcingChatClient({
+        inner,
+        projectDir: dir,
+        getCapUsd: () => 1,
+        rateLookup: () => ({ input: 0.01, output: 0.01 }),
+      });
+
+      await expect(client.chat([{ role: 'user', content: 'hi' }])).rejects.toThrow('upstream failed');
+      const record = await readTodaySpend(dir);
+      expect(record!.spentUsd).toBe(0);
+      expect(record!.byModel['custom-model'] ?? 0).toBe(0);
     } finally { await rm(dir); }
   });
 

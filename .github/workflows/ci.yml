@@ -63,5 +63,8 @@ jobs:
       - name: Verify CHANGELOG version section
         run: npm run verify:changelog
 
+      - name: Verify release version metadata
+        run: npm run verify:versions
+
       - name: Smoke release archive
         run: npm run release:dry-run

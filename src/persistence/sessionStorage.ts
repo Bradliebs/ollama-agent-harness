@@ -4,6 +4,32 @@ import * as crypto from 'crypto';
 import type { SessionEvent, SessionEventData, SessionMeta, SessionStatus } from '../types';
 import { withFileLock } from './atomicFile';
 
+export interface SessionTranscriptDiagnostics {
+  path: string;
+  missing: boolean;
+  totalLines: number;
+  validEvents: number;
+  corruptLines: number;
+  unreadable: boolean;
+  error?: string;
+}
+
+export interface SessionTranscriptReadResult {
+  events: SessionEvent[];
+  diagnostics: SessionTranscriptDiagnostics;
+}
+
+export interface SessionStorageHealth {
+  status: 'healthy' | 'warning' | 'missing' | 'error';
+  sessionDir: string;
+  transcripts: number;
+  metaFiles: number;
+  corruptTranscriptFiles: number;
+  corruptTranscriptLines: number;
+  corruptMetaFiles: number;
+  unreadableFiles: number;
+}
+
 export class SessionStorage {
   private transcriptPath: string;
   private metaPath: string;
@@ -70,16 +96,12 @@ export class SessionStorage {
   }
 
   async readAll(): Promise<SessionEvent[]> {
-    try {
-      const content = await fs.readFile(this.transcriptPath, 'utf-8');
-      return content
-        .trim()
-        .split('\n')
-        .filter((line) => line.length > 0)
-        .map((line) => JSON.parse(line) as SessionEvent);
-    } catch {
-      return [];
-    }
+    const result = await this.readAllDetailed();
+    return result.events;
+  }
+
+  async readAllDetailed(): Promise<SessionTranscriptReadResult> {
+    return readTranscriptFile(this.transcriptPath);
   }
 
   async getMeta(): Promise<SessionMeta> {
@@ -119,6 +141,66 @@ export class SessionStorage {
     }
   }
 
+  static async inspectStorage(projectDir: string): Promise<SessionStorageHealth> {
+    const sessionsDir = path.join(projectDir, '.harness', 'sessions');
+    let files: string[];
+    try {
+      files = await fs.readdir(sessionsDir);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      return {
+        status: code === 'ENOENT' ? 'missing' : 'error',
+        sessionDir: sessionsDir,
+        transcripts: 0,
+        metaFiles: 0,
+        corruptTranscriptFiles: 0,
+        corruptTranscriptLines: 0,
+        corruptMetaFiles: 0,
+        unreadableFiles: code === 'ENOENT' ? 0 : 1,
+      };
+    }
+
+    let corruptTranscriptFiles = 0;
+    let corruptTranscriptLines = 0;
+    let corruptMetaFiles = 0;
+    let unreadableFiles = 0;
+    const transcripts = files.filter((file) => file.endsWith('.jsonl'));
+    const metaFiles = files.filter((file) => file.endsWith('.meta.json'));
+
+    for (const file of transcripts) {
+      const result = await readTranscriptFile(path.join(sessionsDir, file));
+      if (result.diagnostics.unreadable) unreadableFiles += 1;
+      if (result.diagnostics.corruptLines > 0) {
+        corruptTranscriptFiles += 1;
+        corruptTranscriptLines += result.diagnostics.corruptLines;
+      }
+    }
+
+    for (const file of metaFiles) {
+      try {
+        JSON.parse(await fs.readFile(path.join(sessionsDir, file), 'utf-8'));
+      } catch {
+        corruptMetaFiles += 1;
+      }
+    }
+
+    const status = unreadableFiles > 0
+      ? 'error'
+      : corruptTranscriptFiles > 0 || corruptMetaFiles > 0
+        ? 'warning'
+        : 'healthy';
+    return {
+      status,
+      sessionDir: sessionsDir,
+      transcripts: transcripts.length,
+      metaFiles: metaFiles.length,
+      corruptTranscriptFiles,
+      corruptTranscriptLines,
+      corruptMetaFiles,
+      unreadableFiles,
+    };
+  }
+
   static async listRecoverableSessions(projectDir: string): Promise<SessionMeta[]> {
     const recoverableStatuses: Set<SessionStatus> = new Set(['running', 'error', 'aborted']);
     const sessions = await SessionStorage.listSessions(projectDir);
@@ -155,5 +237,39 @@ export class SessionStorage {
       }
     }
     return marked;
+  }
+}
+
+async function readTranscriptFile(filePath: string): Promise<SessionTranscriptReadResult> {
+  const diagnostics: SessionTranscriptDiagnostics = {
+    path: filePath,
+    missing: false,
+    totalLines: 0,
+    validEvents: 0,
+    corruptLines: 0,
+    unreadable: false,
+  };
+  try {
+    const content = await fs.readFile(filePath, 'utf-8');
+    const events: SessionEvent[] = [];
+    for (const line of content.split('\n')) {
+      if (!line.trim()) continue;
+      diagnostics.totalLines += 1;
+      try {
+        events.push(JSON.parse(line) as SessionEvent);
+        diagnostics.validEvents += 1;
+      } catch {
+        diagnostics.corruptLines += 1;
+      }
+    }
+    return { events, diagnostics };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') diagnostics.missing = true;
+    else {
+      diagnostics.unreadable = true;
+      diagnostics.error = error instanceof Error ? error.message : String(error);
+    }
+    return { events: [], diagnostics };
   }
 }

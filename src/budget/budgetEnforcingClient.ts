@@ -17,7 +17,7 @@ import type { ChatResult, IChatClient, ModelLocality, StreamChunk, TokenUsage } 
 import { CostTracker } from '../eval/costTracker';
 import { logger } from '../core/logger';
 import { recordSwallowed } from '../observability/silentFailureSink';
-import { recordSpend, checkBudgetState } from './dailyBudget';
+import { checkBudgetState, reconcileReservedSpend, reserveSpend } from './dailyBudget';
 import type { BudgetState } from './dailyBudget';
 
 export class BudgetExceededError extends Error {
@@ -46,6 +46,8 @@ export interface BudgetEnforcingClientOptions {
 /** chars-per-token heuristic for the streaming path. Conservative — biases toward over-counting. */
 const STREAM_CHARS_PER_TOKEN = 4;
 const STREAM_SAFETY_MULTIPLIER = 1.2;
+const CHAT_COMPLETION_RESERVE_TOKENS = 2_000;
+const STREAM_COMPLETION_RESERVE_TOKENS = 4_000;
 
 function estimateOutputTokensFromText(text: string): number {
   if (!text) return 0;
@@ -71,6 +73,11 @@ function costFromUsage(model: string, usage: TokenUsage, lookup: BudgetEnforcing
   return (usage.promptTokens / 1000) * rate.input + (usage.completionTokens / 1000) * rate.output;
 }
 
+function estimatedCost(model: string, promptTokens: number, completionTokens: number, lookup: BudgetEnforcingClientOptions['rateLookup']): number {
+  const rate = rateFor(model, lookup);
+  return (promptTokens / 1000) * rate.input + (completionTokens / 1000) * rate.output;
+}
+
 export class BudgetEnforcingChatClient implements IChatClient {
   constructor(private readonly opts: BudgetEnforcingClientOptions) {}
 
@@ -84,12 +91,27 @@ export class BudgetEnforcingChatClient implements IChatClient {
     }
   }
 
+  private async reserveForCost(model: string, estimatedCostUsd: number): Promise<number> {
+    const cap = this.opts.getCapUsd();
+    if (!Number.isFinite(cap) || cap <= 0 || estimatedCostUsd <= 0) return 0;
+    const result = await reserveSpend(this.opts.projectDir, { modelId: model, estimatedCostUsd }, cap);
+    if (result.state.status === 'unavailable' || !result.reserved) throw new BudgetExceededError(result.state);
+    if (result.crossedWarn) {
+      logger.warn('Budget', 'Daily spend crossed warn threshold on reservation', {
+        spentUsd: result.state.spentUsd,
+        capUsd: result.state.effectiveCapUsd,
+        fraction: result.state.fraction,
+      });
+    }
+    return result.reservedCostUsd;
+  }
+
   /** Post-call accounting. Best-effort: errors here are logged + swallowed so a metering hiccup never breaks a successful chat. */
-  private async accountForCost(model: string, estimatedCostUsd: number): Promise<void> {
-    if (estimatedCostUsd <= 0) return;
+  private async accountForCost(model: string, estimatedCostUsd: number, reservedCostUsd: number): Promise<void> {
+    if (estimatedCostUsd <= 0 && reservedCostUsd <= 0) return;
     const cap = this.opts.getCapUsd();
     try {
-      const result = await recordSpend(this.opts.projectDir, { modelId: model, estimatedCostUsd }, cap);
+      const result = await reconcileReservedSpend(this.opts.projectDir, { modelId: model, estimatedCostUsd }, reservedCostUsd, cap);
       if (result.crossedWarn) {
         logger.warn('Budget', 'Daily spend crossed warn threshold', {
           spentUsd: result.state.spentUsd,
@@ -112,18 +134,32 @@ export class BudgetEnforcingChatClient implements IChatClient {
 
   async chat(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): Promise<ChatResult> {
     await this.assertAllowed();
-    const result = await this.opts.inner.chat(messages, tools, abortSignal);
-    const cost = costFromUsage(this.opts.inner.getModel(), result.usage, this.opts.rateLookup);
-    await this.accountForCost(this.opts.inner.getModel(), cost);
-    return result;
+    const model = this.opts.inner.getModel();
+    const reservedCostUsd = await this.reserveForCost(model, estimatedCost(model, estimateInputTokensFromMessages(messages), CHAT_COMPLETION_RESERVE_TOKENS, this.opts.rateLookup));
+    try {
+      const result = await this.opts.inner.chat(messages, tools, abortSignal);
+      const cost = costFromUsage(model, result.usage, this.opts.rateLookup);
+      await this.accountForCost(model, cost, reservedCostUsd);
+      return result;
+    } catch (error) {
+      await this.accountForCost(model, 0, reservedCostUsd);
+      throw error;
+    }
   }
 
   async chatOnce(messages: Message[], tools?: Tool[]): Promise<ChatResult> {
     await this.assertAllowed();
-    const result = await this.opts.inner.chatOnce(messages, tools);
-    const cost = costFromUsage(this.opts.inner.getModel(), result.usage, this.opts.rateLookup);
-    await this.accountForCost(this.opts.inner.getModel(), cost);
-    return result;
+    const model = this.opts.inner.getModel();
+    const reservedCostUsd = await this.reserveForCost(model, estimatedCost(model, estimateInputTokensFromMessages(messages), CHAT_COMPLETION_RESERVE_TOKENS, this.opts.rateLookup));
+    try {
+      const result = await this.opts.inner.chatOnce(messages, tools);
+      const cost = costFromUsage(model, result.usage, this.opts.rateLookup);
+      await this.accountForCost(model, cost, reservedCostUsd);
+      return result;
+    } catch (error) {
+      await this.accountForCost(model, 0, reservedCostUsd);
+      throw error;
+    }
   }
 
   async *chatStream(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): AsyncGenerator<StreamChunk> {
@@ -131,6 +167,7 @@ export class BudgetEnforcingChatClient implements IChatClient {
     const model = this.opts.inner.getModel();
     const rate = rateFor(model, this.opts.rateLookup);
     const inputTokensEstimate = estimateInputTokensFromMessages(messages);
+    const reservedCostUsd = await this.reserveForCost(model, estimatedCost(model, inputTokensEstimate, STREAM_COMPLETION_RESERVE_TOKENS, this.opts.rateLookup));
     let outputBuffer = '';
     try {
       for await (const chunk of this.opts.inner.chatStream(messages, tools, abortSignal)) {
@@ -140,7 +177,7 @@ export class BudgetEnforcingChatClient implements IChatClient {
     } finally {
       const outputTokensEstimate = estimateOutputTokensFromText(outputBuffer);
       const costEstimate = (inputTokensEstimate / 1000) * rate.input + (outputTokensEstimate / 1000) * rate.output;
-      await this.accountForCost(model, costEstimate);
+      await this.accountForCost(model, costEstimate, reservedCostUsd);
     }
   }
 

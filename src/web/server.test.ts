@@ -2651,6 +2651,30 @@ describe('web server API validation', () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
+  it('GET /api/system/health exposes persistence diagnostics', async () => {
+    const response = await request('/api/system/health');
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      persistence: {
+        sessions: { status: string; corruptTranscriptLines: number; corruptMetaFiles: number };
+        evidence: { status: string; corruptLines: number; unreadable: boolean };
+        settings: { status: string; lastAttemptAt: string | null; lastError: string | null };
+        swallowed_failures: { total_recorded: number; dropped: number };
+      };
+    };
+
+    expect(body.persistence).toBeDefined();
+    expect(typeof body.persistence.sessions.status).toBe('string');
+    expect(typeof body.persistence.sessions.corruptTranscriptLines).toBe('number');
+    expect(typeof body.persistence.sessions.corruptMetaFiles).toBe('number');
+    expect(typeof body.persistence.evidence.status).toBe('string');
+    expect(typeof body.persistence.evidence.corruptLines).toBe('number');
+    expect(typeof body.persistence.evidence.unreadable).toBe('boolean');
+    expect(typeof body.persistence.settings.status).toBe('string');
+    expect(typeof body.persistence.swallowed_failures.total_recorded).toBe('number');
+    expect(typeof body.persistence.swallowed_failures.dropped).toBe('number');
+  });
+
   // Pin the Phase 2/3 additions to /api/jarvis/status: the assistant-profile
   // resolution and the unified scheduler registry are surfaced here so the UI
   // (refreshJarvisLive) can render one identity. A regression that dropped

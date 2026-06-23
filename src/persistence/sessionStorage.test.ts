@@ -52,9 +52,34 @@ describe('SessionStorage', () => {
     // which is acceptable "clean recovery" behavior
     const events = await resumedStorage.readAll();
 
-    // Should not throw and should return empty array (current behavior)
+    // Should not throw and should return an array (valid prefix is preserved).
     expect(Array.isArray(events)).toBe(true);
     // No error thrown = successful recovery
+  });
+
+  test('readAllDetailed preserves valid prefix and reports corrupt transcript lines', async () => {
+    await storage.append('user_message', { kind: 'message', message: { role: 'user', content: 'first message' } });
+    await fs.appendFile(storage.getTranscriptPath(), '{bad json\n', 'utf-8');
+
+    const result = await storage.readAllDetailed();
+
+    expect(result.events).toHaveLength(1);
+    expect(result.diagnostics.validEvents).toBe(1);
+    expect(result.diagnostics.corruptLines).toBe(1);
+    expect(result.diagnostics.unreadable).toBe(false);
+  });
+
+  test('inspectStorage reports corrupt transcript and meta files', async () => {
+    await storage.append('user_message', { kind: 'message', message: { role: 'user', content: 'first message' } });
+    await fs.appendFile(storage.getTranscriptPath(), '{bad json\n', 'utf-8');
+    await fs.writeFile(path.join(TEST_DIR, '.harness', 'sessions', 'bad.meta.json'), 'not json', 'utf-8');
+
+    const health = await SessionStorage.inspectStorage(TEST_DIR);
+
+    expect(health.status).toBe('warning');
+    expect(health.corruptTranscriptFiles).toBe(1);
+    expect(health.corruptTranscriptLines).toBe(1);
+    expect(health.corruptMetaFiles).toBe(1);
   });
 
   test('marks stale running sessions as aborted after server restart', async () => {

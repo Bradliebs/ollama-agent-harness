@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { addOverride, checkBudgetState, getEnvCapUsd, readTodaySpend, recordSpend } from './dailyBudget';
+import { addOverride, checkBudgetState, getEnvCapUsd, readTodaySpend, reconcileReservedSpend, recordSpend, reserveSpend } from './dailyBudget';
 
 async function makeTempProject(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'budget-test-'));
@@ -146,6 +146,33 @@ describe('dailyBudget', () => {
         await fs.writeFile(path.join(dir, '.harness', 'daily-spend.json'), 'not json', 'utf-8');
         const r = await recordSpend(dir, { modelId: 'm', estimatedCostUsd: 1 }, 5);
         expect(r.state.status).toBe('unavailable');
+      } finally { await rm(dir); }
+    });
+  });
+
+  describe('reservations', () => {
+    it('blocks a reservation that would exceed the cap before the call starts', async () => {
+      const dir = await makeTempProject();
+      try {
+        const first = await reserveSpend(dir, { modelId: 'm', estimatedCostUsd: 4 }, 5);
+        const second = await reserveSpend(dir, { modelId: 'm', estimatedCostUsd: 2 }, 5);
+
+        expect(first.reserved).toBe(true);
+        expect(second.reserved).toBe(false);
+        expect(second.state.status).toBe('block');
+        const record = await readTodaySpend(dir);
+        expect(record!.spentUsd).toBe(4);
+      } finally { await rm(dir); }
+    });
+
+    it('reconciles unused reservation back out of the spend record', async () => {
+      const dir = await makeTempProject();
+      try {
+        const reservation = await reserveSpend(dir, { modelId: 'm', estimatedCostUsd: 3 }, 5);
+        await reconcileReservedSpend(dir, { modelId: 'm', estimatedCostUsd: 1 }, reservation.reservedCostUsd, 5);
+        const record = await readTodaySpend(dir);
+        expect(record!.spentUsd).toBe(1);
+        expect(record!.byModel.m).toBe(1);
       } finally { await rm(dir); }
     });
   });

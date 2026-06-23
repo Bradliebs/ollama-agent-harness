@@ -1,6 +1,6 @@
 # Ollama Agent Harness — System Breakdown
 
-**Version**: v0.6.4 (2026-06-02)
+**Version**: v0.6.5 (2026-06-23)
 **Tests**: 2392 / 2393 across 206 suites (1 known flake) · **Modules**: 234 source · 206 test files
 **License**: see repo root · **Audience**: operators, contributors, future-you
 
@@ -180,7 +180,7 @@ on-demand capability.
 | `squad.ts` + `squadSessions.ts` | Multi-agent channels with regex routing | `.harness/squads/*.json` |
 | `identity.ts` | SOUL / USER / structured identity rendered into chat prompt | `.harness/identity/*` |
 | `memoryIntelligence.ts` | Semantic memory lookup over session history | derived |
-| `conceptMemoryClient.ts` | Best-effort TS client for the ccmem sidecar (v0.6.4) | `.harness/ccmem/bank.db` (via sidecar) |
+| `conceptMemoryClient.ts` | Best-effort TS client for the ccmem sidecar (v0.6.5) | `.harness/ccmem/bank.db` (via sidecar) |
 | `modelProfiles.ts` | Per-model `contextMaxTokens` / `validationProfile` / `pairedVisionModel` | `.harness/model-profiles.json` |
 | `capabilityRegistry.ts` | Opt-in grants with controls | `.harness/capabilities/*.json` |
 | `capabilityTemplates.ts` + starters | Templated capability bootstrap | derived |
@@ -376,7 +376,7 @@ from legacy plain-text settings on first read).
   concierge/log.jsonl             ← JSONL, auto-pruned at 5000
   mycelium/graph.json
   evals/trace-runs.jsonl
-  ccmem/bank.db                   ← concept-cell semantic memory (v0.6.4, SQLite)
+  ccmem/bank.db                   ← concept-cell semantic memory (v0.6.5, SQLite)
   model-profiles.json             ← per-model overrides (v0.4.2)
   file-write-redirects.json       ← optional path-pattern redirects
   curator/state.json
@@ -553,7 +553,7 @@ For release artifacts (zip + installer) see [docs/RELEASE-PIPELINE.md](RELEASE-P
   are separate concerns. Per user preference, HybridTurtle gets verify
   / harden, not new features.
 
-## 12. Status snapshot at v0.6.4
+## 12. Status snapshot at v0.6.5
 
 | Surface | State |
 |---|---|

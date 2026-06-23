@@ -61,6 +61,12 @@ export interface DispatchOptions {
   /** Context passed to inspectors (recent messages, session id, ...). */
   inspectorContext?: InspectorContext;
   /**
+   * Behaviour when an inspector returns `requireApproval` but no
+   * `onApprovalRequired` callback is wired. Default preserves the historical
+   * soft-pass contract; callers that run unattended should use `deny`.
+   */
+  approvalPolicy?: 'soft-pass' | 'deny';
+  /**
    * Called when an inspector requests human confirmation. Return `true` to
    * proceed, `false` to abort. If omitted, `requireApproval` is treated as
    * `allow` (matches goose's CLI when no confirmation channel is wired), and
@@ -251,6 +257,17 @@ export class ToolDispatcher {
         };
       }
       if (decision.action.kind === 'requireApproval' && !options.onApprovalRequired) {
+        if (options.approvalPolicy === 'deny') {
+          dispatchSpan?.end('ok', { approvalDenied: true, inspector: decision.inspectorName, missingApprovalChannel: true });
+          return {
+            call,
+            result: {
+              success: false,
+              output: `Inspector '${decision.inspectorName}' required approval but no approval channel is configured: ${decision.action.reason}`,
+              error: decision.action.reason,
+            },
+          };
+        }
         // No confirmation channel wired: the call is allowed to proceed
         // (matches goose's CLI), but record the dropped safety decision to the
         // silent-failure sink so it is post-hoc visible via diagnostics instead

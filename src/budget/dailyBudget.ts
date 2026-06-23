@@ -178,28 +178,53 @@ export interface RecordSpendResult {
   crossedBlock: boolean;
 }
 
-/**
- * Add a spend amount to today's record. Always writes (even when cap is
- * off or unavailable) so the operator has a running tally to inspect.
- *
- * Numbers are rounded to micro-USD (6 decimal places) before persisting
- * to keep the file from drifting on float accumulation.
- */
-export async function recordSpend(projectDir: string, input: RecordSpendInput, configuredCapUsd: number, now: Date = new Date()): Promise<RecordSpendResult> {
+export interface SpendReservationResult extends RecordSpendResult {
+  reserved: boolean;
+  reservedCostUsd: number;
+}
+
+export interface ReconcileReservedSpendResult extends RecordSpendResult {
+  adjustmentUsd: number;
+}
+
+function roundMicroUsd(value: number): number {
+  return Math.round(value * 1_000_000) / 1_000_000;
+}
+
+function stateFromRecord(record: DailySpendRecord, configuredCapUsd: number): BudgetState {
+  const effectiveCapUsd = configuredCapUsd > 0 ? configuredCapUsd + record.overrideUsd : 0;
+  const fraction = effectiveCapUsd > 0 ? Math.min(1, record.spentUsd / effectiveCapUsd) : 0;
+  let status: BudgetState['status'];
+  if (configuredCapUsd <= 0) status = 'off';
+  else if (record.spentUsd >= effectiveCapUsd) status = 'block';
+  else if (record.spentUsd >= effectiveCapUsd * WARN_THRESHOLD) status = 'warn';
+  else status = 'ok';
+  return { status, effectiveCapUsd, configuredCapUsd, spentUsd: record.spentUsd, overrideUsd: record.overrideUsd, fraction, utcDate: record.utcDate };
+}
+
+function thresholdCrossings(priorSpent: number, priorOverride: number, record: DailySpendRecord, configuredCapUsd: number): { crossedWarn: boolean; crossedBlock: boolean } {
+  const effectiveCapUsd = configuredCapUsd > 0 ? configuredCapUsd + record.overrideUsd : 0;
+  const priorEffective = configuredCapUsd > 0 ? configuredCapUsd + priorOverride : 0;
+  return {
+    crossedWarn: configuredCapUsd > 0
+      && priorSpent < priorEffective * WARN_THRESHOLD
+      && record.spentUsd >= effectiveCapUsd * WARN_THRESHOLD
+      && record.spentUsd < effectiveCapUsd,
+    crossedBlock: configuredCapUsd > 0
+      && priorSpent < priorEffective
+      && record.spentUsd >= effectiveCapUsd,
+  };
+}
+
+async function mutateSpend(projectDir: string, input: RecordSpendInput, deltaUsd: number, configuredCapUsd: number, now: Date): Promise<RecordSpendResult> {
   const utcDate = todayUtcDate(now);
   const nowIso = now.toISOString();
-  const incrementUsd = Number.isFinite(input.estimatedCostUsd) && input.estimatedCostUsd > 0
-    ? Math.round(input.estimatedCostUsd * 1_000_000) / 1_000_000
-    : 0;
   const result = await withFileLock(spendFilePath(projectDir), async () => {
     const read = await readSpendRecord(projectDir);
     let record: DailySpendRecord;
     let priorSpent = 0;
     let priorOverride = 0;
     if (!read.healthy) {
-      // Fail-closed: refuse to overwrite a corrupt file blindly. Surface
-      // the corruption through the returned state so the caller can
-      // refuse new cloud calls. Do NOT silently reset the file.
       return { record: null, healthy: false as const, reason: read.reason ?? 'unknown' };
     }
     if (read.record === null || read.record.utcDate !== utcDate) {
@@ -209,8 +234,10 @@ export async function recordSpend(projectDir: string, input: RecordSpendInput, c
       priorSpent = record.spentUsd;
       priorOverride = record.overrideUsd;
     }
-    record.spentUsd = Math.round((record.spentUsd + incrementUsd) * 1_000_000) / 1_000_000;
-    record.byModel[input.modelId] = Math.round(((record.byModel[input.modelId] ?? 0) + incrementUsd) * 1_000_000) / 1_000_000;
+    const nextModelSpend = roundMicroUsd((record.byModel[input.modelId] ?? 0) + deltaUsd);
+    record.spentUsd = Math.max(0, roundMicroUsd(record.spentUsd + deltaUsd));
+    if (nextModelSpend <= 0) delete record.byModel[input.modelId];
+    else record.byModel[input.modelId] = nextModelSpend;
     record.lastAt = nowIso;
     await writeSpendRecord(projectDir, record);
     return { record, healthy: true as const, priorSpent, priorOverride };
@@ -230,26 +257,88 @@ export async function recordSpend(projectDir: string, input: RecordSpendInput, c
       crossedBlock: false,
     };
   }
-  const effectiveCapUsd = configuredCapUsd > 0 ? configuredCapUsd + record.overrideUsd : 0;
-  const fraction = effectiveCapUsd > 0 ? Math.min(1, record.spentUsd / effectiveCapUsd) : 0;
-  let status: BudgetState['status'];
-  if (configuredCapUsd <= 0) status = 'off';
-  else if (record.spentUsd >= effectiveCapUsd) status = 'block';
-  else if (record.spentUsd >= effectiveCapUsd * WARN_THRESHOLD) status = 'warn';
-  else status = 'ok';
-  const priorEffective = configuredCapUsd > 0 ? configuredCapUsd + result.priorOverride : 0;
-  const crossedWarn = configuredCapUsd > 0
-    && result.priorSpent < priorEffective * WARN_THRESHOLD
-    && record.spentUsd >= effectiveCapUsd * WARN_THRESHOLD
-    && record.spentUsd < effectiveCapUsd;
-  const crossedBlock = configuredCapUsd > 0
-    && result.priorSpent < priorEffective
-    && record.spentUsd >= effectiveCapUsd;
-  return {
-    state: { status, effectiveCapUsd, configuredCapUsd, spentUsd: record.spentUsd, overrideUsd: record.overrideUsd, fraction, utcDate },
-    crossedWarn,
-    crossedBlock,
-  };
+  return { state: stateFromRecord(record, configuredCapUsd), ...thresholdCrossings(result.priorSpent, result.priorOverride, record, configuredCapUsd) };
+}
+
+/**
+ * Add a spend amount to today's record. Always writes (even when cap is
+ * off or unavailable) so the operator has a running tally to inspect.
+ *
+ * Numbers are rounded to micro-USD (6 decimal places) before persisting
+ * to keep the file from drifting on float accumulation.
+ */
+export async function recordSpend(projectDir: string, input: RecordSpendInput, configuredCapUsd: number, now: Date = new Date()): Promise<RecordSpendResult> {
+  const incrementUsd = Number.isFinite(input.estimatedCostUsd) && input.estimatedCostUsd > 0
+    ? roundMicroUsd(input.estimatedCostUsd)
+    : 0;
+  return mutateSpend(projectDir, input, incrementUsd, configuredCapUsd, now);
+}
+
+export async function reserveSpend(projectDir: string, input: RecordSpendInput, configuredCapUsd: number, now: Date = new Date()): Promise<SpendReservationResult> {
+  const utcDate = todayUtcDate(now);
+  const nowIso = now.toISOString();
+  const reservedCostUsd = Number.isFinite(input.estimatedCostUsd) && input.estimatedCostUsd > 0
+    ? roundMicroUsd(input.estimatedCostUsd)
+    : 0;
+  if (!Number.isFinite(configuredCapUsd) || configuredCapUsd <= 0 || reservedCostUsd <= 0) {
+    return { state: await checkBudgetState(projectDir, configuredCapUsd, now), crossedWarn: false, crossedBlock: false, reserved: false, reservedCostUsd: 0 };
+  }
+  const result = await withFileLock(spendFilePath(projectDir), async () => {
+    const read = await readSpendRecord(projectDir);
+    let record: DailySpendRecord;
+    let priorSpent = 0;
+    let priorOverride = 0;
+    if (!read.healthy) return { record: null, healthy: false as const, reason: read.reason ?? 'unknown', reserved: false as const };
+    if (read.record === null || read.record.utcDate !== utcDate) {
+      record = emptyRecord(utcDate, nowIso);
+    } else {
+      record = read.record;
+      priorSpent = record.spentUsd;
+      priorOverride = record.overrideUsd;
+    }
+    const effectiveCapUsd = configuredCapUsd + record.overrideUsd;
+    const projectedSpend = roundMicroUsd(record.spentUsd + reservedCostUsd);
+    if (record.spentUsd >= effectiveCapUsd || projectedSpend > effectiveCapUsd) {
+      const blockedRecord = { ...record, spentUsd: projectedSpend };
+      return { record: blockedRecord, healthy: true as const, priorSpent, priorOverride, reserved: false as const };
+    }
+    record.spentUsd = projectedSpend;
+    record.byModel[input.modelId] = roundMicroUsd((record.byModel[input.modelId] ?? 0) + reservedCostUsd);
+    record.lastAt = nowIso;
+    await writeSpendRecord(projectDir, record);
+    return { record, healthy: true as const, priorSpent, priorOverride, reserved: true as const };
+  });
+  if (!result.healthy) {
+    return {
+      state: { status: 'unavailable', effectiveCapUsd: configuredCapUsd, configuredCapUsd, spentUsd: 0, overrideUsd: 0, fraction: 0, utcDate, reason: result.reason },
+      crossedWarn: false,
+      crossedBlock: false,
+      reserved: false,
+      reservedCostUsd,
+    };
+  }
+  const record = result.record;
+  if (!record) {
+    return {
+      state: { status: 'unavailable', effectiveCapUsd: configuredCapUsd, configuredCapUsd, spentUsd: 0, overrideUsd: 0, fraction: 0, utcDate, reason: 'spend record missing after reservation' },
+      crossedWarn: false,
+      crossedBlock: false,
+      reserved: false,
+      reservedCostUsd,
+    };
+  }
+  return { state: stateFromRecord(record, configuredCapUsd), ...thresholdCrossings(result.priorSpent, result.priorOverride, record, configuredCapUsd), reserved: result.reserved, reservedCostUsd };
+}
+
+export async function reconcileReservedSpend(projectDir: string, input: RecordSpendInput, reservedCostUsd: number, configuredCapUsd: number, now: Date = new Date()): Promise<ReconcileReservedSpendResult> {
+  const actualCostUsd = Number.isFinite(input.estimatedCostUsd) && input.estimatedCostUsd > 0 ? roundMicroUsd(input.estimatedCostUsd) : 0;
+  const reserved = Number.isFinite(reservedCostUsd) && reservedCostUsd > 0 ? roundMicroUsd(reservedCostUsd) : 0;
+  const adjustmentUsd = roundMicroUsd(actualCostUsd - reserved);
+  if (adjustmentUsd === 0) {
+    const state = await checkBudgetState(projectDir, configuredCapUsd, now);
+    return { state, crossedWarn: false, crossedBlock: false, adjustmentUsd };
+  }
+  return { ...(await mutateSpend(projectDir, input, adjustmentUsd, configuredCapUsd, now)), adjustmentUsd };
 }
 
 /**

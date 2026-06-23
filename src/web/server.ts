@@ -30,7 +30,7 @@ import { TeammateScheduler, sanitizeTeammateSettings, defaultTeammateSettings, t
 import { listActiveSubagents, subscribeSubagentRegistry } from '../services/subagentRegistry';
 import { createToolFailureAlerts, type ToolFailureAlertTracker } from '../services/toolFailureAlerts';
 import { formatPrometheusMetrics, type PrometheusMetric } from '../observability/prometheus';
-import { recordSwallowed } from '../observability/silentFailureSink';
+import { getSwallowedFailureDroppedCount, getSwallowedFailureTotalCount, recordSwallowed } from '../observability/silentFailureSink';
 import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { summarizeTasks } from '../services/taskStore';
 import { createTaskRoutesRouter, type CodexTaskRunner, type CodexTaskRunnerEvent } from './taskRoutes';
@@ -172,7 +172,7 @@ import { createMycelialRouter, deriveToolShortlist, toolNamesFromRoute, type Myc
 import { heuristicVerifier } from '../mycelium/verifier';
 import { seedCodeIntelligence } from '../mycelium/seeds';
 import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
-import { appendRunEvidence, readRunEvidence, setEvidenceAppendHook, type StoredRunEvidence } from '../persistence/evidenceStore';
+import { appendRunEvidence, inspectRunEvidence, readRunEvidence, setEvidenceAppendHook, type StoredRunEvidence } from '../persistence/evidenceStore';
 import { startTelegramBot, stopTelegramBot, isTelegramBotRunning, sendTelegramNotification, loadPersistedChatIds, getTelegramPollingLockInfo } from '../integrations/telegram';
 import { startDiscordBot, stopDiscordBot, isDiscordBotRunning } from '../integrations/discord';
 import { getSlackConnectorStatus, sanitizeSlackWebhookUrl } from '../integrations/slack';
@@ -4439,6 +4439,28 @@ app.get('/api/system/health', async (_req, res) => {
       summarizeTasks(PROJECT_DIR).catch(() => null),
       listSquads(PROJECT_DIR).then((squads) => squads.length).catch(() => 0),
     ]);
+    const [sessionHealth, evidenceHealth] = await Promise.all([
+      SessionStorage.inspectStorage(PROJECT_DIR).catch((error) => ({
+        status: 'error' as const,
+        sessionDir: path.join(PROJECT_DIR, '.harness', 'sessions'),
+        transcripts: 0,
+        metaFiles: 0,
+        corruptTranscriptFiles: 0,
+        corruptTranscriptLines: 0,
+        corruptMetaFiles: 0,
+        unreadableFiles: 1,
+        error: error instanceof Error ? error.message : String(error),
+      })),
+      inspectRunEvidence(PROJECT_DIR).catch((error) => ({
+        status: 'error' as const,
+        path: path.join(PROJECT_DIR, '.harness', 'evidence', 'runs.jsonl'),
+        totalLines: 0,
+        validEntries: 0,
+        corruptLines: 0,
+        unreadable: true,
+        error: error instanceof Error ? error.message : String(error),
+      })),
+    ]);
     const lastHeartbeat = heartbeatHistory[heartbeatHistory.length - 1] ?? null;
     // Read kill-switch and scheduler status from their canonical sources
     // introduced in v0.5.6. The module-level `killSwitchActive` mirror is
@@ -4485,6 +4507,15 @@ app.get('/api/system/health', async (_req, res) => {
       },
       tasks: taskSummary,
       events: { recent_count: recentEvents.length },
+      persistence: {
+        sessions: sessionHealth,
+        evidence: evidenceHealth,
+        settings: { ...settingsPersistenceStatus },
+        swallowed_failures: {
+          total_recorded: getSwallowedFailureTotalCount(),
+          dropped: getSwallowedFailureDroppedCount(),
+        },
+      },
       context: await buildContextHealth(),
       vision: await buildVisionHealth(),
       observability: {
@@ -8631,32 +8662,52 @@ async function persistSessionLearning(session: SessionStorage, projectDir: strin
 }
 
 let _saveSettingsLock: Promise<void> = Promise.resolve();
+let settingsPersistenceStatus: {
+  status: 'never_saved' | 'ok' | 'error';
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastErrorAt: string | null;
+  lastError: string | null;
+} = { status: 'never_saved', lastAttemptAt: null, lastSuccessAt: null, lastErrorAt: null, lastError: null };
 async function saveSettingsToDisk(): Promise<void> {
   // Serialize saves to prevent concurrent write races
   _saveSettingsLock = _saveSettingsLock.then(_doSaveSettings, _doSaveSettings);
   return _saveSettingsLock;
 }
 async function _doSaveSettings(): Promise<void> {
-  await fs.mkdir(path.dirname(SETTINGS_PATH), { recursive: true });
-  const { outputValidationProfiles, customOutputValidationProfiles: profiles, ...settings } = getCurrentSettings();
-  void outputValidationProfiles;
-  void profiles;
-  // Merge with any fields that exist in the file but are not tracked in-memory
-  // (e.g. fields added by newer code not yet loaded). This prevents a running
-  // server from clobbering file edits made to fields it does not manage.
-  let merged: Record<string, unknown> = settings;
+  const attemptAt = new Date().toISOString();
+  settingsPersistenceStatus = { ...settingsPersistenceStatus, lastAttemptAt: attemptAt };
   try {
-    const raw = await fs.readFile(SETTINGS_PATH, 'utf-8');
-    const existing = JSON.parse(raw) as Record<string, unknown>;
-    merged = { ...existing, ...settings };
-  } catch { /* file missing or invalid — use settings as-is */ }
-  const json = JSON.stringify(merged, null, 2);
-  // Validate before writing — never write invalid JSON
-  try { JSON.parse(json); } catch { logger.warn('Settings', 'Skipped save: serialized JSON is invalid'); return; }
-  // Atomic write: write to temp file then rename
-  const tmpPath = SETTINGS_PATH + '.tmp';
-  await fs.writeFile(tmpPath, json, 'utf-8');
-  await renameSettingsFileWithRetry(tmpPath, SETTINGS_PATH);
+    await fs.mkdir(path.dirname(SETTINGS_PATH), { recursive: true });
+    const { outputValidationProfiles, customOutputValidationProfiles: profiles, ...settings } = getCurrentSettings();
+    void outputValidationProfiles;
+    void profiles;
+    // Merge with any fields that exist in the file but are not tracked in-memory
+    // (e.g. fields added by newer code not yet loaded). This prevents a running
+    // server from clobbering file edits made to fields it does not manage.
+    let merged: Record<string, unknown> = settings;
+    try {
+      const raw = await fs.readFile(SETTINGS_PATH, 'utf-8');
+      const existing = JSON.parse(raw) as Record<string, unknown>;
+      merged = { ...existing, ...settings };
+    } catch { /* file missing or invalid — use settings as-is */ }
+    const json = JSON.stringify(merged, null, 2);
+    // Validate before writing — never write invalid JSON
+    try { JSON.parse(json); } catch { logger.warn('Settings', 'Skipped save: serialized JSON is invalid'); return; }
+    // Atomic write: write to temp file then rename
+    const tmpPath = SETTINGS_PATH + '.tmp';
+    await fs.writeFile(tmpPath, json, 'utf-8');
+    await renameSettingsFileWithRetry(tmpPath, SETTINGS_PATH);
+    settingsPersistenceStatus = { status: 'ok', lastAttemptAt: attemptAt, lastSuccessAt: new Date().toISOString(), lastErrorAt: null, lastError: null };
+  } catch (error) {
+    settingsPersistenceStatus = {
+      ...settingsPersistenceStatus,
+      status: 'error',
+      lastErrorAt: new Date().toISOString(),
+      lastError: error instanceof Error ? error.message : String(error),
+    };
+    throw error;
+  }
 }
 
 async function renameSettingsFileWithRetry(tmpPath: string, targetPath: string): Promise<void> {
@@ -8694,7 +8745,7 @@ async function checkSourceDistFreshness(): Promise<void> {
   } catch { /* dist or source missing — skip check */ }
 }
 
-export async function startServer(): Promise<void> {
+export async function startServer(): Promise<ReturnType<typeof app.listen>> {
   const startupProfile = createStartupProfile();
   startupProfile.record('module-route-init', MODULE_LOAD_STARTED_AT);
   // Project-dir self-check. The v0.4.10 install_skill bug was one instance
@@ -9049,6 +9100,7 @@ export async function startServer(): Promise<void> {
       openBrowser(url);
     }
   });
+  return httpServer;
 }
 
 function createStartupProfile(): { record: (phase: string, since?: number) => void; summary: () => Record<string, number> } {
@@ -9077,6 +9129,24 @@ export function setWebRuntimeOverrides(overrides: Partial<WebRuntimeDeps>): () =
   return () => { webRuntime = defaultWebRuntime; };
 }
 
+async function shutdownServer(server: ReturnType<typeof app.listen>, signal: NodeJS.Signals): Promise<void> {
+  logger.info('Process', 'Graceful shutdown requested', { signal });
+  const closeHttp = new Promise<void>((resolve) => {
+    server.close((error?: Error) => {
+      if (error) recordSwallowed('server.shutdown.http.close', error);
+      resolve();
+    });
+  });
+  const stopSubsystems = (async () => {
+    try { await stopAllSchedulers(); } catch (error) { recordSwallowed('server.shutdown.schedulers', error); }
+    try { stopTelegramBot(); } catch (error) { recordSwallowed('server.shutdown.telegram', error); }
+    try { stopDiscordBot(); } catch (error) { recordSwallowed('server.shutdown.discord', error); }
+    try { jarvisAmbientHandle?.stop(); jarvisAmbientHandle = null; } catch (error) { recordSwallowed('server.shutdown.ambient', error); }
+  })();
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, 5_000));
+  await Promise.race([Promise.allSettled([closeHttp, stopSubsystems]).then(() => undefined), timeout]);
+}
+
 if (require.main === module) {
   // Process-level safety net. Installed only when this file is the entry
   // point so importing server.ts from tests does not register handlers
@@ -9101,7 +9171,16 @@ if (require.main === module) {
     // Give the logger a tick to flush stderr before we go.
     setTimeout(() => process.exit(1), 50);
   });
-  startServer().catch((error) => {
+  startServer().then((server) => {
+    let shuttingDown = false;
+    const handleSignal = (signal: NodeJS.Signals): void => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      shutdownServer(server, signal).finally(() => process.exit(0));
+    };
+    process.once('SIGINT', handleSignal);
+    process.once('SIGTERM', handleSignal);
+  }).catch((error) => {
     console.error(error);
     process.exit(1);
   });
