@@ -6904,6 +6904,26 @@ function attachMessageMeta(msgEl, usage) {
  * `messageIndex` is the position in `chatMessages` of THIS assistant
  * reply, so regenerate can slice history just before it.
  */
+/**
+ * Write a reply to the clipboard as both formatted HTML (so rich targets —
+ * email, docs, Slack — paste with headings, bold, code blocks intact) and
+ * raw markdown (so plain editors get clean source). Falls back to plain
+ * text when ClipboardItem isn't supported.
+ */
+async function copyRich(markdown) {
+  const text = String(markdown || '');
+  const inner = (typeof marked !== 'undefined' && marked.parse) ? marked.parse(text) : ('<pre>' + esc(text) + '</pre>');
+  const html = '<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;line-height:1.55;color:#1a1a1a">' + inner + '</div>';
+  if (navigator.clipboard && window.ClipboardItem) {
+    await navigator.clipboard.write([new ClipboardItem({
+      'text/html': new Blob([html], { type: 'text/html' }),
+      'text/plain': new Blob([text], { type: 'text/plain' }),
+    })]);
+    return;
+  }
+  await navigator.clipboard.writeText(text);
+}
+
 function attachMessageActions(msgEl, messageIndex) {
   if (!msgEl) return;
   const body = msgEl.querySelector('.msg-body');
@@ -6922,14 +6942,13 @@ function attachMessageActions(msgEl, messageIndex) {
   };
   const copy = document.createElement('button');
   copy.className = 'msg-action-btn';
-  copy.title = 'Copy reply text';
+  copy.title = 'Copy reply — pastes formatted into rich editors, plain markdown elsewhere';
   copy.innerHTML = '📋 Copy';
-  copy.onclick = () => {
+  copy.onclick = async () => {
     const content = (chatMessages[messageIndex] && chatMessages[messageIndex].content) || '';
-    navigator.clipboard.writeText(content).then(() => {
-      copy.innerHTML = '✅ Copied';
-      setTimeout(() => { copy.innerHTML = '📋 Copy'; }, 1500);
-    });
+    const done = () => { copy.innerHTML = '✅ Copied'; setTimeout(() => { copy.innerHTML = '📋 Copy'; }, 1500); };
+    try { await copyRich(content); done(); }
+    catch { try { await navigator.clipboard.writeText(content); done(); } catch {} }
   };
   const reply = document.createElement('button');
   reply.className = 'msg-action-btn';
@@ -7596,7 +7615,7 @@ async function searchHistory(q) {
   } catch(e){}
 }
 
-async function loadChat(id) { try { const r = await fetch('/api/history/' + id); const d = await r.json(); currentChatId = id; chatMessages = d.messages || []; document.getElementById('chatArea').innerHTML = ''; for (const m of chatMessages) addMsg(m.role, m.content); saveChatSession(); loadHistory(); } catch(e){} }
+async function loadChat(id) { try { const r = await fetch('/api/history/' + id); const d = await r.json(); currentChatId = id; chatMessages = d.messages || []; document.getElementById('chatArea').innerHTML = ''; chatMessages.forEach((m, i) => { const el = addMsg(m.role, m.content); if (m.role === 'assistant' && m.content) attachMessageActions(el, i); }); saveChatSession(); loadHistory(); } catch(e){} }
 async function autoSaveChat() { if (chatMessages.length < 2) return; const title = chatMessages[0].content.slice(0, 60); try { const r = await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: currentChatId, title, messages: chatMessages }) }); const d = await r.json(); if (!currentChatId) currentChatId = d.id; saveChatSession(); loadHistory(); } catch(e){} }
 async function deleteChat(id) { await fetch('/api/history/' + id, { method: 'DELETE' }); if (id === currentChatId) newChat(); loadHistory(); }
 function newChat() {
