@@ -28,6 +28,7 @@ You chat with a model, it can call tools (read/write files, run bash, search the
 
 Landed on `main` but not yet cut into a numbered release:
 
+* **Autonomous Lead Agent** — hand the harness one task and the lead agent plans it into a graph of sub-agent workstreams, dispatches them in parallel via the orchestrator, verifies the merged result against the toolchain, and re-plans until it passes or a budget is exhausted — no human interaction. Use `HARNESS_LEAD=1` headless in the CLI, the `/auto <task>` chat command, or `POST /api/lead/run` (streaming). See [`docs/LEAD-AGENT.md`](docs/LEAD-AGENT.md).
 * **Governed Agent Loop v1** — a shadow-first governance pass beside the product path: confidence-mode labels, per-answer self-critique, a working-memory snapshot, and a human-gated review queue that writes to durable memory only on explicit approval. Idle replays re-ask drained answers and re-enter the same review queue. See [`docs/GOVERNED-LOOP.md`](docs/GOVERNED-LOOP.md).
 * **New HTTP surface** for the loop and supporting subsystems: `/api/working-memory`, `/api/review-queue/*`, `/api/replay-*`, `/api/governed-metrics`, plus `/api/webhooks/*` (including dead-letter redelivery) and `/api/mycelium/*` (router inspection, learning curve, feedback).
 * **Workspace vs install** clarification — set `HARNESS_PROJECT_DIR` to keep user data out of the install dir, and promote user-wide credentials (e.g. SMTP) to OS env vars so they stop going stale per workspace. See [Workspace vs install](#workspace-vs-install).

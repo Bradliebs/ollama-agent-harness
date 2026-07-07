@@ -15,6 +15,8 @@ import { drainRemoteProviderFallbackEvents } from '../core/fallbackChatClient';
 import type { IChatClient } from '../core/chatClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { createCodeVerifier, createLlmPlanner, createQueryLoopExecutor, runConductor, type ConductorEvent } from '../core/taskConductor';
+import { runLeadAgent, type LeadAgentEvent } from '../core/leadAgent';
+import { createLlmDecomposer, createOrchestrateFn, createToolchainVerifier, createLeadPersist } from '../core/leadAgentFactories';
 import { createLlmAdversaryJudge } from '../safety/toolInspectors';
 import { buildMorningBriefing, type BriefingCalendarEvent } from '../jarvis/morningBriefing';
 import { parseIcsEvents } from '../tools/calendarTools';
@@ -159,7 +161,7 @@ import { makeQueryLoopRunner } from '../goal/queryLoopRunner';
 import { surfaceResumableGoalOnBoot } from '../goal/bootResume';
 import { parseJestSummary } from '../goal/verification';
 import { parsePrioritySetCommand, setPriorityForToday } from '../services/morningPriority';
-import { routeSlashCommand, registerYoloHooks, registerResearchHooks } from '../services/slashCommandRouter';
+import { routeSlashCommand, registerYoloHooks, registerResearchHooks, registerLeadAgentHooks } from '../services/slashCommandRouter';
 import { calculateReadiness, type ReadinessInput } from '../core/readinessGate';
 import { planBuildGate, runBuildGate, buildGateVerifierScore, type BuildGateResult, type GateCommand, type ProjectProbe } from '../core/buildGate';
 import { buildTaskContract } from '../core/taskContractBuilder';
@@ -4238,6 +4240,78 @@ function toCodexRunnerEvent(event: ConductorEvent): CodexTaskRunnerEvent {
 }
 
 app.use(createTaskRoutesRouter({ projectDir: PROJECT_DIR, runCodexTask: runCodexTaskWithConductor }));
+
+// ─── Autonomous Lead Agent ──────────────────────────────────────────
+// The lead agent plans a task into a graph of sub-agent workstreams, dispatches
+// them in parallel via the orchestrator, verifies the merged result against the
+// toolchain, and re-plans until done — no human interaction. Sub-agents run
+// without permission prompts (full auto-approve), matching the dontAsk posture.
+//
+// Exposed two ways: a streaming HTTP endpoint (POST /api/lead/run) and the
+// `/auto` chat slash command (wired via registerLeadAgentHooks below).
+async function runLeadAgentForRequest(
+  task: string,
+  onEvent: (e: LeadAgentEvent) => void,
+  abortSignal?: AbortSignal,
+): Promise<import('../core/leadAgent').LeadAgentOutcome> {
+  await ensureSettingsLoaded();
+  const requestedModel = currentModel || 'llama3.1:8b';
+  const routed = await resolveChatModelForRequest(requestedModel, task);
+  const activeModel = routed.model;
+  const activeContextMaxTokens = await resolveContextMaxTokens(activeModel);
+  const client = webRuntime.createClient(activeModel, ollamaHost, activeContextMaxTokens);
+  const tools = webRuntime.getTools();
+  const runId = String(Date.now());
+  return runLeadAgent({
+    task,
+    decompose: createLlmDecomposer(client),
+    orchestrate: createOrchestrateFn(client, tools, PROJECT_DIR),
+    verifyOverall: createToolchainVerifier(PROJECT_DIR),
+    persist: createLeadPersist(PROJECT_DIR, runId),
+    runId,
+    abortSignal,
+    onEvent,
+  });
+}
+
+app.post('/api/lead/run', async (req, res) => {
+  const task = typeof req.body?.task === 'string' ? req.body.task.trim() : '';
+  if (!task) { res.status(400).json({ error: 'task is required' }); return; }
+
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Cache-Control', 'no-cache');
+  const write = (obj: unknown): void => { try { res.write(JSON.stringify(obj) + '\n'); } catch { /* client gone */ } };
+
+  const abortController = new AbortController();
+  req.on('close', () => abortController.abort());
+
+  try {
+    const outcome = await runLeadAgentForRequest(task, (e) => write(e), abortController.signal);
+    write({
+      type: 'outcome',
+      status: outcome.status,
+      finalOutput: outcome.finalOutput,
+      attempts: outcome.attempts.length,
+      capabilityGaps: outcome.capabilityGaps,
+    });
+  } catch (err) {
+    write({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+  } finally {
+    res.end();
+  }
+});
+
+registerLeadAgentHooks({
+  run: async (task) => {
+    const outcome = await runLeadAgentForRequest(task, () => {});
+    return {
+      status: outcome.status,
+      finalOutput: outcome.finalOutput,
+      attempts: outcome.attempts.length,
+      capabilityGaps: outcome.capabilityGaps,
+    };
+  },
+});
 
 // ─── Triggers ───────────────────────────────────────────────────────
 // Persisted in .harness/triggers/triggers.json. Routes extracted to

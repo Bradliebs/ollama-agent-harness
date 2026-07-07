@@ -22,6 +22,12 @@ changes until a human approves.
 The latest additions are additive and default-off, so the product path is
 unchanged until you opt in.
 
+- **Autonomous Lead Agent** (`src/core/leadAgent.ts`, `src/core/leadAgentFactories.ts`):
+  a "main agent" that decomposes a task into a graph of sub-agent workstreams,
+  dispatches them in parallel via the orchestrator, verifies the merged result,
+  and re-plans until done — no human interaction. Bounded by attempt + time
+  budgets. Opt in via `HARNESS_LEAD=1` (CLI headless), the `/auto` chat command,
+  or `POST /api/lead/run` (streaming). Sub-agents run under full auto-approve.
 - **Project Atlas** (`src/web/atlasRoutes.ts`): a read-only repository map served
   from `GET /api/atlas/map`. No write paths.
 - **Prompt auto-gate** (`src/experiments/autoGate.ts`): a fail-closed gate for

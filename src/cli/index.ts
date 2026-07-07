@@ -34,6 +34,13 @@ import {
   createCodeVerifier,
   type ConductorEvent,
 } from '../core/taskConductor';
+import { runLeadAgent, type LeadAgentEvent } from '../core/leadAgent';
+import {
+  createLlmDecomposer,
+  createOrchestrateFn,
+  createToolchainVerifier,
+  createLeadPersist,
+} from '../core/leadAgentFactories';
 import { configureWebReadTool, DEFAULT_WEB_READ_MAX_CHARS, sanitizeWebReadMaxChars } from '../tools/webSearchTool';
 import { getAgentOutputDir, getAllowedExternalPaths, setAllowedExternalPaths } from '../tools/pathResolution';
 
@@ -543,9 +550,11 @@ export async function main(): Promise<void> {
   // --prompt-file lets callers pass large prompts (e.g. inline file contents)
   // that would otherwise overflow shell command-line size limits.
   if (headlessPrompt) {
-    const outcome = process.env.HARNESS_CONDUCTOR === '1'
-      ? await runHeadlessConductor(config, deps, projectDir, headlessPrompt, myceliumRouter)
-      : await runHeadless(config, deps, session, headlessPrompt);
+    const outcome = process.env.HARNESS_LEAD === '1'
+      ? await runHeadlessLeadAgent(deps, projectDir, headlessPrompt)
+      : process.env.HARNESS_CONDUCTOR === '1'
+        ? await runHeadlessConductor(config, deps, projectDir, headlessPrompt, myceliumRouter)
+        : await runHeadless(config, deps, session, headlessPrompt);
     if (myceliumRouter) {
       try {
         await reinforceHeadlessMycelium(myceliumRouter, myceliumContextPackage, outcome);
@@ -1020,6 +1029,72 @@ function logConductorEvent(e: ConductorEvent): void {
       break;
     case 'done':
       console.error(`\n--- conductor ${e.status} (${e.steps} step executions) ---`);
+      break;
+  }
+}
+
+/**
+ * Lead-agent headless run (opt-in via HARNESS_LEAD=1). The lead agent plans the
+ * task into a graph of sub-agent workstreams, dispatches them in parallel via
+ * the orchestrator, verifies the merged result against the toolchain, and
+ * re-plans until the work passes or a budget is exhausted — no human in the
+ * loop. Sub-agents run without permission prompts (full auto-approve), matching
+ * the harness's dontAsk autonomy posture. Returns the standard HeadlessOutcome
+ * shape so mycelium reinforcement is unchanged.
+ */
+async function runHeadlessLeadAgent(
+  deps: QueryLoopDeps,
+  projectDir: string,
+  prompt: string,
+): Promise<HeadlessOutcome> {
+  const runId = String(Date.now());
+  const outcome = await runLeadAgent({
+    task: prompt,
+    decompose: createLlmDecomposer(deps.client),
+    orchestrate: createOrchestrateFn(deps.client, deps.tools, projectDir),
+    verifyOverall: createToolchainVerifier(projectDir),
+    persist: createLeadPersist(projectDir, runId),
+    runId,
+    onEvent: logLeadAgentEvent,
+  });
+
+  if (outcome.finalOutput.trim()) console.log(outcome.finalOutput);
+
+  return {
+    assistantText: outcome.finalOutput,
+    toolCallCount: 0,
+    toolSuccessCount: 0,
+    toolSuccessRatios: {},
+    toolCallSequence: [],
+  };
+}
+
+function logLeadAgentEvent(e: LeadAgentEvent): void {
+  switch (e.type) {
+    case 'start':
+      console.error(`🧭 lead agent starting: ${e.task}`);
+      break;
+    case 'decompose':
+      console.error(`🗺️ attempt ${e.attempt}: ${e.tasks.length} workstream(s)`);
+      for (const t of e.tasks) {
+        const deps = t.dependsOn && t.dependsOn.length ? ` ⟵ ${t.dependsOn.join(', ')}` : '';
+        console.error(`   • ${t.id} [${t.role}]${deps}`);
+      }
+      break;
+    case 'orchestrated':
+      console.error(`⚙️ orchestrated: ${e.result.tasks_succeeded} ok, ${e.result.tasks_failed} failed (${e.result.total_duration_ms}ms)`);
+      break;
+    case 'verify':
+      console.error(`🔍 verify attempt ${e.attempt}: ${e.passed ? 'PASS' : 'FAIL'}${e.detail ? ` — ${e.detail}` : ''}`);
+      break;
+    case 'replan':
+      console.error(`♻️ replanning after attempt ${e.attempt}: ${e.reason}`);
+      break;
+    case 'capability_gap':
+      console.error(`🧩 capability gap: ${e.gap.reason} (${e.gap.need})`);
+      break;
+    case 'done':
+      console.error(`\n--- lead agent ${e.status} (${e.attempts} attempt(s)) ---`);
       break;
   }
 }

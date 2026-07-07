@@ -7233,6 +7233,10 @@ const SLASH_COMMANDS = [
     apply: () => { hideSlashPalette(); },
     fallback: '',
     takesArgs: true },
+  { cmd: '/auto',        desc: 'Autonomous lead agent: plans + spawns sub-agents to finish a task (e.g. /auto build a todo API)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
 ];
 
 // Dynamic slash commands populated from /api/skills so users can autocomplete
