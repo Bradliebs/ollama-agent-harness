@@ -3,7 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { Ollama } from 'ollama';
 import type { Tool, ToolResult } from '../types';
-import { findInstalledVisionModel, isVisionCapableModelName } from '../models/visionModels';
+import { findInstalledVisionModel, isVisionCapableModelName, isVisionModelUsable } from '../models/visionModels';
 import { resolveProjectReadPath } from './pathResolution';
 
 const MAX_IMAGE_BYTES = 10_000_000;
@@ -37,7 +37,7 @@ export const ImageAnalyzeTool: Tool = {
       const client = new Ollama({ host: sanitizeString(input.host) || process.env.OLLAMA_HOST || 'http://localhost:11434' });
       const model = await resolveVisionModel(input, client);
       if (!model) {
-        return { success: false, output: 'No vision model was provided and no installed Ollama vision model could be auto-detected. Set HARNESS_VISION_MODEL to a model such as llava:latest.', error: 'missing vision model' };
+        return { success: false, output: 'No vision model was provided and no installed Ollama vision model could be auto-detected. Set HARNESS_VISION_MODEL to a vision model — a local one such as llava:latest, or a cloud one such as minimax-m3:cloud.', error: 'missing vision model' };
       }
       const response = await client.chat({
         model,
@@ -58,34 +58,37 @@ export const ImageAnalyzeTool: Tool = {
 
 async function resolveVisionModel(input: Record<string, unknown>, client: Ollama): Promise<string> {
   const configuredModel = sanitizeString(input.model) || process.env.HARNESS_VISION_MODEL || '';
-  // List installed models once — used both as a validity check on the
-  // configured/selected model AND as a fallback source when nothing
-  // explicit is set. Without this validation, a configured model that
-  // isn't actually installed (e.g. settings carries `qwen2-vl` but only
-  // `llava` is pulled) sends every image_analyze call to its death.
+  // List installed models once. Used both to validate the configured/selected
+  // model AND as the fallback source for auto-detection. Cloud models (`:cloud`)
+  // are resolved remotely and never appear here, so they are handled via
+  // isVisionModelUsable instead of requiring a local-install match.
   let installed: string[] = [];
+  let listed = false;
   try {
     const response = await client.list();
-    installed = response.models.map((model) => model.name);
+    installed = (response.models ?? []).map((model) => model.name);
+    listed = true;
   } catch {
-    // If we can't list, fall back to the configured value as a best-effort.
-    if (configuredModel) return configuredModel;
-    return '';
+    // Listing failed (Ollama unreachable). Fall through: an explicitly
+    // configured model is still worth attempting so the user gets a real
+    // Ollama error rather than a generic "no vision model" message.
   }
-  const isInstalled = (name: string): boolean => {
-    if (!name) return false;
-    if (installed.includes(name)) return true;
-    // Ollama tags models as "name:tag"; accept a configured bare name
-    // when any installed model shares the same prefix.
-    const bare = name.split(':')[0];
-    return installed.some((entry) => entry === bare || entry.startsWith(`${bare}:`));
-  };
-  if (configuredModel && isInstalled(configuredModel)) return configuredModel;
+  // 1. Explicit configuration wins. Trust a configured model when it is
+  //    usable (installed or a cloud model) OR when we could not list at all.
+  //    This is the robust path for cloud vision models like minimax-m3:cloud
+  //    that the local tags list never reports.
+  if (configuredModel && (isVisionModelUsable(configuredModel, installed) || !listed)) {
+    return configuredModel;
+  }
+  // 2. The active chat model, when it is itself vision-capable and usable.
+  //    Lets `minimax-m3:cloud` selected as the main model handle images with
+  //    zero extra configuration.
   const selectedModel = sanitizeString(process.env.OLLAMA_MODEL);
-  if (selectedModel && isVisionCapableModelName(selectedModel) && isInstalled(selectedModel)) return selectedModel;
-  // Configured/selected model wasn't installed. Auto-fall-back to whichever
-  // vision-capable model IS installed so the call succeeds instead of
-  // looping with `model not found`.
+  if (selectedModel && isVisionCapableModelName(selectedModel) && isVisionModelUsable(selectedModel, installed)) {
+    return selectedModel;
+  }
+  // 3. Auto-detect any vision-capable model present in the list (local or a
+  //    cloud entry that Ollama did surface).
   return findInstalledVisionModel(installed) ?? '';
 }
 
