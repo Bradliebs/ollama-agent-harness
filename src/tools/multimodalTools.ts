@@ -82,16 +82,41 @@ async function resolveVisionModel(input: Record<string, unknown>, client: Ollama
   if (configuredModel && (isVisionModelUsable(configuredModel, installed) || !listed)) {
     return configuredModel;
   }
-  // 2. The active chat model, when it is itself vision-capable and usable.
-  //    Lets `minimax-m3:cloud` selected as the main model handle images with
-  //    zero extra configuration.
+  // 2. The active chat model, when it can actually see. Prefer Ollama's real
+  //    capability metadata over the name heuristic so a vision model with an
+  //    unhelpful name (and only a text model like glm-5.2:cloud is skipped).
   const selectedModel = sanitizeString(process.env.OLLAMA_MODEL);
-  if (selectedModel && isVisionCapableModelName(selectedModel) && isVisionModelUsable(selectedModel, installed)) {
-    return selectedModel;
+  if (selectedModel && isVisionModelUsable(selectedModel, installed)) {
+    if (isVisionCapableModelName(selectedModel) || await modelHasVisionCapability(client, selectedModel)) {
+      return selectedModel;
+    }
   }
-  // 3. Auto-detect any vision-capable model present in the list (local or a
-  //    cloud entry that Ollama did surface).
+  // 3. Auto-detect among installed models. Trust Ollama's actual capabilities
+  //    first — this picks up vision-capable models whose names give no hint
+  //    (e.g. gemma4:e4b reports `vision`) — then fall back to the name heuristic.
+  for (const name of installed) {
+    if (await modelHasVisionCapability(client, name)) return name;
+  }
   return findInstalledVisionModel(installed) ?? '';
+}
+
+/**
+ * Ask Ollama what a model can actually do. `/api/show` returns a
+ * `capabilities` array (e.g. ["completion","vision","tools"]); a model is
+ * vision-capable when it lists "vision". This is authoritative — unlike the
+ * name heuristic it works for any model and never misclassifies. Returns
+ * false when the model can't be shown (unreachable/unknown) so callers fall
+ * back to name-based detection.
+ */
+async function modelHasVisionCapability(client: Ollama, name: string): Promise<boolean> {
+  if (!name) return false;
+  try {
+    const info = await client.show({ model: name });
+    const capabilities = (info as unknown as { capabilities?: unknown }).capabilities;
+    return Array.isArray(capabilities) && capabilities.includes('vision');
+  } catch {
+    return false;
+  }
 }
 
 export const AudioTranscribeTool: Tool = {
