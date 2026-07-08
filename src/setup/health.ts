@@ -3,7 +3,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { AudioTranscribeTool } from '../tools/multimodalTools';
-import { findInstalledVisionModel } from '../models/visionModels';
+import { findInstalledVisionModel, isCloudModelName } from '../models/visionModels';
 import { PdfReadTool } from '../tools/pdfTool';
 import { createBuiltinToolRegistry } from '../tools/registry';
 import { OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiKey } from '../core/chatClientFactory';
@@ -101,7 +101,7 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
     const response = await new Ollama({ host: input.host }).list();
     const modelNames = response.models.map((model) => model.name);
     const matchingVisionModel = input.visionModel
-      ? modelNames.some((name) => name === input.visionModel || name.startsWith(`${input.visionModel}:`))
+      ? (isCloudModelName(input.visionModel) || modelNames.some((name) => name === input.visionModel || name.startsWith(`${input.visionModel}:`)))
       : false;
     const detectedVisionModel = input.visionModel ? '' : findInstalledVisionModel(modelNames);
     return {
@@ -113,7 +113,11 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
       vision: input.visionModel
         ? {
           ok: matchingVisionModel,
-          message: matchingVisionModel ? `Vision model '${input.visionModel}' is installed.` : `Vision model '${input.visionModel}' was not found in Ollama.`,
+          message: matchingVisionModel
+            ? (isCloudModelName(input.visionModel) && !modelNames.some((name) => name === input.visionModel)
+              ? `Vision model '${input.visionModel}' is a cloud model (resolved remotely).`
+              : `Vision model '${input.visionModel}' is installed.`)
+            : `Vision model '${input.visionModel}' was not found in Ollama.`,
         }
         : detectedVisionModel
           ? { ok: true, message: `Auto-detected vision model '${detectedVisionModel}'.` }
