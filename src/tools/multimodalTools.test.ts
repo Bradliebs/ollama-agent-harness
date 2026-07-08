@@ -4,9 +4,10 @@ import { AudioTranscribeTool, ImageAnalyzeTool, resolveDefaultAudioCommand } fro
 
 const mockChat = jest.fn();
 const mockList = jest.fn();
+const mockShow = jest.fn();
 
 jest.mock('ollama', () => ({
-  Ollama: jest.fn().mockImplementation(() => ({ chat: mockChat, list: mockList })),
+  Ollama: jest.fn().mockImplementation(() => ({ chat: mockChat, list: mockList, show: mockShow })),
 }));
 
 describe('multimodal tools', () => {
@@ -22,6 +23,10 @@ describe('multimodal tools', () => {
     await fs.mkdir(fixtureDir, { recursive: true });
     mockChat.mockReset();
     mockList.mockReset();
+    mockShow.mockReset();
+    // Default: models report no vision capability, so name-based detection is
+    // exercised unless a test opts into capability metadata explicitly.
+    mockShow.mockResolvedValue({ capabilities: ['completion'] });
     delete process.env.HARNESS_VISION_MODEL;
     delete process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND;
     delete process.env.OLLAMA_MODEL;
@@ -131,6 +136,37 @@ describe('multimodal tools', () => {
 
     expect(result).toMatchObject({ success: false, error: 'missing vision model' });
     expect(mockChat).not.toHaveBeenCalled();
+  });
+
+  it('auto-detects a vision model by Ollama capability when the name gives no hint', async () => {
+    // gemma4:e4b reports `vision` via /api/show even though its name matches no
+    // vision heuristic. Capability metadata must win so it is used offline.
+    const imagePath = path.join(fixtureDir, 'sample.png');
+    await fs.writeFile(imagePath, Buffer.from([21, 22]));
+    mockList.mockResolvedValue({ models: [{ name: 'gemma4:e4b' }] });
+    mockShow.mockImplementation(async ({ model }: { model: string }) =>
+      model === 'gemma4:e4b' ? { capabilities: ['completion', 'vision', 'tools'] } : { capabilities: ['completion'] });
+    mockChat.mockResolvedValue({ message: { content: 'A diagram.' } });
+
+    const result = await ImageAnalyzeTool.execute({ path: imagePath, prompt: 'Describe.' });
+
+    expect(result).toMatchObject({ success: true, output: 'A diagram.' });
+    expect(mockChat).toHaveBeenCalledWith(expect.objectContaining({ model: 'gemma4:e4b' }));
+  });
+
+  it('uses the selected chat model when Ollama reports it as vision-capable despite its name', async () => {
+    const imagePath = path.join(fixtureDir, 'sample.png');
+    await fs.writeFile(imagePath, Buffer.from([23, 24]));
+    process.env.OLLAMA_MODEL = 'gemma4:e4b';
+    mockList.mockResolvedValue({ models: [{ name: 'gemma4:e4b' }] });
+    mockShow.mockImplementation(async ({ model }: { model: string }) =>
+      model === 'gemma4:e4b' ? { capabilities: ['completion', 'vision'] } : { capabilities: ['completion'] });
+    mockChat.mockResolvedValue({ message: { content: 'A chart.' } });
+
+    const result = await ImageAnalyzeTool.execute({ path: imagePath, prompt: 'Describe.' });
+
+    expect(result).toMatchObject({ success: true, output: 'A chart.' });
+    expect(mockChat).toHaveBeenCalledWith(expect.objectContaining({ model: 'gemma4:e4b' }));
   });
 
   it('reports a clear audio transcription setup error when no command is configured', async () => {
