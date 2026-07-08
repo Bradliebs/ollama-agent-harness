@@ -2,7 +2,7 @@
 // minimal fallback so the rest of app.js still executes and the UI
 // remains interactive (buttons, panel toggles, etc.).
 if (typeof marked === 'undefined') {
-  window.marked = { parse: function(text) { return '<pre>' + String(text).replace(/[&<>"']/g, function(c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }) + '</pre>'; }, setOptions: function() {} };
+  window.marked = { parse: function(text) { return '<pre style="white-space:pre-wrap;word-break:break-word">' + String(text).replace(/[&<>"']/g, function(c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }) + '</pre>'; }, setOptions: function() {} };
 }
 marked.setOptions({ breaks: true, gfm: true });
 
@@ -4879,7 +4879,7 @@ function formatEvidenceFile(file) {
 
 function renderMd(el, text) {
   if (!text) { el.innerHTML = ''; return; }
-  el.innerHTML = (typeof marked !== 'undefined' && marked.parse) ? marked.parse(text) : ('<pre>' + esc(text) + '</pre>');
+  el.innerHTML = (typeof marked !== 'undefined' && marked.parse) ? marked.parse(text) : ('<pre style="white-space:pre-wrap;word-break:break-word">' + esc(text) + '</pre>');
   el.querySelectorAll('pre').forEach((pre) => {
     if (pre.querySelector('.copy-btn')) return;
     // Capture the code text BEFORE the button is appended so the
