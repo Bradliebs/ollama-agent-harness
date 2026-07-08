@@ -56,6 +56,35 @@ describe('setup health', () => {
     }
   });
 
+  it('reports a configured cloud vision model as ok even when ollama list omits it', async () => {
+    const server = http.createServer((req, res) => {
+      if (req.url === '/api/tags') {
+        res.setHeader('Content-Type', 'application/json');
+        // Cloud models are resolved remotely and are not present in the local tags list.
+        res.end(JSON.stringify({ models: [{ name: 'glm-5.2:cloud', size: 1, modified_at: new Date().toISOString(), details: {} }] }));
+        return;
+      }
+      res.statusCode = 404;
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Failed to bind fake Ollama server');
+
+    try {
+      const result = await checkSetupHealth({
+        host: `http://127.0.0.1:${address.port}`,
+        visionModel: 'minimax-m3:cloud',
+        audioTranscribeCommand: '',
+        projectDir: process.cwd(),
+      });
+
+      expect(result.vision).toMatchObject({ ok: true });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
   it('auto-detects an installed vision model when none is configured', async () => {
     const server = http.createServer((req, res) => {
       if (req.url === '/api/tags') {

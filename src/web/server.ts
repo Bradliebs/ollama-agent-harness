@@ -142,7 +142,7 @@ import { IdentityAutoUpdateScheduler } from '../services/identityAutoUpdateSched
 import { checkSetupHealth } from '../setup/health';
 import { probeToolCalling, type ToolCallProbeResult } from '../setup/toolCallProbe';
 import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCatalog';
-import { isVisionCapableModelName } from '../models/visionModels';
+import { isVisionCapableModelName, isVisionModelUsable } from '../models/visionModels';
 import { createAutomationJob, listAutomationJobs, listDueAutomationJobs, readAutomationRunLog } from '../automation/jobs';
 import { AutomationScheduler } from '../automation/scheduler';
 import { handleOperateModeRequest, listAgenticServices } from '../services/agenticServiceMode';
@@ -4630,12 +4630,6 @@ async function buildVisionHealth(): Promise<{
 }> {
   const configured = (mediaTools.visionModel || process.env.HARNESS_VISION_MODEL || '').trim();
   const installed = await webRuntime.listModels(ollamaHost).catch((): string[] => []);
-  const isInstalled = (name: string): boolean => {
-    if (!name) return false;
-    if (installed.includes(name)) return true;
-    const bare = name.split(':')[0];
-    return installed.some((entry) => entry === bare || entry.startsWith(`${bare}:`));
-  };
   const visionInstalled = installed.filter((name) => isVisionCapableModelName(name));
   if (!configured) {
     const fallback = visionInstalled[0];
@@ -4647,7 +4641,9 @@ async function buildVisionHealth(): Promise<{
       reason: fallback ? undefined : 'No vision model is configured and no vision-capable model is installed.',
     };
   }
-  if (isInstalled(configured)) {
+  // A configured model is usable when installed locally OR when it is a cloud
+  // model (`:cloud`), which Ollama resolves remotely and never lists.
+  if (isVisionModelUsable(configured, installed)) {
     return { configured, effective: configured, installed: visionInstalled, ok: true };
   }
   const fallback = visionInstalled[0];
