@@ -88,6 +88,51 @@ describe('multimodal tools', () => {
     expect(mockChat).toHaveBeenCalledWith(expect.objectContaining({ model: 'minimax-m3:cloud' }));
   });
 
+  it('uses a configured cloud vision model even when ollama list omits it', async () => {
+    // Real user scenario: minimax-m3:cloud is a cloud model that never shows
+    // up in the local `ollama list`, yet is set as HARNESS_VISION_MODEL. The
+    // old local-install gate rejected it with "missing vision model".
+    const imagePath = path.join(fixtureDir, 'sample.png');
+    await fs.writeFile(imagePath, Buffer.from([11, 12]));
+    process.env.HARNESS_VISION_MODEL = 'minimax-m3:cloud';
+    mockList.mockResolvedValue({ models: [{ name: 'glm-5.2:cloud' }, { name: 'qwen2.5-coder:7b' }] });
+    mockChat.mockResolvedValue({ message: { content: 'A dragonfly photo.' } });
+
+    const result = await ImageAnalyzeTool.execute({ path: imagePath, prompt: 'What is this?' });
+
+    expect(result).toMatchObject({ success: true, output: 'A dragonfly photo.' });
+    expect(mockChat).toHaveBeenCalledWith(expect.objectContaining({ model: 'minimax-m3:cloud' }));
+  });
+
+  it('uses the selected chat model for vision when it is a cloud vision model', async () => {
+    // Zero-config path: the user picks minimax-m3:cloud as their main model.
+    // Even though it is absent from the local list, it should handle images.
+    const imagePath = path.join(fixtureDir, 'sample.png');
+    await fs.writeFile(imagePath, Buffer.from([13, 14]));
+    process.env.OLLAMA_MODEL = 'minimax-m3:cloud';
+    mockList.mockResolvedValue({ models: [{ name: 'qwen2.5-coder:7b' }] });
+    mockChat.mockResolvedValue({ message: { content: 'Some UI screenshot.' } });
+
+    const result = await ImageAnalyzeTool.execute({ path: imagePath, prompt: 'Describe.' });
+
+    expect(result).toMatchObject({ success: true, output: 'Some UI screenshot.' });
+    expect(mockChat).toHaveBeenCalledWith(expect.objectContaining({ model: 'minimax-m3:cloud' }));
+  });
+
+  it('does not use a text-only cloud chat model for vision', async () => {
+    // glm-5.2:cloud is text-only; it must not be sent an image. With no other
+    // vision model available, the tool reports the missing-model error.
+    const imagePath = path.join(fixtureDir, 'sample.png');
+    await fs.writeFile(imagePath, Buffer.from([15]));
+    process.env.OLLAMA_MODEL = 'glm-5.2:cloud';
+    mockList.mockResolvedValue({ models: [{ name: 'glm-5.2:cloud' }, { name: 'qwen2.5-coder:7b' }] });
+
+    const result = await ImageAnalyzeTool.execute({ path: imagePath, prompt: 'Describe.' });
+
+    expect(result).toMatchObject({ success: false, error: 'missing vision model' });
+    expect(mockChat).not.toHaveBeenCalled();
+  });
+
   it('reports a clear audio transcription setup error when no command is configured', async () => {
     const audioPath = path.join(fixtureDir, 'voice.wav');
     await fs.writeFile(audioPath, Buffer.from([1, 2, 3]));
