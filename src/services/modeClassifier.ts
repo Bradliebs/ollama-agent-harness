@@ -77,7 +77,7 @@ export function classifyMode(message: string): ModeClassification {
     return {
       mode: 'chat',
       confidence: 0.5,
-      reason: 'No mode pattern matched; defaulting to chat.',
+      reason: 'Conversational message — using chat mode.',
       matchedPatterns: [],
       suppressedModes: [],
     };
