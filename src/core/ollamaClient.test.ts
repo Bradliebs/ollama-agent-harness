@@ -58,6 +58,37 @@ describe('OllamaClient context configuration', () => {
     });
   });
 
+  it('falls back to thinking when a reasoning model streams empty content', async () => {
+    // glm-5.2:cloud-style: reasoning streamed in `thinking`, `content` empty.
+    // Without a fallback the user asks a question and sees a blank reply.
+    async function* chunks() {
+      yield { message: { role: 'assistant', content: '', thinking: 'The capital ' }, done: false };
+      yield { message: { role: 'assistant', content: '', thinking: 'of France is Paris.' }, done: true, eval_count: 5 };
+    }
+    mockChat.mockResolvedValue(chunks());
+    const client = new OllamaClient({ model: 'glm-5.2:cloud' });
+
+    const result = await client.chat([{ role: 'user', content: 'capital of France?' }]);
+    expect(result.message.content).toBe('The capital of France is Paris.');
+  });
+
+  it('does not override an empty tool-call turn with thinking', async () => {
+    // A turn that only issues a tool call legitimately has empty content and
+    // must not be replaced by reasoning text.
+    async function* chunks() {
+      yield {
+        message: { role: 'assistant', content: '', thinking: 'I should call a tool.', tool_calls: [{ function: { name: 'read_file', arguments: { path: 'a.txt' } } }] },
+        done: true,
+      };
+    }
+    mockChat.mockResolvedValue(chunks());
+    const client = new OllamaClient({ model: 'glm-5.2:cloud' });
+
+    const result = await client.chat([{ role: 'user', content: 'read a.txt' }]);
+    expect(result.message.content).toBe('');
+    expect(result.message.tool_calls).toHaveLength(1);
+  });
+
   it('writes payload metrics to debug logs', async () => {
     async function* chunks() {
       yield {
