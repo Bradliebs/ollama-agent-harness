@@ -48,8 +48,10 @@ export class OllamaClient implements IChatClient {
     abortSignal?: AbortSignal,
   ): Promise<ChatResult> {
     const maxAttempts = getOllamaChatMaxAttempts();
-    let lastError: unknown;
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const maxEmptyAttempts = getOllamaEmptyResponseMaxAttempts();
+    let transientAttempts = 0;
+    let emptyAttempts = 0;
+    for (;;) {
       try {
         writeDebugLogRequest(this.model, messages, tools);
         const response = await this.client.chat({
@@ -70,15 +72,36 @@ export class OllamaClient implements IChatClient {
         writeDebugLogResponse(this.model, messages, tools, result);
         return result;
       } catch (error) {
-        if (abortSignal?.aborted || !isTransientOllamaChatError(error) || attempt >= maxAttempts - 1) {
+        if (abortSignal?.aborted) throw error;
+
+        // Empty-response flake (Ollama Cloud sometimes closes the stream with
+        // only empty deltas). Retry aggressively but cheaply — these return
+        // instantly and are the top cause of a blank "no output" reply.
+        if (error instanceof EmptyOllamaResponseError) {
+          emptyAttempts += 1;
+          if (emptyAttempts >= maxEmptyAttempts) throw error;
+          const delayMs = getOllamaEmptyResponseRetryDelayMs();
+          ollamaChatRetryEvents.push({
+            type: 'model_retry',
+            model: this.model,
+            attempt: emptyAttempts,
+            maxAttempts: maxEmptyAttempts,
+            delayMs,
+            reason: 'empty response stream',
+          });
+          await sleep(delayMs, abortSignal);
+          continue;
+        }
+
+        if (!isTransientOllamaChatError(error) || transientAttempts >= maxAttempts - 1) {
           throw error;
         }
-        lastError = error;
-        const delayMs = getOllamaChatRetryDelayMs(attempt);
+        transientAttempts += 1;
+        const delayMs = getOllamaChatRetryDelayMs(transientAttempts - 1);
         ollamaChatRetryEvents.push({
           type: 'model_retry',
           model: this.model,
-          attempt: attempt + 1,
+          attempt: transientAttempts,
           maxAttempts,
           delayMs,
           reason: error instanceof Error ? error.message : String(error),
@@ -86,7 +109,6 @@ export class OllamaClient implements IChatClient {
         await sleep(delayMs, abortSignal);
       }
     }
-    throw lastError instanceof Error ? lastError : new Error(String(lastError ?? 'Ollama chat failed'));
   }
 
   async chatOnce(
@@ -171,6 +193,27 @@ function getOllamaChatMaxAttempts(): number {
   return Math.min(5, Math.max(1, parsed));
 }
 
+// Empty successful streams (no content, no reasoning, no tool call) are a
+// distinct, frequent Ollama Cloud flake — so they get their own, more
+// generous retry budget. They return instantly, so extra attempts are cheap.
+class EmptyOllamaResponseError extends Error {
+  constructor() {
+    super('Ollama returned an empty response stream');
+    this.name = 'EmptyOllamaResponseError';
+  }
+}
+
+function getOllamaEmptyResponseMaxAttempts(): number {
+  const parsed = Number.parseInt(process.env.HARNESS_OLLAMA_EMPTY_RETRY_MAX_ATTEMPTS || '5', 10);
+  if (!Number.isFinite(parsed)) return 5;
+  return Math.min(10, Math.max(1, parsed));
+}
+
+function getOllamaEmptyResponseRetryDelayMs(): number {
+  const parsed = Number.parseInt(process.env.HARNESS_OLLAMA_EMPTY_RETRY_DELAY_MS || '300', 10);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 300;
+}
+
 function getOllamaChatRetryDelayMs(attempt: number): number {
   const parsed = Number.parseInt(process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS || '500', 10);
   const baseDelay = Number.isFinite(parsed) ? Math.max(0, parsed) : 500;
@@ -220,6 +263,7 @@ async function collectStreamingChatResponse(
   abortSignal?: AbortSignal,
 ): Promise<ChatResult> {
   let content = '';
+  let thinking = '';
   let role = 'assistant';
   const toolCalls: ToolCall[] = [];
   let usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalDurationNs: 0 };
@@ -233,6 +277,11 @@ async function collectStreamingChatResponse(
       if (abortSignal?.aborted) throw new Error('aborted');
       if (chunk.message?.role) role = chunk.message.role;
       content += chunk.message?.content ?? '';
+      // Thinking models (e.g. glm-5.2:cloud) stream their reasoning in a
+      // separate `thinking` field and only later emit the answer in
+      // `content`. Capture it so a response that ends up with empty content
+      // can fall back to the reasoning instead of showing a blank message.
+      thinking += (chunk.message as { thinking?: string } | undefined)?.thinking ?? '';
       if (chunk.message?.tool_calls?.length) toolCalls.push(...chunk.message.tool_calls);
       usage = {
         promptTokens: chunk.prompt_eval_count ?? usage.promptTokens,
@@ -247,6 +296,21 @@ async function collectStreamingChatResponse(
     abortSignal?.removeEventListener('abort', abort);
   }
 
+  // When a thinking model returns no answer text (empty content) and made no
+  // tool call, surface the reasoning rather than an empty message — otherwise
+  // the user asks a question and sees nothing. Tool-call turns legitimately
+  // have empty content, so they are left untouched.
+  if (!content.trim() && toolCalls.length === 0 && thinking.trim()) {
+    content = thinking;
+  }
+
+  // A fully empty successful stream (no content, no reasoning, no tool call)
+  // is a known Ollama Cloud flake — the SSE closes with only empty deltas.
+  // Signal it so chat() retries instead of returning a blank "no output".
+  if (!content.trim() && toolCalls.length === 0) {
+    throw new EmptyOllamaResponseError();
+  }
+
   const message: Message = { role, content };
   if (toolCalls.length > 0) message.tool_calls = toolCalls;
   liftInlineToolCalls(message);
@@ -255,6 +319,13 @@ async function collectStreamingChatResponse(
 
 function chatResponseToResult(response: ChatResponse): ChatResult {
   const message: Message = response.message;
+  // Mirror the streaming fallback: if a thinking model returned no answer
+  // text and made no tool call, surface its reasoning instead of a blank.
+  const thinking = (response.message as { thinking?: string } | undefined)?.thinking;
+  if (typeof message.content === 'string' && !message.content.trim()
+    && !(message.tool_calls && message.tool_calls.length) && thinking && thinking.trim()) {
+    message.content = thinking;
+  }
   liftInlineToolCalls(message);
   return {
     message,
