@@ -4732,6 +4732,15 @@ function formatEvidenceFile(file) {
 function renderMd(el, text) {
   if (!text) { el.innerHTML = ''; return; }
   el.innerHTML = (typeof marked !== 'undefined' && marked.parse) ? marked.parse(text) : ('<pre style="white-space:pre-wrap;word-break:break-word">' + esc(text) + '</pre>');
+  // Open links from message output in a new tab. Without this, clicking a
+  // markdown link navigates the single-page app away and destroys the live
+  // session. In-page fragment links (#...) are left alone.
+  el.querySelectorAll('a[href]').forEach((a) => {
+    const href = a.getAttribute('href') || '';
+    if (href.startsWith('#')) return;
+    a.setAttribute('target', '_blank');
+    a.setAttribute('rel', 'noopener noreferrer');
+  });
   el.querySelectorAll('pre').forEach((pre) => {
     if (pre.querySelector('.copy-btn')) return;
     // Capture the code text BEFORE the button is appended so the
