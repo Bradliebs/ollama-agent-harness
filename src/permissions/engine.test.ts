@@ -3,11 +3,13 @@ import { BUILTIN_TOOL_ENTRIES } from '../tools/registry';
 import type { PermissionRule } from '../types';
 import * as os from 'os';
 import * as path from 'path';
-import { setAllowedExternalPaths } from '../tools/pathResolution';
+import { setAllowedExternalPaths, setAutonomousBuildTargets } from '../tools/pathResolution';
+import { KillSwitch } from './killSwitch';
 
 describe('PermissionEngine', () => {
   afterEach(() => {
     setAllowedExternalPaths([]);
+    setAutonomousBuildTargets([]);
   });
 
   describe('deny-first rule ordering', () => {
@@ -118,6 +120,30 @@ describe('PermissionEngine', () => {
       expect(result.decision).toBe('allow');
     });
 
+    it('dontAsk mode allows program file writes inside a designated build target', () => {
+      const externalRoot = path.join(os.tmpdir(), 'harness-oracle-external');
+      const buildTarget = path.join(externalRoot, 'bioarn');
+      setAllowedExternalPaths([externalRoot]);
+      setAutonomousBuildTargets([buildTarget]);
+      const engine = new PermissionEngine([], 'dontAsk');
+
+      const result = engine.evaluate({ name: 'file_write', input: { path: path.join(buildTarget, 'model.py') } });
+
+      expect(result.decision).toBe('allow');
+    });
+
+    it('dontAsk mode still asks for program files in allowed external folders outside the build target', () => {
+      const externalRoot = path.join(os.tmpdir(), 'harness-oracle-external');
+      const buildTarget = path.join(externalRoot, 'bioarn');
+      setAllowedExternalPaths([externalRoot]);
+      setAutonomousBuildTargets([buildTarget]);
+      const engine = new PermissionEngine([], 'dontAsk');
+
+      const result = engine.evaluate({ name: 'file_edit', input: { path: path.join(externalRoot, 'bullet-journal', 'journal.py') } });
+
+      expect(result).toMatchObject({ decision: 'ask', reason: 'Protected external program file requires confirmation.' });
+    });
+
     it('acceptEdits mode auto-approves file edits', () => {
       const engine = new PermissionEngine([], 'acceptEdits');
       const result = engine.evaluate({ name: 'file_edit', input: {} });
@@ -130,7 +156,7 @@ describe('PermissionEngine', () => {
       expect(result.decision).toBe('ask');
     });
 
-    it.each(['reflect', 'analyze_patterns', 'promote_pattern', 'consolidate', 'evolve', 'improve_skill', 'memory_write', 'memory_read'])(
+    it.each(['reflect', 'analyze_patterns', 'promote_pattern', 'consolidate', 'evolve', 'improve_skill', 'create_skill', 'memory_write', 'memory_read'])(
       'acceptEdits mode auto-approves harness meta tool: %s',
       (toolName) => {
         const engine = new PermissionEngine([], 'acceptEdits');
@@ -175,6 +201,49 @@ describe('PermissionEngine', () => {
       expect(engine.evaluate({ name: 'file_read', input: {} }).decision).toBe('deny');
       engine.releaseKillSwitch();
       expect(engine.evaluate({ name: 'file_read', input: {} }).decision).toBe('allow');
+    });
+
+    describe('with shared KillSwitch (v0.5.6)', () => {
+      it('reads live state from the shared switch (no construction-time snapshot)', () => {
+        // This is the regression test for audit #6 — engines constructed
+        // BEFORE the kill switch engages must still see the engagement.
+        const ks = new KillSwitch();
+        const engine = new PermissionEngine([], 'default', undefined, ks);
+        expect(engine.evaluate({ name: 'file_read', input: {} }).decision).toBe('allow');
+        ks.engage('engaged after construction');
+        expect(engine.isKillSwitchActive()).toBe(true);
+        const result = engine.evaluate({ name: 'file_read', input: {} });
+        expect(result).toMatchObject({ decision: 'deny', reason: 'engaged after construction' });
+      });
+
+      it('engageKillSwitch on the engine writes through to the shared switch', () => {
+        const ks = new KillSwitch();
+        const engineA = new PermissionEngine([], 'default', undefined, ks);
+        const engineB = new PermissionEngine([], 'default', undefined, ks);
+        engineA.engageKillSwitch('halt from A');
+        expect(ks.isActive()).toBe(true);
+        expect(engineB.isKillSwitchActive()).toBe(true);
+        expect(engineB.getKillSwitchReason()).toBe('halt from A');
+      });
+
+      it('releaseKillSwitch on the engine clears the shared switch for all listeners', () => {
+        const ks = new KillSwitch();
+        ks.engage('initial');
+        const engine = new PermissionEngine([], 'default', undefined, ks);
+        engine.releaseKillSwitch();
+        expect(ks.isActive()).toBe(false);
+      });
+
+      it('setKillSwitch swaps the source after construction', () => {
+        const ksA = new KillSwitch();
+        const ksB = new KillSwitch();
+        ksB.engage('only B engaged');
+        const engine = new PermissionEngine([], 'default', undefined, ksA);
+        expect(engine.isKillSwitchActive()).toBe(false);
+        engine.setKillSwitch(ksB);
+        expect(engine.isKillSwitchActive()).toBe(true);
+        expect(engine.getKillSwitchReason()).toBe('only B engaged');
+      });
     });
   });
 

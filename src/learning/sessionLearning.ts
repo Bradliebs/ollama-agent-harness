@@ -2,8 +2,12 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { SessionEvent } from '../types';
 import { SessionStorage } from '../persistence/sessionStorage';
+import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { evaluatePromotionGate, loadSafetyRules, type PromotionGateConfig, type PromotionGateResult } from './promotionGate';
 import { listEvalTraceRuns } from './evalTrace';
+import { recordSwallowed } from '../observability/silentFailureSink';
+import { appendEvent } from '../persistence/eventStore';
+import { listExperimentEvents } from '../experiments/persistence';
 
 export interface LearningCandidateOptions {
   minToolSuccessRate?: number;
@@ -68,12 +72,26 @@ export function extractLearningCandidate(
 ): SessionLearningCandidate {
   const messages = events.filter((event) => event.data.kind === 'message');
   const toolResults = events.filter((event) => event.data.kind === 'tool_result');
-  const userMessage = messages.find((event) => event.data.kind === 'message' && event.data.message.role === 'user');
-  const assistantMessage = [...messages].reverse().find((event) => event.data.kind === 'message' && event.data.message.role === 'assistant');
-  const prompt = userMessage?.data.kind === 'message' ? userMessage.data.message.content ?? '' : '';
-  const outcome = assistantMessage?.data.kind === 'message' ? assistantMessage.data.message.content ?? '' : '';
-  const toolNames = Array.from(new Set(toolResults.map((event) => event.data.kind === 'tool_result' ? event.data.call.name : ''))).filter(Boolean);
-  const successfulTools = toolResults.filter((event) => event.data.kind === 'tool_result' && event.data.result.success).length;
+  const userMessage = messages.find((event) =>
+    event.data.kind === 'message' &&
+    event.data.message &&
+    typeof event.data.message === 'object' &&
+    event.data.message.role === 'user',
+  );
+  const assistantMessage = [...messages].reverse().find((event) =>
+    event.data.kind === 'message' &&
+    event.data.message &&
+    typeof event.data.message === 'object' &&
+    event.data.message.role === 'assistant',
+  );
+  const prompt = userMessage?.data.kind === 'message' && userMessage.data.message ? userMessage.data.message.content ?? '' : '';
+  const outcome = assistantMessage?.data.kind === 'message' && assistantMessage.data.message ? assistantMessage.data.message.content ?? '' : '';
+  const toolNames = Array.from(new Set(toolResults.map((event) =>
+    event.data.kind === 'tool_result' && event.data.call ? event.data.call.name ?? '' : '',
+  ))).filter(Boolean);
+  const successfulTools = toolResults.filter((event) =>
+    event.data.kind === 'tool_result' && event.data.result && event.data.result.success,
+  ).length;
   const toolSuccessRate = toolResults.length > 0 ? successfulTools / toolResults.length : 1;
   const qualityScore = scoreCandidate(prompt, outcome, toolSuccessRate, toolNames.length);
   const rejectionReasons: string[] = [];
@@ -122,7 +140,8 @@ export async function listLearningCandidates(
       .filter(Boolean)
       .map((line) => JSON.parse(line) as SessionLearningCandidate)
       .slice(-limit);
-  } catch {
+  } catch (err) {
+    recordSwallowed('sessionLearning.listCandidates', err);
     return [];
   }
 }
@@ -138,7 +157,8 @@ export async function listLearningCandidateReviews(
       .filter(Boolean)
       .map((line) => JSON.parse(line) as LearningCandidateReview)
       .slice(-limit);
-  } catch {
+  } catch (err) {
+    recordSwallowed('sessionLearning.listCandidateReviews', err);
     return [];
   }
 }
@@ -199,6 +219,19 @@ export async function reviewLearningCandidate(
   const filePath = candidateReviewsPath(projectDir);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.appendFile(filePath, JSON.stringify(review) + '\n', 'utf-8');
+  // Governance trail: record the human decision as a queryable approval event.
+  // Best-effort — a failure to log must not undo the review that already landed.
+  try {
+    await appendEvent(projectDir, {
+      category: 'approval',
+      type: action === 'promote' ? 'learning_candidate_promoted' : 'learning_candidate_rejected',
+      subject_id: candidateId,
+      actor: 'user',
+      data: { candidateId, action, reason, memoryPath, sessionId: candidate.sessionId },
+    });
+  } catch (err) {
+    recordSwallowed('sessionLearning.reviewApprovalEvent', err, { candidateId });
+  }
   return review;
 }
 
@@ -228,12 +261,46 @@ export async function evaluatePromotionGateForCandidate(
   }
   const recentEvalRuns = await listEvalTraceRuns(projectDir, 50).catch(() => []);
   const safetyRules = await loadSafetyRules(projectDir).catch(() => undefined);
+  const mergedConfig = mergePromotionGateConfigFromEnv(config);
+  const experimentEvents = mergedConfig.requireExperimentConfirmation
+    ? await listExperimentEvents(projectDir, mergedConfig.experimentId).catch(() => [])
+    : [];
   const verdict = evaluatePromotionGate({
     candidate,
     recentEvalRuns,
-    config: { ...config, safetyRules: safetyRules ?? config?.safetyRules },
+    experimentEvidence: experimentEvents.map((event) => {
+      const data = event.data as {
+        id?: string;
+        manifest?: { id?: string };
+        promotionEvidence?: {
+          status?: string;
+          candidateVariantId?: string;
+          automaticPromotionAllowed?: boolean;
+        };
+        safety?: { candidateViolations?: number; baselineViolations?: number };
+      };
+      return {
+        experimentId: data.manifest?.id ?? event.subject_id,
+        runId: data.id,
+        candidateVariantId: data.promotionEvidence?.candidateVariantId,
+        status: data.promotionEvidence?.status,
+        automaticPromotionAllowed: data.promotionEvidence?.automaticPromotionAllowed,
+        safetyCandidateViolations: data.safety?.candidateViolations,
+        safetyBaselineViolations: data.safety?.baselineViolations,
+      };
+    }),
+    config: { ...mergedConfig, safetyRules: safetyRules ?? mergedConfig.safetyRules },
   });
   return { candidateId, candidateFound: true, ...verdict };
+}
+
+function mergePromotionGateConfigFromEnv(config?: PromotionGateConfig): PromotionGateConfig {
+  return {
+    ...config,
+    requireExperimentConfirmation: config?.requireExperimentConfirmation ?? process.env.HARNESS_PROMOTION_REQUIRE_EXPERIMENT === '1',
+    experimentId: config?.experimentId ?? process.env.HARNESS_PROMOTION_EXPERIMENT_ID,
+    candidateVariantId: config?.candidateVariantId ?? process.env.HARNESS_PROMOTION_CANDIDATE_VARIANT_ID,
+  };
 }
 
 export async function getLearningCandidateProvenance(
@@ -268,25 +335,27 @@ export async function promoteLearningCandidate(
   }
   const memoryPath = path.join(projectDir, '.harness', 'memory', 'patterns.md');
   await fs.mkdir(path.dirname(memoryPath), { recursive: true });
-  const existing = await fs.readFile(memoryPath, 'utf-8').catch(() => '# Learned Patterns\n');
-  const entry = [
-    '',
-    `## Session Candidate ${candidate.id}`,
-    '',
-    `* Promoted: ${new Date().toISOString()}`,
-    `* Quality: ${Math.round(candidate.qualityScore * 100)}%`,
-    `* Tools: ${candidate.toolNames.length ? candidate.toolNames.join(', ') : 'none'}`,
-    '',
-    '### Prompt',
-    '',
-    candidate.prompt || '[empty]',
-    '',
-    '### Outcome',
-    '',
-    candidate.outcome || '[empty]',
-    '',
-  ].join('\n');
-  await fs.writeFile(memoryPath, existing.trimEnd() + entry, 'utf-8');
+  await withFileLock(memoryPath, async () => {
+    const existing = await fs.readFile(memoryPath, 'utf-8').catch(() => '# Learned Patterns\n');
+    const entry = [
+      '',
+      `## Session Candidate ${candidate.id}`,
+      '',
+      `* Promoted: ${new Date().toISOString()}`,
+      `* Quality: ${Math.round(candidate.qualityScore * 100)}%`,
+      `* Tools: ${candidate.toolNames.length ? candidate.toolNames.join(', ') : 'none'}`,
+      '',
+      '### Prompt',
+      '',
+      candidate.prompt || '[empty]',
+      '',
+      '### Outcome',
+      '',
+      candidate.outcome || '[empty]',
+      '',
+    ].join('\n');
+    await atomicWriteFile(memoryPath, existing.trimEnd() + entry);
+  });
   return { id: candidate.id, promotedAt: new Date().toISOString(), memoryPath };
 }
 

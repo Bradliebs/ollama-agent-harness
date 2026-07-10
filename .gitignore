@@ -5,6 +5,12 @@ coverage/
 *.js.map
 *.d.ts
 !jest.config.js
+# Python cache (ccmem service)
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+ccmem/*.egg-info/
 # All hand-written scripts in scripts/ are real source. Without this
 # blanket un-ignore, new scripts/*.js files get silently dropped from
 # `git status` (see scripts/headless-smoke.js, scripts/autonomy-docker.js
@@ -25,6 +31,15 @@ Network.md
 Bracknell_Food_Business/
 forge-memory/
 
+# Runtime state files (user-specific, not for version control)
+.harness-workspace
+.harness-workspace.bak-*
+.forge-state.json
+.forge-stop
+
+# Transient build output from scripts/preview-comparison-report.js
+.preview-build/
+
 # Bare-filename agent writes (file_write redirects scratch output here so
 # it does not pile up at the repo root). Force-add intentional outputs.
 agent-outputs/
@@ -43,6 +58,13 @@ release/release-notes.md
 .forge-history.jsonl
 .forge-prompt.txt
 
+# Jest output spool from `npm test -- ... > jest-out.txt` etc.
+# Three of these files were committed in 5c3f4b1; pattern stops it recurring.
+jest-out.txt
+jest-full.log
+jest_full_output.log
+test_output.txt
+
 # Defensive: prior agent sessions dropped non-Harness lottery scripts
 # into the repo root. They have been relocated to C:\AI\Lottery-Toolkit\.
 # These patterns prevent re-creation from being silently committed.
@@ -54,3 +76,13 @@ lottery-*/
 syndicate-optimizer.js
 historical-win-checker.js
 machine-bias-detector.js
+
+# Scratch buffers for commit messages composed via -F
+.git-commit-msg.tmp
+
+# Generated ML experiment artifacts (binary outputs)
+results/
+
+
+# External reference codebases (read-only, not part of harness)
+goose-main/

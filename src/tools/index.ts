@@ -1,9 +1,9 @@
-import { FileReadTool, FileWriteTool, FileEditTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool } from './fileTools';
+import { FileReadTool, FileWriteTool, FileEditTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool, MakeDirectoryTool } from './fileTools';
 import { BashTool } from './bashTool';
 import { WebFetchTool } from './webFetchTool';
 import { GrepTool } from './grepTool';
 import { SkillTool, ListSkillsTool, CreateSkillTool } from './skillTools';
-import { MemoryWriteTool, MemoryReadTool } from './memoryTools';
+import { MemoryWriteTool, MemoryReadTool, SemanticRecallTool } from './memoryTools';
 import { ReflectTool, AnalyzePatternsTool, PromotePatternTool, ConsolidateTool, EvolveTool, ImproveSkillTool } from './learningTools';
 import { WebSearchTool, WebReadTool } from './webSearchTool';
 import { ImageAnalyzeTool, AudioTranscribeTool } from './multimodalTools';
@@ -24,12 +24,13 @@ export function getRuntimeTools(projectDir: string): Tool[] {
   return createToolRegistry(projectDir).listTools();
 }
 
-export { FileReadTool, FileWriteTool, FileEditTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool } from './fileTools';
+export { FileReadTool, FileWriteTool, FileEditTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool, MakeDirectoryTool } from './fileTools';
 export { BashTool } from './bashTool';
 export { WebFetchTool } from './webFetchTool';
 export { GrepTool } from './grepTool';
 export { SkillTool, ListSkillsTool, CreateSkillTool } from './skillTools';
-export { MemoryWriteTool, MemoryReadTool } from './memoryTools';
+export { ImportSkillTool, setImportSkillsDir } from './skillImportTool';
+export { MemoryWriteTool, MemoryReadTool, SemanticRecallTool } from './memoryTools';
 export { ReflectTool, AnalyzePatternsTool, PromotePatternTool, ConsolidateTool, EvolveTool, ImproveSkillTool } from './learningTools';
 export { WebSearchTool, WebReadTool } from './webSearchTool';
 export { ImageAnalyzeTool, AudioTranscribeTool } from './multimodalTools';
@@ -40,6 +41,8 @@ export { DocumentExportTool } from './documentTools';
 export { TelegramNotifyTool } from './telegramTools';
 export { DesktopInputReplayTool } from './desktopInputTools';
 export { ToolDispatcher } from './dispatcher';
+export { ReadBeforeWriteGate } from './readBeforeWriteGate';
+export type { ReadBeforeWriteMode, ReadBeforeWriteGateOptions, ReadBeforeWriteCheck, ReadBeforeWriteViolation } from './readBeforeWriteGate';
 export { BUILTIN_TOOL_ENTRIES, ToolRegistry, createBuiltinToolRegistry, createToolRegistry } from './registry';
 export { createMcpToolEntries, createMcpHarnessToolName } from './mcpTools';
 export type { ToolRegistryEntry } from './registry';

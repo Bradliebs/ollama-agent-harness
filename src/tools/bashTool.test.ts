@@ -1,3 +1,5 @@
+import { promises as fsp } from 'fs';
+import * as path from 'path';
 import { BashTool } from './bashTool';
 
 describe('BashTool safety guardrails', () => {
@@ -19,18 +21,56 @@ describe('BashTool safety guardrails', () => {
     expect(result.error).toContain('file_read/list_files');
   });
 
+  it('redirects unix-only commands on Windows with an actionable message', async () => {
+    // Pin the "spawn ls ENOENT" regression: previously `ls` (and cat,
+    // grep, etc.) would fall through to spawn and surface an opaque
+    // ENOENT. Agents would retry the same command, burn iterations, and
+    // never recover. The gate must name the right replacement tool.
+    if (process.platform !== 'win32') return;
+
+    const ls = await BashTool.execute({ command: 'ls -la' });
+    expect(ls.success).toBe(false);
+    expect(ls.error).toContain("'ls' is a Unix command not available on Windows");
+    expect(ls.error).toContain('list_files');
+
+    const cat = await BashTool.execute({ command: 'cat package.json' });
+    expect(cat.success).toBe(false);
+    expect(cat.error).toContain('file_read');
+
+    const grep = await BashTool.execute({ command: 'grep TODO src/index.ts' });
+    expect(grep.success).toBe(false);
+    expect(grep.error).toContain('grep tool');
+
+    const rm = await BashTool.execute({ command: 'rm foo.txt' });
+    expect(rm.success).toBe(false);
+    expect(rm.error).toContain('file_delete');
+  });
+
+  it('does not redirect when the executable is path-qualified (WSL/MSYS users opt in)', async () => {
+    if (process.platform !== 'win32') return;
+
+    // A path-qualified invocation will still fail to spawn here (the
+    // path doesn't exist), but it must NOT be intercepted by the
+    // unix-redirect gate — agents on WSL/MSYS legitimately point at
+    // their own ls. The spawn failure surfaces as the regular ENOENT
+    // path with whatever message the OS gives.
+    const result = await BashTool.execute({ command: 'C:/wsl/bin/ls' });
+    expect(result.success).toBe(false);
+    expect(result.error).not.toContain('Unix command not available');
+  });
+
   it('blocks shell control operators', async () => {
     const result = await BashTool.execute({ command: 'echo safe && whoami' });
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('shell control operators');
+    expect(result.error).toContain('shell control operator');
   });
 
   it('blocks command substitution patterns', async () => {
     const result = await BashTool.execute({ command: 'echo $(whoami)' });
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('shell control operators');
+    expect(result.error).toContain('shell control operator');
   });
 
   it('blocks known destructive patterns', async () => {
@@ -80,5 +120,246 @@ describe('BashTool safety guardrails', () => {
     expect(result.success).toBe(true);
     expect(result.output).toContain('STDOUT:');
     expect(result.error).toBeUndefined();
+  });
+
+  it('includes the executable name in the error when a command exits non-zero', async () => {
+    // node -e "process.exit(7)" exits with status 7. Verify the error
+    // message names the executable so the agent's failure-counter and
+    // the UI both have something more useful than "exit code 7".
+    const result = await BashTool.execute({ command: 'node -e "process.exit(7)"' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Command 'node' failed with exit code 7");
+  });
+
+  it('allows shell-meaningful characters when they are inside a quoted argument', async () => {
+    // Regression: previously rejected because ';' in the quoted JS body
+    // matched the global SHELL_CONTROL_PATTERN. With shell:false the ';'
+    // is just literal text inside argv[2] — no shell interpretation
+    // happens, so the agent legitimately needs this for one-off node -e
+    // and python -c invocations.
+    const result = await BashTool.execute({
+      command: 'node -e "const x = 1; console.log(x + 2)"',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('3');
+  });
+
+  it('still blocks shell control operators that appear OUTSIDE quotes', async () => {
+    // Sanity check: the quote-aware scanner must still catch the
+    // dangerous case. Bare `;` (not in quotes) would chain commands
+    // if shell:true were ever flipped on by mistake.
+    const result = await BashTool.execute({ command: 'echo hello ; whoami' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('shell control operator');
+    expect(result.error).toContain("';'");
+  });
+
+  it('still blocks unquoted redirects', async () => {
+    const result = await BashTool.execute({ command: 'dir /b 2>nul' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('shell control operator');
+    expect(result.error).toContain("'>'");
+  });
+
+  it('allows angle brackets and pipes when quoted (e.g. inside a JSON arg)', async () => {
+    const result = await BashTool.execute({
+      command: `node -e "console.log('a > b | c')"`,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('a > b | c');
+  });
+});
+
+describe('BashTool bare-script auto-resolve against agent-outputs', () => {
+  // Mirrors the file_write redirect: when the model writes a bare script
+  // filename (which gets routed to agent-outputs/) and immediately tries
+  // to execute it by name, bash should rewrite the bare arg to the
+  // absolute path under agent-outputs/ rather than failing with
+  // "No such file or directory".
+  const overrideDir = path.join(process.cwd(), '.harness', 'test-agent-outputs-bash');
+
+  beforeEach(async () => {
+    await fsp.rm(overrideDir, { recursive: true, force: true });
+    await fsp.mkdir(overrideDir, { recursive: true });
+    process.env.HARNESS_AGENT_OUTPUT_DIR = overrideDir;
+  });
+
+  afterEach(async () => {
+    delete process.env.HARNESS_AGENT_OUTPUT_DIR;
+    await fsp.rm(overrideDir, { recursive: true, force: true });
+  });
+
+  it('rewrites a bare .js arg to the absolute path under agent-outputs/ and runs it', async () => {
+    const scriptName = `_bash-resolve-${Date.now()}.js`;
+    const scriptPath = path.join(overrideDir, scriptName);
+    await fsp.writeFile(scriptPath, 'console.log("hello-from-agent-outputs");\n', 'utf-8');
+
+    // Guard: the bare name must NOT exist in cwd, otherwise the rewriter
+    // correctly leaves it alone.
+    const cwdStray = path.resolve(process.cwd(), scriptName);
+    await fsp.rm(cwdStray, { force: true });
+
+    const result = await BashTool.execute({ command: `node ${scriptName}` });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('hello-from-agent-outputs');
+    // The preamble surfaces the rewrite so the agent can see what happened
+    // and use the full path going forward.
+    expect(result.output).toContain('Bash auto-resolved');
+    expect(result.output).toContain(scriptName);
+    expect(result.output).toContain(scriptPath);
+  });
+
+  it('does NOT rewrite when the bare script also exists in cwd (cwd wins)', async () => {
+    const scriptName = `_bash-cwd-wins-${Date.now()}.js`;
+    const cwdPath = path.resolve(process.cwd(), scriptName);
+    const outputPath = path.join(overrideDir, scriptName);
+    await fsp.writeFile(cwdPath, 'console.log("from-cwd");\n', 'utf-8');
+    await fsp.writeFile(outputPath, 'console.log("from-output-dir");\n', 'utf-8');
+
+    try {
+      const result = await BashTool.execute({ command: `node ${scriptName}` });
+      expect(result.success).toBe(true);
+      expect(result.output).toContain('from-cwd');
+      expect(result.output).not.toContain('Bash auto-resolved');
+    } finally {
+      await fsp.rm(cwdPath, { force: true });
+    }
+  });
+
+  it('does NOT rewrite args that already contain a path separator', async () => {
+    // If the model passes an explicit relative path like `./foo.py` or
+    // `subdir/foo.py`, treat it as deliberate and do not silently retarget.
+    const scriptName = `_bash-explicit-${Date.now()}.js`;
+    await fsp.writeFile(path.join(overrideDir, scriptName), 'console.log("agent-outputs");\n', 'utf-8');
+
+    // Use an explicit ./ path that DOES NOT exist in cwd. Node will fail.
+    const result = await BashTool.execute({ command: `node ./${scriptName}` });
+
+    expect(result.success).toBe(false);
+    expect(result.output).not.toContain('Bash auto-resolved');
+  });
+
+  it('does NOT rewrite flag-like args ending in a script extension', async () => {
+    // Defensive: a flag like `--config=foo.py` happens to end in `.py` but
+    // is not a positional script arg. The rewriter must skip leading-dash
+    // args entirely. We don't care whether `node` accepts the unknown
+    // option — only that the rewriter never touches the arg.
+    const flagLike = `--out=irrelevant-${Date.now()}.js`;
+    await fsp.writeFile(path.join(overrideDir, flagLike), 'noop', 'utf-8').catch(() => {});
+
+    const result = await BashTool.execute({ command: `node --version ${flagLike}` });
+
+    // The rewrite preamble must not appear regardless of node's exit code.
+    expect(result.output).not.toContain('Bash auto-resolved');
+  });
+});
+
+import { quoteWindowsArgv, buildWindowsCmdInvocation } from './bashTool';
+
+describe('quoteWindowsArgv', () => {
+  it('leaves bare alphanumeric args unquoted', () => {
+    expect(quoteWindowsArgv('eslint')).toBe('eslint');
+    expect(quoteWindowsArgv('--version')).toBe('--version');
+    expect(quoteWindowsArgv('src/index.ts')).toBe('src/index.ts');
+  });
+
+  it('represents an empty arg as a pair of quotes so it stays distinct', () => {
+    expect(quoteWindowsArgv('')).toBe('""');
+  });
+
+  it('wraps args containing whitespace', () => {
+    expect(quoteWindowsArgv('hello world')).toBe('"hello world"');
+    expect(quoteWindowsArgv('tab\there')).toBe('"tab\there"');
+  });
+
+  it('escapes embedded double quotes as backslash-quote', () => {
+    expect(quoteWindowsArgv('say "hi"')).toBe('"say \\"hi\\""');
+  });
+
+  it('doubles backslashes that immediately precede an embedded quote', () => {
+    // Microsoft argv rule: every `\` before a `"` must be doubled, plus one
+    // more `\` to escape the quote itself.
+    expect(quoteWindowsArgv('a\\"b')).toBe('"a\\\\\\"b"');
+    expect(quoteWindowsArgv('a\\\\"b')).toBe('"a\\\\\\\\\\"b"');
+  });
+
+  it('doubles trailing backslashes before the closing quote', () => {
+    // Trailing `\` before the auto-added closing `"` would otherwise be
+    // interpreted by CommandLineToArgvW as escaping that quote.
+    expect(quoteWindowsArgv('path with space\\')).toBe('"path with space\\\\"');
+  });
+
+  it('preserves interior backslashes that are NOT next to a quote', () => {
+    // `C:\path\file.ts` has no quote-adjacent backslashes, so each is
+    // kept as a single literal backslash inside the quoted form.
+    expect(quoteWindowsArgv('C:\\path with space\\file.ts')).toBe('"C:\\path with space\\file.ts"');
+  });
+
+  it('wraps args containing cmd.exe metacharacters', () => {
+    // Each of these would be re-interpreted by cmd.exe if left unquoted.
+    for (const ch of ['&', '|', '<', '>', '^', '(', ')', '!', ';', ',']) {
+      const arg = `pre${ch}post`;
+      const quoted = quoteWindowsArgv(arg);
+      expect(quoted.startsWith('"')).toBe(true);
+      expect(quoted.endsWith('"')).toBe(true);
+      expect(quoted).toContain(ch);
+    }
+  });
+});
+
+describe('buildWindowsCmdInvocation', () => {
+  it('produces a single-token command for simple invocations', () => {
+    expect(buildWindowsCmdInvocation('npx', ['--version'])).toBe('npx --version');
+  });
+
+  it('quotes args with spaces and leaves bare flags alone', () => {
+    expect(buildWindowsCmdInvocation('npx', ['eslint', 'src/file with space.ts']))
+      .toBe('npx eslint "src/file with space.ts"');
+  });
+
+  it('escapes a double-quoted arg correctly', () => {
+    // Regression: the audit-flagged scenario was that args with internal
+    // quotes got mangled. The build function must produce a string that
+    // CommandLineToArgvW will parse back to the exact original arg.
+    expect(buildWindowsCmdInvocation('npx', ['prettier', '--write', 'a"b.ts']))
+      .toBe('npx prettier --write "a\\"b.ts"');
+  });
+
+  it('quotes args containing cmd.exe metacharacters so cmd cannot reinterpret them', () => {
+    expect(buildWindowsCmdInvocation('npm', ['run', 'build & deploy']))
+      .toBe('npm run "build & deploy"');
+  });
+});
+
+import * as os from 'os';
+import { getProjectRoot, setProjectRoot } from './pathResolution';
+
+describe('BashTool subprocess working directory', () => {
+  it('spawns children in the project root, not the harness launch dir', async () => {
+    // Regression: subprocess outputs (e.g. Python wb.save('x.xlsx'),
+    // shell redirects) inherited process.cwd() — the harness repo root —
+    // and polluted it. The spawn must set cwd to getProjectRoot() so a
+    // relative write lands in the resolved workspace. Override the root to
+    // a temp dir so this differs from process.cwd() and the assertion is
+    // meaningful.
+    const original = getProjectRoot();
+    const tmp = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'bash-cwd-')));
+    try {
+      setProjectRoot(tmp);
+      const result = await BashTool.execute({
+        command: 'node -e "process.stdout.write(process.cwd())"',
+      });
+      expect(result.success).toBe(true);
+      expect(result.output).toContain(tmp);
+    } finally {
+      setProjectRoot(original);
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
   });
 });

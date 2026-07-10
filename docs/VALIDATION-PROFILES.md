@@ -23,20 +23,30 @@ patterns in this order:
    like "you decide", "whatever", "anything", "surprise me", "up to you", "your
    choice", "idk", "dunno") → fall back to `oracle-prime` and are flagged as
    **unmatched**.
-2. **Tool / terminal signals** (`stdout`, `stderr`, `exit code`, `tool result`,
+2. **Mode-classifier override.** If the upstream mode classifier flagged the
+   prompt as `research` or `maintain`, the suggester returns `oracle-prime`
+   without consulting the keyword table. This stops research/maintenance
+   prompts that happen to mention a file path or language keyword from being
+   graded against the `coding-answer` rubric.
+3. **Research-intent guard.** Even without a mode hint, a clear research verb
+   at the start of a clause (`research`, `investigate`, `look up`, `find out`,
+   `analyse`/`analyze`) or one of the analytical phrases (`pros and cons`,
+   `trade-offs`, `state of the art`, `literature review`, `compare X to/vs Y`)
+   → `oracle-prime`.
+4. **Tool / terminal signals** (`stdout`, `stderr`, `exit code`, `tool result`,
    `terminal output`, `command output`, `stack trace`) → `tool-result-summary`.
-3. **Code signals** (`code`, `coding`, `implement`, `refactor`, `debug`,
+5. **Code signals** (`code`, `coding`, `implement`, `refactor`, `debug`,
    `typecheck`, `unit test`, `pull request`, `commit`, language names like
    `typescript`/`javascript`/`python`, file extensions like `.ts`/`.tsx`/`.js`/
    `.py`, package managers like `npm`/`yarn`/`pnpm`, `jest`, `eslint`, `compile`,
    `function`, `class`, `method`, `api endpoint`) → `coding-answer`.
-4. **Factual signals** (`weather`, `today`, `current`, `latest`, `news`,
+6. **Factual signals** (`weather`, `today`, `current`, `latest`, `news`,
    `price`, `stock`, `who is`, `what is`, `when is`, `where is`, `source`,
    `according to`, `factual`) → `factual-answer`.
-5. **Decision signals** (`decision`, `strategy`, `risk`, `scenario`, `tradeoff`,
+7. **Decision signals** (`decision`, `strategy`, `risk`, `scenario`, `tradeoff`,
    `alternative`, `recommend`, `confidence`, `uncertainty`, `forecast`, `plan`)
    → `oracle-prime`.
-6. **Anything else** → `oracle-prime` (flagged as **unmatched**).
+8. **Anything else** → `oracle-prime` (flagged as **unmatched**).
 
 The matched/unmatched flag is shown in the chat UI as either
 "Auto-selected `<profile>`" or "Defaulted to `<profile>`", along with the

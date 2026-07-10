@@ -90,10 +90,30 @@ describe('createChatClient', () => {
     expect(() => resolveProviderBaseUrl(OPENAI_COMPATIBLE_PRESETS.cloudflare)).toThrow(/CLOUDFLARE_ACCOUNT_ID/);
   });
 
-  it('creates a fallback client when multiple remote backends are configured', () => {
+  it('does NOT create a fallback client by default (opt-in since v0.5.0)', () => {
     process.env.GROQ_API_KEY = 'groq-key';
     process.env.MISTRAL_API_KEY = 'mistral-key';
+    delete process.env.HARNESS_REMOTE_AUTO_FALLBACK;
     const client = createChatClient({ backend: 'groq', model: 'llama-3.1-8b-instant' });
+    expect(client).toBeInstanceOf(OpenAIClient);
+  });
+
+  it('creates a fallback client when HARNESS_REMOTE_AUTO_FALLBACK=1 and multiple backends are configured', () => {
+    process.env.GROQ_API_KEY = 'groq-key';
+    process.env.MISTRAL_API_KEY = 'mistral-key';
+    process.env.HARNESS_REMOTE_AUTO_FALLBACK = '1';
+    try {
+      const client = createChatClient({ backend: 'groq', model: 'llama-3.1-8b-instant' });
+      expect(client).toBeInstanceOf(FallbackChatClient);
+    } finally {
+      delete process.env.HARNESS_REMOTE_AUTO_FALLBACK;
+    }
+  });
+
+  it('creates a fallback client when explicitly requested via autoFallback: true', () => {
+    process.env.GROQ_API_KEY = 'groq-key';
+    process.env.MISTRAL_API_KEY = 'mistral-key';
+    const client = createChatClient({ backend: 'groq', model: 'llama-3.1-8b-instant', autoFallback: true });
     expect(client).toBeInstanceOf(FallbackChatClient);
   });
 

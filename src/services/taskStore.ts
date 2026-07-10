@@ -28,6 +28,9 @@ export type TaskStatus =
 
 export type TaskPriority = 'low' | 'normal' | 'high';
 
+export type ExecutionPolicy = 'auto' | 'require_approval' | 'require_approval_above_budget';
+export type ApprovalState = 'not_required' | 'pending' | 'approved' | 'rejected';
+
 export interface TaskCheckIn {
   timestamp: string;
   progressPercent?: number;
@@ -51,6 +54,18 @@ export interface Task {
   tags: string[];
   /** Optional free-form metadata (e.g. linked session id). */
   metadata?: Record<string, unknown>;
+  /** Company scoping — tasks belong to a company for multi-tenant isolation. */
+  companyId?: string;
+  /** Goal alignment — links this task to a company goal for traceability. */
+  goalId?: string;
+  /** Atomic work checkout — agent that has claimed this task. */
+  checkedOutBy?: string;
+  /** Timestamp of checkout for stale detection. */
+  checkedOutAt?: string;
+  /** Execution policy — controls whether tasks need human approval. */
+  executionPolicy?: ExecutionPolicy;
+  /** Approval state for tasks requiring human sign-off. */
+  approvalState?: ApprovalState;
 }
 
 export interface CreateTaskInput {
@@ -62,6 +77,9 @@ export interface CreateTaskInput {
   dependsOn?: string[];
   tags?: string[];
   metadata?: Record<string, unknown>;
+  companyId?: string;
+  goalId?: string;
+  executionPolicy?: ExecutionPolicy;
 }
 
 export interface UpdateTaskInput {
@@ -73,6 +91,12 @@ export interface UpdateTaskInput {
   dependsOn?: string[];
   tags?: string[];
   metadata?: Record<string, unknown>;
+  companyId?: string;
+  goalId?: string;
+  checkedOutBy?: string;
+  checkedOutAt?: string;
+  executionPolicy?: ExecutionPolicy;
+  approvalState?: ApprovalState;
 }
 
 const STALE_CHECK_IN_MS = 30 * 60 * 1000;
@@ -97,11 +121,13 @@ async function writeAll(projectDir: string, tasks: Task[]): Promise<void> {
   await fs.writeFile(fp, JSON.stringify({ tasks }, null, 2), 'utf-8');
 }
 
-export async function listTasks(projectDir: string, filter: { status?: TaskStatus; assigneeId?: string } = {}): Promise<Task[]> {
+export async function listTasks(projectDir: string, filter: { status?: TaskStatus; assigneeId?: string; companyId?: string; goalId?: string } = {}): Promise<Task[]> {
   const tasks = await readAll(projectDir);
   return tasks.filter((task) => {
     if (filter.status && task.status !== filter.status) return false;
     if (filter.assigneeId && task.assigneeId !== filter.assigneeId) return false;
+    if (filter.companyId && task.companyId !== filter.companyId) return false;
+    if (filter.goalId && task.goalId !== filter.goalId) return false;
     return true;
   });
 }
@@ -128,6 +154,12 @@ export async function createTask(projectDir: string, input: CreateTaskInput, now
     checkIns: [],
     tags: input.tags ?? [],
     metadata: input.metadata,
+    companyId: input.companyId,
+    goalId: input.goalId,
+    checkedOutBy: undefined,
+    checkedOutAt: undefined,
+    executionPolicy: input.executionPolicy,
+    approvalState: input.executionPolicy === 'auto' || !input.executionPolicy ? 'not_required' : 'pending',
   };
   const tasks = await readAll(projectDir);
   tasks.push(task);
@@ -151,11 +183,23 @@ export async function updateTask(projectDir: string, id: string, input: UpdateTa
     ...(input.dependsOn !== undefined ? { dependsOn: input.dependsOn } : {}),
     ...(input.tags !== undefined ? { tags: input.tags } : {}),
     ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+    ...(input.companyId !== undefined ? { companyId: input.companyId || undefined } : {}),
+    ...(input.goalId !== undefined ? { goalId: input.goalId || undefined } : {}),
+    ...(input.checkedOutBy !== undefined ? { checkedOutBy: input.checkedOutBy || undefined } : {}),
+    ...(input.checkedOutAt !== undefined ? { checkedOutAt: input.checkedOutAt || undefined } : {}),
+    ...(input.executionPolicy !== undefined ? { executionPolicy: input.executionPolicy } : {}),
+    ...(input.approvalState !== undefined ? { approvalState: input.approvalState } : {}),
     updatedAt: now.toISOString(),
   };
   // Auto-assign status when assignee changes from undefined → defined.
   if (!previous.assigneeId && updated.assigneeId && updated.status === 'pending') {
     updated.status = 'assigned';
+  }
+  // Guard: block transition to in_progress if approval is required and not yet approved.
+  if (updated.status === 'in_progress' && updated.executionPolicy && updated.executionPolicy !== 'auto') {
+    if (updated.approvalState !== 'approved') {
+      throw new Error(`Task ${id} requires approval before starting (executionPolicy=${updated.executionPolicy}, approvalState=${updated.approvalState ?? 'pending'})`);
+    }
   }
   tasks[idx] = updated;
   await writeAll(projectDir, tasks);

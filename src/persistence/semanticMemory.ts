@@ -106,16 +106,29 @@ export async function getSemanticMemoryContext(projectDir: string, entryId: stri
   };
 }
 
-export async function buildMemoryPalace(projectDir: string): Promise<MemoryPalace> {
+export async function buildMemoryPalace(projectDir: string, query?: string): Promise<MemoryPalace> {
   const entries = await readOrBuildIndex(projectDir);
+  const queryTokens = query && query.trim() ? tokenize(query) : [];
   const groups = new Map<string, SemanticMemoryEntry[]>();
   for (const entry of entries) {
     const roomId = roomIdForKind(entry.kind);
     groups.set(roomId, [...(groups.get(roomId) ?? []), entry]);
   }
-  const rooms = Array.from(groups.entries())
-    .map(([id, roomEntries]) => toRoom(id, roomEntries))
-    .sort((a, b) => b.entryCount - a.entryCount || a.title.localeCompare(b.title));
+  const rooms = Array.from(groups.entries()).map(([id, roomEntries]) => toRoom(id, roomEntries, queryTokens));
+  if (queryTokens.length > 0) {
+    // Sort rooms by their best anchor's relevance (descending), break ties by
+    // entry count so a brand-new high-relevance room still wins, then by
+    // alphabetical title for deterministic output.
+    rooms.sort((a, b) => {
+      const aScore = (a as MemoryPalaceRoom & { relevance?: number }).relevance ?? 0;
+      const bScore = (b as MemoryPalaceRoom & { relevance?: number }).relevance ?? 0;
+      if (bScore !== aScore) return bScore - aScore;
+      if (b.entryCount !== a.entryCount) return b.entryCount - a.entryCount;
+      return a.title.localeCompare(b.title);
+    });
+  } else {
+    rooms.sort((a, b) => b.entryCount - a.entryCount || a.title.localeCompare(b.title));
+  }
 
   return {
     generatedAt: new Date().toISOString(),
@@ -193,9 +206,25 @@ function indexPath(projectDir: string): string {
   return path.join(projectDir, '.harness', 'memory', 'semantic-index.json');
 }
 
-function toRoom(id: string, entries: SemanticMemoryEntry[]): MemoryPalaceRoom {
-  const sorted = [...entries].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-  return {
+function toRoom(id: string, entries: SemanticMemoryEntry[], queryTokens: string[] = []): MemoryPalaceRoom {
+  // When a query is supplied, surface the most relevant anchors first so the
+  // model sees memory that matches what the user is asking about, not just
+  // the freshest events in the largest room.
+  let sorted: SemanticMemoryEntry[];
+  let relevance = 0;
+  if (queryTokens.length > 0) {
+    const scored = entries.map((entry) => ({ entry, score: scoreEntry(queryTokens, entry.tokens) }));
+    relevance = scored.reduce((max, s) => s.score > max ? s.score : max, 0);
+    sorted = scored
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return b.entry.timestamp.localeCompare(a.entry.timestamp);
+      })
+      .map((s) => s.entry);
+  } else {
+    sorted = [...entries].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  }
+  const room: MemoryPalaceRoom & { relevance?: number } = {
     id,
     title: roomTitle(id),
     entryCount: entries.length,
@@ -208,6 +237,8 @@ function toRoom(id: string, entries: SemanticMemoryEntry[]): MemoryPalaceRoom {
       text: entry.text.slice(0, 260),
     })),
   };
+  if (queryTokens.length > 0) room.relevance = relevance;
+  return room;
 }
 
 function roomIdForKind(kind: string): string {

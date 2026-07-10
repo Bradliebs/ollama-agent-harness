@@ -41,6 +41,29 @@ describe('memoryIntelligence', () => {
     expect(content).toMatch(/<!--\s*importance: high/);
   });
 
+  it('round-trips provenance metadata (source-session, created-by)', async () => {
+    await appendMemorySection(projectDir, 'notes.md', '### Provenanced\nBody.', {
+      sourceSessionId: 'sess-123',
+      createdByTool: 'remember',
+    });
+    const content = await fs.readFile(path.join(projectDir, '.harness', 'memory', 'notes.md'), 'utf-8');
+    const parsed = parseMemoryFile(content, 'notes.md');
+    const section = parsed.sections.find((s) => s.title === 'Provenanced');
+    expect(section?.sourceSessionId).toBe('sess-123');
+    expect(section?.createdByTool).toBe('remember');
+  });
+
+  it('omits provenance fields when not supplied (backward compatible)', async () => {
+    await appendMemorySection(projectDir, 'notes.md', '### Plain\nBody.');
+    const content = await fs.readFile(path.join(projectDir, '.harness', 'memory', 'notes.md'), 'utf-8');
+    expect(content).not.toContain('source-session');
+    expect(content).not.toContain('created-by');
+    const parsed = parseMemoryFile(content, 'notes.md');
+    const section = parsed.sections.find((s) => s.title === 'Plain');
+    expect(section?.sourceSessionId).toBeUndefined();
+    expect(section?.createdByTool).toBeUndefined();
+  });
+
   it('skips duplicate appends with high line overlap', async () => {
     const body = '### Demo\nLine A.\nLine B.\nLine C.';
     const first = await appendMemorySection(projectDir, 'notes.md', body);

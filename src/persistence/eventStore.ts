@@ -11,6 +11,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as readline from 'readline';
+import { recordSwallowed } from '../observability/silentFailureSink';
 import { createReadStream, existsSync } from 'fs';
 
 // ─── Types ──────────────────────────────────────────────────────────
@@ -22,6 +23,7 @@ export type EventCategory =
   | 'tool'
   | 'model'
   | 'route'
+  | 'experiment'
   | 'approval'
   | 'file'
   | 'schedule'
@@ -219,13 +221,13 @@ export async function appendEvent(projectDir: string, event: Omit<HarnessEvent, 
     await fs.appendFile(fp, JSON.stringify(full) + '\n', 'utf-8');
     // Notify live stream listeners.
     for (const listener of eventStreamListeners) {
-      try { listener(full); } catch { /* best-effort */ }
+      try { listener(full); } catch (err) { recordSwallowed('eventStore.streamListener', err); }
     }
     // Auto-prune when line count is estimated to exceed the cap. Awaited so
     // the next chained append/query observes the post-prune state.
     knownEventLineCount = knownEventLineCount < 0 ? MAX_EVENT_LINES : knownEventLineCount + 1;
     if (knownEventLineCount > MAX_EVENT_LINES) {
-      try { await pruneEventStoreInternal(projectDir, MAX_EVENT_LINES); } catch { /* best-effort */ }
+      try { await pruneEventStoreInternal(projectDir, MAX_EVENT_LINES); } catch (err) { recordSwallowed('eventStore.autoPrune', err); }
     }
     return full;
   }));
@@ -294,14 +296,16 @@ export async function getEvent(projectDir: string, eventId: string): Promise<Har
   const fp = eventsFilePath(projectDir);
   try { await fs.access(fp); } catch { return null; }
   const rl = readline.createInterface({ input: createReadStream(fp, 'utf-8'), crlfDelay: Infinity });
+  let found: HarnessEvent | null = null;
   for await (const line of rl) {
     if (!line.trim()) continue;
     try {
       const ev = JSON.parse(line) as HarnessEvent;
-      if (ev.event_id === eventId) { rl.close(); return ev; }
+      if (ev.event_id === eventId) { found = ev; break; }
     } catch { /* skip */ }
   }
-  return null;
+  rl.close();
+  return found;
 }
 
 // ─── Snapshots ──────────────────────────────────────────────────────

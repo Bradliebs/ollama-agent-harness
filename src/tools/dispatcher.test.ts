@@ -30,6 +30,61 @@ describe('ToolDispatcher', () => {
     expect(results[0].result.output).toContain('Unknown tool');
   });
 
+  it('does not validate input unless validateInput is set', async () => {
+    let executed = false;
+    const tool: Tool = {
+      name: 'needsPath',
+      description: 'needs path',
+      parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+      isReadOnly: true,
+      execute: async () => {
+        executed = true;
+        return { success: true, output: 'ran' };
+      },
+    };
+    const dispatcher = new ToolDispatcher([tool]);
+    const results = await dispatcher.dispatch([{ name: 'needsPath', input: {} }]);
+    expect(executed).toBe(true);
+    expect(results[0].result.success).toBe(true);
+  });
+
+  it('rejects a call missing a required parameter when validateInput is on', async () => {
+    let executed = false;
+    const tool: Tool = {
+      name: 'needsPath',
+      description: 'needs path',
+      parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+      isReadOnly: true,
+      execute: async () => {
+        executed = true;
+        return { success: true, output: 'ran' };
+      },
+    };
+    const dispatcher = new ToolDispatcher([tool]);
+    const results = await dispatcher.dispatch([{ name: 'needsPath', input: {} }], undefined, undefined, {
+      validateInput: true,
+    });
+    expect(executed).toBe(false);
+    expect(results[0].result.success).toBe(false);
+    expect(results[0].result.output).toContain("Missing required parameter 'path'");
+  });
+
+  it('executes a well-formed call when validateInput is on', async () => {
+    const tool: Tool = {
+      name: 'needsPath',
+      description: 'needs path',
+      parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+      isReadOnly: true,
+      execute: async () => ({ success: true, output: 'ran' }),
+    };
+    const dispatcher = new ToolDispatcher([tool]);
+    const results = await dispatcher.dispatch([{ name: 'needsPath', input: { path: '/tmp/x' } }], undefined, undefined, {
+      validateInput: true,
+    });
+    expect(results[0].result.success).toBe(true);
+    expect(results[0].result.output).toBe('ran');
+  });
+
   it('runs read-only tools in parallel', async () => {
     const order: string[] = [];
     const slowTool = makeTool('slow', true, async () => {

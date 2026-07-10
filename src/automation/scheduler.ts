@@ -3,12 +3,14 @@ import { runtimeTracer } from '../core/tracing';
 import { listDueAutomationJobs, markAutomationJobRun, type DueJobResult } from './jobs';
 import type { AutomationPolicyContext } from './runner';
 import { prepareAutomationRun } from './runner';
+import { completeJob, recoverOrphanedJobs, startJob, type LedgerJobKind, type OrphanedEntry } from './jobLedger';
 import { checkObligations } from '../services/promiseLedger';
 import { listPromises, updatePromise, fulfilPromise } from '../services/promiseLedger';
 import { emitEvent } from '../persistence/eventStore';
 import { pruneEventsByAge } from '../persistence/eventStore';
 import { probeServiceHealth, transitionService } from '../services/serviceLifecycle';
 import { listAgenticServices } from '../services/agenticServiceMode';
+import { recordSwallowed } from '../observability/silentFailureSink';
 
 export interface AutomationSchedulerOptions {
   projectDir: string;
@@ -24,6 +26,13 @@ export interface AutomationSchedulerOptions {
   idleThresholdMinutes: number;
   /** Optional callback to send breach notifications via configured channels. */
   onBreachDetected?: (breaches: Array<{ breach_type: string; detail: string }>) => void;
+  /**
+   * Optional opportunistic-idle hook. Fired once per tick when the system has
+   * been idle long enough, for background work that should only run while the
+   * user is away (e.g. replaying drained governed answers). Fire-and-forget;
+   * failures are swallowed so they never break the tick.
+   */
+  onIdle?: () => void | Promise<void>;
 }
 
 const HEARTBEAT_MS = 60_000;
@@ -39,6 +48,13 @@ export class AutomationScheduler {
   start(now: Date = new Date()): void {
     if (this.heartbeat) return;
     this.lastCheckMs = now.getTime();
+    // Surface any runs that were in flight when the previous process died.
+    // Fire-and-forget so we don't change the sync signature; failures are
+    // logged loudly via the onOrphan handler's own error path.
+    recoverOrphanedJobs(this.opts.projectDir, {
+      onOrphan: (entry) => this.handleOrphanedRun(entry),
+      logError: (msg) => logger.warn('Automation', msg),
+    }).catch((err) => recordSwallowed('scheduler.recoverOrphanedJobs', err));
     this.heartbeat = setInterval(() => {
       this.tick().catch((error) => logger.warn('Automation', 'Scheduler tick failed', { error: error instanceof Error ? error.message : String(error) }));
     }, HEARTBEAT_MS);
@@ -78,13 +94,7 @@ export class AutomationScheduler {
 
       // Always-fire cohort: cron.
       for (const job of cronDue) {
-        try {
-          const run = await prepareAutomationRun(this.opts.projectDir, job, now, policy);
-          const markedJob = await markAutomationJobRun(this.opts.projectDir, job.id, { success: true, outputPath: run.outputPath }, now);
-          results.push({ jobId: job.id, name: job.name, run, markedJob });
-        } catch (error) {
-          logger.warn('Automation', 'Cron job execution failed', { jobId: job.id, error: error instanceof Error ? error.message : String(error) });
-        }
+        await this.executeWithLedger(job, 'cron', policy, now, results);
       }
 
       // Opportunistic cohort: only when the system has been idle long enough.
@@ -93,16 +103,16 @@ export class AutomationScheduler {
       const idleEnough = idleMs >= idleThresholdMs;
       if (idleEnough) {
         for (const job of opportunisticDue) {
-          try {
-            const run = await prepareAutomationRun(this.opts.projectDir, job, now, policy);
-            const markedJob = await markAutomationJobRun(this.opts.projectDir, job.id, { success: true, outputPath: run.outputPath }, now);
-            results.push({ jobId: job.id, name: job.name, run, markedJob });
-          } catch (error) {
-            logger.warn('Automation', 'Opportunistic job execution failed', { jobId: job.id, error: error instanceof Error ? error.message : String(error) });
-          }
+          await this.executeWithLedger(job, 'opportunistic', policy, now, results);
         }
       } else if (opportunisticDue.length > 0) {
         logger.info('Automation', 'Skipped opportunistic jobs (system not idle)', { skipped: opportunisticDue.length, idleMs, idleThresholdMs });
+      }
+
+      // Opportunistic-idle hook: background work that should only run while the
+      // user is away. Fire-and-forget so a slow hook never blocks the tick.
+      if (idleEnough && this.opts.onIdle) {
+        Promise.resolve(this.opts.onIdle()).catch((err) => recordSwallowed('scheduler.onIdle', err));
       }
 
       if (results.length > 0) {
@@ -162,7 +172,7 @@ export class AutomationScheduler {
         if (this.opts.onBreachDetected) {
           try {
             this.opts.onBreachDetected(obligations.breaches.map((b) => ({ breach_type: b.breach_type, detail: b.detail })));
-          } catch { /* notification is best-effort */ }
+          } catch (err) { recordSwallowed('scheduler.onBreachDetected', err); }
         }
       }
     } catch (error) {
@@ -191,7 +201,7 @@ export class AutomationScheduler {
       const retentionDays = parseInt(process.env.HARNESS_EVENT_RETENTION_DAYS ?? '30', 10) || 30;
       const pruned = await pruneEventsByAge(this.opts.projectDir, retentionDays);
       if (pruned > 0) logger.info('Automation', `Pruned ${pruned} event(s) older than ${retentionDays} days`);
-    } catch { /* pruning is best-effort */ }
+    } catch (err) { recordSwallowed('scheduler.pruneEventsByAge', err); }
   }
 
   /** Auto-fulfil pending promises that are linked to the executed job IDs via schedule_id. */
@@ -216,5 +226,43 @@ export class AutomationScheduler {
     } catch (error) {
       logger.warn('Automation', 'Promise auto-fulfilment failed', { error: error instanceof Error ? error.message : String(error) });
     }
+  }
+
+  private async executeWithLedger(
+    job: { id: string; name: string },
+    kind: LedgerJobKind,
+    policy: AutomationPolicyContext,
+    now: Date,
+    results: DueJobResult[],
+  ): Promise<void> {
+    const ledgerEntry = await startJob(this.opts.projectDir, { jobId: job.id, name: job.name, kind }, now);
+    try {
+      const run = await prepareAutomationRun(this.opts.projectDir, job as Parameters<typeof prepareAutomationRun>[1], now, policy);
+      const markedJob = await markAutomationJobRun(this.opts.projectDir, job.id, { success: true, outputPath: run.outputPath }, now);
+      await completeJob(this.opts.projectDir, { jobId: job.id, runId: ledgerEntry.runId, success: true });
+      results.push({ jobId: job.id, name: job.name, run, markedJob });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      await completeJob(this.opts.projectDir, { jobId: job.id, runId: ledgerEntry.runId, success: false, error: msg })
+        .catch((err) => recordSwallowed('scheduler.completeJob', err));
+      logger.warn('Automation', `${kind} job execution failed`, { jobId: job.id, error: msg });
+    }
+  }
+
+  private handleOrphanedRun(entry: OrphanedEntry): void {
+    logger.warn('Automation', 'Orphaned job recovered from previous run', {
+      jobId: entry.jobId,
+      runId: entry.runId,
+      kind: entry.kind,
+      staleForMs: entry.staleForMs,
+    });
+    emitEvent(this.opts.projectDir, 'schedule', 'job_orphaned', {
+      job_id: entry.jobId,
+      run_id: entry.runId,
+      name: entry.name,
+      kind: entry.kind,
+      started_at: entry.startedAt,
+      stale_for_ms: entry.staleForMs,
+    }, 'scheduler', entry.jobId).catch((err) => recordSwallowed('scheduler.emitJobOrphaned', err));
   }
 }

@@ -31,6 +31,7 @@
 | code-review | `.github/skills/code-review/SKILL.md` | Code review checklist enforcing harness conventions |
 | testing | `.github/skills/testing/SKILL.md` | Jest testing conventions and patterns |
 | planner | `.github/skills/planner/SKILL.md` | CopilotForge wizard and scaffolding |
+| research | `.github/skills/research/SKILL.md` | Evidence-first research that cites every claim and marks the unverifiable |
 
 ## Agents
 
@@ -53,6 +54,12 @@
 | Task Loop | `cookbook/task-loop.ts` | Autonomous task execution from IMPLEMENTATION_PLAN.md |
 
 <!-- forge:cookbook-end -->
+
+## Experimental Branches
+
+| Branch | Status | Description |
+|---|---|---|
+| `probe/orchestration` | Quarantined | Paperclip-style orchestration layer (companies, goals, org charts, adapters, engine). 11 files, ~2.7k lines, 21 passing tests. Built by the harness as a feasibility probe — not merged to master. Check out with `git checkout probe/orchestration`. |
 
 ## Memory
 

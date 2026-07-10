@@ -1,0 +1,12 @@
+# ccmem runtime dependencies (trimmed — no experiment/plotting tools)
+torch>=2.0
+numpy>=1.24
+
+# Sentence encoder (MiniLM)
+sentence-transformers>=2.2
+transformers>=4.30
+
+# FastAPI service
+fastapi>=0.100
+uvicorn[standard]>=0.23
+pydantic>=2.0

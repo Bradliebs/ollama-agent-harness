@@ -1,7 +1,7 @@
 # Ollama Agent Harness — System Breakdown
 
-**Version**: v0.4.2 (commit `ba8406d`, 2026-05-06)
-**Tests**: 1477 / 1477 across 132 suites · **Modules**: 158 source · 132 test files
+**Version**: v0.6.5 (2026-06-23)
+**Tests**: 2392 / 2393 across 206 suites (1 known flake) · **Modules**: 234 source · 206 test files
 **License**: see repo root · **Audience**: operators, contributors, future-you
 
 This document is the single-page system reference. It covers every
@@ -27,8 +27,8 @@ Design constraints that show up everywhere in the codebase:
 - **Env-gated additions.** Every new behaviour added since v0.4.0
   defaults OFF via a `HARNESS_*_ENABLED` env flag. Existing installs
   keep working without reading release notes.
-- **Test-as-spec.** 1477 tests are the ground truth for behaviour.
-  When this document and a test disagree, the test wins.
+- **Test-as-spec.** 2392 passing tests are the ground truth for
+  behaviour. When this document and a test disagree, the test wins.
 
 ## 2. Top-level layout
 
@@ -37,13 +37,16 @@ src/
   agents/         Sub-agent orchestration, model routing, custom-agent loader
   automation/     Background scheduler, job-safety guards, recurring tasks
   cli/            `harness` entry point, command registry, parser
-  context/        System-prompt assembly + injection
+  context/        System-prompt assembly + injection (incl. concept-memory recall)
   core/           Chat client, query loop, validation, fallback routing,
                   tracing, structured output, rate limiting
   curator/        Memory curation scheduler
   eval/           Adversarial probes + simulator (eval traces)
   extensibility/  MCP server bridge + capability template starters
+  goal/           `/goal` outer loop: verification-driven autonomous iteration
   integrations/   Discord, Slack, Telegram, Teams, GitHub PR
+  jarvis/         Ambient/voice layer: trust ladder, knowledge graph, model
+                  council, predictive engine, daily brief, MCP server, voice
   learning/       Reflection extractor, candidate promotion gate, eval traces
   models/         Vision-model registry, model capability inference
   mycelium/       Context router graph (long-term routing memory)
@@ -51,13 +54,19 @@ src/
   observability/  Prometheus, OpenInference, OTLP exporter
   permissions/    Engine, audit log, prompt broker, capability registry
   persistence/    Session storage, event store, promise ledger, continuity
+  presets/        Bundled preset data
+  reports/        Comparison-report rendering
+  safety/         Prompt-injection defence
   services/       Heartbeat, triggers, concierge, squads, identity, tasks,
-                  memory intelligence, model profiles, capability registry
+                  memory intelligence, model profiles, capability registry,
+                  concept-memory client, operate-mode, Apex (goal/kanban/
+                  morning-priority), worker queue
   setup/          `doctor`, `doctor --fix`, health probes
   tools/          File/grep/web/PDF/image/audio/squad/agent/task/docker tools
   tui/            Terminal client (readline + ANSI, no Ink)
   web/            Express server, routes, UI wiring, WS
   workflows/      Workflow runner glue
+ccmem/            FastAPI concept-cell semantic memory sidecar (Python)
 ui/               Static SPA served by the web daemon
 docs/             Operator-facing reference
 .copilot-tracking/  RPI artifacts (research, plans, changes, reviews, memory)
@@ -157,7 +166,7 @@ REST: `/api/permissions/*`, `/api/audit*`, `/api/capabilities*`.
 | Heartbeat history | `.harness/heartbeat/runs.jsonl` (auto-pruned at 1000) | Self-learning tick log |
 | Concierge log | `.harness/concierge/log.jsonl` (auto-pruned at 5000) | Routing decisions |
 
-### 3.6 Services (`src/services`) — 22 modules
+### 3.6 Services (`src/services`)
 
 The largest subsystem. Each service is a focused background or
 on-demand capability.
@@ -171,6 +180,7 @@ on-demand capability.
 | `squad.ts` + `squadSessions.ts` | Multi-agent channels with regex routing | `.harness/squads/*.json` |
 | `identity.ts` | SOUL / USER / structured identity rendered into chat prompt | `.harness/identity/*` |
 | `memoryIntelligence.ts` | Semantic memory lookup over session history | derived |
+| `conceptMemoryClient.ts` | Best-effort TS client for the ccmem sidecar (v0.6.5) | `.harness/ccmem/bank.db` (via sidecar) |
 | `modelProfiles.ts` | Per-model `contextMaxTokens` / `validationProfile` / `pairedVisionModel` | `.harness/model-profiles.json` |
 | `capabilityRegistry.ts` | Opt-in grants with controls | `.harness/capabilities/*.json` |
 | `capabilityTemplates.ts` + starters | Templated capability bootstrap | derived |
@@ -178,6 +188,65 @@ on-demand capability.
 | `artifactCatalog.ts` | Walks `agent-outputs/`, auto-tags by ext | derived |
 | `subagentRegistry.ts` | In-memory map of active sub-agents | RAM only |
 | `toolFailureAlerts.ts` | Sliding-window failure-rate alarm | RAM + event store |
+| `agenticServiceMode.ts` | Operate-mode classifier + handler (vs build mode) | `.harness/` operate state |
+| `goalExpander.ts` + `goalSlashCommand.ts` | `/goal` natural-language → structured goal (Apex) | derived |
+| `kanbanBridge.ts` | Kanban board → autonomy bridge (Apex) | derived |
+| `morningPriority.ts` | Daily morning-priority prompt (Apex) | derived |
+| `workerQueue.ts` + `workerExecutors.ts` | Background worker queue with persistence | `.harness/` worker state |
+
+### 3.6a Concept memory sidecar (`ccmem/` + `services/conceptMemoryClient.ts`)
+
+A bundled FastAPI sidecar (`ccmem/service.py`, port 8765) implementing
+the Tyukin & Gorban (2018) concept-cell scheme. Each remembered item is
+stored as a unit-vector "neuron" with a per-cell firing threshold in
+`.harness/ccmem/bank.db` (SQLite). Endpoints: `/write`, `/write_many`,
+`/query`, `/bind`, `/health`, `/cells`.
+
+- `memoryTools.ts` dual-writes every `remember` call to ccmem alongside
+  the existing markdown memory files.
+- `context/assembly.ts` adds a `Concept memory recall` section to the
+  auto-recall buffer (shared 4 000-char cap).
+- `start.bat` step 6 auto-launches ccmem when Python is present and
+  defaults `ccmemUrl` to `http://localhost:8765`.
+- Best-effort: if the sidecar is down the harness behaves identically.
+
+### 3.6b Goal loop (`src/goal`)
+
+The `/goal` autonomous outer loop. Drives a goal through verification-gated
+iterations until a terminal state. Agnostic of *how* each iteration works —
+the caller supplies a `runIteration` callback. Enforces iteration/time
+budgets, re-reads goal status between iterations (external pause/abandon
+wins), runs verification before and after each iteration, and persists
+progress so it survives a crash. Modules: `loop.ts`, `judge.ts`,
+`verification.ts`, `shellRunner.ts`, `resume.ts`, `bootResume.ts`,
+`runRegistry.ts`, `store.ts`, `queryLoopRunner.ts`, `loopConfig.ts`.
+
+### 3.6c Jarvis layer (`src/jarvis`)
+
+Ambient + voice + reasoning layer. Self-contained; none of it is
+required for the core chat loop. Key modules:
+
+| Module | Responsibility |
+|---|---|
+| `trustLadder.ts` | Per-capability autonomy rungs (confirm vs act autonomously) |
+| `knowledgeGraph.ts` (+ compaction, viz) | Entity/fact/edge store with recall and Mermaid export |
+| `modelCouncil.ts` | Multi-model deliberation (`runCouncil`) |
+| `predictiveEngine.ts` + `predictiveAdapter.ts` | Mines next-action suggestions from event history |
+| `ambientDaemon.ts` + `ambientActions.ts` | Ambient signal collection and reactions |
+| `dailyBrief.ts` + `briefScheduler.ts` + `briefTrigger.ts` | Composes and schedules a daily brief |
+| `mcpServer.ts` + `mcpStdio.ts` | Harness-as-MCP-server bridge (stdio + in-process) |
+| `voice.ts` | Speech-to-text / text-to-speech / wake-word config |
+| `inboundTriage.ts` | Classifies inbound channel messages into buckets |
+| `permissionGate.ts` + `permissionFeedback.ts` + `grantBridge.ts` | Permission gating fed back into the trust ladder |
+| `runtimeRegistry.ts` | Tracks which optional runtime features are installed |
+
+### 3.6d Safety / reports / presets
+
+- `src/safety/injectionDefence.ts` — prompt-injection defence over tool
+  output and untrusted content.
+- `src/reports/comparisonReport.ts` — renders structured comparison
+  reports (e.g. product/option comparisons).
+- `src/presets/` — bundled preset data.
 
 ### 3.7 Web server (`src/web`)
 
@@ -307,6 +376,7 @@ from legacy plain-text settings on first read).
   concierge/log.jsonl             ← JSONL, auto-pruned at 5000
   mycelium/graph.json
   evals/trace-runs.jsonl
+  ccmem/bank.db                   ← concept-cell semantic memory (v0.6.5, SQLite)
   model-profiles.json             ← per-model overrides (v0.4.2)
   file-write-redirects.json       ← optional path-pattern redirects
   curator/state.json
@@ -450,7 +520,8 @@ For release artifacts (zip + installer) see [docs/RELEASE-PIPELINE.md](RELEASE-P
 
 ## 9. Test discipline
 
-- 1477 tests across 132 suites. **Every cycle stays green.**
+- 2392 / 2393 tests across 206 suites. **Every cycle stays green** bar
+  one known flake.
 - Pre-existing flake: `src/web/server.test.ts › returns discovery
   payloads … sessionSearch.fresh: true → false` flakes intermittently
   on master. Confirmed unrelated to recent work.
@@ -482,13 +553,14 @@ For release artifacts (zip + installer) see [docs/RELEASE-PIPELINE.md](RELEASE-P
   are separate concerns. Per user preference, HybridTurtle gets verify
   / harden, not new features.
 
-## 12. Status snapshot at v0.4.2
+## 12. Status snapshot at v0.6.5
 
 | Surface | State |
 |---|---|
-| CLAW alignment scorecard | 79 / 79 closed (100%) |
-| Tests | 1477 / 1477 green (132 suites) |
+| Tests | 2392 / 2393 green (206 suites); 1 known flake |
 | Typecheck | Clean |
-| Last failure mode from real session | Closed (vision fallback, context auto, agent-outputs prune, attachment previews) |
-| Open Phase-5 backlog | None blocking |
+| Headline feature | ccmem concept-cell semantic memory (dual-write `remember`, meaning-based recall) |
+| Autonomous experiences | Apex family (`/goal`, PDF→wiki, Kanban→autonomy, competitor research, memory wiki, morning priority) — renamed from Hermes |
+| Startup | Hardened (BOM path fix, clearer `npm install` errors, ccmem auto-launch) |
+| Open backlog | None blocking |
 | Recommended next action | Use the harness for real work. Return to code only when something actually breaks. |

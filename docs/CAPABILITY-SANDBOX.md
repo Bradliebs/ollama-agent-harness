@@ -37,7 +37,28 @@ Desktop control is gated. Screenshot capture and bounded text/key/wait replay re
 
 ### Browser profile access
 
-Browser profile access stays design-only until profile grants can be scoped to explicit browser profiles, cookie/session access can be redacted, and profile data never enters traces by default.
+Browser profile access is gated by capability grants, and the page-acting tools now ship an audit log, redaction-by-default, and an explicit cookie/session vault. Domain scoping remains the one outstanding hardening item before profile-touching modes could be considered for anything other than deliberate, user-driven use.
+
+The headless `browser` toolset (navigate, click, fill, read, screenshot) is gated by the `browser-page-access` capability. The page-acting tools enforce that grant at execute time by reading `.harness/settings.json` from the working directory, so direct, CLI, and cookbook call paths are blocked without an active grant — not only the web chat loop. `browser_close` is intentionally ungated because it only releases resources.
+
+Launch behaviour is selected by environment variables, in precedence order. With none set, the tools keep their default behaviour: a fresh, headless, bundled-Chromium profile with no access to your real sessions.
+
+| Variable | Effect |
+| --- | --- |
+| `HARNESS_BROWSER_CDP_URL` | Attach to an already-running Chrome over CDP (e.g. `http://127.0.0.1:9222`). Reuses your live tabs; `browser_close` disconnects instead of closing your tab. |
+| `HARNESS_BROWSER_PROFILE_DIR` | Launch a persistent context against the given profile directory so logins survive across runs. |
+| `HARNESS_BROWSER_SESSION` | Restore a named session-vault entry (cookies + storage saved under `.harness/browser-sessions/`) into a fresh context, instead of pointing at a raw profile directory. |
+| `HARNESS_BROWSER_HEADFUL` | When truthy, show a visible browser window instead of running headless. |
+| `HARNESS_BROWSER_CHANNEL` | Use an installed browser channel (`chrome`, `msedge`) instead of bundled Chromium. |
+
+The CDP and persistent-profile modes reach your real logged-in sessions and remain opt-in. Three hardening features now back the page tools:
+
+* **Audit log.** Every navigate, click, fill, read, and screenshot (including capability denials) is appended to `.harness/browser-audit.jsonl` with a timestamp, launch mode, target URL, and outcome. Readable via `GET /api/browser/audit` and the Settings panel.
+* **Redaction by default.** The audit log never stores page text or cookie values. `browser_fill` values are masked by default, and URLs can be narrowed to their origin (dropping path/query tokens) via the `browserRedaction` setting.
+* **Cookie/session vault.** `POST /api/browser/sessions/:name` saves the live browser login as a named Playwright `storageState` snapshot under `.harness/browser-sessions/`; the listing API returns metadata only and never echoes cookie values. Set `HARNESS_BROWSER_SESSION=<name>` to auto-restore it.
+
+Domain scoping is not yet implemented, so profile-touching use stays a deliberate, user-driven choice rather than a sandboxed default.
+
 
 ### Password manager access
 
@@ -86,3 +107,18 @@ Internet marketplace execution stays blocked until source trust, malware scannin
 ### Multi-agent swarm
 
 Multi-agent swarm behavior is gated. Fan-out execution needs role boundaries, per-agent budgets, parent-controlled tool access, and aggregate run logging.
+
+## Tool-call inspectors
+
+Inspectors run inside the dispatcher between the model's tool-call decision and tool execution. They can deny, approve, or pause a call. All inspectors are off by default — opt in per environment variable. Source of truth: [`src/safety/toolInspectors/buildFromEnv.ts`](../src/safety/toolInspectors/buildFromEnv.ts).
+
+| Env var | Effect when set | Notes |
+| --- | --- | --- |
+| `HARNESS_INSPECTOR_REPETITION_MAX=<n>` | Blocks the same `(tool, args)` call after `n` consecutive repeats within a turn. | Catches stuck loops. `n` must be a positive finite number; invalid values silently disable. |
+| `HARNESS_INSPECTOR_EGRESS=approve` | Requires human approval before any shell tool runs a command that looks like network egress (curl, wget, npm install, etc.). | Approval prompt goes through the standard permission UI. |
+| `HARNESS_INSPECTOR_EGRESS=deny` | Same detection, denies the call outright. | Use for hardened sessions. |
+| `HARNESS_INSPECTOR_EGRESS_ALLOW=a.com,b.org` | Domain allowlist consulted before approve/deny fires. | CSV, applies to both `approve` and `deny` modes. |
+| `HARNESS_INSPECTOR_EGRESS_TOOLS=bash,custom_shell` | Override the set of tool names treated as "shell" for egress detection. | CSV. Default covers builtin shell-ish tools. |
+| `HARNESS_INSPECTOR_ADVERSARY=1` | Adds the LLM-graded adversary judge. Each tool call is scored against `.harness/adversary.md`; high-risk calls get blocked or surfaced for approval. | **Cost:** one extra model call per inspected tool call. Requires `.harness/adversary.md` to exist; otherwise the inspector no-ops at construction time. Same-model adjudication risk applies — pair with a stronger judge model when possible. |
+| `HARNESS_TOOL_RESPONSE_SPOOL_THRESHOLD=<n>` | Tool responses larger than `n` characters get spooled to disk and replaced with a pointer in the conversation. | Keeps context windows healthy on tools that return large blobs. Off when unset; invalid values silently disable. |
+

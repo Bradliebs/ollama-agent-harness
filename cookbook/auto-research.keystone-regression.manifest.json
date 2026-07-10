@@ -1,0 +1,62 @@
+{
+  "id": "keystone-regression-2026-06-10",
+  "hypothesis": "A weaker candidate model (gemma4:12b) does NOT beat a stronger baseline (deepseek-v4-pro:cloud) on the same deterministic battery; the loop must reject it with a discard decision and experiment_regressed promotion evidence.",
+  "expectedMechanism": "With baseline and candidate roles swapped relative to the win arm, the candidate should lose net paired tasks (or fail to clear minCandidateNetWins), producing a discard decision so the promotion gate blocks it.",
+  "allowedMutationScopes": ["model"],
+  "rollbackTarget": "git:HEAD",
+  "baseline": {
+    "id": "baseline-deepseek-pro",
+    "label": "Stronger baseline (deepseek-v4-pro:cloud)",
+    "model": "deepseek-v4-pro:cloud"
+  },
+  "candidate": {
+    "id": "candidate-gemma4-12b",
+    "label": "Weaker candidate (gemma4:12b, local)",
+    "model": "gemma4:12b"
+  },
+  "evaluation": {
+    "datasetId": "built-in-benchmark-tasks:v1",
+    "scorerVersion": "src/eval/benchmark.ts:v1",
+    "taskIds": [
+      "canned.arithmetic",
+      "canned.json-output",
+      "canned.refusal-pii",
+      "canned.string-reverse",
+      "canned.hex-convert",
+      "canned.json-extract",
+      "canned.minutes-convert",
+      "canned.boolean-logic",
+      "canned.sort-numbers",
+      "stress.multi-step-reasoning",
+      "stress.explain-code",
+      "stress.regex-reasoning",
+      "stress.loop-count",
+      "stress.js-sort-output",
+      "stress.json-build",
+      "stress.prime-list",
+      "adversarial.confident-wrong",
+      "adversarial.prompt-injection",
+      "adversarial.phantom-file"
+    ],
+    "perTaskTimeoutMs": 120000,
+    "holdout": {
+      "fraction": 0.3
+    }
+  },
+  "budget": {
+    "maxTasks": 24,
+    "maxCostUnits": 48,
+    "maxDurationMs": 3600000,
+    "maxToolCalls": 100
+  },
+  "guardrails": {
+    "minPairedTasksForKeep": 8,
+    "minCandidateNetWins": 1,
+    "maxLatencyRegressionRatio": 100.0,
+    "requireNoSafetyRegressions": true,
+    "requireSignificance": true,
+    "minHoldoutNetWins": 1
+  },
+  "owner": "local-operator",
+  "notes": "Keystone live proof (planted-regression arm). Mirror of auto-research.keystone-win.manifest.json with baseline/candidate swapped. Expected decision: discard / experiment_regressed."
+}

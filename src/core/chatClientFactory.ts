@@ -3,6 +3,8 @@ import { OpenAIClient } from './openaiClient';
 import { FallbackChatClient } from './fallbackChatClient';
 import { ReplicateClient } from './replicateClient';
 import type { IChatClient } from './chatClient';
+import { BudgetEnforcingChatClient } from '../budget/budgetEnforcingClient';
+import { getEnvCapUsd } from '../budget/dailyBudget';
 
 /**
  * Provider preset table for OpenAI Chat Completions-compatible backends.
@@ -160,6 +162,8 @@ export interface CreateClientConfig {
   numCtx?: number;
   /** Cycle to other configured remote providers when the selected provider hits rate/quota/request limits. */
   autoFallback?: boolean;
+  /** Project directory used by the daily-spend cap. Defaults to process.cwd(). */
+  projectDir?: string;
 }
 
 /**
@@ -176,14 +180,20 @@ export interface CreateClientConfig {
 export function createChatClient(config: CreateClientConfig): IChatClient {
   const backend = (config.backend ?? process.env.HARNESS_BACKEND ?? 'ollama').toLowerCase();
   if (backend === 'ollama') {
+    // Local backend: no $ cost, no budget wrapper.
     return new OllamaClient({ model: config.model, host: config.host, numCtx: config.numCtx });
   }
   if (backend === 'replicate') {
     const primary = createReplicateClient(config.model);
-    const autoFallback = config.autoFallback ?? process.env.HARNESS_REMOTE_AUTO_FALLBACK !== '0';
-    if (!autoFallback) return primary;
+    // Opt-in by default (v0.5.0+). Previously enabled unless HARNESS_REMOTE_AUTO_FALLBACK=0.
+    // Flipped because silent provider fallback violates the "local-first" product promise:
+    // a transient Ollama hiccup used to route conversation contents (which include tool
+    // outputs from file_read / bash) to whichever remote provider had a key configured.
+    // Set HARNESS_REMOTE_AUTO_FALLBACK=1 to restore the old behaviour.
+    const autoFallback = config.autoFallback ?? process.env.HARNESS_REMOTE_AUTO_FALLBACK === '1';
+    if (!autoFallback) return wrapWithBudget(primary, config);
     const fallbackEntries = buildFallbackEntries(backend, config.model, config.numCtx);
-    return fallbackEntries.length > 1 ? new FallbackChatClient(fallbackEntries) : primary;
+    return wrapWithBudget(fallbackEntries.length > 1 ? new FallbackChatClient(fallbackEntries) : primary, config);
   }
   const preset = OPENAI_COMPATIBLE_PRESETS[backend];
   if (!preset) {
@@ -197,10 +207,27 @@ export function createChatClient(config: CreateClientConfig): IChatClient {
     throw new Error(`${preset.label} backend selected but no API key found. Set ${envVarList}.${signup}`);
   }
   const primary = createOpenAIClient(preset, config.model, apiKey, config.numCtx);
-  const autoFallback = config.autoFallback ?? process.env.HARNESS_REMOTE_AUTO_FALLBACK !== '0';
-  if (!autoFallback) return primary;
+  // Opt-in by default (v0.5.0+). See note on the replicate branch above.
+  const autoFallback = config.autoFallback ?? process.env.HARNESS_REMOTE_AUTO_FALLBACK === '1';
+  if (!autoFallback) return wrapWithBudget(primary, config);
   const fallbackEntries = buildFallbackEntries(backend, config.model, config.numCtx);
-  return fallbackEntries.length > 1 ? new FallbackChatClient(fallbackEntries) : primary;
+  return wrapWithBudget(fallbackEntries.length > 1 ? new FallbackChatClient(fallbackEntries) : primary, config);
+}
+
+/**
+ * Apply the daily-spend cap decorator when HARNESS_DAILY_SPEND_USD is set to a
+ * positive value. Re-reads the cap on every call inside the decorator so a
+ * settings change takes effect without a restart. Skipped for local backends
+ * (handled at the call site) since those have no $ cost.
+ */
+function wrapWithBudget(client: IChatClient, config: CreateClientConfig): IChatClient {
+  const projectDir = config.projectDir ?? process.cwd();
+  if (getEnvCapUsd() <= 0) return client;
+  return new BudgetEnforcingChatClient({
+    inner: client,
+    projectDir,
+    getCapUsd: getEnvCapUsd,
+  });
 }
 
 /** First non-empty value among the preset's listed env var names, or undefined. */

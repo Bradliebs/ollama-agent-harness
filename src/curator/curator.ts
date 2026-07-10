@@ -19,6 +19,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
 import { scanSkillsDir, type SkillDefinition } from '../extensibility/skillLoader';
@@ -100,7 +101,8 @@ function archiveDir(projectDir: string): string {
 async function appendAuditLog(projectDir: string, entry: Record<string, unknown>): Promise<void> {
   await fs.mkdir(curatorDir(projectDir), { recursive: true });
   const line = JSON.stringify({ timestamp: new Date().toISOString(), ...entry }) + '\n';
-  await fs.appendFile(logFile(projectDir), line, 'utf-8');
+  const filePath = logFile(projectDir);
+  await withFileLock(filePath, () => fs.appendFile(filePath, line, 'utf-8'));
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
@@ -317,7 +319,7 @@ export async function runLlmPhase(
   await fs.mkdir(curatorDir(projectDir), { recursive: true });
   const header = `<!-- markdownlint-disable-file -->\n# Curator merge proposals\n\nGenerated: ${new Date().toISOString()}\nActive skills considered: ${active.length}\n\n`;
   const body = header + proposals.trim() + '\n';
-  await fs.writeFile(proposalsFile(projectDir), body, 'utf-8');
+  await atomicWriteFile(proposalsFile(projectDir), body);
   await appendAuditLog(projectDir, { phase: 'llm', wrote: proposalsFile(projectDir), activeSkillCount: active.length });
   return { proposals, proposalsPath: proposalsFile(projectDir) };
 }
@@ -489,7 +491,7 @@ export async function applyMergeProposal(
         ``,
       ]),
     ].filter((line) => line !== null && line !== undefined).join('\n');
-    await fs.writeFile(umbrellaPath, body, 'utf-8');
+    await atomicWriteFile(umbrellaPath, body);
 
     for (const skill of sourceSkills) {
       const record = usage.records[skill.name];

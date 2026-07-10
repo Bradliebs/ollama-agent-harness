@@ -65,11 +65,14 @@ describe('cookbook/task-loop ralphLoop snapshot restore E2E', () => {
   });
 
   it('preserves .forge-history.jsonl and wipes stray files when an iteration fails', () => {
-    // maxIterations=1 keeps the test focused on a single fail-then-restore
-    // cycle without bleeding into a second iteration.
+    // Three iterations exhaust the retry budget so the task transitions to
+    // permanent [!]. Each iteration runs the same fail-then-restore cycle;
+    // the assertions on history-preservation and stray-cleanup hold across
+    // every attempt because snapshot restore runs on both retry and final
+    // failure paths.
     ralphLoop(
       join(workDir, 'IMPLEMENTATION_PLAN.md'),
-      1,
+      3,
       false,
       {
         implementTask: () => {
@@ -113,7 +116,7 @@ describe('cookbook/task-loop ralphLoop snapshot restore E2E', () => {
 
     ralphLoop(
       join(workDir, 'IMPLEMENTATION_PLAN.md'),
-      1,
+      3,
       false,
       {
         implementTask: () => {
@@ -127,5 +130,55 @@ describe('cookbook/task-loop ralphLoop snapshot restore E2E', () => {
     const finalPlan = readFileSync(join(workDir, 'IMPLEMENTATION_PLAN.md'), 'utf-8');
     expect(finalPlan).toMatch(/^- \[x\] already-done/m);
     expect(finalPlan).toMatch(/^- \[!\] uncommitted-task/m);
+  });
+
+  it('preserves sibling uncommitted pending tasks when one task fails and triggers snapshot restore', () => {
+    // Reproduces the production bug: user added several new pending tasks
+    // via plan-from-goal (uncommitted), the first one failed the evidence
+    // gate, snapshot restore ran `git reset --hard` which wiped every
+    // uncommitted plan entry, then the old restore code only re-added the
+    // currently-failing task — silently deleting all sibling pending work
+    // and causing the loop to exit "all tasks complete" prematurely.
+    writeFileSync(
+      join(workDir, 'IMPLEMENTATION_PLAN.md'),
+      ['# Plan', '', '- [x] already-done — committed task', ''].join('\n'),
+    );
+    execSync('git add IMPLEMENTATION_PLAN.md', { stdio: 'pipe' });
+    execSync('git commit -q -m baseline-plan', { stdio: 'pipe' });
+    writeFileSync(
+      join(workDir, 'IMPLEMENTATION_PLAN.md'),
+      [
+        '# Plan',
+        '',
+        '- [x] already-done — committed task',
+        '- [ ] task-a — will fail and trigger restore',
+        '- [ ] task-b — sibling, must survive restore',
+        '- [ ] task-c — sibling, must also survive restore',
+        '',
+      ].join('\n'),
+    );
+
+    // Only one iteration: the first task fails and triggers restore.
+    // After restore, the plan must still list task-b and task-c as pending.
+    ralphLoop(
+      join(workDir, 'IMPLEMENTATION_PLAN.md'),
+      1,
+      false,
+      {
+        implementTask: () => {
+          writeFileSync(join(workDir, 'stray.txt'), 'wipe me');
+        },
+        validateTask: () => false,
+      },
+    );
+
+    const finalPlan = readFileSync(join(workDir, 'IMPLEMENTATION_PLAN.md'), 'utf-8');
+    expect(finalPlan).toMatch(/^- \[x\] already-done/m);
+    expect(finalPlan).toMatch(/^- \[ \] task-b/m);
+    expect(finalPlan).toMatch(/^- \[ \] task-c/m);
+    // task-a was the failing one; with retry budget > 0 it stays pending,
+    // with budget exhausted it would be [!]. Either way it must still
+    // appear — it must not have been silently deleted.
+    expect(finalPlan).toMatch(/^- \[[ !]\] task-a/m);
   });
 });

@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { loadSkillsDir, matchSkillTrigger, scanSkillsDir } from './skillLoader';
+import { loadSkillsDir, loadSkillsFromDirs, matchSkillTrigger, scanSkillsDir, scanSkillsDirs } from './skillLoader';
 
 describe('skillLoader', () => {
   it('loads valid skills and reports skipped skill folders', async () => {
@@ -101,5 +101,49 @@ describe('skillLoader', () => {
     expect(matchSkillTrigger([disabled, enabled], 'run lottery analysis')?.name).toBe('enabled-skill');
     // With only a disabled skill in the list, no match.
     expect(matchSkillTrigger([disabled], 'run lottery analysis')).toBeNull();
+  });
+
+  it('merges tiered skill directories with higher-precedence dirs winning name collisions', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-skill-tiers-'));
+    const globalDir = path.join(root, 'global');
+    const workspaceDir = path.join(root, 'workspace');
+    await fs.mkdir(path.join(globalDir, 'shared'), { recursive: true });
+    await fs.mkdir(path.join(globalDir, 'global-only'), { recursive: true });
+    await fs.mkdir(path.join(workspaceDir, 'shared'), { recursive: true });
+    await fs.writeFile(path.join(globalDir, 'shared', 'SKILL.md'), ['---', 'name: shared', 'description: Global version', 'domain: t', 'triggers: []', '---', 'Global body.'].join('\n'), 'utf-8');
+    await fs.writeFile(path.join(globalDir, 'global-only', 'SKILL.md'), ['---', 'name: global-only', 'description: Only in global', 'domain: t', 'triggers: []', '---', 'Body.'].join('\n'), 'utf-8');
+    await fs.writeFile(path.join(workspaceDir, 'shared', 'SKILL.md'), ['---', 'name: shared', 'description: Workspace version', 'domain: t', 'triggers: []', '---', 'Workspace body.'].join('\n'), 'utf-8');
+
+    try {
+      // Ordered low-to-high precedence: global first, workspace last (wins).
+      const merged = await loadSkillsFromDirs([globalDir, workspaceDir]);
+      const shared = merged.find((s) => s.name === 'shared');
+      const globalOnly = merged.find((s) => s.name === 'global-only');
+      expect(shared?.description).toBe('Workspace version');
+      expect(globalOnly?.description).toBe('Only in global');
+      expect(merged).toHaveLength(2);
+
+      const scan = await scanSkillsDirs([globalDir, workspaceDir]);
+      expect(scan.skills).toHaveLength(2);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('scanSkillsDirs tolerates missing directories and preserves diagnostics', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-skill-tiers-missing-'));
+    const realDir = path.join(root, 'real');
+    await fs.mkdir(path.join(realDir, 'broken'), { recursive: true });
+    await fs.writeFile(path.join(realDir, 'broken', 'SKILL.md'), '# no frontmatter', 'utf-8');
+
+    try {
+      const scan = await scanSkillsDirs([path.join(root, 'does-not-exist'), realDir]);
+      expect(scan.skills).toEqual([]);
+      expect(scan.diagnostics).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'broken', reason: 'missing-frontmatter' }),
+      ]));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

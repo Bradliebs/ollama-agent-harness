@@ -16,6 +16,15 @@ import { emitEvent } from '../persistence/eventStore';
 
 export type SquadAutonomy = 'supervised' | 'semi-autonomous' | 'autonomous';
 
+export interface OrgNode {
+  agentId: string;
+  role: string;
+  reportsTo?: string;
+  department?: string;
+  budgetCents?: number;
+  canDelegateTo: string[];
+}
+
 export interface SquadAgentSlot {
   agentId: string;
   role: string;
@@ -40,6 +49,10 @@ export interface SquadDefinition {
   maxHandoffDepth: number;
   /** Per-squad concurrent sub-agent limit; default 3. */
   maxConcurrentAgents: number;
+  /** Company scoping — squads belong to a company for multi-tenant isolation. */
+  companyId?: string;
+  /** Org chart — hierarchical agent teams with delegation and reporting lines. */
+  orgChart?: OrgNode[];
   createdAt: string;
   updatedAt: string;
 }
@@ -54,6 +67,8 @@ export interface CreateSquadInput {
   autonomy?: SquadAutonomy;
   maxHandoffDepth?: number;
   maxConcurrentAgents?: number;
+  companyId?: string;
+  orgChart?: OrgNode[];
 }
 
 export interface RouteResult {
@@ -82,7 +97,7 @@ function squadFile(projectDir: string, id: string): string {
   return path.join(squadsDir(projectDir), `${id}.json`);
 }
 
-export async function listSquads(projectDir: string): Promise<SquadDefinition[]> {
+export async function listSquads(projectDir: string, filter?: { companyId?: string }): Promise<SquadDefinition[]> {
   const dir = squadsDir(projectDir);
   let entries: import('fs').Dirent[];
   try {
@@ -238,6 +253,8 @@ function normalizeSquad(value: Partial<SquadDefinition>): SquadDefinition {
     autonomy: normalizeAutonomy(value.autonomy),
     maxHandoffDepth: clamp(value.maxHandoffDepth, 1, 10, DEFAULT_HANDOFF_DEPTH),
     maxConcurrentAgents: clamp(value.maxConcurrentAgents, 1, 16, DEFAULT_CONCURRENT_AGENTS),
+    companyId: value.companyId || undefined,
+    orgChart: Array.isArray(value.orgChart) ? value.orgChart : undefined,
     createdAt: typeof value.createdAt === 'string' ? value.createdAt : new Date().toISOString(),
     updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : new Date().toISOString(),
   };

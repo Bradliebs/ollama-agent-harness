@@ -15,7 +15,9 @@ import type { Tool, ToolResult } from '../types';
 import { getSquad, listSquads, planHandoff, routeMessage } from '../services/squad';
 
 function projectDir(): string {
-  return process.cwd();
+  return process.env.HARNESS_PROJECT_DIR && process.env.HARNESS_PROJECT_DIR.trim()
+    ? process.env.HARNESS_PROJECT_DIR
+    : process.cwd();
 }
 
 function asString(value: unknown): string | undefined {

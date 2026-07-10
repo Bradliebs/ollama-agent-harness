@@ -28,6 +28,7 @@ echo.
 echo   Starting server in background on port 4300...
 set PORT=4300
 set NO_OPEN=1
+if not defined HARNESS_PROFILE set "HARNESS_PROFILE=assistant"
 powershell -Command "Start-Process -FilePath 'node' -ArgumentList 'dist/web/server.js' -WorkingDirectory '%~dp0' -WindowStyle Hidden -PassThru | ForEach-Object { $_.Id } | Out-File -FilePath '%~dp0.harness\server.pid' -Encoding ascii"
 echo.
 

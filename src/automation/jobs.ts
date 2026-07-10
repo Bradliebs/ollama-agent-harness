@@ -1,7 +1,9 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { prepareAutomationRun, type AutomationPolicyContext, type AutomationRunResult } from './runner';
+import { completeJob, startJob, type LedgerJobKind } from './jobLedger';
 
 export type AutomationScheduleKind = 'once' | 'interval' | 'cron';
 
@@ -85,9 +87,11 @@ export async function createAutomationJob(projectDir: string, input: CreateAutom
     enabled: true,
     nextRunAt: computeNextAutomationRun(schedule, undefined, now),
   };
-  const jobs = await listAutomationJobs(projectDir);
-  jobs.push(job);
-  await saveAutomationJobs(projectDir, jobs);
+  await withFileLock(jobsPath(projectDir), async () => {
+    const jobs = await listAutomationJobs(projectDir);
+    jobs.push(job);
+    await writeJobsFileUnlocked(projectDir, jobs);
+  });
   return job;
 }
 
@@ -102,9 +106,14 @@ export async function listAutomationJobs(projectDir: string): Promise<Automation
 }
 
 export async function saveAutomationJobs(projectDir: string, jobs: AutomationJob[]): Promise<void> {
+  await withFileLock(jobsPath(projectDir), () => writeJobsFileUnlocked(projectDir, jobs));
+}
+
+// Internal: write the jobs file without taking the lock. Callers must
+// already hold the lock for jobsPath(projectDir).
+async function writeJobsFileUnlocked(projectDir: string, jobs: AutomationJob[]): Promise<void> {
   const filePath = jobsPath(projectDir);
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify({ jobs }, null, 2), 'utf-8');
+  await atomicWriteFile(filePath, JSON.stringify({ jobs }, null, 2));
 }
 
 export async function listDueAutomationJobs(projectDir: string, now = new Date()): Promise<AutomationJob[]> {
@@ -113,20 +122,25 @@ export async function listDueAutomationJobs(projectDir: string, now = new Date()
 }
 
 export async function markAutomationJobRun(projectDir: string, jobId: string, update: AutomationRunUpdate = {}, now = new Date()): Promise<AutomationJob> {
-  const jobs = await listAutomationJobs(projectDir);
-  const jobIndex = jobs.findIndex((job) => job.id === jobId);
-  if (jobIndex === -1) throw new Error(`Automation job not found: ${jobId}`);
-  const existing = jobs[jobIndex];
-  const lastRunAt = now.toISOString();
-  const updated: AutomationJob = {
-    ...existing,
-    lastRunAt,
-    updatedAt: lastRunAt,
-    nextRunAt: computeNextAutomationRun(existing.schedule, lastRunAt, now),
-  };
-  if (existing.schedule.kind === 'once') updated.enabled = false;
-  jobs[jobIndex] = updated;
-  await saveAutomationJobs(projectDir, jobs);
+  const updated = await withFileLock(jobsPath(projectDir), async () => {
+    const jobs = await listAutomationJobs(projectDir);
+    const jobIndex = jobs.findIndex((job) => job.id === jobId);
+    if (jobIndex === -1) throw new Error(`Automation job not found: ${jobId}`);
+    const existing = jobs[jobIndex];
+    const lastRunAt = now.toISOString();
+    const next: AutomationJob = {
+      ...existing,
+      lastRunAt,
+      updatedAt: lastRunAt,
+      nextRunAt: computeNextAutomationRun(existing.schedule, lastRunAt, now),
+    };
+    if (existing.schedule.kind === 'once') next.enabled = false;
+    jobs[jobIndex] = next;
+    await writeJobsFileUnlocked(projectDir, jobs);
+    return next;
+  });
+  // The run log is a separate append-only file; it's safe to write
+  // outside the jobs.json lock.
   await appendAutomationRunLog(projectDir, updated, update, now);
   return updated;
 }
@@ -218,11 +232,13 @@ export interface DueJobResult {
 }
 
 export async function deleteAutomationJob(projectDir: string, jobId: string): Promise<boolean> {
-  const jobs = await listAutomationJobs(projectDir);
-  const filtered = jobs.filter((job) => job.id !== jobId);
-  if (filtered.length === jobs.length) return false;
-  await saveAutomationJobs(projectDir, filtered);
-  return true;
+  return withFileLock(jobsPath(projectDir), async () => {
+    const jobs = await listAutomationJobs(projectDir);
+    const filtered = jobs.filter((job) => job.id !== jobId);
+    if (filtered.length === jobs.length) return false;
+    await writeJobsFileUnlocked(projectDir, filtered);
+    return true;
+  });
 }
 
 export interface UpdateAutomationJobInput {
@@ -234,32 +250,51 @@ export interface UpdateAutomationJobInput {
 }
 
 export async function updateAutomationJob(projectDir: string, jobId: string, input: UpdateAutomationJobInput, now = new Date()): Promise<AutomationJob | null> {
-  const jobs = await listAutomationJobs(projectDir);
-  const index = jobs.findIndex((job) => job.id === jobId);
-  if (index === -1) return null;
-  const existing = jobs[index];
-  const updated: AutomationJob = { ...existing, updatedAt: now.toISOString() };
-  if (input.enabled !== undefined) updated.enabled = input.enabled;
-  if (typeof input.name === 'string' && input.name.trim()) updated.name = input.name.trim();
-  if (typeof input.prompt === 'string' && input.prompt.trim()) updated.prompt = input.prompt.trim();
-  if (typeof input.schedule === 'string' && input.schedule.trim()) {
-    updated.schedule = parseAutomationSchedule(input.schedule.trim(), now);
-    updated.nextRunAt = computeNextAutomationRun(updated.schedule, updated.lastRunAt, now);
-  }
-  if (input.scriptCommand === null) updated.scriptCommand = undefined;
-  else if (typeof input.scriptCommand === 'string') updated.scriptCommand = input.scriptCommand.trim() || undefined;
-  jobs[index] = updated;
-  await saveAutomationJobs(projectDir, jobs);
-  return updated;
+  return withFileLock(jobsPath(projectDir), async () => {
+    const jobs = await listAutomationJobs(projectDir);
+    const index = jobs.findIndex((job) => job.id === jobId);
+    if (index === -1) return null;
+    const existing = jobs[index];
+    const updated: AutomationJob = { ...existing, updatedAt: now.toISOString() };
+    if (input.enabled !== undefined) updated.enabled = input.enabled;
+    if (typeof input.name === 'string' && input.name.trim()) updated.name = input.name.trim();
+    if (typeof input.prompt === 'string' && input.prompt.trim()) updated.prompt = input.prompt.trim();
+    if (typeof input.schedule === 'string' && input.schedule.trim()) {
+      updated.schedule = parseAutomationSchedule(input.schedule.trim(), now);
+      updated.nextRunAt = computeNextAutomationRun(updated.schedule, updated.lastRunAt, now);
+    }
+    if (input.scriptCommand === null) updated.scriptCommand = undefined;
+    else if (typeof input.scriptCommand === 'string') updated.scriptCommand = input.scriptCommand.trim() || undefined;
+    jobs[index] = updated;
+    await writeJobsFileUnlocked(projectDir, jobs);
+    return updated;
+  });
 }
 
-export async function executeDueJobs(projectDir: string, policy: AutomationPolicyContext = {}, now = new Date()): Promise<DueJobResult[]> {
+export async function executeDueJobs(
+  projectDir: string,
+  policy: AutomationPolicyContext = {},
+  now = new Date(),
+  ledgerKind: LedgerJobKind = 'manual',
+): Promise<DueJobResult[]> {
   const due = await listDueAutomationJobs(projectDir, now);
   const results: DueJobResult[] = [];
   for (const job of due) {
-    const run = await prepareAutomationRun(projectDir, job, now, policy);
-    const markedJob = await markAutomationJobRun(projectDir, job.id, { success: true, outputPath: run.outputPath }, now);
-    results.push({ jobId: job.id, name: job.name, run, markedJob });
+    const ledgerEntry = await startJob(projectDir, { jobId: job.id, name: job.name, kind: ledgerKind }, now);
+    try {
+      const run = await prepareAutomationRun(projectDir, job, now, policy);
+      const markedJob = await markAutomationJobRun(projectDir, job.id, { success: true, outputPath: run.outputPath }, now);
+      await completeJob(projectDir, { jobId: job.id, runId: ledgerEntry.runId, success: true });
+      results.push({ jobId: job.id, name: job.name, run, markedJob });
+    } catch (error) {
+      await completeJob(projectDir, {
+        jobId: job.id,
+        runId: ledgerEntry.runId,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
   return results;
 }

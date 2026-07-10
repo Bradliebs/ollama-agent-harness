@@ -8,7 +8,23 @@ const os = require('os');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
-const realOllamaHost = process.env.OLLAMA_HOST || process.env.HARNESS_OLLAMA_HOST || 'http://localhost:11434';
+// OLLAMA_HOST is a server bind directive that may be scheme-less (e.g. "0.0.0.0:11434");
+// normalise to a client URL so `new URL` / `fetch` accept it. Mirrors src/web/server.ts.
+function normaliseHost(raw) {
+  const trimmed = String(raw).trim().replace(/\/$/, '');
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  try {
+    const url = new URL(withScheme);
+    if (!url.port) url.port = '11434';
+    if (url.hostname === '0.0.0.0' || url.hostname === '::' || url.hostname === '') {
+      url.hostname = 'localhost';
+    }
+    return url.origin;
+  } catch {
+    return 'http://localhost:11434';
+  }
+}
+const realOllamaHost = normaliseHost(process.env.OLLAMA_HOST || process.env.HARNESS_OLLAMA_HOST || 'http://localhost:11434');
 const retryRef = `retry-fault-probe-${Date.now()}`;
 
 async function main() {

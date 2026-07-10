@@ -98,6 +98,49 @@ describe('cookbook/task-loop ralphLoop HARNESS_TIME_BUDGET_MS halt', () => {
     expect(implementCalls.length).toBeLessThan(3);
   });
 
+  it('halts on a permanently failed prerequisite instead of running downstream tasks', () => {
+    // Sequential plans build on each other. If the first not-done task has
+    // failed after exhausting its retry budget, the loop must NOT skip ahead
+    // to later tasks (which would build on a missing scaffold) — it halts.
+    writeFileSync(join(workDir, 'IMPLEMENTATION_PLAN.md'), [
+      '# Plan',
+      '',
+      '- [ ] task-a — will fail with no output',
+      '- [ ] task-b — should never run',
+      '',
+    ].join('\n'));
+    rmSync(join(workDir, '.forge-state.json'), { force: true });
+    process.env.HARNESS_TIME_BUDGET_MS = '0';
+
+    const implementCalls: string[] = [];
+    ralphLoop(
+      join(workDir, 'IMPLEMENTATION_PLAN.md'),
+      6,
+      false,
+      {
+        // task-a writes nothing → reverts every attempt → fails after the
+        // retry budget. task-b would write a file, but the dependency gate
+        // must stop it from ever running.
+        implementTask: (task) => {
+          implementCalls.push(task.id);
+          if (task.id === 'task-b') writeFileSync(join(workDir, 'b.txt'), 'b');
+        },
+        validateTask: () => true,
+      },
+    );
+
+    // task-a tried exactly TASK_RETRY_BUDGET (3) times; task-b never reached.
+    expect(implementCalls).toEqual(['task-a', 'task-a', 'task-a']);
+    expect(implementCalls).not.toContain('task-b');
+
+    const plan = readFileSync(join(workDir, 'IMPLEMENTATION_PLAN.md'), 'utf-8');
+    expect(plan).toContain('- [!] task-a');
+    expect(plan).toContain('- [ ] task-b');
+
+    const logged = logSpy.mock.calls.flat().join('\n');
+    expect(logged).toMatch(/Blocked:.*task-a/);
+  });
+
   it('logs requested task budget separately from absolute resume iteration stop', () => {
     writeFileSync(join(workDir, 'IMPLEMENTATION_PLAN.md'), ['# Plan', '', '- [ ] task-a — first', ''].join('\n'));
     writeFileSync(join(workDir, '.forge-state.json'), JSON.stringify({ iteration: 1, lastTaskId: 'previous-task' }));
@@ -165,9 +208,11 @@ describe('cookbook/task-loop ralphLoop HARNESS_TIME_BUDGET_MS halt', () => {
     ].join('\n'));
     rmSync(join(workDir, '.forge-state.json'), { force: true });
 
+    // Three iterations exhaust the retry budget (TASK_RETRY_BUDGET = 3) so
+    // the failing task flips from `[ ]` (retry pending) to `[!]` (permanent).
     ralphLoop(
       join(workDir, 'IMPLEMENTATION_PLAN.md'),
-      1,
+      3,
       false,
       {
         implementTask: () => {

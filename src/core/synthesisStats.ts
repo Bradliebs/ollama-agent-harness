@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 
 export interface ModelSynthesisRecord {
   fired: number;
@@ -40,36 +41,45 @@ export async function loadSynthesisStats(projectDir: string): Promise<SynthesisS
 }
 
 export async function recordSynthesisFired(projectDir: string, model: string): Promise<void> {
-  const stats = await loadSynthesisStats(projectDir);
-  const record = stats[model] ?? { fired: 0, total: 0 };
-  record.fired++;
-  record.lastFired = new Date().toISOString();
-  stats[model] = record;
-  await fs.mkdir(path.dirname(statsPath(projectDir)), { recursive: true });
-  await fs.writeFile(statsPath(projectDir), JSON.stringify(stats, null, 2), 'utf-8');
+  const filePath = statsPath(projectDir);
+  await withFileLock(filePath, async () => {
+    const stats = await loadSynthesisStats(projectDir);
+    const record = stats[model] ?? { fired: 0, total: 0 };
+    record.fired++;
+    record.lastFired = new Date().toISOString();
+    stats[model] = record;
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await atomicWriteFile(filePath, JSON.stringify(stats, null, 2));
+  });
 }
 
 export async function recordSessionCompleted(projectDir: string, model: string): Promise<void> {
-  const stats = await loadSynthesisStats(projectDir);
-  const record = stats[model] ?? { fired: 0, total: 0 };
-  record.total++;
-  stats[model] = record;
-  await fs.mkdir(path.dirname(statsPath(projectDir)), { recursive: true });
-  await fs.writeFile(statsPath(projectDir), JSON.stringify(stats, null, 2), 'utf-8');
+  const filePath = statsPath(projectDir);
+  await withFileLock(filePath, async () => {
+    const stats = await loadSynthesisStats(projectDir);
+    const record = stats[model] ?? { fired: 0, total: 0 };
+    record.total++;
+    stats[model] = record;
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await atomicWriteFile(filePath, JSON.stringify(stats, null, 2));
+  });
 }
 
 export async function clearSynthesisStats(projectDir: string, model?: string): Promise<void> {
-  if (!model) {
-    await fs.rm(statsPath(projectDir), { force: true });
-    return;
-  }
-  const stats = await loadSynthesisStats(projectDir);
-  delete stats[model];
-  if (Object.keys(stats).length === 0) {
-    await fs.rm(statsPath(projectDir), { force: true });
-  } else {
-    await fs.writeFile(statsPath(projectDir), JSON.stringify(stats, null, 2), 'utf-8');
-  }
+  const filePath = statsPath(projectDir);
+  await withFileLock(filePath, async () => {
+    if (!model) {
+      await fs.rm(filePath, { force: true });
+      return;
+    }
+    const stats = await loadSynthesisStats(projectDir);
+    delete stats[model];
+    if (Object.keys(stats).length === 0) {
+      await fs.rm(filePath, { force: true });
+    } else {
+      await atomicWriteFile(filePath, JSON.stringify(stats, null, 2));
+    }
+  });
 }
 
 /**
@@ -92,15 +102,18 @@ export function adaptiveMaxTurns(stats: SynthesisStatsMap, model: string, defaul
  */
 export async function recordAvgTurnDuration(projectDir: string, model: string, avgTurnMs: number): Promise<void> {
   if (!Number.isFinite(avgTurnMs) || avgTurnMs <= 0) return;
-  const stats = await loadSynthesisStats(projectDir);
-  const record = stats[model] ?? { fired: 0, total: 0 };
-  const alpha = 0.3;
-  record.avgTurnMs = record.avgTurnMs
-    ? Math.round(record.avgTurnMs * (1 - alpha) + avgTurnMs * alpha)
-    : Math.round(avgTurnMs);
-  stats[model] = record;
-  await fs.mkdir(path.dirname(statsPath(projectDir)), { recursive: true });
-  await fs.writeFile(statsPath(projectDir), JSON.stringify(stats, null, 2), 'utf-8');
+  const filePath = statsPath(projectDir);
+  await withFileLock(filePath, async () => {
+    const stats = await loadSynthesisStats(projectDir);
+    const record = stats[model] ?? { fired: 0, total: 0 };
+    const alpha = 0.3;
+    record.avgTurnMs = record.avgTurnMs
+      ? Math.round(record.avgTurnMs * (1 - alpha) + avgTurnMs * alpha)
+      : Math.round(avgTurnMs);
+    stats[model] = record;
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await atomicWriteFile(filePath, JSON.stringify(stats, null, 2));
+  });
 }
 
 export interface ToolUseStatsInput {
@@ -111,21 +124,24 @@ export interface ToolUseStatsInput {
 }
 
 export async function recordToolUseStats(projectDir: string, model: string, input: ToolUseStatsInput): Promise<void> {
-  const stats = await loadSynthesisStats(projectDir);
-  const record = stats[model] ?? { fired: 0, total: 0 };
-  const toolCalls = Math.max(0, Math.floor(input.toolCalls));
-  const toolSuccesses = Math.max(0, Math.min(toolCalls, Math.floor(input.toolSuccesses)));
-  record.toolCalls = (record.toolCalls ?? 0) + toolCalls;
-  record.toolSuccesses = (record.toolSuccesses ?? 0) + toolSuccesses;
-  if (toolCalls > 0) record.toolSessions = (record.toolSessions ?? 0) + 1;
-  if (input.finalTextResponse) record.finalTextResponses = (record.finalTextResponses ?? 0) + 1;
-  else record.emptyTextResponses = (record.emptyTextResponses ?? 0) + 1;
-  if (input.parserLiftedToolCalls && input.parserLiftedToolCalls > 0) {
-    record.parserLiftedToolCalls = (record.parserLiftedToolCalls ?? 0) + Math.floor(input.parserLiftedToolCalls);
-  }
-  stats[model] = record;
-  await fs.mkdir(path.dirname(statsPath(projectDir)), { recursive: true });
-  await fs.writeFile(statsPath(projectDir), JSON.stringify(stats, null, 2), 'utf-8');
+  const filePath = statsPath(projectDir);
+  await withFileLock(filePath, async () => {
+    const stats = await loadSynthesisStats(projectDir);
+    const record = stats[model] ?? { fired: 0, total: 0 };
+    const toolCalls = Math.max(0, Math.floor(input.toolCalls));
+    const toolSuccesses = Math.max(0, Math.min(toolCalls, Math.floor(input.toolSuccesses)));
+    record.toolCalls = (record.toolCalls ?? 0) + toolCalls;
+    record.toolSuccesses = (record.toolSuccesses ?? 0) + toolSuccesses;
+    if (toolCalls > 0) record.toolSessions = (record.toolSessions ?? 0) + 1;
+    if (input.finalTextResponse) record.finalTextResponses = (record.finalTextResponses ?? 0) + 1;
+    else record.emptyTextResponses = (record.emptyTextResponses ?? 0) + 1;
+    if (input.parserLiftedToolCalls && input.parserLiftedToolCalls > 0) {
+      record.parserLiftedToolCalls = (record.parserLiftedToolCalls ?? 0) + Math.floor(input.parserLiftedToolCalls);
+    }
+    stats[model] = record;
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await atomicWriteFile(filePath, JSON.stringify(stats, null, 2));
+  });
 }
 
 /** Default time budgets when no per-model data exists. */

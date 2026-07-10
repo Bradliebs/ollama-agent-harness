@@ -1,6 +1,7 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 
 // ─── Node types ─────────────────────────────────────────────────────
 
@@ -193,6 +194,9 @@ export class MyceliumGraph {
       reason,
       archivedAt: new Date().toISOString(),
     });
+    if (this.archivedEdges.length > 1000) {
+      this.archivedEdges = this.archivedEdges.slice(-1000);
+    }
     this.edges = this.edges.filter((e) => !(e.source === source && e.target === target));
     return true;
   }
@@ -258,6 +262,13 @@ export class MyceliumGraph {
     return this.episodes.slice(-limit);
   }
 
+  /** Look up a single episode by its stable id. Used by the feedback
+   * endpoint to attach user votes to the exact route they rated, rather
+   * than whatever episode happens to be most recent. */
+  getEpisodeById(id: string): MyceliumEpisode | undefined {
+    return this.episodes.find((e) => e.id === id);
+  }
+
   // ─── Activation ───────────────────────────────────────────
 
   resetActivations(): void {
@@ -318,8 +329,7 @@ export async function loadMyceliumGraph(projectDir: string): Promise<MyceliumGra
 
 export async function saveMyceliumGraph(projectDir: string, graph: MyceliumGraph): Promise<void> {
   const filePath = graphPath(projectDir);
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify(graph.toJSON(), null, 2), 'utf-8');
+  await withFileLock(filePath, () => atomicWriteFile(filePath, JSON.stringify(graph.toJSON(), null, 2)));
 }
 
 function graphPath(projectDir: string): string {

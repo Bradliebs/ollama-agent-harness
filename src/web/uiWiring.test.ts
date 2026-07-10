@@ -5,6 +5,60 @@ const root = process.cwd();
 const indexHtml = fs.readFileSync(path.join(root, 'ui', 'index.html'), 'utf-8');
 const appJs = fs.readFileSync(path.join(root, 'ui', 'app.js'), 'utf-8');
 const serverTs = fs.readFileSync(path.join(root, 'src', 'web', 'server.ts'), 'utf-8');
+const goalRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'goalRoutes.ts'), 'utf-8');
+const identityRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'identityRoutes.ts'), 'utf-8');
+const taskRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'taskRoutes.ts'), 'utf-8');
+const promiseRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'promiseRoutes.ts'), 'utf-8');
+const profileRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'profileRoutes.ts'), 'utf-8');
+const evalRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'evalRoutes.ts'), 'utf-8');
+const memoryHealthRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'memoryHealthRoutes.ts'), 'utf-8');
+const scanRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'scanRoutes.ts'), 'utf-8');
+const promptsRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'promptsRoutes.ts'), 'utf-8');
+const eventRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'eventRoutes.ts'), 'utf-8');
+const doneStateRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'doneStateRoutes.ts'), 'utf-8');
+const codeIntelRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'codeIntelRoutes.ts'), 'utf-8');
+const myceliumRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'myceliumRoutes.ts'), 'utf-8');
+const traceRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'traceRoutes.ts'), 'utf-8');
+const snapshotRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'snapshotRoutes.ts'), 'utf-8');
+const historyRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'historyRoutes.ts'), 'utf-8');
+const fileRedirectRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'fileRedirectRoutes.ts'), 'utf-8');
+const documentRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'documentRoutes.ts'), 'utf-8');
+const benchmarkRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'benchmarkRoutes.ts'), 'utf-8');
+const squadRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'squadRoutes.ts'), 'utf-8');
+const runtimeCostRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'runtimeCostRoutes.ts'), 'utf-8');
+const triggerRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'triggerRoutes.ts'), 'utf-8');
+const artifactRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'artifactRoutes.ts'), 'utf-8');
+const subagentRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'subagentRoutes.ts'), 'utf-8');
+const sessionRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'sessionRoutes.ts'), 'utf-8');
+const memoryRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'memoryRoutes.ts'), 'utf-8');
+const ragRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'ragRoutes.ts'), 'utf-8');
+const serviceRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'serviceRoutes.ts'), 'utf-8');
+const skillRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'skillRoutes.ts'), 'utf-8');
+const workflowRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'workflowRoutes.ts'), 'utf-8');
+const webhookRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'webhookRoutes.ts'), 'utf-8');
+const agentRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'agentRoutes.ts'), 'utf-8');
+const fileBrowseRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'fileBrowseRoutes.ts'), 'utf-8');
+const assetRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'assetRoutes.ts'), 'utf-8');
+const nervousRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'nervousRoutes.ts'), 'utf-8');
+const synthesisStatsRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'synthesisStatsRoutes.ts'), 'utf-8');
+const aboutRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'aboutRoutes.ts'), 'utf-8');
+const budgetRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'budgetRoutes.ts'), 'utf-8');
+const connectorRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'connectorRoutes.ts'), 'utf-8');
+const saveOutputRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'saveOutputRoutes.ts'), 'utf-8');
+const miscRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'miscRoutes.ts'), 'utf-8');
+const runsRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'runsRoutes.ts'), 'utf-8');
+const learningRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'learningRoutes.ts'), 'utf-8');
+const mcpRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'mcpRoutes.ts'), 'utf-8');
+const uploadsRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'uploadsRoutes.ts'), 'utf-8');
+const teammateRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'teammateRoutes.ts'), 'utf-8');
+const toolsRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'toolsRoutes.ts'), 'utf-8');
+const curatorRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'curatorRoutes.ts'), 'utf-8');
+const evalsRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'evalsRoutes.ts'), 'utf-8');
+const automationRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'automationRoutes.ts'), 'utf-8');
+const reviewQueueRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'reviewQueueRoutes.ts'), 'utf-8');
+const browserHardeningRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'browserHardeningRoutes.ts'), 'utf-8');
+const workingMemoryRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'workingMemoryRoutes.ts'), 'utf-8');
+const atlasRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'atlasRoutes.ts'), 'utf-8');
 
 const inlineGlobals = new Set([
   'alert',
@@ -135,11 +189,21 @@ describe('web UI wiring', () => {
   });
 
   it('keeps the beginner first-chat readiness surface wired', () => {
-    expect(indexHtml).toContain('beginnerReadiness');
-    expect(indexHtml).toContain('beginnerReadinessBadge');
-    expect(appJs).toContain('function setBeginnerReadiness');
-    expect(appJs).toContain('Start Ollama first');
-    expect(appJs).toContain('Install one model');
+    // The legacy beginner-readiness banner + model-capability-hint were
+    // removed in the v0.5.10 welcome trim. The replacement surfaces are
+    // the no-model banner (with concrete "ollama pull" / "ollama serve"
+    // instructions and a Refresh button), the quick-start panel, and the
+    // first-visit onboarding modal. This test guards against accidental
+    // regression of that beginner-friendly first-chat experience.
+    expect(indexHtml).toContain('noModelBanner');
+    expect(indexHtml).toContain('quickStartHint');
+    expect(indexHtml).toContain('onboardModal');
+    expect(appJs).toContain('function updateNoModelEmptyState');
+    expect(appJs).toContain('shouldShowOnboardModal');
+    // Concrete remediation text must be wired so beginners see the fix,
+    // not a bare "Server not running" message.
+    expect(appJs).toContain('ollama pull llama3.2');
+    expect(appJs).toContain('ollama serve');
   });
 
   it('keeps tool-only final replies readable', () => {
@@ -147,6 +211,17 @@ describe('web UI wiring', () => {
     expect(appJs).toContain('function buildToolOnlyFallback');
     expect(appJs).toContain('What I could see from the tool results');
     expect(appJs).not.toContain('Done. The model used tools, but did not return a readable final message.');
+  });
+
+  it('keeps Codex task run controls wired to task APIs', () => {
+    expect(appJs).toContain('id="codexRunTaskBtn"');
+    expect(appJs).toContain('onclick="startCodexTaskFromMission()"');
+    expect(appJs).toContain('id="codexRunPanel"');
+    expect(appJs).toContain('function startCodexTaskFromMission');
+    expect(appJs).toContain("fetch('/api/codex/tasks'");
+    expect(appJs).toContain("'/api/codex/tasks/' + encodeURIComponent(taskId) + '/run'");
+    expect(appJs).toContain('function readCodexRunStream');
+    expect(indexHtml).toContain('.codex-run-panel');
   });
 
   it('opens to a fresh chat instead of auto-restoring the previous one', () => {
@@ -204,6 +279,7 @@ describe('web UI wiring', () => {
       rag: 'ragView',
       tools: 'toolsDashboardView',
       runs: 'runsView',
+      atlas: 'atlasView',
       workflows: 'workflowsView',
       mycelium: 'myceliumView',
       promises: 'promisesView',
@@ -229,10 +305,106 @@ describe('web UI wiring', () => {
   });
 
   it('keeps UI API calls backed by server routes', () => {
-    const serverRoutes = new Set([...serverTs.matchAll(/app\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1])));
+    const appRoutes = [...serverTs.matchAll(/app\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const goalRouterRoutes = [...goalRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const identityRouterRoutes = [...identityRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const taskRouterRoutes = [...taskRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const promiseRouterRoutes = [...promiseRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const profileRouterRoutes = [...profileRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const evalRouterRoutes = [...evalRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const memoryHealthRouterRoutes = [...memoryHealthRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const scanRouterRoutes = [...scanRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const promptsRouterRoutes = [...promptsRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const eventRouterRoutes = [...eventRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const doneStateRouterRoutes = [...doneStateRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const codeIntelRouterRoutes = [...codeIntelRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const myceliumRouterRoutes = [...myceliumRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const traceRouterRoutes = [...traceRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const snapshotRouterRoutes = [...snapshotRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const historyRouterRoutes = [...historyRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const fileRedirectRouterRoutes = [...fileRedirectRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const documentRouterRoutes = [...documentRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const benchmarkRouterRoutes = [...benchmarkRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const squadRouterRoutes = [...squadRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const runtimeCostRouterRoutes = [...runtimeCostRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const triggerRouterRoutes = [...triggerRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const artifactRouterRoutes = [...artifactRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const subagentRouterRoutes = [...subagentRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const sessionRouterRoutes = [...sessionRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const memoryRouterRoutes = [...memoryRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const ragRouterRoutes = [...ragRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const serviceRouterRoutes = [...serviceRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const skillRouterRoutes = [...skillRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const workflowRouterRoutes = [...workflowRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const webhookRouterRoutes = [...webhookRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const agentRouterRoutes = [...agentRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const fileBrowseRouterRoutes = [...fileBrowseRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const assetRouterRoutes = [...assetRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const nervousRouterRoutes = [...nervousRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const synthesisStatsRouterRoutes = [...synthesisStatsRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const aboutRouterRoutes = [...aboutRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const budgetRouterRoutes = [...budgetRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const connectorRouterRoutes = [...connectorRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const saveOutputRouterRoutes = [...saveOutputRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const miscRouterRoutes = [...miscRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const runsRouterRoutes = [...runsRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const learningRouterRoutes = [...learningRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const mcpRouterRoutes = [...mcpRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const uploadsRouterRoutes = [...uploadsRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const teammateRouterRoutes = [...teammateRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const toolsRouterRoutes = [...toolsRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const curatorRouterRoutes = [...curatorRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const evalsRouterRoutes = [...evalsRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const automationRouterRoutes = [...automationRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const reviewQueueRouterRoutes = [...reviewQueueRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const browserHardeningRouterRoutes = [...browserHardeningRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const workingMemoryRouterRoutes = [...workingMemoryRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const atlasRouterRoutes = [...atlasRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes, ...promptsRouterRoutes, ...eventRouterRoutes, ...doneStateRouterRoutes, ...codeIntelRouterRoutes, ...myceliumRouterRoutes, ...traceRouterRoutes, ...snapshotRouterRoutes, ...historyRouterRoutes, ...fileRedirectRouterRoutes, ...documentRouterRoutes, ...benchmarkRouterRoutes, ...squadRouterRoutes, ...runtimeCostRouterRoutes, ...triggerRouterRoutes, ...artifactRouterRoutes, ...subagentRouterRoutes, ...sessionRouterRoutes, ...memoryRouterRoutes, ...ragRouterRoutes, ...serviceRouterRoutes, ...skillRouterRoutes, ...workflowRouterRoutes, ...webhookRouterRoutes, ...agentRouterRoutes, ...fileBrowseRouterRoutes, ...assetRouterRoutes, ...nervousRouterRoutes, ...synthesisStatsRouterRoutes, ...aboutRouterRoutes, ...budgetRouterRoutes, ...connectorRouterRoutes, ...saveOutputRouterRoutes, ...miscRouterRoutes, ...runsRouterRoutes, ...learningRouterRoutes, ...mcpRouterRoutes, ...uploadsRouterRoutes, ...teammateRouterRoutes, ...toolsRouterRoutes, ...curatorRouterRoutes, ...evalsRouterRoutes, ...automationRouterRoutes, ...reviewQueueRouterRoutes, ...workingMemoryRouterRoutes, ...browserHardeningRouterRoutes, ...atlasRouterRoutes]);
     const uiRoutes = [...new Set(extractFetchExpressions(appJs).map(normalizeUiFetchPath).filter((route): route is string => Boolean(route)))].sort();
-    const missing = uiRoutes.filter((route) => !serverRoutes.has(route));
+
+    // A UI route like '/api/foo/:param' is satisfied either by an exact match
+    // (Express `:foo` placeholder) or by any concrete sibling route under the
+    // same prefix — e.g. UI calls '/api/jarvis/ambient/' + action and the
+    // server registers '/api/jarvis/ambient/start' and '.../stop' as the only
+    // valid actions. Without this the test forces every UI string-concat
+    // fetch to be backed by an Express-level wildcard, which would weaken
+    // the server's input validation.
+    const missing = uiRoutes.filter((route) => {
+      if (serverRoutes.has(route)) return false;
+      if (route.endsWith('/:param')) {
+        const prefix = route.slice(0, -':param'.length);
+        for (const serverRoute of serverRoutes) {
+          if (serverRoute.startsWith(prefix) && serverRoute.length > prefix.length) {
+            return false;
+          }
+        }
+      }
+      if (route.endsWith('/:param/')) {
+        const prefix = route.slice(0, -':param/'.length);
+        for (const serverRoute of serverRoutes) {
+          if (serverRoute.startsWith(prefix) && serverRoute.length > prefix.length) {
+            return false;
+          }
+        }
+      }
+      return true;
+    });
 
     expect(missing).toEqual([]);
+  });
+
+  it('exposes a per-goal Undo control wired to the undo route', () => {
+    // The Undo button lets a user roll back a goal run's recorded side effects.
+    // It is keyed by goal.id via the container dataset, posts to the undo
+    // route, and surfaces the revert summary.
+    expect(appJs).toContain("class=\"goal-run-undo\"");
+    expect(appJs).toContain("goalRunControl(el, 'undo')");
+    expect(appJs).toContain("if (action === 'undo')");
+    expect(appJs).toContain('Undone: reverted ');
+    // finalizeGoalRunControls disables pause/abandon but must leave Undo usable
+    // after the run ends, since undo is a post-run recovery action.
+    const finalizeBody = appJs.slice(appJs.indexOf('function finalizeGoalRunControls'));
+    expect(finalizeBody.slice(0, 200)).not.toContain('goal-run-undo');
   });
 });

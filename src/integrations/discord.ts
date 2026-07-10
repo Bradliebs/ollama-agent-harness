@@ -158,6 +158,7 @@ export function isDiscordBotRunning(): boolean {
  * Extract the assistant's final text reply from an SSE chat response.
  */
 function extractAssistantReply(sseText: string): string {
+  if (typeof sseText !== 'string' || sseText.length === 0) return '';
   let reply = '';
   for (const line of sseText.split('\n')) {
     if (!line.startsWith('data: ')) continue;
@@ -165,6 +166,7 @@ function extractAssistantReply(sseText: string): string {
     if (data === '[DONE]') break;
     try {
       const parsed = JSON.parse(data);
+      if (!parsed || typeof parsed !== 'object') continue;
       if (parsed.type === 'content' && typeof parsed.content === 'string') {
         reply += parsed.content;
       } else if (parsed.type === 'done' && typeof parsed.fullResponse === 'string') {

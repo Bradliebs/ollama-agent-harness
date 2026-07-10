@@ -1,5 +1,5 @@
 import type { Message, Tool } from 'ollama';
-import type { ChatResult, IChatClient, StreamChunk } from './chatClient';
+import type { ChatResult, IChatClient, ModelLocality, StreamChunk } from './chatClient';
 
 export interface FallbackChatClientEntry {
   backend: string;
@@ -56,7 +56,7 @@ export class FallbackChatClient implements IChatClient {
     return this.tryClients((entry) => entry.client.chatOnce(messages, tools), tools);
   }
 
-  async *chatStream(messages: Message[], tools?: Tool[]): AsyncGenerator<StreamChunk> {
+  async *chatStream(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): AsyncGenerator<StreamChunk> {
     const entries = this.availableEntries(tools);
     let lastError: unknown;
     for (let i = 0; i < entries.length; i += 1) {
@@ -64,7 +64,7 @@ export class FallbackChatClient implements IChatClient {
       let yielded = false;
       try {
         this.recordRequest(entry.backend);
-        for await (const chunk of entry.client.chatStream(messages, tools)) {
+        for await (const chunk of entry.client.chatStream(messages, tools, abortSignal)) {
           yielded = true;
           yield chunk;
         }
@@ -90,15 +90,29 @@ export class FallbackChatClient implements IChatClient {
   async healthCheck(): Promise<{ ok: boolean; error?: string }> {
     const errors: string[] = [];
     for (const entry of this.entries) {
-      const result = await entry.client.healthCheck();
-      if (result.ok) return { ok: true };
-      errors.push(`${entry.backend}: ${result.error ?? 'unavailable'}`);
+      try {
+        const result = await Promise.race([
+          entry.client.healthCheck(),
+          new Promise<{ ok: boolean; error?: string }>((_, reject) =>
+            setTimeout(() => reject(new Error('healthCheck timed out')), 5_000),
+          ),
+        ]);
+        if (result.ok) return { ok: true };
+        errors.push(`${entry.backend}: ${result.error ?? 'unavailable'}`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(`${entry.backend}: ${msg}`);
+      }
     }
     return { ok: false, error: errors.join('; ') };
   }
 
   getModel(): string {
     return this.entries[0].client.getModel();
+  }
+
+  getLocality(): ModelLocality {
+    return this.entries[0].client.getLocality?.() ?? 'unknown';
   }
 
   private async tryClients(
@@ -125,6 +139,16 @@ export class FallbackChatClient implements IChatClient {
   private availableEntries(tools?: Tool[]): FallbackChatClientEntry[] {
     const now = Date.now();
     const cooldownMs = FALLBACK_COOLDOWN_MS;
+    // Evict expired cooldowns to prevent unbounded map growth
+    for (const [backend, failedAt] of this.cooldowns) {
+      if (now - failedAt >= cooldownMs) this.cooldowns.delete(backend);
+    }
+    // Trim stale request timestamps
+    for (const [backend, timestamps] of this.requestLog) {
+      const fresh = timestamps.filter((t) => t > now - 60_000);
+      if (fresh.length === 0) this.requestLog.delete(backend);
+      else this.requestLog.set(backend, fresh);
+    }
     let candidates = this.entries.filter((entry, index) => {
       // Always try the primary (first) entry regardless of cooldown.
       if (index === 0) return true;

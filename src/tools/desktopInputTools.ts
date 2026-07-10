@@ -5,10 +5,18 @@ import type { Tool, ToolResult } from '../types';
 import { evaluateCapabilityGrant, sanitizeCapabilityGrants, type CapabilityGrant } from '../permissions/capabilities';
 import * as desktopCapture from './desktopTools';
 
+type MouseButton = 'left' | 'right' | 'middle';
+
 type DesktopInputAction =
   | { type: 'text'; value: string }
   | { type: 'key'; value: string }
-  | { type: 'wait'; ms: number };
+  | { type: 'wait'; ms: number }
+  | { type: 'move'; x: number; y: number }
+  | { type: 'click'; x: number | null; y: number | null; button: MouseButton; count: number }
+  | { type: 'drag'; x1: number; y1: number; x2: number; y2: number; button: MouseButton }
+  | { type: 'scroll'; x: number | null; y: number | null; amount: number };
+
+type DesktopMouseAction = Extract<DesktopInputAction, { type: 'move' | 'click' | 'drag' | 'scroll' }>;
 
 interface DesktopInputPolicyState {
   killSwitch: { active: boolean; reason: string };
@@ -19,6 +27,8 @@ const MAX_ACTIONS = 10;
 const MAX_TEXT_LENGTH = 500;
 const MAX_KEY_LENGTH = 80;
 const MAX_WAIT_MS = 2_000;
+const MAX_COORDINATE = 20_000;
+const MAX_SCROLL_AMOUNT = 20;
 const MAX_AUDIT_ENTRIES = 50;
 const MAX_SCREENSHOT_FILES = 50;
 const SETTINGS_PATH = path.join('.harness', 'settings.json');
@@ -39,9 +49,16 @@ export const DesktopInputReplayTool: Tool = {
         items: {
           type: 'object',
           properties: {
-            type: { type: 'string', enum: ['text', 'key', 'wait'] },
-            value: { type: 'string' },
-            ms: { type: 'number' },
+            type: { type: 'string', enum: ['text', 'key', 'wait', 'move', 'click', 'drag', 'scroll'] },
+            value: { type: 'string', description: 'Text to type (text) or key chord such as {ENTER} (key).' },
+            ms: { type: 'number', description: 'Wait duration in milliseconds (wait).' },
+            x: { type: 'number', description: 'Target x coordinate (move/click/drag start/scroll).' },
+            y: { type: 'number', description: 'Target y coordinate (move/click/drag start/scroll).' },
+            x2: { type: 'number', description: 'Drag end x coordinate (drag).' },
+            y2: { type: 'number', description: 'Drag end y coordinate (drag).' },
+            button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Mouse button (click/drag). Defaults to left.' },
+            count: { type: 'number', description: 'Click count 1-3 for single/double/triple (click). Defaults to 1.' },
+            amount: { type: 'number', description: 'Scroll amount; positive scrolls up, negative scrolls down (scroll).' },
           },
           required: ['type'],
         },
@@ -115,9 +132,46 @@ export function sanitizeDesktopInputActions(value: unknown): DesktopInputAction[
     } else if (type === 'wait') {
       const ms = Math.max(0, Math.min(MAX_WAIT_MS, Math.floor(Number(raw.ms ?? 0))));
       actions.push({ type, ms });
+    } else if (type === 'move') {
+      const x = clampCoordinate(raw.x);
+      const y = clampCoordinate(raw.y);
+      if (x !== null && y !== null) actions.push({ type, x, y });
+    } else if (type === 'click') {
+      const x = clampCoordinate(raw.x);
+      const y = clampCoordinate(raw.y);
+      const hasPoint = x !== null && y !== null;
+      const count = Math.max(1, Math.min(3, Math.floor(Number(raw.count ?? 1)) || 1));
+      actions.push({ type, x: hasPoint ? x : null, y: hasPoint ? y : null, button: parseMouseButton(raw.button), count });
+    } else if (type === 'drag') {
+      const x1 = clampCoordinate(raw.x);
+      const y1 = clampCoordinate(raw.y);
+      const x2 = clampCoordinate(raw.x2);
+      const y2 = clampCoordinate(raw.y2);
+      if (x1 !== null && y1 !== null && x2 !== null && y2 !== null) {
+        actions.push({ type, x1, y1, x2, y2, button: parseMouseButton(raw.button) });
+      }
+    } else if (type === 'scroll') {
+      const amount = Math.max(-MAX_SCROLL_AMOUNT, Math.min(MAX_SCROLL_AMOUNT, Math.floor(Number(raw.amount ?? 0)) || 0));
+      if (amount !== 0) {
+        const x = clampCoordinate(raw.x);
+        const y = clampCoordinate(raw.y);
+        const hasPoint = x !== null && y !== null;
+        actions.push({ type, x: hasPoint ? x : null, y: hasPoint ? y : null, amount });
+      }
     }
   }
   return actions;
+}
+
+function clampCoordinate(value: unknown): number | null {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(MAX_COORDINATE, Math.floor(n)));
+}
+
+function parseMouseButton(value: unknown): MouseButton {
+  const button = String(value ?? '').trim().toLowerCase();
+  return button === 'right' || button === 'middle' ? button : 'left';
 }
 
 async function readDesktopInputPolicyState(projectDir: string): Promise<DesktopInputPolicyState> {
@@ -139,8 +193,16 @@ async function readDesktopInputPolicyState(projectDir: string): Promise<DesktopI
 
 function renderDesktopInputPreview(actions: DesktopInputAction[]): string {
   return actions.map((action, index) => {
-    if (action.type === 'wait') return `${index + 1}. wait ${action.ms}ms`;
-    return `${index + 1}. ${action.type} ${JSON.stringify(action.value)}`;
+    const n = index + 1;
+    switch (action.type) {
+      case 'wait': return `${n}. wait ${action.ms}ms`;
+      case 'text':
+      case 'key': return `${n}. ${action.type} ${JSON.stringify(action.value)}`;
+      case 'move': return `${n}. move to (${action.x}, ${action.y})`;
+      case 'click': return `${n}. ${action.count > 1 ? `${action.count}x ` : ''}${action.button} click${action.x !== null ? ` at (${action.x}, ${action.y})` : ''}`;
+      case 'drag': return `${n}. ${action.button} drag (${action.x1}, ${action.y1}) -> (${action.x2}, ${action.y2})`;
+      case 'scroll': return `${n}. scroll ${action.amount > 0 ? 'up' : 'down'} ${Math.abs(action.amount)}${action.x !== null ? ` at (${action.x}, ${action.y})` : ''}`;
+    }
   }).join('\n');
 }
 
@@ -149,18 +211,94 @@ async function executeDesktopInputAction(action: DesktopInputAction): Promise<vo
     await new Promise((resolve) => setTimeout(resolve, action.ms));
     return;
   }
-  const value = action.type === 'text' ? action.value : action.value;
   const platform = os.platform();
+  if (action.type === 'text' || action.type === 'key') {
+    const value = action.value;
+    if (platform === 'win32') {
+      const psLiteral = `'${value.replace(/'/g, "''")}'`;
+      const encoded = Buffer.from(`Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(${psLiteral})`, 'utf16le').toString('base64');
+      await desktopCapture.execPromise(`powershell -NoProfile -EncodedCommand ${encoded}`, 10_000);
+    } else if (platform === 'darwin') {
+      const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      await desktopCapture.execPromise(`osascript -e "tell application \"System Events\" to keystroke \"${escaped}\""`, 10_000);
+    } else {
+      await desktopCapture.execPromise(`xdotool type --delay 0 ${shellQuote(value)}`, 10_000);
+    }
+    return;
+  }
   if (platform === 'win32') {
-    const psLiteral = `'${value.replace(/'/g, "''")}'`;
-    const encoded = Buffer.from(`Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait(${psLiteral})`, 'utf16le').toString('base64');
+    const encoded = Buffer.from(buildWindowsMouseScript(action), 'utf16le').toString('base64');
     await desktopCapture.execPromise(`powershell -NoProfile -EncodedCommand ${encoded}`, 10_000);
   } else if (platform === 'darwin') {
-    const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    await desktopCapture.execPromise(`osascript -e "tell application \"System Events\" to keystroke \"${escaped}\""`, 10_000);
+    await desktopCapture.execPromise(buildMacMouseCommand(action), 10_000);
   } else {
-    await desktopCapture.execPromise(`xdotool type --delay 0 ${shellQuote(value)}`, 10_000);
+    await desktopCapture.execPromise(buildLinuxMouseCommand(action), 10_000);
   }
+}
+
+function windowsMouseFlags(button: MouseButton): { down: string; up: string } {
+  if (button === 'right') return { down: '0x0008', up: '0x0010' };
+  if (button === 'middle') return { down: '0x0020', up: '0x0040' };
+  return { down: '0x0002', up: '0x0004' };
+}
+
+function windowsMovePoint(x: number, y: number): string {
+  return `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x}, ${y});`;
+}
+
+export function buildWindowsMouseScript(action: DesktopMouseAction): string {
+  const header = 'Add-Type -AssemblyName System.Windows.Forms,System.Drawing; Add-Type -MemberDefinition \'[DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, int e);\' -Name MouseNative -Namespace HarnessWin;';
+  const parts = [header];
+  if (action.type === 'move') {
+    parts.push(windowsMovePoint(action.x, action.y));
+  } else if (action.type === 'click') {
+    if (action.x !== null && action.y !== null) parts.push(windowsMovePoint(action.x, action.y));
+    const { down, up } = windowsMouseFlags(action.button);
+    for (let i = 0; i < action.count; i++) {
+      parts.push(`[HarnessWin.MouseNative]::mouse_event(${down},0,0,0,0); [HarnessWin.MouseNative]::mouse_event(${up},0,0,0,0);`);
+    }
+  } else if (action.type === 'drag') {
+    const { down, up } = windowsMouseFlags(action.button);
+    parts.push(windowsMovePoint(action.x1, action.y1));
+    parts.push(`[HarnessWin.MouseNative]::mouse_event(${down},0,0,0,0); Start-Sleep -Milliseconds 60;`);
+    parts.push(windowsMovePoint(action.x2, action.y2));
+    parts.push(`[HarnessWin.MouseNative]::mouse_event(${up},0,0,0,0);`);
+  } else {
+    if (action.x !== null && action.y !== null) parts.push(windowsMovePoint(action.x, action.y));
+    parts.push(`[HarnessWin.MouseNative]::mouse_event(0x0800,0,0,${action.amount * 120},0);`);
+  }
+  return parts.join(' ');
+}
+
+function linuxButtonNumber(button: MouseButton): string {
+  return button === 'right' ? '3' : button === 'middle' ? '2' : '1';
+}
+
+export function buildLinuxMouseCommand(action: DesktopMouseAction): string {
+  if (action.type === 'move') return `xdotool mousemove ${action.x} ${action.y}`;
+  if (action.type === 'click') {
+    const pos = action.x !== null && action.y !== null ? `mousemove ${action.x} ${action.y} ` : '';
+    return `xdotool ${pos}click --repeat ${action.count} ${linuxButtonNumber(action.button)}`;
+  }
+  if (action.type === 'drag') {
+    const b = linuxButtonNumber(action.button);
+    return `xdotool mousemove ${action.x1} ${action.y1} mousedown ${b} mousemove ${action.x2} ${action.y2} mouseup ${b}`;
+  }
+  const pos = action.x !== null && action.y !== null ? `mousemove ${action.x} ${action.y} ` : '';
+  return `xdotool ${pos}click --repeat ${Math.abs(action.amount)} ${action.amount > 0 ? '4' : '5'}`;
+}
+
+export function buildMacMouseCommand(action: DesktopMouseAction): string {
+  if (action.type === 'move') return `cliclick m:${action.x},${action.y}`;
+  if (action.type === 'click') {
+    const pos = action.x !== null && action.y !== null ? `${action.x},${action.y}` : '.';
+    if (action.count >= 2) return `cliclick dc:${pos}`;
+    return `cliclick ${action.button === 'right' ? 'rc' : 'c'}:${pos}`;
+  }
+  if (action.type === 'drag') {
+    return `cliclick dd:${action.x1},${action.y1} du:${action.x2},${action.y2}`;
+  }
+  throw new Error('scroll is not supported on macOS (cliclick has no scroll verb)');
 }
 
 function shellQuote(value: string): string {

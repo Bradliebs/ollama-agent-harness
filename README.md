@@ -2,7 +2,7 @@
 title: Ollama Agent Harness
 description: Local-first Ollama agent harness with tools, documents, Telegram, email, tracing, learning, and a browser UI
 author: Bradliebs
-ms.date: 2026-05-03
+ms.date: 2026-06-05
 ms.topic: overview
 keywords:
   - ollama
@@ -15,7 +15,6 @@ estimated_reading_time: 7
 ---
 
 [![Release](https://img.shields.io/github/v/release/Bradliebs/ollama-agent-harness)](https://github.com/Bradliebs/ollama-agent-harness/releases/latest)
-[![npm](https://img.shields.io/npm/v/ollama-agent-harness)](https://www.npmjs.com/package/ollama-agent-harness)
 
 ## What is this?
 
@@ -23,13 +22,35 @@ Ollama Agent Harness is a local-first agent runtime that wraps Ollama models wit
 
 You chat with a model, it can call tools (read/write files, run bash, search the web, analyze images, transcribe audio, generate documents, send emails), and the harness manages permissions, context, and history.
 
-**v0.3.9** adds a beginner-friendly welcome screen, multi-backend model routing, a Windows installer, and npm global install.
+**v0.6.4** brings semantic memory via the bundled `ccmem` concept-cell service (auto-started on port 8765), the **Apex** family of autonomous experiences (`/goal` natural-language expander, PDF → wiki blueprint, Kanban bridge, competitor-research renderer, personal memory wiki, daily morning-priority prompt), persistent workspace path so `start.bat` only asks once, and a smarter empty-synthesis fallback that leads with any files the model wrote and falls back to short labelled bullets instead of raw page dumps. See the [CHANGELOG](CHANGELOG.md) for the full history.
+
+### What's new since v0.6.5 (in development)
+
+Landed on `main` but not yet cut into a numbered release:
+
+* **Governed Agent Loop v1** — a shadow-first governance pass beside the product path: confidence-mode labels, per-answer self-critique, a working-memory snapshot, and a human-gated review queue that writes to durable memory only on explicit approval. Idle replays re-ask drained answers and re-enter the same review queue. See [`docs/GOVERNED-LOOP.md`](docs/GOVERNED-LOOP.md).
+* **New HTTP surface** for the loop and supporting subsystems: `/api/working-memory`, `/api/review-queue/*`, `/api/replay-*`, `/api/governed-metrics`, plus `/api/webhooks/*` (including dead-letter redelivery) and `/api/mycelium/*` (router inspection, learning curve, feedback).
+* **Workspace vs install** clarification — set `HARNESS_PROJECT_DIR` to keep user data out of the install dir, and promote user-wide credentials (e.g. SMTP) to OS env vars so they stop going stale per workspace. See [Workspace vs install](#workspace-vs-install).
+
+### What's new in v0.6.5
+
+Shipped since the v0.6.4 release:
+
+* **Build Mode** — a simplified, non-developer flow for describing a goal and letting the harness plan and build it.
+* **`/wiki` and `/memory-wiki`** slash commands, plus research commands, built on reusable renderers.
+* **Evidence-first verification** — a side-effect ledger and research skill that check work before presenting it.
+* **Autonomy reliability fixes** — the Build-it loop now launches correctly in isolated workspaces and streams live tool activity to the dashboard.
+* **`OLLAMA_HOST` support**, tool-output compression, and plain-English intent chips.
+
+### 🌅 Apex-class autonomous experiences
+
+A small family of end-to-end experiences composed from existing harness primitives: the `/goal` natural-language expander, a PDF → wiki blueprint, a triage/doing/done Kanban bridge that auto-promotes cards into the autonomy plan, a competitor-research report renderer, a personal memory wiki, and a daily morning-priority prompt. See [`docs/APEX-FEATURES.md`](docs/APEX-FEATURES.md) for the full tour with copy-pasteable commands.
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    A["🖥️ Install\nNode.js + Ollama"] -->|pull a model| B["🤖 Start Harness\nstart.bat or npm run ui"]
+    A["🖥️ Install\nNode.js + Ollama"] -->|pull a model| B["🤖 Start Harness\nstart.bat / ./start.sh"]
     B -->|opens browser| C["🌐 Chat UI\nhttp://127.0.0.1:4300"]
     C -->|type a message| D["💬 AI Responds\nusing local model"]
     D -->|needs a file?| E["🔧 Tools\nread, write, search, run"]
@@ -51,7 +72,7 @@ flowchart LR
 graph TD
     S1["① Install Node.js<br/><i>nodejs.org → LTS → Next through everything</i>"] --> S2
     S2["② Install Ollama<br/><i>ollama.com → Download → ollama pull llama3.2</i>"] --> S3
-    S3["③ Start the Harness<br/><i>Double-click start.bat or npm run ui</i>"] --> S4
+    S3["③ Start the Harness<br/><i>Double-click start.bat or run ./start.sh</i>"] --> S4
     S4["④ Pick a model<br/><i>Choose llama3.2 from the dropdown</i>"] --> S5
     S5["⑤ Start chatting!<br/><i>Try: 'List the files in this project'</i>"]
 
@@ -78,27 +99,24 @@ graph TD
 
 Download **Harness-Setup.exe** from the [latest release](https://github.com/Bradliebs/ollama-agent-harness/releases/latest), run it, and double-click the desktop shortcut. The installer checks for Node.js and Ollama automatically.
 
-### Option B — npm global install
-
-```powershell
-npm install -g ollama-agent-harness
-harness
-```
-
-### Option C — Double-click (from source)
+### Option B — Double-click (from source)
 
 1. Clone this repo
 2. Double-click `start.bat` (Windows) or run `./start.sh` (Mac/Linux)
 3. Open **http://127.0.0.1:4300** in your browser
 
-### Option D — Terminal (from source)
+These launchers run the **assistant profile** (`HARNESS_PROFILE=assistant`) — the
+same harness with its proactive "Jarvis" features (ambient daily brief, voice,
+chat channels) on by default.
+
+### Option C — Terminal (from source)
 
 ```powershell
 npm install
 npm run ui
 ```
 
-Open **http://127.0.0.1:4300** in your browser. That is the full UI — start chatting in the main panel.
+Open **http://127.0.0.1:4300** in your browser. That is the full UI — start chatting in the main panel. This dev path runs a plain harness; set `HARNESS_PROFILE=assistant` first to turn the proactive assistant features on.
 
 ### CLI mode
 
@@ -152,6 +170,17 @@ graph:
 npm run build
 npm run smoke:mycelium
 ```
+
+Run a paired AutoResearch experiment when you want to compare a baseline model,
+prompt, skill, or routing configuration against a candidate with frozen
+benchmark evidence:
+
+```powershell
+npm run experiment:run -- --manifest cookbook/auto-research.manifest.example.json --dry-run
+```
+
+See [AutoResearch experiments](docs/AUTORESEARCH-EXPERIMENTS.md) for the
+manifest shape, execution command, history views, and promotion-evidence rules.
 
 Tests and smoke scripts that need `.harness/**` state should create the fixture
 inside the test or script and restore the prior state before exiting. Do not
@@ -290,23 +319,25 @@ Reviewer:  llama3.1:8b (local) or magistral-small-latest (API)
 
 ## UI tabs
 
-The browser UI has 13 tabs in the left sidebar:
+The browser UI keeps five primary tabs in the left sidebar, with everything else under a **More** (⋯) menu:
 
 | Tab | What it does |
 |-----|-------------|
-| 💬 **Chats** | Chat history, new/export sessions |
-| 📁 **Files** | Browse and read project files |
-| ⚡ **Skills** | Runtime and repo skill libraries, skill curator, install/scaffold actions |
-| 🧠 **Memory** | Agent memory entries per session |
-| 🏛 **Palace** | Memory palace browser (semantic memory) |
-| 🔮 **Discover** | Discovered patterns and learning candidates |
-| 📈 **Learning** | Eval trace runs, output validation trends, learning datasets |
-| 📦 **Snaps** | Skill and memory snapshots for backup/restore |
-| 🔎 **RAG** | Local vector index over chosen files with search and rebuild |
-| 🛠 **Tools** | Tool registry with risk badges, permissions, kill switch, capability grants, shell presets |
-| 📜 **Runs** | Session list, automation jobs, run history, scheduler status |
-| ⚙ **Flows** | Declarative tool-call workflows (YAML/JSON under `.harness/workflows/`) |
-| 🍄 **Mycelium** | Adaptive context routing network — nodes, edges, episodes |
+| 💬 **Chats** | Your past conversations; new/export sessions |
+| 📁 **Files** | Browse files in this project |
+| ⚡ **Abilities** | Reusable instructions (skills) the AI can follow |
+| 🧠 **Memory** | What the AI remembers across sessions |
+| ⚙ **Automations** | Saved sequences of AI actions (workflows under `.harness/workflows/`) |
+
+The **More** menu groups the remaining tabs:
+
+| Group | Tabs |
+|-------|------|
+| **Build & use** | 🤖 Agents · 👥 Squads · ⚡ Triggers · ✅ Tasks · 🪪 Identity |
+| **Search & knowledge** | 🔎 Search Files (vector index) · 🏛 Memory Bank (semantic memory) · 🔮 Discoveries · 🧬 Code Intel |
+| **History & diagnostics** | 📜 Runs · 📋 Events · 🛡 Activity Log · 📈 Learning · 💓 Health |
+| **Admin & backup** | 🛠 Tools (registry, permissions, kill switch, capability grants) · 📦 Backups · 📎 Generated Files |
+| **Advanced** | 🚀 Autonomy · 🍄 AI Router (adaptive routing network) · 🤝 Commitments |
 
 The right side has a **Settings** panel for Ollama host, generation parameters, model routing, media tools, output validation, and safety mode. Settings are saved to `.harness/settings.json`.
 
@@ -314,9 +345,27 @@ The right side has a **Settings** panel for Ollama host, generation parameters, 
 
 ### Tools
 
-Built-in tools include `file_read`, `file_write`, `file_edit`, `bash`, `list_files`, `grep`, `web_fetch`, `web_search`, `web_read`, `image_analyze`, `audio_transcribe`, `document_export`, `email_send`, `email_draft`, `create_skill`, `install_skill`, `desktop_screenshot`, `browser_bookmarks`, `browser_navigate`, `browser_click`, `browser_fill`, `browser_read`, `browser_screenshot`, `browser_close`, `calendar_read`, `calendar_write`, `slack_notify`, `telegram_notify`, and more. Each tool has a risk level (low/medium/high) and can be individually disabled from the Tools tab.
+Built-in tools include `file_read`, `file_write`, `file_edit`, `file_move`, `file_delete`, `make_directory`, `bash`, `list_files`, `grep`, `web_fetch`, `web_search`, `web_read`, `image_analyze`, `audio_transcribe`, `document_export`, `email_send`, `email_draft`, `create_skill`, `install_skill`, `desktop_screenshot`, `browser_bookmarks`, `browser_navigate`, `browser_click`, `browser_fill`, `browser_read`, `browser_screenshot`, `browser_close`, `calendar_read`, `calendar_write`, `slack_notify`, `telegram_notify`, and more. Each tool has a risk level (low/medium/high) and can be individually disabled from the Tools tab.
 
 Browser tools (`browser_navigate`, `browser_click`, `browser_fill`) are disabled by default and require a capability grant — they interact with live websites via Playwright.
+
+The `bash` tool spawns a single executable without a shell. Shell control operators (`;`, `|`, `&&`, redirects, command substitution) outside quoted arguments are rejected — quote them and they pass through verbatim (e.g. `python -c "import x; print(x)"`). Use `make_directory` instead of `mkdir`, `file_read`/`list_files` instead of `cat`/`dir`, and pipe through a script file instead of `cmd`-style pipes.
+
+### Allowed External Paths
+
+File tools are confined to the project directory by default. To let the agent read and write under other folders (e.g. `D:\Downloads\AI`) without permission prompts, add them under **Settings → 📂 Allowed External Paths**. The allowlist matches recursively, applies to both reads and writes, and bypasses the permission-prompt timeout. Configure per folder; precedence is exact match → ancestor match → blocked.
+
+### agent-outputs redirect
+
+When the agent writes to a bare filename (e.g. `notes.md`, no directory), the harness redirects the write into the configured agent-outputs directory (default `./agent-outputs/`, override with `HARNESS_AGENT_OUTPUT_DIR`). The `file_write` response leads with the resolved absolute path so the model uses it for follow-up commands. The `bash` tool mirrors this: a bare script-extension arg (`python notes.py`, `node run.js`) is auto-resolved against the agent-outputs directory when it does not exist in the cwd, so the agent's first run-after-write Just Works.
+
+### Environment knobs
+
+* `HARNESS_PROJECT_DIR` — where the harness stores user data (`.harness/`, sessions, memory, API keys). Defaults to the cwd; auto-redirects to `~/apex-workspace` if the cwd is the install dir. See [Workspace vs install](#workspace-vs-install).
+* `HARNESS_AGENT_OUTPUT_DIR` — override the agent-outputs directory (absolute or project-relative).
+* `HARNESS_PERMISSION_PROMPT_TIMEOUT_MS` — change the default permission-prompt timeout (default 5 minutes). Lower it for autonomous runs; pair with **Allowed External Paths** to avoid prompts entirely.
+* `HARNESS_VERIFY_PATH_CLAIMS` — set to `1` to append an `⚠️ Unverified file references:` footer to assistant text whenever it cites a file path that does not exist on disk. Off by default.
+* `HARNESS_FILE_WRITE_REDIRECTS` — JSON of pattern → directory rules to route specific writes (e.g. `lottery-*.py` → a sibling repo). Overrides the agent-outputs redirect when matched.
 
 ### Document generation
 
@@ -413,8 +462,8 @@ Optional deterministic checks on the model's final answer. Built-in profiles: `o
 
 ### Media tools
 
-* **Image analysis** — configure a vision model in Settings or with `HARNESS_VISION_MODEL`
-* **Audio transcription** — configure a transcription command in Settings or with `HARNESS_AUDIO_TRANSCRIBE_COMMAND`
+* **Image analysis** — auto-detects an installed Ollama vision model; or set one in Settings / `HARNESS_VISION_MODEL`
+* **Audio transcription** — auto-detects an OpenAI Whisper install on `PATH` (`pip install -U openai-whisper`); or set a command in Settings / `HARNESS_AUDIO_TRANSCRIBE_COMMAND`
 
 ### Agent identity
 
@@ -426,7 +475,7 @@ Click **⚡ Full Autonomy** in Settings to set `dontAsk` mode and enable all too
 
 ### Mycelium context router
 
-An adaptive graph system that learns which combinations of tools, skills, and memories work best for different queries. The network reinforces successful routes and decays unused ones. View the graph in the 🍄 Mycelium tab.
+An adaptive graph system that learns which combinations of tools, skills, and memories work best for different queries. The network reinforces successful routes and decays unused ones. View the graph in the 🍄 AI Router tab.
 
 ### Automation
 
@@ -444,6 +493,14 @@ scripts/        Build, smoke, and release scripts
 ```
 
 ## Storage
+
+### Workspace vs install
+
+The harness separates the **install directory** (where the code lives, e.g. `H:\ollama-agent-harness-master`) from the **project directory** (where your data lives, e.g. `D:\Brad\Downloads\AI`). Set `HARNESS_PROJECT_DIR` to point at the project directory; if you launch from inside the install dir without setting it, the server auto-redirects to `~/apex-workspace` so user data never lands next to source code.
+
+One consequence: `.harness/api-keys.json` is **per workspace**. Credentials you want to share across every workspace (SMTP, third-party API keys) should be set as OS environment variables instead — the harness reads env vars whenever a key is absent from `api-keys.json`, so promoting a credential to an env var and removing it from per-workspace files prevents drift.
+
+### Runtime state
 
 All runtime state goes under `.harness/` in your project directory:
 

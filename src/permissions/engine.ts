@@ -1,7 +1,8 @@
 import type { PermissionRule, PermissionMode, PermissionResult, ToolCall } from '../types';
 import * as path from 'path';
 import { BUILTIN_TOOL_ENTRIES } from '../tools/registry';
-import { getAllowedExternalPaths } from '../tools/pathResolution';
+import { getAllowedExternalPaths, getAutonomousBuildTargets } from '../tools/pathResolution';
+import { KillSwitch } from './killSwitch';
 
 /**
  * Optional trust-ladder provider. When wired, PermissionEngine consults the
@@ -44,14 +45,18 @@ const PROTECTED_EXTERNAL_EXTENSIONS = new Set(['.bat', '.cmd', '.cjs', '.js', '.
  * harmless to auto-approve under `acceptEdits`, and blocking them wastes
  * autonomous turns when an agent tries to record reflections or consolidate
  * memory between substantive tool calls.
+ *
+ * Exported (read-only by convention) so the IterationBudget refund logic
+ * in `queryLoop.ts` can recognise meta-only turns without forking the list.
  */
-const META_TOOLS = new Set([
+export const META_TOOLS = new Set([
   'reflect',
   'analyze_patterns',
   'promote_pattern',
   'consolidate',
   'evolve',
   'improve_skill',
+  'create_skill',
   'memory_write',
   'memory_read',
 ]);
@@ -59,14 +64,26 @@ const META_TOOLS = new Set([
 export class PermissionEngine {
   private rules: PermissionRule[];
   private mode: PermissionMode;
+  /**
+   * Local kill-switch state used when no shared `KillSwitch` is wired. Tests
+   * and standalone callers fall back to this; the server passes its shared
+   * `KillSwitch` so per-session engines see live state.
+   */
   private killSwitchActive = false;
   private killSwitchReason = '';
+  private killSwitch?: KillSwitch;
   private trustLadder?: TrustLadderProvider;
 
-  constructor(rules: PermissionRule[] = [], mode: PermissionMode = 'default', trustLadder?: TrustLadderProvider) {
+  constructor(
+    rules: PermissionRule[] = [],
+    mode: PermissionMode = 'default',
+    trustLadder?: TrustLadderProvider,
+    killSwitch?: KillSwitch,
+  ) {
     this.rules = rules;
     this.mode = mode;
     this.trustLadder = trustLadder;
+    this.killSwitch = killSwitch;
   }
 
   /** Replace or clear the trust-ladder provider at runtime. */
@@ -74,29 +91,45 @@ export class PermissionEngine {
     this.trustLadder = provider;
   }
 
+  /**
+   * Attach (or detach) a shared `KillSwitch` after construction. Any future
+   * kill-switch read/write goes through the shared instance.
+   */
+  setKillSwitch(killSwitch: KillSwitch | undefined): void {
+    this.killSwitch = killSwitch;
+  }
+
   /** Engage the global kill switch. While active, every tool call is denied. */
   engageKillSwitch(reason: string = 'Kill switch engaged.'): void {
+    if (this.killSwitch) {
+      this.killSwitch.engage(reason);
+      return;
+    }
     this.killSwitchActive = true;
     this.killSwitchReason = reason;
   }
 
   /** Release the kill switch and resume normal evaluation. */
   releaseKillSwitch(): void {
+    if (this.killSwitch) {
+      this.killSwitch.release();
+      return;
+    }
     this.killSwitchActive = false;
     this.killSwitchReason = '';
   }
 
   isKillSwitchActive(): boolean {
-    return this.killSwitchActive;
+    return this.killSwitch ? this.killSwitch.isActive() : this.killSwitchActive;
   }
 
   getKillSwitchReason(): string {
-    return this.killSwitchReason;
+    return this.killSwitch ? this.killSwitch.getReason() : this.killSwitchReason;
   }
 
   evaluate(call: ToolCall): PermissionResult {
-    if (this.killSwitchActive) {
-      return { decision: 'deny', reason: this.killSwitchReason || 'Kill switch active.' };
+    if (this.isKillSwitchActive()) {
+      return { decision: 'deny', reason: this.getKillSwitchReason() || 'Kill switch active.' };
     }
 
     // Trust-ladder pre-check (no-op when not provided).
@@ -215,9 +248,25 @@ function isProtectedExternalProgramPath(rawPath: string): boolean {
   if (isInsideOrEqualPath(target, process.cwd())) return false;
   const externalRoot = getAllowedExternalPaths().find((allowedPath) => isInsideOrEqualPath(target, allowedPath));
   if (!externalRoot) return false;
+  // An explicitly-designated autonomous build target authorises program-file
+  // writes inside it — the user chose this folder as the build destination, so
+  // producing code there is the point. Every OTHER allowed-external folder keeps
+  // the confirmation gate, so autonomy still cannot overwrite an unrelated
+  // project's executable files without an answerable confirmation.
+  if (getAutonomousBuildTargets().some((buildRoot) => isInsideOrEqualPath(target, buildRoot))) return false;
   const basename = path.basename(target).toLowerCase();
-  const extension = path.extname(target).toLowerCase();
-  return PROTECTED_EXTERNAL_FILENAMES.has(basename) || PROTECTED_EXTERNAL_EXTENSIONS.has(extension);
+  if (PROTECTED_EXTERNAL_FILENAMES.has(basename)) return true;
+  // Check every dotted suffix so that 'malware.bat.txt' or 'evil.tar.sh' is
+  // still treated as protected — a trailing-extension-only check (`.txt`)
+  // would let attackers chain extensions to bypass.
+  const segments = basename.split('.');
+  for (let i = 1; i < segments.length; i++) {
+    const ext = '.' + segments.slice(i).join('.');
+    const lastExt = '.' + segments[i];
+    if (PROTECTED_EXTERNAL_EXTENSIONS.has(ext)) return true;
+    if (PROTECTED_EXTERNAL_EXTENSIONS.has(lastExt)) return true;
+  }
+  return false;
 }
 
 function isInsideOrEqualPath(child: string, parent: string): boolean {

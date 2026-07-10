@@ -2,14 +2,1222 @@
 title: Ollama Agent Harness Changelog
 description: Release notes generated from local RPI changes logs for Ollama Agent Harness
 author: Bradliebs
-ms.date: 2026-05-09
+ms.date: 2026-06-22
 ms.topic: reference
 keywords:
 	- ollama
 	- release notes
 	- changelog
-estimated_reading_time: 14
+estimated_reading_time: 18
 ---
+
+## Ollama Agent Harness v0.6.6
+
+A governance pass beside the product path, plus operator surfaces for what the
+agent learned while you were away. Shadow-first end-to-end: no default behaviour
+changes until a human approves.
+
+### Autonomy surfaces and verification
+
+The latest additions are additive and default-off, so the product path is
+unchanged until you opt in.
+
+- **Project Atlas** (`src/web/atlasRoutes.ts`): a read-only repository map served
+  from `GET /api/atlas/map`. No write paths.
+- **Prompt auto-gate** (`src/experiments/autoGate.ts`): a fail-closed gate for
+  promoting evolved prompts — a candidate is rejected unless it clears the bar.
+- **Autonomy prompt learning** (`src/learning/autonomyPrompt.ts`,
+  `src/learning/promptApproval.ts`): evolved prompts are applied in the autonomy
+  loop only behind `HARNESS_APPLY_EVOLVED_PROMPT_AUTONOMY` (default off).
+- **Bounded cross-loop continuation** (`src/core/continuation.ts`): opt-in
+  continuation across task-loop halts behind `HARNESS_CONTINUATION` (default
+  off), capped by `HARNESS_MAX_CONTINUATIONS` (default 2).
+- **Pluggable verification panel + surgical critic** (`src/verification/panel.ts`,
+  `src/verification/critic.ts`, `src/verification/builtinSignals.ts`,
+  `src/verification/metrics.ts`): opt-in signal panel attachment on the
+  heuristic verifier and a surgical critic for remediation steps.
+- **Per-role model resolution** (`src/models/roleRouting.ts`): resolve a
+  distinct model per role.
+- **Git-worktree helper** (`src/agents/worktree.ts`): isolate parallel subagents
+  in separate worktrees.
+- **Tool refinements**: `web_read` extracts readable text with cheerio
+  (`src/tools/webSearchTool.ts`), and desktop input replay adds mouse actions
+  (`src/tools/desktopInputTools.ts`).
+
+### Governed Agent Loop v1
+
+A new `src/governed/` subsystem (8 files) wraps an already-produced answer with
+one deterministic governance pass and stages any proposed memory updates as
+review artifacts. See [`docs/GOVERNED-LOOP.md`](docs/GOVERNED-LOOP.md) for the
+full tour.
+
+- **Confidence modes** (`src/governed/confidenceMode.ts`): every answer is
+  labelled `settled`, `reasoned`, `web-fresh`, or `distrust` based on signals
+  the harness already computes.
+- **Per-answer self-critique** (`src/governed/selfCritique.ts`): structured
+  findings against the four reviewer questions (cited? old? fact or judgement?
+  what would make this wrong?). Surfaces only — never blocks.
+- **Working memory snapshot** (`src/governed/workingMemory.ts`): one
+  inspectable object for current goal, open questions, decisions, next action,
+  and blocked items.
+- **Governed answer composition** (`src/governed/governedAnswer.ts`): pure,
+  model-free wrapper. The original `answer` string is passed through untouched
+  so the function runs shadow-first beside the product path.
+- **Human-gated review queue** (`src/governed/reviewQueue.ts`): one durable
+  queue for two lifecycles — `brain-update` (writes to `.harness/memory/patterns.md`
+  on approval) and `needs-review` (drains onto a replay seam on approval).
+  Writes happen only on explicit human approval; rejection and timeout drop the
+  item with an audit entry.
+- **Idle-replay loop** (`replayLedger.ts` + `replayConsumer.ts` + `replayRunner.ts`):
+  consumes drained `needs-review` candidates, re-asks each one through an
+  injected harness runner, and re-enqueues the fresh governed answer for human
+  review. Auto-approves nothing. Writes a per-run audit entry to
+  `.harness/idle-replay-log.jsonl`.
+
+### New HTTP surface
+
+Registered by `src/web/reviewQueueRoutes.ts`, `src/web/workingMemoryRoutes.ts`,
+`src/web/webhookRoutes.ts`, and `src/web/myceliumRoutes.ts`:
+
+- `GET /api/working-memory` — current goal, open questions, next action.
+- `GET /api/review-queue`, `POST /api/review-queue/:id/{approve,reject,drain}` —
+  human-gated approval surface for brain updates and needs-review answers.
+- `GET /api/replay-candidates`, `POST /api/replay-candidates/consume`,
+  `GET /api/replay-history`, `GET /api/governed-metrics` — idle-replay control
+  and audit endpoints.
+- `GET /api/webhooks`, `POST/PATCH/DELETE /api/webhooks/...`,
+  `GET /api/webhooks/dead-letter`, `POST /api/webhooks/dead-letter/:id/redeliver`,
+  `DELETE /api/webhooks/dead-letter/:id` — webhook registry, manual test,
+  dead-letter inspection, and replay.
+- `GET /api/mycelium`, `GET /api/mycelium/{last-route,learning-curve,build-gate-trend}`,
+  `DELETE /api/mycelium`, `POST /api/mycelium/feedback` — Mycelium router
+  inspection, learning-curve telemetry, and feedback intake.
+
+### Core and tool changes
+
+- `src/core/queryLoop.ts`, `src/core/rewardLedger.ts`, `src/core/buildGate.ts` —
+  loop changes feeding the governed pass and the Mycelium build-gate trend.
+- `src/tools/bashTool.ts`, `src/tools/memoryTools.ts` — refinements to bash
+  invocation safety and memory write semantics.
+- `src/setup/health.ts` — additional readiness checks.
+- `src/integrations/webhooks.ts`, `src/automation/scheduler.ts` — webhook
+  delivery hardening and scheduler hooks.
+- `src/services/conceptMemoryClient.ts` — ccmem client refinements.
+
+### Browser takeover
+
+- **Execute-time capability enforcement** (`src/tools/browserTools.ts`): the
+  page-acting browser tools (navigate, click, fill, read, screenshot) now check
+  the `browser-page-access` grant inside `execute()` by reading
+  `.harness/settings.json`, so direct, CLI, and cookbook call paths are gated —
+  not only the web chat loop. `browser_close` stays ungated as a resource
+  release. This makes the previously documented execute-time enforcement real.
+- **Real-browser launch modes**: new environment variables select how the
+  browser launches, with default (no env) behaviour unchanged (fresh, headless,
+  bundled Chromium). `HARNESS_BROWSER_CDP_URL` attaches to a running Chrome over
+  CDP and disconnects rather than closing your tabs on `browser_close`;
+  `HARNESS_BROWSER_PROFILE_DIR` launches a persistent profile so logins survive;
+  `HARNESS_BROWSER_HEADFUL` shows a visible window; `HARNESS_BROWSER_CHANNEL`
+  picks an installed `chrome`/`msedge` channel. See
+  [`docs/CAPABILITY-SANDBOX.md`](docs/CAPABILITY-SANDBOX.md) for the full table
+  and the residual gaps.
+- **Browser audit log** (`src/tools/browserAudit.ts`): every navigate, click,
+  fill, read, and screenshot — including capability denials — is appended to
+  `.harness/browser-audit.jsonl` with a timestamp, launch mode, target URL, and
+  outcome. Exposed via `GET /api/browser/audit` and a Settings panel. Page text
+  and cookie values are never written.
+- **Trace/secret redaction** (`browserRedaction` setting): the audit log is
+  redaction-safe by construction; `browser_fill` values are masked by default
+  and URLs can be narrowed to their origin (dropping path/query tokens). Toggled
+  from the Browser Redaction settings panel and persisted to
+  `.harness/settings.json`.
+- **Cookie/session vault** (`src/tools/browserSessions.ts`): save the live
+  browser login as a named Playwright `storageState` snapshot under
+  `.harness/browser-sessions/` (`POST /api/browser/sessions/:name`), list/delete
+  via the Settings panel, and auto-restore with `HARNESS_BROWSER_SESSION=<name>`
+  — an explicit, scoped alternative to raw profile directories. The listing API
+  returns metadata only and never echoes cookie values.
+
+### Documentation
+
+- New [`docs/GOVERNED-LOOP.md`](docs/GOVERNED-LOOP.md) — confidence modes,
+  self-critique, review queue, and idle replay.
+- README updated with **Workspace vs install** guidance for `HARNESS_PROJECT_DIR`
+  so user-wide credentials (e.g. SMTP) can be promoted to OS env vars and stop
+  going stale per workspace.
+
+### Known gaps
+
+- The review queue and working-memory endpoints are live; UI panels for them
+  are partial. Until they ship, the seam is driven by direct API calls or by
+  an operator working from `.harness/review-queue.jsonl`.
+
+## Ollama Agent Harness v0.6.5
+
+This release focuses on making the harness approachable for non-developers and
+more reliable when running autonomously, plus trustworthier output.
+
+### Build Mode and guided experiences
+
+- **Build Mode**: a simplified flow for describing a goal in plain English and
+  letting the harness plan and build it, without needing developer tooling.
+- **`/wiki`, `/memory-wiki`, and research slash commands**, built on a set of
+  reusable renderers so the output format stays consistent.
+- Plain-English intent chips and a decluttered Start-work panel for newcomers.
+
+### Trustworthier output
+
+- **Evidence-first verification**: a side-effect ledger and a research skill
+  that check work before it is presented, rather than asserting success.
+- Tool-output compression keeps large tool results from crowding the context.
+
+### Autonomy reliability
+
+- The Build-it loop now launches correctly in isolated workspaces (it runs the
+  in-repo task loop instead of assuming a script in the target project).
+- Live model tool activity streams into `.forge-run.log` so the dashboard shows
+  what the agent is doing as it happens.
+- The run builder rejects pasted-back plan lines that previously produced nested
+  task titles.
+
+### Configuration
+
+- Honor the `OLLAMA_HOST` environment variable so the harness can talk to a
+  non-default Ollama endpoint.
+
+### Unified assistant profile
+
+- **One product surface**: the personal assistant (Jarvis) and the harness now
+  share a single engine, launcher, and config profile instead of two
+  parallel entry points. `HARNESS_PROFILE=assistant` turns on the assistant
+  identity (voice, ambient watchers, inbound channels) on top of the harness.
+- **Opt-in proactive tier**: `HARNESS_PROFILE=assistant-proactive` adds standing
+  autonomy — the self-learning heartbeat and trigger scheduler default on — for
+  users who want the assistant to act without being prompted. The plain
+  `assistant` profile stays reactive.
+- **Scheduler visibility and control**: the Jarvis Live panel lists every
+  registered scheduler with its running state and per-scheduler **Stop** and
+  **Start** buttons, backed by `POST /api/jarvis/schedulers/:name/stop` and
+  `/restart`. Stopping halts one noisy subsystem without the global kill switch
+  or a full restart; Start brings a stopped scheduler back in place. Schedulers
+  without a clean re-create path show Stop only.
+
+## Ollama Agent Harness v0.6.4
+
+Concept Cells Memory (`ccmem`) ships in-tree. The harness now writes every
+`remember` entry into a semantic memory bank and pulls related memories
+back into the prompt by meaning, not keyword match.
+
+### ccmem semantic memory
+
+- `ccmem/service.py`: FastAPI sidecar implementing the high-dimensional
+  concept-cell scheme from Tyukin & Gorban (2018). Stores items as
+  unit-vector "neurons" with per-cell firing thresholds in
+  `.harness/ccmem/bank.db` (SQLite). Exposes `/write`, `/write_many`,
+  `/query`, `/bind`, `/health`, `/cells`.
+- `src/services/conceptMemoryClient.ts`: thin TS client. Best-effort —
+  if the service is down the harness behaves identically.
+- `src/tools/memoryTools.ts`: every `remember` call dual-writes to
+  ccmem alongside the existing markdown files.
+- `src/context/assembly.ts`: `Concept memory recall` section added to
+  the auto-recall buffer; subject to the shared 4 000-char cap.
+- `start.bat` step 6: auto-launches ccmem on port 8765 when Python is
+  present; defaults `ccmemUrl` to `http://localhost:8765` so the
+  feature is on out of the box.
+- `setCcmemUrl` is statically imported so saved settings propagate to
+  the client on startup (no first-call URL mismatch).
+
+### Apex naming
+
+The autonomous-experiences track originally shipped as "Hermes" in
+v0.6.0; renamed to "Apex" in v0.6.4 to avoid trademark concerns. No
+behavioural change — strings and identifiers only.
+
+### Startup hardening
+
+- `start.bat`: resolved a BOM-corrupted workspace path and unescaped
+  parentheses in echo blocks that broke launch on some shells.
+- Better error messages when `npm install` is required.
+- Hardcoded `cc_service` path removed; the bundled `ccmem/` is the
+  only source of truth.
+
+### Operate-mode routing + synthesis fallback
+
+`src/services/queryRouter.ts` and the synthesis fallback formatter
+tightened so operate-mode queries don't fall back into chat-mode
+synthesis silently.
+
+### Runtime files ignored
+
+`.harness-workspace`, `.forge-state.json`, and `.forge-stop` added to
+`.gitignore` so they no longer surface as dirty-tree noise.
+
+---
+
+## Ollama Agent Harness v0.6.3
+
+Workspace folder memory and the M-tier security batch.
+
+### Workspace memory
+
+`start.bat` now remembers the last chosen workspace folder in
+`.harness-workspace`. After the first run the prompt is skipped.
+
+### Security batch (M1 / M3 / M4 / M5 / M6 / L1)
+
+`b15695c` collected six audit fixes spanning path handling, write
+gates, and permission boundaries. Notably:
+
+- `baf9f7b`: atomic write helpers, path-traversal guard, near-root
+  path filter for tool writes.
+- C2 redirect guard now allows absolute paths it previously rejected.
+- Trigger-interval test flake stabilised.
+
+### Tests
+
+`src/tools/readBeforeWriteGate.test.ts` and adjacent suites updated
+to cover the new path-traversal and atomic-write paths.
+
+---
+
+## Ollama Agent Harness v0.6.2
+
+Workspace isolation — phase 2.
+
+`src/web/server.ts` path resolution now anchors to the project root
+rather than `process.cwd()`. Combined with v0.6.1, the agent cannot
+write into the harness repo from a chat launched in a different
+workspace, even when relative paths are passed.
+
+---
+
+## Ollama Agent Harness v0.6.1
+
+Workspace isolation — phase 1.
+
+The agent no longer writes into the harness repository when the user
+is working in an external project. `267a0f6` is a hard boundary: any
+write whose resolved path lands inside the harness checkout is
+refused. Combined with v0.6.2 below, this closes the "agent edited
+its own code without asking" class of incident.
+
+Also: PDF rendering fixes (emoji/unsupported-char corruption, cursor
+reset after tables, styled headings, alternating row colours, page
+numbers).
+
+---
+
+## Ollama Agent Harness v0.6.0
+
+Apex (originally "Hermes") autonomous experiences and `/yolo` mode.
+
+### `/yolo` autonomy
+
+`/yolo <duration>` switches the harness into `dontAsk` permission mode
+for a bounded window, letting the agent run without per-call prompts.
+On expiry the mode reverts. (Note: v0.6.4 / v0.6.5 follow-ups added
+grant revocation on expiry — see `451ead2`.)
+
+### Apex (Hermes) experiences
+
+`e77075e` introduced the autonomous-experience track: long-horizon
+tasks the harness can drive without continuous user input. UI panels
+for all nine harness features shipped in `b931922`.
+
+### Gap closure (267 tests)
+
+`fd81f84` closed nine outstanding harness gaps and shipped 267 new
+tests. The feature inventory expanded to cover doneStateVerifier
+wiring (gap1), benchmark task runner with tiered tasks (gap2), A/B
+model comparison + task contracts + cost tracking (gaps 3–5), and the
+remaining UX gaps.
+
+---
+
+## Ollama Agent Harness v0.5.9
+
+Nervous-system audit follow-ups. Three coordinated fixes from the
+ORACLE SYSTEM extension of the prior audit, plus seven new test cases.
+No breaking changes.
+
+### Per-chat learning state (no more cross-chat bleed)
+
+`src/learning/engine.ts` now exposes a `LearningRecorder` class that
+holds per-session/per-project learning state. Free-function shims are
+preserved so existing CLI tools and tests keep working. The dispatcher
+(`src/tools/dispatcher.ts`) and query loop (`src/core/queryLoop.ts`)
+thread an optional `learningRecorder` through their option bags, and
+`src/web/server.ts` instantiates one recorder per chat. The nervous
+system also gets snapshot-on-recovery and prior-signal re-feed wired
+around `inspectQuery()`.
+
+### Silent-catch sweep (12 catches routed)
+
+`src/observability/silentFailureSink.ts`’s `recordSwallowed` now covers
+twelve previously silent failure paths, calibrated by ORACLE AUDIT A6
+(benign existence/cleanup catches left alone):
+
+- `src/automation/scheduler.ts`: breach-detected callback, age-prune
+- `src/agents/subagent.ts`: recall-context load
+- `src/services/selfLearningHeartbeat.ts`: skill safety scan
+- `src/persistence/eventStore.ts`: stream listener, auto-prune
+- `src/learning/engine.ts`: consolidated-digest write, prompt evolve,
+  pattern promote
+- `src/web/server.ts`: OTLP/heartbeat/scheduler startup configs,
+  heuristic verifier, mycelium code seed
+
+### Recall-section token budget
+
+`src/context/assembly.ts` now collects the RAG, memory-palace, and
+prior-session-search blocks into a `recallParts[]` buffer and caps
+their joined output at `RECALL_SECTIONS_COMBINED_MAX_CHARS = 4_000`
+via the existing `trimContextText` tail trim. The new auto-recall
+sections can no longer blow the system-prompt budget when several
+fire at once.
+
+### Tests
+
+`src/context/assembly.test.ts` gains seven new cases covering RAG
+auto-consult (skip + inject), memory palace summary (skip + inject),
+prior-session search (skip + inject), and the combined-budget cap
+(asserts the trim marker fires when sections exceed 4 000 chars).
+Hash-backend RAG indexes keep the suite fully offline.
+
+Suite: 1793 / 1793 passing across 163 suites.
+
+## Ollama Agent Harness v0.5.8
+
+Closes the rest of the prior persistence/scheduler audit findings AND
+the new concurrency findings from the system-audit extension into a
+single hardening release. Eight distinct fixes, three new tests, no
+breaking changes.
+
+### Persistence: lock the rest of the RMW writers
+
+Five writers in `synthesisStats` (`recordSynthesisFired`,
+`recordSessionCompleted`, `clearSynthesisStats` single-model branch,
+`recordAvgTurnDuration`, `recordToolUseStats`) and
+`promoteLearningCandidate` in `sessionLearning` were doing
+load → mutate → `fs.writeFile` without holding the file lock.
+Concurrent writers could read the same snapshot and overwrite each
+other, even though v0.5.2 had already made the byte-level write
+atomic. They are now all wrapped in `withFileLock` with the write
+going through `atomicWriteFile`.
+
+### Persistence: atomic snapshots in the curator
+
+`curator.ts` was writing the merge-proposals file and umbrella-skill
+files with raw `fs.writeFile`. Two curator runs racing each other
+could leave a torn snapshot. Both writes now use `atomicWriteFile`
+and `appendAuditLog` holds `withFileLock` while appending the audit
+JSONL.
+
+### Persistence: lock JSONL appenders for nervous signals + subagent routing
+
+`NervousSystemController.persistSignals` and
+`appendSubagentRoutingMetric` were calling `fs.appendFile` without a
+lock. Concurrent chats sharing one project directory could interleave
+bytes mid-line. Both now hold `withFileLock` for the append.
+`persistSignals` also stops swallowing failures with a comment — it
+now reports through `recordSwallowed` so the silent-failure sink
+sees it.
+
+### Persistence: atomic writes for custom agent files
+
+`writeCustomAgent` in `agentLoader` now uses `atomicWriteFile`
+instead of `fs.writeFile`.
+
+### Concurrency: per-chat NervousSystemController
+
+`server.ts` previously held one module-level
+`NervousSystemController` instance and routed every chat through it.
+Two parallel chats tangled signal histories and reflex state. Each
+chat handler now constructs its own controller; `/api/nervous` reads
+from a `lastNervousSnapshot` mirror updated at the end of each chat.
+
+### Concurrency: shared in-memory Mycelium graph
+
+Every chat used to load its own copy of the mycelium graph from disk,
+mutate it independently across the chat lifetime, and write the full
+copy back at end-of-chat. Two overlapping chats would both load the
+same baseline and the later writer silently overwrote the earlier
+writer's reinforcements. The atomic-write/lock from v0.5.2 protected
+the bytes but not the load-then-overwrite window.
+
+A new `src/mycelium/graphStore.ts` module keeps a single
+`MyceliumGraph` per `projectDir` in memory. `createMycelialRouter`
+now goes through `getSharedMyceliumGraph`, and `router.save()` flushes
+through `flushSharedMyceliumGraph`. Concurrent reinforcements now
+accumulate on the same instance instead of producing divergent
+snapshots that overwrite each other.
+
+### Schedulers: register the two Jarvis ambient timers
+
+`jarvisAmbientHandle` and the 60-second `ambientActionTimer` are now
+registered with `SchedulerRegistry` as `jarvis-ambient` and
+`jarvis-ambient-action`. `/api/shutdown` and the kill switch see and
+stop them like every other scheduler.
+
+### Tests
+
+Three new tests in `src/mycelium/graphStore.test.ts` cover:
+- Concurrent routers receive the same in-memory graph instance.
+- Three concurrent first-load callers share one disk load.
+- Concurrent seedings accumulate on the shared graph rather than
+  overwriting each other on save.
+
+The full suite now runs 163 suites / 1786 tests, all green.
+
+## Ollama Agent Harness v0.5.7
+
+Closes audit item #10 (health endpoint upgrade). Now that v0.5.6 made
+the kill switch and the scheduler set first-class objects, the public
+health endpoints stop relying on dozens of hand-wired booleans and
+the mirror variables, and read from the canonical sources instead.
+The shape gains a `schedulers` field that finally surfaces every
+registered scheduler — including `uploads-auto-prune` and
+`otlp-exporter`, which had no per-key surface before.
+
+### /api/system/health
+
+* [src/web/server.ts](src/web/server.ts) — `kill_switch.active` and
+  `kill_switch.reason` now read from `killSwitch.snapshot()` directly
+  instead of the module-level mirrors. The mirrors are still kept in
+  lockstep for the ~60 internal read sites, but no public HTTP
+  surface depends on that indirection any more.
+* New top-level `schedulers: Array<{ name: string; running: boolean }>`
+  field sourced from `schedulerRegistry.list()`. Covers all six
+  schedulers (`uploads-auto-prune`, `curator`, `self-learning-heartbeat`,
+  `triggers`, `otlp-exporter`, `automation`) with a unique-name
+  contract enforced by the registry.
+* Existing per-scheduler keys (`heartbeat.*`, `triggers.*`,
+  `automation.*`, `curator.*`) are kept for backward compatibility —
+  they expose richer fields like `enabled`, `last_run_at`, and
+  `recent_runs` that the registry list deliberately does not.
+
+### /api/readiness
+
+* [src/web/server.ts](src/web/server.ts) — all three kill-switch
+  reads (top-level `killSwitch` field, automation section
+  `kill.switch` check, autonomy section `autonomy.kill.switch`
+  check) now route through `killSwitch.snapshot()`. Behaviour is
+  byte-for-byte identical to v0.5.6 because the mirrors were in
+  lockstep already; the change is about removing the indirection
+  from the public surface so a future drift cannot ever appear here.
+
+### Tests
+
+* [src/web/server.test.ts](src/web/server.test.ts) — added two
+  tests pinning the new contract:
+  * `/api/system/health` exposes a `schedulers` array of
+    `{name, running}` entries with unique names.
+  * `/api/system/health.kill_switch` reflects KillSwitch engagement
+    end-to-end (engage → assert `active: true` with reason →
+    release → assert `active: false`).
+* Suite: 1781 → 1783 (+2). All 162 suites green. `tsc --noEmit` clean.
+
+### Not changed by this release
+
+* The mirror variables `killSwitchActive` / `killSwitchReason` are
+  still maintained — removing them is a much larger internal
+  refactor (~60 read sites) that was deliberately out of scope.
+* `/api/subsystems/health` is unchanged. It's a higher-level
+  rollup that doesn't expose kill switch or schedulers.
+* No new endpoint surface. The fix is additive on existing surfaces.
+
+### Audit ledger after v0.5.7
+
+* Item #4 — closed v0.5.2 (file-lock retrofit).
+* Item #6 — closed v0.5.6 (kill-switch + SchedulerRegistry).
+* Item #6.B — deferred as audit observation (schedulers do not
+  issue ToolCalls directly).
+* Item #7 — closed v0.5.5 (workflow persistence).
+* Item #9 — closed v0.5.3 (Windows arg quoting).
+* Item #10 — **closed v0.5.7** (this release).
+
+## Ollama Agent Harness v0.5.6
+
+Closes audit item #6 (kill-switch / scheduler coupling) with two
+bounded changes: a single source of truth for kill-switch state, and
+a registry that makes every long-running scheduler discoverable and
+shutdownable through one API.
+
+### Kill-switch unification
+
+Before v0.5.6 the server held a `killSwitchActive` boolean and every
+`PermissionEngine` kept a private copy snapshotted at construction
+time. A per-session engine therefore could not see kill-switch
+changes made after the session started; conversely, code that called
+`engine.engageKillSwitch()` directly never propagated back to the
+server flag the schedulers were reading. Two sources of truth, easy
+to drift, hard to audit.
+
+* New [src/permissions/killSwitch.ts](src/permissions/killSwitch.ts) —
+  `KillSwitch` class with `engage(reason)`, `release()`,
+  `isActive()`, `getReason()`, `restore(snapshot)`, `snapshot()`,
+  and `onChange(listener)`. A single instance lives in `server.ts`
+  and is passed to every `PermissionEngine` via a new constructor
+  arg, so `evaluate()` reads live state on every call instead of a
+  construction-time snapshot.
+* [src/permissions/engine.ts](src/permissions/engine.ts) — new
+  optional `killSwitch` constructor argument plus `setKillSwitch()`
+  for late binding. When attached, `engageKillSwitch`,
+  `releaseKillSwitch`, `isKillSwitchActive`, `getKillSwitchReason`
+  and `evaluate` all route through the shared instance. Standalone
+  callers (tests) that do not pass one keep the existing local-field
+  behaviour, so no public API broke.
+* [src/web/server.ts](src/web/server.ts) — single `killSwitch =
+  new KillSwitch()` at module scope. All mutations route through
+  two new helpers, `applyKillSwitchState(active, reason)` and
+  `restoreKillSwitchState(snapshot)`. The module-level
+  `killSwitchActive` / `killSwitchReason` mirrors still exist (dozens
+  of read sites unchanged) but are now written only by these
+  helpers, so they cannot drift from the source of truth.
+* Schedulers (curator, heartbeat, triggers, automation) and the
+  curator tool runtime now read `() => killSwitch.isActive()`
+  instead of the module mirror, so a kill-switch flip is observed
+  on the very next scheduler tick.
+
+### SchedulerRegistry
+
+Before v0.5.6 each scheduler had its own `configureX` / `stopX`
+pair in `server.ts` with no central inventory. There was no way to
+enumerate what was running, no shared shutdown path, and tests had
+to import each `stopX` individually.
+
+* New [src/services/schedulerRegistry.ts](src/services/schedulerRegistry.ts) —
+  `SchedulerRegistry` with `register(scheduler)`, `unregister(name)`,
+  `stop(name)`, `stopAll()`, `list()`, and a `clear()` helper. Stops
+  run in reverse-registration order, async stops are awaited, and
+  one scheduler crashing during shutdown does not block siblings.
+* Registered subsystems in `server.ts`: `uploads-auto-prune`,
+  `curator`, `self-learning-heartbeat`, `triggers`, `otlp-exporter`,
+  `automation`. Each `configureX` registers after `.start()`; each
+  `stopX` unregisters; replacing by name auto-stops the previous
+  instance.
+* New exports: `stopAllSchedulers()` and `getSchedulerStatuses()`
+  for shutdown handlers, tests, and diagnostic surfaces. The
+  existing individual `stopX` exports stay (used by tests).
+* The registry does **not** subscribe to the kill switch — current
+  semantic is preserved: schedulers stay running but their per-tick
+  guard makes them no-op while the switch is engaged, so a release
+  resumes scheduled work without reconfiguration.
+
+### Tests
+
+* New [src/permissions/killSwitch.test.ts](src/permissions/killSwitch.test.ts) —
+  12 tests covering engage/release, default reasons, snapshot
+  defensiveness, listener fan-out and crash isolation, restore
+  semantics, and the 500-char reason cap.
+* New [src/services/schedulerRegistry.test.ts](src/services/schedulerRegistry.test.ts) —
+  17 tests covering name validation, replacement (including when the
+  previous stop throws), unregister semantics, async stop awaiting,
+  reverse-order `stopAll`, failure isolation, and snapshot-stable
+  iteration when an entry unregisters siblings during stop.
+* Extended [src/permissions/engine.test.ts](src/permissions/engine.test.ts) —
+  4 new tests in `kill switch > with shared KillSwitch (v0.5.6)`
+  proving the snapshot-drift bug is fixed: engines constructed
+  before engagement still see the engagement, mutations on one engine
+  propagate to all engines sharing the switch, and `setKillSwitch()`
+  swaps the source after construction.
+* Full suite: **1741 → 1781 tests**, all green. `tsc` clean.
+
+### Audit follow-ups deferred
+
+* Item #6.B (route scheduled work that calls tools through
+  `PermissionEngine`) — left as an audit observation. The
+  schedulers themselves do not issue `ToolCall`s; only the work
+  they delegate does, and that work already goes through the
+  per-session engine.
+* Item #10 — held as follow-up.
+
+---
+
+## Ollama Agent Harness v0.5.5
+
+Closes audit item #7: workflow run state was in-memory only. A server
+restart wiped every `WorkflowRun`, leaving `/api/workflows/runs`
+silently empty and abandoning long-running workflows with no record.
+The header comment on `WorkflowRegistry` already flagged this as a
+v1 limitation.
+
+### Persistence
+
+* [src/workflows/workflowRegistry.ts](src/workflows/workflowRegistry.ts) —
+  every run state transition now persists to
+  `.harness/workflows/runs/<runId>.json` through `withFileLock` +
+  `atomicWriteFile`. The lock is keyed per run file so different runs
+  proceed in parallel without contention.
+* Persist points: `startRun`, `pause`, `resume`, `cancel`, the
+  `execute` loop (start, per-step settle, every terminal status), and
+  the demoted state on restore.
+* `flush()` exposed so the server (and tests) can drain
+  fire-and-forget persists from the synchronous mutator methods
+  before shutdown or teardown. Tracks in-flight promises in a Set so
+  drainage is bounded.
+
+### Recovery on restart
+
+* `restoreRuns()` loads every persisted run on startup. Runs found in
+  `running` (server killed mid-step) or `pending` (server killed
+  before `execute` began) are **demoted to `failed`** with the
+  recovery note `Server exited while workflow run was in progress;
+  not auto-resumed.` and re-persisted so the next restore is
+  idempotent.
+* Currently-running steps inside a demoted run also become `failed`
+  with the same note. Pending steps stay `pending` — they were never
+  in-flight, so the run-level `failed` is the honest signal.
+* **No auto-resume.** Tool side effects are not idempotent. Restored
+  runs are visible for inspection only; a future operator-driven
+  resume is out of scope for this release.
+* Malformed run files are logged and skipped, never thrown.
+* [src/web/server.ts](src/web/server.ts) — `ensureSettingsLoaded`
+  now calls `await workflowRegistry.restoreRuns()`. Best-effort:
+  failures log and never block server start.
+
+### Tests
+
+* [src/workflows/workflowRegistry.test.ts](src/workflows/workflowRegistry.test.ts) —
+  added 8 tests under a `run persistence` describe block:
+  * completed run round-trips through a fresh registry instance
+  * `running` run demoted to `failed` on restore (with idempotent
+    re-persist verified by a second restore)
+  * `pending` run demoted to `failed` with steps still `pending`
+  * malformed/wrong-shape run files skipped without throwing
+  * missing runs directory returns zeros
+  * paused run round-trips with `pauseReason`
+  * cancelled run round-trips with `cancelReason`
+  * 4 parallel runs in one registry produce 4 valid run files with
+    no orphan temp files (race coverage)
+* `afterEach` now calls `registry.flush()` for every tracked
+  registry before `fs.rm` so the fire-and-forget persists from the
+  synchronous mutators cannot race the directory removal.
+
+### Not changed by this release
+
+* The `WorkflowDefinition` schema and on-disk layout for definitions
+  are unchanged.
+* The `WorkflowRegistry` public API is additive only (`flush()` and
+  `restoreRuns()` are new; everything else is identical).
+* No retention or TTL on persisted runs — disk grows monotonically
+  until manually cleaned. Acceptable for v1; a future release can
+  add a cap.
+
+### Still pending from the audit
+
+* Item #6 — schedulers through the PermissionEngine (architectural).
+* Item #10 — health endpoint upgrade (depends on #6).
+
+## Ollama Agent Harness v0.5.4
+
+Removes a full-suite test flake in `src/web/server.test.ts` where
+`addedDocuments` could surface `jarvis-brief-ambient-*.md` files
+written by the Jarvis ambient action subscriber's 60s `setInterval`.
+The flake only fired under the full Jest run (test passed in
+isolation) and was unrelated to the test's own API mutations.
+
+### Fix
+
+* [src/web/server.ts](src/web/server.ts) — the ambient action
+  subscriber's `setInterval` now only registers when
+  `HARNESS_AMBIENT_ENABLED === '1'`, mirroring the gate on the daemon
+  itself. The previous code always registered the timer and then
+  early-returned inside the callback when the daemon wasn't running —
+  dead work in non-ambient runs and the source of the race window.
+* [src/testSupport/harnessCleanup.test-support.ts](src/testSupport/harnessCleanup.test-support.ts) —
+  `listHarnessDocumentFiles` now filters out
+  `jarvis-brief-ambient-*` files. They are background-timer
+  artifacts; the snapshot/diff exists to police documents created by
+  the API mutations a test made, not independent timer work. Genuine
+  test-induced documents still surface.
+
+### Tests
+
+* [src/testSupport/harnessCleanup.test-support.test.ts](src/testSupport/harnessCleanup.test-support.test.ts) —
+  added 1 test pinning the filter contract: ambient briefs are
+  excluded from both the snapshot and the diff, but a real test
+  leak (`test-leaked.md`) still appears in `addedDocuments`.
+
+### Not changed by this release
+
+* The ambient daemon and its bus behave identically when
+  `HARNESS_AMBIENT_ENABLED=1`.
+* The action subscriber's policy and per-action handlers are
+  unchanged.
+* No other snapshot/diff caller behaviour changes.
+
+### Still pending from the audit
+
+* Item #6 — schedulers through the PermissionEngine (architectural).
+* Item #7 — workflow persistence consolidation.
+* Item #10 — health endpoint upgrade (depends on #6).
+
+## Ollama Agent Harness v0.5.3
+
+Fixes audit item #9: when the Bash tool routes a Windows `.cmd` shim
+invocation through `cmd.exe /d /s /c`, args containing whitespace,
+quotes, or shell metacharacters were joined with a naive `.join(' ')`
+and re-quoted by Node, producing a broken command line. Commands like
+`npx prettier --write "a file.ts"` would be split mid-arg or dropped
+when the shim path fired. The bug was uncovered by existing tests
+because the covered path used `node` (a native `.exe`), not a shim.
+
+### Fix
+
+* [src/tools/bashTool.ts](src/tools/bashTool.ts) — added two pure
+  helpers and rerouted the shim path through them:
+  * `quoteWindowsArgv(arg)` applies the Microsoft
+    `CommandLineToArgvW` quoting rules: empty → `""`; bare → unchanged;
+    otherwise wrap in `"..."`, escape internal `"` as `\"`, and double
+    every run of backslashes that immediately precedes a `"` or the
+    closing quote.
+  * `buildWindowsCmdInvocation(executable, args)` produces the single
+    command string that `cmd.exe /d /s /c` will receive.
+  * The spawn site now passes `windowsVerbatimArguments: true` so Node
+    does not re-quote the already-quoted command and produce nested-
+    quote mangling.
+
+### Tests
+
+* [src/tools/bashTool.test.ts](src/tools/bashTool.test.ts) — added 12
+  unit tests covering empty args, bare args, whitespace wrapping,
+  embedded quotes, backslash-doubling before quotes, trailing
+  backslashes, interior backslashes that are NOT adjacent to a quote,
+  cmd metacharacters, and end-to-end build for the regression
+  scenarios (`prettier --write 'a"b.ts'`, `npm run 'build & deploy'`,
+  `eslint 'src/file with space.ts'`).
+
+### Not changed by this release
+
+* `isSafeCommand` gating is unchanged — it still blocks `$()`,
+  backticks, and unquoted shell operators before the arg builder runs.
+* The fast path for native `.exe` targets (no shim) is unchanged.
+
+### Known residual exposure
+
+`%FOO%` inside a quoted arg still triggers `cmd.exe` env-var expansion
+because `cmd.exe` processes `%` even inside `"..."`. Documented in the
+`quoteWindowsArgv` jsdoc; rare in agent-issued commands and accepted.
+
+### Still pending from the audit
+
+* Item #6 — schedulers through the PermissionEngine (architectural).
+* Item #7 — workflow persistence consolidation.
+* Item #10 — health endpoint upgrade (depends on #6).
+
+## Ollama Agent Harness v0.5.2
+
+Completes the file-lock retrofit pass started in v0.5.1. The remaining
+JSON writers identified in the v0.5.1 "Not changed by this release"
+section now go through `withFileLock` + `atomicWriteFile`. Closes the
+deferred portion of audit item #4.
+
+### Retrofitted RMW (read-modify-write) writers
+
+These callers do a read-modify-write on disk; the lock now covers the
+whole sequence so two concurrent paths cannot lose each other's
+mutations.
+
+* [src/extensibility/mcpRuntime.ts](src/extensibility/mcpRuntime.ts) —
+  `upsertMcpServer`, `removeMcpServer`, and `discoverMcpServerTools`
+  now run their RMW under `withFileLock(path.join(projectDir, MCP_SERVERS_PATH))`
+  and write via `atomicWriteFile`. Two race tests added in
+  [src/extensibility/mcpRuntime.test.ts](src/extensibility/mcpRuntime.test.ts)
+  exercise parallel upsert + parallel upsert/remove on overlapping ids.
+* [src/web/server.ts](src/web/server.ts) — `storeConnectorSecret` and
+  the inline `/api/api-keys` POST handler now lock `API_KEYS_PATH` for
+  the whole RMW. File mode `0o600` preserved for the
+  secret-bearing file.
+* [src/web/server.ts](src/web/server.ts) `/api/email/templates` POST
+  and DELETE handlers — wrap the read-filter-write under
+  `withFileLock(EMAIL_TEMPLATES_PATH)`.
+
+### Retrofitted snapshot writers
+
+These writers persist a snapshot of in-memory state; the lock
+prevents concurrent writes from producing a partial file and atomic
+write prevents a half-written file on crash.
+
+* [src/mycelium/graph.ts](src/mycelium/graph.ts) `saveMyceliumGraph`
+* [src/core/codeIntelligence.ts](src/core/codeIntelligence.ts)
+  `saveRepoGraph`
+* [src/integrations/telegram.ts](src/integrations/telegram.ts)
+  `persistChatIds`
+* [src/web/server.ts](src/web/server.ts)
+  `saveCustomOutputValidationProfiles` and `/api/file-redirects` POST
+  (`FILE_REDIRECTS_PATH`).
+
+### Still not changed
+
+* [src/extensibility/mcpRuntime.ts](src/extensibility/mcpRuntime.ts)
+  `readMcpServerDefinitionsSync` — synchronous reader used by code
+  paths that cannot await. Reads are crash-safe by construction (the
+  atomic-write pair guarantees a fully-formed file at the destination
+  or the previous version), so no change needed.
+* No changes to schedulers, workflow persistence, the bash arg-quoting
+  path, or the health endpoint — those remain audit items #6, #7,
+  #9, #10 and are tracked separately.
+
+### Tests
+
+* 1726 → 1728 tests pass (`+2` for this release).
+* No new dependencies. `tsc --noEmit` clean.
+
+---
+
+## Ollama Agent Harness v0.5.1
+
+Closes item #4 from the v0.5.0 deferred-hardening list:
+**file-lock JSON stores**.
+
+### Why
+
+Several harness JSON stores (`.harness/automations/jobs.json`,
+`.harness/jarvis/runtime.json`, `.harness/jarvis/trust-ladder.json`)
+were written via naive `fs.writeFile` with no in-process serialization
+of read-modify-write cycles. The system audit flagged this as a
+silent-data-loss path: when `AutomationScheduler.tick` calls
+`markAutomationJobRun(jobId)` in parallel with a UI route handler
+calling `createAutomationJob`, the two read-modify-write sequences can
+interleave and one writer overwrites the other's mutation. The lost
+mutation is unrecoverable — there is no audit trail of "what should
+have been saved".
+
+### New persistence primitives
+
+* [src/persistence/atomicFile.ts](src/persistence/atomicFile.ts) — pure
+  stdlib, no new dependencies.
+  * `withFileLock<T>(absolutePath, fn)` — in-process Promise-chain
+    mutex keyed by absolute path. The internal chain never rejects, so
+    one caller's failure does not poison subsequent waiters. The
+    caller's own rejection is still rethrown to that caller.
+  * `atomicWriteFile(absolutePath, data, options?)` — writes to a
+    unique sibling temp (`.<basename>.tmp.<pid>.<rand>`) then `rename`s
+    over the destination. Preserves the `mode` option for
+    secret-bearing files (e.g. `api-keys.json` at `0o600`). Includes
+    Windows-only EPERM/EBUSY/EACCES retry with exponential backoff
+    (`25ms, 75ms, 150ms, 300ms, 600ms`). Cleans up the orphan temp on
+    rename failure.
+* 13 unit tests in [src/persistence/atomicFile.test.ts](src/persistence/atomicFile.test.ts)
+  cover lock serialization across same/different paths, error
+  isolation, mode preservation, and a read-modify-write race regression.
+
+### Retrofitted stores
+
+* [src/automation/jobs.ts](src/automation/jobs.ts) —
+  `createAutomationJob`, `updateAutomationJob`, `deleteAutomationJob`,
+  `markAutomationJobRun`, and the public `saveAutomationJobs` now run
+  their read-modify-write under `withFileLock(jobsPath(projectDir))`
+  and write via `atomicWriteFile`. The append-only run log
+  (`runs.jsonl`) is left outside the jobs.json lock since
+  `fs.appendFile` is already crash-safe for a single line.
+* [src/jarvis/runtimeRegistry.ts](src/jarvis/runtimeRegistry.ts) —
+  `saveRuntimeRegistry` snapshots the in-memory map inside the lock,
+  then writes atomically.
+* [src/jarvis/trustLadder.ts](src/jarvis/trustLadder.ts) —
+  `saveTrustLadder` writes through the lock + atomic-write pair.
+* 4 race regression tests in [src/automation/jobs.race.test.ts](src/automation/jobs.race.test.ts)
+  exercise the exact scenario the audit flagged (parallel
+  `markAutomationJobRun` + `createAutomationJob`) and verify no
+  mutation is lost.
+
+### Not changed by this release
+
+* [src/web/server.ts](src/web/server.ts) `saveSettingsToDisk` already
+  had an in-process lock plus temp+rename atomic write before this
+  release; verified, no change needed.
+* `API_KEYS_PATH`, `EMAIL_TEMPLATES_PATH`, `FILE_REDIRECTS_PATH`,
+  `OUTPUT_VALIDATION_PROFILES_PATH` writers in `server.ts` — still
+  pending. They are write-only (no concurrent RMW pattern observed)
+  but should be migrated for crash-safety. Deferred to a follow-up.
+* [src/extensibility/mcpRuntime.ts](src/extensibility/mcpRuntime.ts)
+  `writeMcpServerDefinitions` — its callers do follow an RMW pattern;
+  deferred so the retrofit can be reviewed against the MCP registry's
+  ordering guarantees rather than rushed into this release.
+* [src/mycelium/graph.ts](src/mycelium/graph.ts),
+  [src/integrations/telegram.ts](src/integrations/telegram.ts), and
+  [src/core/codeIntelligence.ts](src/core/codeIntelligence.ts) JSON
+  writers — same call: deferred to a separate review pass.
+
+### Threat model note
+
+The lock is **in-process only**. The harness assumes a single Node
+server process. If the topology ever changes to multi-process (e.g. a
+PM2 cluster), swap `withFileLock` for `proper-lockfile` or an
+equivalent flock-based primitive. The current implementation is
+documented to that effect.
+
+### Tests
+
+* 1709 → 1726 tests pass (`+17` for this release).
+* No new dependencies. `tsc --noEmit` clean.
+
+---
+
+## Ollama Agent Harness v0.5.0
+
+System-audit hardening release. Five items from the recommended hardening
+order ship together; five remain as follow-up work. Includes one
+deliberate breaking default change (auto-fallback is now opt-in).
+
+### Breaking: remote provider fallback is now opt-in
+
+* `HARNESS_REMOTE_AUTO_FALLBACK` is now **off by default**. Previously
+  it defaulted to enabled, which silently routed conversation contents
+  (including tool outputs from `file_read` and `bash`) to a remote
+  provider whenever Ollama errored — directly contradicting the
+  product's "local-first" positioning.
+* To restore the previous behaviour, set `HARNESS_REMOTE_AUTO_FALLBACK=1`.
+* Affects [src/core/chatClientFactory.ts](src/core/chatClientFactory.ts),
+  [src/setup/health.ts](src/setup/health.ts), and the
+  `harness doctor` status line in
+  [src/cli/index.ts](src/cli/index.ts).
+* Tests added for both off-by-default and on-when-opted-in paths.
+
+### Silent-failure sink — observability for swallowed promise rejections
+
+* New module [src/observability/silentFailureSink.ts](src/observability/silentFailureSink.ts)
+  exposes `recordSwallowed(label, error, meta?)`, a bounded
+  (200-entry) in-memory ring buffer that never throws and never does
+  I/O.
+* 65 `.catch(() => {})` sites in
+  [src/web/server.ts](src/web/server.ts) now route to the sink with
+  call-site-derived labels (`saveSettingsToDisk`,
+  `appendCapabilityAuditEvent`, `emitEvent`, `saveRuntimeRegistry`,
+  etc.). Fire-and-forget semantics are preserved — the caller still
+  gets a resolved promise — but the failure is now post-hoc
+  attributable.
+* New endpoint `GET /api/diagnostics/swallowed` returns the buffer
+  contents and total count. Useful for diagnosing "why didn't this
+  audit event land" without grepping stderr.
+* Tests cover the buffer cap, non-`Error` rejection values, and a
+  hostile error object whose `message` getter throws.
+
+### Process-level safety net
+
+* `unhandledRejection` and `uncaughtException` handlers installed only
+  when [src/web/server.ts](src/web/server.ts) runs as the entry point
+  (so test runs are unaffected).
+* Unhandled rejections are logged + recorded in the sink and the
+  process is kept alive. Losing a long-running session to one bad
+  promise is a worse outcome than a quietly logged error.
+* Uncaught exceptions log + record + exit(1) after a 50 ms grace
+  period for stderr flush. Process state is not trustworthy after an
+  uncaught throw; cleaner to let the launcher restart.
+
+### Startup project-directory self-check
+
+* `startServer` now logs the resolved absolute path for every
+  `.harness/*` subdirectory at boot, plus the `HARNESS_PROJECT_DIR`
+  source. Catches the visible half of the misconfiguration class that
+  silently broke `install_skill` in v0.4.9 — wiring bugs are now
+  loud at startup instead of invisible until a user notices missing
+  data.
+
+### Deferred to follow-up releases
+
+The audit's recommended order included five additional items not in
+this release:
+
+1. File-lock JSON stores (`automations.json`, `settings.json`,
+   `runtime-registry.json`, `safety-rules.json`) — needs a new
+   dependency (`proper-lockfile` or equivalent).
+2. Funnel both schedulers through `PermissionEngine` — architectural.
+3. Workflow persistence across server restart — substantial.
+4. `bashTool` Windows arg quoting on the cmd-shim path — needs careful
+   cross-platform tests.
+5. Health-endpoint upgrade incorporating sink counts + scheduler
+   liveness — depends on (2) above.
+
+## Ollama Agent Harness v0.4.10
+
+Sweep release: three bugs found by the post-v0.4.9 audit, all fixed.
+
+### `install_skill` now installs into the configured project directory
+
+* `setInstallSkillsDir(SKILLS_DIR)` is now called from
+  [src/web/server.ts](src/web/server.ts) alongside `setSkillsDir` and
+  `setImportSkillsDir`.
+* Prior to this fix the helper was exported and tested but never wired
+  into production, so `install_skill` fell through to
+  `path.join(process.cwd(), '.harness', 'skills')` and silently dropped
+  downloaded SKILL.md files into the launch directory whenever
+  `HARNESS_PROJECT_DIR` pointed elsewhere — installed skills appeared
+  to "vanish" because `list_skills` looked in the configured project.
+
+### `import_skill` rejects symlinks in skill bundles
+
+* `planCopy` now throws when any bundle entry is a symlink, before any
+  copy starts. `Dirent.isFile()` returns true for symlinks to regular
+  files, and `fs.copyFile` follows them at read time — a hostile bundle
+  could ship `forms.txt -> ~/.ssh/id_rsa` and have the harness copy
+  the dereferenced content into `.harness/skills/`. The Allowed
+  External Paths fence only constrains *where* the source root can
+  live, not what a symlink inside it can reach.
+* Failure mode is the existing `success: false / "scan failed"` path;
+  message names the offending file.
+
+### `uiWiring` test no longer false-fails on dynamic-action fetches
+
+* When the UI fetches a path like `'/api/jarvis/ambient/' + action`,
+  the test normalizer collapses it to `/api/jarvis/ambient/:param`.
+  Previously the comparison required an Express-level `:foo` wildcard
+  on the server, which would have *weakened* input validation
+  (`start`/`stop` are the only valid actions, registered as concrete
+  routes). The matcher now accepts a UI `<prefix>/:param` call when
+  any concrete server route exists under the same prefix.
+* Side effect: v0.4.9 shipped with a failing test on master, which
+  would have blocked the `release.yml` "Require successful CI on
+  tagged commit" gate. That is now green.
+
+## Ollama Agent Harness v0.4.9
+
+Brings the harness's skill subsystem fully in line with the
+[Anthropic Agent Skills][anthropic-skills] spec while keeping it 100% model
+agnostic — the protocol is just markdown plus the filesystem, so any skill
+authored for Claude works here unchanged against any Ollama model.
+
+[anthropic-skills]: https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview
+
+### `skill` tool surfaces bundled resources (Level 3)
+
+* When the agent invokes `skill(name: ...)`, the tool now appends a
+  `--- Bundled resources ---` section listing every non-`SKILL.md`
+  sibling file (up to 20 entries, recursing one level deep) with sizes.
+  Closes the gap where the model knew SKILL.md existed but had to guess
+  that `FORMS.md` or `scripts/fill_form.py` were also available.
+* Skips dotfiles and `SKILL.md.backup-*` snapshots so the list stays
+  meaningful.
+
+### `import_skill` tool: bulk-import a skill bundle from a local folder
+
+* New built-in `import_skill` tool copies an entire skill folder
+  (SKILL.md + bundled files) into `.harness/skills/<name>/`. Recipe for
+  consuming Anthropic-format skills:
+  `bash git clone https://github.com/anthropics/skills.git agent-outputs/anthropic-skills`
+  then `import_skill(source: "agent-outputs/anthropic-skills/pdf")`.
+* Source must live inside the project or under an Allowed External Path —
+  the same fence used by `file_read` and `list_files`.
+* Hard caps: 200 files, 5 MB total bundle. `node_modules/`, `.git/`,
+  `.venv/`, `__pycache__/`, `dist/`, `build/`, and dotfiles are skipped
+  during copy.
+* Refuses to overwrite an existing skill unless `overwrite: true` is set.
+* Appends a `<!-- imported-from: ... -->` provenance footer to the
+  installed SKILL.md so the source is traceable later.
+* Registered with `riskLevel: 'medium'`, `permissionCategory: 'skills'`,
+  `enabledByDefault: true`.
+
+### System prompt: clean Level-1 listing for Anthropic-format skills
+
+* The "Available Skills" section no longer prints `(triggers: none)` for
+  skills whose frontmatter omits the harness-extension `triggers` field.
+  An Anthropic-spec SKILL.md (just `name` + `description`) now appears as
+  `• pdf-processing — Extract text and tables from PDF files.` with no
+  noise suffix.
+
+### Docs
+
+* New [docs/SKILLS.md](docs/SKILLS.md) explains the SKILL.md format, the
+  three-tier progressive disclosure model (Level 1 metadata / Level 2
+  body / Level 3 bundled resources), the `list_skills` / `skill` /
+  `create_skill` / `import_skill` / `install_skill` tool surface, and
+  why this implementation is model agnostic.
+
+## Ollama Agent Harness v0.4.8
+
+Patch release that hardens the tool surface against day-to-day model
+mistakes that kept tripping up autonomous runs: false bash blocks for
+quoted arguments, the agent writing a file then failing to run it,
+permission prompts timing out in the background, synthesis turns that
+swallowed everything the agent had already accomplished, and a
+Settings UI that buried the most useful escape hatch.
+
+### Bash safety scanner is quote-aware
+
+* Legitimate invocations like `python -c "import x; print(x)"` and
+  `node -e "const x = 1; console.log(x + 2)"` are no longer falsely
+  blocked. The previous regex-only check rejected any `;`, `|`, `&&`,
+  redirect, or command substitution anywhere in the string — even
+  inside quoted arguments where they are literal bytes with no shell
+  meaning (bash spawns with `shell: false`).
+* Replacement is a small walker that tracks single/double-quote state
+  and only flags operators outside quotes. Reported operator is named
+  in the error (e.g. `';' outside quotes`) so the model can recover.
+* `unsupportedWindowsBuiltin()` and `BLOCKED_PATTERNS` (rm -rf /, mkfs,
+  fork bomb, etc.) are unchanged — the relaxation is scoped to the
+  shell-control category only.
+
+### `make_directory` tool replaces `bash mkdir`
+
+* New built-in `make_directory` tool creates a directory (with parents,
+  idempotent) under the project or any **Allowed External Path**.
+  Replaces the workaround of `bash mkdir`, which is blocked on Windows
+  because `mkdir` is a `cmd.exe` built-in.
+* Registered with `riskLevel: 'low'`, `permissionCategory: 'write'`,
+  `enabledByDefault: true`.
+
+### `file_write` redirect surface is impossible to miss
+
+* Previously the redirect note was a trailing parenthetical the model
+  often did not parse, leading to broken follow-ups like
+  `python check_yfinance.py` after a write to the agent-outputs
+  directory. The success message now leads with the absolute path on
+  its own line:
+  ```
+  ✅ Saved to: D:\Brad\Downloads\AI\check_yfinance.py
+  ℹ️ Path was redirected from bare filename to agent-outputs/. …
+  Wrote 43 chars.
+  ```
+* Existing `"redirected from bare filename"` and
+  `"redirected by user pattern rule"` substrings are preserved so
+  downstream tooling and tests keep working.
+
+### Bash auto-resolves bare script filenames against agent-outputs
+
+* Belt-and-suspenders for the case where the model writes
+  `notes.py` (which the harness redirects into `agent-outputs/`) and
+  then immediately runs `python notes.py`. Bash now rewrites bare
+  script-extension args (`.py`, `.js`, `.mjs`, `.cjs`, `.ts`, `.sh`,
+  `.ps1`, `.rb`, `.pl`, `.lua`) to the absolute path when the file
+  exists in agent-outputs but not in cwd, and surfaces the rewrite as
+  an `ℹ️ Bash auto-resolved` line above the command output.
+* Safety: skips args starting with `-`, args containing a path
+  separator, absolute paths, and files that exist in cwd (cwd wins).
+
+### Path-claim verifier guards against hallucinated file references
+
+* Opt-in via `HARNESS_VERIFY_PATH_CLAIMS=1`. New `src/core/pathClaims.ts`
+  scans assistant text for path-shaped tokens ending in known
+  extensions, checks them against disk, and appends an
+  `⚠️ Unverified file references:` footer when any are missing.
+* `verifyPathClaims()` is also wired into the synthesis fallback so the
+  warning persists when the model summarises tool work after running
+  out of turns.
+
+### Configurable permission-prompt timeout
+
+* New `HARNESS_PERMISSION_PROMPT_TIMEOUT_MS` env var (default 5 min)
+  replaces the hard-coded broker timeout. The timeout error message is
+  now actionable: it names the tool and tells the operator to either
+  add the path to **Allowed External Paths**, raise the env var, or
+  rerun with permission mode `auto`.
+
+### Query loop surfaces tool work when synthesis fails
+
+* When the synthesis turn throws (Ollama 500, model timeout, etc.) the
+  query loop now emits a `text` event with the formatted
+  `recentToolResults` summary before the `error` / `done` events. The
+  user sees what the agent actually accomplished instead of an empty
+  reply.
+
+### UI: Allowed External Paths is discoverable and accurate
+
+* Renamed the Settings section to **📂 Allowed External Paths** with a
+  rewritten description that mentions reads **and** writes, recursive
+  matching, the permission-prompt timeout bypass, and one-line precedence.
+* Added a cross-reference from the Agent Files panel pointing users
+  down to the Allowed External Paths section so the feature is no
+  longer buried.
 
 ## Ollama Agent Harness v0.4.7
 
