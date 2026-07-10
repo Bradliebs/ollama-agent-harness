@@ -1772,6 +1772,15 @@
     <div class="settings-section">
       <h4>Helper Routing</h4>
       <div class="setting-row">
+        <label>Chat model routing</label>
+        <select id="chatRoutingMode" title="Choose whether chat can replace the model selected above" onchange="updateRoutingSetting('chatRoutingMode',this.value)">
+          <option value="off">Keep selected model</option>
+          <option value="costSaver">Cost saver</option>
+          <option value="balanced">Balanced</option>
+          <option value="quality">Quality</option>
+        </select>
+      </div>
+      <div class="setting-row">
         <label>Small helper model</label>
         <input type="text" id="smallHelperModel" placeholder="Fast read-only helper" onchange="updateRoutingSetting('smallModel',this.value)" />
       </div>

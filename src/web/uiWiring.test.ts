@@ -188,6 +188,13 @@ describe('web UI wiring', () => {
     expect(indexHtml).toContain('modelDebugLogPath');
   });
 
+  it('lets users preserve their selected chat model', () => {
+    expect(indexHtml).toContain('id="chatRoutingMode"');
+    expect(indexHtml).toContain('<option value="off">Keep selected model</option>');
+    expect(indexHtml).toContain("updateRoutingSetting('chatRoutingMode',this.value)");
+    expect(appJs).toContain("currentModelRouting.chatRoutingMode || 'balanced'");
+  });
+
   it('keeps the beginner first-chat readiness surface wired', () => {
     // The legacy beginner-readiness banner + model-capability-hint were
     // removed in the v0.5.10 welcome trim. The replacement surfaces are

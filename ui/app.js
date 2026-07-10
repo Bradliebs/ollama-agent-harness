@@ -2953,6 +2953,7 @@ async function loadSettings() {
     currentExtensionActivation = s.extensionActivation || { executablePlugins: false, allowedPluginNames: [], requirePermissionReview: true };
     currentModelDebugLog = s.modelDebugLog || { enabled: false, path: '.harness/model-debug.jsonl' };
     currentWalkthrough = s.walkthrough || { completed: [] };
+    const chatRoutingMode = document.getElementById('chatRoutingMode');
     const small = document.getElementById('smallHelperModel');
     const def = document.getElementById('defaultHelperModel');
     const strong = document.getElementById('strongHelperModel');
@@ -2975,6 +2976,7 @@ async function loadSettings() {
     const firstRunHost = document.getElementById('firstRunOllamaHost');
     const firstRunVision = document.getElementById('firstRunVisionModel');
     const firstRunAudio = document.getElementById('firstRunAudioCommand');
+    if (chatRoutingMode) chatRoutingMode.value = currentModelRouting.chatRoutingMode || 'balanced';
     if (small) small.value = currentModelRouting.smallModel || '';
     if (def) def.value = currentModelRouting.defaultModel || '';
     if (strong) strong.value = currentModelRouting.strongModel || '';

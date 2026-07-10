@@ -7754,12 +7754,8 @@ export async function resolveChatModelForRequest(requestedModel: string, message
     requestedModel,
     message: messageText,
     candidates,
-    requestedModelWeak: isKnownWeakAgenticModel(requestedModel),
+    requestedModelWeak: inferModelCapabilities(requestedModel).toolUse === 'weak',
   }, modelRouting);
-}
-
-function isKnownWeakAgenticModel(modelName: string): boolean {
-  return /^gemma4:(e4b|26b)$/i.test(modelName.trim());
 }
 
 function buildChatModelCandidatePool(requestedModel: string, availableModels: string[], policy: ModelRoutingPolicy = {}): ChatModelCandidatePool {

@@ -1133,7 +1133,7 @@ describe('web server API validation', () => {
     }
   });
 
-  it('uses OpenRouter Gemini Flash for current-information research turns', async () => {
+  it('keeps a capable selected model for current-information research turns', async () => {
     const previous = process.env.OPENROUTER_API_KEY;
     process.env.OPENROUTER_API_KEY = 'test-key';
     const restore = setWebRuntimeOverrides({
@@ -1143,8 +1143,8 @@ describe('web server API validation', () => {
       const decision = await resolveChatModelForRequest('llama3.1:8b', 'Research the latest Azure AI Search updates today.');
 
       expect(decision).toMatchObject({
-        routed: true,
-        model: 'openrouter/google/gemini-2.5-flash',
+        routed: false,
+        model: 'llama3.1:8b',
         tier: 'default',
         taskType: 'research',
       });

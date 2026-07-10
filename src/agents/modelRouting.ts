@@ -294,14 +294,21 @@ export function selectModelForChatTurn(
   if ((input.confidence ?? 1) < confidenceThreshold) reasons.push('low confidence signal');
   if (input.requestedModelWeak && classification.requiresTools) reasons.push('selected model weak for tool/current-information turn');
 
-  if (mode === 'balanced' && classification.taskType === 'chat' && !classification.requiresTools && !largePrompt && !input.requestedModelWeak) {
+  const selectedModelCanHandleTurn = mode === 'balanced'
+    && !input.requestedModelWeak
+    && !largePrompt
+    && classification.risk !== 'high'
+    && classification.taskType !== 'review'
+    && (input.previousFailures ?? 0) < failureThreshold
+    && (input.confidence ?? 1) >= confidenceThreshold;
+  if (selectedModelCanHandleTurn) {
     return {
       model: requestedModel,
       routed: false,
       tier: 'default',
       taskType: classification.taskType,
       risk: classification.risk,
-      reasons: ['simple chat turn'],
+      reasons: classification.requiresTools ? [...reasons, 'selected model retained'] : ['simple chat turn'],
     };
   }
 
