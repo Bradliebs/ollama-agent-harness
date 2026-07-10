@@ -1,5 +1,6 @@
 import {
   runConductor,
+  createQueryLoopExecutor,
   parsePlan,
   renderStepPrompt,
   PLANNER_SYSTEM_PROMPT,
@@ -11,6 +12,8 @@ import {
   type StepVerifier,
 } from './taskConductor';
 import type { VerificationResult } from './doneStateVerifier';
+import { buildTaskContract } from './taskContractBuilder';
+import type { LoopConfig, Tool } from '../types';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -29,6 +32,10 @@ function passVerification(): VerificationResult {
 
 function failVerification(detail = 'TS2322'): VerificationResult {
   return { domain: 'code', overall: 'fail', checks: [{ name: 'typecheck', domain: 'code', status: 'fail', detail }], timestamp: 'now' };
+}
+
+function skippedVerification(): VerificationResult {
+  return { domain: 'code', overall: 'skip', checks: [{ name: 'typecheck', domain: 'code', status: 'skip' }], timestamp: 'now' };
 }
 
 describe('parsePlan', () => {
@@ -100,8 +107,8 @@ describe('runConductor', () => {
 
   it('runs every planned step in order and reports completed', async () => {
     const seen: number[] = [];
-    const executor: StepExecutor = async (s) => { seen.push(s.id); return okResult({ fileChanged: false }); };
-    const verifier: StepVerifier = async () => null;
+    const executor: StepExecutor = async (s) => { seen.push(s.id); return okResult({ fileChanged: s.verify.kind === 'code' }); };
+    const verifier: StepVerifier = async () => passVerification();
 
     const outcome = await runConductor({ task: 't', planner: twoStepPlanner, executor, verifier });
 
@@ -110,7 +117,7 @@ describe('runConductor', () => {
     expect(outcome.stepResults).toHaveLength(2);
   });
 
-  it('only verifies code steps that changed files', async () => {
+  it('only calls the external verifier for code steps that changed files', async () => {
     const verified: number[] = [];
     const executor: StepExecutor = async (s) => okResult({ fileChanged: s.id === 1 });
     const verifier: StepVerifier = async (s) => { verified.push(s.id); return passVerification(); };
@@ -119,6 +126,52 @@ describe('runConductor', () => {
 
     // Step 1 is code + changed → verified; step 2 is 'none' → skipped.
     expect(verified).toEqual([1]);
+  });
+
+  it('does not complete a code step that made no file change', async () => {
+    const outcome = await runConductor({
+      task: 't',
+      planner: async (task) => ({ task, steps: [step(1, { verify: { kind: 'code' } })] }),
+      executor: async () => okResult({ fileChanged: false }),
+      verifier: async () => passVerification(),
+      maxRemediationsPerStep: 0,
+    });
+
+    expect(outcome.status).toBe('completed_with_failures');
+    expect(outcome.verifications[0]).toMatchObject({
+      overall: 'fail',
+      checks: [expect.objectContaining({ name: 'required_code_change', status: 'fail' })],
+    });
+  });
+
+  it('verifies a verification-only code step without requiring another file change', async () => {
+    const verifier = jest.fn(async () => passVerification());
+    const outcome = await runConductor({
+      task: 't',
+      planner: async (task) => ({
+        task,
+        steps: [step(1, { verify: { kind: 'code' }, requiresChange: false })],
+      }),
+      executor: async () => okResult({ fileChanged: false }),
+      verifier,
+      maxRemediationsPerStep: 0,
+    });
+
+    expect(outcome.status).toBe('completed');
+    expect(verifier).toHaveBeenCalledTimes(1);
+    expect(outcome.verifications).toEqual([expect.objectContaining({ overall: 'pass' })]);
+  });
+
+  it('does not treat skipped required verification as passing', async () => {
+    const outcome = await runConductor({
+      task: 't',
+      planner: async (task) => ({ task, steps: [step(1, { verify: { kind: 'code' } })] }),
+      executor: async () => okResult({ fileChanged: true }),
+      verifier: async () => skippedVerification(),
+      maxRemediationsPerStep: 0,
+    });
+
+    expect(outcome.status).toBe('completed_with_failures');
   });
 
   it('inserts a remediation step when verification fails, then passes', async () => {
@@ -227,11 +280,70 @@ describe('runConductor', () => {
     expect(outcome.capabilityGaps[0].need).toBe('send_sms');
     expect(outcome.capabilityGaps[0].reason).toContain('send_sms');
   });
+
+  it('runs a natural-language task through tool execution and deterministic verification', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'conductor-acceptance-'));
+    const artifactPath = path.join(projectDir, 'result.txt');
+    const responses = [
+      {
+        message: {
+          role: 'assistant',
+          content: '',
+          tool_calls: [{ function: { name: 'file_write', arguments: { content: 'verified output' } } }],
+        },
+      },
+      { message: { role: 'assistant', content: 'Created and verified result.txt.' } },
+    ];
+    const client = { chat: jest.fn(async () => responses.shift()) };
+    const fileWrite: Tool = {
+      name: 'file_write',
+      description: 'Write the requested result artifact.',
+      parameters: { type: 'object', properties: { content: { type: 'string' } }, required: ['content'] },
+      isReadOnly: false,
+      async execute(input) {
+        await fs.writeFile(artifactPath, String(input.content), 'utf-8');
+        return { success: true, output: `Wrote ${artifactPath}` };
+      },
+    };
+    const task = 'Create a result file containing verified output';
+    const contract = buildTaskContract(task);
+    const config: LoopConfig = {
+      model: 'stub',
+      systemPrompt: 'Complete the task with tools.',
+      maxTurns: 3,
+      taskContract: contract,
+      context: { enabled: false },
+    };
+
+    try {
+      const outcome = await runConductor({
+        task,
+        planner: async () => ({
+          task,
+          steps: [step(1, { intent: task, verify: { kind: 'code' } })],
+        }),
+        executor: createQueryLoopExecutor(config, { client: client as never, tools: [fileWrite] }),
+        verifier: async () => {
+          const content = await fs.readFile(artifactPath, 'utf-8').catch(() => '');
+          return content === 'verified output' ? passVerification() : failVerification('artifact content mismatch');
+        },
+      });
+
+      expect(outcome.status).toBe('completed');
+      expect(outcome.toolCallSequence).toEqual(['file_write']);
+      expect(outcome.toolSuccessCount).toBe(1);
+      await expect(fs.readFile(artifactPath, 'utf-8')).resolves.toBe('verified output');
+      expect(outcome.verifications).toEqual([expect.objectContaining({ overall: 'pass' })]);
+    } finally {
+      await fs.rm(projectDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('PLANNER_SYSTEM_PROMPT', () => {
   it('asks for a bare JSON object', () => {
     expect(PLANNER_SYSTEM_PROMPT).toContain('"steps"');
+    expect(PLANNER_SYSTEM_PROMPT).toContain('"requiresChange":false');
     expect(PLANNER_SYSTEM_PROMPT).toMatch(/ONLY a JSON object/i);
   });
 });
