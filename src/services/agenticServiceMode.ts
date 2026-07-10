@@ -909,8 +909,16 @@ function looksLikeGenericOperateCommand(lower: string): boolean {
 
 function looksLikeAgenticSearchRequest(lower: string): boolean {
   const text = lower.trim();
-  return /\b(look for|find|search for|watch for|monitor for|check for)\b[\s\S]{0,120}\b(book|books|room|rooms|appointment|appointments|slot|slots|availability|stock|tickets?)\b/.test(text)
-    && /\b(for me|daily|every day|each day|every morning|when|until|available|opens?|appears?|comes? up|in stock|free)\b/.test(text);
+  const inventoryNoun = /\b(book|books|room|rooms|appointment|appointments|slot|slots|availability|stock|tickets?)\b/;
+  // "watch for" / "monitor for" are inherently recurring verbs — the inventory noun is enough.
+  if (/\b(watch for|monitor for)\b[\s\S]{0,120}/.test(text) && inventoryNoun.test(text)) {
+    return true;
+  }
+  // One-shot verbs (find/look/search/check) need an explicit recurring or scheduling signal,
+  // not just a state descriptor like "in stock" or "available".
+  return /\b(look for|find|search for|check for)\b[\s\S]{0,120}/.test(text)
+    && inventoryNoun.test(text)
+    && /\b(daily|every day|each day|every morning|every week|weekly|until|notify me|alert me|let me know|keep me (updated|posted|informed)|recurring|on a schedule|when [\s\S]{0,40}\b(opens?|appears?|comes? (up|back)|becomes? available|is available|changes?))\b/.test(text);
 }
 
 function explicitlyRequestsSoftwareBuild(lower: string): boolean {

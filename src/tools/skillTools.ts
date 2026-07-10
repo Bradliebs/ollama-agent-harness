@@ -1,29 +1,61 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
-import { loadSkillsDir, matchSkillTrigger, parseSkillFile, type SkillDefinition } from '../extensibility/skillLoader';
+import { loadSkillsFromDirs, matchSkillTrigger, parseSkillFile, type SkillDefinition } from '../extensibility/skillLoader';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
+import { expandSkillTemplateVars } from '../extensibility/skillTemplate';
+import {
+  buildRuntimeSkillFile,
+  sanitizeSkillText,
+  sanitizeSkillBody,
+  sanitizeSkillList,
+  snapshotSkillHistory,
+} from '../extensibility/skillAuthoring';
 
 let cachedSkills: SkillDefinition[] | null = null;
+let cachedSkillsPromise: Promise<SkillDefinition[]> | null = null;
 let skillsDir = '';
+// Lower-precedence tiers (e.g. a global ~/.harness/skills shared across
+// workspaces). The workspace `skillsDir` always wins on name collisions.
+let lowerTierDirs: string[] = [];
 let projectDirForUsage = '';
 
 export function setSkillsDir(dir: string): void {
   skillsDir = dir;
   cachedSkills = null;
+  cachedSkillsPromise = null;
   // Skills directory is .harness/skills, so the project dir is two levels up.
   projectDirForUsage = path.dirname(path.dirname(dir));
 }
 
+/**
+ * Register additional skill directories that the agent can invoke, ordered
+ * low-to-high precedence. They rank below the workspace `skillsDir`, so a
+ * workspace skill shadows a global one of the same name.
+ */
+export function setLowerSkillTiers(dirs: string[]): void {
+  lowerTierDirs = [...dirs];
+  cachedSkills = null;
+  cachedSkillsPromise = null;
+}
+
 export function invalidateSkillsCache(): void {
   cachedSkills = null;
+  cachedSkillsPromise = null;
 }
 
 async function getSkills(): Promise<SkillDefinition[]> {
   if (cachedSkills) return cachedSkills;
-  if (!skillsDir) return [];
-  cachedSkills = await loadSkillsDir(skillsDir);
-  return cachedSkills;
+  if (!skillsDir && lowerTierDirs.length === 0) return [];
+  // Dedup concurrent loads so first-call avalanches don't all hit disk.
+  if (cachedSkillsPromise) return cachedSkillsPromise;
+  // Low-to-high precedence: lower tiers first, workspace skills last (they win).
+  const dirs = skillsDir ? [...lowerTierDirs, skillsDir] : [...lowerTierDirs];
+  cachedSkillsPromise = loadSkillsFromDirs(dirs).then(
+    (skills) => { cachedSkills = skills; cachedSkillsPromise = null; return skills; },
+    (err) => { cachedSkillsPromise = null; throw err; },
+  );
+  return cachedSkillsPromise;
 }
 
 /**
@@ -66,9 +98,16 @@ export const SkillTool: Tool = {
       ? `\n\n--- Bundled resources ---\nThe following files live alongside SKILL.md. Use file_read to view text/markdown or bash to execute scripts. They are NOT loaded into your context until you read them.\n${bundled.map(b => `📎 ${b.relPath} (${b.sizeLabel})`).join('\n')}`
       : '';
 
+    // Expand allowlisted ${HARNESS_*} path tokens. Byte-identical for skills that
+    // don't use a token; no shell execution is performed.
+    const renderedContent = expandSkillTemplateVars(skill.content, {
+      skillDir: path.dirname(skill.filePath),
+      projectDir: projectDirForUsage || undefined,
+    });
+
     return {
       success: true,
-      output: `--- Skill: ${skill.name} ---\n${skill.description}\n\n${skill.content}${bundledSection}`,
+      output: `--- Skill: ${skill.name} ---\n${skill.description}\n\n${renderedContent}${bundledSection}`,
     };
   },
 };
@@ -195,31 +234,25 @@ export const CreateSkillTool: Tool = {
   isReadOnly: false,
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
     const name = input.name as string;
-    const description = input.description as string;
-    const domain = (input.domain as string) ?? 'general';
-    const triggers = (input.triggers as string[]) ?? [];
-    const instructions = input.instructions as string;
 
     // Validate name
     if (!/^[a-z0-9-]+$/.test(name)) {
       return { success: false, output: 'Skill name must be kebab-case (lowercase, hyphens only)', error: 'invalid name' };
     }
 
-    // Build SKILL.md content
-    const triggerYaml = triggers.length > 0
-      ? `triggers:\n${triggers.map(t => `  - "${t}"`).join('\n')}\n`
-      : '';
-
-    const content = `---
-name: "${name}"
-description: "${description}"
-domain: "${domain}"
-confidence: "medium"
-source: "self-created by agent"
-${triggerYaml}---
-
-${instructions}
-`;
+    // Author the SKILL.md through the SAME sanitization, frontmatter escaping,
+    // and length caps the REST/UI path uses (src/extensibility/skillAuthoring),
+    // so a model-authored skill meets the same bar as a hand-edited one — no
+    // YAML injection via unescaped quotes/newlines, and bounded field sizes.
+    const content = buildRuntimeSkillFile({
+      name,
+      description: sanitizeSkillText(input.description, 'Describe what this skill does.', 500),
+      domain: sanitizeSkillText(input.domain, 'general', 120),
+      triggers: sanitizeSkillList(input.triggers, 20, 120),
+      whenToUse: '',
+      requiredTools: [],
+      body: sanitizeSkillBody(input.instructions),
+    });
 
     // Write to skills directory
     const dir = skillsDir || path.join(process.cwd(), '.harness', 'skills');
@@ -228,6 +261,10 @@ ${instructions}
 
     try {
       await fs.mkdir(skillDir, { recursive: true });
+      // Snapshot the previous version before clobbering it, matching the REST
+      // path, so an agent overwrite of an existing skill stays recoverable.
+      const previous = await fs.readFile(skillPath, 'utf-8').catch(() => '');
+      if (previous && previous !== content) await snapshotSkillHistory(dir, name, previous);
       await fs.writeFile(skillPath, content, 'utf-8');
 
       // Invalidate cache so the new skill is available immediately

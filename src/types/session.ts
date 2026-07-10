@@ -36,7 +36,7 @@ export interface ContinuityCheckpoint {
   nextAction: string;
   tokenEstimate: number;
   contextPressure: number;
-  strategy: string;
+  strategy: import('../context/compaction').CompactionStrategy;
 }
 
 export type SessionStatus = 'running' | 'completed' | 'max_turns' | 'time_budget' | 'aborted' | 'error';

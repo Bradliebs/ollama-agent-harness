@@ -1,7 +1,7 @@
 import type { Server } from 'http';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { app, setWebRuntimeOverrides, stopUploadsAutoPrune } from './server';
+import { app, drainChatBackgroundTasksForTest, setWebRuntimeOverrides, stopUploadsAutoPrune } from './server';
 import type { LoopEvent } from '../types';
 
 jest.setTimeout(30_000);
@@ -34,6 +34,7 @@ describe('web mycelium route API validation', () => {
   });
 
   afterAll(async () => {
+    await drainChatBackgroundTasksForTest();
     await new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());
     });
@@ -65,6 +66,32 @@ describe('web mycelium route API validation', () => {
     expect(Array.isArray(body.edges)).toBe(true);
   });
 
+  it('returns a reward learning curve via GET /api/mycelium/learning-curve', async () => {
+    const ledgerPath = path.join(process.cwd(), '.harness', 'mycelium', 'rewards.jsonl');
+    let originalLedger: string | null = null;
+    try {
+      originalLedger = await fs.readFile(ledgerPath, 'utf-8');
+    } catch {
+      originalLedger = null;
+    }
+    try {
+      const { appendRewardEntry } = await import('../core/rewardLedger');
+      // rewards [0.2, 0.2, 0.8, 0.8] → improvement = 0.8 - 0.2 = +0.6.
+      await appendRewardEntry(process.cwd(), { ts: '2026-01-01T00:00:00.000Z', reward: 0.2, model: 'm' });
+      await appendRewardEntry(process.cwd(), { ts: '2026-01-01T01:00:00.000Z', reward: 0.2, model: 'm' });
+      await appendRewardEntry(process.cwd(), { ts: '2026-01-02T00:00:00.000Z', reward: 0.8, model: 'm' });
+      await appendRewardEntry(process.cwd(), { ts: '2026-01-02T01:00:00.000Z', reward: 0.8, model: 'm' });
+
+      const response = await request('/api/mycelium/learning-curve');
+      expect(response.status).toBe(200);
+      const body = await response.json() as { totalEpisodes: number; improvement: number };
+      expect(body.totalEpisodes).toBeGreaterThanOrEqual(4);
+      expect(typeof body.improvement).toBe('number');
+    } finally {
+      await restoreFile(ledgerPath, originalLedger);
+    }
+  });
+
   it('resets mycelium graph via DELETE /api/mycelium', async () => {
     const response = await request('/api/mycelium', { method: 'DELETE' });
     expect(response.status).toBe(200);
@@ -88,6 +115,34 @@ describe('web mycelium route API validation', () => {
       body: JSON.stringify({ vote: 'up' }),
     });
     expect(response.status).toBe(404);
+  });
+
+  it('applies feedback to the episode named by episodeId, not the most recent', async () => {
+    // Reproduce the concurrency case: a user rates response A after a later
+    // response B has already become the most recent episode. Without
+    // episodeId targeting the vote would land on B.
+    const { resetSharedMyceliumGraphForTest, getSharedMyceliumGraph, flushSharedMyceliumGraph } =
+      await import('../mycelium/graphStore');
+    resetSharedMyceliumGraphForTest();
+    const graph = await getSharedMyceliumGraph(process.cwd());
+    const episodeA = graph.recordEpisode('targeting-alpha', ['n1', 'n2'], 0.5);
+    graph.recordEpisode('targeting-beta', ['n3', 'n4'], 0.5); // most recent
+    await flushSharedMyceliumGraph(process.cwd());
+
+    const response = await request('/api/mycelium/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vote: 'down', episodeId: episodeA.id }),
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ applied: true });
+
+    // applyUserFeedback records a fresh episode carrying the TARGETED route
+    // and query, then tags it. It must reflect alpha (the rated turn), not beta.
+    const after = await getSharedMyceliumGraph(process.cwd());
+    const newest = after.listEpisodes(1)[0];
+    expect(newest?.query).toBe('targeting-alpha');
+    expect((newest as { userFeedback?: string }).userFeedback).toBe('down');
   });
 
   it('records mycelium episode with blocked=true when output_validation fails', async () => {

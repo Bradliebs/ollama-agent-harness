@@ -1,5 +1,7 @@
 import { execFile } from 'child_process';
+import { existsSync } from 'fs';
 import * as fs from 'fs/promises';
+import * as os from 'os';
 import * as path from 'path';
 import { Ollama } from 'ollama';
 import type { Tool, ToolResult } from '../types';
@@ -131,11 +133,15 @@ export const AudioTranscribeTool: Tool = {
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
     const filePath = resolveProjectReadPath(input.path);
     if (!filePath) return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
-    const commandTemplate = process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND;
+    // Precedence: an explicitly configured command always wins. When none
+    // is set, fall back to auto-detecting an OpenAI Whisper install on PATH
+    // so audio "just works" after `pip install openai-whisper` with no env
+    // var to configure (mirrors how image_analyze auto-detects vision models).
+    const commandTemplate = process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND?.trim() || resolveDefaultAudioCommand();
     if (!commandTemplate) {
       return {
         success: false,
-        output: 'No audio transcription command is configured. Set HARNESS_AUDIO_TRANSCRIBE_COMMAND with {input}, for example: whisper {input} --model base --output_format txt --output_dir -',
+        output: 'Audio transcription needs a one-time setup. Easiest: install OpenAI Whisper with "pip install -U openai-whisper" and it is auto-detected on PATH next time. Otherwise set HARNESS_AUDIO_TRANSCRIBE_COMMAND to a command containing {input}, for example: whisper "{input}" --model base --output_format txt --output_dir .',
         error: 'missing transcription command',
       };
     }
@@ -157,6 +163,41 @@ export const AudioTranscribeTool: Tool = {
 
 function isImagePath(filePath: string): boolean {
   return IMAGE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+const WHISPER_EXECUTABLE_CANDIDATES = process.platform === 'win32'
+  ? ['whisper.exe', 'whisper']
+  : ['whisper'];
+
+/**
+ * Best-effort zero-config audio setup: when no transcription command is
+ * configured, locate an OpenAI Whisper executable on PATH and return a
+ * ready-to-run command template. Output files are routed to the OS temp
+ * directory so transcription never litters the project; the transcript
+ * itself is captured from Whisper's stdout. Returns null when no Whisper
+ * is found so callers can show setup guidance instead. `HARNESS_WHISPER_BIN`
+ * overrides PATH discovery with an explicit executable path.
+ */
+export function resolveDefaultAudioCommand(): string | null {
+  const override = process.env.HARNESS_WHISPER_BIN?.trim();
+  const whisper = override && existsSync(override)
+    ? override
+    : findExecutableOnPath(WHISPER_EXECUTABLE_CANDIDATES);
+  if (!whisper) return null;
+  const outputDir = os.tmpdir();
+  return `"${whisper}" "{input}" --model base --output_format txt --output_dir "${outputDir}"`;
+}
+
+function findExecutableOnPath(candidates: string[]): string | null {
+  const pathValue = process.env.PATH || process.env.Path || '';
+  for (const dir of pathValue.split(path.delimiter)) {
+    if (!dir) continue;
+    for (const candidate of candidates) {
+      const full = path.join(dir, candidate);
+      if (existsSync(full)) return full;
+    }
+  }
+  return null;
 }
 
 function sanitizeString(value: unknown): string {

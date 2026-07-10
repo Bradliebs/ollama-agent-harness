@@ -31,6 +31,7 @@
 | code-review | `.github/skills/code-review/SKILL.md` | Code review checklist enforcing harness conventions |
 | testing | `.github/skills/testing/SKILL.md` | Jest testing conventions and patterns |
 | planner | `.github/skills/planner/SKILL.md` | CopilotForge wizard and scaffolding |
+| research | `.github/skills/research/SKILL.md` | Evidence-first research that cites every claim and marks the unverifiable |
 
 ## Agents
 

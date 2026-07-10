@@ -1,0 +1,285 @@
+// Express router for identity (SOUL.md / USER.md / structured facts).
+//
+// Extracted from server.ts as the first step of the audit's Fix #7 (route-block
+// extraction from the 11k-line server). Pattern mirrors goalRoutes.ts:
+// dependencies (projectDir + auth helpers + logger) are injected so the router
+// has no closures over server.ts module-scoped state.
+
+import express from 'express';
+import {
+  deleteStructuredEntry,
+  exportIdentity,
+  importIdentity,
+  queryStructured,
+  readIdentityFile,
+  readIdentitySnapshot,
+  upsertStructuredEntry,
+  writeIdentityFile,
+  type IdentityFileName,
+} from '../services/identity';
+import {
+  readIdentityAutoUpdateConfig,
+  writeIdentityAutoUpdateConfig,
+  type IdentityAutoUpdateConfig,
+  type IdentityAutoUpdateResult,
+} from '../services/identityAutoUpdate';
+import {
+  acceptSoulProposal,
+  discardSoulProposal,
+  readSoulProposal,
+} from '../services/identityProposals';
+import {
+  captureIdentitySnapshot,
+  listIdentityHistory,
+  restoreIdentityFromHistory,
+} from '../services/identityHistory';
+
+export interface IdentityRoutesDeps {
+  projectDir: string;
+  /** Returns true if the request is authorised; should send 401 + return false otherwise. */
+  requireAuth: (req: express.Request, res: express.Response, actionLabel: string) => boolean;
+  /**
+   * Validates an audit reason on the request and returns the normalised string,
+   * or null after sending 400. Same contract as server.ts's requireAuditReason.
+   */
+  requireAuditReason: (value: unknown, res: express.Response, actionLabel: string) => string | null;
+  /** Logger surface for the one place identity code logs (overwrite import). */
+  logger: { info: (component: string, message: string, meta?: Record<string, unknown>) => void };
+  /**
+   * Optional: force-run the auto-update scheduler tick. When provided, the
+   * `/api/identity/auto-update/run` endpoint is enabled. Without it the
+   * endpoint returns 503 — useful when the scheduler isn't wired yet.
+   */
+  runAutoUpdateNow?: () => Promise<{ ran: boolean; reason?: string; result?: IdentityAutoUpdateResult }>;
+  /** Optional: returns whether the auto-update scheduler is currently active. */
+  isAutoUpdateSchedulerRunning?: () => boolean;
+}
+
+const VALID_IDENTITY_FILES = new Set<IdentityFileName>(['SOUL.md', 'USER.md']);
+
+export function createIdentityRouter(deps: IdentityRoutesDeps): express.Router {
+  const router = express.Router();
+  const { projectDir, requireAuth, requireAuditReason, logger } = deps;
+
+  router.get('/api/identity', async (_req, res) => {
+    try {
+      const snapshot = await readIdentitySnapshot(projectDir);
+      res.json(snapshot);
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.put('/api/identity/:file', async (req, res, next) => {
+    try {
+      const fileName = req.params.file as IdentityFileName;
+      // Fall through to more specific routes (e.g. /auto-update) when the
+      // path segment isn't an identity file name. Otherwise this generic
+      // handler would shadow them since it's registered first.
+      if (!VALID_IDENTITY_FILES.has(fileName)) { next(); return; }
+      const content = typeof req.body?.content === 'string' ? req.body.content : '';
+      await writeIdentityFile(projectDir, fileName, content);
+      const reread = await readIdentityFile(projectDir, fileName);
+      res.json({ file: fileName, content: reread });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.get('/api/identity/structured', async (req, res) => {
+    try {
+      const category = typeof req.query.category === 'string' ? req.query.category : undefined;
+      const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+      const entries = await queryStructured(projectDir, { category, q });
+      res.json({ entries });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.post('/api/identity/structured', async (req, res) => {
+    try {
+      const { id, category, summary, metadata } = req.body ?? {};
+      if (typeof category !== 'string' || !category.trim()) { res.status(400).json({ error: 'category is required.' }); return; }
+      if (typeof summary !== 'string' || !summary.trim()) { res.status(400).json({ error: 'summary is required.' }); return; }
+      const entry = await upsertStructuredEntry(projectDir, {
+        id: typeof id === 'string' ? id : undefined,
+        category,
+        summary,
+        metadata: metadata && typeof metadata === 'object' ? metadata : undefined,
+      });
+      res.json({ entry });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.delete('/api/identity/structured/:id', async (req, res) => {
+    try {
+      const removed = await deleteStructuredEntry(projectDir, req.params.id);
+      if (!removed) { res.status(404).json({ error: 'Structured entry not found.' }); return; }
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.get('/api/identity/export', async (_req, res) => {
+    try {
+      const payload = await exportIdentity(projectDir);
+      res.json(payload);
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.post('/api/identity/import', async (req, res) => {
+    try {
+      if (!requireAuth(req, res, 'identity import')) return;
+      const mergeStructured = req.body?.mergeStructured !== false;
+      const overwriteFiles = req.body?.overwriteFiles !== false;
+      const hasOverwriteContent = overwriteFiles && (
+        (typeof req.body?.snapshot?.soul === 'string' && req.body.snapshot.soul.trim().length > 0)
+        || (typeof req.body?.snapshot?.user === 'string' && req.body.snapshot.user.trim().length > 0)
+      );
+      if (hasOverwriteContent) {
+        const reason = requireAuditReason(req.body?.reason, res, 'Identity import with SOUL/USER overwrite');
+        if (!reason) return;
+        logger.info('Identity', 'Import requested with file overwrite', { reason, mergeStructured });
+      }
+      const summary = await importIdentity(projectDir, req.body, { mergeStructured, overwriteFiles });
+      res.json({ summary });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(400).json({ error: message });
+    }
+  });
+
+  // ─── Adaptive identity — auto-update config + scheduler controls ─────
+  router.get('/api/identity/auto-update', async (_req, res) => {
+    try {
+      const config = await readIdentityAutoUpdateConfig(projectDir);
+      const schedulerRunning = deps.isAutoUpdateSchedulerRunning ? deps.isAutoUpdateSchedulerRunning() : false;
+      res.json({ config, schedulerRunning });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.put('/api/identity/auto-update', async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as Partial<IdentityAutoUpdateConfig>;
+      const config: IdentityAutoUpdateConfig = {
+        version: 1,
+        user: Boolean(body.user),
+        soul: Boolean(body.soul),
+      };
+      // Pattern matches /api/settings permissionMode handling: any change goes
+      // through escalation auth, audit reason is only required when *enabling*
+      // adaptive identity. Turning auto-update OFF is de-escalation and should
+      // never be blocked by missing creds.
+      if (!requireAuth(req, res, 'identity auto-update toggle')) return;
+      const enabling = config.user || config.soul;
+      let auditNote = '';
+      if (enabling) {
+        const reason = requireAuditReason(req.body?.reason, res, 'Enabling identity auto-update');
+        if (!reason) return;
+        auditNote = reason;
+        // Capture a labelled pre-arm baseline of SOUL/USER/structured so the
+        // user can roll back to the moment before the scheduler was allowed
+        // to rewrite identity. Best-effort: never block arming on a snapshot
+        // failure (it surfaces in the existing identity-history UI).
+        try {
+          await captureIdentitySnapshot(projectDir, `Adaptive identity armed: ${auditNote}`);
+        } catch (snapshotError) {
+          logger.info('Identity', 'Pre-arm baseline snapshot failed', {
+            error: snapshotError instanceof Error ? snapshotError.message : String(snapshotError),
+          });
+        }
+      }
+      await writeIdentityAutoUpdateConfig(projectDir, config);
+      logger.info('Identity', 'Auto-update config changed', {
+        user: config.user,
+        soul: config.soul,
+        reason: auditNote || undefined,
+      });
+      res.json({ config });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.post('/api/identity/auto-update/run', async (req, res) => {
+    if (!deps.runAutoUpdateNow) {
+      res.status(503).json({ error: 'Auto-update scheduler is not wired in this server.' });
+      return;
+    }
+    // Manually triggering a tick can write to USER.md (or stage a SOUL
+    // proposal) depending on the current config, so gate it the same way
+    // we gate enabling the toggle.
+    if (!requireAuth(req, res, 'identity auto-update manual run')) return;
+    const reason = requireAuditReason(req.body?.reason, res, 'Manual identity auto-update tick');
+    if (!reason) return;
+    try {
+      const outcome = await deps.runAutoUpdateNow();
+      logger.info('Identity', 'Auto-update manual run', { reason, ran: outcome.ran });
+      res.json(outcome);
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  // ─── Adaptive identity — SOUL proposal review ────────────────────────
+  router.get('/api/identity/soul-proposal', async (_req, res) => {
+    try {
+      const proposal = await readSoulProposal(projectDir);
+      res.json({ proposal });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.post('/api/identity/soul-proposal/accept', async (_req, res) => {
+    try {
+      const accepted = await acceptSoulProposal(projectDir);
+      if (!accepted) { res.status(404).json({ error: 'No SOUL proposal to accept.' }); return; }
+      res.json({ ok: true, snapshotId: accepted.snapshotId });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.post('/api/identity/soul-proposal/discard', async (_req, res) => {
+    try {
+      const discarded = await discardSoulProposal(projectDir);
+      res.json({ discarded });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  // ─── Adaptive identity — snapshot history + restore ──────────────────
+  router.get('/api/identity/history', async (_req, res) => {
+    try {
+      const snapshots = await listIdentityHistory(projectDir);
+      res.json({ snapshots });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  router.post('/api/identity/history/:id/restore', async (req, res) => {
+    try {
+      const id = String(req.params.id ?? '').trim();
+      if (!id) { res.status(400).json({ error: 'snapshot id is required.' }); return; }
+      const restored = await restoreIdentityFromHistory(projectDir, id);
+      if (!restored) { res.status(404).json({ error: 'Snapshot not found.' }); return; }
+      logger.info('Identity', 'Restored from history', { id, backup: restored.backup.id });
+      res.json({ ok: true, restored: restored.restored, backup: restored.backup });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  return router;
+}

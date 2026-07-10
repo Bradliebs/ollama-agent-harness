@@ -44,7 +44,7 @@ async function ensureApiAuthReady() {
     const config = await response.json();
     if (!config || !config.required) return;
     if (harnessApiToken) return;
-    const entered = window.prompt('Harness API auth is required. Enter HARNESS_API_AUTH_TOKEN:');
+    const entered = await promptToast('Harness API auth is required. Enter HARNESS_API_AUTH_TOKEN:');
     if (entered && entered.trim()) {
       setHarnessApiToken(entered.trim());
     }
@@ -54,10 +54,413 @@ async function ensureApiAuthReady() {
 }
 
 let isSending = false;
+let activeCodexTaskRun = null;
 // Reply-to-message state. When set, the next outbound user message is
 // prefixed with a markdown blockquote of the referenced assistant reply
 // so the model knows which earlier turn the user is responding to.
 let pendingReply = null;
+// ─── Toasts ───────────────────────────────────────────────────────
+// Non-blocking notification used in place of the browser's blocking
+// modal dialog. Stacked bottom-right above the sub-agents bar. The
+// severity tone is auto-detected from common keywords in the message
+// so call sites can stay as terse as the old one-liners they replaced.
+// Pass { type, ttl } in options to override.
+// See also confirmToast() / promptToast() below for the async drop-in
+// replacements for the browser's synchronous dialog APIs (added in
+// v0.5.10 so destructive actions no longer freeze the page).
+function showToast(message, options) {
+  try {
+    const opts = options || {};
+    const text = String(message == null ? '' : message);
+    let type = opts.type;
+    if (!type) {
+      const lower = text.toLowerCase();
+      if (/\b(fail|failed|error|invalid|denied|cannot|could not|not found|missing)\b/.test(lower)) type = 'error';
+      else if (/\b(saved|created|updated|deleted|imported|exported|restored|added|installed|cleared|registered|sent|delivered|granted|revoked|copied|forked|executed)\b/.test(lower)) type = 'success';
+      else type = 'info';
+    }
+    const ttl = opts.ttl !== undefined ? opts.ttl : (type === 'error' ? 0 : 4000);
+    let host = document.getElementById('toastHost');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'toastHost';
+      host.className = 'toast-host';
+      document.body.appendChild(host);
+    }
+    const el = document.createElement('div');
+    el.className = 'toast toast-' + type;
+    el.setAttribute('role', type === 'error' ? 'alert' : 'status');
+    el.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
+    const safeText = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+    el.innerHTML = '<div class="toast-msg">' + safeText + '</div>'
+      + '<button type="button" class="toast-close" aria-label="Dismiss">&times;</button>';
+    el.querySelector('.toast-close').onclick = () => el.remove();
+    host.appendChild(el);
+    if (ttl > 0) setTimeout(() => { if (el.parentNode) el.remove(); }, ttl);
+    return el;
+  } catch (e) {
+    // Fail-safe: if anything goes wrong building the toast, fall back to
+    // the native blocking dialog so the message is never silently lost.
+    // Accessed via bracket notation so the alert→showToast sweep cannot
+    // rewrite this line into infinite recursion.
+    try { window['alert'](String(message)); } catch { /* truly nothing we can do */ }
+    return null;
+  }
+}
+if (typeof window !== 'undefined') window.showToast = showToast;
+
+// ─── Modal toast prompts (confirm / prompt replacements) ──────────
+// Drop-in async replacements for the browser's synchronous confirm
+// and prompt dialogs, so destructive actions no longer freeze the whole page (which also
+// pauses websockets, sub-agent telemetry, and the chat stream). The
+// modal is centered, focus-trapped, dismissable with Esc, and resolves
+// to:
+//   confirmToast(message)        → Promise<boolean>
+//   promptToast(message, def)    → Promise<string | null>  (null on cancel)
+// Existing call-site idioms keep working when prefixed with `await`:
+//   if (!await confirmToast('Delete?')) return;
+//   const name = await promptToast('Name:', 'foo');
+function _harnessModal({ kind, message, defaultValue }) {
+  return new Promise((resolve) => {
+    const host = document.createElement('div');
+    host.className = 'harness-modal-host';
+    const safe = String(message == null ? '' : message)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+    const inputHtml = kind === 'prompt'
+      ? '<input class="harness-modal-input" type="text" />'
+      : '';
+    host.innerHTML = ''
+      + '<div class="harness-modal-backdrop"></div>'
+      + '<div class="harness-modal" role="dialog" aria-modal="true">'
+      +   '<div class="harness-modal-body">' + safe + '</div>'
+      +   inputHtml
+      +   '<div class="harness-modal-actions">'
+      +     (kind === 'confirm' || kind === 'prompt'
+              ? '<button type="button" class="btn-sm harness-modal-cancel">Cancel</button>'
+              : '')
+      +     '<button type="button" class="btn-sm primary harness-modal-ok">OK</button>'
+      +   '</div>'
+      + '</div>';
+    document.body.appendChild(host);
+    const input = host.querySelector('.harness-modal-input');
+    if (input) {
+      input.value = defaultValue == null ? '' : String(defaultValue);
+      setTimeout(() => { input.focus(); input.select(); }, 0);
+    } else {
+      setTimeout(() => { const ok = host.querySelector('.harness-modal-ok'); ok && ok.focus(); }, 0);
+    }
+    const cleanup = (result) => {
+      document.removeEventListener('keydown', onKey, true);
+      if (host.parentNode) host.remove();
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); cleanup(kind === 'prompt' ? null : false); }
+      else if (e.key === 'Enter' && (e.target === input || !input)) {
+        e.preventDefault();
+        cleanup(kind === 'prompt' ? (input ? input.value : '') : true);
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    host.querySelector('.harness-modal-ok').onclick = () => cleanup(kind === 'prompt' ? (input ? input.value : '') : true);
+    const cancelBtn = host.querySelector('.harness-modal-cancel');
+    if (cancelBtn) cancelBtn.onclick = () => cleanup(kind === 'prompt' ? null : false);
+    host.querySelector('.harness-modal-backdrop').onclick = () => cleanup(kind === 'prompt' ? null : false);
+  });
+}
+function confirmToast(message) { return _harnessModal({ kind: 'confirm', message }); }
+function promptToast(message, defaultValue) { return _harnessModal({ kind: 'prompt', message, defaultValue }); }
+if (typeof window !== 'undefined') {
+  window.confirmToast = confirmToast;
+  window.promptToast = promptToast;
+}
+
+// ─── Beginner UX: Simple/Advanced settings mode ───────────────────
+// Stored in localStorage. Simple mode adds body.simple-mode which hides
+// settings sections that aren't marked .essential and More-menu items
+// marked .more-advanced. Defaults to simple on first visit.
+const SETTINGS_MODE_KEY = 'harness.settingsMode';
+function getSettingsMode() {
+  try { return localStorage.getItem(SETTINGS_MODE_KEY) || 'simple'; } catch(e){ return 'simple'; }
+}
+function applySettingsMode(mode) {
+  const simple = mode !== 'advanced';
+  document.body.classList.toggle('simple-mode', simple);
+  const simpleBtn = document.getElementById('settingsModeSimple');
+  const advBtn = document.getElementById('settingsModeAdvanced');
+  if (simpleBtn) simpleBtn.classList.toggle('active', simple);
+  if (advBtn) advBtn.classList.toggle('active', !simple);
+}
+function setSettingsMode(mode) {
+  const next = mode === 'advanced' ? 'advanced' : 'simple';
+  try { localStorage.setItem(SETTINGS_MODE_KEY, next); } catch(e){ try { showToast('Could not save settings mode', 2500, 'warning'); } catch(_){} }
+  applySettingsMode(next);
+}
+if (typeof window !== 'undefined') {
+  window.setSettingsMode = setSettingsMode;
+  // Apply early (before DOMContentLoaded so the body class is set ASAP).
+  try { applySettingsMode(getSettingsMode()); } catch(e){}
+  document.addEventListener('DOMContentLoaded', () => applySettingsMode(getSettingsMode()));
+}
+
+// ─── Beginner UX: Topbar emergency STOP ───────────────────────────
+// Always-visible safety net. Confirms, then engages the kill switch via
+// the same backend endpoint as the Tools panel. Lets users abort without
+// having to find the buried button.
+async function topbarEmergencyStop() {
+  const ok = await confirmToast('Emergency STOP\n\nThis will halt the AI and block ALL tool calls (including reads) until you release it from the Tools tab. Proceed?');
+  if (!ok) return;
+  try {
+    const r = await fetch('/api/permissions/kill-switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: true, reason: 'Topbar STOP button.' }),
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    showToast('🛑 Kill switch engaged. The AI cannot run any tools.', 5000, 'warning');
+  } catch (err) {
+    showToast('⚠️ Could not engage kill switch: ' + (err && err.message ? err.message : err), 5000, 'error');
+  }
+}
+if (typeof window !== 'undefined') {
+  window.topbarEmergencyStop = topbarEmergencyStop;
+}
+
+// ─── Beginner UX: First-visit onboarding modal ────────────────────
+// Shown once, dismissed forever via localStorage. Example prompts wire
+// directly to the chat composer so the user can run them with one click.
+const ONBOARD_SEEN_KEY = 'harness.onboardSeen';
+function shouldShowOnboardModal() {
+  try { return !localStorage.getItem(ONBOARD_SEEN_KEY); } catch(e){ return false; }
+}
+function dismissOnboardModal(remember) {
+  const modal = document.getElementById('onboardModal');
+  if (modal) modal.classList.add('hidden-by-default');
+  const cb = document.getElementById('onboardDontShow');
+  const shouldRemember = remember !== false && (!cb || cb.checked);
+  if (shouldRemember) {
+    try { localStorage.setItem(ONBOARD_SEEN_KEY, String(Date.now())); } catch(e){}
+  }
+}
+function showOnboardModal() {
+  const modal = document.getElementById('onboardModal');
+  if (!modal) return;
+  modal.classList.remove('hidden-by-default');
+  // Wire example buttons to populate the chat composer.
+  const examples = modal.querySelectorAll('.onboard-example');
+  examples.forEach((btn) => {
+    btn.onclick = () => {
+      const prompt = btn.getAttribute('data-prompt') || '';
+      const input = document.getElementById('chatInput');
+      if (input) {
+        input.value = prompt;
+        try { autoSize(input); } catch(e){}
+        input.focus();
+      }
+      dismissOnboardModal(true);
+    };
+  });
+}
+function replayOnboardingTour() {
+  try { localStorage.removeItem(ONBOARD_SEEN_KEY); } catch(e){}
+  showOnboardModal();
+}
+if (typeof window !== 'undefined') {
+  window.dismissOnboardModal = dismissOnboardModal;
+  window.showOnboardModal = showOnboardModal;
+  window.replayOnboardingTour = replayOnboardingTour;
+  document.addEventListener('DOMContentLoaded', () => {
+    if (shouldShowOnboardModal()) {
+      // Slight delay so the page paints first.
+      setTimeout(() => { try { showOnboardModal(); } catch(e){} }, 400);
+    }
+  });
+}
+
+// ─── Teammate mode (Daily Brief scheduler) ─────────────────────────
+// Powers the welcome-card "Your teammate" widget and the setup wizard.
+// Talks to /api/teammate/* — see src/automation/teammateScheduler.ts on
+// the server. Everything here is best-effort: a failed status fetch
+// hides the card rather than blocking the chat surface.
+const TEAMMATE_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+let _teammateState = null;
+
+function _formatTeammateSubtitle(state) {
+  const s = state && state.settings;
+  if (!s) return 'Loading…';
+  if (!s.enabled) return 'Idle — set up a Daily Brief so I work for you between sessions.';
+  const channels = (s.channels || []).join(' + ') || 'file only';
+  const next = state.nextRunAt ? new Date(state.nextRunAt) : null;
+  let when = '';
+  if (next && !isNaN(next.getTime())) {
+    const diffMin = Math.round((next.getTime() - Date.now()) / 60000);
+    if (diffMin <= 0) when = 'queued';
+    else if (diffMin < 60) when = `in ${diffMin}m`;
+    else if (diffMin < 1440) when = `in ${Math.round(diffMin / 60)}h`;
+    else when = `at ${next.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`;
+  } else {
+    when = `at ${s.scheduleTime}`;
+  }
+  return `Next brief ${when} · delivering to ${channels}`;
+}
+
+async function loadTeammateStatus() {
+  const card = document.getElementById('teammateCard');
+  if (!card) return;
+  let state;
+  try {
+    const r = await fetch('/api/teammate/status');
+    if (!r.ok) { card.classList.add('initial-hidden'); return; }
+    state = await r.json();
+  } catch (err) {
+    card.classList.add('initial-hidden');
+    return;
+  }
+  _teammateState = state;
+  card.classList.remove('initial-hidden');
+  card.classList.toggle('active', Boolean(state.settings && state.settings.enabled));
+  card.classList.toggle('paused', !(state.settings && state.settings.enabled));
+  const title = document.getElementById('teammateCardTitle');
+  const sub = document.getElementById('teammateCardSubtitle');
+  const cta = document.getElementById('teammateCardCta');
+  const runBtn = document.getElementById('teammateRunNowBtn');
+  if (title) title.textContent = state.settings && state.settings.enabled ? 'Your teammate is active' : 'Your teammate is asleep';
+  if (sub) sub.textContent = _formatTeammateSubtitle(state);
+  if (cta) cta.textContent = state.settings && state.settings.enabled ? 'Edit' : 'Set up';
+  if (runBtn) runBtn.style.display = state.settings && state.settings.enabled ? '' : 'none';
+}
+
+function _renderTeammateDays(selectedDays) {
+  const host = document.getElementById('teammateDays');
+  if (!host) return;
+  host.innerHTML = '';
+  for (const day of TEAMMATE_DAYS) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'teammate-day-chip' + (selectedDays.includes(day) ? ' active' : '');
+    chip.textContent = day;
+    chip.dataset.day = day;
+    chip.onclick = () => { chip.classList.toggle('active'); };
+    host.appendChild(chip);
+  }
+}
+
+function _renderTeammateChannels(selectedChannels, state) {
+  const host = document.getElementById('teammateChannels');
+  if (!host) return;
+  host.innerHTML = '';
+  const channels = [
+    { id: 'file', label: '📄 File (always saved)', enabled: true, disabled: true, alwaysOn: true },
+    { id: 'telegram', label: '📱 Telegram', enabled: state.telegramConfigured, disabledReason: 'Configure HARNESS_TELEGRAM_BOT_TOKEN in Settings first.' },
+    { id: 'discord', label: '💬 Discord webhook', enabled: state.discordConfigured, disabledReason: 'Configure Discord webhook in Settings first.' },
+    { id: 'slack', label: '💬 Slack webhook', enabled: state.slackConfigured, disabledReason: 'Configure Slack webhook in Settings first.' },
+  ];
+  for (const c of channels) {
+    const chip = document.createElement('label');
+    chip.className = 'teammate-channel-chip' + (selectedChannels.includes(c.id) || c.alwaysOn ? ' active' : '') + (c.enabled ? '' : ' disabled');
+    chip.title = c.enabled ? '' : (c.disabledReason || '');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = selectedChannels.includes(c.id) || c.alwaysOn === true;
+    cb.disabled = c.alwaysOn === true || !c.enabled;
+    cb.dataset.channel = c.id;
+    cb.onchange = () => { chip.classList.toggle('active', cb.checked); };
+    chip.appendChild(cb);
+    const span = document.createElement('span');
+    span.textContent = c.label;
+    chip.appendChild(span);
+    host.appendChild(chip);
+  }
+}
+
+function _readTeammateWizard() {
+  const time = document.getElementById('teammateTime').value || '08:00';
+  const days = Array.from(document.querySelectorAll('#teammateDays .teammate-day-chip.active')).map((el) => el.dataset.day);
+  const channels = Array.from(document.querySelectorAll('#teammateChannels input[type=checkbox]')).filter((el) => el.checked).map((el) => el.dataset.channel);
+  const briefingPrompt = (document.getElementById('teammateBriefingPrompt')?.value || '').trim();
+  const maxWordsRaw = parseInt(document.getElementById('teammateBriefingMaxWords')?.value || '150', 10);
+  const briefingMaxWords = Number.isFinite(maxWordsRaw) ? maxWordsRaw : 150;
+  const calendarPath = (document.getElementById('teammateCalendarPath')?.value || '').trim();
+  return { enabled: true, scheduleTime: time, scheduleDays: days.length > 0 ? days : TEAMMATE_DAYS, channels: channels.length > 0 ? channels : ['file'], briefingPrompt, briefingMaxWords, calendarPath };
+}
+
+async function openTeammateWizard() {
+  const modal = document.getElementById('teammateModal');
+  if (!modal) return;
+  // Refresh status so chip availability reflects current connector config.
+  await loadTeammateStatus();
+  const state = _teammateState || { settings: { scheduleTime: '08:00', scheduleDays: TEAMMATE_DAYS, channels: ['file'] }, telegramConfigured: false, discordConfigured: false, slackConfigured: false };
+  document.getElementById('teammateTime').value = state.settings.scheduleTime || '08:00';
+  _renderTeammateDays(Array.isArray(state.settings.scheduleDays) && state.settings.scheduleDays.length ? state.settings.scheduleDays : TEAMMATE_DAYS);
+  _renderTeammateChannels(Array.isArray(state.settings.channels) && state.settings.channels.length ? state.settings.channels : ['file'], state);
+  const promptEl = document.getElementById('teammateBriefingPrompt');
+  if (promptEl) promptEl.value = state.settings.briefingPrompt || '';
+  const wordsEl = document.getElementById('teammateBriefingMaxWords');
+  if (wordsEl) wordsEl.value = state.settings.briefingMaxWords || 150;
+  const calEl = document.getElementById('teammateCalendarPath');
+  if (calEl) calEl.value = state.settings.calendarPath || '';
+  const hint = document.getElementById('teammateNextRunHint');
+  if (hint) hint.textContent = state.nextRunAt ? `Next run: ${new Date(state.nextRunAt).toLocaleString()}` : '';
+  modal.classList.remove('hidden-by-default');
+}
+
+function dismissTeammateWizard() {
+  const modal = document.getElementById('teammateModal');
+  if (modal) modal.classList.add('hidden-by-default');
+}
+
+async function teammateSave() {
+  const payload = _readTeammateWizard();
+  try {
+    const r = await fetch('/api/teammate/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error('HTTP ' + r.status + ' ' + t.slice(0, 160)); }
+    showToast('🤝 Teammate scheduled', 2500, 'success');
+    dismissTeammateWizard();
+    loadTeammateStatus();
+  } catch (err) {
+    showToast('⚠️ Save failed: ' + (err && err.message ? err.message : err), 4000, 'error');
+  }
+}
+
+async function teammateSaveAndRunNow() {
+  await teammateSave();
+  await teammateRunNow();
+}
+
+async function teammateRunNow() {
+  try {
+    const r = await fetch('/api/teammate/run-now', { method: 'POST' });
+    if (!r.ok) { const t = await r.text().catch(() => ''); throw new Error('HTTP ' + r.status + ' ' + t.slice(0, 160)); }
+    const data = await r.json();
+    if (data && data.result && data.result.fired) {
+      const delivered = (data.result.channelsDelivered || []).join(', ') || 'file';
+      const failed = (data.result.channelsFailed || []).length;
+      showToast(`📓 Brief delivered to ${delivered}${failed ? ` (${failed} channel(s) failed)` : ''}`, 4000, failed ? 'warning' : 'success');
+    } else {
+      showToast('Brief did not fire: ' + (data && data.result ? data.result.reason : 'unknown'), 3500, 'warning');
+    }
+    loadTeammateStatus();
+  } catch (err) {
+    showToast('⚠️ Could not run brief: ' + (err && err.message ? err.message : err), 4000, 'error');
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.openTeammateWizard = openTeammateWizard;
+  window.dismissTeammateWizard = dismissTeammateWizard;
+  window.teammateSave = teammateSave;
+  window.teammateSaveAndRunNow = teammateSaveAndRunNow;
+  window.teammateRunNow = teammateRunNow;
+  window.loadTeammateStatus = loadTeammateStatus;
+  document.addEventListener('DOMContentLoaded', () => {
+    // Defer slightly so we don't compete with the initial model fetch.
+    setTimeout(() => { try { loadTeammateStatus(); } catch(e){} }, 600);
+    // Refresh every 5 min so the "Next brief in Xh" hint stays fresh.
+    setInterval(() => { try { loadTeammateStatus(); } catch(e){} }, 5 * 60_000);
+  });
+}
+
+
 // ─── Active sub-agents bar ────────────────────────────────────────
 // Renders a compact pill row above the chat input showing every
 // currently-running sub-agent with a cancel button. Driven by the
@@ -81,11 +484,17 @@ async function loadActiveSubagentsBar() {
       const seconds = Math.max(0, Math.round((record.durationMs || 0) / 1000));
       const snippet = safeEsc((record.promptSnippet || '').slice(0, 60));
       const idAttr = safeEsc(record.id);
+      const activity = safeEsc((record.lastActivity || '').slice(0, 60));
+      const activityAge = record.updatedAtMs ? Math.max(0, Math.round((Date.now() - record.updatedAtMs) / 1000)) : null;
+      const activityHtml = activity
+        ? '<span style="color:var(--accent);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + activity + (activityAge !== null ? ' (' + activityAge + 's ago)' : '') + '">' + activity + '</span>'
+        : '<span style="color:var(--text-dim);font-style:italic" title="No activity reported yet \u2014 the agent may still be thinking">thinking\u2026</span>';
       return '<span class="active-subagent-pill" style="display:inline-flex;align-items:center;gap:6px;padding:2px 6px;margin:2px;border-radius:10px;background:var(--surface2,rgba(120,120,120,0.15));font-size:11px">'
         + '<span style="color:var(--accent)">\u26AC</span>'
         + '<strong>' + safeEsc(record.name || 'subagent') + '</strong>'
         + '<span style="color:var(--text-dim)">' + seconds + 's</span>'
-        + (snippet ? '<span style="color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + snippet + '">' + snippet + '</span>' : '')
+        + activityHtml
+        + (snippet ? '<span style="color:var(--text-dim);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + snippet + '">' + snippet + '</span>' : '')
         + '<button type="button" class="msg-action-btn" title="Cancel sub-agent" onclick="cancelActiveSubagent(\'' + idAttr.replace(/'/g, "\\'") + '\')" style="padding:0 6px">\u2715</button>'
         + '</span>';
     }).join('');
@@ -112,11 +521,12 @@ if (typeof window !== 'undefined') {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', loadActiveSubagentsBar);
   else loadActiveSubagentsBar();
   // Periodic refresh as a safety net so the bar reflects in-flight runs
-  // even when the WS reconnects mid-flight.
+  // even when the WS reconnects mid-flight. 2s so the live activity
+  // label ("\uD83D\uDD27 read_file", etc) feels live.
   setInterval(() => {
     const host = document.getElementById('activeSubagentsBar');
     if (host) loadActiveSubagentsBar();
-  }, 5000);
+  }, 2000);
 }
 function renderPendingReplyChip() {
   const host = document.getElementById('pendingReplyChip') || (() => {
@@ -133,7 +543,10 @@ function renderPendingReplyChip() {
   if (!pendingReply) { host.style.display = 'none'; host.innerHTML = ''; return; }
   host.style.display = 'flex';
   const snippet = (pendingReply.snippet || '').slice(0, 140).replace(/\s+/g, ' ');
-  host.innerHTML = '<span style="flex:1">↪ Replying to: <em>' + (window.HarnessChatHistory && window.HarnessChatHistory.escapeHtml ? window.HarnessChatHistory.escapeHtml(snippet) : snippet.replace(/[<>&"]/g, '')) + '</em></span><button type="button" class="msg-action-btn" id="cancelPendingReplyBtn" title="Cancel reply" style="padding:2px 6px">✕</button>';
+  const safeSnippet = document.createElement('em');
+  safeSnippet.textContent = snippet;
+  host.innerHTML = '<span style="flex:1">↪ Replying to: </span><button type="button" class="msg-action-btn" id="cancelPendingReplyBtn" title="Cancel reply" style="padding:2px 6px">✕</button>';
+  host.querySelector('span').appendChild(safeSnippet);
   const cancel = document.getElementById('cancelPendingReplyBtn');
   if (cancel) cancel.onclick = () => { pendingReply = null; renderPendingReplyChip(); };
 }
@@ -186,6 +599,165 @@ let statusCenterReadiness = {
 };
 let statusCenterActionHandler = null;
 
+// ─── Parallel Session Tabs ──────────────────────────────────────────
+// Each session tab holds its own chat state so the user can start a prompt,
+// open a new tab, prompt again, and come back when either finishes.
+const sessionTabs = new Map(); // tabId → { title, chatMessages, currentChatId, isSending, activeChatController, sessionUsage, htmlSnapshot, status }
+let activeTabId = null;
+let _tabIdCounter = 0;
+
+function _nextTabId() { return 'tab-' + (++_tabIdCounter); }
+
+function _defaultSessionState(title) {
+  return {
+    title: title || 'New chat',
+    chatMessages: [],
+    currentChatId: null,
+    model: null, // per-tab model override; null = use whatever's selected
+    isSending: false,
+    activeChatController: null,
+    sessionUsage: { calls: 0, promptTokens: 0, completionTokens: 0, totalDurationMs: 0, totalTurnMs: 0, lastModel: null },
+    htmlSnapshot: null,
+    status: 'idle', // idle | streaming | done
+  };
+}
+
+function _snapshotActiveTab() {
+  if (!activeTabId || !sessionTabs.has(activeTabId)) return;
+  const tab = sessionTabs.get(activeTabId);
+  tab.chatMessages = [...chatMessages]; // Deep copy — don't share by reference
+  tab.currentChatId = currentChatId;
+  tab.isSending = isSending;
+  tab.activeChatController = activeChatController;
+  tab.sessionUsage = typeof sessionUsage !== 'undefined' ? { ...sessionUsage } : tab.sessionUsage;
+  tab.htmlSnapshot = document.getElementById('chatArea').innerHTML;
+  tab.title = chatMessages.length > 0 ? (chatMessages[0].content || '').slice(0, 40) || 'Chat' : 'New chat';
+  const modelSel = document.getElementById('modelSelect');
+  if (modelSel) tab.model = modelSel.value || null;
+}
+
+function _restoreTab(tabId) {
+  const tab = sessionTabs.get(tabId);
+  if (!tab) return;
+  chatMessages = [...tab.chatMessages]; // Copy — don't share reference with tab state
+  currentChatId = tab.currentChatId;
+  isSending = tab.isSending;
+  activeChatController = tab.activeChatController;
+  if (typeof sessionUsage !== 'undefined') Object.assign(sessionUsage, tab.sessionUsage);
+  const area = document.getElementById('chatArea');
+  if (tab.htmlSnapshot !== null) {
+    area.innerHTML = tab.htmlSnapshot;
+  } else {
+    area.innerHTML = welcomeMarkup();
+  }
+  // Restore per-tab model selection
+  const modelSel = document.getElementById('modelSelect');
+  if (modelSel && tab.model) modelSel.value = tab.model;
+  // Update send button state
+  const btn = document.getElementById('sendBtn');
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = isSending ? '■' : '➤';
+    btn.title = isSending ? 'Stop' : 'Send';
+  }
+  activeTabId = tabId;
+}
+
+function createSessionTab(switchTo) {
+  const id = _nextTabId();
+  sessionTabs.set(id, _defaultSessionState('New chat'));
+  if (switchTo !== false) {
+    // Snapshot the current tab before switching
+    _snapshotActiveTab();
+    // Force-clear global state for the new empty tab
+    chatMessages = [];
+    currentChatId = null;
+    isSending = false;
+    activeChatController = null;
+    document.getElementById('chatArea').innerHTML = welcomeMarkup();
+    activeTabId = id;
+    const btn = document.getElementById('sendBtn');
+    if (btn) { btn.disabled = false; btn.textContent = '➤'; btn.title = 'Send'; }
+  }
+  renderSessionTabs();
+  return id;
+}
+
+function switchToTab(tabId) {
+  if (tabId === activeTabId) return;
+  _snapshotActiveTab();
+  _restoreTab(tabId);
+  // Safety: re-render DOM from chatMessages if htmlSnapshot might be stale
+  // (e.g. background tab was still streaming when we last left it)
+  const tab = sessionTabs.get(tabId);
+  if (tab && tab.status === 'done' && tab.htmlSnapshot === null) {
+    const area = document.getElementById('chatArea');
+    area.innerHTML = '';
+    for (const m of chatMessages) addMsg(m.role, m.content);
+  }
+  renderSessionTabs();
+  saveChatSession();
+  loadHistory();
+}
+
+function closeSessionTab(tabId) {
+  const tab = sessionTabs.get(tabId);
+  if (!tab) return;
+  // Abort any active stream
+  if (tab.activeChatController) {
+    try { tab.activeChatController.abort(); } catch(e){}
+  }
+  sessionTabs.delete(tabId);
+  // If we closed the active tab, switch to another
+  if (tabId === activeTabId) {
+    const remaining = [...sessionTabs.keys()];
+    if (remaining.length > 0) {
+      switchToTab(remaining[remaining.length - 1]);
+    } else {
+      // Last tab — create a fresh one
+      createSessionTab();
+    }
+  }
+  renderSessionTabs();
+}
+
+function renderSessionTabs() {
+  const bar = document.getElementById('sessionTabs');
+  if (!bar) return;
+  const tabs = [...sessionTabs.entries()];
+  bar.innerHTML = '';
+  // Always show tab labels when 2+ tabs exist; show only the "+" button when just 1
+  for (const [id, tab] of tabs) {
+    if (tabs.length < 2) continue; // Hide individual tab chips when only one session
+    const el = document.createElement('div');
+    el.className = 'session-tab' + (id === activeTabId ? ' active' : '');
+    const badgeClass = tab.status === 'streaming' ? 'streaming' : tab.status === 'done' ? 'done' : 'idle';
+    const title = tab.title || 'New chat';
+    const modelTag = tab.model ? ' · ' + tab.model.split(':')[0] : '';
+    el.innerHTML = '<span class="tab-badge ' + badgeClass + '"></span>'
+      + '<span class="tab-title">' + esc(title) + '<span style="opacity:.5;font-weight:400">' + esc(modelTag) + '</span></span>'
+      + '<button class="tab-close" onclick="event.stopPropagation();closeSessionTab(\'' + id + '\')" title="Close">&times;</button>';
+    el.onclick = () => switchToTab(id);
+    bar.appendChild(el);
+  }
+  const addBtn = document.createElement('button');
+  addBtn.className = 'session-tab-add';
+  addBtn.innerHTML = tabs.length < 2 ? '+ New parallel session' : '+';
+  addBtn.title = 'New parallel session — run another chat while this one streams';
+  addBtn.onclick = () => createSessionTab();
+  bar.appendChild(addBtn);
+}
+
+function _markTabStatus(tabId, status) {
+  const tab = sessionTabs.get(tabId);
+  if (tab) {
+    tab.status = status;
+    if (status === 'streaming') tab.isSending = true;
+    if (status === 'done' || status === 'idle') tab.isSending = false;
+  }
+  renderSessionTabs();
+}
+
 window.addEventListener('DOMContentLoaded', async () => {
   await ensureApiAuthReady();
   restoreTheme();
@@ -226,6 +798,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   jarvisAutoRegisterBrowserVoice();
   refreshJarvisLive();
   setInterval(() => { refreshJarvisLive().catch(() => {}); }, 30_000);
+  // Initialize the first session tab
+  const firstTabId = createSessionTab(false);
+  activeTabId = firstTabId;
+  renderSessionTabs();
   document.getElementById('chatInput').focus();
 });
 
@@ -267,6 +843,7 @@ function resolveReadinessAction(check) {
   if (check.action === 'Open Tools') return { actionLabel: 'Open tools', actionHandler: () => openLeftTabByName('tools') };
   if (check.action === 'Open Promises') return { actionLabel: 'Open promises', actionHandler: () => openLeftTabByName('promises') };
   if (check.id === 'permission.mode') return { actionLabel: 'Set safe mode', actionHandler: () => toggleRight() };
+  if (check.id === 'model.toolCalling') return { actionLabel: 'Probe model', actionHandler: () => probeModelTools() };
   if (check.id && check.id.startsWith('tool.')) return { actionLabel: 'Fix blockers', actionHandler: () => fixReadinessBlockers() };
   return { actionLabel: 'Refresh checks', actionHandler: () => loadReadiness() };
 }
@@ -340,8 +917,19 @@ async function loadModels() {
     const r = await fetch('/api/models');
     const d = await r.json();
     if (d.error) {
-      setStatus('error', 'Offline', d.error);
-      sel.innerHTML = '<option>' + esc(d.error) + '</option>';
+      const friendly = String(d.error || '');
+      const isConn = /ECONNREFUSED|fetch failed|connect|refused|getaddrinfo|ENOTFOUND/i.test(friendly);
+      setStatus('error', 'Offline', isConn ? 'Ollama is not running' : friendly);
+      sel.innerHTML = '<option>' + esc(friendly) + '</option>';
+      const banner = document.getElementById('noModelBanner');
+      if (banner) {
+        banner.classList.remove('hidden-by-default');
+        if (isConn) {
+          banner.innerHTML = '<div class="no-model-icon">⚠️</div><div><strong>Can\'t reach Ollama.</strong><div class="no-model-hint">Open a terminal and run: <code>ollama serve</code><br>If Ollama isn\'t installed, get it from <a href="https://ollama.com" target="_blank" rel="noopener">ollama.com</a>. Then click Refresh.</div><div style="margin-top:8px"><button class="btn-sm primary" onclick="loadModels()">🔄 Refresh</button></div></div>';
+        } else {
+          banner.innerHTML = '<div class="no-model-icon">⚠️</div><div><strong>Could not list models.</strong><div class="no-model-hint">' + esc(friendly) + '</div><div style="margin-top:8px"><button class="btn-sm primary" onclick="loadModels()">🔄 Refresh</button></div></div>';
+        }
+      }
       return;
     }
     setStatus('ok', 'Connected', 'Connected to Ollama');
@@ -350,6 +938,12 @@ async function loadModels() {
     if (!models.length) {
       sel.innerHTML = '<option value="">No models installed</option>';
       updateNoModelEmptyState();
+      // Banner with concrete fix instructions for non-developers.
+      const banner = document.getElementById('noModelBanner');
+      if (banner) {
+        banner.classList.remove('hidden-by-default');
+        banner.innerHTML = '<div class="no-model-icon">⬇</div><div><strong>No AI models installed yet.</strong><div class="no-model-hint">Open a terminal and run: <code>ollama pull llama3.2</code> (downloads about 2 GB). When it finishes, click Refresh below.</div><div style="margin-top:8px"><button class="btn-sm primary" onclick="loadModels()">🔄 Refresh models</button></div></div>';
+      }
       return;
     }
     sel.innerHTML = '<option value="">— Select model —</option>' + models.map((m) => {
@@ -408,10 +1002,15 @@ async function loadModels() {
       if (input) input.focus();
     }
   } catch(e){
-    setStatus('error', 'Offline', 'Server not running');
-    sel.innerHTML = '<option>Server not running</option>';
+    setStatus('error', 'Offline', 'Ollama is not running. Start it with `ollama serve`.');
+    sel.innerHTML = '<option>Ollama not running</option>';
     availableModels = [];
     updateNoModelEmptyState();
+    const banner = document.getElementById('noModelBanner');
+    if (banner) {
+      banner.classList.remove('hidden-by-default');
+      banner.innerHTML = '<div class="no-model-icon">⚠️</div><div><strong>Can\'t reach Ollama.</strong><div class="no-model-hint">Open a terminal and run: <code>ollama serve</code><br>If Ollama isn\'t installed, download it from <a href="https://ollama.com" target="_blank" rel="noopener">ollama.com</a>. Then click Refresh.</div><div style="margin-top:8px"><button class="btn-sm primary" onclick="loadModels()">🔄 Refresh</button></div></div>';
+    }
   }
 }
 
@@ -424,6 +1023,28 @@ function updateNoModelEmptyState() {
   if (!sel || !sel.value) banner.classList.remove('hidden-by-default');
   else banner.classList.add('hidden-by-default');
   updateQuickStartCtaState();
+  applyModelGate();
+}
+
+// Generic "this action needs a model" gate. Any element with
+// data-requires-model="1" is disabled while the model dropdown is empty.
+// Saves the original title so we can restore it later. The hint title
+// helps a novice understand WHY the button is greyed out instead of
+// clicking and getting nothing.
+function applyModelGate() {
+  const sel = document.getElementById('modelSelect');
+  const hasModel = Boolean(sel && sel.value);
+  const nodes = document.querySelectorAll('[data-requires-model="1"]');
+  nodes.forEach((node) => {
+    if (!node.dataset.originalTitle) node.dataset.originalTitle = node.title || '';
+    if (hasModel) {
+      node.disabled = false;
+      node.title = node.dataset.originalTitle;
+    } else {
+      node.disabled = true;
+      node.title = 'Pick a model in the top bar first';
+    }
+  });
 }
 
 function updateQuickStartCtaState() {
@@ -598,7 +1219,7 @@ async function jarvisLadderAction(capability, action) {
     await readApiJson(response, 'Jarvis trust-ladder ' + action);
     await renderJarvisTrustLadder();
   } catch (error) {
-    alert('Trust ladder ' + action + ' failed: ' + (error.message || error));
+    showToast('Trust ladder ' + action + ' failed: ' + (error.message || error));
   }
 }
 
@@ -606,9 +1227,9 @@ async function saveDailyBrief() {
   try {
     const response = await fetch('/api/jarvis/brief/save', { method: 'POST' });
     const data = await readApiJson(response, 'Jarvis brief save');
-    alert('Saved to: ' + data.savedTo);
+    showToast('Saved to: ' + data.savedTo);
   } catch (error) {
-    alert('Save failed: ' + (error.message || error));
+    showToast('Save failed: ' + (error.message || error));
   }
 }
 
@@ -639,11 +1260,14 @@ async function loadJarvisGraph() {
   try {
     const response = await fetch('/api/jarvis/graph/mermaid');
     const data = await readApiJson(response, 'Jarvis graph');
+    const mermaidTheme = localStorage.getItem('harness-theme') === 'light' ? 'default' : 'dark';
+    const mermaidBg = mermaidTheme === 'default' ? '#fff' : '#1e1e2e';
+    const iframeHtml = '<!doctype html><html><head><meta charset=utf-8><script src=https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js></script><style>body{margin:8px;font-family:system-ui,sans-serif;background:' + mermaidBg + ';overflow:auto}svg{max-width:100%;height:auto}</style></head><body><div class=mermaid>' + esc(data.mermaid) + '</div><script>mermaid.initialize({startOnLoad:true,theme:\'' + mermaidTheme + '\',securityLevel:"loose",fontFamily:"system-ui,sans-serif",fontSize:13,flowchart:{htmlLabels:true,curve:"basis",nodeSpacing:40,rankSpacing:60}})</script></body></html>';
+    const mmdBlob = JSON.stringify(data.mermaid);
     host.innerHTML = '<div style="font-weight:600;margin-bottom:4px">Knowledge graph</div>'
-      + '<pre class="mermaid" style="font-size:11px;background:var(--surface);padding:8px;border-radius:6px;white-space:pre">' + esc(data.mermaid) + '</pre>';
-    if (window.mermaid && typeof window.mermaid.run === 'function') {
-      try { window.mermaid.run({ querySelector: '#dailyBriefGraph .mermaid' }); } catch { /* mermaid lib optional */ }
-    }
+      + '<iframe sandbox="allow-scripts" style="width:100%;height:420px;border:1px solid var(--border,#333);border-radius:6px;background:' + mermaidBg + '" srcdoc="' + escAttr(iframeHtml) + '"></iframe>'
+      + '<div class="document-actions" style="margin-top:4px"><button class="btn-sm" onclick="downloadMmd(' + mmdBlob + ',\'knowledge-graph.mmd\')">📥 Download .mmd</button>'
+      + '<button class="btn-sm" onclick="navigator.clipboard.writeText(' + mmdBlob + ')">📋 Copy Mermaid</button></div>';
   } catch (error) {
     host.innerHTML = '<div class="readiness-empty">Graph unavailable: ' + esc(error.message || error) + '</div>';
   }
@@ -693,7 +1317,7 @@ async function refreshJarvisRuntime() {
 }
 
 async function jarvisRuntimeRegister(feature) {
-  const adapterName = prompt('Adapter name for ' + feature + ' (e.g. whisper-cpp):');
+  const adapterName = await promptToast('Adapter name for ' + feature + ' (e.g. whisper-cpp):');
   if (!adapterName) return;
   try {
     await fetch('/api/jarvis/runtime/register', {
@@ -703,7 +1327,7 @@ async function jarvisRuntimeRegister(feature) {
     });
     await refreshJarvisRuntime();
   } catch (error) {
-    alert('Register failed: ' + (error.message || error));
+    showToast('Register failed: ' + (error.message || error));
   }
 }
 
@@ -730,7 +1354,7 @@ async function jarvisAmbientControl(action) {
     await fetch('/api/jarvis/ambient/' + action, { method: 'POST' });
     await refreshJarvisAmbientTile();
   } catch (error) {
-    alert('Ambient ' + action + ' failed: ' + (error.message || error));
+    showToast('Ambient ' + action + ' failed: ' + (error.message || error));
   }
 }
 
@@ -750,8 +1374,6 @@ function renderReadiness(data) {
   if (compact) compact.innerHTML = summary;
   const panel = document.getElementById('missionControlPanel');
   if (!panel) return;
-  // Check if permission mode message contains timed info for the header
-  const modeLabel = data.permissionMode || 'default';
   const allChecks = sections.flatMap((s) => s.checks || []);
   const permCheck = allChecks.find((c) => c.id === 'permission.mode');
   const firstAttentionCheck = allChecks.find((c) => c.status === 'blocked') || allChecks.find((c) => c.status === 'warn');
@@ -764,7 +1386,6 @@ function renderReadiness(data) {
     actionLabel: readinessAction.actionLabel,
     actionHandler: readinessAction.actionHandler,
   });
-  const timedNote = permCheck && permCheck.message && permCheck.message.includes('timed') ? ' <span class="text-warning-xs">(' + esc(permCheck.message.replace(/^.*\(/, '').replace(/\).*$/, '')) + ')</span>' : '';
   // Identify fixable blockers for the fix-all button
   const fixableChecks = allChecks.filter((c) => c.status === 'blocked' || c.status === 'warn').filter((c) => {
     if (c.id && c.id.startsWith('tool.')) return true;
@@ -776,8 +1397,8 @@ function renderReadiness(data) {
   const fixBtn = fixableChecks.length > 0 ? ' <button class="btn-sm btn-success-soft" onclick="fixReadinessBlockers()">Fix ' + fixableChecks.length + '</button>'
     + ' <button class="btn-sm btn-warning-soft" onclick="fixReadinessBlockersTimed()">Fix ' + fixableChecks.length + ' (timed)</button>' : '';
   const undoBtn = window._fixAllUndoSnapshot ? ' <button class="btn-sm btn-info-soft" onclick="undoFixAll()">Undo fix-all</button>' : '';
-  panel.innerHTML = '<div class="mission-header"><div><h3>Start work</h3><p>' + esc(data.model || 'No model selected') + ' · ' + esc(modeLabel) + timedNote + '</p></div><div class="inline-actions"><button class="btn-sm" onclick="loadReadiness()">Refresh</button>' + fixBtn + undoBtn + '</div></div>'
-    + renderTaskFirstPanel(data, { avg, ready, total: sections.length, blocked, warn, firstAttentionCheck })
+  const headerActions = '<button class="btn-sm" onclick="loadReadiness()">Refresh</button>' + fixBtn + undoBtn;
+  panel.innerHTML = renderTaskFirstPanel(data, { avg, ready, total: sections.length, blocked, warn, firstAttentionCheck, headerActions })
     + '<details class="readiness-details" id="readinessDetailsPanel"><summary>Readiness details</summary><div class="readiness-details-body">'
     + '<div class="readiness-summary">' + summary + '</div>'
     + '<div class="mission-grid">' + sections.map(renderReadinessSection).join('') + '</div>'
@@ -826,9 +1447,10 @@ function renderTaskFirstPanel(data, summary) {
   ];
   return '<div class="task-first-panel" id="taskFirstPanel">'
     + '<div class="task-first-top"><div><div class="task-first-title">Tell Harness the job</div><div class="task-first-subtitle">' + esc(attention) + '</div></div>'
-    + '<div class="task-first-status"><span class="task-first-pill" title="' + escAttr(workspace) + '">' + esc(workspaceLabel) + '</span><span class="task-first-pill">' + esc(modelLabel) + '</span><span class="task-first-pill ' + readinessClass + '">' + esc(readinessLabel) + '</span></div></div>'
+    + '<div class="task-first-status-col"><div class="task-first-status"><span class="task-first-pill" title="' + escAttr(workspace) + '">' + esc(workspaceLabel) + '</span><span class="task-first-pill">' + esc(modelLabel) + '</span><span class="task-first-pill ' + readinessClass + '">' + esc(readinessLabel) + '</span></div>' + (summary.headerActions ? '<div class="inline-actions">' + summary.headerActions + '</div>' : '') + '</div></div>'
     + '<div class="task-first-input-row"><textarea id="missionTaskInput" placeholder="Example: Fix the failing test, update the report, or review the current changes."></textarea>'
-    + '<div class="task-first-actions"><button class="btn-sm primary" onclick="sendTaskFirstPrompt()">Use task</button><button class="btn-sm" onclick="openLeftTabByName(\'runs\')">Runs</button></div></div>'
+    + '<div class="task-first-actions"><button class="btn-sm primary" id="codexRunTaskBtn" onclick="startCodexTaskFromMission()">Run task</button><button class="btn-sm" onclick="sendTaskFirstPrompt()">Draft chat</button><button class="btn-sm" onclick="openLeftTabByName(\'runs\')">Runs</button></div></div>'
+    + '<div class="codex-run-panel hidden-by-default" id="codexRunPanel"><div class="codex-run-top"><strong id="codexRunTitle">Codex task</strong><span id="codexRunStatus">Idle</span></div><div class="codex-run-progress"><div id="codexRunProgressBar"></div></div><div class="codex-run-log" id="codexRunLog"></div><details class="codex-run-diff hidden-by-default" id="codexRunDiffWrap"><summary>Diff preview</summary><pre id="codexRunDiff"></pre></details></div>'
     + renderCodingLoopRail()
     + '<div class="task-first-presets">' + presets.map(([label, prompt]) => '<button class="task-first-preset" onclick="useTaskFirstPreset(\'' + escAttr(prompt) + '\')">' + esc(label) + '</button>').join('') + '</div>'
     + '</div>';
@@ -842,9 +1464,11 @@ function renderCodingLoopRail() {
     ['Validate', 'Run checks'],
     ['Review', 'Diff and evidence'],
   ];
-  return '<div class="coding-loop-rail" id="codingLoopRail">'
+  return '<details class="readiness-details coding-loop-details"><summary>How a task runs</summary><div class="readiness-details-body">'
+    + '<div class="coding-loop-rail" id="codingLoopRail">'
     + steps.map(([title, note]) => '<div class="coding-loop-step"><strong>' + esc(title) + '</strong><span>' + esc(note) + '</span></div>').join('')
-    + '</div><div class="coding-loop-action"><button class="btn-sm btn-xxs-muted" onclick="startCodingLoopPrompt()">Use coding loop</button></div>';
+    + '</div><div class="coding-loop-action"><button class="btn-sm btn-xxs-muted" onclick="startCodingLoopPrompt()">Use coding loop</button></div>'
+    + '</div></details>';
 }
 
 function sendTaskFirstPrompt() {
@@ -870,6 +1494,145 @@ function startCodingLoopPrompt() {
   useTaskFirstPreset(task + ' Work in this loop: restate the task, make a short plan, edit only the needed files, run the smallest useful validation, then show the diff, evidence, and what needs accepting.');
 }
 
+async function startCodexTaskFromMission() {
+  if (activeCodexTaskRun) {
+    showToast('A Codex task is already running.', 3000, 'info');
+    return;
+  }
+  const taskInput = document.getElementById('missionTaskInput');
+  const task = String(taskInput?.value || '').trim() || 'Inspect this workspace and complete the safest useful coding task.';
+  const button = document.getElementById('codexRunTaskBtn');
+  const panel = ensureCodexRunPanel();
+  if (!panel) return;
+  const controller = new AbortController();
+  activeCodexTaskRun = controller;
+  if (button) button.disabled = true;
+  updateCodexRunPanel({ title: 'Creating task', status: 'Starting', progressPercent: 2, reset: true });
+  try {
+    const createResponse = await fetch('/api/codex/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: task }),
+      signal: controller.signal,
+    });
+    const created = await readApiJson(createResponse, 'Codex task create API');
+    const taskId = created?.task?.id;
+    if (!taskId) throw new Error('Codex task create API did not return a task id.');
+    updateCodexRunPanel({ title: created.task.title || task, status: 'Task ' + taskId + ' running', progressPercent: 5 });
+    const runResponse = await fetch('/api/codex/tasks/' + encodeURIComponent(taskId) + '/run', { method: 'POST', signal: controller.signal });
+    if (!runResponse.ok) {
+      if ((runResponse.headers.get('content-type') || '').includes('application/json')) await readApiJson(runResponse, 'Codex task run API');
+      throw new Error('Codex task run API failed: ' + runResponse.status + ' ' + runResponse.statusText);
+    }
+    await readCodexRunStream(runResponse, (event) => handleCodexRunEvent(event));
+    await refreshCodexTaskStatus(taskId);
+    showToast('Codex task ready for review.', 3000, 'success');
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      updateCodexRunPanel({ status: 'Cancelled', log: 'Run cancelled.' });
+    } else {
+      updateCodexRunPanel({ status: 'Failed', progressPercent: 100, log: error.message || String(error) });
+      showToast(error.message || String(error), 6000, 'error');
+    }
+  } finally {
+    activeCodexTaskRun = null;
+    if (button) button.disabled = false;
+  }
+}
+
+function ensureCodexRunPanel() {
+  const panel = document.getElementById('codexRunPanel');
+  if (panel) panel.classList.remove('hidden-by-default');
+  return panel;
+}
+
+function updateCodexRunPanel(update) {
+  const panel = ensureCodexRunPanel();
+  if (!panel) return;
+  const title = document.getElementById('codexRunTitle');
+  const status = document.getElementById('codexRunStatus');
+  const progressBar = document.getElementById('codexRunProgressBar');
+  const log = document.getElementById('codexRunLog');
+  const diffWrap = document.getElementById('codexRunDiffWrap');
+  const diff = document.getElementById('codexRunDiff');
+  if (update.reset && log) log.innerHTML = '';
+  if (update.reset && diff) diff.textContent = '';
+  if (update.reset && diffWrap) diffWrap.classList.add('hidden-by-default');
+  if (update.title && title) title.textContent = update.title;
+  if (update.status && status) status.textContent = update.status;
+  if (typeof update.progressPercent === 'number' && progressBar) progressBar.style.width = Math.max(0, Math.min(100, update.progressPercent)) + '%';
+  if (update.log && log) {
+    const row = document.createElement('div');
+    row.textContent = update.log;
+    log.appendChild(row);
+    log.scrollTop = log.scrollHeight;
+  }
+  if (typeof update.diff === 'string' && diff && diffWrap) {
+    diff.textContent = update.diff || 'No diff reported.';
+    diffWrap.classList.remove('hidden-by-default');
+  }
+}
+
+async function readCodexRunStream(response, onEvent) {
+  const reader = response.body?.getReader ? response.body.getReader() : null;
+  if (!reader) throw new Error('Codex task run API did not return a readable stream.');
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    let splitAt;
+    while ((splitAt = buffer.indexOf('\n\n')) >= 0) {
+      const frame = buffer.slice(0, splitAt);
+      buffer = buffer.slice(splitAt + 2);
+      const dataLines = frame.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart());
+      if (!dataLines.length) continue;
+      const data = dataLines.join('\n');
+      if (data === '[DONE]') return;
+      try { onEvent(JSON.parse(data)); } catch { onEvent({ type: 'log', message: data }); }
+    }
+    if (done) break;
+  }
+}
+
+function handleCodexRunEvent(event) {
+  if (!event || typeof event !== 'object') return;
+  if (event.type === 'task_status') {
+    updateCodexRunPanel({ status: String(event.status || 'Running'), progressPercent: Number(event.progressPercent || 10) });
+  } else if (event.type === 'model') {
+    updateCodexRunPanel({ log: 'Model: ' + event.model });
+  } else if (event.type === 'plan') {
+    const steps = Array.isArray(event.plan?.steps) ? event.plan.steps.length : 0;
+    updateCodexRunPanel({ status: 'Plan ready', progressPercent: 15, log: steps ? 'Plan ready: ' + steps + ' step(s).' : 'Plan ready.' });
+  } else if (event.type === 'step_start') {
+    const index = Number(event.index || 0) + 1;
+    const total = Number(event.total || index);
+    const pct = Math.min(85, 15 + Math.round((index / Math.max(total, 1)) * 60));
+    updateCodexRunPanel({ status: 'Step ' + index + ' of ' + total, progressPercent: pct, log: event.step?.intent || 'Running step ' + index + '.' });
+  } else if (event.type === 'verify') {
+    updateCodexRunPanel({ status: 'Validating', progressPercent: 86, log: 'Validation: ' + (event.result?.overall || 'complete') });
+  } else if (event.type === 'capability_gap') {
+    updateCodexRunPanel({ log: 'Capability needed: ' + (event.gap?.need || 'unknown') });
+  } else if (event.type === 'run_result') {
+    const diffText = event.diff?.patchPreview || event.diff?.stat || '';
+    updateCodexRunPanel({ status: 'Review ready', progressPercent: 95, log: 'Run ended: ' + (event.result?.status || 'done'), diff: diffText });
+  } else if (event.type === 'error') {
+    updateCodexRunPanel({ status: 'Failed', progressPercent: 100, log: event.message || 'Run failed.' });
+  } else if (event.type === 'done') {
+    updateCodexRunPanel({ status: 'Done', progressPercent: 100 });
+  }
+}
+
+async function refreshCodexTaskStatus(taskId) {
+  const response = await fetch('/api/codex/tasks/' + encodeURIComponent(taskId) + '/status');
+  const data = await readApiJson(response, 'Codex task status API');
+  const status = data?.task?.status || 'unknown';
+  const progressPercent = typeof data?.task?.progressPercent === 'number' ? data.task.progressPercent : undefined;
+  const diffText = data?.diff?.patchPreview || data?.diff?.stat || '';
+  updateCodexRunPanel({ status: 'Task status: ' + status, progressPercent, diff: diffText });
+  loadReadiness();
+}
+
 function renderReadinessSection(section) {
   const checks = section.checks || [];
   const firstBlocked = checks.find((check) => check.status === 'blocked') || checks.find((check) => check.status === 'warn');
@@ -888,6 +1651,8 @@ function renderReadinessSection(section) {
           const toolName = c.id.replace('tool.', '');
           actionBtn = ' <button class="btn-sm btn-xxs" onclick="event.stopPropagation();toggleTool(\'' + escAttr(toolName) + '\',true).then(function(){loadReadiness()})">Enable</button>'
             + ' <button class="btn-sm btn-xxs-warning" onclick="event.stopPropagation();readinessTimedFix(\'tool\',\'' + escAttr(toolName) + '\')">⏱</button>';
+        } else if (c.id === 'model.toolCalling') {
+          actionBtn = ' <button class="btn-sm btn-xxs" onclick="event.stopPropagation();probeModelTools()">Probe</button>';
         } else if (c.id === 'permission.mode') {
           actionBtn = ' <button class="btn-sm btn-xxs" onclick="event.stopPropagation();setMode(\'dontAsk\',document.querySelectorAll(\'.permission-mode-option\')[0]);setTimeout(loadReadiness,500)">Set dontAsk</button>'
             + ' <button class="btn-sm btn-xxs-warning" onclick="event.stopPropagation();readinessTimedFix(\'mode\')">⏱</button>';
@@ -937,17 +1702,32 @@ function sendMissionPrompt(mode) {
   input.focus();
 }
 
-function editMissionPrompt(mode) {
+// Wrap localStorage writes so a single quota-exceeded failure surfaces a
+// user-visible toast instead of silently dropping changes.
+function safeLocalStorageSet(key, value, label) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (e) {
+    try { showToast('⚠️ Could not save ' + (label || key) + ': ' + (e && e.message ? e.message : 'storage error'), 4000, 'warning'); } catch(_){}
+    return false;
+  }
+}
+if (typeof window !== 'undefined') {
+  window.safeLocalStorageSet = safeLocalStorageSet;
+}
+
+async function editMissionPrompt(mode) {
   const prompts = { ...DEFAULT_MISSION_PROMPTS, ...customMissionPrompts };
   const current = prompts[mode] || '';
-  const updated = prompt('Edit ' + mode + ' prompt:', current);
+  const updated = await promptToast('Edit ' + mode + ' prompt:', current);
   if (updated === null) return;
   if (updated.trim() === '' || updated === DEFAULT_MISSION_PROMPTS[mode]) {
     delete customMissionPrompts[mode];
   } else {
     customMissionPrompts[mode] = updated;
   }
-  try { localStorage.setItem('harness_mission_prompts', JSON.stringify(customMissionPrompts)); } catch(e){}
+  try { localStorage.setItem('harness_mission_prompts', JSON.stringify(customMissionPrompts)); } catch(e){ try { showToast('⚠️ Mission prompt save failed: ' + (e && e.message ? e.message : 'storage error'), 4000, 'warning'); } catch(_){} }
   showToast('Mission prompt updated for ' + mode, 2000, 'success');
 }
 
@@ -961,8 +1741,8 @@ function exportMissionPrompts() {
     .catch(() => showToast('Export failed', 2000, 'error'));
 }
 
-function importMissionPrompts() {
-  const raw = prompt('Paste mission prompts JSON:');
+async function importMissionPrompts() {
+  const raw = await promptToast('Paste mission prompts JSON:');
   if (raw === null) return;
   try {
     const parsed = JSON.parse(raw);
@@ -980,11 +1760,27 @@ function importMissionPrompts() {
 }
 
 window._readinessFixableChecks = [];
+// Actively verify whether the selected model can call tools, then refresh
+// readiness so the measured verdict replaces the static heuristic. Explicit
+// user action — never auto-run — so cloud models are not probed unprompted.
+async function probeModelTools() {
+  showToast('Probing model tool-calling…', 2500, 'info');
+  try {
+    const response = await fetch('/api/model/probe-tools', { method: 'POST' });
+    const data = await readApiJson(response, 'Tool-calling probe');
+    const tone = data.verdict === 'verified' ? 'success' : data.verdict === 'failed' ? 'warning' : 'info';
+    showToast(data.message || ('Probe ' + (data.verdict || 'finished') + '.'), 6000, tone);
+  } catch (error) {
+    showToast('Probe failed: ' + (error.message || error), 5000, 'warning');
+  }
+  await loadReadiness();
+}
+
 async function fixReadinessBlockers(timedMinutes) {
   const checks = window._readinessFixableChecks || [];
   if (checks.length === 0) return;
   const label = timedMinutes ? 'Auto-fix ' + checks.length + ' blocker(s) for ' + timedMinutes + ' minutes?' : 'Auto-fix ' + checks.length + ' blocker(s)?';
-  if (!confirm(label + '\n\nThis will enable disabled tools, set dontAsk mode, and grant missing capabilities.')) return;
+  if (!await confirmToast(label + '\n\nThis will enable disabled tools, set dontAsk mode, and grant missing capabilities.')) return;
   // Snapshot pre-fix state for undo
   window._fixAllUndoSnapshot = await snapshotPreFixState();
   try { sessionStorage.setItem('harness_fixall_undo', JSON.stringify(window._fixAllUndoSnapshot)); } catch(e){}
@@ -1021,18 +1817,18 @@ async function fixReadinessBlockers(timedMinutes) {
 }
 
 async function fixReadinessBlockersTimed() {
-  const minutesRaw = prompt('Fix blockers for how many minutes? (1-1440)', '120');
+  const minutesRaw = await promptToast('Fix blockers for how many minutes? (1-1440)', '120');
   if (minutesRaw === null) return;
   const minutes = Number(minutesRaw);
-  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { alert('Enter a number between 1 and 1440.'); return; }
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { showToast('Enter a number between 1 and 1440.'); return; }
   await fixReadinessBlockers(minutes);
 }
 
 async function readinessTimedFix(type, name) {
-  const minutesRaw = prompt('Enable for how many minutes? (1-1440)', '60');
+  const minutesRaw = await promptToast('Enable for how many minutes? (1-1440)', '60');
   if (minutesRaw === null) return;
   const minutes = Number(minutesRaw);
-  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { alert('Enter a number between 1 and 1440.'); return; }
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { showToast('Enter a number between 1 and 1440.'); return; }
   if (type === 'tool') {
     await toggleTool(name, true, minutes);
   } else if (type === 'mode') {
@@ -1057,7 +1853,7 @@ async function snapshotPreFixState() {
     return {
       disabledTools: toolsR.disabled || [],
       permissionMode: settingsR.permissionMode || 'default',
-      grantIds: ((grantsR.capabilities || []).flatMap((c) => c.id ? [] : [])),
+      grantIds: ((grantsR.capabilities || []).flatMap((c) => c.id ? [c.id] : [])),
       activeGrantIds: ((grantsR.grants || []).map((g) => g.id)),
       ts: Date.now(),
     };
@@ -1067,7 +1863,7 @@ async function snapshotPreFixState() {
 async function undoFixAll() {
   const snap = window._fixAllUndoSnapshot;
   if (!snap) { showToast('No fix-all to undo', 2000); return; }
-  if (!confirm('Undo last fix-all?\n\nThis will re-disable tools and revert permission mode to ' + snap.permissionMode + '.')) return;
+  if (!await confirmToast('Undo last fix-all?\n\nThis will re-disable tools and revert permission mode to ' + snap.permissionMode + '.')) return;
   // Re-disable tools
   for (const name of snap.disabledTools) {
     await fetch('/api/tools/' + encodeURIComponent(name) + '/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: false }) }).catch(() => {});
@@ -1202,14 +1998,26 @@ function updateTopbarPet() {
   window._petLastState = state;
 }
 
+let _topbarPetTimer = null;
 function startTopbarPet() {
   // Activity hooks: any keystroke or mouse movement counts as a sign of
   // life so the pet wakes up promptly when the user comes back.
   document.addEventListener('keydown', noteUserActivity, { passive: true });
   document.addEventListener('mousemove', noteUserActivity, { passive: true });
   document.addEventListener('click', noteUserActivity, { passive: true });
-  setInterval(updateTopbarPet, 2_000);
+  if (_topbarPetTimer) { clearInterval(_topbarPetTimer); }
+  _topbarPetTimer = setInterval(updateTopbarPet, 2_000);
   updateTopbarPet();
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    try {
+      if (_topbarPetTimer) { clearInterval(_topbarPetTimer); _topbarPetTimer = null; }
+      document.removeEventListener('keydown', noteUserActivity);
+      document.removeEventListener('mousemove', noteUserActivity);
+      document.removeEventListener('click', noteUserActivity);
+    } catch(_) {}
+  });
 }
 
 async function loadInbox() {
@@ -1241,10 +2049,11 @@ function renderInboxStrip(host, items, total) {
   const cardsHtml = items.map((item) => {
     const meta = INBOX_KIND_META[item.kind] || { icon: '•', tone: 'med' };
     const cls = 'inbox-item' + (meta.tone === 'high' ? ' priority-high' : '');
-    return '<button type="button" class="' + cls + '" data-id="' + escAttr(item.id) + '" title="' + escAttr(item.detail || '') + '">'
+    return '<div class="' + cls + '" data-id="' + escAttr(item.id) + '" data-kind="' + escAttr(item.kind) + '" title="' + escAttr(item.detail || '') + '">'
       + '<div class="inbox-row"><span class="inbox-kind-icon">' + meta.icon + '</span><span class="inbox-title">' + esc(item.title) + '</span></div>'
       + (item.detail ? '<div class="inbox-detail">' + esc(item.detail) + '</div>' : '')
-      + '</button>';
+      + inboxActionsHtml(item)
+      + '</div>';
   }).join('');
   host.innerHTML = ''
     + '<div class="inbox-strip-summary">'
@@ -1256,21 +2065,93 @@ function renderInboxStrip(host, items, total) {
     + '<div class="inbox-strip-list' + (collapsed ? ' collapsed' : '') + '" id="inboxStripList">' + cardsHtml + '</div>';
   const toggleBtn = document.getElementById('inboxStripToggle');
   if (toggleBtn) toggleBtn.onclick = () => toggleInboxStrip();
-  // Wire each card to its action. Permissions → open Tools tab so the
-  // user can see what is queued; plan tasks → Autonomy; runs → Runs.
-  // Falls back to chat input population so unknown actions still help.
-  for (const btn of host.querySelectorAll('.inbox-item')) {
-    const id = btn.getAttribute('data-id');
-    const item = items.find((i) => i.id === id);
-    if (!item) continue;
-    btn.onclick = () => {
-      if (item.action?.kind === 'open_tab') {
-        try { openLeftTabByName(item.action.payload); } catch (e) { console.warn('inbox open failed', e); }
-      } else if (item.action?.kind === 'chat') {
-        const inp = document.getElementById('chatInput');
-        if (inp) { inp.value = item.action.payload; inp.focus(); try { autoSize(inp); } catch(e){} }
-      }
-    };
+  // Wire each card's inline action buttons. Cards are no longer
+  // whole-card clickable — every verb is an explicit button so the user
+  // never has to guess "what now" after a navigation. Action handlers
+  // call the matching server endpoint, toast the outcome, and refresh
+  // the inbox so resolved items vanish immediately.
+  for (const btn of host.querySelectorAll('.inbox-action-btn[data-action]')) {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const action = btn.getAttribute('data-action');
+      const cardId = btn.getAttribute('data-card-id') || '';
+      handleInboxAction(action, cardId, btn).catch((err) => {
+        try { showToast('⚠️ ' + (err?.message || err), 3500, 'warning'); } catch(_){}
+      });
+    });
+  }
+}
+
+// Per-kind action row. Returns HTML for the buttons that should appear
+// underneath the card body. Each button carries data-action and the
+// card's full id so handleInboxAction can route without re-finding the
+// item. Verbs picked for "what would the user actually want to DO with
+// this?" rather than "where could we send them to think about it?".
+function inboxActionsHtml(item) {
+  const cardId = escAttr(item.id);
+  if (item.kind === 'permission') {
+    return '<div class="inbox-actions">'
+      + '<button type="button" class="inbox-action-btn primary" data-action="permission_allow" data-card-id="' + cardId + '">✓ Approve</button>'
+      + '<button type="button" class="inbox-action-btn danger" data-action="permission_deny" data-card-id="' + cardId + '">✕ Deny</button>'
+      + '<button type="button" class="inbox-action-btn" data-action="open_tools" data-card-id="' + cardId + '">Open Tools</button>'
+      + '</div>';
+  }
+  if (item.kind === 'plan_task') {
+    return '<div class="inbox-actions">'
+      + '<button type="button" class="inbox-action-btn primary" data-action="task_complete" data-card-id="' + cardId + '">✓ Mark done</button>'
+      + '<button type="button" class="inbox-action-btn danger" data-action="task_delete" data-card-id="' + cardId + '">✕ Delete</button>'
+      + '<button type="button" class="inbox-action-btn" data-action="open_autonomy" data-card-id="' + cardId + '">Open Plan</button>'
+      + '</div>';
+  }
+  if (item.kind === 'automation_run') {
+    return '<div class="inbox-actions">'
+      + '<button type="button" class="inbox-action-btn" data-action="open_runs" data-card-id="' + cardId + '">View in Runs</button>'
+      + '</div>';
+  }
+  return '';
+}
+
+async function handleInboxAction(action, cardId, btn) {
+  // cardId encodes both the kind prefix and the resource id, e.g.
+  // "plan_task:abc-123" or "automation_run:job-7:2026-06-06T...".
+  // Strip the first segment to get the underlying resource id.
+  const colonAt = cardId.indexOf(':');
+  const resourceId = colonAt >= 0 ? cardId.slice(colonAt + 1) : cardId;
+  const setBusy = (busy) => { try { btn.disabled = busy; } catch(_){} };
+  setBusy(true);
+  try {
+    if (action === 'permission_allow' || action === 'permission_deny') {
+      const allowed = action === 'permission_allow';
+      const res = await fetch('/api/permissions/' + encodeURIComponent(resourceId) + '/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ allowed }),
+      });
+      if (!res.ok) throw new Error((await res.text()) || 'Permission resolve failed');
+      showToast(allowed ? '✓ Approved' : '✕ Denied', 2200, 'success');
+    } else if (action === 'task_complete') {
+      const res = await fetch('/api/autonomy/tasks/' + encodeURIComponent(resourceId) + '/complete', { method: 'POST' });
+      if (!res.ok) throw new Error((await res.text()) || 'Mark done failed');
+      showToast('✓ Task marked done', 2200, 'success');
+    } else if (action === 'task_delete') {
+      if (!confirm('Delete this task from IMPLEMENTATION_PLAN.md?')) { setBusy(false); return; }
+      const res = await fetch('/api/autonomy/tasks/' + encodeURIComponent(resourceId), { method: 'DELETE' });
+      if (!res.ok) throw new Error((await res.text()) || 'Delete failed');
+      showToast('✕ Task deleted', 2200, 'success');
+    } else if (action === 'open_tools') {
+      openLeftTabByName('tools');
+    } else if (action === 'open_autonomy') {
+      openLeftTabByName('autonomy');
+    } else if (action === 'open_runs') {
+      openLeftTabByName('runs');
+    }
+  } finally {
+    setBusy(false);
+    // Refresh the inbox after any mutation so resolved/completed/deleted
+    // items disappear. Cheap because /api/inbox is just an aggregator.
+    if (action !== 'open_tools' && action !== 'open_autonomy' && action !== 'open_runs') {
+      try { await loadInbox(); } catch(_){}
+    }
   }
 }
 
@@ -1281,7 +2162,7 @@ function toggleInboxStrip() {
   const willCollapse = !list.classList.contains('collapsed');
   list.classList.toggle('collapsed', willCollapse);
   btn.textContent = willCollapse ? 'Show' : 'Hide';
-  try { localStorage.setItem('inboxStripCollapsed', willCollapse ? '1' : '0'); } catch(e){}
+  try { localStorage.setItem('inboxStripCollapsed', willCollapse ? '1' : '0'); } catch(e){ try { showToast('⚠️ Could not remember inbox state', 2500, 'warning'); } catch(_){} }
 }
 
 async function loadSubsystemHealth() {
@@ -1465,11 +2346,154 @@ function renderAutonomyBudgetField(id, label, value, min, max, step, title) {
     + '</label>';
 }
 
+// --- BUILD MODE (non-technical "describe it and I'll build it") ---
+// A friendly front-end over the existing autonomy loop: the user types a
+// plain-English goal, the server decomposes it into plan steps, the user
+// reviews them and picks how long to work, then presses Build it — which
+// reuses applyAutonomyPreset + startAutonomyRun under the hood.
+
+const BUILD_TIME_LABELS = {
+  single: 'Quick try (one step, quick check)',
+  work: 'About an hour',
+  overnight: "Until it's done (overnight)",
+};
+
+function renderBuildModeCard() {
+  const chosen = window.__buildTimeChoice || null;
+  const timeBtn = (preset, label) =>
+    '<button class="btn-sm build-time-btn' + (chosen === preset ? ' selected' : '')
+    + '" onclick="chooseBuildTime(\'' + preset + '\')">' + esc(label) + '</button>';
+  return '<div class="build-mode-card">'
+    + '<div class="build-mode-head"><strong>🚀 Build something</strong>'
+    + '<span>Describe what you want in plain English — I\'ll turn it into steps and build it for you.</span></div>'
+    + '<textarea id="buildGoalInput" class="build-goal-input" rows="3" '
+    + 'placeholder="e.g. A simple to-do list web app where I can add, complete, and delete tasks."></textarea>'
+    + '<div class="build-examples">Try: '
+    + '<button class="btn-xs" onclick="fillBuildExample(\'A personal expense tracker with a chart of spending by category.\')">expense tracker</button> '
+    + '<button class="btn-xs" onclick="fillBuildExample(\'A landing page for a coffee shop with a menu and a contact form.\')">coffee shop site</button> '
+    + '<button class="btn-xs" onclick="fillBuildExample(\'A command-line tool that renames photo files by the date they were taken.\')">photo renamer</button>'
+    + '</div>'
+    + '<div class="build-mode-actions"><button class="btn-sm build-plan-btn" onclick="planFromGoal()">📝 Plan it</button></div>'
+    + '<div class="build-mode-status" id="buildModeStatus"></div>'
+    + '<div class="build-review" id="buildReview"></div>'
+    + '<div class="build-time-choice"><div class="build-time-label">When the steps look right, choose how long I should work:</div>'
+    + '<div class="build-time-buttons">'
+    + timeBtn('single', 'Quick try')
+    + timeBtn('work', 'About an hour')
+    + timeBtn('overnight', "Until it's done")
+    + '</div></div>'
+    + '<button class="btn build-it-btn" onclick="buildIt()">▶ Build it</button>'
+    + '</div>';
+}
+
+function fillBuildExample(text) {
+  const input = document.getElementById('buildGoalInput');
+  if (input) { input.value = text; input.focus(); }
+}
+
+function setBuildStatus(text, tone) {
+  const el = document.getElementById('buildModeStatus');
+  if (!el) return;
+  el.textContent = text || '';
+  el.className = 'build-mode-status' + (tone ? ' ' + tone : '');
+}
+
+async function planFromGoal() {
+  const input = document.getElementById('buildGoalInput');
+  const goal = (input?.value || '').trim();
+  if (!goal) { setBuildStatus('Type what you want to build first, then press Plan it.', 'warn'); return; }
+  const model = document.getElementById('modelSelect')?.value || '';
+  setBuildStatus('Thinking… breaking your idea into clear steps…');
+  const review = document.getElementById('buildReview');
+  if (review) review.innerHTML = '';
+  try {
+    const response = await fetch('/api/autonomy/plan-from-goal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ goal, model }),
+    });
+    const data = await readApiJson(response, 'Plan from goal API');
+    if (data.error) throw new Error(data.error);
+    const added = data.added || [];
+    if (review) {
+      review.innerHTML = '<div class="build-review-title">Here\'s my plan — ' + esc(added.length) + ' step'
+        + (added.length === 1 ? '' : 's') + ':</div>'
+        + '<ol class="build-review-list">'
+        + added.map((t) => '<li>' + esc(t.title) + '</li>').join('')
+        + '</ol>';
+    }
+    setBuildStatus('Done. Review the steps, choose how long I should work, then press Build it.', 'ok');
+  } catch (error) {
+    setBuildStatus(error.message || String(error), 'warn');
+  }
+}
+
+function chooseBuildTime(preset) {
+  window.__buildTimeChoice = preset;
+  applyAutonomyPreset(preset);
+  const labels = { single: 'Quick try', work: 'About an hour', overnight: "Until it's done" };
+  document.querySelectorAll('.build-time-btn').forEach((btn) => {
+    btn.classList.toggle('selected', (btn.textContent || '').trim() === labels[preset]);
+  });
+  setBuildStatus('Set to: ' + (BUILD_TIME_LABELS[preset] || preset) + '. Press Build it when ready.', 'ok');
+}
+
+async function buildIt() {
+  if (!window.__buildTimeChoice) {
+    window.__buildTimeChoice = 'work';
+    applyAutonomyPreset('work');
+  }
+  // The autonomy run executes as a background process with no UI to answer
+  // permission prompts, so the server's preflight requires supervised-
+  // autonomous (dontAsk) mode plus the shell + background-job grants. Build
+  // Mode never engaged these, so every Build it press was rejected with a 409
+  // that surfaced only in a hidden element — making it look like nothing
+  // happened. Engage a TIMED autonomy window (auto-reverts) sized to the
+  // chosen work length, behind one plain-language consent that covers all
+  // presets, then surface any start failure in the build card itself.
+  const timedMinutes = window.__buildTimeChoice === 'overnight' ? 600
+    : window.__buildTimeChoice === 'work' ? 150
+      : 30;
+  const timeWord = window.__buildTimeChoice === 'overnight' ? 'several hours'
+    : window.__buildTimeChoice === 'work' ? 'up to about 2 hours'
+      : 'a short test run';
+  const consent = window.confirm(
+    'To build this I need permission to create and edit files and run commands on your behalf for ' + timeWord + '.\n\n'
+    + 'I\'ll stop automatically when the work is done or the time is up, and you can press Stop anytime. Continue?');
+  if (!consent) { setBuildStatus('Cancelled — nothing started.', 'warn'); return; }
+  setBuildStatus('Setting up permissions for the build…', 'ok');
+  try {
+    await ensureBuildPermissions(timedMinutes);
+  } catch (error) {
+    setBuildStatus('Could not enable build permissions: ' + (error.message || String(error)), 'warn');
+    return;
+  }
+  setBuildStatus('Starting your build… watch progress in the banner at the top.', 'ok');
+  const result = await startAutonomyRun();
+  if (result && result.ok === false) {
+    setBuildStatus('Could not start the build: ' + (result.error || 'unknown error'), 'warn');
+  }
+}
+
+// Engage a timed supervised-autonomous (dontAsk) window so the background
+// build can create/edit files and run commands without a UI prompt. The
+// window auto-reverts after timedMinutes, mirroring the readiness fix-all
+// escalation. Throws (via readApiJson) if the server rejects the request.
+async function ensureBuildPermissions(timedMinutes) {
+  const response = await fetch('/api/permissions/timed-autonomy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expiresInMinutes: timedMinutes, reason: 'Build Mode one-click supervised autonomous build' }),
+  });
+  await readApiJson(response, 'Timed autonomy API');
+}
+
 function renderAutonomyBuilder(data) {
   const runSettings = getAutonomyRunSettings();
   const nextTasks = (data.tasks || []).filter((task) => task.status === 'pending').slice(0, 5);
   const doneTasks = (data.tasks || []).filter((task) => task.status === 'done').slice(-3);
-  return '<div class="autonomy-head"><div><strong>Autonomy Run Builder</strong><span>' + esc(data.pending || 0) + ' pending · ' + esc(data.done || 0) + ' done · ' + esc(data.failed || 0) + ' failed</span></div><button class="btn-sm danger" onclick="stopAutonomyRun()">Stop</button></div>'
+  return renderBuildModeCard()
+    + '<div class="autonomy-head"><div><strong>Autonomy Run Builder</strong><span>' + esc(data.pending || 0) + ' pending · ' + esc(data.done || 0) + ' done · ' + esc(data.failed || 0) + ' failed</span></div><button class="btn-sm danger" onclick="stopAutonomyRun()">Stop</button></div>'
     + '<div class="autonomy-actions"><button class="btn-sm" onclick="dryRunAutonomy()">Dry run next</button><button class="btn-sm" onclick="startAutonomyRun()">Start run</button><button class="btn-sm" onclick="toggleAutonomyLog()">View live log</button><button class="btn-sm" onclick="resetAutonomyRunState()">Reset run state</button><button class="btn-sm" onclick="openLeftTabByName(\'runs\')">Open runs</button></div>'
     + '<div class="trace-meta" style="margin-bottom:6px">1) Pick a preset or set values · 2) Start run · 3) Watch live log</div>'
     + '<div class="autonomy-actions"><button class="btn-sm" onclick="applyAutonomyPreset(\'single\')">Quick test</button><button class="btn-sm" onclick="applyAutonomyPreset(\'work\')">Work session</button><button class="btn-sm" onclick="applyAutonomyPreset(\'overnight\')">Overnight</button></div>'
@@ -1522,7 +2546,7 @@ async function completePlanTask(id) {
 }
 
 async function deletePlanTask(id) {
-  if (!confirm('Remove task "' + id + '" from the plan?')) return;
+  if (!await confirmToast('Remove task "' + id + '" from the plan?')) return;
   try {
     await fetch('/api/autonomy/tasks/' + encodeURIComponent(id), { method: 'DELETE' });
     loadAutonomyPlanPreview();
@@ -1584,8 +2608,10 @@ async function startAutonomyRun() {
     const logModal = document.getElementById('autonomyLogModal');
     if (logModal && logModal.classList.contains('hidden-by-default')) toggleAutonomyLog();
     startAutonomyPolling();
+    return { ok: true };
   } catch (error) {
     if (status) status.textContent = error.message || String(error);
+    return { ok: false, error: error.message || String(error) };
   }
 }
 
@@ -1603,7 +2629,7 @@ async function stopAutonomyRun() {
 
 async function resetAutonomyRunState() {
   const status = document.getElementById('autonomyBuilderStatus');
-  if (!confirm('Reset autonomy checkpoint and stop files? This is useful if a run is stuck at an old iteration.')) return;
+  if (!await confirmToast('Reset autonomy checkpoint and stop files? This is useful if a run is stuck at an old iteration.')) return;
   if (status) status.textContent = 'Resetting run state...';
   try {
     const response = await fetch('/api/autonomy/reset', { method: 'POST' });
@@ -1685,7 +2711,11 @@ function selectedModelDetails() {
 
 function renderModelCapabilityHint() {
   const hint = document.getElementById('modelCapabilityHint');
-  if (!hint) return;
+  // The hint element was removed in the v0.5.10 welcome trim. Callers
+  // still invoke this on model change for its renderAttachmentHint()
+  // side effect, so refresh that and bail before touching the missing
+  // node.
+  if (!hint) { renderAttachmentHint(); return; }
   const model = selectedModelDetails();
   if (!model) {
     hint.textContent = 'Choose a model to see whether Harness detects text, image, or audio support.';
@@ -1722,8 +2752,14 @@ function renderModelCapabilityHint() {
   }
 
   // Fetch synthesis stats and show adaptive turns badge if different from default.
-  fetch('/api/synthesis-stats').then(r => r.json()).then(data => {
-    if (!data.stats) return;
+  (async () => {
+    let data;
+    try {
+      const r = await fetch('/api/synthesis-stats');
+      if (!r.ok) return;
+      data = await r.json();
+    } catch (err) { console.warn('synthesis-stats fetch failed', err); return; }
+    if (!hint.isConnected || !data || !data.stats) return;
     const record = data.stats[model.name];
     if (!record) return;
     const adaptive = record.adaptiveMaxTurns || data.defaultMaxTurns;
@@ -1743,11 +2779,17 @@ function renderModelCapabilityHint() {
       resetBtn.href = '#';
       resetBtn.className = 'model-inline-link';
       resetBtn.textContent = '(reset)';
-      resetBtn.onclick = (e) => { e.preventDefault(); fetch('/api/synthesis-stats?model=' + encodeURIComponent(model.name), { method: 'DELETE' }).then(() => renderModelCapabilityHint()).catch(() => {}); };
+      resetBtn.onclick = async (e) => {
+        e.preventDefault();
+        try {
+          await fetch('/api/synthesis-stats?model=' + encodeURIComponent(model.name), { method: 'DELETE' });
+          renderModelCapabilityHint();
+        } catch (err) { console.warn('synthesis-stats reset failed', err); }
+      };
       badge.appendChild(resetBtn);
       hint.appendChild(badge);
     }
-  }).catch(() => {});
+  })();
   renderAttachmentHint();
 }
 
@@ -1797,7 +2839,7 @@ function exportModelStatsCsv() {
     a.download = 'model-stats-' + new Date().toISOString().slice(0, 10) + '.csv';
     a.click();
     URL.revokeObjectURL(a.href);
-  }).catch(() => { alert('Failed to export stats.'); });
+  }).catch(() => { showToast('Failed to export stats.'); });
 }
 
 function getModelProfileSuggestion(modelName) {
@@ -1875,6 +2917,7 @@ async function loadSettings() {
     hydrateAgentAvatar(s.agentAvatar || '');
     hydrateAgentProfiles(s.agentProfiles || {});
     hydrateAllowedPaths(s.allowedExternalPaths || []);
+    window._currentAllowedPaths = s.allowedExternalPaths || [];
     if (s.ollamaHost) document.getElementById('ollamaHost').value = s.ollamaHost;
     if (s.summarizerModel) document.getElementById('summarizerModel').value = s.summarizerModel;
     if (s.contextMaxTokens !== undefined) document.getElementById('contextMaxTokens').value = s.contextMaxTokens;
@@ -1971,12 +3014,17 @@ async function loadSettings() {
     if (firstRunAudio) firstRunAudio.value = currentMediaTools.audioTranscribeCommand || '';
     hydrateCuratorSettings(s.curator || {});
     hydrateAutomationSchedulerSettings(s.automationScheduler || {});
+    hydrateBrowserRedaction(s.browserRedaction || {});
     document.querySelectorAll('.permission-mode-option').forEach((option) => option.classList.remove('active'));
     const modeIndex = s.permissionMode === 'dontAsk' ? 0 : s.permissionMode === 'acceptEdits' ? 1 : 2;
     const mode = document.querySelectorAll('.permission-mode-option')[modeIndex];
     if (mode) mode.classList.add('active');
     refreshAutonomyBanner();
     refreshVisionReadinessStatus();
+    // Harness controls hydration
+    hydrateInjectionMode(s.injectionDefence ? s.injectionDefence.mode : 'off');
+    hydrateRbwMode(s.readBeforeWrite ? s.readBeforeWrite.mode : 'off');
+    if (s.taskContract) renderTaskContract(s.taskContract);
   } catch(e){}
 }
 
@@ -2175,8 +3223,8 @@ function renderGlobalAutonomyBanner(state) {
 }
 
 async function cancelTimedAutonomy() {
-  if (!confirm('Cancel timed autonomy and revert permission mode now?')) return;
-  const clearTools = confirm('Also clear all timed tool enables?\n\nYes = revert tools to disabled too\nNo = only revert permission mode, tools keep their timers');
+  if (!await confirmToast('Cancel timed autonomy and revert permission mode now?')) return;
+  const clearTools = await confirmToast('Also clear all timed tool enables?\n\nYes = revert tools to disabled too\nNo = only revert permission mode, tools keep their timers');
   await fetch('/api/permissions/timed-autonomy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clearTimedTools: clearTools }) });
   refreshAutonomyBanner();
   if (typeof loadToolsDashboard === 'function') loadToolsDashboard();
@@ -2692,8 +3740,8 @@ function hydrateAgentProfiles(profiles) {
   }
 }
 
-function saveAgentProfile() {
-  const name = currentAgentName || prompt('Profile name:');
+async function saveAgentProfile() {
+  const name = currentAgentName || await promptToast('Profile name:');
   if (!name) return;
   const model = document.getElementById('modelSelect')?.value || '';
   agentProfiles[name] = {
@@ -2703,9 +3751,21 @@ function saveAgentProfile() {
     model,
     accentColor: localStorage.getItem('harness-accent') || '',
   };
+  // Persona bundle: also record the names of the currently-pinned skills and
+  // configured MCP servers so the profile captures a whole use-case. Names
+  // only — applying a profile never auto-pins or auto-starts anything.
+  if (typeof HarnessPersonaBundle !== 'undefined') {
+    const skillRows = (skillsState.runtime || []).map((s) => ({
+      name: s.name,
+      pinned: !!(skillsState.usageMap.get(s.name) || {}).pinned,
+    }));
+    const mcpRows = Array.from(window._mcpRuntimeServerIds || []).map((id) => ({ id }));
+    agentProfiles[name].skills = HarnessPersonaBundle.extractPinnedSkillNames(skillRows);
+    agentProfiles[name].mcp = HarnessPersonaBundle.extractMcpServerNames(mcpRows);
+  }
   updateSetting('agentProfiles', agentProfiles);
   hydrateAgentProfiles(agentProfiles);
-  alert('Profile "' + name + '" saved.');
+  showToast('Profile "' + name + '" saved.');
 }
 
 function loadAgentProfile(profileName) {
@@ -2724,20 +3784,34 @@ function loadAgentProfile(profileName) {
     if (sel) { sel.value = profile.model; updateSetting('model', profile.model); }
   }
   if (profile.accentColor) setAccentColor(profile.accentColor);
+  // Persona bundle: surface (never auto-apply) the skills/MCP servers this
+  // profile expects but the current environment lacks. Pinning and starting
+  // stay manual so capability grants and the curator are never bypassed.
+  if (typeof HarnessPersonaBundle !== 'undefined' && (profile.skills || profile.mcp)) {
+    const pinnedSkills = (skillsState.runtime || [])
+      .filter((s) => (skillsState.usageMap.get(s.name) || {}).pinned)
+      .map((s) => s.name);
+    const plan = HarnessPersonaBundle.computeStagingPlan(
+      { skills: profile.skills, mcp: profile.mcp },
+      { pinnedSkills, mcpServers: Array.from(window._mcpRuntimeServerIds || []) },
+    );
+    const hint = HarnessPersonaBundle.summarizeStagingPlan(plan);
+    if (hint) showToast(hint, 7000);
+  }
 }
 
-function deleteAgentProfile() {
+async function deleteAgentProfile() {
   const sel = document.getElementById('profileSelect');
   const name = sel?.value;
-  if (!name) { alert('Select a profile to delete.'); return; }
-  if (!confirm('Delete profile "' + name + '"?')) return;
+  if (!name) { showToast('Select a profile to delete.'); return; }
+  if (!await confirmToast('Delete profile "' + name + '"?')) return;
   delete agentProfiles[name];
   updateSetting('agentProfiles', agentProfiles);
   hydrateAgentProfiles(agentProfiles);
 }
 
 function exportAgentProfiles() {
-  if (Object.keys(agentProfiles).length === 0) { alert('No profiles to export.'); return; }
+  if (Object.keys(agentProfiles).length === 0) { showToast('No profiles to export.'); return; }
   const blob = new Blob([JSON.stringify(agentProfiles, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -2748,17 +3822,17 @@ function exportAgentProfiles() {
 function importAgentProfiles(files) {
   if (!files || files.length === 0) return;
   const reader = new FileReader();
-  reader.onload = (e) => {
+  reader.onload = async (e) => {
     try {
       const imported = JSON.parse(e.target.result);
-      if (typeof imported !== 'object' || imported === null) { alert('Invalid profiles file.'); return; }
+      if (typeof imported !== 'object' || imported === null) { showToast('Invalid profiles file.'); return; }
       const count = Object.keys(imported).length;
-      if (!confirm('Import ' + count + ' profile(s)? Existing profiles with the same name will be overwritten.')) return;
+      if (!await confirmToast('Import ' + count + ' profile(s)? Existing profiles with the same name will be overwritten.')) return;
       Object.assign(agentProfiles, imported);
       updateSetting('agentProfiles', agentProfiles);
       hydrateAgentProfiles(agentProfiles);
-      alert('Imported ' + count + ' profile(s).');
-    } catch(e){ alert('Invalid JSON file.'); }
+      showToast('Imported ' + count + ' profile(s).');
+    } catch(e){ showToast('Invalid JSON file.'); }
   };
   reader.readAsText(files[0]);
   document.getElementById('profileImportFile').value = '';
@@ -2771,6 +3845,7 @@ function hydrateAllowedPaths(paths) {
 
 function updateAllowedPaths(text) {
   const paths = text.split('\n').map((p) => p.trim()).filter(Boolean);
+  window._currentAllowedPaths = paths;
   updateSetting('allowedExternalPaths', paths);
 }
 
@@ -2933,7 +4008,7 @@ async function loadUploadsList() {
 
 async function deleteUpload(name) {
   if (!name) return;
-  if (!confirm('Delete upload "' + name + '"?')) return;
+  if (!await confirmToast('Delete upload "' + name + '"?')) return;
   try {
     const response = await fetch('/api/uploads/' + encodeURIComponent(name), { method: 'DELETE' });
     if (!response.ok) {
@@ -2942,7 +4017,7 @@ async function deleteUpload(name) {
     }
     await loadUploadsList();
   } catch (error) {
-    alert('Delete failed: ' + (error.message || error));
+    showToast('Delete failed: ' + (error.message || error));
   }
 }
 
@@ -3096,7 +4171,7 @@ async function checkSettingsHealth() {
     const data = await response.json();
     if (data.error) throw new Error(data.error);
     setVisionReadinessStatus(data.vision);
-    if (detail) detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio) + (data.pdfOcr ? renderSetupHealthRow('PDF OCR', data.pdfOcr) : '');
+    if (detail) detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio) + (data.pdfOcr ? renderSetupHealthRow('PDF OCR', data.pdfOcr) : '') + (data.ccmem ? renderSetupHealthRow('Long-term memory', data.ccmem) : '') + (data.webhooks ? renderSetupHealthRow('Webhooks', data.webhooks) : '');
   } catch (error) {
     if (detail) detail.innerHTML = '<div><strong>Setup</strong> ' + esc(error.message || error) + '</div>';
   }
@@ -3212,14 +4287,14 @@ async function refreshVisionReadinessStatus() {
   }
 }
 
-function setMode(m, el) {
+async function setMode(m, el) {
   let escalationReason;
   if (m === 'dontAsk') {
-    const reasonInput = prompt('Enter reason for enabling dontAsk mode (minimum 8 characters):', 'Temporary escalation for supervised operation');
+    const reasonInput = await promptToast('Enter reason for enabling dontAsk mode (minimum 8 characters):', 'Temporary escalation for supervised operation');
     if (reasonInput === null) return;
     escalationReason = String(reasonInput).trim();
     if (escalationReason.length < 8) {
-      alert('Reason must be at least 8 characters.');
+      showToast('Reason must be at least 8 characters.');
       return;
     }
   }
@@ -3253,10 +4328,10 @@ async function enableFullAutonomy() {
 }
 
 async function enableTimedAutonomy() {
-  const minutesRaw = prompt('Enable full autonomy for how many minutes? (1-1440)', '120');
+  const minutesRaw = await promptToast('Enable full autonomy for how many minutes? (1-1440)', '120');
   if (minutesRaw === null) return;
   const minutes = Number(minutesRaw);
-  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { alert('Enter a number between 1 and 1440.'); return; }
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { showToast('Enter a number between 1 and 1440.'); return; }
 
   // Set timed autonomy via dedicated endpoint (stores previous mode for revert)
   await fetch('/api/permissions/timed-autonomy', {
@@ -3372,10 +4447,10 @@ async function handleFileAttach(fileList) {
     try {
       const res = await fetch('/api/upload', { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream', 'x-filename': file.name }, body: file });
       const data = await res.json();
-      if (data.error) { alert('Upload failed: ' + data.error); continue; }
+      if (data.error) { showToast('Upload failed: ' + data.error); continue; }
       pendingFiles.push(data);
       showAttached();
-    } catch (e) { alert('Upload failed: ' + e.message); }
+    } catch (e) { showToast('Upload failed: ' + e.message); }
   }
   document.getElementById('fileInput').value = '';
 }
@@ -3404,6 +4479,9 @@ async function streamPdfExtract(index) {
   const status = dialog.querySelector('#pdfStreamStatus');
   const close = () => { try { source.close(); } catch(e){} dialog.remove(); };
   dialog.querySelector('#closePdfStream').onclick = close;
+  // Backdrop click should also close — otherwise the EventSource leaks
+  // when the user dismisses by clicking outside the dialog body.
+  dialog.addEventListener('click', (e) => { if (e.target === dialog) close(); });
   const source = new EventSource('/api/pdf/extract?path=' + encodeURIComponent(file.path));
   let pages = 0;
   source.addEventListener('page', (e) => {
@@ -3440,6 +4518,29 @@ function mediaIcon(file) {
   return '📄';
 }
 function removeAttached(i) { pendingFiles.splice(i, 1); showAttached(); }
+
+function promptAddWorkspaceFolder() {
+  const folder = window.prompt('Enter the full folder path to let the AI read/write:\n(e.g. D:\\Brad\\Downloads\\my-project)', '');
+  if (!folder || !folder.trim()) return;
+  const path = folder.trim();
+  fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ allowedExternalPaths: [...(window._currentAllowedPaths || []), path] }),
+  }).then((r) => r.ok ? r.json() : Promise.reject(r))
+    .then(() => {
+      window._currentAllowedPaths = [...(window._currentAllowedPaths || []), path];
+      const el = document.getElementById('allowedExternalPaths');
+      if (el) el.value = (window._currentAllowedPaths || []).join('\n');
+      const input = document.getElementById('chatInput');
+      if (input) {
+        input.value = (input.value ? input.value + '\n' : '') + 'I\'ve allowed access to ' + path + '. Please explore it and tell me what\'s there.';
+        input.dispatchEvent(new Event('input'));
+        document.getElementById('sendBtn')?.removeAttribute('disabled');
+      }
+    })
+    .catch(() => alert('Failed to add path. Check the console for details.'));
+}
 
 function handleChatPaste(event) {
   const items = event.clipboardData?.items;
@@ -3488,6 +4589,8 @@ function autoSize(el) {
   // Re-evaluate slash palette every keystroke so it appears as soon as the
   // user types `/` and disappears the moment the prefix becomes invalid.
   maybeShowSlashPalette(el.value);
+  // Plain-English requests (no slash) get a one-click feature suggestion.
+  maybeShowIntentChip(el.value);
 }
 
 // Same auto-grow pattern as the chat composer, but for the Autonomy
@@ -3502,6 +4605,8 @@ function sendTip(el) { document.getElementById('chatInput').value = el.textConte
 async function sendMessage(opts) {
   // Mark guided tour as seen on first send
   try { localStorage.setItem('harness_tour_seen', '1'); } catch(e){}
+  // Clear any plain-English feature suggestion once the message is sent.
+  hideIntentChip();
   // opts.regenerateFromIndex: when set, drop chatMessages from that index
   // onwards (typically a stale assistant reply) and re-run with the
   // existing user prompt that lives at index-1. Used by the per-message
@@ -3519,8 +4624,8 @@ async function sendMessage(opts) {
     if (!text) return;
     const modelA = document.getElementById('modelSelect').value;
     const modelB = document.getElementById('compareModelSelect').value;
-    if (!modelA || !modelB) { alert('Pick a primary model AND a compare model first.'); return; }
-    if (modelA === modelB) { alert('Pick two different models to compare.'); return; }
+    if (!modelA || !modelB) { showToast('Pick a primary model AND a compare model first.'); return; }
+    if (modelA === modelB) { showToast('Pick two different models to compare.'); return; }
     inp.value = '';
     inp.style.height = 'auto';
     runCompareSend(text, modelA, modelB);
@@ -3585,6 +4690,22 @@ async function sendMessage(opts) {
     }
   }
 
+  // /run <target>: launch the Active Goal primitive end-to-end. Creates the
+  // goal via POST /api/goals, then streams iteration SSE events from
+  // /api/goals/:id/start into per-iteration cards rendered inline in chat.
+  if (!isRegenerate && /^\s*\/run\s+\S/i.test(inp.value)) {
+    const target = inp.value.replace(/^\s*\/run\s+/i, '').trim();
+    if (target) {
+      const userText = inp.value;
+      hideSlashPalette();
+      inp.value = '';
+      autoSize(inp);
+      addMsg('user', userText);
+      runActiveGoalFromChat(target);
+      return;
+    }
+  }
+
   // /<skill-name> [args]: rewrite to "Use the skill: name with input: args" so
   // the agent picks it up via existing trigger matching. Only applies when the
   // first token matches a known runtime skill.
@@ -3644,7 +4765,7 @@ async function sendMessage(opts) {
   }
 
   if (!text || isSending) return;
-  if (!model) { alert('Select a model first.'); return; }
+  if (!model) { showToast('Select a model first.'); return; }
   // If the user clicked 💬 Reply on an earlier assistant message, prefix
   // the outbound text with a markdown blockquote of that reply so the
   // model can resolve "this", "that error", etc. unambiguously. The
@@ -3672,6 +4793,8 @@ async function sendMessage(opts) {
   // Strip any prior follow-up chips and context cards so they don't pile up.
   document.querySelectorAll('.followup-chips, .context-cards').forEach((n) => n.remove());
   isSending = true;
+  const _sendTabId = activeTabId;
+  _markTabStatus(_sendTabId, 'streaming');
   // Per-turn citation collector: every successful web_read becomes a
   // numbered source under the assistant reply. Keeps the model from
   // having to parrot the URL inline.
@@ -3690,6 +4813,7 @@ async function sendMessage(opts) {
   // pill on a 250ms interval so the user sees real-time speed.
   const streamStartedAt = Date.now();
   let streamedChars = 0;
+  let firstTokenAtMs = 0;
   let tokRateTimer = null;
   let assistantText = '';
   let msgEl = null;
@@ -3751,11 +4875,18 @@ async function sendMessage(opts) {
         switch (ev.type) {
           case 'text':
             thinkEl.remove();
+            if (!firstTokenAtMs && (ev.content || '').length > 0) firstTokenAtMs = Date.now();
             if (!msgEl) msgEl = addMsg('assistant', '');
             assistantText += ev.content;
             streamedChars += (ev.content || '').length;
             renderMd(msgEl.querySelector('.msg-content'), assistantText);
             scrollBottom();
+            break;
+          case 'goal_appended':
+            // Server signal that /goal appended tasks. Render a Start
+            // button under the response so a first-time user can run
+            // autonomy in one click without hunting for the dashboard.
+            if (msgEl) attachGoalStartButton(msgEl, ev.taskCount || 1, ev.planPath || 'IMPLEMENTATION_PLAN.md');
             break;
           case 'tool_call':
             notePetToolCall();
@@ -3852,6 +4983,37 @@ async function sendMessage(opts) {
             sessionUsage.totalTurnMs += ev.durationMs || 0;
             updateSessionHud();
             break;
+          case 'run_cost':
+            // Honest run-level cost verdict (server-side rollup). Renders a
+            // "100% local · $0" badge only when every call was provably local.
+            renderRunCost(ev);
+            break;
+          case 'answer_confidence':
+            // Honest answer-confidence verdict (server-side). Renders an
+            // abstention or stated-confidence band; stays silent when unstated.
+            renderAnswerConfidence(ev);
+            break;
+          case 'run_provenance':
+            // Honest, auditable run provenance (server-side): which model
+            // produced the run, when, and from what sources. Stays silent
+            // when nothing beyond a timestamp is provable.
+            renderRunProvenance(ev);
+            break;
+          case 'governed_shadow':
+            // Opt-in governed pass (HARNESS_GOVERNED_SHADOW). Surfaces HOW the
+            // answer knows (confidence mode) plus the self-critique findings
+            // inline under the answer, and refreshes the review queue panel so
+            // any newly staged items appear without a manual reload.
+            renderGovernedShadow(msgEl, ev.governed);
+            if (typeof loadReviewQueue === 'function') loadReviewQueue();
+            if (typeof loadGovernanceMetrics === 'function') loadGovernanceMetrics();
+            break;
+          case 'offline':
+            // Honest offline guarantee (server-side): a 🔒 Offline badge only
+            // when the run was provably local; 🌐 Online when it provably
+            // reached the network; silent when offline can't be confirmed.
+            renderOffline(ev);
+            break;
           case 'context':
             updateContextHud(ev.pressure, ev.strategy, ev.qualityScore, ev.autosaved);
             if (ev.strategy !== 'budget_reduction' || ev.autosaved) {
@@ -3862,6 +5024,10 @@ async function sendMessage(opts) {
           case 'output_validation':
             toolBox = ensureToolBox(toolBox);
             appendOutputValidationItem(toolBox, ev.validation);
+            break;
+          case 'verification':
+            toolBox = ensureToolBox(toolBox);
+            appendVerificationItem(toolBox, ev);
             break;
           case 'output_validation_profile_promoted':
             // Auto-promotion from oracle-prime to coding-answer when
@@ -3967,6 +5133,10 @@ async function sendMessage(opts) {
               toolBox = ensureToolBox(toolBox);
               appendToolItem(toolBox, '⚠️', 'completed with validation failures', 'work finished but the output validator rejected the final reply', true);
             }
+            if (ev.reason === 'completed_with_test_failures') {
+              toolBox = ensureToolBox(toolBox);
+              appendToolItem(toolBox, '❌', 'completed with test failures', 'files were edited but tsc/eslint/tests failed — review the verification card above', true);
+            }
             if (ev.reason === 'time_budget_synthesized') {
               toolBox = ensureToolBox(toolBox);
               appendToolItem(toolBox, '⏱️', 'time budget reached', 'wall-clock limit reached — model synthesized a summary of its work', false);
@@ -3975,13 +5145,17 @@ async function sendMessage(opts) {
               toolBox = ensureToolBox(toolBox);
               appendToolItem(toolBox, '🔁', 'repetition detected', 'model was repeating itself — forced synthesis to break the loop', false);
             }
+            if (ev.reason === 'empty_after_tools_synthesized') {
+              toolBox = ensureToolBox(toolBox);
+              appendToolItem(toolBox, '📝', 'empty final turn recovered', 'model ran tools then returned no answer — forced synthesis to write one', false);
+            }
             break;
         }
       }
     }
     if (thinkEl.parentNode) thinkEl.remove();
     if (!assistantText && toolOnlyResultCount > 0) {
-      if (doneReason === 'max_turns_synthesized' || doneReason === 'time_budget_synthesized' || doneReason === 'repetition_synthesized') {
+      if (doneReason === 'max_turns_synthesized' || doneReason === 'time_budget_synthesized' || doneReason === 'repetition_synthesized' || doneReason === 'empty_after_tools_synthesized') {
         // Bonus synthesis turn fired but produced empty text — rare edge case.
         assistantText = buildToolOnlyFallback(toolOnlyFailureCount, toolOnlySummaries, 'The model synthesized a response, but it came back empty.');
       } else {
@@ -3996,6 +5170,8 @@ async function sendMessage(opts) {
     // so an empty payload is safe.
     try { document.dispatchEvent(new CustomEvent('jarvis-assistant-message', { detail: { text: assistantText || '' } })); } catch { /* noop */ }
     if (msgEl && currentTurnUsage) {
+      if (firstTokenAtMs) currentTurnUsage.firstTokenLatencyMs = firstTokenAtMs - streamStartedAt;
+      currentTurnUsage.toolCallCount = toolOnlyResultCount;
       attachMessageMeta(msgEl, currentTurnUsage);
       currentTurnUsage = null;
     }
@@ -4043,6 +5219,12 @@ async function sendMessage(opts) {
   if (tokRateTimer) clearInterval(tokRateTimer);
   isSending = false;
   activeChatController = null;
+  _markTabStatus(_sendTabId, 'done');
+  // If this tab is still active, also snapshot state to the session
+  if (_sendTabId === activeTabId) {
+    const tab = sessionTabs.get(_sendTabId);
+    if (tab) { tab.chatMessages = [...chatMessages]; tab.currentChatId = currentChatId; tab.isSending = false; tab.activeChatController = null; }
+  }
   document.getElementById('sendBtn').disabled = false;
   document.getElementById('sendBtn').textContent = '➤';
   document.getElementById('sendBtn').title = 'Send';
@@ -4142,6 +5324,22 @@ function appendOutputValidationItem(toolBox, validation) {
   }).join('');
   item.innerHTML = '<span>🧪</span><span class="tool-name">output validation</span><span class="validation-groups"><strong>' + esc(validation.profile) + ' ' + esc(validation.status) + ' · score ' + esc(String(validation.score)) + '</strong>' + groups + '</span>';
   toolBox.appendChild(item);
+  scrollBottom();
+}
+
+function appendVerificationItem(toolBox, ev) {
+  const checks = ev.checks || [];
+  const icon = ev.overall === 'pass' ? '✅' : ev.overall === 'fail' ? '❌' : ev.overall === 'warn' ? '⚠️' : '⏭️';
+  const label = ev.overall === 'pass' ? 'tests passed' : ev.overall === 'fail' ? 'tests failed' : ev.overall === 'warn' ? 'tests warned' : 'tests skipped';
+  const detail = checks.map((c) => {
+    const s = c.status === 'pass' ? '✓' : c.status === 'fail' ? '✗' : c.status === 'warn' ? '⚠' : '–';
+    return s + ' ' + c.name + (c.duration_ms != null ? ' (' + c.duration_ms + 'ms)' : '') + (c.detail ? ': ' + c.detail : '');
+  }).join(' · ') || (ev.overall === 'skip' ? 'no checks ran (no tsconfig / test script found)' : '');
+  const item = document.createElement('div');
+  item.className = 'tool-item' + (ev.overall === 'fail' ? ' error' : '');
+  item.innerHTML = '<span>' + icon + '</span><span class="tool-name">' + label + '</span><span class="tool-detail">' + esc(detail) + '</span>';
+  toolBox.appendChild(item);
+  HarnessToolActivity.updateToolActivitySummary(toolBox, ev.overall === 'fail');
   scrollBottom();
 }
 
@@ -4421,17 +5619,24 @@ function notifyUser(title, body) {
 }
 
 let autonomyLogTimer = null;
+function _clearAutonomyLogTimer() {
+  if (autonomyLogTimer) { clearInterval(autonomyLogTimer); autonomyLogTimer = null; }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', _clearAutonomyLogTimer);
+}
 function toggleAutonomyLog() {
   const modal = document.getElementById('autonomyLogModal');
-  if (!modal) return;
+  if (!modal) { _clearAutonomyLogTimer(); return; }
   const isOpen = !modal.classList.contains('hidden-by-default');
   if (isOpen) {
     modal.classList.add('hidden-by-default');
-    if (autonomyLogTimer) { clearInterval(autonomyLogTimer); autonomyLogTimer = null; }
+    _clearAutonomyLogTimer();
     return;
   }
   modal.classList.remove('hidden-by-default');
   refreshAutonomyLog();
+  _clearAutonomyLogTimer();
   autonomyLogTimer = setInterval(refreshAutonomyLog, 2000);
 }
 
@@ -4488,6 +5693,16 @@ async function resolvePermission(id, allowed) {
   }
   try {
     const res = await fetch('/api/permissions/' + encodeURIComponent(id) + '/resolve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ allowed }) });
+    if (res.status === 404) {
+      // The prompt is no longer pending on the server — it timed out, was
+      // already resolved, or the server restarted since this card was last
+      // polled. That's a benign race, not a failure: drop the stale card and
+      // re-sync rather than alarming with a red "Could not approve" error.
+      if (card) card.remove();
+      showToast('That permission request already expired — it is no longer pending.', 3500, 'warning');
+      pollPermissions().catch((err) => console.warn('pollPermissions follow-up failed', err));
+      return;
+    }
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
       throw new Error('HTTP ' + res.status + (detail ? ' — ' + detail.slice(0, 160) : ''));
@@ -4501,7 +5716,7 @@ async function resolvePermission(id, allowed) {
     showToast('⚠️ Could not ' + (allowed ? 'approve' : 'deny') + ': ' + msg, 5000, 'error');
     return;
   }
-  pollPermissions();
+  pollPermissions().catch((err) => console.warn('pollPermissions follow-up failed', err));
 }
 
 async function loadRecovery() {
@@ -4522,7 +5737,7 @@ async function recoverSession(id) {
   try {
     const r = await fetch('/api/sessions/' + id);
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     lastSessionId = id;
     chatMessages = [];
     document.getElementById('chatArea').innerHTML = '';
@@ -4531,19 +5746,313 @@ async function recoverSession(id) {
       else { addMsg(m.role, m.content); chatMessages.push({ role: m.role, content: m.content }); }
     }
     loadHistory();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 async function forkSession(id) {
   const model = document.getElementById('modelSelect').value;
-  if (!model) { alert('Select a model first.'); return; }
+  if (!model) { showToast('Select a model first.'); return; }
   try {
     const r = await fetch('/api/sessions/' + id + '/fork', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }) });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     lastSessionId = d.sessionId;
-    alert('Forked session ' + d.sessionId);
-  } catch (e) { alert(e.message); }
+    showToast('Forked session ' + d.sessionId);
+  } catch (e) { showToast(e.message); }
+}
+
+// ── Active Goal /run: chat-driven launch + inline iteration cards ──────
+// /run <target> [-- verify <check>]... creates a goal via POST /api/goals
+// then opens a streaming POST /api/goals/:id/start. Browser EventSource is
+// GET-only so we parse the SSE frames manually from the fetch ReadableStream.
+//
+// Verification syntax: the loop treats a goal with zero required checks as
+// "already satisfied" and exits after iteration 0, so /run requires at
+// least one `-- verify` segment. Two forms are supported per segment:
+//   -- verify file:<relative or absolute path>      → file_exists check
+//   -- verify <argv>                                 → command check
+//                                                     (tokenized, no shell)
+// `file:` is cross-platform; the command form goes through Node's execFile
+// so the first token must be a real binary (no shell builtins like `test`).
+function tokenizeShellWords(s) {
+  // Minimal POSIX-ish tokenizer: whitespace splits, single/double quotes
+  // group, backslash escapes the next char. Not a full shell parser; good
+  // enough to turn `cmd /c "if exist x (exit 0)"` into 3 argv items.
+  const out = [];
+  let cur = '';
+  let quote = null;
+  let escaped = false;
+  let hasContent = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (escaped) { cur += c; hasContent = true; escaped = false; continue; }
+    if (c === '\\') { escaped = true; continue; }
+    if (quote) {
+      if (c === quote) { quote = null; hasContent = true; continue; }
+      cur += c; hasContent = true; continue;
+    }
+    if (c === '"' || c === "'") { quote = c; hasContent = true; continue; }
+    if (/\s/.test(c)) {
+      if (hasContent) { out.push(cur); cur = ''; hasContent = false; }
+      continue;
+    }
+    cur += c; hasContent = true;
+  }
+  if (hasContent) out.push(cur);
+  return out;
+}
+
+function parseRunInvocation(raw) {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return { target: '', verifications: [] };
+  const parts = trimmed.split(/\s+--\s+verify\s+/i);
+  const target = (parts[0] || '').trim();
+  const verifications = [];
+  for (const seg of parts.slice(1)) {
+    const s = seg.trim();
+    if (!s) continue;
+    if (/^file:/i.test(s)) {
+      const p = s.slice(5).trim();
+      if (p) verifications.push({ kind: 'file_exists', path: p, raw: s });
+      continue;
+    }
+    const tokens = tokenizeShellWords(s);
+    if (tokens.length === 0) continue;
+    verifications.push({ kind: 'command', command: tokens[0], args: tokens.slice(1), raw: s });
+  }
+  return { target, verifications };
+}
+
+async function runActiveGoalFromChat(rawTarget) {
+  const { target, verifications } = parseRunInvocation(rawTarget);
+  if (!target) {
+    addMsg('assistant', '❌ `/run` needs a goal. Try `/run make all tests pass -- verify npm test`.');
+    return;
+  }
+  if (verifications.length === 0) {
+    addMsg('assistant', '❌ `/run` needs at least one `-- verify` check, otherwise the loop exits immediately.\n\n'
+      + 'Two forms:\n'
+      + '• `-- verify file:<path>` — passes when the file exists (cross-platform, recommended for research/output goals).\n'
+      + '• `-- verify <argv>` — passes when the command exits 0. Tokenized as argv, no shell, so the first token must be a real binary (not `test` or `if`).\n\n'
+      + 'Examples:\n'
+      + '• `/run gather aircon notes -- verify file:agent-outputs/aircons.md`\n'
+      + '• `/run make all tests pass -- verify npm test`');
+    return;
+  }
+
+  const goalBody = {
+    target,
+    verification: verifications.map((v, i) => {
+      const baseId = 'v' + (i + 1);
+      if (v.kind === 'file_exists') {
+        return { id: baseId, description: v.raw, required: true, spec: { kind: 'file_exists', path: v.path } };
+      }
+      return { id: baseId, description: v.raw, required: true, spec: { kind: 'command', command: v.command, args: v.args, expectExitCode: 0 } };
+    }),
+  };
+
+  let goal;
+  try {
+    const createResp = await fetch('/api/goals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(goalBody),
+    });
+    if (!createResp.ok) {
+      const errTxt = await createResp.text().catch(() => '');
+      addMsg('assistant', '❌ Failed to create goal (HTTP ' + createResp.status + '): ' + (errTxt || ''));
+      return;
+    }
+    const body = await createResp.json();
+    goal = body.goal;
+  } catch (err) {
+    addMsg('assistant', '❌ Failed to create goal: ' + ((err && err.message) || err));
+    return;
+  }
+
+  const container = appendGoalRunContainer(goal);
+
+  let startResp;
+  try {
+    startResp = await fetch('/api/goals/' + encodeURIComponent(goal.id) + '/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runner: 'queryloop' }),
+    });
+  } catch (err) {
+    container.querySelector('.goal-run-status').textContent = 'Failed to start: ' + ((err && err.message) || err);
+    finalizeGoalRunControls(container);
+    return;
+  }
+  if (!startResp.ok || !startResp.body) {
+    let errTxt = '';
+    try { errTxt = await startResp.text(); } catch (_) { /* ignore */ }
+    container.querySelector('.goal-run-status').textContent = 'Failed to start (HTTP ' + startResp.status + '): ' + errTxt;
+    finalizeGoalRunControls(container);
+    return;
+  }
+
+  const reader = startResp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const frame = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        let evType = 'message';
+        const dataLines = [];
+        for (const line of frame.split('\n')) {
+          if (line.startsWith('event:')) evType = line.slice(6).trim();
+          else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+        }
+        if (dataLines.length === 0) continue;
+        let parsed;
+        try { parsed = JSON.parse(dataLines.join('\n')); } catch (_) { parsed = { raw: dataLines.join('\n') }; }
+        handleGoalRunEvent(container, evType, parsed);
+      }
+    }
+  } catch (err) {
+    container.querySelector('.goal-run-status').textContent = 'Stream error: ' + ((err && err.message) || err);
+  } finally {
+    finalizeGoalRunControls(container);
+  }
+}
+
+function appendGoalRunContainer(goal) {
+  const area = document.getElementById('chatArea');
+  const el = document.createElement('div');
+  el.className = 'msg assistant goal-run';
+  el.dataset.goalId = goal.id;
+  const checksSummary = (goal.verification && goal.verification.length)
+    ? goal.verification.length + ' check(s)'
+    : 'no checks';
+  el.innerHTML = '<div class="msg-avatar">' + esc(getAgentAvatar()) + '</div>'
+    + '<div class="msg-body"><div class="msg-role">' + esc(currentAgentName || 'Assistant') + ' · Active Goal</div>'
+    + '<div class="msg-content">'
+    + '<div class="goal-run-banner"><strong>Goal:</strong> ' + esc(goal.target)
+    + ' <span class="goal-run-id">(' + esc(goal.id) + ' · ' + esc(checksSummary) + ')</span></div>'
+    + '<div class="goal-run-controls">'
+    +   '<button type="button" class="goal-run-pause">Pause</button>'
+    +   '<button type="button" class="goal-run-abandon">Abandon</button>'
+    +   '<button type="button" class="goal-run-undo">Undo</button>'
+    + '</div>'
+    + '<div class="goal-run-status">Starting…</div>'
+    + '<div class="goal-run-cards"></div>'
+    + '</div></div>';
+  area.appendChild(el);
+  el.querySelector('.goal-run-pause').addEventListener('click', () => goalRunControl(el, 'pause'));
+  el.querySelector('.goal-run-abandon').addEventListener('click', () => goalRunControl(el, 'abandon'));
+  el.querySelector('.goal-run-undo').addEventListener('click', () => goalRunControl(el, 'undo'));
+  scrollBottom();
+  return el;
+}
+
+async function goalRunControl(container, action) {
+  const goalId = container.dataset.goalId;
+  if (!goalId) return;
+  const status = container.querySelector('.goal-run-status');
+  const btn = container.querySelector('.goal-run-' + action);
+  if (btn) btn.disabled = true;
+  try {
+    const resp = await fetch('/api/goals/' + encodeURIComponent(goalId) + '/' + action, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (!resp.ok) {
+      const errTxt = await resp.text().catch(() => '');
+      status.textContent = action + ' failed (HTTP ' + resp.status + '): ' + errTxt;
+      if (btn) btn.disabled = false;
+      return;
+    }
+    if (action === 'undo') {
+      const body = await resp.json().catch(() => ({}));
+      const r = (body && body.result) || {};
+      const reverted = (r.reverted || []).length;
+      const irreversible = (r.irreversible || []).length;
+      const failed = (r.failed || []).length;
+      status.textContent = 'Undone: reverted ' + reverted + ', irreversible ' + irreversible + ', failed ' + failed;
+      return;
+    }
+    status.textContent = action === 'pause' ? 'Pause requested…' : 'Abandon requested…';
+    if (action === 'abandon') finalizeGoalRunControls(container);
+  } catch (err) {
+    status.textContent = action + ' failed: ' + ((err && err.message) || err);
+    if (btn) btn.disabled = false;
+  }
+}
+
+function finalizeGoalRunControls(container) {
+  const pause = container.querySelector('.goal-run-pause');
+  const abandon = container.querySelector('.goal-run-abandon');
+  if (pause) pause.disabled = true;
+  if (abandon) abandon.disabled = true;
+}
+
+function handleGoalRunEvent(container, evType, data) {
+  const status = container.querySelector('.goal-run-status');
+  const cards = container.querySelector('.goal-run-cards');
+  if (evType === 'loop_start') {
+    status.textContent = 'Loop started';
+    return;
+  }
+  if (evType === 'iteration_start') {
+    const card = document.createElement('div');
+    card.className = 'iter-card';
+    card.dataset.iter = String(data.iteration);
+    card.innerHTML = '<div class="iter-card-header">Iteration ' + esc(data.iteration) + ' <span class="iter-card-status">running…</span></div>'
+      + '<div class="iter-card-body"></div>';
+    cards.appendChild(card);
+    status.textContent = 'Iteration ' + data.iteration + ' running…';
+    scrollBottom();
+    return;
+  }
+  if (evType === 'iteration_end') {
+    const card = cards.querySelector('.iter-card[data-iter="' + data.iteration + '"]');
+    if (!card) return;
+    card.querySelector('.iter-card-status').textContent = data.outcome && data.outcome.error ? 'error' : 'done';
+    const out = data.outcome || {};
+    const body = card.querySelector('.iter-card-body');
+    const counters = [];
+    if (out.action) counters.push(out.action);
+    if (typeof out.toolCalls === 'number') counters.push(out.toolCalls + ' tool calls');
+    if (Array.isArray(out.filesTouched) && out.filesTouched.length) counters.push(out.filesTouched.length + ' files');
+    if (typeof out.tokensUsed === 'number' && out.tokensUsed > 0) counters.push(out.tokensUsed + ' tokens');
+    body.innerHTML = '<div class="iter-card-counters">' + counters.map((c) => '<span class="iter-card-pill">' + esc(c) + '</span>').join(' ') + '</div>';
+    if (out.error) body.innerHTML += '<div class="iter-card-error">' + esc(out.error) + '</div>';
+    if (out.notes) body.innerHTML += '<details class="iter-card-notes"><summary>notes</summary><pre>' + esc(out.notes) + '</pre></details>';
+    scrollBottom();
+    return;
+  }
+  if (evType === 'verification_end') {
+    const card = cards.querySelector('.iter-card[data-iter="' + data.iteration + '"]');
+    if (!card) return;
+    const r = data.result || {};
+    const total = Array.isArray(r.results) ? r.results.length : 0;
+    const passed = Array.isArray(r.results) ? r.results.filter((x) => x.result && x.result.passed).length : 0;
+    const verifLine = document.createElement('div');
+    verifLine.className = 'iter-card-verif' + (r.allRequiredPassed ? ' ok' : ' fail');
+    verifLine.textContent = 'verification: ' + passed + '/' + total + ' passed (' + (r.requiredPassed || 0) + '/' + (r.requiredCount || 0) + ' required)';
+    card.querySelector('.iter-card-body').appendChild(verifLine);
+    return;
+  }
+  if (evType === 'transitioned') {
+    status.textContent = 'Status: ' + (data.from || '?') + ' → ' + (data.to || '?');
+    return;
+  }
+  if (evType === 'loop_end') {
+    status.textContent = 'Loop ended: ' + (data.reason || 'unknown') + ' · ' + (data.iterations || 0) + ' iteration(s)';
+    scrollBottom();
+    return;
+  }
+  if (evType === 'error') {
+    status.textContent = 'Error: ' + (data.message || JSON.stringify(data));
+  }
 }
 
 function addMsg(role, text) {
@@ -4558,6 +6067,124 @@ function addMsg(role, text) {
   area.appendChild(el);
   scrollBottom();
   return el;
+}
+
+function attachGoalStartButton(msgEl, taskCount, planPath) {
+  const body = msgEl.querySelector('.msg-body');
+  if (!body) return;
+  if (body.querySelector('.goal-start-row')) return;
+  const row = document.createElement('div');
+  row.className = 'goal-start-row';
+  row.style.cssText = 'margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'goal-start-btn';
+  btn.textContent = '▶ Start autonomy on ' + taskCount + ' task' + (taskCount === 1 ? '' : 's');
+  btn.style.cssText = 'padding:6px 12px;border-radius:6px;border:1px solid var(--accent,#6cf);background:var(--accent,#6cf);color:#000;font-weight:600;cursor:pointer';
+  const status = document.createElement('span');
+  status.className = 'goal-start-status';
+  status.style.cssText = 'font-size:12px;color:var(--text-dim);white-space:pre-line';
+  status.textContent = 'Or open the Autonomy panel for full controls.';
+
+  // Live status pump: after a successful start, subscribe to the
+  // autonomy state SSE stream and rewrite the status line on every
+  // checkpoint push. One stream per click; closes when the run ends or
+  // the chat tab unloads.
+  let liveES = null;
+  let liveStartedAt = 0;
+  function closeLive() {
+    if (liveES) { try { liveES.close(); } catch { /* noop */ } liveES = null; }
+  }
+  function fmtElapsed(ms) {
+    if (!ms || ms < 0) return '';
+    const s = Math.round(ms / 1000);
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return m + 'm ' + (r < 10 ? '0' : '') + r + 's';
+  }
+  function renderLive(s) {
+    if (!s) return;
+    const phase = s.status || s.lastTaskStatus || 'running';
+    const icon = phase === 'done' ? '✅' : phase === 'failed' ? '❌' : phase === 'running' ? '⏳' : '•';
+    const task = s.lastTaskId || s.currentTask || '?';
+    const taskElapsed = fmtElapsed(s.lastTaskElapsedMs);
+    const runElapsed = fmtElapsed(Date.now() - liveStartedAt);
+    const done = s.totalDone ?? 0;
+    const failed = s.totalFailed ?? 0;
+    const pending = s.totalPending ?? 0;
+    const counts = done + '✓ ' + failed + '✗ ' + pending + '⋯';
+    const parts = [icon + ' ' + phase, 'task: ' + task];
+    if (taskElapsed) parts.push(taskElapsed);
+    parts.push(counts);
+    parts.push('elapsed: ' + runElapsed);
+    status.textContent = parts.join(' · ');
+    // Terminal states: lock in the final line and stop the stream.
+    const terminal = phase === 'done' || phase === 'failed' || (pending === 0 && phase !== 'running');
+    if (terminal) {
+      const finalIcon = phase === 'failed' || failed > 0 ? '❌' : '✅';
+      status.textContent = finalIcon + ' ' + (phase === 'failed' ? 'failed' : 'done')
+        + ' in ' + runElapsed + ' · ' + counts
+        + ' · see agent-outputs/ and .harness/sessions/ for artefacts.';
+      closeLive();
+    }
+  }
+  function startLive() {
+    if (typeof window.EventSource !== 'function') return;
+    closeLive();
+    liveStartedAt = Date.now();
+    try {
+      liveES = new EventSource('/api/autonomy/state/stream');
+      liveES.onmessage = (evt) => {
+        try {
+          const s = evt.data === 'null' ? null : JSON.parse(evt.data);
+          renderLive(s);
+        } catch { /* ignore malformed frames */ }
+      };
+      liveES.onerror = () => {
+        if (liveES && liveES.readyState === EventSource.CLOSED) closeLive();
+      };
+    } catch { /* SSE unavailable; the panel polls as a fallback */ }
+  }
+  if (typeof window !== 'undefined') {
+    window.addEventListener('beforeunload', closeLive);
+  }
+
+  btn.onclick = async () => {
+    btn.disabled = true;
+    btn.style.opacity = '0.6';
+    status.textContent = 'Starting...';
+    try {
+      const model = (document.getElementById('modelSelect')?.value) || '';
+      const response = await fetch('/api/autonomy/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, maxIterations: taskCount, maxTurns: 30, timeBudgetMs: 0, unproductiveTurnLimit: 6 }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.error) {
+        const blocked = (data.preflight && data.preflight.blocked) || [];
+        const detail = blocked.length
+          ? '\n' + blocked.map((c) => '• ' + c.label + ': ' + (c.message || 'no detail') + (c.action ? ' — ' + c.action : '')).join('\n')
+          : '';
+        throw new Error((data.error || ('HTTP ' + response.status)) + detail);
+      }
+      status.textContent = '✓ Started PID ' + (data.pid || '?') + ' — waiting for first checkpoint...';
+      btn.textContent = '✓ Autonomy started';
+      startLive();
+      if (typeof startAutonomyPolling === 'function') {
+        try { startAutonomyPolling(); } catch { /* noop */ }
+      }
+    } catch (error) {
+      status.textContent = '⚠️ ' + (error.message || String(error));
+      btn.disabled = false;
+      btn.style.opacity = '1';
+    }
+  };
+  row.appendChild(btn);
+  row.appendChild(status);
+  body.appendChild(row);
+  scrollBottom();
 }
 
 function attachEvidenceCard(msgEl, evidence) {
@@ -4867,7 +6494,7 @@ function refreshArtifactPreview() {
     let html;
     if (art.lang === 'svg') html = '<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;padding:12px;background:#fff}svg{max-width:100%;height:auto}</style></head><body>' + art.code + '</body></html>';
     else if (art.lang === 'markdown' || art.lang === 'md') html = '<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:system-ui,sans-serif;padding:18px;max-width:780px;margin:0 auto;line-height:1.55;color:#111}h1,h2,h3{margin-top:1.2em}pre{background:#f4f4f4;padding:10px;border-radius:6px;overflow:auto}code{background:#f4f4f4;padding:1px 4px;border-radius:3px}</style></head><body>' + (window.marked ? window.marked.parse(art.code) : ('<pre>' + esc(art.code) + '</pre>')) + '</body></html>';
-    else if (art.lang === 'mermaid') html = '<!doctype html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script></head><body><div class="mermaid">' + esc(art.code) + '</div><script>mermaid.initialize({startOnLoad:true})</script></body></html>';
+    else if (art.lang === 'mermaid') html = '<!doctype html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script><style>body{margin:12px;font-family:system-ui,sans-serif;overflow:auto}svg{max-width:100%;height:auto}</style></head><body><div class="mermaid">' + esc(art.code) + '</div><script>mermaid.initialize({startOnLoad:true,securityLevel:"loose",fontFamily:"system-ui,sans-serif",fontSize:14,flowchart:{htmlLabels:true,curve:"basis",padding:20,nodeSpacing:50,rankSpacing:80}})</script></body></html>';
     else html = art.code; // raw HTML
     iframe.srcdoc = html;
   } else {
@@ -4894,6 +6521,18 @@ function downloadArtifact() {
   const a = document.createElement('a');
   a.href = url;
   a.download = art.title.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 40) + '.' + ext;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function downloadMmd(source, filename) {
+  const blob = new Blob([source], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename || 'diagram.mmd';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -5052,6 +6691,10 @@ function resetSessionUsage() {
   sessionUsage = { calls: 0, promptTokens: 0, completionTokens: 0, totalDurationMs: 0, totalTurnMs: 0, lastModel: null };
   currentTurnUsage = null;
   updateSessionHud();
+  renderRunCost(null);
+  renderAnswerConfidence(null);
+  renderRunProvenance(null);
+  renderOffline(null);
 }
 
 function formatTokensCompact(n) {
@@ -5097,6 +6740,136 @@ function updateSessionHud() {
       + (sessionUsage.lastModel ? ' · last model: ' + sessionUsage.lastModel : '');
 }
 
+// Honest run-level cost verdict rendered into the session HUD. The server
+// emits one `run_cost` event at the end of each run; we paint a badge that
+// claims "$0 local" ONLY when the server proved every call ran locally.
+function renderRunCost(verdict) {
+  const costEl = document.getElementById('sessionHudCost');
+  const sepEl = document.getElementById('sessionHudCostSep');
+  if (!costEl || !sepEl) return;
+  if (!verdict || !verdict.calls) {
+    costEl.style.display = 'none';
+    sepEl.style.display = 'none';
+    return;
+  }
+  let label;
+  if (verdict.freeMarginal) {
+    label = '🟢 100% local · $0';
+  } else if (verdict.locality === 'cloud') {
+    label = '☁ cloud · billed';
+  } else {
+    label = 'cost unknown';
+  }
+  costEl.textContent = label;
+  costEl.title = verdict.reason || '';
+  costEl.style.display = '';
+  sepEl.style.display = '';
+}
+
+// Honest answer-confidence verdict rendered into the session HUD. The server
+// emits one `answer_confidence` event after a run that produced answer text.
+// We surface an explicit abstention or a model-stated confidence band, and
+// render NOTHING when the model expressed no confidence ('unstated') rather
+// than inventing one.
+function renderAnswerConfidence(verdict) {
+  const confEl = document.getElementById('sessionHudConf');
+  const sepEl = document.getElementById('sessionHudConfSep');
+  if (!confEl || !sepEl) return;
+  if (!verdict || verdict.band === 'unstated') {
+    confEl.style.display = 'none';
+    sepEl.style.display = 'none';
+    return;
+  }
+  let label;
+  if (verdict.abstained) {
+    label = '🤔 abstained';
+  } else if (verdict.band === 'high') {
+    label = '✓ high confidence';
+  } else if (verdict.band === 'medium') {
+    label = '~ medium confidence';
+  } else {
+    label = '! low confidence';
+  }
+  confEl.textContent = label;
+  confEl.title = verdict.reason || '';
+  confEl.style.display = '';
+  sepEl.style.display = '';
+}
+
+// Honest, auditable run provenance rendered into the session HUD. The server
+// emits one `run_provenance` event per run: which model produced it, when,
+// and the tools/commands/files that fed it. We paint a badge with the model
+// and source count, and render NOTHING when nothing beyond a timestamp is
+// provable (no model and no sources) rather than implying false provenance.
+function renderRunProvenance(verdict) {
+  const provEl = document.getElementById('sessionHudProv');
+  const sepEl = document.getElementById('sessionHudProvSep');
+  if (!provEl || !sepEl) return;
+  const hasModel = Boolean(verdict && verdict.model);
+  const sources = verdict && Array.isArray(verdict.sources) ? verdict.sources : [];
+  if (!verdict || (!hasModel && sources.length === 0)) {
+    provEl.style.display = 'none';
+    sepEl.style.display = 'none';
+    return;
+  }
+  const parts = [];
+  if (hasModel) parts.push(verdict.model);
+  if (sources.length > 0) {
+    const proven = sources.filter((s) => s && s.proven).length;
+    parts.push(sources.length + ' source' + (sources.length === 1 ? '' : 's')
+      + (proven < sources.length ? ' (' + proven + ' proven)' : ''));
+  }
+  provEl.textContent = '🔗 ' + parts.join(' · ');
+  provEl.title = verdict.reason || '';
+  provEl.style.display = '';
+  sepEl.style.display = '';
+}
+
+// Opt-in governed pass surfaced inline under the assistant message. Renders the
+// confidence mode (HOW the answer knows) and the self-critique findings. Stays
+// quiet if there is no message element or no governed payload.
+function renderGovernedShadow(msgEl, governed) {
+  if (!msgEl || !governed) return;
+  const body = msgEl.querySelector('.msg-body') || msgEl;
+  let box = msgEl.querySelector('.governed-shadow');
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'governed-shadow';
+    box.style.cssText = 'margin-top:6px;padding:6px 8px;border-left:2px solid var(--accent,#69c);font-size:0.85em;opacity:0.9';
+    body.appendChild(box);
+  }
+  const mode = governed.confidence && governed.confidence.mode ? governed.confidence.mode : 'unknown';
+  const reason = governed.confidence && governed.confidence.reason ? governed.confidence.reason : '';
+  const overall = governed.critique && governed.critique.overall ? governed.critique.overall : 'ok';
+  const badge = overall === 'review' ? '⚠️ needs review' : '✓ ok';
+  const findings = (governed.critique && Array.isArray(governed.critique.findings)) ? governed.critique.findings : [];
+  const icon = function (status) { return status === 'flag' ? '🚩' : status === 'warn' ? '⚠️' : '✓'; };
+  const findingRows = findings.map(function (f) {
+    return '<div>' + icon(f.status) + ' <strong>' + esc(String(f.check)) + ':</strong> ' + esc(String(f.detail)) + '</div>';
+  }).join('');
+  box.innerHTML = '<div><strong>Governed:</strong> <code>' + esc(mode) + '</code> · ' + esc(badge)
+    + (reason ? ' <span class="muted">(' + esc(reason) + ')</span>' : '') + '</div>'
+    + findingRows;
+}
+
+function renderOffline(verdict) {
+  const offEl = document.getElementById('sessionHudOffline');
+  const sepEl = document.getElementById('sessionHudOfflineSep');
+  if (!offEl || !sepEl) return;
+  const state = verdict && verdict.state;
+  // Stay silent unless offline is provably confirmed or the run provably
+  // reached the network. 'unknown' paints nothing rather than a false claim.
+  if (state !== 'offline' && state !== 'online') {
+    offEl.style.display = 'none';
+    sepEl.style.display = 'none';
+    return;
+  }
+  offEl.textContent = state === 'offline' ? '🔒 Offline' : '🌐 Online';
+  offEl.title = verdict.reason || '';
+  offEl.style.display = '';
+  sepEl.style.display = '';
+}
+
 function attachMessageMeta(msgEl, usage) {
   if (!msgEl || !usage) return;
   const body = msgEl.querySelector('.msg-body');
@@ -5130,7 +6903,8 @@ function attachMessageMeta(msgEl, usage) {
     + '<span>' + formatDurationCompact(usage.totalDurationMs || 0) + '</span>'
     + timingInline
     + (usage.turnDurationMs ? '<span class="meta-sep">·</span><span title="Wall-clock turn time (model + tools)">' + formatDurationCompact(usage.turnDurationMs) + ' turn</span>' : '')
-    + (usage.loadDurationMs > 500 ? '<span class="meta-sep">·</span><span title="Time spent loading model into VRAM">🔥 ' + formatDurationCompact(usage.loadDurationMs) + ' load</span>' : '');
+    + (usage.loadDurationMs > 500 ? '<span class="meta-sep">·</span><span title="Time spent loading model into VRAM">🔥 ' + formatDurationCompact(usage.loadDurationMs) + ' load</span>' : '')
+    + (typeof HarnessExecMetrics !== 'undefined' ? HarnessExecMetrics.formatExecMetrics(usage) : '');
   body.appendChild(meta);
 }
 
@@ -5139,6 +6913,26 @@ function attachMessageMeta(msgEl, usage) {
  * `messageIndex` is the position in `chatMessages` of THIS assistant
  * reply, so regenerate can slice history just before it.
  */
+/**
+ * Write a reply to the clipboard as both formatted HTML (so rich targets —
+ * email, docs, Slack — paste with headings, bold, code blocks intact) and
+ * raw markdown (so plain editors get clean source). Falls back to plain
+ * text when ClipboardItem isn't supported.
+ */
+async function copyRich(markdown) {
+  const text = String(markdown || '');
+  const inner = (typeof marked !== 'undefined' && marked.parse) ? marked.parse(text) : ('<pre>' + esc(text) + '</pre>');
+  const html = '<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;line-height:1.55;color:#1a1a1a">' + inner + '</div>';
+  if (navigator.clipboard && window.ClipboardItem) {
+    await navigator.clipboard.write([new ClipboardItem({
+      'text/html': new Blob([html], { type: 'text/html' }),
+      'text/plain': new Blob([text], { type: 'text/plain' }),
+    })]);
+    return;
+  }
+  await navigator.clipboard.writeText(text);
+}
+
 function attachMessageActions(msgEl, messageIndex) {
   if (!msgEl) return;
   const body = msgEl.querySelector('.msg-body');
@@ -5157,14 +6951,13 @@ function attachMessageActions(msgEl, messageIndex) {
   };
   const copy = document.createElement('button');
   copy.className = 'msg-action-btn';
-  copy.title = 'Copy reply text';
+  copy.title = 'Copy reply — pastes formatted into rich editors, plain markdown elsewhere';
   copy.innerHTML = '📋 Copy';
-  copy.onclick = () => {
+  copy.onclick = async () => {
     const content = (chatMessages[messageIndex] && chatMessages[messageIndex].content) || '';
-    navigator.clipboard.writeText(content).then(() => {
-      copy.innerHTML = '✅ Copied';
-      setTimeout(() => { copy.innerHTML = '📋 Copy'; }, 1500);
-    });
+    const done = () => { copy.innerHTML = '✅ Copied'; setTimeout(() => { copy.innerHTML = '📋 Copy'; }, 1500); };
+    try { await copyRich(content); done(); }
+    catch { try { await navigator.clipboard.writeText(content); done(); } catch {} }
   };
   const reply = document.createElement('button');
   reply.className = 'msg-action-btn';
@@ -5178,7 +6971,7 @@ function attachMessageActions(msgEl, messageIndex) {
   save.onclick = async () => {
     const content = (chatMessages[messageIndex] && chatMessages[messageIndex].content) || '';
     if (!content) return;
-    const suggested = window.prompt('Save reply as (filename, leave blank for auto):', '');
+    const suggested = await promptToast('Save reply as (filename, leave blank for auto):', '');
     if (suggested === null) return; // cancel
     save.innerHTML = '⏳ Saving';
     try {
@@ -5195,7 +6988,7 @@ function attachMessageActions(msgEl, messageIndex) {
     } catch (e) {
       save.innerHTML = '✗ Failed';
       setTimeout(() => { save.innerHTML = '💾 Save'; }, 2000);
-      alert('Save failed: ' + (e && e.message ? e.message : e));
+      showToast('Save failed: ' + (e && e.message ? e.message : e));
     }
   };
   row.appendChild(regen);
@@ -5272,7 +7065,8 @@ function attachCitations(msgEl, citations, originalText) {
  * intent, and offer the 3 most likely next moves.
  */
 function renderFollowUpChips(userText, assistantText) {
-  const suggestions = computeFollowUps(userText, assistantText);
+  if (typeof HarnessFollowUps === 'undefined') return;
+  const suggestions = HarnessFollowUps.computeFollowUps(userText, assistantText);
   if (!suggestions.length) return;
   const area = document.getElementById('chatArea');
   if (!area) return;
@@ -5369,35 +7163,6 @@ async function renderMyceliumContextCards(userText) {
   scrollBottom();
 }
 
-function computeFollowUps(userText, assistantText) {
-  const out = [];
-  const ut = (userText || '').toLowerCase();
-  const at = assistantText || '';
-  const hasCode = /```[\s\S]+?```/.test(at);
-  const hasFiles = /(?:[\w./-]+\.(?:ts|tsx|js|jsx|py|md|json|yml|yaml|sh|html|css|sql))/.test(at);
-  const hasError = /(error|failed|exception|stack trace)/i.test(at);
-  const hasNumbers = /\d{2,}/.test(at);
-  const askedHow = /\b(how|why|explain|what)\b/.test(ut);
-  if (hasError) out.push('Diagnose the error and propose a fix.');
-  if (hasCode && !hasError) out.push('Add tests for that code.');
-  if (hasFiles) out.push('Show a diff of the changes.');
-  if (askedHow) out.push('Give me a worked example.');
-  if (hasNumbers) out.push('Where do those numbers come from?');
-  // Generic fallbacks always offered last.
-  out.push('Summarize this in 3 bullets.');
-  out.push('What would you do differently next?');
-  // Dedup + cap at 3.
-  const seen = new Set();
-  const final = [];
-  for (const s of out) {
-    if (seen.has(s)) continue;
-    seen.add(s);
-    final.push(s);
-    if (final.length >= 3) break;
-  }
-  return final;
-}
-
 // ─── Slash command palette ─────────────────────────────────────────────
 // Opens when the composer's first character is `/`. Up/down to navigate,
 // Enter to apply (replaces the input), Esc/Tab also work. Commands are
@@ -5460,6 +7225,42 @@ const SLASH_COMMANDS = [
     apply: () => { hideSlashPalette(); },
     fallback: '',
     takesArgs: true },
+  { cmd: '/goal',        desc: 'Expand a high-level intent into autonomy tasks (e.g. /goal Build a wiki from D:\\big.pdf)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
+  { cmd: '/run',         desc: 'Run an Active Goal end-to-end (e.g. /run gather notes -- verify file:agent-outputs/notes.md, or -- verify npm test)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
+  { cmd: '/priority',    desc: 'Set your top priority for today (e.g. /priority ship the Hermes features)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
+  { cmd: '/wiki',        desc: 'Turn a PDF into a chaptered wiki + RAG chat page (e.g. /wiki D:\\big.pdf)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
+  { cmd: '/research',    desc: 'Generate a research report on any subject (e.g. /research Acme Corp tech stack)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
+  { cmd: '/memory-wiki', desc: 'Rebuild your personal memory wiki from all stored memories',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: false },
+  { cmd: '/kanban',      desc: 'Show or manage the Kanban board (e.g. /kanban or /kanban move <id> triage)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
+  { cmd: '/brief',       desc: 'Generate your daily brief right now',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: false },
+  { cmd: '/yolo',        desc: 'Full-send: dontAsk + all grants + autonomy loop (e.g. /yolo 2h)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
 ];
 
 // Dynamic slash commands populated from /api/skills so users can autocomplete
@@ -5506,6 +7307,113 @@ const slashPaletteState = { visible: false, index: 0, filtered: [] };
 
 function getAllSlashCommands() {
   return SLASH_COMMANDS.concat(dynamicSkillSlashCommands);
+}
+
+// ── Plain-English → feature suggestions ──────────────────────────────
+// Beginners type "back up my stuff", not "/snapshots". This deterministic,
+// LLM-free matcher maps natural phrasing onto the slash commands that already
+// exist, then surfaces a one-click chip. The button reuses each command's own
+// apply(), so there is no duplicate navigation logic. Ordered most-specific
+// first; the first matching pattern wins.
+const FEATURE_INTENTS = [
+  { cmd: '/snapshots', label: 'back up your skills & memory', re: /\b(back\s?up|backup)\b.*\b(data|settings|stuff|everything|memor|skill|chat|work)|\bsnapshot/i },
+  { cmd: '/memory',    label: 'see what I remember about you',  re: /\bwhat.*(remember|know about me)|\bmy memor|\bremember about me/i },
+  { cmd: '/tools',     label: 'see the tools you can use',      re: /\b(what|which|list).{0,12}tools|\byour tools\b|\btool status\b|\btools.{0,12}(have|available)/i },
+  { cmd: '/skills',    label: 'see your skills',                re: /\b(what|which|list|my)\b.{0,8}skills\b|\byour skills\b/i },
+  { cmd: '/rag',       label: 'search your local documents',   re: /\b(search|index|build).{0,16}(docs|documents|notes|files|folder|pdf)|\blocal rag\b/i },
+  { cmd: '/files',     label: 'browse your files',             re: /\bmy files\b|\b(show|browse|open|see).{0,8}files\b/i },
+  { cmd: '/history',   label: 'see your chat history',         re: /\bchat history\b|\bpast chats\b|\bprevious (chats|conversations)\b|\bmy history\b/i },
+  { cmd: '/new',       label: 'start a new chat',              re: /\bnew chat\b|\bstart over\b|\bclear (the )?chat\b|\breset (the )?(chat|conversation)\b|\bfresh chat\b/i },
+  { cmd: '/export',    label: 'export this chat',              re: /\bexport.{0,12}(chat|conversation)|\bsave (this )?(chat|conversation)\b|\bdownload (this )?chat\b/i },
+  { cmd: '/settings',  label: 'open settings',                 re: /\bopen settings\b|\bmy settings\b|\bpreferences\b|\bchange settings\b/i },
+  { cmd: '/brief',     label: 'generate your daily brief',     re: /\bdaily brief\b|\bmy brief\b|\bcatch me up\b/i },
+  { cmd: '/kanban',    label: 'open your task board',          re: /\bkanban\b|\btask board\b|\bmy board\b/i },
+  // Argument-taking commands: the chip prefills "/cmd <arg>" (arg extracted
+  // from the phrasing when clean) and focuses the box. It never auto-sends, so
+  // the user can review a path or topic before kicking off a long operation.
+  { cmd: '/wiki',     label: 'turn a document into a wiki',          btnLabel: 'Set up',   takesArgs: true,
+    re: /\b(make|build|create|turn)\b.{0,20}\bwiki\b|\bwiki\b.{0,12}\b(from|out of)\b/i,
+    arg: /(?:from|out of|on)\s+(.+?)(?:\s+into\s+a\s+wiki)?$|turn\s+(.+?)\s+into\s+a\s+wiki/i },
+  { cmd: '/research', label: 'research a topic and write a report',  btnLabel: 'Start',    takesArgs: true,
+    re: /\bresearch\b|\breport on\b|\blook into\b/i,
+    arg: /(?:research(?:\s+on)?|report on|look into)\s+(.+)$/i },
+  { cmd: '/goal',     label: 'break a big goal into autonomous tasks', btnLabel: 'Set up', takesArgs: true,
+    re: /\bmy goal is\b|\bset (a |my )?goal\b|\bbreak (this|it) down into (steps|tasks)\b/i,
+    arg: /(?:my goal is|set (?:a |my )?goal(?: to| of| is)?)\s+(.+)$/i },
+  { cmd: '/schedule', label: 'schedule a recurring job',             btnLabel: 'Schedule', takesArgs: true,
+    re: /\bevery\s+\d+\s*(h|hr|hrs|hours?|m|min|mins|minutes?)\b|\bremind me every\b/i,
+    arg: /(remind me every\s+.+)$|(every\s+.+)$/i },
+  { cmd: '/priority', label: 'set your top priority for today',      btnLabel: 'Set',      takesArgs: true,
+    re: /\bmy (top )?priority\b|\bpriority for today\b|\btop priority is\b/i,
+    arg: /priority(?:\s+(?:is|for today is|today is))?\s+(.+)$/i },
+  { cmd: '/yolo',     label: 'run fully autonomous for a while',     btnLabel: 'Start',    takesArgs: true,
+    re: /\byolo\b|\bfull[\s-]?send\b|\bgo (fully )?autonomous\b/i,
+    arg: /\b(\d+\s*(?:h|hr|hrs|hours?|m|min|minutes?))\b/i },
+  { cmd: '/help',      label: 'see what you can do here',      re: /\bwhat can (you|i) (do|type)\b|\bshow .{0,8}commands\b|\blist commands\b|\bhelp me get started\b/i },
+];
+
+let intentChipDismissedFor = '';
+
+function detectFeatureIntent(text) {
+  for (const intent of FEATURE_INTENTS) {
+    if (intent.re.test(text)) return intent;
+  }
+  return null;
+}
+
+function hideIntentChip() {
+  const chip = document.getElementById('intentChip');
+  if (chip) chip.classList.add('hidden');
+}
+
+function maybeShowIntentChip(value) {
+  const chip = document.getElementById('intentChip');
+  if (!chip) return;
+  const v = (value || '').trim();
+  // Stay out of the slash palette's way and ignore tiny/dismissed input.
+  if (!v || v.startsWith('/') || v.length < 4 || slashPaletteState.visible || v === intentChipDismissedFor) {
+    hideIntentChip();
+    return;
+  }
+  const hit = detectFeatureIntent(v);
+  if (!hit) { hideIntentChip(); return; }
+  chip.textContent = '';
+  const text = document.createElement('span');
+  text.textContent = '💡 Sounds like you want to ' + hit.label + '.';
+  const open = document.createElement('button');
+  open.type = 'button';
+  open.className = 'intent-chip-btn';
+  open.textContent = hit.btnLabel || 'Open';
+  open.onclick = () => {
+    hideIntentChip();
+    if (hit.takesArgs) {
+      // Prefill "/cmd <arg>" and focus; the user reviews, then presses Enter.
+      const input = document.getElementById('chatInput');
+      if (!input) return;
+      let argText = '';
+      if (hit.arg) {
+        const m = v.match(hit.arg);
+        if (m) argText = (m[1] || m[2] || '').trim();
+      }
+      input.value = hit.cmd + (argText ? ' ' + argText : ' ');
+      input.focus();
+      try { autoSize(input); } catch (e) {}
+      try { input.setSelectionRange(input.value.length, input.value.length); } catch (e) {}
+      return;
+    }
+    const c = getAllSlashCommands().find((x) => x.cmd === hit.cmd);
+    if (c && typeof c.apply === 'function') c.apply();
+  };
+  const dismiss = document.createElement('button');
+  dismiss.type = 'button';
+  dismiss.className = 'intent-chip-dismiss';
+  dismiss.title = 'Dismiss';
+  dismiss.textContent = '✕';
+  dismiss.onclick = () => { intentChipDismissedFor = v; hideIntentChip(); };
+  chip.appendChild(text);
+  chip.appendChild(open);
+  chip.appendChild(dismiss);
+  chip.classList.remove('hidden');
 }
 
 function maybeShowSlashPalette(value) {
@@ -5592,6 +7500,32 @@ function applySelectedSlashCommand() {
   const choice = slashPaletteState.filtered[slashPaletteState.index];
   if (!choice) return;
   const inp = document.getElementById('chatInput');
+  const currentValue = inp ? inp.value : '';
+
+  // takesArgs commands: don't wipe input on Enter — autocomplete the command
+  // so the user can type args, or if args are already present, submit. This
+  // fixes the "type /goal, hit Enter, nothing happens" beginner trap where
+  // the old behavior cleared the input and silently closed the palette.
+  if (choice.takesArgs) {
+    const cmdEsc = choice.cmd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const hasArgs = new RegExp('^\\s*' + cmdEsc + '\\s+\\S', 'i').test(currentValue);
+    if (hasArgs) {
+      hideSlashPalette();
+      sendMessage();
+      return;
+    }
+    if (inp) {
+      inp.value = choice.cmd + ' ';
+      inp.style.height = 'auto';
+      inp.style.height = Math.min(inp.scrollHeight, 180) + 'px';
+      inp.focus();
+      inp.setSelectionRange(inp.value.length, inp.value.length);
+    }
+    hideSlashPalette();
+    return;
+  }
+
+  // No-args command: invoke its apply handler (preserves existing behavior).
   if (inp) { inp.value = choice.fallback || ''; autoSize(inp); inp.focus(); }
   try { choice.apply(); } catch (e) { console.warn('slash command failed', e); }
 }
@@ -5627,29 +7561,84 @@ function openLeftTabByName(name) {
   const tabs = Array.from(document.querySelectorAll('.tab'));
   const tab = tabs.find((t) => (t.textContent || '').toLowerCase().includes(lookup.text.toLowerCase()));
   revealLeftPanel();
-  if (tab) showLeftTab(lookup.key, tab);
+  if (tab) { showLeftTab(lookup.key, tab); return; }
+  // No visible tab matched — but the key may still be a valid view that
+  // lives under the "More" overflow menu (autonomy, runs, tools, etc.).
+  // showLeftTab() switches view by id regardless of which DOM tab was
+  // clicked, so call it directly without a tab element. Without this
+  // fallback, inbox cards targeting More-menu views appear to do nothing.
+  if (typeof MORE_MENU_TABS !== 'undefined' && MORE_MENU_TABS.includes(lookup.key)) {
+    try { showLeftTab(lookup.key); } catch (e) { console.warn('openLeftTabByName fallback failed', e); }
+  }
 }
 
 async function loadHistory() {
+  const q = (document.getElementById('historySearch')?.value || '').trim();
+  if (q) { await searchHistory(q); return; }
   try {
     const r = await fetch('/api/history');
     const d = await r.json();
-    const list = document.getElementById('historyList');
-    list.innerHTML = '';
-    for (const c of d.chats || []) {
-      const el = document.createElement('div');
-      el.className = 'history-item' + (c.id === currentChatId ? ' active' : '');
-      el.innerHTML = '<div><div class="history-title">' + esc(c.title) + '</div><div class="history-date">' + c.messageCount + ' msgs</div></div><button class="history-del" onclick="event.stopPropagation();deleteChat(\'' + c.id + '\')">🗑</button>';
-      el.onclick = () => loadChat(c.id);
-      list.appendChild(el);
-    }
+    renderHistoryList(d.chats || [], '', false);
   } catch(e){}
 }
 
-async function loadChat(id) { try { const r = await fetch('/api/history/' + id); const d = await r.json(); currentChatId = id; chatMessages = d.messages || []; document.getElementById('chatArea').innerHTML = ''; for (const m of chatMessages) addMsg(m.role, m.content); saveChatSession(); loadHistory(); } catch(e){} }
+function renderHistoryList(items, query, isSearch) {
+  const list = document.getElementById('historyList');
+  list.innerHTML = '';
+  if (items.length === 0 && query) {
+    list.innerHTML = '<div style="padding:16px 12px;font-size:12px;color:var(--text-dim)">No chats match "' + esc(query) + '"</div>';
+    return;
+  }
+  for (const c of items) {
+    const el = document.createElement('div');
+    el.className = 'history-item' + (c.id === currentChatId ? ' active' : '');
+    const titleHtml = query ? hlMatch(esc(c.title), query) : esc(c.title);
+    const snippetHtml = isSearch && c.snippet ? '<div class="history-match-snippet">' + hlMatch(esc(c.snippet), query) + '</div>' : '';
+    const meta = isSearch ? (c.matchCount + ' match' + (c.matchCount !== 1 ? 'es' : '')) : (c.messageCount + ' msgs');
+    el.innerHTML = '<div style="min-width:0;flex:1"><div class="history-title">' + titleHtml + '</div><div class="history-date">' + meta + '</div>' + snippetHtml + '</div><button class="history-del" onclick="event.stopPropagation();deleteChat(\'' + c.id + '\')">🗑</button>';
+    el.onclick = () => loadChat(c.id);
+    list.appendChild(el);
+  }
+}
+
+function hlMatch(html, query) {
+  if (!query) return html;
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return html.replace(new RegExp('(' + escaped + ')', 'gi'), '<mark class="history-hl">$1</mark>');
+}
+
+let _historySearchTimer = null;
+function onHistorySearch(val) {
+  clearTimeout(_historySearchTimer);
+  _historySearchTimer = setTimeout(() => {
+    if (val.trim()) searchHistory(val.trim());
+    else loadHistory();
+  }, 250);
+}
+
+async function searchHistory(q) {
+  try {
+    const r = await fetch('/api/history/search?q=' + encodeURIComponent(q));
+    const d = await r.json();
+    renderHistoryList(d.results || [], q, true);
+  } catch(e){}
+}
+
+async function loadChat(id) { try { const r = await fetch('/api/history/' + id); const d = await r.json(); currentChatId = id; chatMessages = d.messages || []; document.getElementById('chatArea').innerHTML = ''; chatMessages.forEach((m, i) => { const el = addMsg(m.role, m.content); if (m.role === 'assistant' && m.content) attachMessageActions(el, i); }); saveChatSession(); loadHistory(); } catch(e){} }
 async function autoSaveChat() { if (chatMessages.length < 2) return; const title = chatMessages[0].content.slice(0, 60); try { const r = await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: currentChatId, title, messages: chatMessages }) }); const d = await r.json(); if (!currentChatId) currentChatId = d.id; saveChatSession(); loadHistory(); } catch(e){} }
 async function deleteChat(id) { await fetch('/api/history/' + id, { method: 'DELETE' }); if (id === currentChatId) newChat(); loadHistory(); }
-function newChat() { currentChatId = null; chatMessages = []; resetSessionUsage(); saveChatSession(); document.getElementById('chatArea').innerHTML = welcomeMarkup(); renderModelCapabilityHint(); updateNoModelEmptyState(); loadReadiness(); loadSettings(); loadHistory(); }
+function newChat() {
+  // If current tab has messages, create a new tab; otherwise reuse the current one
+  if (chatMessages.length > 0 && sessionTabs.size > 0) {
+    createSessionTab();
+  }
+  currentChatId = null; chatMessages = []; resetSessionUsage(); saveChatSession(); document.getElementById('chatArea').innerHTML = welcomeMarkup(); renderModelCapabilityHint(); updateNoModelEmptyState(); loadReadiness(); loadSettings(); loadHistory();
+  if (activeTabId) {
+    const tab = sessionTabs.get(activeTabId);
+    if (tab) { tab.chatMessages = []; tab.currentChatId = null; tab.status = 'idle'; tab.title = 'New chat'; tab.htmlSnapshot = null; }
+    renderSessionTabs();
+  }
+}
 function getPersonalityGreeting(name, personalityText) {
   const p = personalityText.toLowerCase();
   if (p.includes('pirate')) return { headline: 'Ahoy! Captain ' + name + ' at yer service!', subtitle: 'Set course for yer next task, matey. I can navigate files, chart code, search the seven seas of the web, and remember every port we visit.' };
@@ -5679,7 +7668,6 @@ function welcomeMarkup() {
     + '<div class="quick-start-body"><strong>Start here</strong><span id="quickStartHint">Step 1: Pick a model above to unlock quick start.</span></div>'
     + '<div class="quick-start-actions"><button id="quickStartBtn" class="btn-sm primary" onclick="startQuickTest()">Start quick test</button><button class="btn-sm" onclick="openFirstRunGuide()">Open setup guide</button></div>'
     + '</div>'
-    + '<div class="beginner-readiness warn" id="beginnerReadiness"><div><strong id="beginnerReadinessTitle">Checking first-chat readiness</strong><span id="beginnerReadinessMessage">Harness is checking Ollama and installed models before your first message.</span></div><span class="readiness-badge" id="beginnerReadinessBadge">Checking</span></div>'
     + '<div class="quick-suggestions" id="quickSuggestions" data-populated="1">'
     + quickStartChipsMarkup()
     + '</div>'
@@ -5698,7 +7686,6 @@ function welcomeMarkup() {
     + '<div class="cap-group"><div class="cap-icon">⚡</div><div><strong>Skills</strong><br>Create and use reusable AI capabilities</div></div>'
     + '<div class="cap-group"><div class="cap-icon">🤖</div><div><strong>Autonomy</strong><br>Run tasks automatically from a plan, no human in the loop</div></div>'
     + '</div></details>'
-    + '<div class="model-capability-hint" id="modelCapabilityHint">Pick a model from the dropdown above to get started.</div>'
     + '<details class="welcome-disclosure" id="welcomeFirstRun"' + (localStorage.getItem('harness_tour_seen') ? '' : ' open') + '>'
     + '<summary>New here? Quick guided tour (2 minutes)</summary>'
     + '<div class="welcome-disclosure-body">'
@@ -5731,7 +7718,7 @@ function welcomeMarkup() {
     + '</details>'
     + '</div>';
 }
-function exportChat() { if (!chatMessages.length) { alert('No messages.'); return; } let md = '# Chat Export\n\n'; for (const m of chatMessages) md += '## ' + (m.role === 'user' ? 'You' : 'Assistant') + '\n\n' + m.content + '\n\n---\n\n'; const blob = new Blob([md], { type: 'text/markdown' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'chat-' + new Date().toISOString().slice(0, 10) + '.md'; a.click(); }
+function exportChat() { if (!chatMessages.length) { showToast('No messages.'); return; } let md = '# Chat Export\n\n'; for (const m of chatMessages) md += '## ' + (m.role === 'user' ? 'You' : 'Assistant') + '\n\n' + m.content + '\n\n---\n\n'; const blob = new Blob([md], { type: 'text/markdown' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'chat-' + new Date().toISOString().slice(0, 10) + '.md'; a.click(); }
 
 async function loadFiles(dir) {
   try {
@@ -5849,7 +7836,7 @@ function clearSkillsBulkSelection() {
 async function bulkSetSkillsEnabled(enabled) {
   const names = Array.from(skillsBulkSelection);
   if (names.length === 0) return;
-  if (!confirm((enabled ? 'Enable' : 'Disable') + ' ' + names.length + ' skill(s)?')) return;
+  if (!await confirmToast((enabled ? 'Enable' : 'Disable') + ' ' + names.length + ' skill(s)?')) return;
   await Promise.all(names.map((name) => fetch('/api/skills/' + encodeURIComponent(name) + '/enabled', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -5862,7 +7849,7 @@ async function bulkSetSkillsEnabled(enabled) {
 async function bulkSetSkillsPinned(pinned) {
   const names = Array.from(skillsBulkSelection);
   if (names.length === 0) return;
-  if (!confirm((pinned ? 'Pin' : 'Unpin') + ' ' + names.length + ' skill(s)?')) return;
+  if (!await confirmToast((pinned ? 'Pin' : 'Unpin') + ' ' + names.length + ' skill(s)?')) return;
   await Promise.all(names.map((name) => fetch('/api/skills/' + encodeURIComponent(name) + '/pin', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -5875,7 +7862,7 @@ async function bulkSetSkillsPinned(pinned) {
 async function bulkDeleteSkills() {
   const names = Array.from(skillsBulkSelection);
   if (names.length === 0) return;
-  if (!confirm('Permanently delete ' + names.length + ' skill(s)?\n\n' + names.join('\n'))) return;
+  if (!await confirmToast('Permanently delete ' + names.length + ' skill(s)?\n\n' + names.join('\n'))) return;
   await Promise.all(names.map((name) => fetch('/api/skills/' + encodeURIComponent(name), { method: 'DELETE' }).catch(() => {})));
   clearSkillsBulkSelection();
   await loadSkills();
@@ -6006,7 +7993,7 @@ function clearFeaturedBulkSelection() {
 async function installSelectedFeatured() {
   const entries = Array.from(featuredBulkSelection.entries());
   if (entries.length === 0) return;
-  if (!confirm('Install ' + entries.length + ' featured skill(s) into runtime?')) return;
+  if (!await confirmToast('Install ' + entries.length + ' featured skill(s) into runtime?')) return;
   await Promise.all(entries.map(([id]) => fetch('/api/skills/install', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -6098,9 +8085,9 @@ async function toggleSkillEnabled(name, enabled) {
       body: JSON.stringify({ enabled }),
     });
     const data = await response.json();
-    if (data.error) { alert('Toggle failed: ' + data.error); return; }
+    if (data.error) { showToast('Toggle failed: ' + data.error); return; }
     await loadSkills();
-  } catch (error) { alert('Toggle failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Toggle failed: ' + (error.message || error)); }
 }
 
 // --- Skill detail modal ---
@@ -6246,7 +8233,7 @@ function renderSkillDiff(oldText, newText) {
 
 async function revertSkillToHistory(ts) {
   if (!activeSkillModalName) return;
-  if (!confirm('Revert this skill to the version from ' + ts + '? The current content will be snapshotted before the revert.')) return;
+  if (!await confirmToast('Revert this skill to the version from ' + ts + '? The current content will be snapshotted before the revert.')) return;
   const status = document.getElementById('skillModalStatus');
   if (status) status.textContent = 'Reverting…';
   try {
@@ -6381,9 +8368,9 @@ async function togglePinSkill(name, pinned) {
   try {
     const r = await fetch('/api/skills/' + encodeURIComponent(name) + '/pin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinned }) });
     const data = await r.json();
-    if (data.error) { alert('Pin failed: ' + data.error); return; }
+    if (data.error) { showToast('Pin failed: ' + data.error); return; }
     await loadSkills();
-  } catch (error) { alert('Pin failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Pin failed: ' + (error.message || error)); }
 }
 
 function renderCuratorPanel(curator) {
@@ -6421,13 +8408,13 @@ function renderCuratorPanel(curator) {
 }
 
 async function restoreArchivedSkill(name) {
-  if (!confirm('Restore archived skill "' + name + '" back to the runtime library?')) return;
+  if (!await confirmToast('Restore archived skill "' + name + '" back to the runtime library?')) return;
   try {
     const response = await fetch('/api/curator/restore/' + encodeURIComponent(name), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     const data = await response.json();
-    if (data.error) { alert('Restore failed: ' + data.error); return; }
+    if (data.error) { showToast('Restore failed: ' + data.error); return; }
     await loadSkills();
-  } catch (error) { alert('Restore failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Restore failed: ' + (error.message || error)); }
 }
 
 async function curatorPreview() {
@@ -6442,7 +8429,7 @@ async function curatorPreview() {
 }
 
 async function curatorRunNow() {
-  if (!confirm('Run the curator now? This may archive stale, unpinned skills.')) return;
+  if (!await confirmToast('Run the curator now? This may archive stale, unpinned skills.')) return;
   const out = document.getElementById('curatorPreviewOutput');
   if (out) out.textContent = 'Running curator…';
   try {
@@ -6458,7 +8445,7 @@ async function curatorToggle(enable) {
   try {
     await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ curator: { enabled: enable } }) });
     await loadSkills();
-  } catch (error) { alert('Toggle failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Toggle failed: ' + (error.message || error)); }
 }
 
 function renderCuratorSummary(summary) {
@@ -6513,7 +8500,7 @@ async function applyCuratorProposal(index, dryRun) {
   const proposal = (window._curatorProposals || [])[index];
   if (!proposal) return;
   const result = document.getElementById('curatorProposalResult' + index);
-  if (!dryRun && !confirm('Apply merge "' + proposal.heading + '"? This writes a new umbrella skill and archives ' + proposal.mergeSkills.length + ' source skill(s).')) return;
+  if (!dryRun && !await confirmToast('Apply merge "' + proposal.heading + '"? This writes a new umbrella skill and archives ' + proposal.mergeSkills.length + ' source skill(s).')) return;
   if (result) result.textContent = dryRun ? 'Previewing…' : 'Applying…';
   try {
     const response = await fetch('/api/curator/proposals/apply', {
@@ -6533,33 +8520,33 @@ async function applyCuratorProposal(index, dryRun) {
 }
 
 async function dismissCuratorProposals() {
-  if (!confirm('Clear all current LLM merge proposals?')) return;
+  if (!await confirmToast('Clear all current LLM merge proposals?')) return;
   try {
     await fetch('/api/curator/proposals', { method: 'DELETE' });
     await loadSkills();
-  } catch (error) { alert('Dismiss failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Dismiss failed: ' + (error.message || error)); }
 }
 function renderRepoSkillItem(s) { const id = s.id || s.name; return '<div class="skill-item"><div class="sk-name">' + esc(s.name) + '</div><div class="sk-desc">' + esc(s.description) + '</div><div class="sk-meta"><span>' + esc(s.domain || 'repo') + '</span><span>read-only</span><button class="sk-install" onclick="installRepoSkill(\'' + escAttr(id) + '\', \'' + escAttr(s.name) + '\')">Install to runtime</button></div></div>'; }
 function renderSkillDiagnostics(diagnostics) { if (!diagnostics || diagnostics.length === 0) return '<div id="skillDiagnostics" class="trace-list"><div class="trace-title">Skill Diagnostics</div><div class="trace-meta">No skipped runtime skill folders.</div></div>'; return '<div id="skillDiagnostics" class="trace-list"><div class="trace-title">Skill Diagnostics</div>' + diagnostics.map((item) => '<div class="trace-item"><div class="trace-title">' + esc(item.name) + '</div><div class="trace-meta">' + esc(item.reason) + ' · ' + esc(item.message) + '</div><div class="trace-meta">' + esc(item.filePath) + '</div>' + renderSkillDiagnosticActions(item) + '</div>').join('') + '</div>'; }
 function renderSkillDiagnosticActions(item) { const actions = ['<button class="btn-sm" onclick="copySkillDiagnosticPath(\'' + escAttr(item.filePath) + '\')">Copy path</button>']; if (item.reason === 'missing-skill-file') actions.push('<button class="btn-sm" onclick="scaffoldSkill(\'' + escAttr(item.name) + '\')">Create starter SKILL.md</button>'); return '<div class="skill-diagnostic-actions">' + actions.join(' ') + '</div>'; }
 function useSkillFromList(name) { document.getElementById('chatInput').value = 'Use the skill: ' + name; sendMessage(); }
-async function deleteSkill(name) { if (!confirm('Delete skill "' + name + '"?')) return; await fetch('/api/skills/' + name, { method: 'DELETE' }); loadSkills(); }
+async function deleteSkill(name) { if (!await confirmToast('Delete skill "' + name + '"?')) return; await fetch('/api/skills/' + name, { method: 'DELETE' }); loadSkills(); }
 async function installRepoSkill(id, displayName) {
   const label = displayName || id;
-  if (!confirm('Install repo skill "' + label + '" into runtime .harness/skills?')) return;
+  if (!await confirmToast('Install repo skill "' + label + '" into runtime .harness/skills?')) return;
   try {
     let response = await fetch('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: id }) });
     if (response.status === 409) {
-      if (!confirm('Runtime skill "' + label + '" already exists. Overwrite it?')) return;
+      if (!await confirmToast('Runtime skill "' + label + '" already exists. Overwrite it?')) return;
       response = await fetch('/api/skills/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: id, overwrite: true }) });
     }
     const data = await response.json();
-    if (data.error) { alert('Install failed: ' + data.error); return; }
+    if (data.error) { showToast('Install failed: ' + data.error); return; }
     await loadSkills();
-  } catch (error) { alert('Install failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Install failed: ' + (error.message || error)); }
 }
 async function runSkillAutomation() {
-  if (!confirm('Run skill automation now? It installs missing repo skills and scaffolds runtime folders missing SKILL.md. Existing skills are skipped.')) return;
+  if (!await confirmToast('Run skill automation now? It installs missing repo skills and scaffolds runtime folders missing SKILL.md. Existing skills are skipped.')) return;
   const out = document.getElementById('skillAutomationResult');
   if (out) out.textContent = 'Running skill automation...';
   try {
@@ -6574,21 +8561,31 @@ async function runSkillAutomation() {
   } catch (error) { if (out) out.textContent = 'Automation failed: ' + (error.message || error); }
 }
 async function scaffoldSkill(name) {
-  if (!confirm('Create a starter SKILL.md for "' + name + '"?')) return;
+  if (!await confirmToast('Create a starter SKILL.md for "' + name + '"?')) return;
   try {
     const response = await fetch('/api/skills/scaffold', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
     const data = await response.json();
-    if (data.error) { alert('Scaffold failed: ' + data.error); return; }
+    if (data.error) { showToast('Scaffold failed: ' + data.error); return; }
     await loadSkills();
-  } catch (error) { alert('Scaffold failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Scaffold failed: ' + (error.message || error)); }
 }
 async function createSkillFromForm() {
   const out = document.getElementById('skillAutomationResult');
-  const name = document.getElementById('newSkillName')?.value.trim() || '';
+  const nameEl = document.getElementById('newSkillName');
+  const rawName = nameEl?.value.trim() || '';
   const description = document.getElementById('newSkillDescription')?.value.trim() || 'Describe what this skill does.';
   const triggers = document.getElementById('newSkillTriggers')?.value || '';
   const content = document.getElementById('newSkillContent')?.value.trim() || '';
-  if (!name) { if (out) out.textContent = 'Enter a skill id first.'; return; }
+  if (!rawName) { if (out) out.textContent = 'Enter a skill id first.'; return; }
+  // Server requires SAFE_ID_PATTERN /^[a-zA-Z0-9._-]+$/. If the user typed
+  // spaces or other characters, auto-slug instead of bouncing them with
+  // an opaque "Invalid skill name." error.
+  let name = rawName;
+  if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
+    name = name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+    if (!name) { if (out) out.textContent = 'Could not derive a valid id from that name. Use letters, digits, dot, dash, or underscore.'; return; }
+    if (nameEl) nameEl.value = name;
+  }
   try {
     let response = await fetch('/api/skills/create', {
       method: 'POST',
@@ -6596,7 +8593,7 @@ async function createSkillFromForm() {
       body: JSON.stringify({ name, description, triggers, content }),
     });
     if (response.status === 409) {
-      if (!confirm('Runtime skill "' + name + '" already exists. Overwrite it?')) return;
+      if (!await confirmToast('Runtime skill "' + name + '" already exists. Overwrite it?')) return;
       response = await fetch('/api/skills/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -6688,7 +8685,7 @@ async function exportOperatingServices() {
     anchor.click();
     URL.revokeObjectURL(anchor.href);
   } catch (error) {
-    alert('Export failed: ' + (error.message || error));
+    showToast('Export failed: ' + (error.message || error));
   }
 }
 
@@ -6700,10 +8697,10 @@ async function importOperatingServices(files) {
     const payload = JSON.parse(text);
     const response = await fetch('/api/services/import?overwrite=false', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const data = await readApiJson(response, 'Operating services import API');
-    alert('Imported ' + (data.imported?.length || 0) + ' service(s); skipped ' + (data.skipped?.length || 0) + '.');
+    showToast('Imported ' + (data.imported?.length || 0) + ' service(s); skipped ' + (data.skipped?.length || 0) + '.');
     await loadDiscovery();
   } catch (error) {
-    alert('Import failed: ' + (error.message || error));
+    showToast('Import failed: ' + (error.message || error));
   } finally {
     if (input) input.value = '';
   }
@@ -6840,11 +8837,11 @@ function renderInlineList(label, values) {
 
 async function refreshModelCatalog() { const status = document.getElementById('modelCatalogSettingsStatus'); if (status) status.textContent = 'Refreshing catalog...'; try { const response = await fetch('/api/models/catalog/refresh', { method: 'POST' }); const data = await response.json(); if (data.error) throw new Error(data.error); if (status) status.textContent = 'Catalog refreshed: ' + Object.keys(data.manifest?.providers || {}).length + ' provider(s).'; await loadDiscovery(); } catch (error) { if (status) status.textContent = 'Catalog refresh failed: ' + (error.message || error); } }
 
-async function rebuildSessionSearchIndex() { const view = document.getElementById('sessionSearchDiscoveryPanel'); if (view) view.querySelector('.trace-meta').textContent = 'Rebuilding search index...'; try { const response = await fetch('/api/sessions/search-index/rebuild', { method: 'POST' }); const data = await response.json(); if (data.error) throw new Error(data.error); await loadDiscovery(); } catch (error) { alert('Search index rebuild failed: ' + (error.message || error)); } }
+async function rebuildSessionSearchIndex() { const view = document.getElementById('sessionSearchDiscoveryPanel'); if (view) view.querySelector('.trace-meta').textContent = 'Rebuilding search index...'; try { const response = await fetch('/api/sessions/search-index/rebuild', { method: 'POST' }); const data = await response.json(); if (data.error) throw new Error(data.error); await loadDiscovery(); } catch (error) { showToast('Search index rebuild failed: ' + (error.message || error)); } }
 
 async function loadPalaceEntry(id) { const detail = document.getElementById('palaceDetail'); if (!detail) return; detail.classList.remove('initial-hidden'); detail.textContent = 'Loading memory entry...'; try { const entryResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id)); const entryData = await entryResponse.json(); if (entryData.error) { detail.textContent = entryData.error; return; } const contextResponse = await fetch('/api/memory/entries/' + encodeURIComponent(id) + '/context?window=3'); const contextData = await contextResponse.json(); const entry = entryData.entry; const transcriptRows = (contextData.events || []).map((event) => '<div class="transcript-row' + (event.isAnchor ? ' anchor' : '') + '"><div><strong>' + esc(event.kind) + '</strong> · ' + esc(event.timestamp) + '</div><div class="prewrap-text">' + esc(event.text || '[empty]') + '</div></div>').join(''); detail.innerHTML = '<div><strong>Session</strong> ' + esc(entry.sessionId) + '</div><div><strong>Event</strong> ' + esc(entry.id) + '</div><div><strong>Kind</strong> ' + esc(entry.kind) + '</div><div><strong>Time</strong> ' + esc(entry.timestamp) + '</div><div class="prewrap-text trace-block-spaced">' + esc(entry.text) + '</div><div class="trace-block-spaced-large"><strong>Transcript Context</strong>' + (transcriptRows || '<div class="transcript-row">No transcript context found.</div>') + '</div>'; } catch (error) { detail.textContent = error.message; } }
 
-function showLeftTab(tab, el) { revealLeftPanel(); document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); if (el) el.classList.add('active'); if (!MORE_MENU_TABS.includes(tab)) { const moreBtn = document.getElementById('tabMoreBtn'); if (moreBtn) moreBtn.classList.remove('has-active'); document.querySelectorAll('.more-menu-item').forEach((item) => item.classList.remove('active')); } document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; const rn = document.getElementById('runsView'); if (rn) rn.style.display = tab === 'runs' ? 'block' : 'none'; const at = document.getElementById('autonomyView'); if (at) at.style.display = tab === 'autonomy' ? 'block' : 'none'; const wf = document.getElementById('workflowsView'); if (wf) wf.style.display = tab === 'workflows' ? 'block' : 'none'; const my = document.getElementById('myceliumView'); if (my) my.style.display = tab === 'mycelium' ? 'block' : 'none'; const pr = document.getElementById('promisesView'); if (pr) pr.style.display = tab === 'promises' ? 'block' : 'none'; const ev = document.getElementById('eventsView'); if (ev) ev.style.display = tab === 'events' ? 'block' : 'none'; const ci = document.getElementById('codeintelView'); if (ci) ci.style.display = tab === 'codeintel' ? 'block' : 'none'; const tk = document.getElementById('tasksView'); if (tk) tk.style.display = tab === 'tasks' ? 'block' : 'none'; const au = document.getElementById('auditView'); if (au) au.style.display = tab === 'audit' ? 'block' : 'none'; const tg = document.getElementById('triggersView'); if (tg) tg.style.display = tab === 'triggers' ? 'block' : 'none'; const ag = document.getElementById('agentsView'); if (ag) ag.style.display = tab === 'agents' ? 'block' : 'none'; const sq = document.getElementById('squadsView'); if (sq) sq.style.display = tab === 'squads' ? 'block' : 'none'; const idn = document.getElementById('identityView'); if (idn) idn.style.display = tab === 'identity' ? 'block' : 'none'; const arf = document.getElementById('artifactsView'); if (arf) arf.style.display = tab === 'artifacts' ? 'block' : 'none'; const hl = document.getElementById('healthView'); if (hl) hl.style.display = tab === 'health' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); if (tab === 'runs') loadRuns(); if (tab === 'autonomy') loadAutonomyTab(); if (tab === 'workflows') loadWorkflows(); if (tab === 'mycelium') loadMycelium(); if (tab === 'promises') loadPromises(); if (tab === 'events') loadEvents(); if (tab === 'codeintel') loadCodeIntel(); if (tab === 'tasks') loadTasks(); if (tab === 'audit') loadAudit(); if (tab === 'triggers') loadTriggers(); if (tab === 'agents') loadAgents(); if (tab === 'squads') loadSquads(); if (tab === 'identity') loadIdentity(); if (tab === 'artifacts') loadArtifacts(); if (tab === 'health') loadHealth(); }
+function showLeftTab(tab, el) { revealLeftPanel(); document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active')); if (el) el.classList.add('active'); if (!MORE_MENU_TABS.includes(tab)) { const moreBtn = document.getElementById('tabMoreBtn'); if (moreBtn) moreBtn.classList.remove('has-active'); document.querySelectorAll('.more-menu-item').forEach((item) => item.classList.remove('active')); } document.getElementById('historyList').style.display = tab === 'history' ? 'block' : 'none'; document.getElementById('fileTree').style.display = tab === 'files' ? 'block' : 'none'; document.getElementById('skillList').style.display = tab === 'skills' ? 'block' : 'none'; document.getElementById('memoryView').style.display = tab === 'memory' ? 'block' : 'none'; document.getElementById('memoryPalaceView').style.display = tab === 'palace' ? 'block' : 'none'; document.getElementById('discoveryView').style.display = tab === 'discovery' ? 'block' : 'none'; document.getElementById('learningView').style.display = tab === 'learning' ? 'block' : 'none'; const sn = document.getElementById('snapshotsView'); if (sn) sn.style.display = tab === 'snapshots' ? 'block' : 'none'; const rg = document.getElementById('ragView'); if (rg) rg.style.display = tab === 'rag' ? 'block' : 'none'; const td = document.getElementById('toolsDashboardView'); if (td) td.style.display = tab === 'tools' ? 'block' : 'none'; const rn = document.getElementById('runsView'); if (rn) rn.style.display = tab === 'runs' ? 'block' : 'none'; const al = document.getElementById('atlasView'); if (al) al.style.display = tab === 'atlas' ? 'block' : 'none'; const at = document.getElementById('autonomyView'); if (at) at.style.display = tab === 'autonomy' ? 'block' : 'none'; const wf = document.getElementById('workflowsView'); if (wf) wf.style.display = tab === 'workflows' ? 'block' : 'none'; const my = document.getElementById('myceliumView'); if (my) my.style.display = tab === 'mycelium' ? 'block' : 'none'; const pr = document.getElementById('promisesView'); if (pr) pr.style.display = tab === 'promises' ? 'block' : 'none'; const ev = document.getElementById('eventsView'); if (ev) ev.style.display = tab === 'events' ? 'block' : 'none'; const ci = document.getElementById('codeintelView'); if (ci) ci.style.display = tab === 'codeintel' ? 'block' : 'none'; const tk = document.getElementById('tasksView'); if (tk) tk.style.display = tab === 'tasks' ? 'block' : 'none'; const au = document.getElementById('auditView'); if (au) au.style.display = tab === 'audit' ? 'block' : 'none'; const tg = document.getElementById('triggersView'); if (tg) tg.style.display = tab === 'triggers' ? 'block' : 'none'; const ag = document.getElementById('agentsView'); if (ag) ag.style.display = tab === 'agents' ? 'block' : 'none'; const sq = document.getElementById('squadsView'); if (sq) sq.style.display = tab === 'squads' ? 'block' : 'none'; const idn = document.getElementById('identityView'); if (idn) idn.style.display = tab === 'identity' ? 'block' : 'none'; const arf = document.getElementById('artifactsView'); if (arf) arf.style.display = tab === 'artifacts' ? 'block' : 'none'; const hl = document.getElementById('healthView'); if (hl) hl.style.display = tab === 'health' ? 'block' : 'none'; if (tab === 'files') loadFiles(); if (tab === 'skills') loadSkills(); if (tab === 'memory') loadMemory(); if (tab === 'palace') loadMemoryPalace(); if (tab === 'discovery') loadDiscovery(); if (tab === 'learning') loadLearning(); if (tab === 'snapshots') loadSnapshots(); if (tab === 'rag') loadRagTab(); if (tab === 'tools') loadToolsDashboard(); if (tab === 'runs') loadRuns(); if (tab === 'atlas') loadAtlas(); if (tab === 'autonomy') loadAutonomyTab(); if (tab === 'workflows') loadWorkflows(); if (tab === 'mycelium') loadMycelium(); if (tab === 'promises') loadPromises(); if (tab === 'events') loadEvents(); if (tab === 'codeintel') loadCodeIntel(); if (tab === 'tasks') loadTasks(); if (tab === 'audit') loadAudit(); if (tab === 'triggers') loadTriggers(); if (tab === 'agents') loadAgents(); if (tab === 'squads') loadSquads(); if (tab === 'identity') loadIdentity(); if (tab === 'artifacts') loadArtifacts(); if (tab === 'health') loadHealth(); }
 function toggleLeft() {
   const panel = document.getElementById('leftPanel');
   if (!panel) return;
@@ -6881,6 +8878,90 @@ async function loadAutonomyTab() {
     + '<div class="autonomy-builder" id="autonomyBuilderPanel" style="padding:14px"><div class="readiness-empty">Loading autonomy plan...</div></div>';
   loadAutonomyPlanPreview();
 }
+
+// ─── Project Atlas ─────────────────────────────────────────────────
+// Read-only map answering "what's been built, where, and by which task".
+// Synthesizes IMPLEMENTATION_PLAN.md + .forge-history.jsonl via /api/atlas/map.
+function atlasStatusBadge(status) {
+  const map = { done: ['\u2713 done', 'var(--ok,#3fb950)'], pending: ['\u25cb pending', 'var(--text-dim)'], failed: ['\u2715 failed', 'var(--err,#f85149)'] };
+  const [label, color] = map[status] || ['\u2014', 'var(--text-dim)'];
+  return '<span style="color:' + color + ';font-size:11px">' + label + '</span>';
+}
+
+function atlasWhen(iso) {
+  if (!iso) return '<span style="color:var(--text-dim)">never</span>';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? esc(iso) : esc(d.toLocaleString());
+}
+
+// Pre-fill (not auto-send) a targeted update goal into the chat composer so the
+// user can review before running. This is the incremental-update entry point:
+// it reuses the normal chat goal path rather than introducing a new write path.
+function atlasUpdateFile(filePath) {
+  const inp = document.getElementById('chatInput');
+  if (!inp) return;
+  inp.value = 'Update ' + filePath + ': ';
+  inp.focus();
+  try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (e) { /* noop */ }
+}
+
+async function loadAtlas() {
+  const view = document.getElementById('atlasView');
+  if (!view) return;
+  view.innerHTML = '<div style="padding:12px 14px;border-bottom:1px solid var(--border)"><h3 style="margin:0">\ud83d\uddfa Project Atlas</h3><p style="margin:4px 0 0;font-size:12px;color:var(--text-dim)">What has been built, where, and by which task \u2014 from the plan and change history.</p></div><div id="atlasBody" style="padding:14px"><div class="readiness-empty">Loading project map\u2026</div></div>';
+  const body = document.getElementById('atlasBody');
+  try {
+    const res = await fetch('/api/atlas/map');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const map = await res.json();
+    renderAtlas(body, map);
+  } catch (e) {
+    body.innerHTML = '<div class="readiness-empty">Could not load the project map: ' + esc(e && e.message ? e.message : String(e)) + '</div>';
+  }
+}
+
+function renderAtlas(body, map) {
+  const s = map.summary || {};
+  if (!map.files?.length && !map.tasks?.length) {
+    body.innerHTML = '<div class="readiness-empty">No project map yet. Once the autonomy loop runs tasks (writing IMPLEMENTATION_PLAN.md and .forge-history.jsonl), the files it builds and the tasks that built them appear here.</div>';
+    return;
+  }
+  const chip = (label, value) => '<div style="background:var(--bg-soft,rgba(255,255,255,0.04));border:1px solid var(--border);border-radius:6px;padding:6px 10px"><div style="font-size:18px;font-weight:600">' + value + '</div><div style="font-size:11px;color:var(--text-dim)">' + label + '</div></div>';
+  const chips = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">'
+    + chip('files tracked', s.filesTracked ?? 0)
+    + chip('tasks', s.tasksTotal ?? 0)
+    + chip('done', s.tasksDone ?? 0)
+    + chip('pending', s.tasksPending ?? 0)
+    + chip('failed', s.tasksFailed ?? 0)
+    + '</div>'
+    + '<div style="font-size:11px;color:var(--text-dim);margin-bottom:14px">Last activity: ' + atlasWhen(s.lastActivityAt) + '</div>';
+
+  const fileRows = (map.files || []).map((f) => '<tr>'
+    + '<td style="padding:6px 8px;font-family:monospace;font-size:12px">' + esc(f.path) + '</td>'
+    + '<td style="padding:6px 8px;font-size:12px">' + esc(f.lastChangedByTaskTitle || f.lastChangedByTaskId || '\u2014') + '</td>'
+    + '<td style="padding:6px 8px;font-size:12px">' + atlasWhen(f.lastChangedAt) + '</td>'
+    + '<td style="padding:6px 8px;text-align:center">' + (f.changeCount ?? 0) + '</td>'
+    + '<td style="padding:6px 8px">' + atlasStatusBadge(f.planStatus) + '</td>'
+    + '<td style="padding:6px 8px"><button class="btn-sm" onclick="atlasUpdateFile(' + JSON.stringify(f.path).replace(/"/g, '&quot;') + ')">Update this</button></td>'
+    + '</tr>').join('');
+  const filesTable = '<h4 style="margin:0 0 8px">Files</h4><table style="width:100%;border-collapse:collapse"><thead><tr style="text-align:left;color:var(--text-dim);font-size:11px;border-bottom:1px solid var(--border)">'
+    + '<th style="padding:6px 8px">File</th><th style="padding:6px 8px">Built / last changed by</th><th style="padding:6px 8px">When</th><th style="padding:6px 8px">Changes</th><th style="padding:6px 8px">Plan status</th><th style="padding:6px 8px"></th>'
+    + '</tr></thead><tbody>' + (fileRows || '<tr><td colspan="6" style="padding:8px;color:var(--text-dim)">No files changed yet.</td></tr>') + '</tbody></table>';
+
+  const taskRows = (map.tasks || []).map((t) => '<tr>'
+    + '<td style="padding:6px 8px;font-size:12px">' + esc(t.title || t.id) + (t.inPlan ? '' : ' <span style="color:var(--text-dim);font-size:10px">(not in plan)</span>') + '</td>'
+    + '<td style="padding:6px 8px">' + atlasStatusBadge(t.planStatus) + '</td>'
+    + '<td style="padding:6px 8px;text-align:center">' + (t.runCount ?? 0) + '</td>'
+    + '<td style="padding:6px 8px;font-size:12px">' + atlasWhen(t.lastRunAt) + '</td>'
+    + '<td style="padding:6px 8px;text-align:center">' + (t.changedFiles ? t.changedFiles.length : 0) + '</td>'
+    + '</tr>').join('');
+  const tasksTable = '<h4 style="margin:18px 0 8px">Tasks</h4><table style="width:100%;border-collapse:collapse"><thead><tr style="text-align:left;color:var(--text-dim);font-size:11px;border-bottom:1px solid var(--border)">'
+    + '<th style="padding:6px 8px">Task</th><th style="padding:6px 8px">Plan status</th><th style="padding:6px 8px">Runs</th><th style="padding:6px 8px">Last run</th><th style="padding:6px 8px">Files</th>'
+    + '</tr></thead><tbody>' + (taskRows || '<tr><td colspan="5" style="padding:8px;color:var(--text-dim)">No tasks yet.</td></tr>') + '</tbody></table>';
+
+  body.innerHTML = chips + filesTable + tasksTable;
+}
+
 
 // ─── Left panel resize ─────────────────────────────────────────────
 // Drag the right edge of the left panel to widen it. Width persists in
@@ -6955,7 +9036,7 @@ if (document.readyState === 'interactive' || document.readyState === 'complete')
 }
 
 // Tabs we don't show in the main bar — selected via the More overflow menu.
-const MORE_MENU_TABS = ['palace', 'discovery', 'learning', 'snapshots', 'rag', 'tools', 'runs', 'autonomy', 'mycelium', 'promises', 'events', 'codeintel', 'tasks', 'audit', 'triggers', 'agents', 'squads', 'identity', 'artifacts', 'health'];
+const MORE_MENU_TABS = ['palace', 'discovery', 'learning', 'snapshots', 'rag', 'tools', 'runs', 'atlas', 'autonomy', 'mycelium', 'promises', 'events', 'codeintel', 'tasks', 'audit', 'triggers', 'agents', 'squads', 'identity', 'artifacts', 'health'];
 
 function toggleMoreMenu(event) {
   if (event && event.stopPropagation) event.stopPropagation();
@@ -7072,7 +9153,7 @@ const SETTINGS_DEFAULTS = {
 async function resetSettingsSection(section) {
   const payload = SETTINGS_DEFAULTS[section];
   if (!payload) return;
-  if (!confirm('Reset the ' + section + ' section to defaults?')) return;
+  if (!await confirmToast('Reset the ' + section + ' section to defaults?')) return;
   try {
     const response = await fetch('/api/settings', {
       method: 'POST',
@@ -7080,7 +9161,7 @@ async function resetSettingsSection(section) {
       body: JSON.stringify(payload),
     });
     const data = await response.json();
-    if (data.error) { alert('Reset failed: ' + data.error); return; }
+    if (data.error) { showToast('Reset failed: ' + data.error); return; }
     // Reflect the new value in the UI inputs that the user can see.
     if (section === 'connection') {
       const el = document.getElementById('ollamaHost');
@@ -7101,7 +9182,7 @@ async function resetSettingsSection(section) {
       const w = document.getElementById('webReadMaxChars'); if (w) w.value = 12000;
     }
     loadAbout();
-  } catch (error) { alert('Reset failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Reset failed: ' + (error.message || error)); }
 }
 
 // Populate the About section with version, model, ollama host, permission/skill/memory counts.
@@ -7558,10 +9639,10 @@ function toggleComposeFormat() {
   }
 }
 
-function insertComposeLink() {
-  var url = prompt('URL:');
+async function insertComposeLink() {
+  var url = await promptToast('URL:');
   if (!url) return;
-  var text = prompt('Link text:', url);
+  var text = await promptToast('Link text:', url);
   document.execCommand('insertHTML', false, '<a href="' + url.replace(/"/g, '&quot;') + '">' + (text || url).replace(/</g, '&lt;') + '</a>');
 }
 
@@ -7720,9 +9801,9 @@ async function saveAsTemplate() {
   var subjectInput = document.getElementById('composeSubjectInput');
   var bodyInput = document.getElementById('composeBodyInput');
   var status = document.getElementById('composeStatus');
-  var name = prompt('Template name:');
+  var name = await promptToast('Template name:');
   if (!name || !name.trim()) return;
-  var category = prompt('Category (optional, e.g. Work, Personal):');
+  var category = await promptToast('Category (optional, e.g. Work, Personal):');
   var formatRadio = document.querySelector('input[name="composeFormat"]:checked');
   var isHtml = formatRadio && formatRadio.value === 'html';
   try {
@@ -7930,7 +10011,7 @@ async function stopTelegram() {
 }
 
 async function loadConnectorStatuses() {
-  await Promise.allSettled([loadDiscordStatus(), loadSlackStatus(), loadWhatsAppStatus(), loadConnectorBadges()]);
+  await Promise.allSettled([loadDiscordStatus(), loadSlackStatus(), loadWhatsAppStatus(), loadWebhooks(), loadGovernedLoop(), loadBrowserAuditLog(), loadBrowserSessions(), loadConnectorBadges(), loadConnectorGallery()]);
 }
 
 async function loadConnectorBadges() {
@@ -7967,6 +10048,77 @@ async function loadConnectorBadges() {
   } catch (_e) {
     // Silently skip badges on error — not critical.
   }
+}
+
+// Renders the connector gallery (Settings → 🔌 Connectors) as cards built from
+// the design-stage connector contracts (/api/connectors/contracts) merged with
+// live status (/api/connectors/status). Cards honestly distinguish live
+// connectors, email-backed providers (Gmail/Outlook work now via SMTP/IMAP),
+// and design-stage contracts whose live integration is not built yet.
+async function loadConnectorGallery() {
+  var container = document.getElementById('connectorGallery');
+  if (!container) return;
+  var statusEl = document.getElementById('connectorGalleryStatus');
+  try {
+    var results = await Promise.all([
+      fetch('/api/connectors/contracts'),
+      fetch('/api/connectors/status'),
+    ]);
+    var contractsData = await results[0].json();
+    var statusData = await results[1].json();
+    var contracts = (contractsData && contractsData.contracts) || [];
+    var statuses = (statusData && statusData.connectors) || {};
+
+    // Presentation metadata per connector id: icon, the settings section to
+    // jump to when configurable, and whether email is already live for it.
+    var meta = {
+      google: { icon: '✉️', section: 'settingsSmtp', emailLive: true, note: 'Gmail send/read works now via SMTP/IMAP. OAuth + calendar is design-stage.' },
+      microsoft: { icon: '📅', section: 'settingsSmtp', emailLive: true, note: 'Outlook send/read works now via SMTP/IMAP. OAuth + calendar is design-stage.' },
+      github: { icon: '🐙', section: null, emailLive: false, note: '' },
+      notion: { icon: '📝', section: null, emailLive: false, note: '' },
+      telegram: { icon: '📱', section: 'settingsTelegram', emailLive: false, note: '' },
+      slack: { icon: '💬', section: 'settingsSlack', emailLive: false, note: '' },
+    };
+
+    var html = '';
+    for (var i = 0; i < contracts.length; i++) {
+      var c = contracts[i];
+      var m = meta[c.id] || { icon: '🔌', section: null, emailLive: false, note: '' };
+      var live = statuses[c.id];
+      var pill;
+      if (live && (live.ready || live.configured || live.running)) {
+        pill = '<span class="conn-pill conn-on">● Connected</span>';
+      } else if (m.emailLive) {
+        pill = '<span class="conn-pill conn-partial">◐ Email live · OAuth planned</span>';
+      } else {
+        pill = '<span class="conn-pill conn-off">○ Design stage</span>';
+      }
+      var ops = (c.operations || []).map(function (o) { return '<span class="conn-op">' + esc(o.name) + '</span>'; }).join('');
+      var secrets = (c.requiredSecrets || []).join(', ');
+      var configBtn = m.section
+        ? '<button class="btn-sm" data-section="' + m.section + '" onclick="scrollToConnectorSection(this)">Configure</button>'
+        : '';
+      html += '<div class="connector-card">'
+        + '<div class="conn-head"><span class="conn-icon">' + m.icon + '</span><span class="conn-label">' + esc(c.label) + '</span>' + pill + '</div>'
+        + '<div class="conn-purpose">' + esc(c.purpose || '') + '</div>'
+        + (ops ? '<div class="conn-ops">' + ops + '</div>' : '')
+        + (secrets ? '<div class="conn-secrets">Needs: ' + esc(secrets) + '</div>' : '')
+        + (m.note ? '<div class="conn-note">' + esc(m.note) + '</div>' : '')
+        + (configBtn ? '<div class="conn-actions">' + configBtn + '</div>' : '')
+        + '</div>';
+    }
+    container.innerHTML = html || '<div class="settings-note">No connectors available.</div>';
+    if (statusEl) statusEl.textContent = '';
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'Could not load connectors: ' + (e.message || e);
+  }
+}
+
+function scrollToConnectorSection(btn) {
+  var sectionId = btn.getAttribute('data-section');
+  if (!sectionId) return;
+  var section = document.getElementById(sectionId);
+  if (section) section.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 async function loadDiscordStatus() {
@@ -8041,6 +10193,436 @@ async function saveSlackWebhook() {
     loadConnectorBadges();
   } catch (e) {
     status.textContent = 'Slack setup failed: ' + (e.message || e);
+  }
+}
+
+// ── Outgoing webhooks (generic) ──────────────────────────────────────────────
+
+async function loadWebhooks() {
+  const list = document.getElementById('webhookList');
+  if (!list) return;
+  try {
+    const [hooksRes, deadRes] = await Promise.all([fetch('/api/webhooks'), fetch('/api/webhooks/dead-letter')]);
+    const hooks = (await readApiJson(hooksRes, 'Webhooks API')).webhooks || [];
+    const dead = (await readApiJson(deadRes, 'Dead-letter API')).deadLetters || [];
+    if (hooks.length === 0) {
+      list.innerHTML = '<em>No webhooks configured.</em>';
+    } else {
+      list.innerHTML = hooks.map(function (w) {
+        const d = w.lastDelivery;
+        let badge = '<span class="muted">no deliveries yet</span>';
+        if (d) {
+          const when = new Date(d.at).toLocaleString();
+          badge = d.ok
+            ? '<span style="color:var(--ok,#3a3)">✓ delivered' + (d.status ? ' (' + d.status + ')' : '') + ' · ' + esc(when) + '</span>'
+            : '<span style="color:var(--err,#c33)">✗ failed' + (d.status ? ' (' + d.status + ')' : '') + ' after ' + d.attempts + ' attempt(s) · ' + esc(when) + '</span>';
+        }
+        const history = w.recentDeliveries || [];
+        let timeline = '';
+        if (history.length > 0) {
+          const dots = history.map(function (h) {
+            const label = (h.ok ? 'ok' : 'failed') + (h.status ? ' ' + h.status : '') + ' · ' + new Date(h.at).toLocaleString();
+            return '<span title="' + esc(label) + '" style="color:' + (h.ok ? 'var(--ok,#3a3)' : 'var(--err,#c33)') + '">●</span>';
+          }).join('');
+          const failures = history.filter(function (h) { return !h.ok; }).length;
+          const flap = (failures > 0 && failures < history.length) ? ' <span style="color:var(--err,#c33)" title="mixed success/failure">⚠ flapping</span>' : '';
+          timeline = '<br><span class="muted" style="letter-spacing:2px">' + dots + '</span>' + flap;
+        }
+        const eventsLabel = (w.events && w.events.length > 0) ? esc(w.events.join(', ')) : 'all events';
+        return '<div class="setting-row" style="justify-content:space-between;gap:8px;align-items:center">'
+          + '<div style="overflow:hidden;text-overflow:ellipsis"><code>' + esc(w.url) + '</code>' + (w.enabled === false ? ' <span class="muted">(disabled)</span>' : '') + '<br><span class="muted">events: ' + eventsLabel + '</span><br>' + badge + timeline + '</div>'
+          + '<span style="white-space:nowrap"><button class="btn-sm" onclick="toggleWebhook(\'' + esc(w.id) + '\',' + (w.enabled === false) + ')">' + (w.enabled === false ? 'Enable' : 'Disable') + '</button> '
+          + '<button class="btn-sm" onclick="editWebhookEvents(\'' + esc(w.id) + '\',\'' + esc((w.events || []).join(',')) + '\')">Events</button> '
+          + '<button class="btn-sm" onclick="testWebhook(\'' + esc(w.id) + '\')">Test</button> '
+          + '<button class="btn-sm" onclick="removeWebhook(\'' + esc(w.id) + '\')">Delete</button></span></div>';
+      }).join('');
+    }
+    renderDeadLetters(dead);
+  } catch (e) {
+    list.textContent = 'Could not load webhooks: ' + (e.message || e);
+  }
+}
+
+function renderDeadLetters(dead) {
+  const box = document.getElementById('webhookDeadLetters');
+  if (!box) return;
+  if (!dead || dead.length === 0) { box.innerHTML = ''; return; }
+  box.innerHTML = '<div class="settings-note" style="margin-top:8px"><strong>Failed deliveries awaiting action (' + dead.length + ')</strong></div>'
+    + dead.map(function (e) {
+      const when = new Date(e.failedAt).toLocaleString();
+      const reason = e.error ? esc(e.error) : (e.status ? 'HTTP ' + e.status : 'unknown');
+      return '<div class="setting-row" style="justify-content:space-between;gap:8px;align-items:center">'
+        + '<div style="overflow:hidden;text-overflow:ellipsis"><code>' + esc(e.event) + '</code> → <code>' + esc(e.url) + '</code><br>'
+        + '<span style="color:var(--err,#c33)">' + reason + ' · ' + esc(when) + '</span></div>'
+        + '<span style="white-space:nowrap"><button class="btn-sm primary" onclick="redeliverDeadLetter(\'' + esc(e.id) + '\')">Redeliver</button> '
+        + '<button class="btn-sm" onclick="discardDeadLetter(\'' + esc(e.id) + '\')">Discard</button></span></div>';
+    }).join('');
+}
+
+async function addWebhook() {
+  const urlInput = document.getElementById('webhookUrlInput');
+  const secretInput = document.getElementById('webhookSecretInput');
+  const eventsInput = document.getElementById('webhookEventsInput');
+  const list = document.getElementById('webhookList');
+  if (!urlInput || !urlInput.value.trim()) { if (list) list.textContent = 'A webhook URL is required.'; return; }
+  const events = (eventsInput?.value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  try {
+    const res = await fetch('/api/webhooks', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: urlInput.value.trim(), secret: secretInput?.value.trim() || undefined, events }),
+    });
+    await readApiJson(res, 'Webhooks API');
+    urlInput.value = ''; if (secretInput) secretInput.value = ''; if (eventsInput) eventsInput.value = '';
+    loadWebhooks();
+  } catch (e) {
+    if (list) list.textContent = 'Could not add webhook: ' + (e.message || e);
+  }
+}
+
+async function removeWebhook(id) {
+  try {
+    await fetch('/api/webhooks/' + encodeURIComponent(id), { method: 'DELETE' });
+    loadWebhooks();
+  } catch (e) {
+    const list = document.getElementById('webhookList');
+    if (list) list.textContent = 'Could not delete webhook: ' + (e.message || e);
+  }
+}
+
+async function editWebhookEvents(id, currentCsv) {
+  const input = window.prompt('Comma-separated event filter (leave blank for all events):', currentCsv || '');
+  if (input === null) return; // cancelled
+  const events = input.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  const list = document.getElementById('webhookList');
+  try {
+    const res = await fetch('/api/webhooks/' + encodeURIComponent(id), {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ events: events }),
+    });
+    await readApiJson(res, 'Webhooks API');
+    loadWebhooks();
+  } catch (e) {
+    if (list) list.textContent = 'Could not update webhook events: ' + (e.message || e);
+  }
+}
+
+async function toggleWebhook(id, enable) {
+  const list = document.getElementById('webhookList');
+  try {
+    const res = await fetch('/api/webhooks/' + encodeURIComponent(id), {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: !!enable }),
+    });
+    await readApiJson(res, 'Webhooks API');
+    loadWebhooks();
+  } catch (e) {
+    if (list) list.textContent = 'Could not update webhook: ' + (e.message || e);
+  }
+}
+
+async function testWebhook(id) {
+  const list = document.getElementById('webhookList');
+  try {
+    const res = await fetch('/api/webhooks/' + encodeURIComponent(id) + '/test', { method: 'POST' });
+    const data = await res.json().catch(function () { return {}; });
+    if (res.ok) {
+      if (list) list.insertAdjacentHTML('afterbegin', '<div class="settings-note" style="color:var(--ok,#3a3)">Test ping delivered' + (data.status ? ' (' + esc(String(data.status)) + ')' : '') + '.</div>');
+    } else if (list) {
+      list.insertAdjacentHTML('afterbegin', '<div class="settings-note" style="color:var(--err,#c33)">Test ping failed: ' + esc(data.error || data.status || res.status) + '</div>');
+    }
+  } catch (e) {
+    if (list) list.textContent = 'Test ping failed: ' + (e.message || e);
+  }
+}
+
+async function redeliverDeadLetter(id) {
+  const box = document.getElementById('webhookDeadLetters');
+  try {
+    const res = await fetch('/api/webhooks/dead-letter/' + encodeURIComponent(id) + '/redeliver', { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json().catch(function () { return {}; });
+      if (box) box.insertAdjacentHTML('afterbegin', '<div class="settings-note" style="color:var(--err,#c33)">Redelivery failed: ' + esc(data.error || res.status) + '</div>');
+    }
+    loadWebhooks();
+  } catch (e) {
+    if (box) box.textContent = 'Redelivery failed: ' + (e.message || e);
+  }
+}
+
+async function discardDeadLetter(id) {
+  try {
+    await fetch('/api/webhooks/dead-letter/' + encodeURIComponent(id), { method: 'DELETE' });
+    loadWebhooks();
+  } catch (e) {
+    const box = document.getElementById('webhookDeadLetters');
+    if (box) box.textContent = 'Could not discard: ' + (e.message || e);
+  }
+}
+
+// ── Governed Agent Loop (working memory + review queue) ───────────────────────
+async function loadBrowserAuditLog() {
+  const box = document.getElementById('browserAuditLogList');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/browser/audit?limit=100');
+    const data = await readApiJson(res, 'Browser audit API');
+    const entries = data.entries || [];
+    if (entries.length === 0) { box.innerHTML = '<div class="settings-note">No browser actions recorded yet.</div>'; return; }
+    box.innerHTML = entries.map(function (e) {
+      const ok = e.outcome === 'ok';
+      const where = e.url ? esc(e.url) : (e.target ? esc(e.target) : '');
+      const detail = e.detail ? ' <span class="muted">' + esc(e.detail) + '</span>' : '';
+      return '<div class="setting-row">'
+        + '<code>' + esc(e.tool || '') + '</code> '
+        + (ok ? '✓' : '✕') + ' '
+        + where + detail
+        + ' <span class="muted">' + esc(e.ts || '') + ' · ' + esc(e.mode || '') + '</span>'
+        + '</div>';
+    }).join('');
+  } catch (e) {
+    box.textContent = 'Could not load browser audit log: ' + (e.message || e);
+  }
+}
+
+async function loadBrowserSessions() {
+  const box = document.getElementById('browserSessionsList');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/browser/sessions');
+    const data = await readApiJson(res, 'Browser sessions API');
+    const sessions = data.sessions || [];
+    if (sessions.length === 0) { box.innerHTML = '<div class="settings-note">No saved sessions.</div>'; return; }
+    box.innerHTML = sessions.map(function (s) {
+      return '<div class="setting-row">'
+        + '<code>' + esc(s.name) + '</code> '
+        + '<span class="muted">' + (s.cookieCount || 0) + ' cookies · ' + (s.originCount || 0) + ' origins · ' + esc(s.savedAt || '') + '</span> '
+        + '<button class="btn-sm" onclick="deleteBrowserSession(\'' + esc(s.name) + '\')">Delete</button>'
+        + '</div>';
+    }).join('');
+  } catch (e) {
+    box.textContent = 'Could not load browser sessions: ' + (e.message || e);
+  }
+}
+
+async function saveBrowserSession() {
+  const input = document.getElementById('browserSessionNameInput');
+  const status = document.getElementById('browserSessionStatus');
+  const name = input ? input.value.trim() : '';
+  if (!name) { if (status) status.textContent = 'Enter a session name first.'; return; }
+  if (status) status.textContent = 'Saving…';
+  try {
+    const res = await fetch('/api/browser/sessions/' + encodeURIComponent(name), { method: 'POST' });
+    const data = await readApiJson(res, 'Browser session save API');
+    if (status) status.textContent = '✓ Saved ' + (data.session ? data.session.name : name);
+    if (input) input.value = '';
+    loadBrowserSessions();
+  } catch (e) {
+    if (status) status.textContent = '✕ ' + (e.message || e);
+  }
+}
+
+async function deleteBrowserSession(name) {
+  const status = document.getElementById('browserSessionStatus');
+  try {
+    const res = await fetch('/api/browser/sessions/' + encodeURIComponent(name), { method: 'DELETE' });
+    await readApiJson(res, 'Browser session delete API');
+    if (status) status.textContent = 'Deleted ' + name;
+    loadBrowserSessions();
+  } catch (e) {
+    if (status) status.textContent = '✕ ' + (e.message || e);
+  }
+}
+
+function hydrateBrowserRedaction(redaction) {
+  const values = document.getElementById('browserRedactValues');
+  const origin = document.getElementById('browserRedactUrlOrigin');
+  if (values) values.checked = redaction.redactValues !== false;
+  if (origin) origin.checked = redaction.urlMode === 'origin';
+}
+
+async function saveBrowserRedaction() {
+  const values = document.getElementById('browserRedactValues');
+  const origin = document.getElementById('browserRedactUrlOrigin');
+  const status = document.getElementById('browserRedactionStatus');
+  if (status) status.textContent = 'Saving…';
+  try {
+    await updateSetting('browserRedaction', {
+      redactValues: values ? values.checked : true,
+      urlMode: origin && origin.checked ? 'origin' : 'full',
+    });
+    if (status) status.textContent = 'Saved.';
+  } catch (e) {
+    if (status) status.textContent = 'Save failed: ' + (e.message || e);
+  }
+}
+
+async function loadGovernedLoop() {
+  await Promise.allSettled([loadWorkingMemory(), loadReviewQueue(), loadReplayCandidates(), loadGovernanceMetrics()]);
+}
+
+async function loadWorkingMemory() {
+  const box = document.getElementById('governedWorkingMemory');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/working-memory');
+    const data = await readApiJson(res, 'Working-memory API');
+    const wm = data.workingMemory;
+    if (!wm) { box.innerHTML = '<em>No working memory yet (no session checkpoint).</em>'; return; }
+    function listRows(label, arr) {
+      if (!arr || arr.length === 0) return '';
+      return '<div class="setting-row"><strong>' + label + ':</strong> ' + arr.map(function (s) { return esc(String(s)); }).join('; ') + '</div>';
+    }
+    box.innerHTML = '<div class="setting-row"><strong>Goal:</strong> ' + esc(wm.currentGoal || '(none)') + '</div>'
+      + '<div class="setting-row"><strong>Next action:</strong> ' + esc(wm.nextAction || '(none)') + '</div>'
+      + listRows('Assumptions', wm.assumptions)
+      + listRows('Open questions', wm.openQuestions)
+      + listRows('Decisions', wm.decisions)
+      + listRows('Blocked', wm.blocked);
+  } catch (e) {
+    box.textContent = 'Could not load working memory: ' + (e.message || e);
+  }
+}
+
+async function loadReviewQueue() {
+  const box = document.getElementById('governedReviewQueue');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/review-queue?status=pending');
+    const data = await readApiJson(res, 'Review-queue API');
+    const items = data.items || [];
+    renderReviewCount(items.length);
+    if (items.length === 0) { box.innerHTML = '<div class="settings-note">Review queue is empty.</div>'; return; }
+    box.innerHTML = '<div class="settings-note" style="margin-top:8px"><strong>Pending review (' + items.length + ')</strong></div>'
+      + items.map(function (it) {
+        const isBrain = it.kind === 'brain-update';
+        const tag = isBrain ? 'brain-update' : 'needs-review';
+        const primary = isBrain
+          ? '<button class="btn-sm primary" onclick="resolveReviewItem(\'' + esc(it.id) + '\',\'approve\')">Approve</button> '
+            + '<button class="btn-sm" onclick="resolveReviewItem(\'' + esc(it.id) + '\',\'reject\')">Reject</button>'
+          : '<button class="btn-sm" onclick="resolveReviewItem(\'' + esc(it.id) + '\',\'drain\')">Drain</button> '
+            + '<button class="btn-sm" onclick="resolveReviewItem(\'' + esc(it.id) + '\',\'reject\')">Dismiss</button>';
+        return '<div class="setting-row" style="justify-content:space-between;gap:8px;align-items:center">'
+          + '<div style="overflow:hidden;text-overflow:ellipsis"><code>' + esc(tag) + '</code> ' + esc(it.content)
+          + (it.priorContent ? '<br><span class="muted">was: ' + esc(it.priorContent) + '</span>' : '')
+          + '<br><span class="muted">' + esc(it.reason) + '</span></div>'
+          + '<span style="white-space:nowrap">' + primary + '</span></div>';
+      }).join('');
+  } catch (e) {
+    box.textContent = 'Could not load review queue: ' + (e.message || e);
+  }
+}
+
+// Pending-review count badge in the session HUD. Stays silent at zero so the
+// HUD is uncluttered until the governed loop actually stages something for
+// human review. Refreshed live from loadReviewQueue (called on each
+// governed_shadow chat event).
+function renderReviewCount(count) {
+  const el = document.getElementById('sessionHudReview');
+  const sepEl = document.getElementById('sessionHudReviewSep');
+  if (!el || !sepEl) return;
+  const n = Number(count) || 0;
+  if (n <= 0) {
+    el.style.display = 'none';
+    sepEl.style.display = 'none';
+    return;
+  }
+  el.textContent = '🔍 ' + n + ' review';
+  el.title = n + ' governed-loop item(s) awaiting your approval';
+  el.style.display = '';
+  sepEl.style.display = '';
+}
+
+async function resolveReviewItem(id, action) {
+  const box = document.getElementById('governedReviewQueue');
+  try {
+    const res = await fetch('/api/review-queue/' + encodeURIComponent(id) + '/' + encodeURIComponent(action), { method: 'POST' });
+    await readApiJson(res, 'Review-queue API');
+    loadReviewQueue();
+  } catch (e) {
+    if (box) box.textContent = 'Could not update review item: ' + (e.message || e);
+  }
+}
+
+// Drained needs-review answers staged for re-investigation. The list is a
+// non-destructive peek at the replay seam; "Replay drained answers" re-asks
+// each one through the harness and re-enqueues the fresh governed answer for
+// review (it auto-approves nothing).
+async function loadReplayCandidates() {
+  const box = document.getElementById('governedReplayCandidates');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/replay-candidates');
+    const data = await readApiJson(res, 'Replay-candidates API');
+    const items = data.candidates || [];
+    const btn = document.getElementById('governedReplayBtn');
+    if (btn) btn.disabled = items.length === 0;
+    if (items.length === 0) { box.innerHTML = '<div class="settings-note">No drained answers waiting to replay.</div>'; return; }
+    box.innerHTML = '<div class="settings-note" style="margin-top:8px"><strong>Drained, awaiting replay (' + items.length + ')</strong></div>'
+      + items.map(function (c) {
+        return '<div class="setting-row" style="gap:8px;align-items:center">'
+          + '<div style="overflow:hidden;text-overflow:ellipsis"><code>replay</code> ' + esc(c.content)
+          + '<br><span class="muted">' + esc(c.reason) + '</span></div></div>';
+      }).join('');
+  } catch (e) {
+    box.textContent = 'Could not load replay candidates: ' + (e.message || e);
+  }
+}
+
+// Small lifetime readout of the governed-loop review queue: staged → approved /
+// drained → re-queued. Stays quiet on failure so it never blocks the panel.
+async function loadGovernanceMetrics() {
+  const box = document.getElementById('governedMetrics');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/governed-metrics');
+    const data = await readApiJson(res, 'Governed-metrics API');
+    const m = data.metrics || {};
+    box.innerHTML = '<div class="settings-note" style="margin-top:8px">'
+      + '<strong>Loop metrics</strong> · staged ' + (m.staged || 0)
+      + ' · approved ' + (m.approved || 0)
+      + ' · drained ' + (m.drained || 0)
+      + ' · rejected ' + (m.rejected || 0)
+      + ' · re-queued ' + (m.reQueued || 0) + '</div>';
+    renderLoopMetrics(m);
+  } catch (e) {
+    box.textContent = 'Could not load loop metrics: ' + (e.message || e);
+  }
+}
+
+// Compact loop-throughput badge in the session HUD, beside the review badge:
+// ✅ approved facts and ↻ replay re-queues. Stays hidden until the loop has
+// actually approved or re-queued something, so the HUD stays uncluttered.
+function renderLoopMetrics(m) {
+  const el = document.getElementById('sessionHudLoop');
+  const sepEl = document.getElementById('sessionHudLoopSep');
+  if (!el || !sepEl) return;
+  const approved = Number(m && m.approved) || 0;
+  const reQueued = Number(m && m.reQueued) || 0;
+  if (approved <= 0 && reQueued <= 0) {
+    el.style.display = 'none';
+    sepEl.style.display = 'none';
+    return;
+  }
+  el.textContent = '✅ ' + approved + ' · ↻ ' + reQueued;
+  el.title = approved + ' approved fact(s), ' + reQueued + ' replay re-queue(s)';
+  el.style.display = '';
+  sepEl.style.display = '';
+}
+
+async function runReplayNow() {
+  const statusEl = document.getElementById('governedReplayStatus');
+  const btn = document.getElementById('governedReplayBtn');
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.textContent = 'Replaying…';
+  try {
+    const res = await fetch('/api/replay-candidates/run', { method: 'POST' });
+    const data = await readApiJson(res, 'Replay-run API');
+    if (statusEl) statusEl.textContent = 'Replayed ' + (data.replayed || 0) + ', re-queued ' + (data.reQueued || 0) + '.';
+    loadReviewQueue();
+    loadReplayCandidates();
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'Replay failed: ' + (e.message || e);
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -8362,6 +10944,11 @@ function renderLearningManager(data) {
   const view = document.getElementById('learningView');
   if (!view) return;
   view.innerHTML += renderRoutingMetrics(data) + renderCandidateQueue(data) + renderOutputValidationTrends(data) + renderProfileFeedbackTrends(data) + renderContextLossTrend(data) + renderEvalDatasetManager(data);
+  // Inject benchmark panel as a sibling section.
+  const benchmarkContainer = document.createElement('div');
+  benchmarkContainer.id = 'benchmarkPanel';
+  view.appendChild(benchmarkContainer);
+  renderBenchmarkPanel(benchmarkContainer);
 }
 
 function renderOutputValidationTrends(data) {
@@ -8528,7 +11115,7 @@ function renderReplaySourceLinks(example) {
 async function applyRoutingCalibration() {
   const response = await fetch('/api/learning/routing/apply-calibration', { method: 'POST' });
   const data = await response.json();
-  if (data.error) { alert(data.error); return; }
+  if (data.error) { showToast(data.error); return; }
   currentModelRouting = data.settings?.modelRouting || currentModelRouting;
   await loadSettings();
   await loadLearning();
@@ -8548,37 +11135,37 @@ async function inspectLearningCandidate(id) {
 
 async function runEvalDataset(mode) {
   const selectedModel = document.getElementById('modelSelect')?.value;
-  if (mode === 'live' && !selectedModel) { alert('Select a model before running live replay evals.'); return; }
+  if (mode === 'live' && !selectedModel) { showToast('Select a model before running live replay evals.'); return; }
   const response = await fetch('/api/evals/trace-examples/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: mode || 'stored', model: selectedModel }) });
   const data = await response.json();
-  if (data.error) { alert(data.error); return; }
+  if (data.error) { showToast(data.error); return; }
   await loadLearning();
 }
 
 async function reviewLearningCandidate(id, action) {
-  const reason = action === 'reject' ? prompt('Reason for rejection', 'Not useful enough') : undefined;
+  const reason = action === 'reject' ? await promptToast('Reason for rejection', 'Not useful enough') : undefined;
   if (action === 'reject' && reason === null) return;
   const response = await fetch('/api/learning/candidates/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, action, reason }) });
   const data = await response.json();
-  if (data.error) { alert(data.error); return; }
+  if (data.error) { showToast(data.error); return; }
   await loadLearning();
 }
 
 async function tagEvalExample(id, currentTags) {
-  const input = prompt('Tags, comma separated', currentTags || '');
+  const input = await promptToast('Tags, comma separated', currentTags || '');
   if (input === null) return;
   const response = await fetch('/api/evals/trace-examples/' + encodeURIComponent(id) + '/tags', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tags: input.split(',') }) });
   const data = await response.json();
-  if (data.error) { alert(data.error); return; }
+  if (data.error) { showToast(data.error); return; }
   await loadLearning();
   await loadTraceEvalExamples();
 }
 
 async function deleteEvalExample(id) {
-  if (!confirm('Delete this eval example?')) return;
+  if (!await confirmToast('Delete this eval example?')) return;
   const response = await fetch('/api/evals/trace-examples/' + encodeURIComponent(id), { method: 'DELETE' });
   const data = await response.json();
-  if (data.error) { alert(data.error); return; }
+  if (data.error) { showToast(data.error); return; }
   await loadLearning();
   await loadTraceEvalExamples();
 }
@@ -8587,12 +11174,12 @@ function downloadEvalDataset() {
   window.location.href = '/api/evals/trace-examples/download';
 }
 
-async function rebuildSemanticMemory() { try { const r = await fetch('/api/memory/rebuild', { method: 'POST' }); const d = await r.json(); alert('Semantic memory entries: ' + (d.entries || 0)); } catch (e) { alert(e.message); } }
+async function rebuildSemanticMemory() { try { const r = await fetch('/api/memory/rebuild', { method: 'POST' }); const d = await r.json(); showToast('Semantic memory entries: ' + (d.entries || 0)); } catch (e) { showToast(e.message); } }
 async function searchSemanticMemory() { const q = document.getElementById('semanticQuery').value.trim(); const box = document.getElementById('semanticResults'); if (!q) return; try { const r = await fetch('/api/memory/search?q=' + encodeURIComponent(q)); const d = await r.json(); box.innerHTML = (d.results || []).map((x) => '<div class="learning-pattern-card"><div class="accent-strong">' + esc(x.entry.kind) + ' · ' + Math.round(x.score * 100) + '</div><div class="trace-meta">' + esc(x.entry.text.slice(0, 220)) + '</div></div>').join('') || '<div class="settings-note">No matches</div>'; } catch (e) { box.textContent = e.message; } }
 
-async function exportTraceSnapshot() { try { const response = await fetch('/api/traces/exports', { method: 'POST' }); const data = await response.json(); if (data.error) { alert(data.error); return; } loadTraceExports(); } catch (error) { alert(error.message); } }
-async function exportTraceEvalExample() { try { const response = await fetch('/api/evals/trace-examples', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'browser trace export', tags: ['browser', 'runtime'] }) }); const data = await response.json(); if (data.error) { alert(data.error); return; } await loadTraceEvalExamples(); } catch (error) { alert(error.message); } }
-async function createWeatherReplayEval() { try { const response = await fetch('/api/evals/replay-examples', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'Bracknell weather answer regression', prompt: 'What is the weather like in Bracknell, UK today?', expectedResponseIncludes: ['Bracknell', 'weather'], expectedTools: ['web_search', 'web_read'], tags: ['weather', 'replay'] }) }); const data = await response.json(); if (data.error) { alert(data.error); return; } await loadTraceEvalExamples(); await loadLearning(); } catch (error) { alert(error.message); } }
+async function exportTraceSnapshot() { try { const response = await fetch('/api/traces/exports', { method: 'POST' }); const data = await response.json(); if (data.error) { showToast(data.error); return; } loadTraceExports(); } catch (error) { showToast(error.message); } }
+async function exportTraceEvalExample() { try { const response = await fetch('/api/evals/trace-examples', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'browser trace export', tags: ['browser', 'runtime'] }) }); const data = await response.json(); if (data.error) { showToast(data.error); return; } await loadTraceEvalExamples(); } catch (error) { showToast(error.message); } }
+async function createWeatherReplayEval() { try { const response = await fetch('/api/evals/replay-examples', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ task: 'Bracknell weather answer regression', prompt: 'What is the weather like in Bracknell, UK today?', expectedResponseIncludes: ['Bracknell', 'weather'], expectedTools: ['web_search', 'web_read'], tags: ['weather', 'replay'] }) }); const data = await response.json(); if (data.error) { showToast(data.error); return; } await loadTraceEvalExamples(); await loadLearning(); } catch (error) { showToast(error.message); } }
 async function loadTraceEvalExamples() { const box = document.getElementById('traceEvalExamples'); if (!box) return; try { const response = await fetch('/api/evals/trace-examples'); const data = await response.json(); const examples = data.examples || []; box.innerHTML = examples.slice(-5).reverse().map((item) => '<div class="trace-item"><div class="trace-title">Eval · ' + esc(item.status) + '</div><div class="trace-meta">' + esc(item.task) + ' · ' + esc((item.tags || []).join(', ')) + '</div></div>').join('') || '<div class="trace-meta">No eval examples</div>'; } catch(e){ box.innerHTML = '<div class="trace-meta">Eval examples unavailable</div>'; } }
 async function loadTraceExports() { const box = document.getElementById('traceExports'); if (!box) return; try { const response = await fetch('/api/traces/exports'); const data = await response.json(); box.innerHTML = (data.exports || []).slice(0, 5).map((item) => '<div class="trace-item"><div class="trace-title">' + esc(item.id) + '</div><div class="trace-meta">' + Math.round((item.size || 0) / 1024) + ' KB · ' + esc(item.modifiedAt || '') + '</div><button class="btn-sm full-width-button" onclick="inspectTraceExport(\'' + escAttr(item.id) + '\')">Inspect trace</button></div>').join('') || '<div class="trace-meta">No exports</div>'; await loadTraceEvalExamples(); } catch(e){ box.innerHTML = '<div class="trace-meta">Trace exports unavailable</div>'; } }
 
@@ -8604,7 +11191,174 @@ function traceRecordText(record) { return JSON.stringify(record || {}).toLowerCa
 
 async function loadRuntimeStorage() { const box = document.getElementById('runtimeStorageStatus'); if (!box) return; try { const response = await fetch('/api/runtime/storage'); const data = await response.json(); box.innerHTML = '<div><strong>Trace exports</strong> ' + esc(data.traces.count) + ' files · ' + Math.round((data.traces.bytes || 0) / 1024) + ' KB</div><div><strong>Semantic index</strong> ' + (data.semanticIndex.exists ? Math.round((data.semanticIndex.bytes || 0) / 1024) + ' KB' : 'not built') + '</div>'; } catch (error) { box.textContent = error.message; } }
 
-async function cleanupRuntimeStorage(target) { const body = { traces: target === 'traces', semanticIndex: target === 'semanticIndex' }; try { const response = await fetch('/api/runtime/cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const data = await response.json(); if (data.error) { alert(data.error); return; } await loadRuntimeStorage(); if (target === 'traces') await loadTraceExports(); } catch (error) { alert(error.message); } }
+async function cleanupRuntimeStorage(target) { const body = { traces: target === 'traces', semanticIndex: target === 'semanticIndex' }; try { const response = await fetch('/api/runtime/cleanup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const data = await response.json(); if (data.error) { showToast(data.error); return; } await loadRuntimeStorage(); if (target === 'traces') await loadTraceExports(); } catch (error) { showToast(error.message); } }
+
+// ─── Benchmark panel (Gap #2) ───────────────────────────────────────
+
+async function runBenchmarkSuite(tiers) {
+  const btn = document.getElementById('runBenchmarkBtn');
+  const box = document.getElementById('benchmarkResults');
+  if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
+  if (box) box.innerHTML = '<div class="trace-meta">Running benchmark suite…</div>';
+  try {
+    const model = document.getElementById('modelSelect')?.value || '';
+    const response = await fetch('/api/benchmark/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tiers: tiers || undefined, model }),
+    });
+    const data = await response.json();
+    if (data.error) { showToast(data.error); return; }
+    renderBenchmarkRun(data.run, data.summary, box);
+    await loadBenchmarkHistory();
+  } catch (error) {
+    showToast(error.message);
+    if (box) box.innerHTML = '<div class="trace-meta">Error: ' + esc(error.message) + '</div>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '▶ Run'; }
+  }
+}
+
+function renderBenchmarkRun(run, summary, box) {
+  if (!box || !run) return;
+  const pct = Math.round((run.passRate || 0) * 100);
+  const badge = pct >= 80 ? '✅' : pct >= 50 ? '⚠️' : '❌';
+  const tierRows = (summary || []).map((t) =>
+    '<div class="trace-row"><strong>' + esc(t.tier) + '</strong> · ' + esc(t.passed) + '/' + esc(t.total) + ' · ' + esc(t.passRate) + '</div>'
+  ).join('');
+  const failRows = (run.results || []).filter((r) => r.status !== 'pass').map((r) =>
+    '<div class="trace-row error-row"><strong>' + esc(r.taskId) + '</strong>' +
+    (r.failureCategory ? ' <span class="tool-name">' + esc(r.failureCategory) + '</span>' : '') +
+    '<div class="trace-meta">' + esc(r.reason) + '</div></div>'
+  ).join('');
+  box.innerHTML =
+    '<div class="trace-item"><div class="trace-title">' + badge + ' ' + pct + '% · ' + run.passed + '/' + run.total + ' tasks passed</div>' +
+    '<div class="trace-meta">model: ' + esc(run.model) + ' · ' + run.total + ' tasks · ' + esc(run.finishedAt?.slice(0, 19) || '') + '</div>' +
+    '<div class="trace-block-spaced">' + tierRows + '</div>' +
+    (failRows ? '<div class="trace-block-spaced"><strong>Failures</strong>' + failRows + '</div>' : '') +
+    '</div>';
+}
+
+async function loadBenchmarkHistory() {
+  const box = document.getElementById('benchmarkHistory');
+  if (!box) return;
+  try {
+    const response = await fetch('/api/benchmark/runs');
+    const data = await response.json();
+    const runs = data.runs || [];
+    box.innerHTML = runs.slice(0, 10).map((r) => {
+      const pct = Math.round((r.passRate || 0) * 100);
+      const badge = pct >= 80 ? '✅' : pct >= 50 ? '⚠️' : '❌';
+      const tiers = (r.tiers || []).join(', ');
+      return '<div class="trace-item"><div class="trace-title">' + badge + ' ' + pct + '% · ' + esc(r.model) + '</div>' +
+        '<div class="trace-meta">' + r.passed + '/' + r.total + ' · tiers: ' + esc(tiers) + ' · ' + esc((r.startedAt || '').slice(0, 10)) + '</div></div>';
+    }).join('') || '<div class="trace-meta">No benchmark runs yet</div>';
+  } catch (e) {
+    box.innerHTML = '<div class="trace-meta">History unavailable</div>';
+  }
+}
+
+function renderBenchmarkPanel(container) {
+  if (!container) return;
+  container.innerHTML =
+    '<div class="trace-list">' +
+    '<div class="trace-title">Benchmark Suite</div>' +
+    '<div class="trace-meta" style="margin-bottom:8px">Tiered task runner: canned · stress · adversarial · regression</div>' +
+    '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">' +
+    '<button id="runBenchmarkBtn" class="btn-sm" onclick="runBenchmarkSuite()">▶ Run all</button>' +
+    '<button class="btn-sm" onclick="runBenchmarkSuite([\'canned\'])">Canned only</button>' +
+    '<button class="btn-sm" onclick="runBenchmarkSuite([\'adversarial\'])">Adversarial</button>' +
+    '<button class="btn-sm" onclick="runBenchmarkSuite([\'regression\'])">Regression</button>' +
+    '</div>' +
+    '<div id="benchmarkResults"><div class="trace-meta">No run yet this session</div></div>' +
+
+    // A/B comparison section (Gap #3)
+    '<div class="trace-title" style="margin-top:12px">A/B Model Comparison</div>' +
+    '<div class="trace-meta" style="margin-bottom:6px">Run the same tasks against two models head-to-head</div>' +
+    '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">' +
+    '<input id="abModelA" class="learning-search-input" placeholder="Model A" style="width:160px">' +
+    '<span>vs</span>' +
+    '<input id="abModelB" class="learning-search-input" placeholder="Model B" style="width:160px">' +
+    '<button class="btn-sm" onclick="runABComparison()">⚔️ Compare</button>' +
+    '</div>' +
+    '<div id="abCompareResults"></div>' +
+
+    // Cost rates section (Gap #5)
+    '<div class="trace-title" style="margin-top:12px">Cost Rates</div>' +
+    '<div class="trace-meta" style="margin-bottom:6px">$/1K-token rates for cost-per-success calculations</div>' +
+    '<div id="costRatesPanel"><div class="trace-meta">Loading…</div></div>' +
+
+    '<div class="trace-title" style="margin-top:12px">Past Runs</div>' +
+    '<div id="benchmarkHistory"><div class="trace-meta">Loading…</div></div>' +
+    '</div>';
+  loadBenchmarkHistory();
+  loadCostRates();
+}
+
+// ─── A/B Comparison (Gap #3) ──────────────────────────────────────
+
+async function runABComparison() {
+  const modelA = (document.getElementById('abModelA') || {}).value;
+  const modelB = (document.getElementById('abModelB') || {}).value;
+  if (!modelA || !modelB) { showToast('Enter both Model A and Model B'); return; }
+  const out = document.getElementById('abCompareResults');
+  if (out) out.innerHTML = '<div class="trace-meta">Running comparison… this may take a few minutes.</div>';
+  try {
+    const r = await fetch('/api/benchmark/compare', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelA, modelB }),
+    });
+    const d = await r.json();
+    if (d.error) { if (out) out.innerHTML = '<div class="trace-meta trace-meta-warn">Error: ' + esc(d.error) + '</div>'; return; }
+    if (out) out.innerHTML = renderComparisonResult(d);
+  } catch (e) { if (out) out.innerHTML = '<div class="trace-meta trace-meta-warn">' + esc(e.message) + '</div>'; }
+}
+
+function renderComparisonResult(cmp) {
+  let html = '<div class="trace-block-spaced">';
+  html += '<div class="trace-title">' + esc(cmp.modelA.model) + ' vs ' + esc(cmp.modelB.model) + '</div>';
+  html += '<div class="metric-row"><span>Pass rate</span><span>' + Math.round(cmp.modelA.passRate * 100) + '% vs ' + Math.round(cmp.modelB.passRate * 100) + '%</span></div>';
+  html += '<div class="metric-row"><span>Avg duration</span><span>' + cmp.modelA.avgDurationMs + 'ms vs ' + cmp.modelB.avgDurationMs + 'ms</span></div>';
+  html += '<div class="metric-row"><span>Avg tool calls</span><span>' + cmp.modelA.avgToolCalls + ' vs ' + cmp.modelB.avgToolCalls + '</span></div>';
+  const winsA = (cmp.diffs || []).filter(function(d) { return d.winner === 1; }).length;
+  const winsB = (cmp.diffs || []).filter(function(d) { return d.winner === -1; }).length;
+  const ties = (cmp.diffs || []).filter(function(d) { return d.winner === 0; }).length;
+  html += '<div class="metric-row"><span>Task wins</span><span>' + winsA + ' / ' + winsB + ' / ' + ties + ' ties</span></div>';
+
+  // Per-task diffs
+  const disagreements = (cmp.diffs || []).filter(function(d) { return d.winner !== 0; });
+  if (disagreements.length > 0) {
+    html += '<div class="trace-title" style="margin-top:8px">Disagreements</div>';
+    for (const d of disagreements) {
+      const winner = d.winner === 1 ? cmp.modelA.model : cmp.modelB.model;
+      html += '<div class="trace-meta">• <strong>' + esc(d.taskId) + '</strong>: ' + esc(winner) + ' won (' + d.statusA + '/' + d.statusB + ', ' + d.durationMsA + 'ms/' + d.durationMsB + 'ms)</div>';
+    }
+  }
+  html += '</div>';
+  return html;
+}
+
+// ─── Cost Rates (Gap #5) ──────────────────────────────────────────
+
+async function loadCostRates() {
+  const panel = document.getElementById('costRatesPanel');
+  if (!panel) return;
+  try {
+    const r = await fetch('/api/cost/rates');
+    const d = await r.json();
+    const rates = d.rates || {};
+    const models = Object.keys(rates);
+    if (models.length === 0) { panel.innerHTML = '<div class="trace-meta">No rates configured</div>'; return; }
+    let html = '<div style="max-height:150px;overflow-y:auto">';
+    for (const model of models) {
+      const rate = rates[model];
+      const label = rate.input === 0 && rate.output === 0 ? 'free (local)' : '$' + rate.input + '/$' + rate.output + ' per 1K';
+      html += '<div class="metric-row"><span>' + esc(model) + '</span><span class="trace-meta">' + label + '</span></div>';
+    }
+    html += '</div>';
+    panel.innerHTML = html;
+  } catch (e) { if (panel) panel.innerHTML = '<div class="trace-meta">Failed: ' + esc(e.message) + '</div>'; }
+}
 
 // ─── Snapshots tab (skills + memory + config) ──────────────────────
 // Renders a list of snapshots with "Take", "Diff", "Restore", "Delete"
@@ -8639,14 +11393,14 @@ async function loadSnapshots() {
 }
 
 async function takeSnapshot() {
-  const reason = window.prompt('Snapshot label (optional):', 'manual');
+  const reason = await promptToast('Snapshot label (optional):', 'manual');
   if (reason === null) return;
   try {
     const r = await fetch('/api/snapshots', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     await loadSnapshots();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 async function diffSnapshot(id) {
@@ -8667,24 +11421,24 @@ async function diffSnapshot(id) {
 }
 
 async function restoreSnapshot(id) {
-  if (!confirm('Restore snapshot ' + id + '?\n\nA pre-restore safety snapshot will be taken first so you can undo.')) return;
+  if (!await confirmToast('Restore snapshot ' + id + '?\n\nA pre-restore safety snapshot will be taken first so you can undo.')) return;
   try {
     const r = await fetch('/api/snapshots/' + encodeURIComponent(id) + '/restore', { method: 'POST' });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
-    alert('Restored ' + d.restoredFiles + ' file(s).\nSafety snapshot: ' + d.safetySnapshotId);
+    if (d.error) { showToast(d.error); return; }
+    showToast('Restored ' + d.restoredFiles + ' file(s).\nSafety snapshot: ' + d.safetySnapshotId);
     await loadSnapshots();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 async function deleteSnapshot(id) {
-  if (!confirm('Delete snapshot ' + id + '? This cannot be undone.')) return;
+  if (!await confirmToast('Delete snapshot ' + id + '? This cannot be undone.')) return;
   try {
     const r = await fetch('/api/snapshots/' + encodeURIComponent(id), { method: 'DELETE' });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     await loadSnapshots();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 // ─── Local RAG tab ────────────────────────────────────────────────
@@ -9128,13 +11882,13 @@ function ragCopyChunk(button) {
 }
 
 async function ragDrop(name) {
-  if (!confirm('Delete index "' + name + '"?')) return;
+  if (!await confirmToast('Delete index "' + name + '"?')) return;
   try {
     const r = await fetch('/api/rag/indexes/' + encodeURIComponent(name), { method: 'DELETE' });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     await loadRagTab();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 function ragLoadPrefsIntoPicker(name) {
@@ -9154,7 +11908,7 @@ function ragLoadPrefsIntoPicker(name) {
 async function ragRebuildNow(name) {
   const idx = ragState.indexCache.get(name);
   if (!idx || !idx.prefs || !Array.isArray(idx.prefs.paths) || idx.prefs.paths.length === 0) return;
-  if (!confirm('Rebuild index "' + name + '" with the same ' + idx.prefs.paths.length + ' path(s)?')) return;
+  if (!await confirmToast('Rebuild index "' + name + '" with the same ' + idx.prefs.paths.length + ' path(s)?')) return;
   ragState.selectedPaths = new Set(idx.prefs.paths);
   const nameInput = document.getElementById('ragBuildName');
   if (nameInput) nameInput.value = name;
@@ -9372,41 +12126,41 @@ async function mcpRuntimeStart(id) {
   try {
     const r = await fetch('/api/mcp/runtime/servers/' + encodeURIComponent(id) + '/start', { method: 'POST' });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     const pid = d.server && d.server.pid ? ' (pid ' + d.server.pid + ')' : '';
     showToast('Started MCP server "' + id + '"' + pid + '. Run Discover tools to expose its tools in the registry.', 5000, 'success');
     await loadToolsDashboard();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 async function mcpRuntimeDiscoverTools(id) {
   try {
     const r = await fetch('/api/mcp/runtime/servers/' + encodeURIComponent(id) + '/discover-tools', { method: 'POST' });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     const count = Array.isArray(d.server?.tools) ? d.server.tools.length : 0;
     showToast('Discovered ' + count + ' MCP tool(s) for "' + id + '".', 5000, 'success');
     await loadToolsDashboard();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 async function mcpRuntimeStop(id) {
   try {
     const r = await fetch('/api/mcp/runtime/servers/' + encodeURIComponent(id) + '/stop', { method: 'POST' });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     await loadToolsDashboard();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 async function mcpRuntimeDelete(id) {
-  if (!confirm('Remove MCP runtime server "' + id + '"?')) return;
+  if (!await confirmToast('Remove MCP runtime server "' + id + '"?')) return;
   try {
     const r = await fetch('/api/mcp/runtime/servers/' + encodeURIComponent(id), { method: 'DELETE' });
     const d = await r.json();
-    if (d.error) { alert(d.error); return; }
+    if (d.error) { showToast(d.error); return; }
     await loadToolsDashboard();
-  } catch (e) { alert(e.message); }
+  } catch (e) { showToast(e.message); }
 }
 
 async function createMcpRuntimeFromForm() {
@@ -9627,7 +12381,7 @@ function filterAuditEvents() {
 }
 
 async function grantCapability(capabilityId) {
-  const reason = prompt('Reason for this capability grant?', 'Manual grant from Tools dashboard.');
+  const reason = await promptToast('Reason for this capability grant?', 'Manual grant from Tools dashboard.');
   if (reason === null) return;
   // For shell-style capabilities, offer to attach a per-grant
   // commandAllowlist of regex sources. When ANY pattern is supplied the
@@ -9638,7 +12392,7 @@ async function grantCapability(capabilityId) {
   let commandAllowlist = [];
   let maxExpiry = 1440;
   if (isShellCapability) {
-    const patternsRaw = prompt(
+    const patternsRaw = await promptToast(
       'OPTIONAL: command allowlist (one regex per line). '
       + 'Leave blank for the default 24h preset-only grant. '
       + 'Each pattern is anchored at run time and matched against the trimmed command. '
@@ -9649,11 +12403,11 @@ async function grantCapability(capabilityId) {
     commandAllowlist = patternsRaw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     if (commandAllowlist.length > 0) maxExpiry = 525_600; // 1 year
   }
-  const expiresRaw = prompt('Expire after how many minutes? (1-' + maxExpiry + ')', commandAllowlist.length > 0 ? '525600' : '60');
+  const expiresRaw = await promptToast('Expire after how many minutes? (1-' + maxExpiry + ')', commandAllowlist.length > 0 ? '525600' : '60');
   if (expiresRaw === null) return;
   const capabilities = await fetch('/api/capabilities').then((r) => r.json());
   const item = (capabilities.capabilities || []).find((cap) => cap.id === capabilityId);
-  if (!item || item.posture !== 'gated') { alert('Only gated capabilities can be granted.'); return; }
+  if (!item || item.posture !== 'gated') { showToast('Only gated capabilities can be granted.'); return; }
   const body = {
     capabilityId,
     controls: item.requiredControls || [],
@@ -9667,15 +12421,15 @@ async function grantCapability(capabilityId) {
     body: JSON.stringify(body),
   });
   const data = await response.json();
-  if (data.error) { alert('Grant failed: ' + data.error); return; }
+  if (data.error) { showToast('Grant failed: ' + data.error); return; }
   await loadToolsDashboard();
 }
 
 async function revokeCapabilityGrant(grantId) {
-  if (!confirm('Revoke this capability grant?')) return;
+  if (!await confirmToast('Revoke this capability grant?')) return;
   const response = await fetch('/api/capabilities/grants/' + encodeURIComponent(grantId), { method: 'DELETE' });
   const data = await response.json();
-  if (data.error) { alert('Revoke failed: ' + data.error); return; }
+  if (data.error) { showToast('Revoke failed: ' + data.error); return; }
   await loadToolsDashboard();
 }
 
@@ -9752,10 +12506,10 @@ async function toggleTool(name, enable, expiresInMinutes) {
 }
 
 async function toggleToolTimed(name) {
-  const minutesRaw = prompt('Enable ' + name + ' for how many minutes? (1-1440)', '60');
+  const minutesRaw = await promptToast('Enable ' + name + ' for how many minutes? (1-1440)', '60');
   if (minutesRaw === null) return;
   const minutes = Number(minutesRaw);
-  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { alert('Enter a number between 1 and 1440.'); return; }
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { showToast('Enter a number between 1 and 1440.'); return; }
   await toggleTool(name, true, minutes);
 }
 
@@ -9769,22 +12523,22 @@ async function bulkToggleToolset(names, enable, expiresInMinutes) {
 }
 
 async function bulkToggleToolsetTimed(names) {
-  const minutesRaw = prompt('Enable all tools in this group for how many minutes? (1-1440)', '60');
+  const minutesRaw = await promptToast('Enable all tools in this group for how many minutes? (1-1440)', '60');
   if (minutesRaw === null) return;
   const minutes = Number(minutesRaw);
-  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { alert('Enter a number between 1 and 1440.'); return; }
+  if (!Number.isFinite(minutes) || minutes < 1 || minutes > 1440) { showToast('Enter a number between 1 and 1440.'); return; }
   await bulkToggleToolset(names, true, minutes);
 }
 
 async function engageKillSwitch() {
-  const reason = prompt('Why are you engaging the kill switch?', 'Manual stop from dashboard.');
+  const reason = await promptToast('Why are you engaging the kill switch?', 'Manual stop from dashboard.');
   if (reason === null) return;
   await fetch('/api/permissions/kill-switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: true, reason }) });
   await loadToolsDashboard();
 }
 
 async function releaseKillSwitch() {
-  if (!confirm('Release the kill switch and resume normal tool calls?')) return;
+  if (!await confirmToast('Release the kill switch and resume normal tool calls?')) return;
   await fetch('/api/permissions/kill-switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: false }) });
   await loadToolsDashboard();
 }
@@ -10064,33 +12818,33 @@ async function viewAutomationRunOutput(outputPath, btn) {
   try {
     const response = await fetch('/api/automations/output?path=' + encodeURIComponent(outputPath));
     const data = await response.json();
-    if (data.error) { alert('Could not load output: ' + data.error); return; }
+    if (data.error) { showToast('Could not load output: ' + data.error); return; }
     if (outputDiv) {
       outputDiv.classList.remove('hidden-by-default');
       outputDiv.innerHTML = '<pre class="automation-output-pre">' + esc(data.content) + '</pre>';
       btn.textContent = 'Hide';
     }
-  } catch (error) { alert('Failed to load output: ' + (error.message || error)); }
+  } catch (error) { showToast('Failed to load output: ' + (error.message || error)); }
 }
 
 async function executeAutomationDueJobs() {
   try {
     const response = await fetch('/api/automations/execute-due', { method: 'POST' });
     const data = await response.json();
-    if (data.error) { alert('Execute failed: ' + data.error); return; }
-    alert('Executed ' + (data.executed || 0) + ' due job(s).');
+    if (data.error) { showToast('Execute failed: ' + data.error); return; }
+    showToast('Executed ' + (data.executed || 0) + ' due job(s).');
     loadRuns();
-  } catch (error) { alert('Execute failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Execute failed: ' + (error.message || error)); }
 }
 
 async function runAutomationJobNow(jobId) {
   try {
     const response = await fetch('/api/automations/' + encodeURIComponent(jobId) + '/execute', { method: 'POST' });
     const data = await response.json();
-    if (data.error) { alert('Run failed: ' + data.error); return; }
-    alert('Job "' + (data.name || jobId) + '" executed. Output: ' + (data.outputPath || 'none'));
+    if (data.error) { showToast('Run failed: ' + data.error); return; }
+    showToast('Job "' + (data.name || jobId) + '" executed. Output: ' + (data.outputPath || 'none'));
     loadRuns();
-  } catch (error) { alert('Run failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Run failed: ' + (error.message || error)); }
 }
 
 function showNewAutomationJobForm() {
@@ -10262,7 +13016,7 @@ async function saveWorkflowWizard() {
       body: JSON.stringify({ name, description, steps }),
     });
     if (response.status === 409) {
-      if (!confirm('Workflow "' + name + '" already exists. Overwrite?')) { status.textContent = 'Cancelled.'; return; }
+      if (!await confirmToast('Workflow "' + name + '" already exists. Overwrite?')) { status.textContent = 'Cancelled.'; return; }
       response = await fetch('/api/workflows', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -10299,7 +13053,7 @@ async function createAutomationJob() {
   const prompt = document.getElementById('newJobPrompt')?.value?.trim();
   const schedule = document.getElementById('newJobSchedule')?.value?.trim();
   const scriptCommand = document.getElementById('newJobScript')?.value?.trim() || undefined;
-  if (!name || !prompt || !schedule) { alert('Name, prompt, and schedule are required.'); return; }
+  if (!name || !prompt || !schedule) { showToast('Name, prompt, and schedule are required.'); return; }
   try {
     const response = await fetch('/api/automations/jobs', {
       method: 'POST',
@@ -10307,20 +13061,20 @@ async function createAutomationJob() {
       body: JSON.stringify({ name, prompt, schedule, scriptCommand }),
     });
     const data = await response.json();
-    if (data.error) { alert('Create failed: ' + data.error); return; }
+    if (data.error) { showToast('Create failed: ' + data.error); return; }
     hideNewAutomationJobForm();
     loadRuns();
-  } catch (error) { alert('Create failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Create failed: ' + (error.message || error)); }
 }
 
 async function deleteAutomationJob(jobId) {
-  if (!confirm('Delete this automation job?')) return;
+  if (!await confirmToast('Delete this automation job?')) return;
   try {
     const response = await fetch('/api/automations/jobs/' + encodeURIComponent(jobId), { method: 'DELETE' });
     const data = await response.json();
-    if (data.error) { alert('Delete failed: ' + data.error); return; }
+    if (data.error) { showToast('Delete failed: ' + data.error); return; }
     loadRuns();
-  } catch (error) { alert('Delete failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Delete failed: ' + (error.message || error)); }
 }
 
 async function toggleAutomationJob(jobId, enabled) {
@@ -10331,19 +13085,19 @@ async function toggleAutomationJob(jobId, enabled) {
       body: JSON.stringify({ enabled }),
     });
     const data = await response.json();
-    if (data.error) { alert('Toggle failed: ' + data.error); return; }
+    if (data.error) { showToast('Toggle failed: ' + data.error); return; }
     loadRuns();
-  } catch (error) { alert('Toggle failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Toggle failed: ' + (error.message || error)); }
 }
 
-function editAutomationJob(jobId, name, prompt, schedule, scriptCommand) {
-  const newName = window.prompt('Job name:', name);
+async function editAutomationJob(jobId, name, prompt, schedule, scriptCommand) {
+  const newName = await promptToast('Job name:', name);
   if (newName === null) return;
-  const newPrompt = window.prompt('Prompt:', prompt);
+  const newPrompt = await promptToast('Prompt:', prompt);
   if (newPrompt === null) return;
-  const newSchedule = window.prompt('Schedule (e.g. every 2h, 30m, 0 9 * * *):', schedule);
+  const newSchedule = await promptToast('Schedule (e.g. every 2h, 30m, 0 9 * * *):', schedule);
   if (newSchedule === null) return;
-  const newScript = window.prompt('Script command (leave empty for none):', scriptCommand);
+  const newScript = await promptToast('Script command (leave empty for none):', scriptCommand);
   if (newScript === null) return;
   const body = {};
   if (newName.trim() !== name) body.name = newName.trim();
@@ -10356,9 +13110,9 @@ function editAutomationJob(jobId, name, prompt, schedule, scriptCommand) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then((r) => r.json()).then((data) => {
-    if (data.error) { alert('Edit failed: ' + data.error); return; }
+    if (data.error) { showToast('Edit failed: ' + data.error); return; }
     loadRuns();
-  }).catch((error) => alert('Edit failed: ' + (error.message || error)));
+  }).catch((error) => showToast('Edit failed: ' + (error.message || error)));
 }
 
 function renderCuratorRunsSection(curator) {
@@ -10613,9 +13367,9 @@ async function runWorkflow(name, dryRun) {
       body: JSON.stringify({ dryRun }),
     });
     const data = await response.json();
-    if (data.error) { alert('Workflow failed to start: ' + data.error); return; }
+    if (data.error) { showToast('Workflow failed to start: ' + data.error); return; }
     setTimeout(loadWorkflows, 300);
-  } catch (error) { alert('Workflow failed to start: ' + (error.message || error)); }
+  } catch (error) { showToast('Workflow failed to start: ' + (error.message || error)); }
 }
 
 async function pauseWorkflowRun(id) {
@@ -10654,7 +13408,7 @@ async function resumeWorkflowRun(id) {
 }
 
 async function cancelWorkflowRun(id) {
-  if (!confirm('Cancel this workflow run?')) return;
+  if (!await confirmToast('Cancel this workflow run?')) return;
   await fetch('/api/workflows/runs/' + encodeURIComponent(id) + '/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   loadWorkflows();
 }
@@ -10696,18 +13450,18 @@ function renderMcpCatalogList() {
 
 async function configureMcpFromCatalog(name, overwrite) {
   try {
-    if (overwrite && !confirm('Replace the saved MCP server "' + name + '" with the catalog definition?')) return;
+    if (overwrite && !await confirmToast('Replace the saved MCP server "' + name + '" with the catalog definition?')) return;
     let response = await fetch('/api/mcp/runtime/from-catalog', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, overwrite: overwrite === true }) });
     if (response.status === 409) {
-      if (!confirm('MCP server "' + name + '" already exists. Replace it from the catalog?')) return;
+      if (!await confirmToast('MCP server "' + name + '" already exists. Replace it from the catalog?')) return;
       response = await fetch('/api/mcp/runtime/from-catalog', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, overwrite: true }) });
     }
     const data = await response.json();
-    if (data.error) { alert('Add failed: ' + data.error); return; }
+    if (data.error) { showToast('Add failed: ' + data.error); return; }
     const envNote = (data.requiresEnv || []).length ? '\nSet env vars before starting: ' + data.requiresEnv.join(', ') : '';
-    alert((overwrite ? 'Replaced' : 'Added') + ' MCP server "' + name + '".' + envNote);
+    showToast((overwrite ? 'Replaced' : 'Added') + ' MCP server "' + name + '".' + envNote);
     await loadToolsDashboard();
-  } catch (error) { alert('Add failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Add failed: ' + (error.message || error)); }
 }
 
 function copyMcpInstall(text, btn) {
@@ -10719,7 +13473,7 @@ function copyMcpInstall(text, btn) {
       setTimeout(() => { if (btn) btn.textContent = original; }, 1200);
     }
   } catch (e) {
-    alert('Copy failed: ' + e.message);
+    showToast('Copy failed: ' + e.message);
   }
 }
 
@@ -10734,7 +13488,7 @@ let voiceActive = false;
 function toggleVoiceInput() {
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!Recognition) {
-    alert('Voice input requires Web Speech API support. Try Chrome or Edge.');
+    showToast('Voice input requires Web Speech API support. Try Chrome or Edge.');
     return;
   }
   const btn = document.getElementById('voiceBtn');
@@ -10779,7 +13533,7 @@ function toggleVoiceInput() {
     console.warn('voice recognition error:', code, event);
     if (code === 'not-allowed' || code === 'service-not-allowed') {
       voiceShowStatus('🎙️ ❌ mic permission denied — click 🔒 in address bar to allow');
-      alert('Microphone permission denied. Allow microphone access in your browser to use voice input.');
+      showToast('Microphone permission denied. Allow microphone access in your browser to use voice input.');
     } else if (code === 'no-speech') {
       voiceShowStatus('🎙️ ⚠️ no speech detected — speak louder or check your input device');
     } else if (code === 'audio-capture') {
@@ -10821,7 +13575,7 @@ function toggleVoiceInput() {
     voiceActive = false;
     if (btn) { btn.classList.remove('recording'); btn.title = 'Voice input (browser STT)'; }
     voiceShowStatus('🎙️ ❌ start failed: ' + e.message);
-    alert('Could not start voice input: ' + e.message);
+    showToast('Could not start voice input: ' + e.message);
   }
 }
 
@@ -11116,12 +13870,30 @@ async function refreshJarvisLive() {
     const ambient = status.ambient || {};
     const kg = status.knowledgeGraph || {};
     const trustCount = ((status.trustLadder && status.trustLadder.capabilities) || []).length;
+    const profile = status.assistantProfile || {};
+    const schedulers = status.schedulers || [];
 
     const lines = [];
+    lines.push(row('🧩 Assistant profile', profile.enabled ? (profile.proactive ? 'proactive · voice + ambient + channels + autonomy' : 'on · voice + ambient + channels') : 'off (run start.bat / ./start.sh, or set HARNESS_PROFILE=assistant)'));
     lines.push(row('🎤 Voice (mic)', runtime.voice.stt ? 'ready · ' + (runtime.voice.sttAdapter || '') : 'not ready'));
     lines.push(row('🔊 Voice (speak)', runtime.voice.tts ? 'ready · ' + (runtime.voice.ttsAdapter || '') : 'not ready'));
     lines.push(row('💬 Telegram', telegram.running ? 'connected' + (telegram.hasAllowedChatIds ? ' · allowlist on' : '') : (telegram.configured ? 'configured but not running' : 'not configured')));
-    lines.push(row('👁️ Ambient daemon', ambient.running ? 'running · watchers: ' + ((ambient.watchers || []).join(', ') || 'none') : 'off (set HARNESS_AMBIENT_ENABLED=1 or click Start ambient in Daily Brief)'));
+    lines.push(row('👁️ Ambient daemon', ambient.running ? 'running · watchers: ' + ((ambient.watchers || []).join(', ') || 'none') : (profile.enabled ? 'off (click Start ambient in Daily Brief)' : 'off (assistant profile is off; set HARNESS_AMBIENT_ENABLED=1 to force)')));
+    if (schedulers.length) {
+      const runningCount = schedulers.filter((s) => s.running).length;
+      const cells = schedulers.map((s) => {
+        let control;
+        if (s.running) {
+          control = ' <button class="btn-sm" style="padding:0 6px" onclick="jarvisStopScheduler(\'' + escAttr(s.name) + '\')" title="Stop this scheduler">Stop</button>';
+        } else if (s.restartable) {
+          control = ' <button class="btn-sm" style="padding:0 6px" onclick="jarvisRestartScheduler(\'' + escAttr(s.name) + '\')" title="Start this scheduler">Start</button>';
+        } else {
+          control = ' <span style="color:var(--muted)">(idle)</span>';
+        }
+        return '<span style="display:inline-block">' + esc(s.name) + control + '</span>';
+      }).join('<br>');
+      lines.push('<tr><td style="padding:2px 8px;color:var(--muted);vertical-align:top">' + esc('🗓️ Schedulers') + '</td><td style="padding:2px 8px">' + runningCount + '/' + schedulers.length + ' running<br>' + cells + '</td></tr>');
+    }
     lines.push(row('🧠 Knowledge graph', kg.records ? (kg.records + ' records · ' + kg.entities + ' entities · ' + kg.facts + ' facts') : 'empty (run jarvis:seed to backfill)'));
     lines.push(row('📊 Trust ladder', trustCount + ' tracked capability(s)'));
     lines.push(row('🛰️ MCP server', (status.mcpServer && status.mcpServer.toolCount) ? (status.mcpServer.toolCount + ' tool(s) catalogued · run jarvis:mcp to expose') : 'not exposed'));
@@ -11135,14 +13907,46 @@ async function refreshJarvisLive() {
   }
 }
 
+// Stop one registered scheduler from the Jarvis Live panel. This is the
+// per-subsystem control that complements the global kill switch: the kill
+// switch only makes ticks no-op, whereas this fully stops the named
+// scheduler. Restartable schedulers can be brought back via the Start
+// button (jarvisRestartScheduler); the rest stay stopped until a server
+// restart.
+async function jarvisStopScheduler(name) {
+  if (!await confirmToast('Stop the "' + name + '" scheduler?\n\nIt halts only this one subsystem (this is not the kill switch). You can bring it back with the Start button if it is restartable, otherwise it stays stopped until the next server restart.')) return;
+  try {
+    const response = await fetch('/api/jarvis/schedulers/' + encodeURIComponent(name) + '/stop', { method: 'POST' });
+    await readApiJson(response, 'Stop scheduler');
+    showToast('Stopped scheduler: ' + name, 2500, 'success');
+    refreshJarvisLive();
+  } catch (error) {
+    showToast('Stop failed: ' + (error.message || error), 4000, 'error');
+  }
+}
+
+// Restart (start) one registered scheduler from the Jarvis Live panel. Starting
+// is benign — it re-runs the scheduler's own configure path, which respects the
+// same enabled guards — so no confirmation is required.
+async function jarvisRestartScheduler(name) {
+  try {
+    const response = await fetch('/api/jarvis/schedulers/' + encodeURIComponent(name) + '/restart', { method: 'POST' });
+    await readApiJson(response, 'Start scheduler');
+    showToast('Started scheduler: ' + name, 2500, 'success');
+    refreshJarvisLive();
+  } catch (error) {
+    showToast('Start failed: ' + (error.message || error), 4000, 'error');
+  }
+}
+
 async function jarvisSendBriefToTelegram() {
   try {
     const response = await fetch('/api/jarvis/brief/telegram', { method: 'POST' });
     const data = await response.json();
-    if (!response.ok) { alert('Telegram brief failed: ' + (data.error || response.status)); return; }
-    alert('Brief delivered to ' + data.delivered + ' Telegram chat(s).');
+    if (!response.ok) { showToast('Telegram brief failed: ' + (data.error || response.status)); return; }
+    showToast('Brief delivered to ' + data.delivered + ' Telegram chat(s).');
   } catch (error) {
-    alert('Telegram brief failed: ' + (error.message || error));
+    showToast('Telegram brief failed: ' + (error.message || error));
   }
 }
 
@@ -11157,7 +13961,7 @@ async function jarvisSendBriefToTelegram() {
 async function jarvisPickMic() {
   try {
     if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
-      alert('Browser does not expose mic device enumeration.');
+      showToast('Browser does not expose mic device enumeration.');
       return;
     }
     // Permission must already have been granted at least once for labels
@@ -11168,28 +13972,28 @@ async function jarvisPickMic() {
     if (probeStream) probeStream.getTracks().forEach((t) => t.stop());
     const inputs = devices.filter((d) => d.kind === 'audioinput');
     if (inputs.length === 0) {
-      alert('No microphones detected. Check Windows → Settings → Privacy → Microphone.');
+      showToast('No microphones detected. Check Windows → Settings → Privacy → Microphone.');
       return;
     }
     const current = localStorage.getItem('jarvisMicDeviceId') || '';
     const lines = inputs.map((d, i) => `${i + 1}. ${d.label || '(unlabeled — grant permission first)'}${d.deviceId === current ? '  ← currently selected' : ''}`).join('\n');
-    const choice = prompt('Pick microphone (number):\n\n' + lines + '\n\nLeave blank to use system default.', '');
+    const choice = await promptToast('Pick microphone (number):\n\n' + lines + '\n\nLeave blank to use system default.', '');
     if (choice === null) return;
     const trimmed = choice.trim();
     if (!trimmed) {
       localStorage.removeItem('jarvisMicDeviceId');
-      alert('Cleared mic preference. Will use system default next time.');
+      showToast('Cleared mic preference. Will use system default next time.');
       return;
     }
     const idx = parseInt(trimmed, 10) - 1;
     if (Number.isNaN(idx) || idx < 0 || idx >= inputs.length) {
-      alert('Invalid choice.');
+      showToast('Invalid choice.');
       return;
     }
     localStorage.setItem('jarvisMicDeviceId', inputs[idx].deviceId);
-    alert('Selected: ' + (inputs[idx].label || inputs[idx].deviceId) + '\n\nClick the 🎤 button again to use it.');
+    showToast('Selected: ' + (inputs[idx].label || inputs[idx].deviceId) + '\n\nClick the 🎤 button again to use it.');
   } catch (error) {
-    alert('Mic picker failed: ' + (error.message || error));
+    showToast('Mic picker failed: ' + (error.message || error));
   }
 }
 
@@ -11824,10 +14628,18 @@ function refreshHealthCard() { refreshHealthCardAsync(); }
 // ─── Theme toggle ───────────────────────────────────────────────────
 
 function toggleTheme() {
-  const isLight = document.documentElement.classList.toggle('light');
-  localStorage.setItem('harness-theme', isLight ? 'light' : 'dark');
-  const btn = document.getElementById('themeToggle');
-  if (btn) btn.textContent = isLight ? '☀️' : '🌙';
+  const apply = () => {
+    const isLight = document.documentElement.classList.toggle('light');
+    localStorage.setItem('harness-theme', isLight ? 'light' : 'dark');
+    const btn = document.getElementById('themeToggle');
+    if (btn) btn.textContent = isLight ? '☀️' : '🌙';
+  };
+  const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (document.startViewTransition && !reduced) {
+    document.startViewTransition(apply);
+  } else {
+    apply();
+  }
 }
 
 function restoreTheme() {
@@ -11858,13 +14670,13 @@ function applyAccentColor(color) {
 // ─── Mycelium tab ───────────────────────────────────────────────────
 
 async function resetMyceliumGraph() {
-  if (!confirm('Reset the mycelium graph? All learned routes will be lost.')) return;
+  if (!await confirmToast('Reset the mycelium graph? All learned routes will be lost.')) return;
   try {
     const response = await fetch('/api/mycelium', { method: 'DELETE' });
     const data = await response.json();
-    if (data.error) { alert('Reset failed: ' + data.error); return; }
+    if (data.error) { showToast('Reset failed: ' + data.error); return; }
     loadMycelium();
-  } catch (error) { alert('Reset failed: ' + (error.message || error)); }
+  } catch (error) { showToast('Reset failed: ' + (error.message || error)); }
 }
 
 async function loadMycelium() {
@@ -12266,9 +15078,53 @@ async function loadTasks() {
       }).join('');
       return '<div class="mem-section"><h5>' + esc(groupLabels[status]) + ' (' + items.length + ')</h5><div class="skills-gallery">' + rows + '</div></div>';
     }).join('');
-    view.innerHTML = summaryLine + newForm + (groupHtml || '<div class="trace-meta">No tasks yet — create one above.</div>');
+    view.innerHTML = summaryLine + newForm + (groupHtml || '<div class="trace-meta">No tasks yet — create one above.</div>') + '<div id="kanbanBoardSection"></div>';
+    loadKanbanBoard();
   } catch (error) {
     view.textContent = 'Failed to load tasks: ' + (error && error.message ? error.message : error);
+  }
+}
+
+async function loadKanbanBoard() {
+  const host = document.getElementById('kanbanBoardSection');
+  if (!host) return;
+  host.innerHTML = '<div class="mem-section"><h5>Kanban</h5><div class="trace-meta">Loading board…</div></div>';
+  try {
+    const response = await fetch('/api/kanban/board');
+    const board = await response.json();
+    if (board && board.error) { host.innerHTML = '<div class="mem-section"><h5>Kanban</h5><div class="trace-meta">' + esc(board.error) + '</div></div>'; return; }
+    const columns = [
+      { key: 'triage', label: 'Triage' },
+      { key: 'doing', label: 'Doing' },
+      { key: 'done', label: 'Done' },
+    ];
+    const colHtml = columns.map((col) => {
+      const items = Array.isArray(board[col.key]) ? board[col.key] : [];
+      const cards = items.map((task) => {
+        const moveBtns = columns.filter((c) => c.key !== col.key)
+          .map((c) => '<button class="btn-sm" onclick="moveKanbanCard(\'' + esc(task.id) + '\', \'' + c.key + '\')">→ ' + c.label + '</button>')
+          .join(' ');
+        return '<div class="skill-card"><div class="skill-card-top"><div><div class="skill-card-name">' + esc(task.title || task.id) + '</div><div class="skill-card-meta">' + esc(task.status || '') + ' · ' + esc(col.label) + '</div></div></div><div style="margin-top:6px">' + moveBtns + '</div></div>';
+      }).join('') || '<div class="trace-meta">(empty)</div>';
+      return '<div class="mem-section"><h5>' + esc(col.label) + ' (' + items.length + ')</h5><div class="skills-gallery">' + cards + '</div></div>';
+    }).join('');
+    host.innerHTML = '<div class="mem-section"><h5>Kanban</h5>' + colHtml + '</div>';
+  } catch (error) {
+    host.innerHTML = '<div class="mem-section"><h5>Kanban</h5><div class="trace-meta">Failed to load board: ' + esc((error && error.message) ? error.message : String(error)) + '</div></div>';
+  }
+}
+
+async function moveKanbanCard(taskId, column) {
+  try {
+    const response = await fetch('/api/kanban/move', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskId, column }) });
+    const data = await response.json();
+    if (data && data.error) throw new Error(data.error);
+    if (column === 'triage' && data && data.promoted && data.promoted.mutated) {
+      showToast('Moved to triage and added to IMPLEMENTATION_PLAN.md');
+    }
+    await loadKanbanBoard();
+  } catch (error) {
+    showToast('Move failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12277,7 +15133,7 @@ async function createTaskFromForm() {
   const assigneeEl = document.getElementById('newTaskAssignee');
   const priorityEl = document.getElementById('newTaskPriority');
   const title = titleEl ? titleEl.value.trim() : '';
-  if (!title) { alert('Title is required.'); return; }
+  if (!title) { showToast('Title is required.'); return; }
   const body = { title };
   if (assigneeEl && assigneeEl.value.trim()) body.assigneeId = assigneeEl.value.trim();
   if (priorityEl && priorityEl.value.trim()) body.priority = priorityEl.value.trim();
@@ -12288,7 +15144,7 @@ async function createTaskFromForm() {
     if (titleEl) titleEl.value = '';
     await loadTasks();
   } catch (error) {
-    alert('Create failed: ' + (error && error.message ? error.message : error));
+    showToast('Create failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12299,19 +15155,19 @@ async function updateTaskStatus(id, status) {
     if (data.error) throw new Error(data.error);
     await loadTasks();
   } catch (error) {
-    alert('Update failed: ' + (error && error.message ? error.message : error));
+    showToast('Update failed: ' + (error && error.message ? error.message : error));
   }
 }
 
 async function deleteTaskById(id) {
-  if (!confirm('Delete this task?')) return;
+  if (!await confirmToast('Delete this task?')) return;
   try {
     const response = await fetch('/api/tasks/' + encodeURIComponent(id), { method: 'DELETE' });
     const data = await response.json();
     if (data.error) throw new Error(data.error);
     await loadTasks();
   } catch (error) {
-    alert('Delete failed: ' + (error && error.message ? error.message : error));
+    showToast('Delete failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12462,7 +15318,7 @@ async function createTriggerFromForm() {
   const intervalEl = document.getElementById('newTriggerInterval');
   const id = idEl ? idEl.value.trim() : '';
   const command = commandEl ? commandEl.value.trim() : '';
-  if (!id || !command) { alert('id and command are required.'); return; }
+  if (!id || !command) { showToast('id and command are required.'); return; }
   const args = argsEl && argsEl.value.trim() ? argsEl.value.trim().split(/\s+/) : [];
   const intervalSeconds = intervalEl ? Math.max(5, Number(intervalEl.value) || 30) : 30;
   try {
@@ -12474,7 +15330,7 @@ async function createTriggerFromForm() {
     if (argsEl) argsEl.value = '';
     await loadTriggers();
   } catch (error) {
-    alert('Create failed: ' + (error && error.message ? error.message : error));
+    showToast('Create failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12485,19 +15341,19 @@ async function setTriggerEnabled(id, enabled) {
     if (data.error) throw new Error(data.error);
     await loadTriggers();
   } catch (error) {
-    alert('Update failed: ' + (error && error.message ? error.message : error));
+    showToast('Update failed: ' + (error && error.message ? error.message : error));
   }
 }
 
 async function deleteTriggerById(id) {
-  if (!confirm('Delete trigger ' + id + '?')) return;
+  if (!await confirmToast('Delete trigger ' + id + '?')) return;
   try {
     const response = await fetch('/api/triggers/' + encodeURIComponent(id), { method: 'DELETE' });
     const data = await response.json();
     if (data.error) throw new Error(data.error);
     await loadTriggers();
   } catch (error) {
-    alert('Delete failed: ' + (error && error.message ? error.message : error));
+    showToast('Delete failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12511,7 +15367,7 @@ async function loadAgents() {
     if (data.error) { view.textContent = data.error; return; }
     const agents = Array.isArray(data.agents) ? data.agents : [];
     const summary = '<div class="tools-summary-line"><strong>' + agents.length + '</strong> agents (built-in + custom under .harness/agents/)</div>';
-    const newForm = '<div class="automation-wizard"><div class="automation-wizard-title">New custom agent</div><div class="automation-field"><label for="newAgentId">Id</label><input id="newAgentId" type="text" placeholder="finance-analyst" /></div><div class="automation-field"><label for="newAgentName">Name</label><input id="newAgentName" type="text" placeholder="Finance Analyst" /></div><div class="automation-field"><label for="newAgentDescription">Description</label><input id="newAgentDescription" type="text" placeholder="Reviews ledgers and budgets." /></div><div class="automation-field"><label for="newAgentPreset">Preset (optional)</label><input id="newAgentPreset" type="text" placeholder="explore | plan | review | summarize | general" /></div><div class="automation-field"><label for="newAgentSystemPrompt">System prompt</label><textarea id="newAgentSystemPrompt" rows="4" placeholder="You are a Finance Analyst..."></textarea></div><div class="settings-collapse-actions"><button class="btn-sm" onclick="createAgentFromForm()">+ Create</button></div></div>';
+    const newForm = '<div class="automation-wizard"><div class="automation-wizard-title">New custom agent</div><div class="automation-field"><label for="newAgentId">Id <span class="automation-field-hint">(auto from name if blank)</span></label><input id="newAgentId" type="text" placeholder="finance-analyst" /></div><div class="automation-field"><label for="newAgentName">Name</label><input id="newAgentName" type="text" placeholder="Finance Analyst" /></div><div class="automation-field"><label for="newAgentDescription">Description</label><input id="newAgentDescription" type="text" placeholder="Reviews ledgers and budgets." /></div><div class="automation-field"><label for="newAgentPreset">Preset (optional)</label><input id="newAgentPreset" type="text" placeholder="explore | plan | review | summarize | general" /></div><div class="automation-field"><label for="newAgentSystemPrompt">System prompt</label><textarea id="newAgentSystemPrompt" rows="4" placeholder="You are a Finance Analyst..."></textarea></div><div class="settings-collapse-actions"><button class="btn-sm" onclick="createAgentFromForm()">+ Create</button></div></div>';
     const rows = agents.map((agent) => {
       const sourceBadge = agent.source === 'custom' ? 'custom' : 'built-in';
       const meta = [
@@ -12522,22 +15378,51 @@ async function loadAgents() {
       const allowed = Array.isArray(agent.allowedTools) && agent.allowedTools.length > 0
         ? '<div class="skill-card-meta">tools: ' + esc(agent.allowedTools.slice(0, 6).join(', ')) + (agent.allowedTools.length > 6 ? '…' : '') + '</div>' : '';
       const description = agent.description ? '<div class="skill-card-desc">' + esc(agent.description) + '</div>' : '';
-      const actions = agent.source === 'custom' ? '<button class="sk-del" onclick="deleteAgentById(\'' + esc(agent.id) + '\')" title="Delete custom agent">✕</button>' : '';
-      return '<div class="skill-card"><div class="skill-card-top"><div><div class="skill-card-name">' + esc(agent.name) + '</div><div class="skill-card-meta">' + meta + '</div></div><div class="skill-card-actions-right">' + actions + '</div></div>' + description + allowed + '</div>';
+      const safeId = esc(agent.id);
+      const runBtn = '<button class="btn-sm" data-requires-model="1" onclick="toggleAgentRunPanel(\'' + safeId + '\')" title="Run this agent">▶ Run</button>';
+      const delBtn = agent.source === 'custom' ? '<button class="sk-del" onclick="deleteAgentById(\'' + safeId + '\')" title="Delete custom agent">✕</button>' : '';
+      const actions = runBtn + delBtn;
+      const runPanel = '<div id="agentRunPanel-' + safeId + '" class="automation-wizard" style="display:none;margin-top:8px;">'
+        + '<div class="automation-field"><label for="agentRunPrompt-' + safeId + '">Prompt for ' + esc(agent.name) + '</label>'
+        + '<textarea id="agentRunPrompt-' + safeId + '" rows="3" placeholder="What should this agent do?"></textarea></div>'
+        + '<div class="settings-collapse-actions">'
+        + '<button class="btn-sm primary" onclick="runAgentFromPanel(\'' + safeId + '\')">Run</button>'
+        + '<button class="btn-sm" onclick="toggleAgentRunPanel(\'' + safeId + '\')">Close</button>'
+        + '</div>'
+        + '<div id="agentRunResult-' + safeId + '" class="trace-meta" style="margin-top:8px;"></div>'
+        + '</div>';
+      return '<div class="skill-card"><div class="skill-card-top"><div><div class="skill-card-name">' + esc(agent.name) + '</div><div class="skill-card-meta">' + meta + '</div></div><div class="skill-card-actions-right">' + actions + '</div></div>' + description + allowed + runPanel + '</div>';
     }).join('');
     view.innerHTML = summary + newForm + '<div class="skills-gallery">' + rows + '</div>';
+    applyModelGate();
   } catch (error) {
     view.textContent = 'Failed to load agents: ' + (error && error.message ? error.message : error);
   }
 }
 
+function slugifyAgentId(value) {
+  if (typeof value !== 'string') return '';
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return /^[a-z0-9]/.test(slug) ? slug : '';
+}
+
 async function createAgentFromForm() {
   const fields = ['newAgentId', 'newAgentName', 'newAgentDescription', 'newAgentPreset', 'newAgentSystemPrompt'].map((id) => document.getElementById(id));
   const [idEl, nameEl, descEl, presetEl, promptEl] = fields;
-  const id = idEl ? idEl.value.trim() : '';
+  const rawId = idEl ? idEl.value.trim() : '';
   const name = nameEl ? nameEl.value.trim() : '';
   const systemPrompt = promptEl ? promptEl.value.trim() : '';
-  if (!id || !name || !systemPrompt) { alert('id, name, and system prompt are required.'); return; }
+  if (!name || !systemPrompt) { showToast('name and system prompt are required.'); return; }
+  // Auto-derive id from the name when the user leaves Id blank or types
+  // characters the server would reject (spaces, punctuation, etc).
+  const idValidator = /^[a-z0-9][a-z0-9-_]*$/i;
+  let id = rawId;
+  if (!id || !idValidator.test(id)) id = slugifyAgentId(rawId || name);
+  if (!id) { showToast('Could not derive an id from the name. Use letters/digits.'); return; }
+  if (idEl && id !== rawId) idEl.value = id;
   const body = {
     id,
     name,
@@ -12552,19 +15437,58 @@ async function createAgentFromForm() {
     fields.forEach((field) => { if (field) field.value = ''; });
     await loadAgents();
   } catch (error) {
-    alert('Create failed: ' + (error && error.message ? error.message : error));
+    showToast('Create failed: ' + (error && error.message ? error.message : error));
   }
 }
 
 async function deleteAgentById(id) {
-  if (!confirm('Delete custom agent ' + id + '?')) return;
+  if (!await confirmToast('Delete custom agent ' + id + '?')) return;
   try {
     const response = await fetch('/api/agents/' + encodeURIComponent(id), { method: 'DELETE' });
     const data = await response.json();
     if (data.error) throw new Error(data.error);
     await loadAgents();
   } catch (error) {
-    alert('Delete failed: ' + (error && error.message ? error.message : error));
+    showToast('Delete failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+function toggleAgentRunPanel(id) {
+  const panel = document.getElementById('agentRunPanel-' + id);
+  if (!panel) return;
+  const open = panel.style.display !== 'none';
+  panel.style.display = open ? 'none' : 'block';
+  if (!open) {
+    const input = document.getElementById('agentRunPrompt-' + id);
+    if (input) input.focus();
+  }
+}
+
+async function runAgentFromPanel(id) {
+  const promptEl = document.getElementById('agentRunPrompt-' + id);
+  const resultEl = document.getElementById('agentRunResult-' + id);
+  if (!promptEl || !resultEl) return;
+  const prompt = promptEl.value.trim();
+  if (!prompt) { resultEl.textContent = 'Enter a prompt first.'; return; }
+  const sel = document.getElementById('modelSelect');
+  if (!sel || !sel.value) {
+    resultEl.textContent = 'Pick a model in the top bar before running an agent.';
+    return;
+  }
+  resultEl.textContent = 'Running ' + id + '… (cancel from the sub-agents bar at the top of Chat)';
+  try {
+    const response = await fetch('/api/agents/' + encodeURIComponent(id) + '/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    // Render the summary as preformatted text so structure survives.
+    resultEl.innerHTML = '<div style="font-weight:600;margin-bottom:4px;">Summary</div>'
+      + '<pre style="white-space:pre-wrap;margin:0;">' + esc(data.summary || '(empty summary)') + '</pre>';
+  } catch (error) {
+    resultEl.textContent = 'Run failed: ' + (error && error.message ? error.message : error);
   }
 }
 
@@ -12578,7 +15502,7 @@ async function loadSquads() {
     if (data.error) { view.textContent = data.error; return; }
     const squads = Array.isArray(data.squads) ? data.squads : [];
     const summary = '<div class="tools-summary-line"><strong>' + squads.length + '</strong> squad(s) configured</div>';
-    const newForm = '<div class="automation-wizard"><div class="automation-wizard-title">New squad</div><div class="automation-field"><label for="newSquadId">Id</label><input id="newSquadId" type="text" placeholder="eng" /></div><div class="automation-field"><label for="newSquadName">Name</label><input id="newSquadName" type="text" placeholder="Engineering" /></div><div class="automation-field"><label for="newSquadLead">Lead agent id</label><input id="newSquadLead" type="text" placeholder="architect" /></div><div class="automation-field"><label for="newSquadAutonomy">Autonomy</label><input id="newSquadAutonomy" type="text" value="supervised" placeholder="supervised | semi-autonomous | autonomous" /></div><div class="settings-collapse-actions"><button class="btn-sm" onclick="createSquadFromForm()">+ Create</button></div></div>';
+    const newForm = '<div class="automation-wizard"><div class="automation-wizard-title">New squad</div><div class="automation-field"><label for="newSquadId">Id <span class="automation-field-hint">(auto from name if blank)</span></label><input id="newSquadId" type="text" placeholder="eng" /></div><div class="automation-field"><label for="newSquadName">Name</label><input id="newSquadName" type="text" placeholder="Engineering" /></div><div class="automation-field"><label for="newSquadLead">Lead agent id</label><input id="newSquadLead" type="text" placeholder="architect" /></div><div class="automation-field"><label for="newSquadAutonomy">Autonomy</label><input id="newSquadAutonomy" type="text" value="supervised" placeholder="supervised | semi-autonomous | autonomous" /></div><div class="settings-collapse-actions"><button class="btn-sm" onclick="createSquadFromForm()">+ Create</button></div></div>';
     const rows = squads.map((squad) => {
       const meta = [
         'lead: ' + esc(squad.leadAgentId || '?'),
@@ -12603,10 +15527,17 @@ async function loadSquads() {
 async function createSquadFromForm() {
   const fields = ['newSquadId', 'newSquadName', 'newSquadLead', 'newSquadAutonomy'].map((id) => document.getElementById(id));
   const [idEl, nameEl, leadEl, autonomyEl] = fields;
-  const id = idEl ? idEl.value.trim() : '';
+  const rawId = idEl ? idEl.value.trim() : '';
   const name = nameEl ? nameEl.value.trim() : '';
   const leadAgentId = leadEl ? leadEl.value.trim() : '';
-  if (!id || !name || !leadAgentId) { alert('id, name, and lead agent id are required.'); return; }
+  if (!name || !leadAgentId) { showToast('name and lead agent id are required.'); return; }
+  // Same shape as createAgentFromForm: server requires a slug-safe id, so
+  // auto-derive one from the name when the user leaves Id blank or types
+  // characters the server would reject.
+  let id = rawId;
+  if (!id || !slugifyAgentId(id)) id = slugifyAgentId(rawId || name);
+  if (!id) { showToast('Could not derive an id from the name. Use letters/digits.'); return; }
+  if (idEl && id !== rawId) idEl.value = id;
   const body = { id, name, leadAgentId, autonomy: autonomyEl && autonomyEl.value.trim() ? autonomyEl.value.trim() : 'supervised' };
   try {
     const response = await fetch('/api/squads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -12615,19 +15546,19 @@ async function createSquadFromForm() {
     fields.forEach((field) => { if (field) field.value = field === autonomyEl ? 'supervised' : ''; });
     await loadSquads();
   } catch (error) {
-    alert('Create failed: ' + (error && error.message ? error.message : error));
+    showToast('Create failed: ' + (error && error.message ? error.message : error));
   }
 }
 
 async function deleteSquadById(id) {
-  if (!confirm('Delete squad ' + id + '?')) return;
+  if (!await confirmToast('Delete squad ' + id + '?')) return;
   try {
     const response = await fetch('/api/squads/' + encodeURIComponent(id), { method: 'DELETE' });
     const data = await response.json();
     if (data.error) throw new Error(data.error);
     await loadSquads();
   } catch (error) {
-    alert('Delete failed: ' + (error && error.message ? error.message : error));
+    showToast('Delete failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12637,9 +15568,9 @@ async function addSquadRule(squadId) {
   const priorityEl = document.getElementById('newRulePriority_' + squadId);
   const pattern = patternEl ? patternEl.value.trim() : '';
   const agentId = agentEl ? agentEl.value.trim() : '';
-  if (!pattern || !agentId) { alert('pattern and agent id are required.'); return; }
+  if (!pattern || !agentId) { showToast('pattern and agent id are required.'); return; }
   // Validate regex client-side so the user sees immediate feedback.
-  try { new RegExp(pattern); } catch (error) { alert('Invalid regex: ' + (error && error.message ? error.message : error)); return; }
+  try { new RegExp(pattern); } catch (error) { showToast('Invalid regex: ' + (error && error.message ? error.message : error)); return; }
   const priority = priorityEl ? Math.floor(Number(priorityEl.value) || 0) : 0;
   try {
     const current = await fetch('/api/squads/' + encodeURIComponent(squadId)).then((r) => r.json());
@@ -12653,7 +15584,7 @@ async function addSquadRule(squadId) {
     if (agentEl) agentEl.value = '';
     await loadSquads();
   } catch (error) {
-    alert('Add rule failed: ' + (error && error.message ? error.message : error));
+    showToast('Add rule failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12669,7 +15600,7 @@ async function deleteSquadRule(squadId, index) {
     if (data.error) throw new Error(data.error);
     await loadSquads();
   } catch (error) {
-    alert('Delete rule failed: ' + (error && error.message ? error.message : error));
+    showToast('Delete rule failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12692,7 +15623,10 @@ async function loadIdentity() {
       return '<div class="skill-card"><div class="skill-card-top"><div><div class="skill-card-name">' + esc(entry.category) + '</div><div class="skill-card-meta">' + esc(entry.summary) + '</div></div><div class="skill-card-actions-right"><button class="sk-del" onclick="deleteIdentityEntry(\'' + esc(entry.id) + '\')" title="Delete entry">✕</button></div></div></div>';
     }).join('');
     const entriesPanel = '<div class="mem-section"><h5>structured.json (' + entries.length + ' entries)</h5>' + newEntryForm + (entryRows ? '<div class="skills-gallery">' + entryRows + '</div>' : '<div class="trace-meta">No structured facts yet.</div>') + '</div>';
-    view.innerHTML = summary + soulPanel + userPanel + entriesPanel;
+    const autoUpdatePanel = '<div class="mem-section" id="identityAutoUpdatePanel"><h5>Adaptive identity</h5><div class="trace-meta">Loading…</div></div>';
+    view.innerHTML = summary + soulPanel + userPanel + entriesPanel + autoUpdatePanel;
+    // Fire-and-forget — failures render inline, never block the main panel.
+    refreshIdentityAutoUpdatePanel();
   } catch (error) {
     view.textContent = 'Failed to load identity: ' + (error && error.message ? error.message : error);
   }
@@ -12707,7 +15641,7 @@ async function saveIdentityFile(fileName) {
     const data = await response.json();
     if (data.error) throw new Error(data.error);
   } catch (error) {
-    alert('Save failed: ' + (error && error.message ? error.message : error));
+    showToast('Save failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12716,7 +15650,7 @@ async function addIdentityEntry() {
   const summaryEl = document.getElementById('newIdentitySummary');
   const category = categoryEl ? categoryEl.value.trim() : '';
   const summary = summaryEl ? summaryEl.value.trim() : '';
-  if (!category || !summary) { alert('category and summary are required.'); return; }
+  if (!category || !summary) { showToast('category and summary are required.'); return; }
   try {
     const response = await fetch('/api/identity/structured', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ category, summary }) });
     const data = await response.json();
@@ -12725,19 +15659,205 @@ async function addIdentityEntry() {
     if (summaryEl) summaryEl.value = '';
     await loadIdentity();
   } catch (error) {
-    alert('Add failed: ' + (error && error.message ? error.message : error));
+    showToast('Add failed: ' + (error && error.message ? error.message : error));
   }
 }
 
 async function deleteIdentityEntry(id) {
-  if (!confirm('Delete entry ' + id + '?')) return;
+  if (!await confirmToast('Delete entry ' + id + '?')) return;
   try {
     const response = await fetch('/api/identity/structured/' + encodeURIComponent(id), { method: 'DELETE' });
     const data = await response.json();
     if (data.error) throw new Error(data.error);
     await loadIdentity();
   } catch (error) {
-    alert('Delete failed: ' + (error && error.message ? error.message : error));
+    showToast('Delete failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+// ─── Adaptive identity controls ────────────────────────────────────
+// USER auto-apply: when on, observation passes can rewrite USER.md
+// directly (a snapshot is taken first). SOUL suggest: when on, the
+// scheduler may write SOUL.proposed.md but never SOUL.md itself —
+// proposals appear here for the user to accept or discard.
+async function refreshIdentityAutoUpdatePanel() {
+  const panel = document.getElementById('identityAutoUpdatePanel');
+  if (!panel) return;
+  try {
+    const [configRes, proposalRes, historyRes] = await Promise.all([
+      fetch('/api/identity/auto-update'),
+      fetch('/api/identity/soul-proposal'),
+      fetch('/api/identity/history'),
+    ]);
+    const configData = await configRes.json();
+    const proposalData = await proposalRes.json();
+    const historyData = await historyRes.json();
+    const cfg = configData.config || { user: false, soul: false };
+    const running = !!configData.schedulerRunning;
+    const proposal = proposalData.proposal;
+    const snapshots = Array.isArray(historyData.snapshots) ? historyData.snapshots : [];
+
+    const statusBadge = running
+      ? '<span class="trace-meta" style="color:#4ec9b0">scheduler: running</span>'
+      : '<span class="trace-meta" style="color:#888">scheduler: stopped</span>';
+
+    const togglesHtml =
+      '<div style="display:flex;flex-direction:column;gap:8px;margin:8px 0">'
+      + '<label style="display:flex;align-items:center;gap:8px;cursor:pointer">'
+      +   '<input type="checkbox" id="identityToggleUser" ' + (cfg.user ? 'checked' : '') + ' onchange="setIdentityAutoUpdate(\'user\', this.checked)" />'
+      +   '<span><strong>USER auto-apply</strong> — periodically rewrite <code>USER.md</code> from recent sessions. Snapshot taken first.</span>'
+      + '</label>'
+      + '<label style="display:flex;align-items:center;gap:8px;cursor:pointer">'
+      +   '<input type="checkbox" id="identityToggleSoul" ' + (cfg.soul ? 'checked' : '') + ' onchange="setIdentityAutoUpdate(\'soul\', this.checked)" />'
+      +   '<span><strong>SOUL suggest</strong> — periodically write proposed edits to <code>SOUL.proposed.md</code> for review. Never auto-applied.</span>'
+      + '</label>'
+      + '</div>'
+      + '<div style="display:flex;gap:8px;align-items:center;margin:8px 0">'
+      +   '<button class="btn-secondary btn-sm" onclick="runIdentityAutoUpdateNow()">Run now</button>'
+      +   statusBadge
+      + '</div>';
+
+    let proposalHtml = '';
+    if (proposal && proposal.after) {
+      const rationale = proposal.rationale ? '<div class="trace-meta" style="margin-top:6px"><em>' + esc(proposal.rationale) + '</em></div>' : '';
+      const generatedAt = proposal.capturedAt ? ' · proposed ' + esc(proposal.capturedAt) : '';
+      proposalHtml =
+        '<div class="skill-card" style="border-left:3px solid #d7ba7d;margin-top:8px">'
+        + '<div class="skill-card-top">'
+        +   '<div style="flex:1">'
+        +     '<div class="skill-card-name">Pending SOUL proposal</div>'
+        +     '<div class="skill-card-meta">SOUL.proposed.md is ready for review' + generatedAt + '</div>'
+        +     rationale
+        +     '<pre style="margin-top:8px;max-height:240px;overflow:auto;background:#1e1e1e;padding:8px;border-radius:4px;font-size:12px">' + esc(proposal.after) + '</pre>'
+        +   '</div>'
+        + '</div>'
+        + '<div style="display:flex;gap:8px;margin-top:8px">'
+        +   '<button class="btn-secondary btn-sm" onclick="acceptIdentitySoulProposal()">Accept</button>'
+        +   '<button class="btn-secondary btn-sm" onclick="discardIdentitySoulProposal()">Discard</button>'
+        + '</div>'
+        + '</div>';
+    }
+
+    let historyHtml = '';
+    if (snapshots.length > 0) {
+      const rows = snapshots.slice(0, 5).map((snap) => {
+        const when = snap.capturedAt ? esc(snap.capturedAt) : esc(snap.id);
+        const reason = snap.reason ? esc(snap.reason) : 'manual';
+        return '<div class="skill-card"><div class="skill-card-top">'
+          + '<div style="flex:1"><div class="skill-card-name">' + when + '</div><div class="skill-card-meta">' + reason + '</div></div>'
+          + '<div><button class="btn-secondary btn-sm" onclick="restoreIdentitySnapshot(\'' + esc(snap.id) + '\')">Restore</button></div>'
+          + '</div></div>';
+      }).join('');
+      historyHtml = '<div style="margin-top:12px"><div class="trace-meta" style="margin-bottom:4px">Recent snapshots (' + snapshots.length + ' total, showing 5)</div>' + rows + '</div>';
+    } else {
+      historyHtml = '<div class="trace-meta" style="margin-top:12px">No identity snapshots yet — one is taken automatically before any change.</div>';
+    }
+
+    panel.innerHTML = '<h5>Adaptive identity</h5>' + togglesHtml + proposalHtml + historyHtml;
+  } catch (error) {
+    panel.innerHTML = '<h5>Adaptive identity</h5><div class="trace-meta">Failed to load: ' + esc(error && error.message ? error.message : String(error)) + '</div>';
+  }
+}
+
+async function setIdentityAutoUpdate(field, value) {
+  try {
+    // Read current then merge — the PUT endpoint is whole-object replace.
+    const currentRes = await fetch('/api/identity/auto-update');
+    const currentData = await currentRes.json();
+    const cfg = currentData.config || { user: false, soul: false };
+    cfg[field] = !!value;
+    // The server audit-gates any config where adaptive identity stays enabled
+    // (user || soul). Collect a reason then, mirroring the dontAsk escalation.
+    const enabling = !!cfg.user || !!cfg.soul;
+    let reason;
+    if (enabling) {
+      const reasonInput = await promptToast('Enabling adaptive identity lets the scheduler rewrite USER.md and propose SOUL edits. Enter a reason (minimum 8 characters):', 'Enabling adaptive identity for this workspace');
+      if (reasonInput === null) { refreshIdentityAutoUpdatePanel(); return; }
+      reason = String(reasonInput).trim();
+      if (reason.length < 8) {
+        showToast('Reason must be at least 8 characters.');
+        refreshIdentityAutoUpdatePanel();
+        return;
+      }
+    }
+    const response = await fetch('/api/identity/auto-update', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user: !!cfg.user, soul: !!cfg.soul, reason }),
+    });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    showToast('Adaptive identity: ' + field + ' = ' + (value ? 'on' : 'off'));
+  } catch (error) {
+    showToast('Update failed: ' + (error && error.message ? error.message : error));
+    refreshIdentityAutoUpdatePanel();
+  }
+}
+
+async function runIdentityAutoUpdateNow() {
+  // A manual tick can rewrite USER.md or stage a SOUL proposal, so the server
+  // requires an audit reason just like enabling the toggle.
+  const reasonInput = await promptToast('Running a tick can rewrite USER.md or stage a SOUL proposal. Enter a reason (minimum 8 characters):', 'Manual identity auto-update tick');
+  if (reasonInput === null) return;
+  const reason = String(reasonInput).trim();
+  if (reason.length < 8) { showToast('Reason must be at least 8 characters.'); return; }
+  showToast('Running identity auto-update tick…');
+  try {
+    const response = await fetch('/api/identity/auto-update/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    if (data.ran === false) {
+      showToast('Tick skipped: ' + (data.reason || 'no work to do'));
+    } else {
+      showToast('Tick complete.');
+    }
+    refreshIdentityAutoUpdatePanel();
+  } catch (error) {
+    showToast('Run failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function acceptIdentitySoulProposal() {
+  if (!await confirmToast('Accept proposed SOUL.md? A snapshot of the current SOUL is taken first.')) return;
+  try {
+    const response = await fetch('/api/identity/soul-proposal/accept', { method: 'POST' });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    showToast('SOUL updated. Snapshot: ' + (data.snapshotId || 'taken'));
+    await loadIdentity();
+  } catch (error) {
+    showToast('Accept failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function discardIdentitySoulProposal() {
+  if (!await confirmToast('Discard pending SOUL proposal?')) return;
+  try {
+    const response = await fetch('/api/identity/soul-proposal/discard', { method: 'POST' });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    showToast(data.discarded ? 'Proposal discarded.' : 'No proposal to discard.');
+    refreshIdentityAutoUpdatePanel();
+  } catch (error) {
+    showToast('Discard failed: ' + (error && error.message ? error.message : error));
+  }
+}
+
+async function restoreIdentitySnapshot(id) {
+  if (!await confirmToast('Restore identity from snapshot ' + id + '? Current SOUL/USER will be backed up first.')) return;
+  try {
+    const response = await fetch('/api/identity/history/' + encodeURIComponent(id) + '/restore', { method: 'POST' });
+    const data = await response.json();
+    if (data.error) throw new Error(data.error);
+    const backupId = data.backup && data.backup.id ? data.backup.id : 'taken';
+    showToast('Restored. Backup of prior state: ' + backupId);
+    await loadIdentity();
+  } catch (error) {
+    showToast('Restore failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12947,7 +16067,7 @@ async function setHealthFlag(key, enabled) {
     if (data.error) throw new Error(data.error);
     await loadHealth();
   } catch (error) {
-    alert('Update failed: ' + (error && error.message ? error.message : error));
+    showToast('Update failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12956,14 +16076,14 @@ async function saveModelProfileCap() {
   if (!input) return;
   const raw = (input.value || '').trim();
   const value = raw === '' ? 0 : Number(raw);
-  if (!Number.isFinite(value) || value < 0) { alert('Cap must be a non-negative number (0 = auto-detect).'); return; }
+  if (!Number.isFinite(value) || value < 0) { showToast('Cap must be a non-negative number (0 = auto-detect).'); return; }
   // Resolve the active model from the latest health payload via the
   // input's data attribute fallback or by hitting /api/system/health.
   try {
     const healthResp = await fetch('/api/system/health');
     const health = await healthResp.json();
     const model = health && health.context && health.context.model;
-    if (!model) { alert('No active model — cannot save profile.'); return; }
+    if (!model) { showToast('No active model — cannot save profile.'); return; }
     const response = await fetch('/api/system/model-profiles/' + encodeURIComponent(model), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -12973,7 +16093,7 @@ async function saveModelProfileCap() {
     if (data.error) throw new Error(data.error);
     await loadHealth();
   } catch (error) {
-    alert('Save failed: ' + (error && error.message ? error.message : error));
+    showToast('Save failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -12982,7 +16102,7 @@ async function clearModelProfileCap() {
     const healthResp = await fetch('/api/system/health');
     const health = await healthResp.json();
     const model = health && health.context && health.context.model;
-    if (!model) { alert('No active model — cannot clear profile.'); return; }
+    if (!model) { showToast('No active model — cannot clear profile.'); return; }
     const response = await fetch('/api/system/model-profiles/' + encodeURIComponent(model), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -12992,7 +16112,7 @@ async function clearModelProfileCap() {
     if (data.error) throw new Error(data.error);
     await loadHealth();
   } catch (error) {
-    alert('Clear failed: ' + (error && error.message ? error.message : error));
+    showToast('Clear failed: ' + (error && error.message ? error.message : error));
   }
 }
 
@@ -13217,12 +16337,305 @@ async function showArchDiagram() {
     if (data.error) { panel.innerHTML = '<div class="trace-meta">' + esc(data.error) + '</div>'; return; }
     const mermaidTheme = localStorage.getItem('harness-theme') === 'light' ? 'default' : 'dark';
     const mermaidBg = mermaidTheme === 'default' ? '#fff' : '#1e1e2e';
+    const mmdBlob = JSON.stringify(data.mermaid);
     panel.innerHTML = '<div class="trace-item"><div class="trace-title">Architecture Diagram</div>'
-      + '<iframe sandbox="allow-scripts" style="width:100%;height:350px;border:1px solid var(--border,#333);border-radius:4px;background:' + mermaidBg + '" srcdoc="' + escAttr('<!doctype html><html><head><meta charset=utf-8><script src=https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js></script><style>body{margin:8px;font-family:sans-serif}</style></head><body><div class=mermaid>' + esc(data.mermaid) + '</div><script>mermaid.initialize({startOnLoad:true,theme:\'' + mermaidTheme + '\'})</script></body></html>') + '"></iframe>'
+      + '<iframe sandbox="allow-scripts" style="width:100%;height:500px;border:1px solid var(--border,#333);border-radius:4px;background:' + mermaidBg + '" srcdoc="' + escAttr('<!doctype html><html><head><meta charset=utf-8><script src=https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js></script><style>body{margin:8px;font-family:system-ui,sans-serif;background:' + mermaidBg + ';overflow:auto}svg{max-width:100%;height:auto}</style></head><body><div class=mermaid>' + esc(data.mermaid) + '</div><script>mermaid.initialize({startOnLoad:true,theme:\'' + mermaidTheme + '\',securityLevel:"loose",fontFamily:"system-ui,sans-serif",fontSize:13,flowchart:{htmlLabels:true,curve:"basis",padding:20,nodeSpacing:50,rankSpacing:80}})</script></body></html>') + '"></iframe>'
       + '<details style="margin-top:4px"><summary style="cursor:pointer;font-size:0.75em;opacity:0.6">Raw Mermaid</summary>'
       + '<pre style="font-size:0.65em;overflow-x:auto;background:var(--bg-code,#1e1e2e);padding:8px;border-radius:4px;max-height:200px">' + esc(data.mermaid) + '</pre></details>'
-      + '<div class="document-actions"><button class="btn-sm" onclick="navigator.clipboard.writeText(' + JSON.stringify(JSON.stringify(data.mermaid)) + ')">📋 Copy Mermaid</button></div></div>';
+      + '<div class="document-actions"><button class="btn-sm" onclick="downloadMmd(' + mmdBlob + ',\'architecture.mmd\')">📥 Download .mmd</button>'
+      + '<button class="btn-sm" onclick="navigator.clipboard.writeText(' + mmdBlob + ')">📋 Copy Mermaid</button></div></div>';
   } catch (error) {
     panel.innerHTML = '<div class="trace-meta">Diagram failed: ' + esc(error.message || error) + '</div>';
   }
+}
+
+// ─── Harness Controls ─────────────────────────────────────────────
+
+// -- Run Profiles --
+let currentRunProfile = '';
+async function loadRunProfiles() {
+  try {
+    const res = await fetch('/api/profiles');
+    const data = await res.json();
+    const sel = document.getElementById('runProfileSelect');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— None —</option>';
+    for (const p of (data.profiles || [])) {
+      const opt = document.createElement('option');
+      opt.value = p.name;
+      opt.textContent = p.name;
+      if (p.name === currentRunProfile) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  } catch (e) { /* silent */ }
+}
+async function applyRunProfile(name) {
+  currentRunProfile = name;
+  const desc = document.getElementById('runProfileDescription');
+  if (!name) { if (desc) desc.textContent = ''; return; }
+  try {
+    const res = await fetch('/api/profiles/' + encodeURIComponent(name));
+    const profile = await res.json();
+    if (desc) desc.textContent = profile.description || '';
+    showToast('Profile "' + name + '" selected');
+  } catch (e) { showToast('Failed to load profile'); }
+}
+
+// -- Injection Defence --
+let currentInjectionMode = 'off';
+function setInjectionMode(mode, el) {
+  currentInjectionMode = mode;
+  document.querySelectorAll('.injection-mode-option').forEach(o => o.classList.remove('active'));
+  if (el) el.classList.add('active');
+  updateSetting('injectionDefence', { mode: mode });
+}
+function hydrateInjectionMode(mode) {
+  currentInjectionMode = mode || 'off';
+  const idx = mode === 'flag' ? 1 : mode === 'block' ? 2 : 0;
+  document.querySelectorAll('.injection-mode-option').forEach((o, i) => {
+    o.classList.toggle('active', i === idx);
+  });
+}
+
+// -- Read-before-write gate --
+let currentRbwMode = 'off';
+function setRbwMode(mode, el) {
+  currentRbwMode = mode;
+  document.querySelectorAll('.rbw-mode-option').forEach(o => o.classList.remove('active'));
+  if (el) el.classList.add('active');
+  updateSetting('readBeforeWrite', { mode: mode });
+}
+function hydrateRbwMode(mode) {
+  currentRbwMode = mode || 'off';
+  const idx = mode === 'warn' ? 1 : mode === 'enforce' ? 2 : 0;
+  document.querySelectorAll('.rbw-mode-option').forEach((o, i) => {
+    o.classList.toggle('active', i === idx);
+  });
+}
+
+// -- Repo Map --
+async function refreshRepoMap(force) {
+  const info = document.getElementById('repoMapInfo');
+  if (info) info.innerHTML = 'Scanning…';
+  try {
+    const url = force ? '/api/repo-map?force=true' : '/api/repo-map';
+    const res = await fetch(url);
+    const map = await res.json();
+    if (info) {
+      const stack = (map.frameworks || []).join(', ');
+      const pkgMgr = map.packageManager ? ' · ' + map.packageManager : '';
+      const testCmd = map.testCommand ? '<br>Test: <code>' + esc(map.testCommand) + '</code>' : '';
+      const checkCmd = map.checkCommand ? '<br>Check: <code>' + esc(map.checkCommand) + '</code>' : '';
+      const doNotEdit = (map.doNotEdit || []).length;
+      info.innerHTML = '<div class="repo-map-card"><strong>' + esc(stack) + '</strong>' + esc(pkgMgr) + testCmd + checkCmd + '<br><span style="color:var(--text-dim)">' + doNotEdit + ' do-not-edit paths</span></div>';
+    }
+    showToast(force ? 'Repo map rescanned' : 'Repo map loaded');
+  } catch (e) {
+    if (info) info.textContent = 'Failed to load';
+    showToast('Failed to load repo map');
+  }
+}
+
+// -- Memory Health --
+async function checkMemoryHealth() {
+  const info = document.getElementById('memoryHealthInfo');
+  if (info) info.innerHTML = 'Checking…';
+  try {
+    const res = await fetch('/api/memory/stale');
+    const data = await res.json();
+    const stale = data.stale || {};
+    const files = Object.keys(stale);
+    if (files.length === 0) {
+      if (info) info.innerHTML = '<span class="harness-badge fresh">✓ All fresh</span> No stale entries found';
+    } else {
+      let total = 0;
+      for (const f of files) total += stale[f].length;
+      const badges = files.map(f => '<span class="harness-badge stale">' + esc(f) + ': ' + stale[f].length + '</span>').join(' ');
+      if (info) info.innerHTML = badges + '<br><span style="color:var(--text-dim)">' + total + ' stale section(s) across ' + files.length + ' file(s)</span>';
+    }
+  } catch (e) {
+    if (info) info.textContent = 'Failed to check';
+  }
+}
+
+// -- Task Contract --
+function renderTaskContract(contract) {
+  const info = document.getElementById('taskContractInfo');
+  if (!info) return;
+  if (!contract || !contract.goal) { info.textContent = 'No active contract'; return; }
+  const lines = [];
+  lines.push('Goal: ' + contract.goal);
+  lines.push('Mode: ' + (contract.mode || '—'));
+  if (contract.constraints && contract.constraints.length) lines.push('Constraints: ' + contract.constraints.join('; '));
+  if (contract.blocked_paths && contract.blocked_paths.length) lines.push('Blocked: ' + contract.blocked_paths.join(', '));
+  if (contract.validation && contract.validation.length) lines.push('Validation: ' + contract.validation.join(', '));
+  lines.push('Max turns: ' + (contract.max_turns || '—'));
+  lines.push('Approval: ' + (contract.approval_required ? 'Yes' : 'No'));
+  info.textContent = lines.join('\n');
+}
+
+// ─── Evaluation & Prompts ─────────────────────────────────────────
+
+// -- Confidence Calibration --
+async function loadCalibrationReports() {
+  const el = document.getElementById('calibrationReports');
+  if (el) el.innerHTML = 'Loading…';
+  try {
+    const res = await fetch('/api/calibration/reports');
+    const data = await res.json();
+    const reports = data.reports || [];
+    if (reports.length === 0) {
+      if (el) el.innerHTML = '<span class="harness-badge info">No data yet</span> Record samples via the API to see calibration.';
+      return;
+    }
+    let html = '';
+    for (const r of reports) {
+      const brierPct = (r.brierScore * 100).toFixed(1);
+      const ecePct = (r.ece * 100).toFixed(1);
+      const overPct = (r.overconfidenceRatio * 100).toFixed(0);
+      const barWidth = Math.max(2, Math.min(100, 100 - r.brierScore * 200));
+      html += '<div style="margin:4px 0;padding:6px 0;border-bottom:1px solid var(--border)">';
+      html += '<strong>' + esc(r.model) + '</strong> <span style="color:var(--text-dim)">(' + r.totalSamples + ' samples)</span>';
+      html += '<div class="calibration-bar"><span>Brier: ' + brierPct + '%</span><div class="calibration-bar-track"><div class="calibration-bar-fill" style="width:' + barWidth + '%"></div></div></div>';
+      html += '<span style="font-size:10px;color:var(--text-dim)">ECE: ' + ecePct + '% · Overconfidence: ' + overPct + '%</span>';
+      html += '</div>';
+    }
+    if (el) el.innerHTML = html;
+  } catch (e) {
+    if (el) el.textContent = 'Failed to load';
+  }
+}
+
+// -- Golden Traces --
+async function loadGoldenTraces() {
+  const el = document.getElementById('goldenTracesList');
+  if (el) el.innerHTML = 'Loading…';
+  try {
+    const res = await fetch('/api/golden-traces');
+    const data = await res.json();
+    const traces = data.traces || [];
+    if (traces.length === 0) {
+      if (el) el.innerHTML = '<span class="harness-badge info">No traces</span> Capture golden traces via the API.';
+      return;
+    }
+    let html = '';
+    for (const t of traces) {
+      const tags = (t.tags || []).map(tag => '<span class="harness-badge info">' + esc(tag) + '</span>').join(' ');
+      html += '<div class="golden-trace-item" title="' + esc(t.id) + '">';
+      html += '<strong>' + esc(t.name) + '</strong> <span style="color:var(--text-dim)">' + esc(t.model) + '</span>';
+      if (tags) html += '<div style="margin-top:2px">' + tags + '</div>';
+      html += '<div style="color:var(--text-dim);font-size:10px">' + esc(t.capturedAt || '') + ' · ' + (t.expectedToolCalls || []).length + ' tools · ' + (t.expectedFiles || []).length + ' files</div>';
+      html += '</div>';
+    }
+    if (el) el.innerHTML = html;
+  } catch (e) {
+    if (el) el.textContent = 'Failed to load';
+  }
+}
+
+// -- Versioned Prompts --
+async function loadPromptRegistries() {
+  try {
+    const res = await fetch('/api/prompts');
+    const data = await res.json();
+    const sel = document.getElementById('promptRegistrySelect');
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">— Select —</option>';
+    for (const name of (data.prompts || [])) {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (name === prev) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  } catch (e) { /* silent */ }
+}
+async function loadPromptRegistry(name) {
+  const el = document.getElementById('promptVersionInfo');
+  if (!name) { if (el) el.textContent = 'Select a registry'; return; }
+  try {
+    const res = await fetch('/api/prompts/' + encodeURIComponent(name));
+    const registry = await res.json();
+    if (!registry || !registry.versions) { if (el) el.textContent = 'Not found'; return; }
+    let html = '<div style="margin-bottom:4px"><strong>Active: v' + registry.activeVersion + '</strong> · ' + registry.versions.length + ' version(s)</div>';
+    for (const v of registry.versions.slice().reverse().slice(0, 5)) {
+      const isActive = v.version === registry.activeVersion;
+      html += '<div class="prompt-version-item' + (isActive ? ' active-version' : '') + '">';
+      html += '<strong>v' + v.version + '</strong> ' + esc(v.label || '(no label)');
+      html += ' <span style="color:var(--text-dim)">' + esc(v.createdAt || '') + '</span>';
+      if (v.changelog) html += '<div style="color:var(--text-dim);font-size:10px;margin-top:2px">' + esc(v.changelog) + '</div>';
+      if (!isActive) html += ' <a href="#" onclick="activatePromptVersion(\'' + esc(name) + '\',' + v.version + ');event.preventDefault()" style="font-size:10px">activate</a>';
+      html += '</div>';
+    }
+    if (registry.versions.length > 5) html += '<div style="color:var(--text-dim);font-size:10px">… and ' + (registry.versions.length - 5) + ' more</div>';
+    if (el) el.innerHTML = html;
+  } catch (e) {
+    if (el) el.textContent = 'Failed to load';
+  }
+}
+async function activatePromptVersion(name, version) {
+  try {
+    await fetch('/api/prompts/' + encodeURIComponent(name) + '/active', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version: version }),
+    });
+    showToast('Activated v' + version);
+    loadPromptRegistry(name);
+  } catch (e) { showToast('Failed to activate version'); }
+}
+async function rollbackActivePrompt() {
+  const sel = document.getElementById('promptRegistrySelect');
+  const name = sel ? sel.value : '';
+  if (!name) { showToast('Select a prompt registry first'); return; }
+  try {
+    const res = await fetch('/api/prompts/' + encodeURIComponent(name) + '/rollback', { method: 'POST' });
+    if (!res.ok) { const err = await res.json(); showToast(err.error || 'Cannot rollback'); return; }
+    const prev = await res.json();
+    showToast('Rolled back to v' + prev.version);
+    loadPromptRegistry(name);
+  } catch (e) { showToast('Rollback failed'); }
+}
+async function saveNewPromptVersion() {
+  const sel = document.getElementById('promptRegistrySelect');
+  const name = sel ? sel.value : '';
+  if (!name) { showToast('Select a prompt registry first'); return; }
+  const sysPrompt = document.getElementById('sysPrompt');
+  const content = sysPrompt ? sysPrompt.value : '';
+  if (!content.trim()) { showToast('System prompt is empty'); return; }
+  const label = 'v' + Date.now();
+  try {
+    const res = await fetch('/api/prompts/' + encodeURIComponent(name) + '/versions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: content, label: label, changelog: 'Saved from UI' }),
+    });
+    const version = await res.json();
+    showToast('Saved prompt v' + version.version);
+    loadPromptRegistry(name);
+  } catch (e) { showToast('Failed to save version'); }
+}
+
+// ─── Injection warning in chat ────────────────────────────────────
+
+// Patch: scan outgoing messages for injection patterns and show inline warning
+const _originalSendChat = typeof sendChat === 'function' ? sendChat : null;
+// We don't patch sendChat since it's complex; instead show warning on injection match in the message area.
+
+// ─── Init: load on settings open ─────────────────────────────────
+// Hook into loadSettings to hydrate our new controls
+const _originalHydrateEnd = typeof refreshWalkthroughChecklist === 'function' ? refreshWalkthroughChecklist : null;
+const _patchedRefreshWalkthroughChecklist = function() {
+  if (_originalHydrateEnd) _originalHydrateEnd();
+  // Hydrate harness controls from current settings
+  try {
+    loadRunProfiles();
+    loadPromptRegistries();
+    // Injection / RBW mode will be hydrated from settings when we have them
+  } catch(e) {}
+};
+// Override — if refreshWalkthroughChecklist exists, wrap it
+if (typeof refreshWalkthroughChecklist === 'function') {
+  window.refreshWalkthroughChecklist = _patchedRefreshWalkthroughChecklist;
 }

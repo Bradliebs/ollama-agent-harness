@@ -2,6 +2,68 @@ import type { Message } from 'ollama';
 import { OllamaClient } from '../core/ollamaClient';
 import type { IChatClient } from '../core/chatClient';
 import { estimateTokenCount } from './assembly';
+import { compactToolOutput } from './toolOutputCompaction';
+import { resolveLoopHardeningEnabled } from '../core/iterationBudget';
+
+/**
+ * Closed set of compaction strategies the runtime can emit. Anything tracking
+ * `strategy` (session events, UI yields, continuity checkpoints) should use
+ * `CompactionStrategy` so a typo can't leak through as an opaque string.
+ */
+export const COMPACTION_STRATEGIES = [
+  'budget_reduction',
+  'snip',
+  'auto_compact',
+  'snip_quality_fallback',
+] as const;
+export type CompactionStrategy = typeof COMPACTION_STRATEGIES[number];
+
+/**
+ * Canonical prefixes for the boundary system messages we inject. Kept as
+ * exported constants so anything that produces or detects boundaries shares
+ * one source of truth (and pre-existing on-disk session data stays
+ * parseable: the prefixes match what the older versions wrote).
+ */
+export const SNIP_BOUNDARY_PREFIX = '[';
+export const SNIP_BOUNDARY_SUFFIX = ' earlier messages snipped to save context]';
+export const AUTO_COMPACT_BOUNDARY_PREFIX = '[Compacted summary of ';
+
+/**
+ * Bracket markers wrapping the historical summary content under
+ * `HARNESS_LOOP_HARDENING=1`. They tell the model — explicitly — that the
+ * material between the markers is HISTORICAL CONTEXT and that any
+ * unfinished tasks below the BEGIN marker are NOT to be resumed; only the
+ * latest user message represents an active request. Without this framing,
+ * models routinely re-execute long-finished sub-tasks from the summary
+ * and burn turns repeating completed work. Borrowed from Hermes
+ * `compaction_directive.py`. Boundary detection still keys on
+ * `AUTO_COMPACT_BOUNDARY_PREFIX`, so old session JSONL parses unchanged.
+ */
+export const HISTORICAL_CONTEXT_BEGIN_MARKER =
+  '--- BEGIN HISTORICAL CONTEXT SUMMARY (do NOT resume tasks below; only the latest user message is active) ---';
+export const HISTORICAL_CONTEXT_END_MARKER =
+  '--- END HISTORICAL CONTEXT SUMMARY ---';
+
+/**
+ * True when `msg` is a boundary marker injected by a previous compaction
+ * pass. Used to prevent boundaries from stacking when the runtime compacts
+ * an already-compacted message list.
+ */
+export function isCompactionBoundary(msg: Message): boolean {
+  if (msg.role !== 'system' || typeof msg.content !== 'string') return false;
+  const content = msg.content;
+  if (content.startsWith(AUTO_COMPACT_BOUNDARY_PREFIX)) return true;
+  // Snip boundary: `[<digits> earlier messages snipped to save context]`.
+  if (content.startsWith(SNIP_BOUNDARY_PREFIX) && content.endsWith(SNIP_BOUNDARY_SUFFIX)) {
+    const middle = content.slice(SNIP_BOUNDARY_PREFIX.length, content.length - SNIP_BOUNDARY_SUFFIX.length);
+    if (/^\d+$/.test(middle)) return true;
+  }
+  return false;
+}
+
+function stripCompactionBoundaries(messages: Message[]): Message[] {
+  return messages.filter((msg) => !isCompactionBoundary(msg));
+}
 
 export interface CompactionConfig {
   maxTokens: number;
@@ -27,7 +89,7 @@ export interface CompactionValidation {
 
 export interface CompactionResult {
   messages: Message[];
-  strategy: string;
+  strategy: CompactionStrategy;
   tokensFreed: number;
   summary?: string;
   compactedCount?: number;
@@ -41,10 +103,9 @@ export function applyBudgetReduction(
   let freed = 0;
   const updated = messages.map((msg) => {
     if (msg.role === 'tool' && msg.content && msg.content.length > maxCharsPerResult) {
-      const original = msg.content.length;
-      const truncated = msg.content.slice(0, maxCharsPerResult) + '\n...(truncated)';
-      freed += Math.ceil((original - truncated.length) / 4);
-      return { ...msg, content: truncated };
+      const { content, freedChars } = compactToolOutput(msg.content, maxCharsPerResult);
+      freed += Math.ceil(freedChars / 4);
+      return { ...msg, content };
     }
     return msg;
   });
@@ -60,9 +121,16 @@ export function applySnip(
     return { messages, strategy: 'snip', tokensFreed: 0 };
   }
 
-  // Keep system message + the last N messages
-  const systemMessages = messages.filter((m) => m.role === 'system');
-  const nonSystem = messages.filter((m) => m.role !== 'system');
+  // Keep system message + the last N messages. Strip any prior boundary
+  // markers so repeated compaction doesn't stack them up.
+  const cleaned = stripCompactionBoundaries(messages);
+  const systemMessages = cleaned.filter((m) => m.role === 'system');
+  const nonSystem = cleaned.filter((m) => m.role !== 'system');
+  if (nonSystem.length <= keepCount) {
+    // After stripping boundaries we're already within budget; emit a
+    // zero-freed result so the caller's guard treats this as a no-op.
+    return { messages, strategy: 'snip', tokensFreed: 0 };
+  }
   const snipped = nonSystem.slice(-keepCount);
   const droppedCount = nonSystem.length - snipped.length;
   const dropped = nonSystem.slice(0, droppedCount);
@@ -70,7 +138,7 @@ export function applySnip(
 
   const boundary: Message = {
     role: 'system' as const,
-    content: `[${droppedCount} earlier messages snipped to save context]`,
+    content: `${SNIP_BOUNDARY_PREFIX}${droppedCount}${SNIP_BOUNDARY_SUFFIX}`,
   };
 
   return {
@@ -87,9 +155,11 @@ export async function applyAutoCompact(
   client: IChatClient,
   minSummaryQuality = DEFAULT_COMPACTION_CONFIG.minSummaryQuality ?? 0,
 ): Promise<CompactionResult> {
-  // Separate system messages from conversation
-  const systemMessages = messages.filter((m) => m.role === 'system');
-  const conversation = messages.filter((m) => m.role !== 'system');
+  // Strip any prior compaction-boundary system messages first so the LLM
+  // summarises the real conversation and we don't stack boundaries.
+  const cleaned = stripCompactionBoundaries(messages);
+  const systemMessages = cleaned.filter((m) => m.role === 'system');
+  const conversation = cleaned.filter((m) => m.role !== 'system');
 
   if (conversation.length < 4) {
     return { messages, strategy: 'auto_compact', tokensFreed: 0 };
@@ -115,7 +185,9 @@ export async function applyAutoCompact(
     }
     const summary: Message = {
       role: 'system' as const,
-      content: `[Compacted summary of ${toSummarize.length} messages]\n${result.message.content}`,
+      content: resolveLoopHardeningEnabled()
+        ? `${AUTO_COMPACT_BOUNDARY_PREFIX}${toSummarize.length} messages]\n${HISTORICAL_CONTEXT_BEGIN_MARKER}\n${result.message.content}\n${HISTORICAL_CONTEXT_END_MARKER}`
+        : `${AUTO_COMPACT_BOUNDARY_PREFIX}${toSummarize.length} messages]\n${result.message.content}`,
     };
 
     return {

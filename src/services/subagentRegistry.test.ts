@@ -4,6 +4,7 @@ import {
   listActiveSubagents,
   registerSubagent,
   unregisterSubagent,
+  updateSubagentActivity,
   _resetSubagentRegistryForTests,
 } from './subagentRegistry';
 
@@ -50,5 +51,25 @@ describe('subagentRegistry', () => {
 
   it('cancel returns false for an unknown id', () => {
     expect(cancelSubagent('missing')).toBe(false);
+  });
+
+  it('updateSubagentActivity stamps lastActivity and updatedAtMs', () => {
+    const before = Date.now();
+    registerSubagent({ id: 'r1', name: 'x', prompt: '', controller: new AbortController() });
+    updateSubagentActivity('r1', '🔧 read_file');
+    const record = getActiveSubagent('r1');
+    expect(record?.lastActivity).toBe('🔧 read_file');
+    expect(record?.updatedAtMs).toBeGreaterThanOrEqual(before);
+  });
+
+  it('updateSubagentActivity truncates labels to 120 chars', () => {
+    registerSubagent({ id: 'r1', name: 'x', prompt: '', controller: new AbortController() });
+    updateSubagentActivity('r1', 'a'.repeat(500));
+    expect(getActiveSubagent('r1')?.lastActivity).toHaveLength(120);
+  });
+
+  it('updateSubagentActivity is a no-op for unknown ids', () => {
+    expect(() => updateSubagentActivity('missing', 'whatever')).not.toThrow();
+    expect(getActiveSubagent('missing')).toBeUndefined();
   });
 });

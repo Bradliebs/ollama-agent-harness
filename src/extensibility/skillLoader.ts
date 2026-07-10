@@ -1,6 +1,8 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
+import { auditSkillContent } from './contentAudit';
+
 export type SkillRiskLevel = 'low' | 'medium' | 'high';
 
 export interface SkillDefinition {
@@ -31,7 +33,7 @@ export interface SkillDefinition {
 export interface SkillLoadDiagnostic {
   name: string;
   filePath: string;
-  reason: 'missing-skill-file' | 'unreadable-skill-file' | 'missing-frontmatter';
+  reason: 'missing-skill-file' | 'unreadable-skill-file' | 'missing-frontmatter' | 'suspicious-content';
   message: string;
 }
 
@@ -61,6 +63,16 @@ export async function scanSkillsDir(skillsDir: string): Promise<SkillDirectorySc
         const skill = parseSkillFile(content, skillFile);
         if (skill) {
           skills.push(skill);
+          // Non-blocking: flag hidden/control characters in skill text (these
+          // would otherwise reach the model prompt unseen) but still load it.
+          for (const finding of auditSkillContent(skill.name, content)) {
+            diagnostics.push({
+              name: entry.name,
+              filePath: skillFile,
+              reason: 'suspicious-content',
+              message: finding.message,
+            });
+          }
         } else {
           diagnostics.push({
             name: entry.name,
@@ -86,6 +98,35 @@ export async function scanSkillsDir(skillsDir: string): Promise<SkillDirectorySc
   }
 
   return { skills, diagnostics };
+}
+
+/**
+ * Scan several skill directories and merge them into one set. When the same
+ * skill name appears in more than one tier, the entry from the later
+ * (higher-precedence) directory wins — e.g. a workspace skill shadows a global
+ * one of the same name. Diagnostics from every tier are preserved.
+ *
+ * Pass directories ordered low-to-high precedence, e.g.
+ * `[globalDir, repoDir, workspaceDir]`.
+ */
+export async function scanSkillsDirs(dirs: string[]): Promise<SkillDirectoryScan> {
+  const byName = new Map<string, SkillDefinition>();
+  const diagnostics: SkillLoadDiagnostic[] = [];
+
+  for (const dir of dirs) {
+    const scan = await scanSkillsDir(dir);
+    for (const skill of scan.skills) {
+      byName.set(skill.name.toLowerCase(), skill);
+    }
+    diagnostics.push(...scan.diagnostics);
+  }
+
+  return { skills: [...byName.values()], diagnostics };
+}
+
+/** Convenience wrapper around {@link scanSkillsDirs} returning only the merged skills. */
+export async function loadSkillsFromDirs(dirs: string[]): Promise<SkillDefinition[]> {
+  return (await scanSkillsDirs(dirs)).skills;
 }
 
 async function skillFileExists(filePath: string): Promise<boolean> {
@@ -134,6 +175,27 @@ function normalizeStringList(value: unknown): string[] {
   return [];
 }
 
+function coerceYamlScalar(raw: string): unknown {
+  const trimmed = raw.trim();
+  if (trimmed === '') return '';
+  // Preserve quoted strings as strings.
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1);
+  }
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+  if (trimmed === 'null' || trimmed === '~') return null;
+  if (/^-?\d+$/.test(trimmed)) {
+    const n = Number(trimmed);
+    if (Number.isSafeInteger(n)) return n;
+  }
+  if (/^-?\d+\.\d+$/.test(trimmed)) {
+    const n = Number(trimmed);
+    if (Number.isFinite(n)) return n;
+  }
+  return trimmed;
+}
+
 function extractFrontmatter(content: string): Record<string, unknown> | null {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return null;
@@ -146,14 +208,9 @@ function extractFrontmatter(content: string): Record<string, unknown> | null {
     if (colonIdx === -1) continue;
 
     const key = line.slice(0, colonIdx).trim();
-    let value: unknown = line.slice(colonIdx + 1).trim();
-
-    // Remove surrounding quotes
-    if (typeof value === 'string' && value.startsWith('"') && value.endsWith('"')) {
-      value = value.slice(1, -1);
-    }
-
-    result[key] = value;
+    const rawValue = line.slice(colonIdx + 1).trim();
+    if (rawValue === '') continue;
+    result[key] = coerceYamlScalar(rawValue);
   }
 
   // Parse triggers array (YAML list)

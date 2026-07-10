@@ -9,6 +9,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as readline from 'readline';
 import { createReadStream } from 'fs';
+import { withFileLock } from '../persistence/atomicFile';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -116,7 +117,7 @@ export async function createPromise(
   };
   const fp = ledgerPath(projectDir);
   await fs.mkdir(path.dirname(fp), { recursive: true });
-  await fs.appendFile(fp, JSON.stringify(promise) + '\n', 'utf-8');
+  await withFileLock(fp, () => fs.appendFile(fp, JSON.stringify(promise) + '\n', 'utf-8'));
   return promise;
 }
 
@@ -146,18 +147,19 @@ export async function updatePromise(
   promise_id: string,
   updates: Partial<Pick<AgentPromise, 'status' | 'last_fulfilled_at' | 'failure_count' | 'next_due_at' | 'fallback_message' | 'schedule_id'>>,
 ): Promise<AgentPromise | null> {
-  const all = await listPromises(projectDir);
-  const existing = all.find((p) => p.promise_id === promise_id);
-  if (!existing) return null;
-
-  const updated: AgentPromise = {
-    ...existing,
-    ...updates,
-    updated_at: new Date().toISOString(),
-  };
   const fp = ledgerPath(projectDir);
-  await fs.appendFile(fp, JSON.stringify(updated) + '\n', 'utf-8');
-  return updated;
+  return withFileLock(fp, async () => {
+    const all = await listPromises(projectDir);
+    const existing = all.find((p) => p.promise_id === promise_id);
+    if (!existing) return null;
+    const updated: AgentPromise = {
+      ...existing,
+      ...updates,
+      updated_at: new Date().toISOString(),
+    };
+    await fs.appendFile(fp, JSON.stringify(updated) + '\n', 'utf-8');
+    return updated;
+  });
 }
 
 // ─── Obligation checker ─────────────────────────────────────────────

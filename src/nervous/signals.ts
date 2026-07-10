@@ -119,6 +119,7 @@ export class SignalBus {
 }
 
 let signalCounter = 0;
+const SIGNAL_COUNTER_MAX = Number.MAX_SAFE_INTEGER - 1;
 
 /** Create a signal with auto-generated ID and timestamp. */
 export function createSignal(
@@ -128,8 +129,11 @@ export function createSignal(
   message: string,
   metadata?: Record<string, unknown>,
 ): NervousSignal {
+  if (signalCounter >= SIGNAL_COUNTER_MAX) signalCounter = 0;
+  const seq = ++signalCounter;
+  const rand = Math.floor(Math.random() * 0xffff).toString(36);
   return {
-    id: `sig-${Date.now().toString(36)}-${(++signalCounter).toString(36)}`,
+    id: `sig-${Date.now().toString(36)}-${seq.toString(36)}-${rand}`,
     type,
     source,
     severity,

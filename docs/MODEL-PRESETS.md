@@ -86,12 +86,14 @@ harness --summarizer-model qwen2.5:3b
 
 ## Audio Transcription
 
-Most chat models do not directly hear audio through the chat API. Harness expects a local transcription command and passes the uploaded audio path into `{input}`.
+Most chat models do not directly hear audio through the chat API. Harness passes the uploaded audio path into `{input}` of a local transcription command.
 
-Example with Whisper:
+Zero-config: if [OpenAI Whisper](https://github.com/openai/whisper) is installed (`pip install -U openai-whisper`), Harness auto-detects the `whisper` executable on your `PATH` and uses it automatically — no environment variable required.
+
+To override the default with an explicit command:
 
 ```powershell
-$env:HARNESS_AUDIO_TRANSCRIBE_COMMAND = 'whisper "{input}" --model base --output_format txt --output_dir -'
+$env:HARNESS_AUDIO_TRANSCRIBE_COMMAND = 'whisper "{input}" --model base --output_format txt --output_dir .'
 harness doctor --audio-command $env:HARNESS_AUDIO_TRANSCRIBE_COMMAND --audio-sample .harness/uploads/sample.wav
 ```
 

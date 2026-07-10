@@ -2,6 +2,14 @@ import type { Tool, ToolCall, ToolResult } from '../types';
 import type { HookPipeline } from '../extensibility/hookPipeline';
 import { trackToolUsage, type LearningRecorder } from '../learning/engine';
 import type { RuntimeTracer } from '../core/tracing';
+import { recordSwallowed } from '../observability/silentFailureSink';
+import type { ReadBeforeWriteGate } from './readBeforeWriteGate';
+import { compressToolResult, type CompressionConfig } from './outputCompression';
+import { prepareSideEffectRecording, type SideEffectRecorder } from '../persistence/sideEffectRecording';
+import type { ToolInspectionManager, InspectorContext } from '../safety/toolInspectors';
+import { maybeSpoolLargeResponse, type LargeResponseConfig } from './largeResponseHandler';
+import { validateToolInput } from './validateToolInput';
+import { classifyError } from '../core/retryClass';
 
 export interface DispatchResult {
   call: ToolCall;
@@ -17,6 +25,73 @@ export interface DispatchOptions {
    * instead of the legacy process-wide default. Required to avoid the
    * cross-session race on the module-level default. */
   learningRecorder?: LearningRecorder;
+  /**
+   * When set, the gate is consulted before every write tool call.
+   * Read tool calls are recorded in the gate's ledger automatically.
+   * This enforces the read-before-write discipline.
+   */
+  readBeforeWriteGate?: ReadBeforeWriteGate;
+  /**
+   * When true, successful string tool outputs are run through the
+   * rule-based compression pass (`outputCompression.ts`) before they
+   * enter history. Gated OFF by default; the caller decides based on
+   * `HARNESS_TOOL_COMPRESSION_ENABLED`.
+   */
+  compressOutput?: boolean;
+  /** Optional overrides for the compression pass. */
+  compressionConfig?: CompressionConfig;
+  /**
+   * When set, file-mutating tool calls (file_write / file_edit / file_delete)
+   * record a reversible side effect against this run, so the whole run can be
+   * undone later. The pre-image is captured before the tool runs; the effect is
+   * recorded only after it succeeds. Best-effort — a recording failure is
+   * surfaced to the silent-failure sink and never blocks the tool.
+   */
+  sideEffectRecorder?: SideEffectRecorder;
+  /**
+   * Chain of safety inspectors (repetition guard, egress detector, adversary
+   * judge, ...) consulted between the permission gate and tool execution.
+   * Borrowed from goose's `ToolInspectionManager`. `deny` halts the call;
+   * `requireApproval` is surfaced via `onApprovalRequired` for the host to
+   * decide. When the host does not wire `onApprovalRequired`, `requireApproval`
+   * is treated as a soft pass (allowed), but the dropped decision is recorded
+   * to the silent-failure sink so it stays post-hoc visible via diagnostics.
+   */
+  inspectors?: ToolInspectionManager;
+  /** Context passed to inspectors (recent messages, session id, ...). */
+  inspectorContext?: InspectorContext;
+  /**
+   * Behaviour when an inspector returns `requireApproval` but no
+   * `onApprovalRequired` callback is wired. Default preserves the historical
+   * soft-pass contract; callers that run unattended should use `deny`.
+   */
+  approvalPolicy?: 'soft-pass' | 'deny';
+  /**
+   * Called when an inspector requests human confirmation. Return `true` to
+   * proceed, `false` to abort. If omitted, `requireApproval` is treated as
+   * `allow` (matches goose's CLI when no confirmation channel is wired), and
+   * the dropped decision is recorded to the silent-failure sink for visibility.
+   */
+  onApprovalRequired?: (info: {
+    call: ToolCall;
+    reason: string;
+    warning?: string;
+    inspectorName: string;
+  }) => Promise<boolean>;
+  /**
+   * When set, tool responses larger than the threshold are spooled to a
+   * temp file and replaced with a pointer message. Mirrors goose's
+   * `large_response_handler`. Runs before `compressOutput`.
+   */
+  largeResponseConfig?: LargeResponseConfig;
+  /**
+   * When true, a tool call's input is checked against the tool's declared
+   * parameter schema before execution. Only missing `required` parameters are
+   * rejected (no type-checking, extra keys allowed); a violation returns a
+   * correctable error result instead of executing on malformed input. Off by
+   * default so the dispatch contract is unchanged unless a caller opts in.
+   */
+  validateInput?: boolean;
 }
 
 /**
@@ -162,6 +237,75 @@ export class ToolDispatcher {
       }
     }
 
+    // Safety inspectors (repetition guard, egress detector, adversary judge, ...)
+    if (options.inspectors) {
+      const inspectSpan = options.tracer?.startSpan('inspector.chain', { tool: call.name });
+      const decision = await options.inspectors.decide(call, options.inspectorContext ?? {});
+      inspectSpan?.end('ok', {
+        action: decision.action.kind,
+        inspector: decision.inspectorName,
+      });
+      if (decision.action.kind === 'deny') {
+        dispatchSpan?.end('ok', { inspectorDenied: true, inspector: decision.inspectorName });
+        return {
+          call,
+          result: {
+            success: false,
+            output: `Blocked by inspector '${decision.inspectorName}': ${decision.action.reason}`,
+            error: decision.action.reason,
+          },
+        };
+      }
+      if (decision.action.kind === 'requireApproval' && !options.onApprovalRequired) {
+        if (options.approvalPolicy === 'deny') {
+          dispatchSpan?.end('ok', { approvalDenied: true, inspector: decision.inspectorName, missingApprovalChannel: true });
+          return {
+            call,
+            result: {
+              success: false,
+              output: `Inspector '${decision.inspectorName}' required approval but no approval channel is configured: ${decision.action.reason}`,
+              error: decision.action.reason,
+            },
+          };
+        }
+        // No confirmation channel wired: the call is allowed to proceed
+        // (matches goose's CLI), but record the dropped safety decision to the
+        // silent-failure sink so it is post-hoc visible via diagnostics instead
+        // of silently passing through. See audit finding F2.
+        recordSwallowed(
+          'dispatcher.inspector.requireApproval.dropped',
+          `requireApproval not honored (no onApprovalRequired wired): ${decision.action.reason}`,
+          { tool: call.name, inspector: decision.inspectorName, reason: decision.action.reason },
+        );
+      }
+      if (decision.action.kind === 'requireApproval' && options.onApprovalRequired) {
+        const approvalSpan = options.tracer?.startSpan('inspector.approval', { tool: call.name });
+        let approved = false;
+        try {
+          approved = await options.onApprovalRequired({
+            call,
+            reason: decision.action.reason,
+            warning: decision.action.warning,
+            inspectorName: decision.inspectorName,
+          });
+        } catch (err) {
+          recordSwallowed('dispatcher.inspector.approval', err);
+        }
+        approvalSpan?.end('ok', { approved });
+        if (!approved) {
+          dispatchSpan?.end('ok', { approvalDenied: true, inspector: decision.inspectorName });
+          return {
+            call,
+            result: {
+              success: false,
+              output: `Inspector '${decision.inspectorName}' required approval but it was not granted: ${decision.action.reason}`,
+              error: decision.action.reason,
+            },
+          };
+        }
+      }
+    }
+
     // Lookup tool
     const tool = this.toolMap.get(call.name);
     if (!tool) {
@@ -176,17 +320,96 @@ export class ToolDispatcher {
       };
     }
 
+    // Inbound argument validation (after tool lookup, before execution).
+    // Catches calls missing a declared-required parameter and returns a
+    // correctable error so the loop can retry rather than executing on
+    // malformed input.
+    if (options.validateInput) {
+      const validation = validateToolInput(tool, call.input);
+      if (!validation.valid) {
+        const reason = validation.errors.join(' ');
+        dispatchSpan?.end('ok', { invalidInput: true });
+        return {
+          call,
+          result: {
+            success: false,
+            output: `Invalid arguments for '${call.name}': ${reason}`,
+            error: reason,
+          },
+        };
+      }
+    }
+
+    // Read-before-write gate (after permission check, before execution)
+    let pendingReadPath: string | undefined;
+    if (options.readBeforeWriteGate) {
+      const gateResult = options.readBeforeWriteGate.gateTool(call.name, call.input);
+      if (!gateResult.allowed) {
+        dispatchSpan?.end('ok', { blockedByReadBeforeWriteGate: true });
+        return {
+          call,
+          result: {
+            success: false,
+            output: `Read-before-write gate blocked '${call.name}': ${gateResult.reason}`,
+            error: gateResult.reason,
+          },
+        };
+      }
+      pendingReadPath = gateResult.pendingReadPath;
+    }
+
     // Execute with error boundary
     try {
       const startTime = Date.now();
       const toolSpan = options.tracer?.startSpan('tool.execute', { tool: call.name });
-      const result = await tool.execute(call.input);
+      let commitSideEffect: (() => Promise<void>) | null = null;
+      if (options.sideEffectRecorder) {
+        try {
+          commitSideEffect = await prepareSideEffectRecording(options.sideEffectRecorder, call.name, call.input);
+        } catch (err) {
+          recordSwallowed('dispatcher.sideEffectRecord.prepare', err);
+        }
+      }
+      let result = await tool.execute(call.input);
       const durationMs = Date.now() - startTime;
       toolSpan?.end(result.success ? 'ok' : 'error', { durationMs, success: result.success });
+      // Spool overly large responses to disk before they enter history.
+      // Runs before compression so compression sees the pointer message.
+      if (options.largeResponseConfig) {
+        const outcome = maybeSpoolLargeResponse(call.name, result, options.largeResponseConfig);
+        if (outcome.spooled) {
+          options.tracer
+            ?.startSpan('tool.spool', { tool: call.name })
+            ?.end('ok', { originalChars: outcome.originalChars, spoolPath: outcome.spoolPath });
+        }
+        result = outcome.result;
+      }
+      // Compress verbose output at the boundary, before it enters history.
+      if (options.compressOutput) {
+        const compressed = compressToolResult(call.name, result, options.compressionConfig);
+        if (compressed.saved > 0) {
+          options.tracer?.startSpan('tool.compress', { tool: call.name })?.end('ok', { saved: compressed.saved });
+          result = compressed.result;
+        }
+      }
+      // Confirm deferred read after successful execution
+      if (result.success && pendingReadPath && options.readBeforeWriteGate) {
+        options.readBeforeWriteGate.confirmRead(pendingReadPath);
+      }
+      // Record the reversible side effect once the mutation actually succeeded.
+      if (result.success && commitSideEffect) {
+        try {
+          await commitSideEffect();
+        } catch (err) {
+          recordSwallowed('dispatcher.sideEffectRecord.commit', err);
+        }
+      }
       if (options.trackUsage) {
         const recorder = options.learningRecorder;
-        const p = recorder ? recorder.trackToolUsage(call.name, call.input, result.success, durationMs) : trackToolUsage(call.name, call.input, result.success, durationMs);
-        p.catch(() => {});
+        try {
+          const p = recorder ? recorder.trackToolUsage(call.name, call.input, result.success, durationMs) : trackToolUsage(call.name, call.input, result.success, durationMs);
+          Promise.resolve(p).catch((err) => recordSwallowed('dispatcher.trackToolUsage.success', err));
+        } catch (err) { recordSwallowed('dispatcher.trackToolUsage.success.sync', err); }
       }
       if (options.hooks) {
         const postHookSpan = options.tracer?.startSpan('hook.post_tool_use', { tool: call.name });
@@ -206,11 +429,24 @@ export class ToolDispatcher {
       return { call, result };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
+      const classified = classifyError(error);
+      // Surface the retry class on a dedicated annotation span so callers
+      // (UI, telemetry, schedulers) can distinguish transient blips from
+      // auth/policy failures without parsing error strings.
+      options.tracer
+        ?.startSpan('tool.failure.classified', { tool: call.name })
+        ?.end('ok', {
+          retryClass: classified.class,
+          reason: classified.reason,
+          ...(classified.retryAfterMs !== undefined ? { retryAfterMs: classified.retryAfterMs } : {}),
+        });
       dispatchSpan?.fail(error);
       if (options.trackUsage) {
         const recorder = options.learningRecorder;
-        const p = recorder ? recorder.trackToolUsage(call.name, call.input, false) : trackToolUsage(call.name, call.input, false);
-        p.catch(() => {});
+        try {
+          const p = recorder ? recorder.trackToolUsage(call.name, call.input, false) : trackToolUsage(call.name, call.input, false);
+          Promise.resolve(p).catch((err) => recordSwallowed('dispatcher.trackToolUsage.failure', err));
+        } catch (err) { recordSwallowed('dispatcher.trackToolUsage.failure.sync', err); }
       }
       if (options.hooks) {
         const failureHookSpan = options.tracer?.startSpan('hook.post_tool_use_failure', { tool: call.name });

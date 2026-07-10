@@ -129,6 +129,27 @@ The classifier applies pattern-matching rules with priorities. Operate-mode patt
 
 Source: `src/services/modeClassifier.ts`
 
+## Assistant Profile
+
+The harness and the "Jarvis" assistant are one product, not two processes. The
+`start.bat` / `./start.sh` launchers set `HARNESS_PROFILE=assistant`, which turns
+the proactive assistant features on by default — most notably the ambient daemon.
+`assistantProfileEnabled()` and `ambientEnabled()` in `src/web/server.ts` resolve
+this: an explicit `HARNESS_AMBIENT_ENABLED=1/0` always wins, otherwise the ambient
+daemon follows the profile. Start the server without the profile (for example
+`npm run serve` with `HARNESS_PROFILE` unset) to run a plain harness with the
+assistant features off.
+
+`HARNESS_PROFILE=assistant-proactive` is an explicit opt-in superset. It keeps
+every base assistant feature on and additionally defaults the standing-autonomy
+subsystems — the self-learning heartbeat and the trigger scheduler — to ON. The
+plain `assistant` profile deliberately leaves these off, because they spend
+compute on a timer and act without prompting; that should never start as a side
+effect of launching the app. Explicit `HARNESS_HEARTBEAT_ENABLED=0` /
+`HARNESS_TRIGGERS_ENABLED=0` still force them off under the proactive profile,
+and the existing Settings toggles still turn them on under any profile. Concierge
+auto-route stays opt-in regardless of profile.
+
 ## Communication Connectors
 
 The Settings panel shows connector setup and readiness beside the existing

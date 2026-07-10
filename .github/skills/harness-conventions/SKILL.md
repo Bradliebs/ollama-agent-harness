@@ -32,6 +32,19 @@ Session transcripts are append-only JSONL files. Compaction appends summary even
 
 Tools are classified as concurrent-safe (read-only) or exclusive (state-modifying). Read-only tools can execute in parallel; state-modifying tools are serialized.
 
+### Symbol Lookups Prefer code_graph Over Grep
+
+For "who calls X", "what does X call", "what does this file export", or "show the neighbourhood around X" questions, use the `code_graph` tool first. It reads a static index of `src/` (built from the TypeScript compiler API) and returns precise file/line answers — no false positives from comments or strings, and aliased re-exports are followed.
+
+Operations:
+- `code_graph callers <symbol>` — incoming calls
+- `code_graph callees <symbol>` — outgoing calls
+- `code_graph exports <fragment>` — what a file exports
+- `code_graph around <symbol> [depth]` — local subgraph
+- `code_graph stats` — top-called functions
+
+Fall back to `grep` only when the question is text-shaped (string literals, comments, config files, log messages) or when `code_graph` reports the graph file is missing — in which case run `node scripts/build-code-graph.js` and retry. The graph file lives at `.harness/code-graph.json` and is rebuilt manually for now (no auto-rebuild).
+
 ### Subagent Isolation
 
 Subagents operate in isolated context windows. Only summary text returns to the parent — never the full conversation history. This prevents context explosion.

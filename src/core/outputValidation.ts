@@ -171,7 +171,33 @@ export interface OutputValidationProfileSuggestion {
   matched: boolean;
 }
 
-export function describeOutputValidationProfileSuggestion(input: string, fallback: OutputValidationProfile = 'oracle-prime'): OutputValidationProfileSuggestion {
+/**
+ * Optional hints the caller can pass to disambiguate profile selection when
+ * upstream classifiers (e.g. the mode classifier) already know the user's
+ * intent. Keeps the suggester from re-deriving intent from a regex table that
+ * is easy to fool with stray file paths or language keywords inside an
+ * otherwise-analytical prompt.
+ */
+export interface OutputValidationProfileSuggestionOptions {
+  /**
+   * Intent hint from a higher-level classifier. When set to `'research'` or
+   * `'maintain'` the suggester routes to the analytical profile regardless of
+   * incidental code/factual keywords appearing in the prompt body.
+   */
+  modeHint?: 'chat' | 'build' | 'operate' | 'automate' | 'research' | 'maintain';
+}
+
+// Research/analysis intent. Kept narrow so it does not poach prompts that only
+// happen to use one of these words in passing — anchored verbs at the start of
+// a clause, plus the phrases the mode classifier uses for its own research
+// rule. Acts as a defensive guard for callers that do not pass a modeHint.
+const RESEARCH_INTENT_PATTERN = /(^|[.!?\n]\s*)(research|investigate|look up|find out|analyse|analyze)\b|\b(pros and cons|trade-?offs?|state of the art|literature review|what are the options|compare\s+\w+\s+(to|vs|against))\b/;
+
+export function describeOutputValidationProfileSuggestion(
+  input: string,
+  fallback: OutputValidationProfile = 'oracle-prime',
+  options: OutputValidationProfileSuggestionOptions = {},
+): OutputValidationProfileSuggestion {
   const text = input.toLowerCase();
   const trimmed = text.trim();
   const fallbackProfile: BuiltInOutputValidationProfile = isBuiltInProfile(fallback) ? fallback : 'oracle-prime';
@@ -179,6 +205,17 @@ export function describeOutputValidationProfileSuggestion(input: string, fallbac
   if (trimmed.length < 12 || /^(you decide|whatever|anything|surprise me|up to you|your choice|idk|dunno)\b/.test(trimmed)) {
     return { profile: fallbackProfile, matched: false };
   }
+  // Authoritative mode hint wins over any keyword heuristic. RESEARCH/MAINTAIN
+  // prompts produce analytical prose, not code-change summaries, so they must
+  // not be graded against the coding-answer rubric even when the prompt body
+  // mentions file paths, language names, or function/class.
+  if (options.modeHint === 'research' || options.modeHint === 'maintain') {
+    return { profile: 'oracle-prime', matched: true };
+  }
+  // Defensive guard for callers that do not pass a modeHint: if the prompt
+  // carries a clear research/analysis intent, route to the analytical profile
+  // before the code-signal regex has a chance to claim it.
+  if (RESEARCH_INTENT_PATTERN.test(text)) return { profile: 'oracle-prime', matched: true };
   if (/\b(stdout|stderr|exit code|tool result|terminal output|command output|stack trace)\b/.test(text)) return { profile: 'tool-result-summary', matched: true };
   if (/\b(code|coding|implement|implemented|implementing|refactor|debug|typecheck|unit test|pull request|commit|typescript|javascript|python|\.ts|\.tsx|\.js|\.jsx|\.py|npm|yarn|pnpm|jest|eslint|compile|compiler|stack trace|function|class|method|api endpoint)\b/.test(text)) return { profile: 'coding-answer', matched: true };
   if (/\b(weather|today|current|latest|news|price|stock|who is|what is|when is|where is|source|according to|factual)\b/.test(text)) return { profile: 'factual-answer', matched: true };
@@ -186,8 +223,12 @@ export function describeOutputValidationProfileSuggestion(input: string, fallbac
   return { profile: fallbackProfile, matched: false };
 }
 
-export function suggestOutputValidationProfile(input: string, fallback: OutputValidationProfile = 'oracle-prime'): BuiltInOutputValidationProfile {
-  return describeOutputValidationProfileSuggestion(input, fallback).profile;
+export function suggestOutputValidationProfile(
+  input: string,
+  fallback: OutputValidationProfile = 'oracle-prime',
+  options: OutputValidationProfileSuggestionOptions = {},
+): BuiltInOutputValidationProfile {
+  return describeOutputValidationProfileSuggestion(input, fallback, options).profile;
 }
 
 export function validateOutput(
@@ -581,3 +622,75 @@ function isSectionHeading(line: string, section: string): boolean {
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+// ─── Self-certification detector ────────────────────────────────────
+// Detects when an agent claims to have done something (sent email, wrote
+// file, scheduled job, etc.) without tool evidence supporting the claim.
+// This is a cross-profile check callable from queryLoop after output
+// validation completes.
+
+/** Phrases that indicate the agent is claiming to have completed an action. */
+const CLAIM_PATTERNS: Array<{ pattern: RegExp; claimType: string }> = [
+  { pattern: /\b(sent|delivered|dispatched)\s+(an?\s+)?(email|alert|notification|message)\b/i, claimType: 'notification_sent' },
+  { pattern: /(email|alert|notification)\s*(sent|delivered)/i, claimType: 'notification_sent' },
+  { pattern: /\b(scheduled|created|set up)\s+(\d+\s+)?(daily|hourly|cron|automation|alert|job)/i, claimType: 'automation_scheduled' },
+  { pattern: /\b(file|script|code)\s+(saved|written|created|deployed)\b/i, claimType: 'file_created' },
+  { pattern: /\b(deployed|published|pushed|released)\s+(to|on|at)\b/i, claimType: 'deployment' },
+  { pattern: /\b(database|table|schema)\s+(created|migrated|updated)\b/i, claimType: 'database_modified' },
+  { pattern: /\b(tests?|build|lint)\s+(passed|succeeded|green)\b/i, claimType: 'validation_passed' },
+  { pattern: /\b(installed|configured|enabled)\s+(the\s+)?(\w+\s+)?(plugin|extension|module|service|bot|bridge)\b/i, claimType: 'installation' },
+];
+
+/** Tool names that count as evidence for each claim type. */
+const EVIDENCE_TOOLS: Record<string, string[]> = {
+  notification_sent: ['telegram_notify', 'send_email', 'email_send', 'smtp_send', 'web_fetch'],
+  automation_scheduled: ['file_write', 'file_edit', 'bash', 'add_automation_job'],
+  file_created: ['file_write', 'file_edit'],
+  deployment: ['bash', 'file_write', 'web_fetch'],
+  database_modified: ['bash', 'file_write'],
+  validation_passed: ['bash', 'file_write'],
+  installation: ['bash', 'file_write'],
+};
+
+export interface SelfCertificationFinding {
+  claimType: string;
+  claimText: string;
+  hasEvidence: boolean;
+  evidenceTools: string[];
+  severity: 'warn' | 'fail';
+  message: string;
+}
+
+/**
+ * Cross-profile check: detect when the agent's text claims actions that
+ * the tool trace does not support. Returns findings (empty if clean).
+ */
+export function detectSelfCertification(
+  responseText: string,
+  toolCallNames: string[],
+): SelfCertificationFinding[] {
+  if (!responseText || responseText.length < 20) return [];
+  const findings: SelfCertificationFinding[] = [];
+  const toolSet = new Set(toolCallNames);
+
+  for (const { pattern, claimType } of CLAIM_PATTERNS) {
+    const match = pattern.exec(responseText);
+    if (!match) continue;
+
+    const requiredTools = EVIDENCE_TOOLS[claimType] ?? [];
+    const hasEvidence = requiredTools.length === 0 || requiredTools.some((t) => toolSet.has(t));
+
+    if (!hasEvidence) {
+      findings.push({
+        claimType,
+        claimText: match[0].slice(0, 80),
+        hasEvidence: false,
+        evidenceTools: requiredTools,
+        severity: claimType === 'validation_passed' ? 'fail' : 'warn',
+        message: `Agent claims "${match[0].slice(0, 60)}" but no supporting tool call was found (expected one of: ${requiredTools.join(', ')}).`,
+      });
+    }
+  }
+  return findings;
+}
+

@@ -4,7 +4,8 @@ import * as fsSync from 'fs';
 import http from 'http';
 import * as os from 'os';
 import * as path from 'path';
-import { app, inferModelCapabilities, parseExplicitSkillInvocation, resetSettingsLoadedForTest, resolveChatModelForRequest, setWebRuntimeOverrides, startupConnectorsEnabled, stopUploadsAutoPrune } from './server';
+import { cleanupServerTestWorkspace, serverTestSourceRoot } from './serverTestWorkspace.test-support';
+import { app, ambientEnabled, assistantProfileEnabled, drainChatBackgroundTasksForTest, inferModelCapabilities, parseExplicitSkillInvocation, proactiveProfileEnabled, resetSettingsLoadedForTest, resolveChatModelForRequest, resolveHarnessSourceDistFreshnessPaths, resolveJarvisWhisperBridgePath, setWebRuntimeOverrides, startupConnectorsEnabled, stopUploadsAutoPrune } from './server';
 import { runtimeTracer } from '../core/tracing';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { appendLearningCandidate, extractLearningCandidate } from '../learning/sessionLearning';
@@ -15,7 +16,7 @@ import { createAutomationJob } from '../automation/jobs';
 import { rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
 import { writeModelCatalogCache } from '../models/modelCatalog';
 import { OllamaClient, drainOllamaChatRetryEvents } from '../core/ollamaClient';
-import type { LoopEvent, SessionEvent } from '../types';
+import type { LoopConfig, LoopEvent, SessionEvent } from '../types';
 import { cleanupHarnessArtifacts, diffHarnessRuntimeState, restoreHarnessRuntimeState, seedHarnessAutomationJobsForTest, snapshotHarnessRuntimeState, type HarnessDocumentArtifact, type HarnessRuntimeStateSnapshot } from '../testSupport/harnessCleanup.test-support';
 
 jest.setTimeout(30_000);
@@ -100,6 +101,7 @@ describe('web server API validation', () => {
   });
 
   afterAll(async () => {
+    await drainChatBackgroundTasksForTest();
     await new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());
     });
@@ -134,6 +136,7 @@ describe('web server API validation', () => {
     expect(runtimeDiff.removedDocuments).toEqual([]);
     await expect(diffHarnessRuntimeState(process.cwd(), runtimeStateSnapshot)).resolves.toEqual({ automationJobsChanged: false, addedDocuments: [], removedDocuments: [] });
     logSpy.mockRestore();
+    await cleanupServerTestWorkspace();
   });
 
   async function request(route: string, init?: RequestInit): Promise<Response> {
@@ -164,6 +167,48 @@ describe('web server API validation', () => {
       if (previousDebugLog === undefined) delete process.env.HARNESS_DEBUG_LOG;
       else process.env.HARNESS_DEBUG_LOG = previousDebugLog;
     }
+  });
+
+  // Raw HTTP request so we can set Origin / Sec-Fetch-Site, which undici's
+  // fetch() strips as forbidden header names. Used by the CSRF guard test.
+  function rawApiPost(route: string, headers: Record<string, string>): Promise<number> {
+    const url = new URL(`${baseUrl}${route}`);
+    const body = '{}';
+    return new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: url.pathname + url.search,
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), ...headers },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
+  }
+
+  it('rejects cross-origin/cross-site state-changing /api requests but allows same-origin and non-browser clients', async () => {
+    // Off-allowlist Origin → blocked.
+    expect(await rawApiPost('/api/settings', { Origin: 'http://evil.example' })).toBe(403);
+    // Browser-flagged cross-site → blocked.
+    expect(await rawApiPost('/api/settings', { 'Sec-Fetch-Site': 'cross-site' })).toBe(403);
+    // Malformed Origin → blocked.
+    expect(await rawApiPost('/api/settings', { Origin: 'not a url' })).toBe(403);
+
+    // Same-origin (allow-listed host) Origin → reaches the handler.
+    expect(await rawApiPost('/api/settings', { Origin: 'http://127.0.0.1' })).not.toBe(403);
+    // Non-browser client (no Origin / Sec-Fetch-Site) → passes through, so the
+    // CLI, Telegram bridge, and in-process autonomy loop are unaffected.
+    expect(await rawApiPost('/api/settings', {})).not.toBe(403);
+    // Same-site browsers are explicitly allowed.
+    expect(await rawApiPost('/api/settings', { 'Sec-Fetch-Site': 'same-origin' })).not.toBe(403);
   });
 
   async function withTokenConfiguredServer(
@@ -1044,6 +1089,10 @@ describe('web server API validation', () => {
   });
 
   it('auto-routes Gemma current-information turns to an available agentic model', async () => {
+    const previousOpenRouter = process.env.OPENROUTER_API_KEY;
+    const previousAnthropic = process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
     const restore = setWebRuntimeOverrides({
       listModels: jest.fn().mockResolvedValue(['gemma4:e4b', 'gpt-oss:20b-cloud']),
     });
@@ -1053,12 +1102,66 @@ describe('web server API validation', () => {
       expect(decision).toMatchObject({ routed: true, from: 'gemma4:e4b', model: 'gpt-oss:20b-cloud' });
     } finally {
       restore();
+      if (previousOpenRouter === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previousOpenRouter;
+      if (previousAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previousAnthropic;
+    }
+  });
+
+  it('routes coding turns to paid OpenRouter Sonnet when OpenRouter is configured', async () => {
+    const previous = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = 'test-key';
+    const restore = setWebRuntimeOverrides({
+      listModels: jest.fn().mockResolvedValue(['llama3.1:8b']),
+    });
+    try {
+      const decision = await resolveChatModelForRequest('llama3.1:8b', 'Fix the bug, edit the code, and run tests.');
+
+      expect(decision).toMatchObject({
+        routed: true,
+        from: 'llama3.1:8b',
+        model: 'openrouter/anthropic/claude-sonnet-4.5',
+        tier: 'strong',
+        taskType: 'coding',
+        risk: 'high',
+      });
+    } finally {
+      restore();
+      if (previous === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previous;
+    }
+  });
+
+  it('uses OpenRouter Gemini Flash for current-information research turns', async () => {
+    const previous = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = 'test-key';
+    const restore = setWebRuntimeOverrides({
+      listModels: jest.fn().mockResolvedValue(['llama3.1:8b']),
+    });
+    try {
+      const decision = await resolveChatModelForRequest('llama3.1:8b', 'Research the latest Azure AI Search updates today.');
+
+      expect(decision).toMatchObject({
+        routed: true,
+        model: 'openrouter/google/gemini-2.5-flash',
+        tier: 'default',
+        taskType: 'research',
+      });
+    } finally {
+      restore();
+      if (previous === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previous;
     }
   });
 
   it('routes Gemma to glm-5.1:cloud when no higher-priority cloud model is available', async () => {
     // Pin the contract that glm-5.1:cloud is in the agentic fallback list and
     // gets selected when GPT-OSS variants are not pulled locally.
+    const previousOpenRouter = process.env.OPENROUTER_API_KEY;
+    const previousAnthropic = process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
     const restore = setWebRuntimeOverrides({
       listModels: jest.fn().mockResolvedValue(['gemma4:e4b', 'glm-5.1:cloud']),
     });
@@ -1068,6 +1171,10 @@ describe('web server API validation', () => {
       expect(decision).toMatchObject({ routed: true, from: 'gemma4:e4b', model: 'glm-5.1:cloud' });
     } finally {
       restore();
+      if (previousOpenRouter === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previousOpenRouter;
+      if (previousAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previousAnthropic;
     }
   });
 
@@ -1084,12 +1191,97 @@ describe('web server API validation', () => {
     }
   });
 
+  it('treats HARNESS_PROFILE=assistant (or HARNESS_ASSISTANT=1) as the assistant profile', () => {
+    const prevProfile = process.env.HARNESS_PROFILE;
+    const prevAssistant = process.env.HARNESS_ASSISTANT;
+    try {
+      delete process.env.HARNESS_PROFILE;
+      delete process.env.HARNESS_ASSISTANT;
+      expect(assistantProfileEnabled()).toBe(false);
+
+      process.env.HARNESS_PROFILE = 'assistant';
+      expect(assistantProfileEnabled()).toBe(true);
+
+      process.env.HARNESS_PROFILE = 'Assistant';
+      expect(assistantProfileEnabled()).toBe(true);
+
+      delete process.env.HARNESS_PROFILE;
+      process.env.HARNESS_ASSISTANT = '1';
+      expect(assistantProfileEnabled()).toBe(true);
+    } finally {
+      if (prevProfile === undefined) delete process.env.HARNESS_PROFILE;
+      else process.env.HARNESS_PROFILE = prevProfile;
+      if (prevAssistant === undefined) delete process.env.HARNESS_ASSISTANT;
+      else process.env.HARNESS_ASSISTANT = prevAssistant;
+    }
+  });
+
+  it('lets HARNESS_AMBIENT_ENABLED override the profile, else follows it', () => {
+    const prevProfile = process.env.HARNESS_PROFILE;
+    const prevAmbient = process.env.HARNESS_AMBIENT_ENABLED;
+    try {
+      // Neither set: ambient off.
+      delete process.env.HARNESS_PROFILE;
+      delete process.env.HARNESS_AMBIENT_ENABLED;
+      expect(ambientEnabled()).toBe(false);
+
+      // Profile on, no explicit flag: ambient follows the profile.
+      process.env.HARNESS_PROFILE = 'assistant';
+      expect(ambientEnabled()).toBe(true);
+
+      // Explicit flag always wins over the profile.
+      process.env.HARNESS_AMBIENT_ENABLED = '0';
+      expect(ambientEnabled()).toBe(false);
+
+      delete process.env.HARNESS_PROFILE;
+      process.env.HARNESS_AMBIENT_ENABLED = '1';
+      expect(ambientEnabled()).toBe(true);
+    } finally {
+      if (prevProfile === undefined) delete process.env.HARNESS_PROFILE;
+      else process.env.HARNESS_PROFILE = prevProfile;
+      if (prevAmbient === undefined) delete process.env.HARNESS_AMBIENT_ENABLED;
+      else process.env.HARNESS_AMBIENT_ENABLED = prevAmbient;
+    }
+  });
+
+  it('treats HARNESS_PROFILE=assistant-proactive as a superset that also opts into proactive autonomy', () => {
+    const prevProfile = process.env.HARNESS_PROFILE;
+    const prevAssistant = process.env.HARNESS_ASSISTANT;
+    try {
+      // Plain assistant: base profile on, proactive autonomy stays off.
+      delete process.env.HARNESS_ASSISTANT;
+      process.env.HARNESS_PROFILE = 'assistant';
+      expect(assistantProfileEnabled()).toBe(true);
+      expect(proactiveProfileEnabled()).toBe(false);
+
+      // Proactive: base profile still on (superset) and proactive on.
+      process.env.HARNESS_PROFILE = 'assistant-proactive';
+      expect(assistantProfileEnabled()).toBe(true);
+      expect(proactiveProfileEnabled()).toBe(true);
+
+      // Case-insensitive.
+      process.env.HARNESS_PROFILE = 'Assistant-Proactive';
+      expect(proactiveProfileEnabled()).toBe(true);
+
+      // Opting into the base assistant via HARNESS_ASSISTANT does not grant proactive.
+      delete process.env.HARNESS_PROFILE;
+      process.env.HARNESS_ASSISTANT = '1';
+      expect(assistantProfileEnabled()).toBe(true);
+      expect(proactiveProfileEnabled()).toBe(false);
+    } finally {
+      if (prevProfile === undefined) delete process.env.HARNESS_PROFILE;
+      else process.env.HARNESS_PROFILE = prevProfile;
+      if (prevAssistant === undefined) delete process.env.HARNESS_ASSISTANT;
+      else process.env.HARNESS_ASSISTANT = prevAssistant;
+    }
+  });
+
   it('keeps startTelegramBot and startDiscordBot inside the startupConnectorsEnabled gate', () => {
     // Structural regression: the startup connector calls live in `app.listen(...)`
     // so we cannot observe their side effect from a unit test. Pin the contract
     // by extracting the `if (startupConnectorsEnabled()) { ... }` block via brace
     // counting and asserting both calls live inside it.
-    const sourcePath = path.join(process.cwd(), 'src', 'web', 'server.ts');
+    const sourcePath = path.join(serverTestSourceRoot, 'src', 'web', 'server.ts');
     const source = fsSync.readFileSync(sourcePath, 'utf-8');
     const gateIdx = source.indexOf('if (startupConnectorsEnabled())');
     expect(gateIdx).toBeGreaterThan(-1);
@@ -1123,6 +1315,24 @@ describe('web server API validation', () => {
     expect(inferModelCapabilities('glm-5.1:cloud').toolUse).toBe('strong');
     // Weak-tools local model stays weak even when not auto-routed.
     expect(inferModelCapabilities('gemma4:e4b').toolUse).toBe('weak');
+  });
+
+  it('classifies Minimax M3 as image-capable', () => {
+    expect(inferModelCapabilities('minimax-m3:cloud').image).toBe(true);
+  });
+
+  it('resolves the Jarvis Whisper bridge from the harness root', () => {
+    const bridgePath = resolveJarvisWhisperBridgePath();
+
+    expect(bridgePath).toBe(path.join(serverTestSourceRoot, 'scripts', 'jarvis_whisper.py'));
+    expect(fsSync.existsSync(bridgePath)).toBe(true);
+  });
+
+  it('checks source/dist freshness against the harness root', () => {
+    expect(resolveHarnessSourceDistFreshnessPaths()).toEqual({
+      sourceKey: path.join(serverTestSourceRoot, 'src', 'web', 'server.ts'),
+      distKey: path.join(serverTestSourceRoot, 'dist', 'web', 'server.js'),
+    });
   });
 
   it('classifies every agentic-fallback routing target as strong', () => {
@@ -1221,10 +1431,65 @@ describe('web server API validation', () => {
       const body = await response.text();
       expect(body).toContain('"type":"agentic_mode"');
       expect(body).toContain('"mode":"OPERATE_MODE"');
+      expect(body).toContain('"type":"verification"');
+      expect(body).toContain('"overall":"warn"');
+      expect(body).toContain('"stopReason":"completed_with_verification_warnings"');
       expect(body).toContain('Site Monitor Agent is set up');
       expect(body).toContain('data: [DONE]');
       expect(createClient).not.toHaveBeenCalled();
       expect(runQueryLoop).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('enqueues governed review items from a governed_shadow event during chat', async () => {
+    const uniqueFact = `governed-live-${Date.now()}`;
+    const governed = {
+      answer: 'A governed answer.',
+      confidence: { mode: 'found-online-unsaved', reason: 'web source, not yet saved' },
+      critique: { findings: [{ check: 'sourced', status: 'ok', detail: 'cited' }], overall: 'ok' },
+      workingMemory: null,
+      proposedBrainUpdates: [{ content: uniqueFact, reason: 'staged by shadow pass' }],
+    };
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('governed-live-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (): AsyncGenerator<LoopEvent> {
+        yield { type: 'text', content: 'A governed answer.' };
+        yield { type: 'governed_shadow', governed } as unknown as LoopEvent;
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'Please give me a brief governed answer.', model: 'test-model' }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain('"type":"governed_shadow"');
+
+      const queue = await request('/api/review-queue?kind=brain-update');
+      expect(queue.status).toBe(200);
+      const queueBody = await queue.json() as { items: Array<{ kind: string; content: string }> };
+      expect(queueBody.items.some((item) => item.kind === 'brain-update' && item.content === uniqueFact)).toBe(true);
     } finally {
       restore();
     }
@@ -1551,9 +1816,64 @@ describe('web server API validation', () => {
     }
   });
 
+  it('decomposes a plain-English goal into plan tasks via plan-from-goal', async () => {
+    const planPath = path.join(process.cwd(), 'IMPLEMENTATION_PLAN.md');
+    const original = await fs.readFile(planPath, 'utf-8');
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({
+        chatOnce: jest.fn().mockResolvedValue({
+          message: { role: 'assistant', content: '[{"title":"Set up the project"},{"title":"Build the to-do list UI"},{"title":"Add save and load"}]' },
+          usage: { promptTokens: 0, completionTokens: 0, totalDurationNs: 0 },
+        }),
+      }) as never),
+    });
+    try {
+      const response = await request('/api/autonomy/plan-from-goal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ goal: 'A simple to-do list app', model: 'stub-model' }),
+      });
+      expect(response.status).toBe(200);
+      const data = await response.json() as { ok: boolean; added: { id: string; title: string }[]; pending: number };
+      expect(data.ok).toBe(true);
+      expect(data.added).toHaveLength(3);
+      expect(data.added[0].title).toBe('Set up the project');
+      expect(data.added[1].id).toBe('build-the-to-do-list-ui');
+      const planAfter = await fs.readFile(planPath, 'utf-8');
+      expect(planAfter).toContain('Build the to-do list UI');
+    } finally {
+      restore();
+      await fs.writeFile(planPath, original, 'utf-8');
+    }
+  });
+
+  it('rejects plan-from-goal with an empty goal', async () => {
+    const response = await request('/api/autonomy/plan-from-goal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ goal: '', model: 'stub-model' }),
+    });
+    expect(response.status).toBe(400);
+  });
+
   it('rejects task creation with empty title', async () => {
     const response = await request('/api/autonomy/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: '' }) });
     expect(response.status).toBe(400);
+  });
+
+  it('rejects a pasted-back plan line to prevent nested task titles', async () => {
+    const planPath = path.join(process.cwd(), 'IMPLEMENTATION_PLAN.md');
+    const original = await fs.readFile(planPath, 'utf-8');
+    try {
+      const created = await request('/api/autonomy/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Nested guard probe' }) });
+      expect(created.status).toBe(200);
+      const { id } = await created.json() as { id: string };
+      // Re-submitting "<id> — <text>" (a pasted-back plan line) must be refused.
+      const pasted = await request('/api/autonomy/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: `${id} — Nested guard probe again` }) });
+      expect(pasted.status).toBe(409);
+    } finally {
+      await fs.writeFile(planPath, original, 'utf-8');
+    }
   });
 
   it('generates and downloads Markdown documents', async () => {
@@ -2334,6 +2654,70 @@ describe('web server API validation', () => {
     // would mean the registry shape itself drifted.
     const names = body.schedulers.map((s) => s.name);
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('GET /api/system/health exposes persistence diagnostics', async () => {
+    const response = await request('/api/system/health');
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      persistence: {
+        sessions: { status: string; corruptTranscriptLines: number; corruptMetaFiles: number };
+        evidence: { status: string; corruptLines: number; unreadable: boolean };
+        settings: { status: string; lastAttemptAt: string | null; lastError: string | null };
+        swallowed_failures: { total_recorded: number; dropped: number };
+      };
+    };
+
+    expect(body.persistence).toBeDefined();
+    expect(typeof body.persistence.sessions.status).toBe('string');
+    expect(typeof body.persistence.sessions.corruptTranscriptLines).toBe('number');
+    expect(typeof body.persistence.sessions.corruptMetaFiles).toBe('number');
+    expect(typeof body.persistence.evidence.status).toBe('string');
+    expect(typeof body.persistence.evidence.corruptLines).toBe('number');
+    expect(typeof body.persistence.evidence.unreadable).toBe('boolean');
+    expect(typeof body.persistence.settings.status).toBe('string');
+    expect(typeof body.persistence.swallowed_failures.total_recorded).toBe('number');
+    expect(typeof body.persistence.swallowed_failures.dropped).toBe('number');
+  });
+
+  // Pin the Phase 2/3 additions to /api/jarvis/status: the assistant-profile
+  // resolution and the unified scheduler registry are surfaced here so the UI
+  // (refreshJarvisLive) can render one identity. A regression that dropped
+  // either field would silently blank those rows.
+  it('GET /api/jarvis/status exposes assistantProfile and the scheduler registry', async () => {
+    const response = await request('/api/jarvis/status');
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      assistantProfile: { enabled: boolean; ambient: boolean; proactive: boolean };
+      schedulers: Array<{ name: string; running: boolean; restartable: boolean }>;
+    };
+    expect(body.assistantProfile).toBeDefined();
+    expect(typeof body.assistantProfile.enabled).toBe('boolean');
+    expect(typeof body.assistantProfile.ambient).toBe('boolean');
+    expect(typeof body.assistantProfile.proactive).toBe('boolean');
+    expect(Array.isArray(body.schedulers)).toBe(true);
+    for (const entry of body.schedulers) {
+      expect(typeof entry.name).toBe('string');
+      expect(entry.name.length).toBeGreaterThan(0);
+      expect(typeof entry.running).toBe('boolean');
+      expect(typeof entry.restartable).toBe('boolean');
+    }
+    const names = body.schedulers.map((s) => s.name);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('POST /api/jarvis/schedulers/:name/stop returns 404 for an unknown scheduler', async () => {
+    const response = await request('/api/jarvis/schedulers/does-not-exist/stop', { method: 'POST' });
+    expect(response.status).toBe(404);
+    const body = await response.json() as { error: string };
+    expect(body.error).toMatch(/Unknown scheduler/);
+  });
+
+  it('POST /api/jarvis/schedulers/:name/restart returns 404 for an unknown scheduler', async () => {
+    const response = await request('/api/jarvis/schedulers/does-not-exist/restart', { method: 'POST' });
+    expect(response.status).toBe(404);
+    const body = await response.json() as { error: string };
+    expect(body.error).toMatch(/Unknown scheduler/);
   });
 
   it('GET /api/system/health.kill_switch reflects KillSwitch engagement directly', async () => {
@@ -3487,6 +3871,53 @@ describe('web server API validation', () => {
     }
   });
 
+  it('applies an execution contract and verification to actionable coding chat', async () => {
+    let capturedConfig: LoopConfig | undefined;
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('contract-chat-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
+        capturedConfig = config;
+        yield { type: 'text', content: 'implemented' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'Implement a CSV parser module', model: 'test-model' }),
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(capturedConfig).toMatchObject({
+        taskContract: { mode: 'code_edit', goal: 'Implement a CSV parser module' },
+        verify: { enabled: true, quick: false },
+        validateToolInput: true,
+        readBeforeWrite: { mode: 'warn', allowNewFiles: true },
+        repeatedToolFailureLimit: 3,
+        unproductiveTurnLimit: 5,
+      });
+    } finally {
+      restore();
+    }
+  });
+
   it('injects explicitly selected runtime skill instructions into chat context', async () => {
     const skillDir = path.join(process.cwd(), '.harness', 'skills', 'explicit-skill-test');
     const skillFile = path.join(skillDir, 'SKILL.md');
@@ -4530,11 +4961,13 @@ describe('web server API validation', () => {
       const response = await request('/api/pdf/extract?path=' + encodeURIComponent(pdfPath));
       expect(response.status).toBe(200);
       const body = await response.text();
-      // pdfjs-dist requires --experimental-vm-modules for dynamic import;
-      // when the flag is not fully propagated, the stream returns an error event.
-      if (body.includes('ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING_FLAG')) {
-        // Expected in some Node.js environments — the server correctly streams
-        // an error event rather than crashing.
+      // pdfjs-dist requires Jest's native ESM bridge for dynamic import. Some
+      // environments omit the bridge or retain one from a prior test sandbox.
+      const hasJestDynamicImportError =
+        body.includes('ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING_FLAG') ||
+        body.includes('Test environment has been torn down');
+      if (hasJestDynamicImportError) {
+        // The server must stream a structured error rather than crashing.
         expect(body).toContain('event: error');
       } else {
         expect(body).toContain('event: page');
@@ -4763,6 +5196,145 @@ describe('web server API validation', () => {
       expect(csp).toContain("connect-src 'self' ws: wss:");
       expect(csp).not.toContain('http://');
       expect(csp).not.toContain('https://');
+    });
+  });
+
+  describe('Kanban API', () => {
+    const planPath = path.join(process.cwd(), 'IMPLEMENTATION_PLAN.md');
+    let planBackup: string | null = null;
+
+    beforeAll(async () => {
+      try { planBackup = await fs.readFile(planPath, 'utf-8'); } catch { planBackup = null; }
+    });
+
+    afterAll(async () => {
+      if (planBackup !== null) {
+        await fs.writeFile(planPath, planBackup, 'utf-8');
+      }
+    });
+
+    it('GET /api/kanban/board returns the 3-column shape', async () => {
+      const response = await request('/api/kanban/board');
+      expect(response.status).toBe(200);
+      const board = await response.json() as { triage: unknown[]; doing: unknown[]; done: unknown[] };
+      expect(board).toHaveProperty('triage');
+      expect(board).toHaveProperty('doing');
+      expect(board).toHaveProperty('done');
+      expect(Array.isArray(board.triage)).toBe(true);
+      expect(Array.isArray(board.doing)).toBe(true);
+      expect(Array.isArray(board.done)).toBe(true);
+    });
+
+    it('POST /api/kanban/move to triage tags the task and adds it to IMPLEMENTATION_PLAN.md', async () => {
+      const createResponse = await request('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Kanban move test task', priority: 'normal' }),
+      });
+      expect(createResponse.status).toBe(200);
+      const { task } = await createResponse.json() as { task: { id: string; tags?: string[] } };
+      expect(task && typeof task.id).toBe('string');
+      const taskId = task.id;
+
+      try {
+        const moveResponse = await request('/api/kanban/move', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ taskId, column: 'triage' }),
+        });
+        expect(moveResponse.status).toBe(200);
+        const moveBody = await moveResponse.json() as { moved: boolean; task: { tags: string[] }; promoted: unknown };
+        expect(moveBody.moved).toBe(true);
+        expect(Array.isArray(moveBody.task.tags)).toBe(true);
+        expect(moveBody.task.tags).toContain('kanban:triage');
+        expect(moveBody.promoted).toBeTruthy();
+
+        const planContents = await fs.readFile(planPath, 'utf-8');
+        // promoteTriageToPlan slugifies non-slug ids from the title.
+        const expectedId = /^[a-z0-9-]+$/.test(taskId) ? taskId : 'kanban-move-test-task';
+        expect(planContents).toContain(expectedId);
+
+        const invalidColumn = await request('/api/kanban/move', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ taskId, column: 'nope' }),
+        });
+        expect(invalidColumn.status).toBe(400);
+
+        const missing = await request('/api/kanban/move', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ taskId: 'definitely-not-a-real-task-id-xyz', column: 'doing' }),
+        });
+        expect(missing.status).toBe(404);
+      } finally {
+        await request('/api/tasks/' + encodeURIComponent(taskId), { method: 'DELETE' });
+      }
+    });
+  });
+
+  describe('Codex task mode API', () => {
+    it('creates a contract-backed coding task and exposes status', async () => {
+      const createResponse = await request('/api/codex/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: 'Fix the parser bug in src/core/parser.ts without touching config files.',
+          validation: ['npm run typecheck'],
+          allowedPaths: ['src/core/parser.ts'],
+          priority: 'high',
+        }),
+      });
+      expect(createResponse.status).toBe(200);
+      const created = await createResponse.json() as { task: { id: string; tags: string[]; metadata: { codex: { contract: unknown } } }; contract: { mode: string; validation: string[]; blocked_paths: string[]; allowed_paths: string[] }; next: { statusUrl: string; diffUrl: string } };
+      expect(created.task.tags).toEqual(expect.arrayContaining(['codex', 'mode:debug']));
+      expect(created.contract).toMatchObject({ mode: 'debug', validation: ['npm run typecheck'], allowed_paths: ['src/core/parser.ts'] });
+      expect(created.contract.blocked_paths).toEqual(expect.arrayContaining(['.env', '.git/']));
+      expect(created.next.statusUrl).toContain('/api/codex/tasks/');
+
+      try {
+        const statusResponse = await request(created.next.statusUrl);
+        expect(statusResponse.status).toBe(200);
+        const status = await statusResponse.json() as { task: { id: string }; contract: { mode: string }; lifecycle: { phase: string; terminal: boolean }; diff: { available: boolean; status: string[]; changedFiles: string[] } };
+        expect(status.task.id).toBe(created.task.id);
+        expect(status.contract.mode).toBe('debug');
+        expect(status.lifecycle).toMatchObject({ phase: 'ready', terminal: false });
+        expect(status.diff).toMatchObject({ available: true });
+        expect(Array.isArray(status.diff.status)).toBe(true);
+        expect(Array.isArray(status.diff.changedFiles)).toBe(true);
+      } finally {
+        await request('/api/tasks/' + encodeURIComponent(created.task.id), { method: 'DELETE' });
+      }
+    });
+
+    it('rejects Codex task creation without a prompt', async () => {
+      const response = await request('/api/codex/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: '' }),
+      });
+      expect(response.status).toBe(400);
+    });
+
+    it('returns bounded diff previews for Codex tasks', async () => {
+      const createResponse = await request('/api/codex/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: 'Review the current repository diff.' }),
+      });
+      expect(createResponse.status).toBe(200);
+      const created = await createResponse.json() as { task: { id: string }; next: { diffUrl: string } };
+      try {
+        const diffResponse = await request(`${created.next.diffUrl}?maxPatchChars=25`);
+        expect(diffResponse.status).toBe(200);
+        const body = await diffResponse.json() as { taskId: string; diff: { available: boolean; patchPreview: string; truncated: boolean } };
+        expect(body.taskId).toBe(created.task.id);
+        expect(body.diff.available).toBe(true);
+        expect(body.diff.patchPreview.length).toBeLessThanOrEqual(25);
+        expect(typeof body.diff.truncated).toBe('boolean');
+      } finally {
+        await request('/api/tasks/' + encodeURIComponent(created.task.id), { method: 'DELETE' });
+      }
     });
   });
 });

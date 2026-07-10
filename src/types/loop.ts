@@ -1,10 +1,94 @@
 import type { ToolCall, ToolResult } from './tool';
 import type { CustomOutputValidationProfile, OutputValidationProfile, OutputValidationResult } from '../core/outputValidation';
+import type { TaskContract } from './taskContract';
+import type { ReadBeforeWriteMode } from '../tools/readBeforeWriteGate';
+import type { RepoMap } from '../core/repoMap';
+import type { InjectionDefenceMode } from '../safety/injectionDefence';
+import type { ModelLocality } from '../observability/costProvenance';
+import type { GovernedAnswer } from '../governed/governedAnswer';
 
 export interface LoopConfig {
+  /**
+   * Optional task contract to inject into the system prompt.
+   * When present, the loop prepends a structured Task Contract block so the
+   * model always sees the goal, constraints, blocked paths, and validation
+   * commands regardless of how the system prompt was assembled.
+   */
+  taskContract?: TaskContract;
+  /**
+   * Lightweight project snapshot injected into the system prompt.
+   * When present, the loop prepends a ## Project Snapshot block so the model
+   * always knows the framework, test command, and do-not-edit paths without
+   * having to discover them through tool calls.
+   *
+   * Build or load a map with `buildRepoMap()` / `getOrBuildRepoMap()` from
+   * `src/core/repoMap`.
+   */
+  repoMap?: RepoMap;
+  /**
+   * Read-before-write gate configuration.
+   * When set, every file_write / file_edit call is checked to ensure the same
+   * path was read earlier in the session.
+   *
+   * - `off`     — disabled (default)
+   * - `warn`    — logs a warning but allows the write
+   * - `enforce` — blocks the write and returns an error result
+   *
+   * `exemptPaths` is a list of absolute paths that bypass the check (e.g.
+   * auto-generated files or temp outputs the agent creates from scratch).
+   * `allowNewFiles` (default true) exempts writes to paths that do not yet
+   * exist on disk.
+   */
+  readBeforeWrite?: {
+    mode: ReadBeforeWriteMode;
+    exemptPaths?: string[];
+    allowNewFiles?: boolean;
+  };
+  /**
+   * Prompt injection defence.
+   * Scans incoming user messages for known injection patterns before they
+   * reach the model.
+   *
+   * - `off`   — disabled (default)
+   * - `flag`  — scan and log but allow through
+   * - `block` — reject the message when a high-confidence pattern matches
+   *
+   * `blockThreshold` (default 0.7) sets the confidence floor for blocking
+   * in `block` mode; matches below this still flag but are allowed.
+   */
+  injectionDefence?: {
+    mode: InjectionDefenceMode;
+    blockThreshold?: number;
+  };
   model: string;
   systemPrompt: string;
   maxTurns: number;
+  /**
+   * Run tsc / eslint / npm test after any coding turn that produced file
+   * mutations. Surfaces the result as a `verification` event and promotes the
+   * done reason to `completed_with_test_failures` when a check fails.
+   *
+   * `enabled` is tri-state: leave it unset to auto-enable for code projects
+   * (working directory has a package.json) while non-code sessions stay
+   * untouched; set `false` to force off, `true` to force on. The
+   * `HARNESS_VERIFY` env var (0/off or 1/on) overrides this entirely.
+   * A check that exceeds its timeout surfaces as `warn`, not `fail`.
+   */
+  verify?: {
+    enabled?: boolean;
+    /** Skip lint + tests, run typecheck only. */
+    quick?: boolean;
+    /** Per-check timeout in ms. Default 60 000. */
+    timeout?: number;
+  };
+  /**
+   * When true, each tool call's input is validated against the tool's declared
+   * parameter schema before execution. Only missing `required` parameters are
+   * rejected (no type-checking, extra keys allowed); a violation returns a
+   * correctable error so the agent can retry instead of executing on malformed
+   * input. Off by default so existing loop behaviour is unchanged.
+   */
+  validateToolInput?: boolean;
   /**
    * Wall-clock budget in milliseconds. When elapsed time exceeds this
    * budget the loop triggers a synthesis turn (tools stripped, model
@@ -14,6 +98,19 @@ export interface LoopConfig {
    */
   maxTimeMs?: number;
   abortSignal?: AbortSignal;
+  /**
+   * Per-model-call inactivity timeout in milliseconds. When a single
+   * `client.chat()` call exceeds this without resolving, the loop yields an
+   * `inactivity_timeout` event and ends with `done.reason = 'inactivity_timeout'`.
+   *
+   * Falls back to `HARNESS_LOOP_INACTIVITY_MS` env var when unset; 0 or
+   * unset on both = disabled (current behavior preserved).
+   *
+   * Distinct from `maxTimeMs` (whole-run budget that triggers synthesis):
+   * this catches stuck individual calls (network hang, dead provider) and
+   * surfaces the failure cleanly instead of letting the loop hang forever.
+   */
+  inactivityTimeoutMs?: number;
   /**
    * Terminate the loop early when the agent runs `unproductiveTurnLimit`
    * consecutive turns without invoking a file-mutating tool
@@ -58,6 +155,17 @@ export interface LoopConfig {
    * medical, legal) disable auto-continue to force human confirmation.
    */
   taskType?: string;
+  /**
+   * Cost tracking configuration (Gap #5). When enabled, the loop tracks
+   * token usage per turn and enforces an optional budget cap.
+   */
+  costTracking?: {
+    enabled?: boolean;
+    /** Abort the loop when cumulative estimated cost exceeds this (USD). */
+    budgetUsd?: number;
+    /** Override $/1K-token rates. Key = model name, value = { input, output } per 1K tokens. */
+    rates?: Record<string, { input: number; output: number }>;
+  };
 }
 
 export type LoopEvent =
@@ -76,7 +184,10 @@ export type LoopEvent =
   | SynthesisFiredEvent
   | AutoContinueEvent
   | TimeBudgetStatusEvent
-  | TurnCompleteEvent;
+  | TurnCompleteEvent
+  | VerificationEvent
+  | InactivityTimeoutEvent
+  | GovernedShadowEvent;
 
 export interface TextEvent {
   type: 'text';
@@ -122,7 +233,7 @@ export interface ProviderFallbackEvent {
 
 export interface ContextEvent {
   type: 'context';
-  strategy: string;
+  strategy: import('../context/compaction').CompactionStrategy;
   tokensFreed: number;
   compactedCount: number;
   autosaved: boolean;
@@ -159,8 +270,15 @@ export interface ErrorEvent {
 
 export interface DoneEvent {
   type: 'done';
-  reason: 'completed' | 'completed_with_validation_failures' | 'max_turns' | 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' | 'aborted' | 'error' | 'unproductive' | 'repeated_tool_failure';
+  reason: 'completed' | 'completed_without_required_changes' | 'completed_with_validation_failures' | 'completed_with_test_failures' | 'max_turns' | 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' | 'empty_after_tools_synthesized' | 'aborted' | 'error' | 'unproductive' | 'repeated_tool_failure' | 'inactivity_timeout';
   turns: number;
+  /** Extra metadata when the done event follows a synthesis turn (timeout/max-turns). */
+  synthesisMetadata?: {
+    elapsedMs: number;
+    totalToolCalls: number;
+    anyProductiveToolSucceeded: boolean;
+    selfCertIssues: number;
+  };
 }
 
 /** Per-LLM-call usage stats. Emitted after every successful model call so
@@ -168,14 +286,18 @@ export interface DoneEvent {
  * provider-specific log fields.
  *
  * `model` is the resolved model name; `turn` is the 1-based loop turn so the
- * UI can attribute multi-turn usage to the right agent reply. Costs are
- * intentionally omitted — Ollama is local; if a hosted backend is added,
- * wire the conversion at emit time using a per-model rate map.
+ * UI can attribute multi-turn usage to the right agent reply. `locality`
+ * flags whether the serving backend ran locally ($0 marginal) or in the
+ * cloud, so the UI can show an honest cost badge instead of assuming local.
  */
 export interface UsageEvent {
   type: 'usage';
   model: string;
   turn: number;
+  /** Cost-honesty signal: 'local' ($0 marginal), 'cloud' (billed), or
+   * 'unknown' when locality could not be established. Optional so legacy
+   * emitters/consumers stay valid. */
+  locality?: ModelLocality;
   promptTokens: number;
   completionTokens: number;
   totalDurationMs: number;
@@ -226,4 +348,46 @@ export interface TurnCompleteEvent {
   turn: number;
   durationMs: number;
   toolCalls: number;
+}
+
+/**
+ * Emitted after a coding run that mutated files, when `LoopConfig.verify`
+ * is enabled. Contains the result of tsc / eslint / npm test so consumers
+ * can surface a "Tests passed ✓" or "Tests failed ✗" card without running
+ * validation themselves.
+ */
+export interface VerificationEvent {
+  type: 'verification';
+  overall: 'pass' | 'fail' | 'warn' | 'skip';
+  checks: Array<{
+    name: string;
+    status: 'pass' | 'fail' | 'warn' | 'skip';
+    detail?: string;
+    duration_ms?: number;
+  }>;
+}
+
+/**
+ * Emitted when a single model call exceeds `inactivityTimeoutMs` (or
+ * `HARNESS_LOOP_INACTIVITY_MS`) without resolving. The loop terminates
+ * immediately afterwards with a `done` event whose reason is
+ * `'inactivity_timeout'`. Lets the UI distinguish a stuck provider from a
+ * manual abort or a generic model error.
+ */
+export interface InactivityTimeoutEvent {
+  type: 'inactivity_timeout';
+  phase: 'model_call';
+  turn: number;
+  inactivityMs: number;
+}
+
+/**
+ * Opt-in governance telemetry, emitted only when HARNESS_GOVERNED_SHADOW is on.
+ * The governed pass runs BESIDE the answer (the `text` event is unchanged), so
+ * with the flag off no `governed_shadow` event is produced and the default
+ * answer contract is byte-for-byte identical — shadow first, behavior later.
+ */
+export interface GovernedShadowEvent {
+  type: 'governed_shadow';
+  governed: GovernedAnswer;
 }

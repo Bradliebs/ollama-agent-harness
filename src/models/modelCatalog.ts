@@ -17,6 +17,8 @@ export interface ModelCatalogManifest {
   updatedAt: string;
   metadata?: Record<string, unknown>;
   providers: Record<string, ModelCatalogProvider>;
+  /** True when this is the built-in fallback because no usable cache or network catalog was available. */
+  stale?: boolean;
 }
 
 export interface ModelCatalogCacheStatus {
@@ -95,7 +97,7 @@ export async function getModelCatalog(projectDir: string, options: GetModelCatal
     }
   }
 
-  return cache ?? BUILTIN_MODEL_CATALOG;
+  return cache ?? { ...BUILTIN_MODEL_CATALOG, stale: true };
 }
 
 export async function getModelCatalogCacheStatus(projectDir: string, now = new Date(), ttlMs = DEFAULT_MODEL_CATALOG_TTL_MS): Promise<ModelCatalogCacheStatus> {

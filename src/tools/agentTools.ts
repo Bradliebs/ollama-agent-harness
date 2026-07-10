@@ -4,6 +4,12 @@
 import type { Tool, ToolResult } from '../types';
 import { writeCustomAgent } from '../agents/agentLoader';
 
+function agentsProjectDir(): string {
+  return process.env.HARNESS_PROJECT_DIR && process.env.HARNESS_PROJECT_DIR.trim()
+    ? process.env.HARNESS_PROJECT_DIR
+    : process.cwd();
+}
+
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value : undefined;
 }
@@ -44,7 +50,7 @@ export const CreateCustomAgentTool: Tool = {
       return { success: false, output: message, error: message };
     }
     try {
-      const filePath = await writeCustomAgent(process.cwd(), {
+      const filePath = await writeCustomAgent(agentsProjectDir(), {
         id,
         name,
         description,

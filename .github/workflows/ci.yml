@@ -11,6 +11,7 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -56,10 +57,14 @@ jobs:
           exit 1
 
       - name: Smoke UI
+        timeout-minutes: 8
         run: npm run smoke:ui -- http://127.0.0.1:4310/
 
       - name: Verify CHANGELOG version section
         run: npm run verify:changelog
+
+      - name: Verify release version metadata
+        run: npm run verify:versions
 
       - name: Smoke release archive
         run: npm run release:dry-run

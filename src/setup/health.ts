@@ -70,6 +70,10 @@ export interface SetupHealthResult {
   fallback: FallbackRoutingConfig;
   /** SMTP email configuration status. */
   smtp: { ok: boolean; message: string };
+  /** Concept memory (ccmem) service reachability. Optional; reports not-running when the service is offline. */
+  ccmem: { ok: boolean; message: string };
+  /** Webhook delivery health. Optional; present only when ≥1 webhook is configured. */
+  webhooks?: { ok: boolean; message: string };
   /** Per-model synthesis turn statistics (optional, populated when stats file exists). */
   synthesisStats?: Record<string, { fired: number; total: number; adaptiveMaxTurns: number }>;
 }
@@ -92,6 +96,8 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
   const backends = checkBackendAuth();
   const fallback = checkFallbackConfig(backends);
   const smtp = checkSmtpConfig();
+  const ccmem = await checkCcmemHealth();
+  const webhooks = await checkWebhookHealth();
   const rawStats = await loadSynthesisStats(input.projectDir ?? process.cwd());
   const synthesisStats: Record<string, { fired: number; total: number; adaptiveMaxTurns: number }> = {};
   for (const [model, record] of Object.entries(rawStats)) {
@@ -128,6 +134,8 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
       backends,
       fallback,
       smtp,
+      ccmem,
+      ...(webhooks ? { webhooks } : {}),
       ...(Object.keys(synthesisStats).length > 0 ? { synthesisStats } : {}),
     };
   } catch (error) {
@@ -141,6 +149,8 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
       backends,
       fallback,
       smtp,
+      ccmem,
+      ...(webhooks ? { webhooks } : {}),
       ...(Object.keys(synthesisStats).length > 0 ? { synthesisStats } : {}),
     };
   }
@@ -214,6 +224,57 @@ function checkSmtpConfig(): { ok: boolean; message: string } {
   return { ok: true, message: `SMTP configured: ${host}:${port} as ${from || user}.` };
 }
 
+/**
+ * Probe the optional Concept Memory (ccmem) service. The harness works fine
+ * without it — long-term memory is simply off — so a not-running result is
+ * informational, not a failure. Lazy-imports the client to avoid loading it
+ * unless health checks run, mirroring the mycelium check.
+ */
+async function checkCcmemHealth(): Promise<{ ok: boolean; message: string }> {
+  try {
+    const { isAvailable, getCcmemUrl, getCcmemToken } = await import('../services/conceptMemoryClient');
+    const url = getCcmemUrl();
+    const authNote = getCcmemToken().length > 0 ? ' Bearer auth is active.' : ' No auth token set (open on loopback).';
+    const ok = await isAvailable();
+    return ok
+      ? { ok: true, message: `Long-term memory service is reachable at ${url}.${authNote}` }
+      : { ok: false, message: `Long-term memory service is not running at ${url} (optional).${authNote} Start it with: python ccmem/service.py` };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, message: `Long-term memory check failed: ${message}` };
+  }
+}
+
+/**
+ * Summarize webhook delivery health for the doctor. Returns undefined when no
+ * webhooks are configured so the doctor only shows the row to users who use
+ * them. Lazy-imports the registry to avoid loading it unless health runs.
+ */
+async function checkWebhookHealth(): Promise<{ ok: boolean; message: string } | undefined> {
+  try {
+    const { listWebhooks, listDeadLetters } = await import('../integrations/webhooks');
+    const hooks = listWebhooks();
+    if (hooks.length === 0) return undefined;
+    const recentFailures = hooks.filter((w) => w.lastDelivery && !w.lastDelivery.ok).length;
+    // A webhook is "flapping" when its recent history holds both successes and
+    // failures — an intermittently reachable endpoint that a single last-delivery
+    // status would hide.
+    const flapping = hooks.filter((w) => {
+      const h = w.recentDeliveries ?? [];
+      return h.length > 1 && h.some((d) => d.ok) && h.some((d) => !d.ok);
+    }).length;
+    const deadLetterCount = listDeadLetters().length;
+    const parts = [`${hooks.length} configured`];
+    if (recentFailures > 0) parts.push(`${recentFailures} with a failed last delivery`);
+    if (flapping > 0) parts.push(`${flapping} flapping`);
+    if (deadLetterCount > 0) parts.push(`${deadLetterCount} awaiting redelivery`);
+    if (recentFailures === 0 && flapping === 0 && deadLetterCount === 0) parts.push('recent deliveries ok');
+    return { ok: recentFailures === 0 && flapping === 0 && deadLetterCount === 0, message: `${parts.join(' · ')}.` };
+  } catch (error) {
+    return { ok: false, message: `Webhook health check failed: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
 async function checkLocalHealth(projectDir: string): Promise<SetupHealthResult['local']> {
   const packagePath = path.join(projectDir, 'package.json');
   const sessionsDir = path.join(projectDir, '.harness', 'sessions');
@@ -260,17 +321,42 @@ function checkNodeVersion(): LocalHealthCheck {
 }
 
 async function checkPackage(packagePath: string): Promise<LocalHealthCheck> {
+  let raw: string;
   try {
-    const parsed = JSON.parse(await fs.readFile(packagePath, 'utf-8')) as { name?: string; scripts?: Record<string, string> };
-    const hasValidation = Boolean(parsed.scripts?.test && (parsed.scripts.typecheck || parsed.scripts.lint));
-    return {
-      ok: hasValidation,
-      message: hasValidation ? `${parsed.name ?? 'package'} has test and typecheck scripts.` : 'package.json is missing test or typecheck scripts.',
-    };
+    raw = await fs.readFile(packagePath, 'utf-8');
   } catch (error) {
+    // No package.json at all: the workspace is not a Node/JS project (it may
+    // be a Python, docs, data, or general-purpose folder). Validation scripts
+    // simply do not apply, so this is not a failure. Any other read error
+    // (e.g. EACCES) is surfaced as a real problem.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { ok: true, message: 'No package.json — not a Node project, so validation scripts do not apply.' };
+    }
     const message = error instanceof Error ? error.message : String(error);
     return { ok: false, message: `Cannot read package.json: ${message}` };
   }
+  let parsed: { name?: string; scripts?: Record<string, string> };
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, message: `package.json is present but is not valid JSON: ${message}` };
+  }
+  const scripts = parsed.scripts ?? {};
+  // A package.json with no scripts block is not set up for npm-based
+  // validation; `npm test`/`npm run typecheck` cannot exist regardless.
+  // Treat as not applicable rather than nagging the user for scripts that
+  // would have no meaning in this workspace.
+  if (Object.keys(scripts).length === 0) {
+    return { ok: true, message: `${parsed.name ?? 'package.json'} defines no scripts — validation scripts do not apply.` };
+  }
+  const hasValidation = Boolean(scripts.test && (scripts.typecheck || scripts.lint));
+  return {
+    ok: hasValidation,
+    message: hasValidation
+      ? `${parsed.name ?? 'package'} has test and typecheck scripts.`
+      : `${parsed.name ?? 'package.json'} is a Node project but is missing a test and a typecheck/lint script — add them so the agent can self-validate edits.`,
+  };
 }
 
 async function checkWritableDirectory(dirPath: string, okMessage: string): Promise<LocalHealthCheck> {
