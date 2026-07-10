@@ -602,16 +602,14 @@ export async function* queryLoop(
         });
       }
 
-      if (session) {
-        await appendStatus(session, 'completed', undefined, tracer);
-      }
-
       // Post-completion code verification: runs tsc / eslint / npm test when
       // the agent mutated files. The shared loop defaults off (env override or
       // explicit config required); the CLI coding-task runner opts in via
       // verify.enabled so real coding tasks are verified by default. This is
       // Gap 1 — catching regressions introduced by agent edits instead of
       // trusting that files merely changed.
+      const requiresProductiveChange = config.taskContract?.mode === 'code_edit' || config.taskContract?.mode === 'debug';
+      const requiredChangeMissing = requiresProductiveChange && !anyProductiveToolSucceeded;
       let testsFailed = false;
       if (resolveVerifyEnabled(config.verify?.enabled) && anyProductiveToolSucceeded) {
         try {
@@ -629,20 +627,35 @@ export async function* queryLoop(
             overall: verifyResult.overall,
             checks: verifyResult.checks,
           };
-          testsFailed = verifyResult.overall === 'fail';
+          testsFailed = requiresProductiveChange
+            ? verifyResult.overall !== 'pass'
+            : verifyResult.overall === 'fail';
         } catch (verifyErr) {
           const msg = verifyErr instanceof Error ? verifyErr.message : String(verifyErr);
           tracer?.recordEvent('verification.error', { error: msg });
+          testsFailed = requiresProductiveChange;
         }
+      }
+
+      const doneReason = requiredChangeMissing
+        ? 'completed_without_required_changes'
+        : testsFailed
+          ? 'completed_with_test_failures'
+          : validationFailed
+            ? 'completed_with_validation_failures'
+            : 'completed';
+      if (session) {
+        await appendStatus(
+          session,
+          requiredChangeMissing || testsFailed ? 'error' : 'completed',
+          requiredChangeMissing ? 'Required code change was not produced.' : testsFailed ? 'Required verification did not pass.' : undefined,
+          tracer,
+        );
       }
 
       yield {
         type: 'done',
-        reason: testsFailed
-          ? 'completed_with_test_failures'
-          : validationFailed
-            ? 'completed_with_validation_failures'
-            : 'completed',
+        reason: doneReason,
         turns: turn,
       };
       return;

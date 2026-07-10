@@ -15,6 +15,7 @@ import { drainRemoteProviderFallbackEvents } from '../core/fallbackChatClient';
 import type { IChatClient } from '../core/chatClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { createCodeVerifier, createLlmPlanner, createQueryLoopExecutor, runConductor, type ConductorEvent } from '../core/taskConductor';
+import { verifyService } from '../core/doneStateVerifier';
 import { createLlmAdversaryJudge } from '../safety/toolInspectors';
 import { buildMorningBriefing, type BriefingCalendarEvent } from '../jarvis/morningBriefing';
 import { parseIcsEvents } from '../tools/calendarTools';
@@ -5802,6 +5803,14 @@ app.post('/api/chat', async (req, res) => {
   }
 
   if (operateResult?.handled) {
+    const serviceVerification = operateResult.service
+      ? await verifyService(PROJECT_DIR, operateResult.service.service_id)
+      : undefined;
+    const completionReason = serviceVerification?.overall === 'fail'
+      ? 'completed_with_verification_failures'
+      : serviceVerification && serviceVerification.overall !== 'pass'
+        ? 'completed_with_verification_warnings'
+        : 'completed';
     const evidenceCard: EvidenceCard = {
       id: crypto.randomUUID(),
       kind: 'chat',
@@ -5812,7 +5821,7 @@ app.post('/api/chat', async (req, res) => {
       backend: 'local',
       permissionMode,
       capabilityGrantCount: listActiveCapabilityGrants(capabilityGrants).length,
-      toolSuccessRate: 1,
+      toolSuccessRate: serviceVerification?.overall === 'fail' ? 0 : 1,
       tools: [],
       files: operateResult.service
         ? [
@@ -5823,7 +5832,7 @@ app.post('/api/chat', async (req, res) => {
         : [],
       commands: [],
       artifacts: [],
-      recovery: { stopReason: 'completed' },
+      recovery: { stopReason: completionReason },
     };
     await appendRunEvidence(PROJECT_DIR, evidenceCard).catch((err) => recordSwallowed('appendRunEvidence', err));
     res.setHeader('Content-Type', 'text/event-stream');
@@ -5836,8 +5845,11 @@ app.post('/api/chat', async (req, res) => {
     }
     res.write(`data: ${JSON.stringify({ type: 'text', content: operateResult.response })}\n\n`);
     res.write(`data: ${JSON.stringify({ type: 'agentic_mode', mode: 'OPERATE_MODE', classification: operateResult.classification, service: operateResult.service, state: operateResult.state, schedule: operateResult.schedule })}\n\n`);
+    if (serviceVerification) {
+      res.write(`data: ${JSON.stringify({ type: 'verification', overall: serviceVerification.overall, checks: serviceVerification.checks })}\n\n`);
+    }
     res.write(`data: ${JSON.stringify({ type: 'evidence', evidence: evidenceCard })}\n\n`);
-    res.write(`data: ${JSON.stringify({ type: 'done', reason: 'completed', turns: 0 })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'done', reason: completionReason, turns: 0 })}\n\n`);
     res.write('data: [DONE]\n\n');
     res.end();
     return;
@@ -6158,6 +6170,8 @@ CONTEXT HYGIENE (critical for long tasks):
 
   const synthesisStats = await loadSynthesisStats(PROJECT_DIR);
   const effectiveMaxTurns = adaptiveMaxTurns(synthesisStats, activeModel, 25);
+  const chatTaskContract = messageText ? buildTaskContract(messageText) : undefined;
+  const requiresExecutionProof = chatTaskContract?.mode === 'code_edit' || chatTaskContract?.mode === 'debug';
 
   // Wall-clock budget: local Ollama models are slow per-turn so a generous
   // turn budget hammers the GPU. Cloud APIs are fast so they can afford
@@ -6172,9 +6186,19 @@ CONTEXT HYGIENE (critical for long tasks):
   const config: LoopConfig = {
     model: activeModel,
     systemPrompt,
-    maxTurns: effectiveMaxTurns,
+    maxTurns: requiresExecutionProof
+      ? Math.min(effectiveMaxTurns, chatTaskContract.max_turns)
+      : effectiveMaxTurns,
     maxTimeMs: effectiveTimeBudgetMs,
     abortSignal: abortController.signal,
+    ...(requiresExecutionProof ? {
+      taskContract: chatTaskContract,
+      verify: { enabled: true, quick: false, timeout: 60_000 },
+      validateToolInput: true,
+      readBeforeWrite: { mode: 'warn' as const, allowNewFiles: true },
+      repeatedToolFailureLimit: 3,
+      unproductiveTurnLimit: 5,
+    } : {}),
     context: { maxTokens: activeContextMaxTokens, summarizerModel },
     outputValidation: {
       enabled: activeOutputValidation.enabled,
@@ -6182,7 +6206,7 @@ CONTEXT HYGIENE (critical for long tasks):
       customProfiles: customOutputValidationProfiles,
     },
     autoContinue: true,
-    taskType: myceliumClassification?.type,
+    taskType: requiresExecutionProof ? chatTaskContract.intent_type : myceliumClassification?.type,
   };
 
   const keepAlive = setInterval(() => {

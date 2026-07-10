@@ -3,19 +3,24 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { SquadInspectTool } from './squadTools';
 import { createSquad } from '../services/squad';
+import { getProjectRoot, setProjectRoot } from './pathResolution';
 
 describe('SquadInspectTool', () => {
   let projectDir: string;
   let originalCwd: string;
+  let originalProjectRoot: string;
 
   beforeEach(async () => {
     projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-squadtool-'));
     originalCwd = process.cwd();
+    originalProjectRoot = getProjectRoot();
     process.chdir(projectDir);
+    setProjectRoot(projectDir);
   });
 
   afterEach(async () => {
     process.chdir(originalCwd);
+    setProjectRoot(originalProjectRoot);
     await fs.rm(projectDir, { recursive: true, force: true });
   });
 
