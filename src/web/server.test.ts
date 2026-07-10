@@ -4,6 +4,7 @@ import * as fsSync from 'fs';
 import http from 'http';
 import * as os from 'os';
 import * as path from 'path';
+import { cleanupServerTestWorkspace, serverTestSourceRoot } from './serverTestWorkspace.test-support';
 import { app, ambientEnabled, assistantProfileEnabled, drainChatBackgroundTasksForTest, inferModelCapabilities, parseExplicitSkillInvocation, proactiveProfileEnabled, resetSettingsLoadedForTest, resolveChatModelForRequest, resolveHarnessSourceDistFreshnessPaths, resolveJarvisWhisperBridgePath, setWebRuntimeOverrides, startupConnectorsEnabled, stopUploadsAutoPrune } from './server';
 import { runtimeTracer } from '../core/tracing';
 import { SessionStorage } from '../persistence/sessionStorage';
@@ -15,7 +16,7 @@ import { createAutomationJob } from '../automation/jobs';
 import { rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
 import { writeModelCatalogCache } from '../models/modelCatalog';
 import { OllamaClient, drainOllamaChatRetryEvents } from '../core/ollamaClient';
-import type { LoopEvent, SessionEvent } from '../types';
+import type { LoopConfig, LoopEvent, SessionEvent } from '../types';
 import { cleanupHarnessArtifacts, diffHarnessRuntimeState, restoreHarnessRuntimeState, seedHarnessAutomationJobsForTest, snapshotHarnessRuntimeState, type HarnessDocumentArtifact, type HarnessRuntimeStateSnapshot } from '../testSupport/harnessCleanup.test-support';
 
 jest.setTimeout(30_000);
@@ -135,6 +136,7 @@ describe('web server API validation', () => {
     expect(runtimeDiff.removedDocuments).toEqual([]);
     await expect(diffHarnessRuntimeState(process.cwd(), runtimeStateSnapshot)).resolves.toEqual({ automationJobsChanged: false, addedDocuments: [], removedDocuments: [] });
     logSpy.mockRestore();
+    await cleanupServerTestWorkspace();
   });
 
   async function request(route: string, init?: RequestInit): Promise<Response> {
@@ -1279,7 +1281,7 @@ describe('web server API validation', () => {
     // so we cannot observe their side effect from a unit test. Pin the contract
     // by extracting the `if (startupConnectorsEnabled()) { ... }` block via brace
     // counting and asserting both calls live inside it.
-    const sourcePath = path.join(process.cwd(), 'src', 'web', 'server.ts');
+    const sourcePath = path.join(serverTestSourceRoot, 'src', 'web', 'server.ts');
     const source = fsSync.readFileSync(sourcePath, 'utf-8');
     const gateIdx = source.indexOf('if (startupConnectorsEnabled())');
     expect(gateIdx).toBeGreaterThan(-1);
@@ -1322,14 +1324,14 @@ describe('web server API validation', () => {
   it('resolves the Jarvis Whisper bridge from the harness root', () => {
     const bridgePath = resolveJarvisWhisperBridgePath();
 
-    expect(bridgePath).toBe(path.join(process.cwd(), 'scripts', 'jarvis_whisper.py'));
+    expect(bridgePath).toBe(path.join(serverTestSourceRoot, 'scripts', 'jarvis_whisper.py'));
     expect(fsSync.existsSync(bridgePath)).toBe(true);
   });
 
   it('checks source/dist freshness against the harness root', () => {
     expect(resolveHarnessSourceDistFreshnessPaths()).toEqual({
-      sourceKey: path.join(process.cwd(), 'src', 'web', 'server.ts'),
-      distKey: path.join(process.cwd(), 'dist', 'web', 'server.js'),
+      sourceKey: path.join(serverTestSourceRoot, 'src', 'web', 'server.ts'),
+      distKey: path.join(serverTestSourceRoot, 'dist', 'web', 'server.js'),
     });
   });
 
@@ -1429,6 +1431,9 @@ describe('web server API validation', () => {
       const body = await response.text();
       expect(body).toContain('"type":"agentic_mode"');
       expect(body).toContain('"mode":"OPERATE_MODE"');
+      expect(body).toContain('"type":"verification"');
+      expect(body).toContain('"overall":"warn"');
+      expect(body).toContain('"stopReason":"completed_with_verification_warnings"');
       expect(body).toContain('Site Monitor Agent is set up');
       expect(body).toContain('data: [DONE]');
       expect(createClient).not.toHaveBeenCalled();
@@ -3842,6 +3847,53 @@ describe('web server API validation', () => {
     }
   });
 
+  it('applies an execution contract and verification to actionable coding chat', async () => {
+    let capturedConfig: LoopConfig | undefined;
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('contract-chat-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
+        capturedConfig = config;
+        yield { type: 'text', content: 'implemented' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'Implement a CSV parser module', model: 'test-model' }),
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(capturedConfig).toMatchObject({
+        taskContract: { mode: 'code_edit', goal: 'Implement a CSV parser module' },
+        verify: { enabled: true, quick: false },
+        validateToolInput: true,
+        readBeforeWrite: { mode: 'warn', allowNewFiles: true },
+        repeatedToolFailureLimit: 3,
+        unproductiveTurnLimit: 5,
+      });
+    } finally {
+      restore();
+    }
+  });
+
   it('injects explicitly selected runtime skill instructions into chat context', async () => {
     const skillDir = path.join(process.cwd(), '.harness', 'skills', 'explicit-skill-test');
     const skillFile = path.join(skillDir, 'SKILL.md');
@@ -4885,11 +4937,13 @@ describe('web server API validation', () => {
       const response = await request('/api/pdf/extract?path=' + encodeURIComponent(pdfPath));
       expect(response.status).toBe(200);
       const body = await response.text();
-      // pdfjs-dist requires --experimental-vm-modules for dynamic import;
-      // when the flag is not fully propagated, the stream returns an error event.
-      if (body.includes('ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING_FLAG')) {
-        // Expected in some Node.js environments — the server correctly streams
-        // an error event rather than crashing.
+      // pdfjs-dist requires Jest's native ESM bridge for dynamic import. Some
+      // environments omit the bridge or retain one from a prior test sandbox.
+      const hasJestDynamicImportError =
+        body.includes('ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING_FLAG') ||
+        body.includes('Test environment has been torn down');
+      if (hasJestDynamicImportError) {
+        // The server must stream a structured error rather than crashing.
         expect(body).toContain('event: error');
       } else {
         expect(body).toContain('event: page');
