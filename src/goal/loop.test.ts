@@ -50,7 +50,7 @@ describe('runGoalLoop', () => {
     expect(final?.status).toBe('complete');
   });
 
-  it('emits a verification_adequacy warning for an execution-grounded task with no proof check', async () => {
+  it('blocks an execution-grounded task with no proof check', async () => {
     // A code task verified only by a model_judge check: looks done, not proven.
     const judgeOnly: GoalCheck = {
       id: 'judge-1', description: 'judge', required: true,
@@ -68,6 +68,10 @@ describe('runGoalLoop', () => {
     expect(adequacy.adequacy.taskKind).toBe('code');
     expect(adequacy.adequacy.executionGrounded).toBe(true);
     expect(adequacy.adequacy.adequate).toBe(false);
+    const end = events.find((e) => e.type === 'loop_end') as Extract<GoalLoopEvent, { type: 'loop_end' }>;
+    expect(end).toMatchObject({ reason: 'verification_inadequate', iterations: 0, verified: false });
+    const final = await readGoal(dir, g.id);
+    expect(final).toMatchObject({ status: 'blocked', block: { needs: expect.stringContaining('proof check') } });
   });
 
   it('emits verification_adequacy=adequate for a code task backed by a test_suite check', async () => {
@@ -120,7 +124,7 @@ describe('runGoalLoop', () => {
     expect(end.verified).toBe(true);
   });
 
-  it('marks completion verified=false when a code task completes on a model_judge only (looks done)', async () => {
+  it('does not complete a code task on model judgement alone', async () => {
     const judgeOnly: GoalCheck = {
       id: 'judge-2', description: 'judge', required: true,
       spec: { kind: 'model_judge', rubric: 'looks right?' },
@@ -132,8 +136,10 @@ describe('runGoalLoop', () => {
       verifyCtx: { judge: async () => ({ score: 1, rationale: 'looks fine' }) },
     }));
     const end = events.find((e) => e.type === 'loop_end') as Extract<GoalLoopEvent, { type: 'loop_end' }>;
-    expect(end.reason).toBe('already_satisfied');
+    expect(end.reason).toBe('verification_inadequate');
     expect(end.verified).toBe(false);
+    const final = await readGoal(dir, g.id);
+    expect(final?.status).toBe('blocked');
   });
 
   it('persists a completionVerdict on the goal when it completes (durable, not just live)', async () => {

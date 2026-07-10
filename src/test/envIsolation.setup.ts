@@ -7,14 +7,18 @@
 // very suite (capped only by a 60s timeout) and producing nondeterministic
 // `completed_with_test_failures` outcomes. HARNESS_VERIFY_PATH_CLAIMS is reset
 // too because it mutates assistant output and would otherwise leak into tests.
+// HARNESS_PROJECT_DIR is reset so filesystem fixtures resolve inside the test
+// process working directory rather than a developer-configured workspace.
 //
 // Tests that intentionally exercise these toggles (queryLoop.verify.test.ts)
 // set them explicitly inside their own test bodies, which run after this hook.
 
 delete process.env.HARNESS_VERIFY;
 delete process.env.HARNESS_VERIFY_PATH_CLAIMS;
+delete process.env.HARNESS_PROJECT_DIR;
 
 beforeEach(() => {
   delete process.env.HARNESS_VERIFY;
   delete process.env.HARNESS_VERIFY_PATH_CLAIMS;
+  delete process.env.HARNESS_PROJECT_DIR;
 });

@@ -60,7 +60,8 @@ async function runCommand(cwd: string, cmd: string, args: string[], timeout = 60
   } catch (err: unknown) {
     const e = err as { stdout?: string; stderr?: string; message?: string; killed?: boolean };
     // execFile sets killed=true when it terminates the child due to the timeout.
-    return { ok: false, output: (e.stdout ?? '') + '\n' + (e.stderr ?? e.message ?? ''), duration_ms: Date.now() - start, timedOut: e.killed === true };
+    const errorDetail = e.stderr?.trim() || e.message || '';
+    return { ok: false, output: (e.stdout ?? '') + '\n' + errorDetail, duration_ms: Date.now() - start, timedOut: e.killed === true };
   }
 }
 
@@ -84,7 +85,8 @@ export async function verifyCode(options: CodeVerifyOptions): Promise<Verificati
   // TypeScript check
   const tsconfigExists = await fileExists(path.join(projectDir, 'tsconfig.json'));
   if (tsconfigExists) {
-    const tsc = await runCommand(projectDir, 'npx', ['tsc', '--noEmit', '--pretty'], timeout);
+    const npx = platformCommand('npx', ['tsc', '--noEmit', '--pretty']);
+    const tsc = await runCommand(projectDir, npx.command, npx.args, timeout);
     checks.push({ name: 'typecheck', domain: 'code', status: checkStatus(tsc), detail: checkDetail(tsc), duration_ms: tsc.duration_ms });
   } else {
     checks.push({ name: 'typecheck', domain: 'code', status: 'skip', detail: 'No tsconfig.json found' });
@@ -105,7 +107,8 @@ export async function verifyCode(options: CodeVerifyOptions): Promise<Verificati
   if (!quick) {
     const packageJson = await readPackageJson(projectDir);
     if (packageJson?.scripts?.test) {
-      const test = await runCommand(projectDir, 'npm', ['test', '--', '--passWithNoTests'], timeout * 2);
+      const npm = platformCommand('npm', ['test', '--', '--passWithNoTests']);
+      const test = await runCommand(projectDir, npm.command, npm.args, timeout * 2);
       checks.push({ name: 'tests', domain: 'code', status: checkStatus(test), detail: checkDetail(test), duration_ms: test.duration_ms });
     } else {
       checks.push({ name: 'tests', domain: 'code', status: 'skip', detail: 'No test script in package.json' });
@@ -118,6 +121,12 @@ export async function verifyCode(options: CodeVerifyOptions): Promise<Verificati
     checks,
     timestamp: new Date().toISOString(),
   };
+}
+
+function platformCommand(command: 'npm' | 'npx', args: string[]): { command: string; args: string[] } {
+  if (process.platform !== 'win32') return { command, args };
+  const cliPath = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', `${command}-cli.js`);
+  return { command: process.execPath, args: [cliPath, ...args] };
 }
 
 // ─── Service verification ───────────────────────────────────────────
