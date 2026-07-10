@@ -1,0 +1,14 @@
+{
+  "category": "aircons",
+  "aliases": ["aircon", "air conditioner", "air conditioners", "portable aircon", "portable aircons", "portable air conditioner"],
+  "title": "Portable air conditioners",
+  "columns": [
+    { "key": "model", "label": "Model", "type": "string" },
+    { "key": "price_usd", "label": "Price", "type": "number", "unit": "$", "direction": "lower-better", "weight": 0.35 },
+    { "key": "btu", "label": "Cooling", "type": "number", "unit": "BTU", "direction": "higher-better", "weight": 0.25 },
+    { "key": "noise_db", "label": "Noise", "type": "number", "unit": "dB", "direction": "lower-better", "weight": 0.20 },
+    { "key": "energy_class", "label": "Energy", "type": "enum", "enumValues": ["A+++", "A++", "A+", "A", "B", "C", "D", "E", "F", "G"], "direction": "enum-better", "weight": 0.15 },
+    { "key": "weight_kg", "label": "Weight", "type": "number", "unit": "kg", "direction": "lower-better", "weight": 0.05 },
+    { "key": "url", "label": "Source", "type": "url" }
+  ]
+}

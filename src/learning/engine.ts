@@ -111,8 +111,8 @@ export class LearningRecorder {
     try {
       await fs.mkdir(this.baseDir, { recursive: true });
       await fs.appendFile(this.trackerFile, JSON.stringify(entry) + '\n');
-    } catch {
-      // Non-critical — don't break the agent loop
+    } catch (err) {
+      recordSwallowed('learning.trackToolUsage', err);
     }
   }
 
@@ -144,14 +144,23 @@ export class LearningRecorder {
     return markPatternPromotedImpl(this.patternsFile, patternId);
   }
 
-  async onSessionEnd(): Promise<{ reflection: Reflection; newPatterns: DetectedPattern[] }> {
+  async onSessionEnd(): Promise<{ reflection: Reflection; newPatterns: DetectedPattern[]; digest?: string }> {
     const reflection = await this.reflectOnSession();
     const newPatterns = await this.detectPatterns();
     const unpromoted = newPatterns.filter(p => !p.promoted);
     if (unpromoted.length > 0) {
       logger.info('Learning', `${unpromoted.length} patterns ready for skill promotion`);
     }
-    return { reflection, newPatterns: unpromoted };
+    // Consolidate the session into a digest so .harness/memory/consolidated-digest.md
+    // actually grows over time. Best-effort: a consolidation failure must not
+    // wipe the reflection/pattern signal that already succeeded.
+    let digest: string | undefined;
+    try {
+      digest = await this.consolidateMemory();
+    } catch (err) {
+      recordSwallowed('learning.onSessionEnd.consolidateMemory', err, { sessionId: this.sessionId });
+    }
+    return { reflection, newPatterns: unpromoted, digest };
   }
 }
 
@@ -259,7 +268,8 @@ async function detectPatternsImpl(trackerFile: string, patternsFile: string): Pr
 
     return patterns;
 
-  } catch {
+  } catch (err) {
+    recordSwallowed('learning.detectPatterns', err);
     return [];
   }
 }
@@ -356,8 +366,8 @@ async function reflectOnSessionImpl(recorder: LearningRecorder): Promise<Reflect
   try {
     await fs.mkdir(recorder.baseDir, { recursive: true });
     await fs.appendFile(recorder.reflectionsFile, JSON.stringify(reflection) + '\n');
-  } catch {
-    // Non-critical
+  } catch (err) {
+    recordSwallowed('learning.persistReflection', err);
   }
 
   // Write insights to memory if there are any
@@ -374,8 +384,8 @@ async function reflectOnSessionImpl(recorder: LearningRecorder): Promise<Reflect
         await fs.writeFile(notesPath, '# Notes\n\nGeneral observations and context.\n');
       }
       await fs.appendFile(notesPath, entry);
-    } catch {
-      // Non-critical
+    } catch (err) {
+      recordSwallowed('learning.writeReflectionMemory', err);
     }
   }
 
@@ -396,7 +406,7 @@ async function consolidateMemoryImpl(recorder: LearningRecorder): Promise<string
   for (const file of ['decisions.md', 'patterns.md', 'notes.md']) {
     try {
       parts.push(await fs.readFile(path.join(recorder.memoryDir, file), 'utf-8'));
-    } catch { /* not yet created */ }
+    } catch (err) { recordSwallowed('learning.readMemoryFile', err); }
   }
 
   // Read reflections
@@ -416,7 +426,7 @@ async function consolidateMemoryImpl(recorder: LearningRecorder): Promise<string
         `Common insights: ${[...new Set(allInsights)].slice(0, 10).join('; ')}\n` +
         `Improvements: ${[...new Set(allImprovements)].slice(0, 10).join('; ')}`);
     }
-  } catch { /* no reflections yet */ }
+  } catch (err) { recordSwallowed('learning.readReflections', err); }
 
   // Read detected patterns
   try {
@@ -427,7 +437,7 @@ async function consolidateMemoryImpl(recorder: LearningRecorder): Promise<string
           `• ${p.toolSequence.join(' → ')} (seen ${p.occurrences}x, suggested skill: ${p.suggestedSkillName})`
         ).join('\n'));
     }
-  } catch { /* no patterns yet */ }
+  } catch (err) { recordSwallowed('learning.readPatterns', err); }
 
   if (parts.length === 0) {
     return 'No memories to consolidate yet.';
@@ -465,7 +475,7 @@ async function getEvolvedPromptImpl(recorder: LearningRecorder, basePrompt: stri
     if (patterns.trim().length > 50) {
       prompt += '\n\n--- Learned Patterns ---\n' + patterns.slice(0, 2000);
     }
-  } catch { /* no patterns yet */ }
+  } catch (err) { recordSwallowed('learning.readLearnedPatterns', err); }
 
   // Layer 3: append consolidated improvements from reflections
   try {
@@ -479,7 +489,7 @@ async function getEvolvedPromptImpl(recorder: LearningRecorder, basePrompt: stri
       prompt += '\n\n--- Self-Improvements (learned from past sessions) ---\n' +
         improvements.slice(0, 10).map(i => `• ${i}`).join('\n');
     }
-  } catch { /* no reflections yet */ }
+  } catch (err) { recordSwallowed('learning.readReflectionsForPrompt', err); }
 
   // Layer 4: append user-evolved prompt additions
   try {
@@ -487,7 +497,7 @@ async function getEvolvedPromptImpl(recorder: LearningRecorder, basePrompt: stri
     if (evolved.trim().length > 0) {
       prompt += '\n\n--- Evolved Instructions ---\n' + evolved;
     }
-  } catch { /* no evolved prompt yet */ }
+  } catch (err) { recordSwallowed('learning.readEvolvedPrompt', err); }
 
   return prompt;
 }
@@ -515,7 +525,8 @@ async function getUnpromotedPatternsImpl(patternsFile: string): Promise<Detected
   try {
     const patterns = JSON.parse(await fs.readFile(patternsFile, 'utf-8')) as DetectedPattern[];
     return patterns.filter(p => !p.promoted && p.occurrences >= 3);
-  } catch {
+  } catch (err) {
+    recordSwallowed('learning.getUnpromotedPatterns', err);
     return [];
   }
 }

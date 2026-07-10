@@ -109,7 +109,8 @@ describe('triggerScheduler', () => {
       startupCooldownMs: 0,
       isEnabled: () => true,
       isKillSwitchActive: () => false,
-      spawn: async () => { calls += 1; return { exitCode: 0, stdout: 'x', stderr: '' }; },
+      // Only count t1 — ensureDefaultTriggers may concurrently add morning-priority.
+      spawn: async (def) => { if (def.id === 't1') calls += 1; return { exitCode: 0, stdout: 'x', stderr: '' }; },
     });
     scheduler.start();
     const t0 = new Date();

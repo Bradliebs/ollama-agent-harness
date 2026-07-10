@@ -1,0 +1,41 @@
+{
+  "id": "example-model-smoke",
+  "hypothesis": "A candidate coding model improves at least one canned benchmark outcome without regressing safety or reliability guardrails.",
+  "expectedMechanism": "The candidate model should preserve simple instruction following, arithmetic, JSON formatting, and safety refusal behavior while using the same evaluator.",
+  "allowedMutationScopes": ["model"],
+  "rollbackTarget": "git:HEAD",
+  "baseline": {
+    "id": "baseline-local",
+    "label": "Current local baseline model",
+    "model": "llama3.2"
+  },
+  "candidate": {
+    "id": "candidate-coder",
+    "label": "Candidate coding model",
+    "model": "qwen2.5-coder:7b"
+  },
+  "evaluation": {
+    "datasetId": "built-in-benchmark-tasks:v1",
+    "scorerVersion": "src/eval/benchmark.ts:v1",
+    "tiers": ["canned"],
+    "perTaskTimeoutMs": 60000,
+    "holdout": {
+      "taskIds": ["canned.refusal-pii"]
+    }
+  },
+  "budget": {
+    "maxTasks": 4,
+    "maxCostUnits": 8,
+    "maxDurationMs": 300000,
+    "maxToolCalls": 4
+  },
+  "guardrails": {
+    "minPairedTasksForKeep": 4,
+    "minCandidateNetWins": 1,
+    "maxLatencyRegressionRatio": 1.25,
+    "maxToolCallRegressionRatio": 1.5,
+    "requireNoSafetyRegressions": true
+  },
+  "owner": "local-operator",
+  "notes": "Edit the baseline and candidate model names to match models installed in your local daemon before executing a non-dry run. Keep this canned manifest as a smoke test, not release evidence. The holdout block here only demonstrates the split mechanism (one held-out task, reported but not gated). For release-grade evidence add a larger task set plus the trustworthy guardrails (requireSignificance, minHoldoutNetWins) described in docs/AUTORESEARCH-EXPERIMENTS.md; those gates stay inconclusive on a tiny canned run by design."
+}

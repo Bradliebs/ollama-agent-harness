@@ -2,13 +2,336 @@
 title: Ollama Agent Harness Changelog
 description: Release notes generated from local RPI changes logs for Ollama Agent Harness
 author: Bradliebs
-ms.date: 2026-05-16
+ms.date: 2026-06-22
 ms.topic: reference
 keywords:
 	- ollama
 	- release notes
 	- changelog
-estimated_reading_time: 14
+estimated_reading_time: 18
+---
+
+## Ollama Agent Harness v0.6.6
+
+A governance pass beside the product path, plus operator surfaces for what the
+agent learned while you were away. Shadow-first end-to-end: no default behaviour
+changes until a human approves.
+
+### Autonomy surfaces and verification
+
+The latest additions are additive and default-off, so the product path is
+unchanged until you opt in.
+
+- **Project Atlas** (`src/web/atlasRoutes.ts`): a read-only repository map served
+  from `GET /api/atlas/map`. No write paths.
+- **Prompt auto-gate** (`src/experiments/autoGate.ts`): a fail-closed gate for
+  promoting evolved prompts — a candidate is rejected unless it clears the bar.
+- **Autonomy prompt learning** (`src/learning/autonomyPrompt.ts`,
+  `src/learning/promptApproval.ts`): evolved prompts are applied in the autonomy
+  loop only behind `HARNESS_APPLY_EVOLVED_PROMPT_AUTONOMY` (default off).
+- **Bounded cross-loop continuation** (`src/core/continuation.ts`): opt-in
+  continuation across task-loop halts behind `HARNESS_CONTINUATION` (default
+  off), capped by `HARNESS_MAX_CONTINUATIONS` (default 2).
+- **Pluggable verification panel + surgical critic** (`src/verification/panel.ts`,
+  `src/verification/critic.ts`, `src/verification/builtinSignals.ts`,
+  `src/verification/metrics.ts`): opt-in signal panel attachment on the
+  heuristic verifier and a surgical critic for remediation steps.
+- **Per-role model resolution** (`src/models/roleRouting.ts`): resolve a
+  distinct model per role.
+- **Git-worktree helper** (`src/agents/worktree.ts`): isolate parallel subagents
+  in separate worktrees.
+- **Tool refinements**: `web_read` extracts readable text with cheerio
+  (`src/tools/webSearchTool.ts`), and desktop input replay adds mouse actions
+  (`src/tools/desktopInputTools.ts`).
+
+### Governed Agent Loop v1
+
+A new `src/governed/` subsystem (8 files) wraps an already-produced answer with
+one deterministic governance pass and stages any proposed memory updates as
+review artifacts. See [`docs/GOVERNED-LOOP.md`](docs/GOVERNED-LOOP.md) for the
+full tour.
+
+- **Confidence modes** (`src/governed/confidenceMode.ts`): every answer is
+  labelled `settled`, `reasoned`, `web-fresh`, or `distrust` based on signals
+  the harness already computes.
+- **Per-answer self-critique** (`src/governed/selfCritique.ts`): structured
+  findings against the four reviewer questions (cited? old? fact or judgement?
+  what would make this wrong?). Surfaces only — never blocks.
+- **Working memory snapshot** (`src/governed/workingMemory.ts`): one
+  inspectable object for current goal, open questions, decisions, next action,
+  and blocked items.
+- **Governed answer composition** (`src/governed/governedAnswer.ts`): pure,
+  model-free wrapper. The original `answer` string is passed through untouched
+  so the function runs shadow-first beside the product path.
+- **Human-gated review queue** (`src/governed/reviewQueue.ts`): one durable
+  queue for two lifecycles — `brain-update` (writes to `.harness/memory/patterns.md`
+  on approval) and `needs-review` (drains onto a replay seam on approval).
+  Writes happen only on explicit human approval; rejection and timeout drop the
+  item with an audit entry.
+- **Idle-replay loop** (`replayLedger.ts` + `replayConsumer.ts` + `replayRunner.ts`):
+  consumes drained `needs-review` candidates, re-asks each one through an
+  injected harness runner, and re-enqueues the fresh governed answer for human
+  review. Auto-approves nothing. Writes a per-run audit entry to
+  `.harness/idle-replay-log.jsonl`.
+
+### New HTTP surface
+
+Registered by `src/web/reviewQueueRoutes.ts`, `src/web/workingMemoryRoutes.ts`,
+`src/web/webhookRoutes.ts`, and `src/web/myceliumRoutes.ts`:
+
+- `GET /api/working-memory` — current goal, open questions, next action.
+- `GET /api/review-queue`, `POST /api/review-queue/:id/{approve,reject,drain}` —
+  human-gated approval surface for brain updates and needs-review answers.
+- `GET /api/replay-candidates`, `POST /api/replay-candidates/consume`,
+  `GET /api/replay-history`, `GET /api/governed-metrics` — idle-replay control
+  and audit endpoints.
+- `GET /api/webhooks`, `POST/PATCH/DELETE /api/webhooks/...`,
+  `GET /api/webhooks/dead-letter`, `POST /api/webhooks/dead-letter/:id/redeliver`,
+  `DELETE /api/webhooks/dead-letter/:id` — webhook registry, manual test,
+  dead-letter inspection, and replay.
+- `GET /api/mycelium`, `GET /api/mycelium/{last-route,learning-curve,build-gate-trend}`,
+  `DELETE /api/mycelium`, `POST /api/mycelium/feedback` — Mycelium router
+  inspection, learning-curve telemetry, and feedback intake.
+
+### Core and tool changes
+
+- `src/core/queryLoop.ts`, `src/core/rewardLedger.ts`, `src/core/buildGate.ts` —
+  loop changes feeding the governed pass and the Mycelium build-gate trend.
+- `src/tools/bashTool.ts`, `src/tools/memoryTools.ts` — refinements to bash
+  invocation safety and memory write semantics.
+- `src/setup/health.ts` — additional readiness checks.
+- `src/integrations/webhooks.ts`, `src/automation/scheduler.ts` — webhook
+  delivery hardening and scheduler hooks.
+- `src/services/conceptMemoryClient.ts` — ccmem client refinements.
+
+### Browser takeover
+
+- **Execute-time capability enforcement** (`src/tools/browserTools.ts`): the
+  page-acting browser tools (navigate, click, fill, read, screenshot) now check
+  the `browser-page-access` grant inside `execute()` by reading
+  `.harness/settings.json`, so direct, CLI, and cookbook call paths are gated —
+  not only the web chat loop. `browser_close` stays ungated as a resource
+  release. This makes the previously documented execute-time enforcement real.
+- **Real-browser launch modes**: new environment variables select how the
+  browser launches, with default (no env) behaviour unchanged (fresh, headless,
+  bundled Chromium). `HARNESS_BROWSER_CDP_URL` attaches to a running Chrome over
+  CDP and disconnects rather than closing your tabs on `browser_close`;
+  `HARNESS_BROWSER_PROFILE_DIR` launches a persistent profile so logins survive;
+  `HARNESS_BROWSER_HEADFUL` shows a visible window; `HARNESS_BROWSER_CHANNEL`
+  picks an installed `chrome`/`msedge` channel. See
+  [`docs/CAPABILITY-SANDBOX.md`](docs/CAPABILITY-SANDBOX.md) for the full table
+  and the residual gaps.
+- **Browser audit log** (`src/tools/browserAudit.ts`): every navigate, click,
+  fill, read, and screenshot — including capability denials — is appended to
+  `.harness/browser-audit.jsonl` with a timestamp, launch mode, target URL, and
+  outcome. Exposed via `GET /api/browser/audit` and a Settings panel. Page text
+  and cookie values are never written.
+- **Trace/secret redaction** (`browserRedaction` setting): the audit log is
+  redaction-safe by construction; `browser_fill` values are masked by default
+  and URLs can be narrowed to their origin (dropping path/query tokens). Toggled
+  from the Browser Redaction settings panel and persisted to
+  `.harness/settings.json`.
+- **Cookie/session vault** (`src/tools/browserSessions.ts`): save the live
+  browser login as a named Playwright `storageState` snapshot under
+  `.harness/browser-sessions/` (`POST /api/browser/sessions/:name`), list/delete
+  via the Settings panel, and auto-restore with `HARNESS_BROWSER_SESSION=<name>`
+  — an explicit, scoped alternative to raw profile directories. The listing API
+  returns metadata only and never echoes cookie values.
+
+### Documentation
+
+- New [`docs/GOVERNED-LOOP.md`](docs/GOVERNED-LOOP.md) — confidence modes,
+  self-critique, review queue, and idle replay.
+- README updated with **Workspace vs install** guidance for `HARNESS_PROJECT_DIR`
+  so user-wide credentials (e.g. SMTP) can be promoted to OS env vars and stop
+  going stale per workspace.
+
+### Known gaps
+
+- The review queue and working-memory endpoints are live; UI panels for them
+  are partial. Until they ship, the seam is driven by direct API calls or by
+  an operator working from `.harness/review-queue.jsonl`.
+
+## Ollama Agent Harness v0.6.5
+
+This release focuses on making the harness approachable for non-developers and
+more reliable when running autonomously, plus trustworthier output.
+
+### Build Mode and guided experiences
+
+- **Build Mode**: a simplified flow for describing a goal in plain English and
+  letting the harness plan and build it, without needing developer tooling.
+- **`/wiki`, `/memory-wiki`, and research slash commands**, built on a set of
+  reusable renderers so the output format stays consistent.
+- Plain-English intent chips and a decluttered Start-work panel for newcomers.
+
+### Trustworthier output
+
+- **Evidence-first verification**: a side-effect ledger and a research skill
+  that check work before it is presented, rather than asserting success.
+- Tool-output compression keeps large tool results from crowding the context.
+
+### Autonomy reliability
+
+- The Build-it loop now launches correctly in isolated workspaces (it runs the
+  in-repo task loop instead of assuming a script in the target project).
+- Live model tool activity streams into `.forge-run.log` so the dashboard shows
+  what the agent is doing as it happens.
+- The run builder rejects pasted-back plan lines that previously produced nested
+  task titles.
+
+### Configuration
+
+- Honor the `OLLAMA_HOST` environment variable so the harness can talk to a
+  non-default Ollama endpoint.
+
+### Unified assistant profile
+
+- **One product surface**: the personal assistant (Jarvis) and the harness now
+  share a single engine, launcher, and config profile instead of two
+  parallel entry points. `HARNESS_PROFILE=assistant` turns on the assistant
+  identity (voice, ambient watchers, inbound channels) on top of the harness.
+- **Opt-in proactive tier**: `HARNESS_PROFILE=assistant-proactive` adds standing
+  autonomy — the self-learning heartbeat and trigger scheduler default on — for
+  users who want the assistant to act without being prompted. The plain
+  `assistant` profile stays reactive.
+- **Scheduler visibility and control**: the Jarvis Live panel lists every
+  registered scheduler with its running state and per-scheduler **Stop** and
+  **Start** buttons, backed by `POST /api/jarvis/schedulers/:name/stop` and
+  `/restart`. Stopping halts one noisy subsystem without the global kill switch
+  or a full restart; Start brings a stopped scheduler back in place. Schedulers
+  without a clean re-create path show Stop only.
+
+## Ollama Agent Harness v0.6.4
+
+Concept Cells Memory (`ccmem`) ships in-tree. The harness now writes every
+`remember` entry into a semantic memory bank and pulls related memories
+back into the prompt by meaning, not keyword match.
+
+### ccmem semantic memory
+
+- `ccmem/service.py`: FastAPI sidecar implementing the high-dimensional
+  concept-cell scheme from Tyukin & Gorban (2018). Stores items as
+  unit-vector "neurons" with per-cell firing thresholds in
+  `.harness/ccmem/bank.db` (SQLite). Exposes `/write`, `/write_many`,
+  `/query`, `/bind`, `/health`, `/cells`.
+- `src/services/conceptMemoryClient.ts`: thin TS client. Best-effort —
+  if the service is down the harness behaves identically.
+- `src/tools/memoryTools.ts`: every `remember` call dual-writes to
+  ccmem alongside the existing markdown files.
+- `src/context/assembly.ts`: `Concept memory recall` section added to
+  the auto-recall buffer; subject to the shared 4 000-char cap.
+- `start.bat` step 6: auto-launches ccmem on port 8765 when Python is
+  present; defaults `ccmemUrl` to `http://localhost:8765` so the
+  feature is on out of the box.
+- `setCcmemUrl` is statically imported so saved settings propagate to
+  the client on startup (no first-call URL mismatch).
+
+### Apex naming
+
+The autonomous-experiences track originally shipped as "Hermes" in
+v0.6.0; renamed to "Apex" in v0.6.4 to avoid trademark concerns. No
+behavioural change — strings and identifiers only.
+
+### Startup hardening
+
+- `start.bat`: resolved a BOM-corrupted workspace path and unescaped
+  parentheses in echo blocks that broke launch on some shells.
+- Better error messages when `npm install` is required.
+- Hardcoded `cc_service` path removed; the bundled `ccmem/` is the
+  only source of truth.
+
+### Operate-mode routing + synthesis fallback
+
+`src/services/queryRouter.ts` and the synthesis fallback formatter
+tightened so operate-mode queries don't fall back into chat-mode
+synthesis silently.
+
+### Runtime files ignored
+
+`.harness-workspace`, `.forge-state.json`, and `.forge-stop` added to
+`.gitignore` so they no longer surface as dirty-tree noise.
+
+---
+
+## Ollama Agent Harness v0.6.3
+
+Workspace folder memory and the M-tier security batch.
+
+### Workspace memory
+
+`start.bat` now remembers the last chosen workspace folder in
+`.harness-workspace`. After the first run the prompt is skipped.
+
+### Security batch (M1 / M3 / M4 / M5 / M6 / L1)
+
+`b15695c` collected six audit fixes spanning path handling, write
+gates, and permission boundaries. Notably:
+
+- `baf9f7b`: atomic write helpers, path-traversal guard, near-root
+  path filter for tool writes.
+- C2 redirect guard now allows absolute paths it previously rejected.
+- Trigger-interval test flake stabilised.
+
+### Tests
+
+`src/tools/readBeforeWriteGate.test.ts` and adjacent suites updated
+to cover the new path-traversal and atomic-write paths.
+
+---
+
+## Ollama Agent Harness v0.6.2
+
+Workspace isolation — phase 2.
+
+`src/web/server.ts` path resolution now anchors to the project root
+rather than `process.cwd()`. Combined with v0.6.1, the agent cannot
+write into the harness repo from a chat launched in a different
+workspace, even when relative paths are passed.
+
+---
+
+## Ollama Agent Harness v0.6.1
+
+Workspace isolation — phase 1.
+
+The agent no longer writes into the harness repository when the user
+is working in an external project. `267a0f6` is a hard boundary: any
+write whose resolved path lands inside the harness checkout is
+refused. Combined with v0.6.2 below, this closes the "agent edited
+its own code without asking" class of incident.
+
+Also: PDF rendering fixes (emoji/unsupported-char corruption, cursor
+reset after tables, styled headings, alternating row colours, page
+numbers).
+
+---
+
+## Ollama Agent Harness v0.6.0
+
+Apex (originally "Hermes") autonomous experiences and `/yolo` mode.
+
+### `/yolo` autonomy
+
+`/yolo <duration>` switches the harness into `dontAsk` permission mode
+for a bounded window, letting the agent run without per-call prompts.
+On expiry the mode reverts. (Note: v0.6.4 / v0.6.5 follow-ups added
+grant revocation on expiry — see `451ead2`.)
+
+### Apex (Hermes) experiences
+
+`e77075e` introduced the autonomous-experience track: long-horizon
+tasks the harness can drive without continuous user input. UI panels
+for all nine harness features shipped in `b931922`.
+
+### Gap closure (267 tests)
+
+`fd81f84` closed nine outstanding harness gaps and shipped 267 new
+tests. The feature inventory expanded to cover doneStateVerifier
+wiring (gap1), benchmark task runner with tiered tasks (gap2), A/B
+model comparison + task contracts + cost tracking (gaps 3–5), and the
+remaining UX gaps.
+
 ---
 
 ## Ollama Agent Harness v0.5.9

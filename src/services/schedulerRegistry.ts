@@ -24,11 +24,21 @@ export interface ManagedScheduler {
   stop(): void | Promise<void>;
   /** Optional liveness probe used by `list()`. Defaults to `true` if omitted. */
   isRunning?(): boolean;
+  /**
+   * Optional restart hook. When present, the scheduler can be brought back
+   * after a `stop()` without a server restart — typically by calling the same
+   * idempotent `configureX()` that registered it. Schedulers that have no
+   * clean re-create path (e.g. startup-only inline timers) omit this, and the
+   * UI then offers Stop only, not Start.
+   */
+  restart?(): void | Promise<void>;
 }
 
 export interface SchedulerStatus {
   name: string;
   running: boolean;
+  /** True when the entry exposes a `restart()` hook (UI can offer Start). */
+  restartable: boolean;
 }
 
 export interface SchedulerStopResult {
@@ -73,11 +83,62 @@ export class SchedulerRegistry {
     return true;
   }
 
-  /** Stop a single scheduler by name. No-op if not registered. */
+  /**
+   * Stop a single scheduler by name. No-op if not registered.
+   *
+   * Schedulers typically unregister themselves inside `stop()` (their
+   * `stopX()` helper clears the instance and calls `unregister`). For a
+   * restartable scheduler that would make it vanish from `list()` entirely,
+   * leaving no idle row for the UI to offer a Start control on. To preserve
+   * the Start affordance, when a restartable entry removes itself during stop
+   * we leave a lightweight tombstone: a non-running, restartable placeholder
+   * carrying the same `restart()` hook. Calling `restart()` runs the
+   * scheduler's idempotent configure path, which re-registers a live entry
+   * and replaces the tombstone by name.
+   */
   async stop(name: string): Promise<SchedulerStopResult | null> {
     const entry = this.entries.find((e) => e.name === name);
     if (!entry) return null;
-    return this.runStop(entry);
+    const restart = entry.restart;
+    const result = await this.runStop(entry);
+    const stillRegistered = this.entries.some((e) => e.name === name);
+    if (restart && !stillRegistered) {
+      this.entries.push({ name, stop: () => undefined, isRunning: () => false, restart });
+    }
+    return result;
+  }
+
+  /**
+   * Restart a single scheduler by name using its `restart()` hook. Returns
+   * `null` if the scheduler is not registered, and an `ok: false` result if it
+   * has no `restart()` hook, the hook throws, or the scheduler is still not
+   * running after the hook completes. The hook is expected to call the
+   * scheduler's idempotent configure function, which re-registers the entry —
+   * but that configure can early-return without starting anything if the
+   * subsystem's enabled-guard is now false (e.g. it was disabled while
+   * stopped). In that case the hook does not throw, yet the scheduler did not
+   * come back, so we re-check `list()` and report `ok: false` rather than
+   * claiming a success the operator can see is untrue.
+   */
+  async restart(name: string): Promise<SchedulerStopResult | null> {
+    const entry = this.entries.find((e) => e.name === name);
+    if (!entry) return null;
+    if (!entry.restart) {
+      return { name, ok: false, error: `Scheduler ${name} is not restartable` };
+    }
+    try {
+      const result = entry.restart();
+      if (result && typeof (result as Promise<void>).then === 'function') {
+        await result;
+      }
+      const status = this.list().find((s) => s.name === name);
+      if (!status || !status.running) {
+        return { name, ok: false, error: `Scheduler ${name} did not start (it may be disabled in its settings)` };
+      }
+      return { name, ok: true };
+    } catch (error) {
+      return { name, ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   /**
@@ -104,6 +165,7 @@ export class SchedulerRegistry {
     return this.entries.map((entry) => ({
       name: entry.name,
       running: entry.isRunning ? safeBool(() => entry.isRunning!()) : true,
+      restartable: typeof entry.restart === 'function',
     }));
   }
 

@@ -371,7 +371,7 @@ export async function loadRepoGraph(projectDir: string): Promise<RepoGraph | nul
 // ─── Architecture Diagram ───────────────────────────────────────────
 
 /** Generate a mermaid graph diagram showing top-level module clusters and key dependencies. */
-export function generateArchitectureDiagram(graph: RepoGraph, maxNodes = 30): string {
+export function generateArchitectureDiagram(graph: RepoGraph, maxNodes = 40): string {
   // Group files by top-level directory
   const dirGroups = new Map<string, string[]>();
   for (const [filePath] of graph.nodes) {
@@ -415,13 +415,18 @@ export function generateArchitectureDiagram(graph: RepoGraph, maxNodes = 30): st
     lines.push('  end');
   }
 
-  // Add edges between top files
+  // Add edges between top files (deduplicated)
+  const seenEdges = new Set<string>();
   for (const edge of graph.edges) {
     if (edge.type !== 'imports') continue;
     const fromId = dirIndex.get(edge.from);
     const toId = dirIndex.get(edge.to);
     if (fromId && toId && fromId !== toId) {
-      lines.push(`  ${fromId} --> ${toId}`);
+      const key = `${fromId}-->${toId}`;
+      if (!seenEdges.has(key)) {
+        seenEdges.add(key);
+        lines.push(`  ${fromId} --> ${toId}`);
+      }
     }
   }
 

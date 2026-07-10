@@ -99,6 +99,23 @@ export async function readAuditLog(projectDir: string, limit = 200): Promise<Aud
   return entries.slice(-limit);
 }
 
+/**
+ * Append a single pre-built audit entry to the project's audit log.
+ *
+ * Use this for significant non-tool actions (e.g. a goal undo / rollback)
+ * that should leave the same JSONL trail as tool calls. Best-effort: a write
+ * failure is swallowed so auditing never breaks the action it records.
+ */
+export async function appendAuditEntry(projectDir: string, entry: AuditEntry): Promise<void> {
+  const filePath = auditFilePath(projectDir);
+  try {
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.appendFile(filePath, JSON.stringify(entry) + '\n', 'utf-8');
+  } catch {
+    // Audit must never break the action it records — swallow.
+  }
+}
+
 function truncate(value: string, max: number): string {
   if (value.length <= max) return value;
   return value.slice(0, max) + `…[+${value.length - max} chars]`;

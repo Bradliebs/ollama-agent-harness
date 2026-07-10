@@ -4,7 +4,7 @@ import * as path from 'path';
 import { MyceliumGraph, loadMyceliumGraph, saveMyceliumGraph } from './graph';
 import { spreadActivation, selectRoute } from './activation';
 import { reinforceRoute, weakenRoute, decayUnusedEdges, pruneDeadEdges, computeReward } from './reinforcement';
-import { MycelialContextRouter, createMycelialRouter } from './router';
+import { MycelialContextRouter, createMycelialRouter, deriveToolShortlist, toolNamesFromRoute, DEFAULT_TOOL_FLOOR } from './router';
 import { resetSharedMyceliumGraphForTest } from './graphStore';
 
 // ─── Graph store ────────────────────────────────────────────────────
@@ -282,5 +282,63 @@ describe('MycelialContextRouter', () => {
     resetSharedMyceliumGraphForTest();
     const loaded = await createMycelialRouter(dir);
     expect(loaded.getGraph().listNodes()).toHaveLength(1);
+  });
+});
+
+// ─── Tool shortlisting (Phase 2) ────────────────────────────────────
+
+describe('toolNamesFromRoute', () => {
+  it('extracts only tool-type node labels', () => {
+    const route = {
+      nodes: [
+        { type: 'tool', label: 'web_search' },
+        { type: 'memory', label: 'some-memory' },
+        { type: 'tool', label: 'file_read' },
+      ],
+    };
+    expect(toolNamesFromRoute(route)).toEqual(['web_search', 'file_read']);
+  });
+
+  it('returns an empty list when no tool nodes are present', () => {
+    expect(toolNamesFromRoute({ nodes: [{ type: 'memory', label: 'm' }] })).toEqual([]);
+  });
+});
+
+describe('deriveToolShortlist', () => {
+  const allTools = [
+    { name: 'web_search' },
+    { name: 'file_read' },
+    { name: 'file_write' },
+    { name: 'file_edit' },
+    { name: 'bash' },
+    { name: 'pdf_render' },
+  ];
+
+  it('returns ALL tools when routing gives no signal (escalation floor)', () => {
+    expect(deriveToolShortlist([], allTools)).toEqual(allTools);
+  });
+
+  it('returns the routed subset unioned with the floor', () => {
+    const keep = deriveToolShortlist(['web_search'], allTools).map((t) => t.name);
+    expect(keep).toContain('web_search');
+    // floor tools are always offered
+    for (const f of DEFAULT_TOOL_FLOOR) {
+      if (allTools.some((t) => t.name === f)) expect(keep).toContain(f);
+    }
+    // non-routed, non-floor tools are dropped
+    expect(keep).not.toContain('pdf_render');
+  });
+
+  it('honours maxTools for the routed portion', () => {
+    const keep = deriveToolShortlist(['web_search', 'bash', 'pdf_render'], allTools, {
+      floor: [],
+      maxTools: 1,
+    }).map((t) => t.name);
+    expect(keep).toEqual(['web_search']);
+  });
+
+  it('never returns empty: falls back to all tools when nothing matches', () => {
+    const keep = deriveToolShortlist(['nonexistent_tool'], allTools, { floor: [] });
+    expect(keep).toEqual(allTools);
   });
 });

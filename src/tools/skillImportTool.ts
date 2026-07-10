@@ -239,7 +239,7 @@ async function planCopy(
     const rel = path.relative(rootDir, abs).split(path.sep).join('/');
     let size = 0;
     try {
-      const stat = await fs.stat(abs);
+      const stat = await fs.lstat(abs);
       size = stat.size;
     } catch { /* skip unreadable */ }
     acc.push({ src: abs, rel, size });

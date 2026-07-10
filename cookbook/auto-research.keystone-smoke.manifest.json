@@ -1,0 +1,36 @@
+{
+  "id": "keystone-smoke-2026-06-10",
+  "hypothesis": "Pipeline smoke: confirm the live experiment loop reaches both local models, scores paired tasks, and produces a scorecard with non-error results.",
+  "expectedMechanism": "Two trivial deterministic tasks run against both models end-to-end.",
+  "allowedMutationScopes": ["model"],
+  "rollbackTarget": "git:HEAD",
+  "baseline": {
+    "id": "baseline-deepseek-flash",
+    "label": "deepseek-v4-flash:cloud",
+    "model": "deepseek-v4-flash:cloud"
+  },
+  "candidate": {
+    "id": "candidate-deepseek-pro",
+    "label": "deepseek-v4-pro:cloud",
+    "model": "deepseek-v4-pro:cloud"
+  },
+  "evaluation": {
+    "datasetId": "built-in-benchmark-tasks:v1",
+    "scorerVersion": "src/eval/benchmark.ts:v1",
+    "taskIds": ["canned.arithmetic", "canned.json-extract"],
+    "perTaskTimeoutMs": 120000
+  },
+  "budget": {
+    "maxTasks": 4,
+    "maxCostUnits": 8,
+    "maxDurationMs": 600000,
+    "maxToolCalls": 20
+  },
+  "guardrails": {
+    "minPairedTasksForKeep": 2,
+    "minCandidateNetWins": 1,
+    "requireNoSafetyRegressions": true
+  },
+  "owner": "local-operator",
+  "notes": "Throwaway pipeline smoke for the keystone live proof. Delete after the full arms run."
+}

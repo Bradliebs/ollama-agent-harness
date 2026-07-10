@@ -4,6 +4,13 @@ import * as path from 'path';
 import { checkSetupHealth } from './health';
 
 describe('setup health', () => {
+  // checkSetupHealth probes the optional ccmem service via fetch('/health')
+  // with a 5s internal abort (REQUEST_TIMEOUT_MS in conceptMemoryClient). When
+  // that service is offline, the probe can run right up to 5s, colliding with
+  // Jest's 5s default under full-suite parallel load. Give these IO-bound tests
+  // headroom above that probe so the suite is deterministic, not load-dependent.
+  jest.setTimeout(20_000);
+
   let fixtureDir: string;
 
   beforeEach(async () => {
@@ -269,6 +276,97 @@ describe('setup health', () => {
       const result = await probe();
       expect(result.fallback.order).toBe('groq,mistral');
       delete process.env.HARNESS_REMOTE_FALLBACK_ORDER;
+    });
+  });
+
+  describe('validation scripts check', () => {
+    async function packageCheck(): Promise<Awaited<ReturnType<typeof checkSetupHealth>>['local']['package']> {
+      const result = await checkSetupHealth({
+        host: 'http://127.0.0.1:1',
+        visionModel: '',
+        audioTranscribeCommand: '',
+        projectDir: fixtureDir,
+      });
+      return result.local.package;
+    }
+
+    it('treats a workspace with no package.json as not applicable (not a failure)', async () => {
+      const pkg = await packageCheck();
+      expect(pkg.ok).toBe(true);
+      expect(pkg.message).toContain('not a Node project');
+    });
+
+    it('treats a package.json with no scripts as not applicable', async () => {
+      await fs.writeFile(path.join(fixtureDir, 'package.json'), JSON.stringify({ name: 'data-folder' }), 'utf-8');
+      const pkg = await packageCheck();
+      expect(pkg.ok).toBe(true);
+      expect(pkg.message).toContain('no scripts');
+    });
+
+    it('warns when a Node project has scripts but lacks test/typecheck', async () => {
+      await fs.writeFile(path.join(fixtureDir, 'package.json'), JSON.stringify({ name: 'app', scripts: { build: 'tsc' } }), 'utf-8');
+      const pkg = await packageCheck();
+      expect(pkg.ok).toBe(false);
+      expect(pkg.message).toContain('missing a test');
+    });
+
+    it('passes when test and typecheck scripts are present', async () => {
+      await fs.writeFile(path.join(fixtureDir, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'jest', typecheck: 'tsc --noEmit' } }), 'utf-8');
+      const pkg = await packageCheck();
+      expect(pkg.ok).toBe(true);
+      expect(pkg.message).toContain('has test and typecheck scripts');
+    });
+
+    it('accepts lint as a substitute for typecheck', async () => {
+      await fs.writeFile(path.join(fixtureDir, 'package.json'), JSON.stringify({ name: 'app', scripts: { test: 'jest', lint: 'eslint .' } }), 'utf-8');
+      const pkg = await packageCheck();
+      expect(pkg.ok).toBe(true);
+    });
+
+    it('flags malformed package.json as a real error', async () => {
+      await fs.writeFile(path.join(fixtureDir, 'package.json'), '{ not valid json', 'utf-8');
+      const pkg = await packageCheck();
+      expect(pkg.ok).toBe(false);
+      expect(pkg.message).toContain('not valid JSON');
+    });
+  });
+
+  describe('ccmem auth status', () => {
+    it('reports auth state in the long-term memory message', async () => {
+      const { setCcmemToken } = await import('../services/conceptMemoryClient');
+      setCcmemToken('test-token');
+      try {
+        const result = await checkSetupHealth({ host: 'http://127.0.0.1:1', visionModel: '', audioTranscribeCommand: '', projectDir: fixtureDir });
+        expect(result.ccmem.message).toContain('Bearer auth is active');
+      } finally {
+        setCcmemToken('');
+      }
+    });
+
+    it('notes when no auth token is set', async () => {
+      const { setCcmemToken } = await import('../services/conceptMemoryClient');
+      setCcmemToken('');
+      const result = await checkSetupHealth({ host: 'http://127.0.0.1:1', visionModel: '', audioTranscribeCommand: '', projectDir: fixtureDir });
+      expect(result.ccmem.message).toContain('No auth token set');
+    });
+  });
+
+  describe('webhook delivery health', () => {
+    it('omits the webhooks field when none are configured', async () => {
+      const { initWebhookStore } = await import('../integrations/webhooks');
+      initWebhookStore(fixtureDir); // resets the shared registry to empty
+      const result = await checkSetupHealth({ host: 'http://127.0.0.1:1', visionModel: '', audioTranscribeCommand: '', projectDir: fixtureDir });
+      expect(result.webhooks).toBeUndefined();
+    });
+
+    it('summarizes configured webhooks when present', async () => {
+      const { initWebhookStore, addWebhook } = await import('../integrations/webhooks');
+      initWebhookStore(fixtureDir);
+      addWebhook({ url: 'https://example.test/hook', events: [], enabled: true });
+      const result = await checkSetupHealth({ host: 'http://127.0.0.1:1', visionModel: '', audioTranscribeCommand: '', projectDir: fixtureDir });
+      expect(result.webhooks).toBeDefined();
+      expect(result.webhooks!.ok).toBe(true);
+      expect(result.webhooks!.message).toContain('1 configured');
     });
   });
 });

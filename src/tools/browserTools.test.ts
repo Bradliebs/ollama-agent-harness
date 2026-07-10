@@ -1,3 +1,6 @@
+import * as fsPromises from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import { BrowserNavigateTool, BrowserClickTool, BrowserFillTool, BrowserReadTool, BrowserScreenshotTool, BrowserCloseTool, BrowserBookmarksTool } from './browserTools';
 
 // Browser page tools require Playwright with Chromium installed.
@@ -110,5 +113,53 @@ describe('BrowserBookmarksTool', () => {
     const result = await BrowserBookmarksTool.execute({ browser: 'firefox' });
     expect(result.success).toBe(false);
     expect(result.output).toContain('Supported browsers');
+  });
+});
+
+describe('browser-page-access enforcement', () => {
+  // Acting tools must refuse to touch a live page without an active grant.
+  // We run inside a temp working dir whose .harness/settings.json holds no
+  // grant, so the guard denies deterministically and never launches a real
+  // browser, regardless of any local .harness/settings.json in the repo.
+  let originalCwd: string;
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    originalCwd = process.cwd();
+    tmpDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'harness-browser-'));
+    process.chdir(tmpDir);
+  });
+
+  afterEach(async () => {
+    process.chdir(originalCwd);
+    await fsPromises.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('blocks navigate when no active grant is present', async () => {
+    await fsPromises.mkdir(path.join(tmpDir, '.harness'), { recursive: true });
+    await fsPromises.writeFile(path.join(tmpDir, '.harness', 'settings.json'), JSON.stringify({ capabilityGrants: [] }));
+    const result = await BrowserNavigateTool.execute({ url: 'https://example.com/page' });
+    expect(result.success).toBe(false);
+    expect(result.output).toContain('browser-page-access grant');
+  });
+
+  it('blocks read when settings file is absent', async () => {
+    const result = await BrowserReadTool.execute({});
+    expect(result.success).toBe(false);
+    expect(result.output).toContain('browser-page-access grant');
+  });
+
+  it('records a redaction-safe audit entry even when the action is denied', async () => {
+    await fsPromises.mkdir(path.join(tmpDir, '.harness'), { recursive: true });
+    await fsPromises.writeFile(path.join(tmpDir, '.harness', 'settings.json'), JSON.stringify({ capabilityGrants: [] }));
+    const result = await BrowserFillTool.execute({ selector: '#pw', value: 'topsecretpw' });
+    expect(result.success).toBe(false);
+    const raw = await fsPromises.readFile(path.join(tmpDir, '.harness', 'browser-audit.jsonl'), 'utf-8');
+    const entry = JSON.parse(raw.trim().split('\n').pop() as string);
+    expect(entry.tool).toBe('browser_fill');
+    expect(entry.outcome).toBe('error');
+    expect(entry.detail).toContain('capability blocked');
+    // The fill value must never reach the audit log.
+    expect(raw).not.toContain('topsecretpw');
   });
 });

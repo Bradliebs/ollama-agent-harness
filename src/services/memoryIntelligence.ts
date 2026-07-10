@@ -26,6 +26,10 @@ export interface MemorySection {
   importance: Importance;
   createdAt?: string;
   lastReferencedAt?: string;
+  /** Session that produced this section, when the writer supplied it. */
+  sourceSessionId?: string;
+  /** Name of the tool that created this section (e.g. "remember"). */
+  createdByTool?: string;
   /** Character offset where this section started in the source file. */
   offset?: number;
 }
@@ -43,6 +47,10 @@ export interface AppendSectionOptions {
   /** Optional explicit section title; otherwise the first markdown heading in `body` is used. */
   title?: string;
   now?: Date;
+  /** Session that produced this section; recorded as provenance metadata. */
+  sourceSessionId?: string;
+  /** Tool that created this section; recorded as provenance metadata. */
+  createdByTool?: string;
 }
 
 export interface MemoryMaintenanceSummary {
@@ -90,7 +98,7 @@ function archiveDir(projectDir: string): string {
 
 // ─── Parsing ────────────────────────────────────────────────────────
 
-const IMPORTANCE_RE = /<!--\s*importance:\s*(high|medium|low)(?:\s*\|\s*created:\s*([^|>]+?))?(?:\s*\|\s*last-referenced:\s*([^|>]+?))?\s*-->/i;
+const IMPORTANCE_RE = /<!--\s*importance:\s*(high|medium|low)(?:\s*\|\s*created:\s*([^|>]+?))?(?:\s*\|\s*last-referenced:\s*([^|>]+?))?(?:\s*\|\s*source-session:\s*([^|>]+?))?(?:\s*\|\s*created-by:\s*([^|>]+?))?\s*-->/i;
 
 export function parseMemoryFile(content: string, filePath: string): MemoryFile {
   // Header is everything before the first "### " section heading.
@@ -118,6 +126,8 @@ export function parseMemoryFile(content: string, filePath: string): MemoryFile {
       importance: (meta?.[1]?.toLowerCase() as Importance) ?? 'medium',
       createdAt: meta?.[2]?.trim(),
       lastReferencedAt: meta?.[3]?.trim(),
+      sourceSessionId: meta?.[4]?.trim(),
+      createdByTool: meta?.[5]?.trim(),
       offset: start,
     });
   }
@@ -153,8 +163,12 @@ export async function appendMemorySection(
   const now = (options.now ?? new Date()).toISOString().split('T')[0];
   const title = options.title ?? extractFirstHeading(body) ?? `${now}: note`;
 
-  // Build the new body with importance metadata as the first line.
-  const meta = `<!-- importance: ${importance} | created: ${now} -->`;
+  // Build the new body with importance metadata as the first line. Provenance
+  // fields are appended only when supplied so existing callers/output are unchanged.
+  const metaParts = [`importance: ${importance}`, `created: ${now}`];
+  if (options.sourceSessionId) metaParts.push(`source-session: ${options.sourceSessionId}`);
+  if (options.createdByTool) metaParts.push(`created-by: ${options.createdByTool}`);
+  const meta = `<!-- ${metaParts.join(' | ')} -->`;
   // Strip any redundant leading "### title" the caller may have included.
   const cleanedBody = body.replace(/^###\s+.+\n/, '').trim();
 
@@ -172,6 +186,8 @@ export async function appendMemorySection(
     body: composedBody,
     importance,
     createdAt: now,
+    sourceSessionId: options.sourceSessionId,
+    createdByTool: options.createdByTool,
   });
 
   // Hard size enforcement: if the serialized file exceeds the limit, drop

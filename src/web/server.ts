@@ -1,8 +1,9 @@
 import express from 'express';
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'child_process';
+import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { watch as fsWatch } from 'fs';
+import { watch as fsWatch, existsSync, mkdirSync, readFileSync, readdirSync } from 'fs';
 import * as net from 'net';
 import * as crypto from 'crypto';
 import * as os from 'os';
@@ -13,25 +14,82 @@ import { createChatClient, OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiK
 import { drainRemoteProviderFallbackEvents } from '../core/fallbackChatClient';
 import type { IChatClient } from '../core/chatClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
+import { createCodeVerifier, createLlmPlanner, createQueryLoopExecutor, runConductor, type ConductorEvent } from '../core/taskConductor';
+import { verifyService } from '../core/doneStateVerifier';
+import { createLlmAdversaryJudge } from '../safety/toolInspectors';
+import { buildMorningBriefing, type BriefingCalendarEvent } from '../jarvis/morningBriefing';
+import { parseIcsEvents } from '../tools/calendarTools';
 import { getRuntimeTools } from '../tools';
 import { createToolRegistry } from '../tools/registry';
 import { WorkflowRegistry } from '../workflows/workflowRegistry';
-import { runCurator, runDeterministicPhase, readCuratorLog, readCuratorProposals, restoreSkill, parseMergeProposals, applyMergeProposal, clearCuratorProposals, type CuratorConfig } from '../curator/curator';
+import { runCurator, runDeterministicPhase, readCuratorLog, readCuratorProposals, type CuratorConfig } from '../curator/curator';
 import { CuratorScheduler } from '../curator/scheduler';
 import { SelfLearningHeartbeat, createCleanupAgentOutputsAction, createIdentityGcAction, createReflectAndLearnAction, createSkillEvolutionAction, createWorkAssignedTasksAction, defaultHeartbeatActions, readHeartbeatHistory } from '../services/selfLearningHeartbeat';
-import { TriggerScheduler, loadTriggers, saveTriggers, type TriggerDefinition } from '../services/triggerScheduler';
+import { TriggerScheduler } from '../services/triggerScheduler';
 import { SchedulerRegistry } from '../services/schedulerRegistry';
-import { listArtifacts, readArtifact, type ArtifactCategory } from '../services/artifactCatalog';
-import { cancelSubagent, listActiveSubagents, subscribeSubagentRegistry } from '../services/subagentRegistry';
+import { TeammateScheduler, sanitizeTeammateSettings, defaultTeammateSettings, type TeammateSettings, type TeammateChannel } from '../automation/teammateScheduler';
+import { listActiveSubagents, subscribeSubagentRegistry } from '../services/subagentRegistry';
 import { createToolFailureAlerts, type ToolFailureAlertTracker } from '../services/toolFailureAlerts';
 import { formatPrometheusMetrics, type PrometheusMetric } from '../observability/prometheus';
-import { recordSwallowed, getSwallowedFailures, getSwallowedFailureCount } from '../observability/silentFailureSink';
+import { getSwallowedFailureDroppedCount, getSwallowedFailureTotalCount, recordSwallowed } from '../observability/silentFailureSink';
 import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
-import { createTask, deleteTask, getTask, listTasks, recordCheckIn, summarizeTasks, updateTask, type TaskPriority, type TaskStatus } from '../services/taskStore';
-import { listSkillUsage, recordSkillUse, recordSkillView, setSkillPinned } from '../extensibility/skillUsage';
-import { applyFileWriteRedirect, clearFileWriteRedirectCache, drainUploadsFallbacks, getAgentOutputDir, getAllowedExternalPaths, getFileWriteRedirects, getUploadsDir, maybeRedirectAgentOutput, previewFileWriteRedirect, resolveProjectReadPath, setAllowedExternalPaths } from '../tools/pathResolution';
+import { summarizeTasks } from '../services/taskStore';
+import { createTaskRoutesRouter, type CodexTaskRunner, type CodexTaskRunnerEvent } from './taskRoutes';
+import { createPromiseRouter } from './promiseRoutes';
+import { createProfileRouter } from './profileRoutes';
+import { createEvalRouter } from './evalRoutes';
+import { createMemoryHealthRouter } from './memoryHealthRoutes';
+import { createScanRouter } from './scanRoutes';
+import { createPromptsRouter } from './promptsRoutes';
+import { createEventRouter } from './eventRoutes';
+import { createDoneStateRouter } from './doneStateRoutes';
+import { createCodeIntelRouter } from './codeIntelRoutes';
+import { createMyceliumRouter } from './myceliumRoutes';
+import { createTraceRouter } from './traceRoutes';
+import { createSnapshotRouter } from './snapshotRoutes';
+import { createHistoryRouter } from './historyRoutes';
+import { createFileRedirectRouter } from './fileRedirectRoutes';
+import { createDocumentRouter } from './documentRoutes';
+import { createBenchmarkRouter } from './benchmarkRoutes';
+import { createSquadRouter } from './squadRoutes';
+import { createRuntimeCostRouter } from './runtimeCostRoutes';
+import { createTriggerRouter } from './triggerRoutes';
+import { createArtifactRouter } from './artifactRoutes';
+import { createSubagentRouter } from './subagentRoutes';
+import { createSessionRouter } from './sessionRoutes';
+import { createMemoryRouter } from './memoryRoutes';
+import { createRagRouter } from './ragRoutes';
+import { createServiceRouter } from './serviceRoutes';
+import { createSkillRouter } from './skillRoutes';
+import { createWorkflowRouter } from './workflowRoutes';
+import { createWebhookRouter } from './webhookRoutes';
+import { createWorkingMemoryRouter } from './workingMemoryRoutes';
+import { createReviewQueueRouter } from './reviewQueueRoutes';
+import { createBrowserHardeningRouter } from './browserHardeningRoutes';
+import { createAgentRouter } from './agentRoutes';
+import { createFileBrowseRouter } from './fileBrowseRoutes';
+import { createAssetRouter } from './assetRoutes';
+import { createNervousRouter } from './nervousRoutes';
+import { createSynthesisStatsRouter } from './synthesisStatsRoutes';
+import { createAboutRouter } from './aboutRoutes';
+import { createAtlasRouter } from './atlasRoutes';
+import { createBudgetRouter } from './budgetRoutes';
+import { createConnectorRouter } from './connectorRoutes';
+import { createSaveOutputRouter } from './saveOutputRoutes';
+import { createMiscRouter } from './miscRoutes';
+import { createRunsRouter } from './runsRoutes';
+import { createLearningRouter } from './learningRoutes';
+import { createMcpRouter } from './mcpRoutes';
+import { createUploadsRouter } from './uploadsRoutes';
+import { createTeammateRouter } from './teammateRoutes';
+import { createToolsRouter } from './toolsRoutes';
+import { createCuratorRouter } from './curatorRoutes';
+import { createEvalsRouter } from './evalsRoutes';
+import { createAutomationRouter } from './automationRoutes';
+import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
+import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
-import { invalidateSkillsCache, setSkillsDir } from '../tools/skillTools';
+import { setSkillsDir, setLowerSkillTiers } from '../tools/skillTools';
 import { setImportSkillsDir } from '../tools/skillImportTool';
 import { setInstallSkillsDir } from '../tools/skillInstallTool';
 import { setRagRuntime } from '../tools/ragTools';
@@ -39,78 +97,99 @@ import { setCuratorToolRuntime } from '../tools/curatorTools';
 import { PermissionEngine } from '../permissions/engine';
 import { PermissionPromptBroker } from '../permissions/promptBroker';
 import { KillSwitch } from '../permissions/killSwitch';
+import { SandboxSwitch } from '../permissions/sandboxSwitch';
+import { setSandboxStateProvider } from '../tools/sandboxGuards';
 import { createCapabilityGrant, evaluateCapabilityGrant, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, summarizeCapabilityAlignment, autoGrantGatedCapabilities, type CapabilityGrant } from '../permissions/capabilities';
 import { SessionStorage } from '../persistence/sessionStorage';
-import { forkSession, resumeSession } from '../persistence/resume';
-import { buildMemoryPalace, getSemanticMemoryContext, getSemanticMemoryEntry, rebuildSemanticMemory, searchSemanticMemory } from '../persistence/semanticMemory';
+import { rebuildSemanticMemory, searchSemanticMemory } from '../persistence/semanticMemory';
 import * as snapshots from '../persistence/snapshots';
 import * as ragIndex from '../persistence/ragIndex';
-import { MCP_CATALOG } from '../extensibility/mcpCatalog';
-import { discoverMcpServerTools, invokeMcpServerTool, listMcpServers, removeMcpServer, startMcpServer, stopMcpServer, upsertMcpServer } from '../extensibility/mcpRuntime';
+
 import { assembleSystemContext, estimateTokenCount } from '../context/assembly';
 import { HookPipeline } from '../extensibility/hookPipeline';
 import { createAuditHooks, readAuditLog, renderRecentAuditForPrompt } from '../permissions/audit';
-import { loadSkillsDir, matchSkillTrigger, scanSkillsDir, type SkillDefinition, type SkillDirectoryScan } from '../extensibility/skillLoader';
+import { loadSkillsDir, loadSkillsFromDirs, matchSkillTrigger, scanSkillsDir, type SkillDefinition, type SkillDirectoryScan } from '../extensibility/skillLoader';
 import { discoverExtensionManifests } from '../extensibility/extensionManifest';
 import { RateLimiter } from '../core/rateLimiter';
 import { logger } from '../core/logger';
 import { runtimeTracer } from '../core/tracing';
 import { attachOtlpExporter, type OtlpExporter } from '../observability/otlpExporter';
 import { mintTraceId } from '../observability/openinference';
+import { summarizeRunCost, type RunUsageSample, type ModelLocality } from '../observability/costProvenance';
+import { assessAnswerConfidence } from '../observability/answerConfidence';
+import { buildRunProvenance } from '../observability/runProvenance';
+import { assessOfflineGuarantee } from '../observability/offlineGuarantee';
 import { OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, describeOutputValidationProfileSuggestion, normalizeCustomOutputValidationProfiles, parseOutputValidationProfile, validateCustomOutputValidationProfiles, validateOutput, type CustomOutputValidationProfile, type OutputValidationProfile } from '../core/outputValidation';
-import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, adaptiveTimeBudget, recordAvgTurnDuration, clearSynthesisStats, recordToolUseStats } from '../core/synthesisStats';
+import { loadSynthesisStats, recordSynthesisFired, recordSessionCompleted, adaptiveMaxTurns, adaptiveTimeBudget, recordAvgTurnDuration, recordToolUseStats } from '../core/synthesisStats';
+import { loadModelReliability, recordModelOutcome, modelReliabilityScore } from '../core/modelReliability';
+import { appendRewardEntry } from '../core/rewardLedger';
 import { startNewSession, onSessionEnd, getEvolvedPrompt, recordSessionAutoContinue, LearningRecorder } from '../learning/engine';
-import { appendEvalTraceExample, createEvalTraceExample, createOutputValidationTrendExport, createReplayEvalExample, deleteEvalTraceExample, listEvalTraceExamples, listEvalTraceRuns, readEvalTraceDataset, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun, runEvalTraceDataset, summarizeContextLossRuns, summarizeEvalTraceRuns, summarizeOutputValidationRuns, summarizeProfileFeedbackRuns, summarizeUploadsFallbackRuns, updateEvalTraceExampleTags } from '../learning/evalTrace';
-import { appendLearningCandidate, evaluatePromotionGateForCandidate, extractLearningCandidate, getLearningCandidateProvenance, listLearningCandidates, listReviewedLearningCandidates, reviewLearningCandidate } from '../learning/sessionLearning';
-import { createSubagentTool, listSubagentRoutingMetrics } from '../agents/subagent';
+import { getApprovedAutonomyPrompt } from '../learning/autonomyPrompt';
+import { listEvalTraceRuns, recordContextLossEvalRun, recordOutputValidationEvalRun, recordProfileFeedbackEvalRun, recordUploadsFallbackEvalRun } from '../learning/evalTrace';
+import { appendLearningCandidate, extractLearningCandidate, listLearningCandidates, listReviewedLearningCandidates } from '../learning/sessionLearning';
+import { createSubagentTool } from '../agents/subagent';
 import { applyGrantToLadder, clearRuntimeRegistry, composeDailyBrief, composeMermaidGraph, defaultAmbientActionPolicy, ensureCapability, eventsFromAmbientSignals, eventsFromEvidenceCards, getInboundTriageStatus, getKnowledgeGraphStatus, getMcpServerStatus, getRuntimeRegistryStatus, getVoiceStatus, ingestEvidenceCard, loadRuntimeRegistry, loadTrustLadder, markRuntimeInstalled, mergeAndSort, mineNextActions, readAll as readKnowledgeGraph, recall as kgRecall, recordOutcome, recordPermissionOutcome, runCouncilForChat, saveRuntimeRegistry, saveTrustLadder, snapshotDailyBrief, startAmbientDaemon, upsertEntity, type AmbientDaemonHandle, type RuntimeFeature } from '../jarvis';
 import { SignalBus } from '../nervous/signals';
 import { BUILTIN_AGENT_ROLES, loadAgentDefinitions } from '../agents/agentLoader';
 import { classifyIntent, logConciergeDecision, readConciergeLog } from '../services/concierge';
 import { getModelProfile, loadModelProfiles, setModelProfileField, type ModelProfileStore } from '../services/modelProfiles';
-import { createSquad, deleteSquad, getSquad, listSquads, routeMessage, updateSquad } from '../services/squad';
+import { getSquad, listSquads, routeMessage } from '../services/squad';
 import { resolveSessionSquad } from '../services/squadSessions';
-import { deleteStructuredEntry, exportIdentity, importIdentity, queryStructured, readIdentityFile, readIdentitySnapshot, renderIdentityForPrompt, upsertStructuredEntry, writeIdentityFile, type IdentityFileName } from '../services/identity';
-import { calibrateModelRoutingPolicy, summarizeRoutingMetrics } from '../agents/modelRouting';
+import { renderIdentityForPrompt } from '../services/identity';
+import { createIdentityRouter } from './identityRoutes';
+import { IdentityAutoUpdateScheduler } from '../services/identityAutoUpdateScheduler';
 import { checkSetupHealth } from '../setup/health';
+import { probeToolCalling, type ToolCallProbeResult } from '../setup/toolCallProbe';
 import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCatalog';
-import { isVisionCapableModelName } from '../models/visionModels';
-import { createAutomationJob, deleteAutomationJob, executeDueJobs, listAutomationJobs, listDueAutomationJobs, parseAutomationSchedule, computeNextAutomationRun, readAutomationRunLog, updateAutomationJob } from '../automation/jobs';
-import { auditAutomationJobSafety } from '../automation/jobSafety';
-import { prepareAutomationRun } from '../automation/runner';
+import { isVisionCapableModelName, isVisionModelUsable } from '../models/visionModels';
+import { createAutomationJob, listAutomationJobs, listDueAutomationJobs, readAutomationRunLog } from '../automation/jobs';
 import { AutomationScheduler } from '../automation/scheduler';
-import { exportAgenticServices, getAgenticService, handleOperateModeRequest, importAgenticServices, listAgenticServices } from '../services/agenticServiceMode';
+import { handleOperateModeRequest, listAgenticServices } from '../services/agenticServiceMode';
 import { classifyMode, type HarnessMode } from '../services/modeClassifier';
 import { createDefaultCapabilityRegistry, type CapabilityRegistry } from '../services/capabilityRegistry';
 import { evaluateCapabilityTemplates, type ConnectorReadinessInput } from '../services/capabilityTemplates';
-import { getCapabilityTemplateStarter, getMessageIngressPolicy, listCapabilityTemplateStarters, listConnectorContractFixtures, listConnectorReadinessContracts, validateConnectorReadinessContracts, type CapabilityTemplateStarter } from '../services/capabilityTemplateStarters';
-import { WorkerQueue } from '../services/workerQueue';
+import { getCapabilityTemplateStarter, listCapabilityTemplateStarters, type CapabilityTemplateStarter } from '../services/capabilityTemplateStarters';
 import { createPromise, listPromises, updatePromise, checkObligations, fulfilPromise, failPromise, detectCommitments, type PromiseStatus } from '../services/promiseLedger';
-import { getServiceLifecycle, initServiceLifecycle, transitionService, probeServiceHealth, SERVICE_TEMPLATES, type ServiceLifecycleStatus } from '../services/serviceLifecycle';
-import { appendEvent, emitEvent, queryEvents, summarizeEventStore, generatePostmortem, createSnapshot, getSnapshot, listSnapshots, type EventCategory } from '../persistence/eventStore';
-import { subscribeEventStream } from '../persistence/eventStore';
-import { verifyCode, verifyService, verifyPromiseFulfillability } from '../core/doneStateVerifier';
+import { emitEvent, queryEvents, summarizeEventStore } from '../persistence/eventStore';
 import { attachWsServer } from './wsServer';
 import { tryDeterministicShortcut } from '../core/deterministicShortcuts';
+import { tryGoalSlashCommand } from '../services/goalSlashCommand';
+import { createGoalRouter } from './goalRoutes';
+import { makeShellCommandRunner, type IterationRunner } from '../goal/shellRunner';
+import { makeQueryLoopRunner } from '../goal/queryLoopRunner';
+import { surfaceResumableGoalOnBoot } from '../goal/bootResume';
+import { parseJestSummary } from '../goal/verification';
+import { parsePrioritySetCommand, setPriorityForToday } from '../services/morningPriority';
+import { routeSlashCommand, registerYoloHooks, registerResearchHooks } from '../services/slashCommandRouter';
 import { calculateReadiness, type ReadinessInput } from '../core/readinessGate';
+import { planBuildGate, runBuildGate, buildGateVerifierScore, type BuildGateResult, type GateCommand, type ProjectProbe } from '../core/buildGate';
+import { buildTaskContract } from '../core/taskContractBuilder';
+import { BUILTIN_PROFILES, applyProfile, filterToolsByProfile } from '../services/configProfiles';
+import { renderDriftReport } from '../eval/goldenTraces';
+import { setCcmemToken, setCcmemUrl } from '../services/conceptMemoryClient';
 import { validateStructuredOutput, parseAndValidate, detectSchema, BUILTIN_SCHEMAS } from '../core/structuredOutputValidator';
-import { buildRepoGraph, analyzeImpact, summarizeRepo, saveRepoGraph, loadRepoGraph } from '../core/codeIntelligence';
-import { createMycelialRouter, type MycelialContextRouter } from '../mycelium/router';
+import { buildRepoGraph, summarizeRepo, saveRepoGraph, loadRepoGraph } from '../core/codeIntelligence';
+import { createMycelialRouter, deriveToolShortlist, toolNamesFromRoute, type MycelialContextRouter } from '../mycelium/router';
 import { heuristicVerifier } from '../mycelium/verifier';
 import { seedCodeIntelligence } from '../mycelium/seeds';
 import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
-import { appendRunEvidence, readRunEvidence, setEvidenceAppendHook, type StoredRunEvidence } from '../persistence/evidenceStore';
+import { appendRunEvidence, inspectRunEvidence, readRunEvidence, setEvidenceAppendHook, type StoredRunEvidence } from '../persistence/evidenceStore';
 import { startTelegramBot, stopTelegramBot, isTelegramBotRunning, sendTelegramNotification, loadPersistedChatIds, getTelegramPollingLockInfo } from '../integrations/telegram';
 import { startDiscordBot, stopDiscordBot, isDiscordBotRunning } from '../integrations/discord';
 import { getSlackConnectorStatus, sanitizeSlackWebhookUrl } from '../integrations/slack';
 import { getWhatsAppConnectorStatus, sanitizeWhatsAppSetup } from '../integrations/whatsapp';
 import { configureWebReadTool, DEFAULT_WEB_READ_MAX_CHARS, sanitizeWebReadMaxChars } from '../tools/webSearchTool';
-import { addWebhook, removeWebhook, listWebhooks, loadWebhooksFromEnv, sendWebhookNotification } from '../integrations/webhooks';
+import { initWebhookStore, loadWebhooksFromEnv, sendWebhookNotification } from '../integrations/webhooks';
+import { initReviewQueue, enqueueFromGoverned } from '../governed/reviewQueue';
+import { initReplayConsumer, type ReplayCandidate } from '../governed/replayConsumer';
+import { runReplayCandidates } from '../governed/replayRunner';
+import { initReplayLedger, appendReplayLedgerEntry } from '../governed/replayLedger';
+import type { GovernedAnswer } from '../governed/governedAnswer';
 import * as nodemailer from 'nodemailer';
 import { NervousSystemController } from '../nervous';
 import { listShellCommandAllowlistPresets } from '../automation/runner';
 import { appendCapabilityAuditEvent, readCapabilityAuditEvents } from '../permissions/capabilityAudit';
-import type { ModelRoutingPolicy } from '../agents/modelRouting';
+import { selectModelForChatTurn, type ChatModelCandidatePool, type ChatRoutingMode, type ModelRoutingPolicy } from '../agents/modelRouting';
 import type { LoopConfig, LoopEvent, PermissionMode, Tool } from '../types';
 import type { EvidenceCard, EvidenceFileSummary, EvidenceMode, EvidenceToolSummary } from '../types/evidence';
 import type { Message } from 'ollama';
@@ -138,20 +217,187 @@ app.use(express.static(path.join(__dirname, '..', '..', 'ui'), {
   },
 }));
 
-const PROJECT_DIR = process.env.HARNESS_PROJECT_DIR ? path.resolve(process.env.HARNESS_PROJECT_DIR) : process.cwd();
+/**
+ * Workspace isolation: the agent must NEVER write into the harness source tree.
+ * If no HARNESS_PROJECT_DIR is set and the harness is launched from its own
+ * source repo, we redirect to ~/apex-workspace (created on first run). We detect
+ * the repo by the presence of src/web/server.ts and src/tools/dispatcher.ts.
+ * Set HARNESS_PROJECT_DIR to pin a stable home (recommended) so the data dir
+ * never drifts between launches.
+ */
+function resolveProjectDir(): string {
+  if (process.env.HARNESS_PROJECT_DIR) {
+    return path.resolve(process.env.HARNESS_PROJECT_DIR);
+  }
+  // Detect if cwd is the harness source repo
+  const cwd = process.cwd();
+  const isHarnessRepo =
+    existsSync(path.join(cwd, 'src', 'web', 'server.ts')) &&
+    existsSync(path.join(cwd, 'src', 'tools', 'dispatcher.ts'));
+  // Tests write fixtures into cwd/.harness; don't redirect under jest.
+  // (jest sets NODE_ENV='test' automatically; --runInBand does not set JEST_WORKER_ID.)
+  if (isHarnessRepo && (process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID)) {
+    return cwd;
+  }
+  if (isHarnessRepo) {
+    const safeDefault = path.join(os.homedir(), 'apex-workspace');
+    if (!existsSync(safeDefault)) {
+      mkdirSync(safeDefault, { recursive: true });
+    }
+    console.log(`⚠️  Workspace isolation: cwd is the harness repo — redirecting to ${safeDefault}`);
+    console.log(`   Set HARNESS_PROJECT_DIR to override (e.g. your app folder).`);
+    return safeDefault;
+  }
+  return cwd;
+}
+
+const PROJECT_DIR = resolveProjectDir();
+setProjectRoot(PROJECT_DIR);
+// Surface the resolved project dir at startup. A silently-moved home is what
+// makes the harness appear to "lose" its memory/identity, so make it visible.
+if (process.env.NODE_ENV !== 'test' && !process.env.JEST_WORKER_ID) {
+  const projectDirSource = process.env.HARNESS_PROJECT_DIR ? 'HARNESS_PROJECT_DIR' : 'auto-detected';
+  console.log(`📁 Harness project dir: ${PROJECT_DIR} (source: ${projectDirSource})`);
+}
+// LOCAL_HOST controls the bind interface. Defaults to loopback (127.0.0.1) so
+// the dashboard is reachable only from this machine. If you set HOST to a
+// non-loopback address (e.g. 0.0.0.0) to share the UI on your network, you
+// MUST also set HARNESS_API_AUTH_TOKEN — API auth flips on automatically in
+// that case, and requests without the token are rejected. The UI is otherwise
+// unauthenticated and can drive shell/file tools, so never expose it without
+// the token.
 const LOCAL_HOST = process.env.HOST ?? '127.0.0.1';
 const API_AUTH_TOKEN = (process.env.HARNESS_API_AUTH_TOKEN ?? '').trim();
 const HISTORY_DIR = path.join(PROJECT_DIR, '.harness', 'chat-history');
 const SKILLS_DIR = path.join(PROJECT_DIR, '.harness', 'skills');
 const REPO_SKILLS_DIR = path.join(PROJECT_DIR, '.github', 'skills');
+// Global, user-level skills shared across every workspace. Allow an override
+// for tests/headless setups via HARNESS_GLOBAL_SKILLS_DIR.
+const GLOBAL_SKILLS_DIR = (process.env.HARNESS_GLOBAL_SKILLS_DIR ?? '').trim()
+  || path.join(os.homedir(), '.harness', 'skills');
 const TRACES_DIR = path.join(PROJECT_DIR, '.harness', 'traces');
 const DOCUMENTS_DIR = path.join(PROJECT_DIR, '.harness', 'documents');
 const SETTINGS_PATH = path.join(PROJECT_DIR, '.harness', 'settings.json');
 const SETTINGS_SAVE_RETRY_DELAYS_MS = [25, 75, 150, 300, 600];
 const API_KEYS_PATH = path.join(PROJECT_DIR, '.harness', 'api-keys.json');
-const FILE_REDIRECTS_PATH = path.join(PROJECT_DIR, '.harness', 'file-write-redirects.json');
 const OUTPUT_VALIDATION_PROFILES_PATH = path.join(PROJECT_DIR, '.harness', 'output-validation-profiles.json');
-const RELEASE_PROVENANCE_PATH = path.join(PROJECT_DIR, 'release-provenance.json');
+// Harness install root — the directory containing the harness's own
+// package.json and release artifacts. Distinct from PROJECT_DIR, which can be
+// redirected to an isolated user workspace; src/web/server.ts and
+// dist/web/server.js both sit two levels below the harness root.
+const HARNESS_ROOT = path.resolve(__dirname, '..', '..');
+export function resolveJarvisWhisperBridgePath(): string {
+  return path.join(HARNESS_ROOT, 'scripts', 'jarvis_whisper.py');
+}
+
+export function resolveHarnessSourceDistFreshnessPaths(): { sourceKey: string; distKey: string } {
+  return {
+    sourceKey: path.join(HARNESS_ROOT, 'src', 'web', 'server.ts'),
+    distKey: path.join(HARNESS_ROOT, 'dist', 'web', 'server.js'),
+  };
+}
+
+// ─── Chat build gate ──────────────────────────────────────────────────────
+// Advisory test-and-learn validation: after a chat turn writes source files,
+// detect the project type and run a cheap validation (Node typecheck/test,
+// Python py_compile + import smoke) so the readiness gate and the learning
+// signal reflect whether the code the agent wrote actually works. Never
+// blocks the response; any failure is reported and fed back, not thrown.
+const execFileAsync = promisify(execFile);
+const GATE_COMMAND_TIMEOUT_MS = 60_000;
+
+/** True when `dir` is the harness's own source tree (we must never build it). */
+function isInsideHarnessRoot(dir: string): boolean {
+  const rel = path.relative(HARNESS_ROOT, path.resolve(dir));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/** Gather the filesystem facts the pure planner needs (best-effort, never throws). */
+function probeProjectForGate(workingDir: string, changedPyFiles: string[]): ProjectProbe {
+  let hasPackageJson = false;
+  let packageScripts: Record<string, string> = {};
+  try {
+    const pkgPath = path.join(workingDir, 'package.json');
+    if (existsSync(pkgPath)) {
+      hasPackageJson = true;
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { scripts?: Record<string, string> };
+      if (pkg.scripts && typeof pkg.scripts === 'object') packageScripts = pkg.scripts;
+    }
+  } catch { /* unreadable package.json — treat as none */ }
+
+  // Importable top-level python packages: a changed .py file's nearest ancestor
+  // chain of `__init__.py` dirs whose top dir sits directly under workingDir.
+  const pythonPackages = new Set<string>();
+  for (const file of changedPyFiles) {
+    try {
+      let dir = path.dirname(path.resolve(workingDir, file));
+      let topPackage: string | undefined;
+      while (dir.startsWith(path.resolve(workingDir)) && existsSync(path.join(dir, '__init__.py'))) {
+        topPackage = path.basename(dir);
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+      // Only keep it when the top package's parent is the working dir, so
+      // `python -c "import <name>"` resolves from cwd=workingDir.
+      if (topPackage && path.resolve(dir) === path.resolve(workingDir)) {
+        pythonPackages.add(topPackage);
+      }
+    } catch { /* skip unresolvable path */ }
+  }
+
+  // Detect pytest-discoverable tests so a Python project is validated against
+  // its own tests, symmetric with running a Node project's `test` script.
+  let pythonHasTests = false;
+  try {
+    if (changedPyFiles.length > 0) {
+      if (existsSync(path.join(workingDir, 'tests'))) {
+        pythonHasTests = true;
+      } else {
+        pythonHasTests = readdirSync(workingDir).some((name) => /^test_.*\.py$/.test(name) || /.*_test\.py$/.test(name));
+      }
+    }
+  } catch { /* unreadable working dir — assume no tests */ }
+
+  return { hasPackageJson, packageScripts, pythonPackages: [...pythonPackages], pythonHasTests };
+}
+
+/**
+ * Run the advisory build gate for a chat turn. Returns a non-run result for any
+ * skip condition (harness repo, test env, no source files changed, no validation
+ * detected) and never throws — a gate failure is data, not an exception.
+ */
+async function runChatBuildGate(workingDir: string, changedFiles: string[]): Promise<BuildGateResult> {
+  const notRun = (reason: string): BuildGateResult => ({ ran: false, passed: true, kind: 'none', results: [], score: undefined, summary: reason });
+  try {
+    if (process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID) return notRun('skipped under test');
+    if (process.env.HARNESS_DISABLE_BUILD_GATE === '1') return notRun('disabled via HARNESS_DISABLE_BUILD_GATE');
+    if (isInsideHarnessRoot(workingDir)) return notRun('skipped: harness source tree');
+
+    const sourceFiles = changedFiles.filter((f) => /\.(ts|tsx|js|jsx|mjs|cjs|py)$/i.test(f));
+    if (sourceFiles.length === 0) return notRun('no source files changed');
+
+    const pyFiles = sourceFiles.filter((f) => /\.py$/i.test(f));
+    const probe = probeProjectForGate(workingDir, pyFiles);
+    const plan = planBuildGate({ changedFiles: sourceFiles, workingDir, probe });
+
+    return await runBuildGate(plan, async (cmd: GateCommand) => {
+      const bin = cmd.command === 'npm' && process.platform === 'win32' ? 'npm.cmd' : cmd.command;
+      try {
+        const { stdout, stderr } = await execFileAsync(bin, cmd.args, { cwd: cmd.cwd, timeout: GATE_COMMAND_TIMEOUT_MS, windowsHide: true });
+        return { exitCode: 0, output: `${stdout}\n${stderr}`.trim().slice(0, 2000) };
+      } catch (err) {
+        const e = err as { stdout?: string; stderr?: string; code?: number; message?: string };
+        const exitCode = typeof e.code === 'number' ? e.code : 1;
+        return { exitCode, output: `${e.stdout ?? ''}\n${e.stderr ?? ''}\n${e.message ?? ''}`.trim().slice(0, 2000) };
+      }
+    });
+  } catch (err) {
+    logger.warn('BuildGate', 'Gate execution failed (advisory, ignored)', { error: err instanceof Error ? err.message : String(err) });
+    return notRun('gate error');
+  }
+}
+
 const WORKFLOWS_DIR = path.join(PROJECT_DIR, '.harness', 'workflows');
 const workflowRegistry = new WorkflowRegistry(WORKFLOWS_DIR);
 const ALLOWED_PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'dontAsk'];
@@ -234,6 +480,62 @@ function requireAuditReason(
   return null;
 }
 
+// ── Active Goal routes ───────────────────────────────────────────────────
+// Mounted early so the goals API is available regardless of which other
+// route blocks follow. The router is self-contained; it only needs
+// projectDir + auth + a runner factory. The factory below dispatches on the
+// request body so callers pick the runner explicitly per /start request.
+app.use(createGoalRouter({
+  projectDir: PROJECT_DIR,
+  requireAuth: (req, res, label) => requireEscalationAuth(req, res, label),
+  makeRunner: async (body: unknown, _goalId: string): Promise<IterationRunner> => {
+    const b = (body && typeof body === 'object') ? body as Record<string, unknown> : {};
+    const kind = typeof b.runner === 'string' ? b.runner : 'shell';
+    if (kind === 'shell') {
+      if (typeof b.command !== 'string' || b.command.trim().length === 0) {
+        throw new Error("'shell' runner requires 'command' (string)");
+      }
+      return makeShellCommandRunner({
+        command: b.command,
+        args: Array.isArray(b.args) ? b.args.filter((a): a is string => typeof a === 'string') : undefined,
+        cwd: typeof b.cwd === 'string' ? b.cwd : PROJECT_DIR,
+        timeoutMs: typeof b.timeoutMs === 'number' ? b.timeoutMs : undefined,
+      });
+    }
+    if (kind === 'queryloop') {
+      // Drive the harness chat loop as the iteration body — same model,
+      // same tools the chat UI uses. Picks up the server's currently
+      // selected model unless the request body overrides it.
+      const model = typeof b.model === 'string' && b.model.trim().length > 0 ? b.model : currentModel;
+      if (!model) throw new Error("'queryloop' runner requires a selected model (no current model set)");
+      const baseSystemPrompt = typeof b.systemPrompt === 'string' && b.systemPrompt.length > 0
+        ? b.systemPrompt
+        : (systemPromptOverride || 'You are an autonomy agent. Make concrete progress on the active goal each iteration. The outer loop will run verification after you stop.');
+      // Phase 2: optionally apply the Phase-3-gated evolved prompt to unattended
+      // runs. Default OFF (env unset) => systemPrompt is byte-identical to
+      // baseSystemPrompt, so the default autonomy path is unchanged.
+      const gated = await getApprovedAutonomyPrompt({
+        projectDir: PROJECT_DIR,
+        basePrompt: baseSystemPrompt,
+        applyEvolvedPrompt: process.env.HARNESS_APPLY_EVOLVED_PROMPT_AUTONOMY === '1',
+      });
+      const systemPrompt = gated.prompt;
+      const client = webRuntime.createClient(model, ollamaHost);
+      const tools = webRuntime.getTools();
+      return makeQueryLoopRunner({
+        client,
+        tools,
+        model,
+        systemPrompt,
+        projectDir: PROJECT_DIR,
+        maxTurnsPerIteration: typeof b.maxTurns === 'number' ? b.maxTurns : undefined,
+        maxTimeMs: typeof b.maxTimeMs === 'number' ? b.maxTimeMs : undefined,
+      });
+    }
+    throw new Error(`unsupported runner kind: '${kind}' (supported: 'shell', 'queryloop')`);
+  },
+}));
+
 type QueryLoopRunner = (config: LoopConfig, deps: QueryLoopDeps, initialMessages: Message[]) => AsyncGenerator<LoopEvent>;
 
 interface WebSettings {
@@ -262,6 +564,8 @@ interface WebSettings {
   walkthrough: WalkthroughSettings;
   curator: CuratorSettings;
   automationScheduler: AutomationSchedulerSettings;
+  /** Teammate mode: scheduled Daily Brief generation + delivery. */
+  teammate: import('../automation/teammateScheduler').TeammateSettings;
   modelDebugLog: ModelDebugLogSettings;
   /** Tool names disabled via the Tools tab. Restored on startup. */
   disabledTools: string[];
@@ -273,6 +577,8 @@ interface WebSettings {
   autonomyPreviousMode: PermissionMode;
   /** Last known kill switch state. Restored on startup so a stop persists across restarts. */
   killSwitch: { active: boolean; reason: string };
+  /** Last known sandbox state. Restored on startup so containment persists across restarts. */
+  sandbox: { active: boolean; reason: string };
   /** Time-limited capability grants for gated high-power surfaces. */
   capabilityGrants: CapabilityGrant[];
   allowedExternalPaths: string[];
@@ -291,6 +597,13 @@ interface WebSettings {
   whatsappAccessToken: string;
   whatsappPhoneNumberId: string;
   whatsappAllowedRecipients: string;
+  /** URL of the Concept Cells memory service (ccmem). Empty = disabled.
+   *  Default: http://localhost:8765 (override via HARNESS_CCMEM_URL). */
+  ccmemUrl: string;
+  /** Browser audit/trace redaction policy. When `redactValues` is on,
+   *  `browser_fill` values are masked in the audit log; `urlMode: 'origin'`
+   *  drops URL paths/query-strings (which can carry tokens) from the log. */
+  browserRedaction: { redactValues: boolean; urlMode: 'full' | 'origin' };
 }
 
 interface ConnectorSecretStatus {
@@ -372,21 +685,53 @@ interface WebRuntimeDeps {
   createSession(projectDir: string, model: string): SessionStorage;
   startNewSession(): void;
   getEvolvedPrompt(basePrompt: string): Promise<string>;
-  assembleSystemContext(input: { systemPrompt: string; projectDir: string; skillsDir: string; recallProjectDir?: string; recallQuery?: string; ragProjectDir?: string; ragQuery?: string; ragOllamaHost?: string; palaceProjectDir?: string; sessionSearchProjectDir?: string; sessionSearchQuery?: string }): Promise<string>;
+  assembleSystemContext(input: { systemPrompt: string; projectDir: string; skillsDir: string; recallProjectDir?: string; recallQuery?: string; ragProjectDir?: string; ragQuery?: string; ragOllamaHost?: string; palaceProjectDir?: string; sessionSearchProjectDir?: string; sessionSearchQuery?: string; ccmemUrl?: string; ccmemQuery?: string; ccmemTopK?: number }): Promise<string>;
   runQueryLoop: QueryLoopRunner;
   onSessionEnd(): Promise<{ reflection: { insights: string[] }; newPatterns: unknown[] }>;
   rebuildSemanticMemory(projectDir: string): Promise<unknown[]>;
 }
 
+// Resolve the default Ollama host, honoring the OLLAMA_HOST env var when set.
+// OLLAMA_HOST is a server *bind* directive (e.g. "0.0.0.0:11434"); bind-all
+// addresses are not valid client targets, so map them back to localhost.
+function resolveDefaultOllamaHost(): string {
+  const raw = process.env.OLLAMA_HOST?.trim();
+  if (!raw) return 'http://localhost:11434';
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
+  try {
+    const url = new URL(withScheme);
+    if (!url.port) url.port = '11434';
+    if (url.hostname === '0.0.0.0' || url.hostname === '::' || url.hostname === '') {
+      url.hostname = 'localhost';
+    }
+    return url.origin;
+  } catch {
+    return 'http://localhost:11434';
+  }
+}
+
 // --- State ---
 let currentModel = '';
 let permissionMode: PermissionMode = 'default';
-let ollamaHost = 'http://localhost:11434';
+let ollamaHost = resolveDefaultOllamaHost();
 let systemPromptOverride = '';
 let agentPersonality = '';
 let agentName = '';
 let agentAvatar = '';
 let agentProfiles: Record<string, { name: string; avatar: string; personality: string; model: string }> = {};
+
+/**
+ * Build the "Your name is X. <personality>" preamble injected ahead of the
+ * base system prompt. Shared between the main chat path and delegated
+ * sub-agents so a configured persona carries through to delegations.
+ * Returns '' when neither field is set.
+ */
+function buildAgentIdentityPrefix(): string {
+  return [
+    agentName ? `Your name is ${agentName}.` : '',
+    agentPersonality || '',
+  ].filter(Boolean).join(' ');
+}
 let summarizerModel = '';
 const DEFAULT_CONTEXT_MAX_TOKENS = 8192;
 const MYCELIUM_CONTEXT_MAX_CHARS = 4_000;
@@ -397,6 +742,10 @@ let timeBudgetMs = 0; // 0 = auto-detect (180s local, 600s cloud)
 let temperature = 0.7;
 let topP = 0.9;
 let modelRouting: ModelRoutingPolicy = {};
+// Per-session one-shot model escalations queued by the readiness gate. Keyed
+// by client-supplied sessionId. Consumed (and cleared) on the next turn when
+// modelRouting.autoEscalateOnLowReadiness is enabled.
+const pendingReadinessEscalations = new Map<string, string>();
 let mediaTools: MediaToolSettings = {
   visionModel: process.env.HARNESS_VISION_MODEL ?? '',
   audioTranscribeCommand: process.env.HARNESS_AUDIO_TRANSCRIBE_COMMAND ?? '',
@@ -417,6 +766,17 @@ let slackWebhookUrl: string = process.env.HARNESS_SLACK_WEBHOOK_URL ?? '';
 let whatsappAccessToken: string = process.env.HARNESS_WHATSAPP_ACCESS_TOKEN ?? '';
 let whatsappPhoneNumberId: string = process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID ?? '';
 let whatsappAllowedRecipients: string = process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS ?? '';
+let ccmemUrl: string = process.env.HARNESS_CCMEM_URL?.trim() || 'http://localhost:8765';
+let browserRedaction: { redactValues: boolean; urlMode: 'full' | 'origin' } = { redactValues: true, urlMode: 'full' };
+
+/** Coerce arbitrary input into a valid browserRedaction policy (secure defaults). */
+function sanitizeBrowserRedaction(value: unknown): { redactValues: boolean; urlMode: 'full' | 'origin' } {
+  const v = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return {
+    redactValues: v.redactValues !== false,
+    urlMode: v.urlMode === 'origin' ? 'origin' : 'full',
+  };
+}
 let outputValidation: OutputValidationSettings = { enabled: false, profile: 'oracle-prime', autoSelect: true, skipOnLowSignal: true };
 let customOutputValidationProfiles: CustomOutputValidationProfile[] = [];
 let modelCatalog: ModelCatalogSettings = { url: '', ttlHours: 24 };
@@ -436,6 +796,19 @@ let settingsLoaded = false;
  * they always see live state instead of a construction-time snapshot.
  */
 const killSwitch = new KillSwitch();
+/**
+ * Shared sandbox-mode state. Soft containment that narrows the blast
+ * radius of every tool call (path confinement, shell allowlist, network
+ * denylist) without disabling the agent outright. Lives at the module
+ * level so per-session PermissionEngine instances and subagents both
+ * observe the SAME switch — sandbox is process-wide by design, so a
+ * subagent cannot exit sandbox the parent is in.
+ *
+ * Tools consult this via `setSandboxStateProvider` (wired below) so the
+ * dependency edge stays one-way (tools → permissions has no import).
+ */
+const sandboxSwitch = new SandboxSwitch();
+setSandboxStateProvider(() => sandboxSwitch.isActive());
 /** Process-wide scheduler lifecycle registry (curator, heartbeat, etc.). */
 const schedulerRegistry = new SchedulerRegistry();
 let killSwitchActive = false;
@@ -484,6 +857,8 @@ function getAutomationPolicyContext(now = new Date()): { grants: CapabilityGrant
 
 let curatorSettings: CuratorSettings = sanitizeCuratorSettings({});
 let automationSchedulerSettings: AutomationSchedulerSettings = sanitizeAutomationSchedulerSettings({});
+let teammateSettings: TeammateSettings = sanitizeTeammateSettings({});
+let teammateScheduler: TeammateScheduler | null = null;
 let modelDebugLog: ModelDebugLogSettings = sanitizeModelDebugLogSettings({
   enabled: Boolean(process.env.HARNESS_DEBUG_LOG?.trim()),
   path: process.env.HARNESS_DEBUG_LOG || '.harness/model-debug.jsonl',
@@ -491,6 +866,11 @@ let modelDebugLog: ModelDebugLogSettings = sanitizeModelDebugLogSettings({
 applyModelDebugLogEnvironment(modelDebugLog);
 let lastUserActivityMs = Date.now();
 let curatorScheduler: CuratorScheduler | null = null;
+// Identity auto-update scheduler. Always-on once configured: per-tick
+// behaviour is governed by .harness/identity/auto-update.json (default
+// both targets off), so wiring it in never causes identity to change
+// on its own. Kill switch and idle-gate still apply.
+let identityAutoUpdateScheduler: IdentityAutoUpdateScheduler | null = null;
 // Self-learning heartbeat. Disabled unless HARNESS_HEARTBEAT_ENABLED=1 so
 // existing installs keep the same behavior. Survives restarts via in-memory
 // timestamp; the scheduler internally gates on interval + kill switch.
@@ -530,6 +910,49 @@ function resolveFeatureFlag(envName: string, settingKey: keyof SystemFeatureFlag
   return systemFeatureFlags[settingKey] === true;
 }
 
+/**
+ * The "assistant" runtime profile. When HARNESS_PROFILE=assistant (or
+ * HARNESS_ASSISTANT is truthy), the personal-assistant features that used to
+ * require a separate launcher (start-jarvis.bat) default ON, so a single
+ * entry point runs the unified product. Explicit env vars still win, because
+ * each caller checks its own env flag before consulting the profile.
+ *
+ * HARNESS_PROFILE=assistant-proactive is a superset: it also enables the
+ * proactive-autonomy subsystems (see proactiveProfileEnabled). It still
+ * satisfies the base assistant profile so voice/ambient/channels stay on.
+ */
+export function assistantProfileEnabled(): boolean {
+  const profile = (process.env.HARNESS_PROFILE ?? '').trim().toLowerCase();
+  if (profile === 'assistant' || profile === 'assistant-proactive') return true;
+  return readEnvFlag('HARNESS_ASSISTANT') === true;
+}
+
+/**
+ * The "assistant-proactive" runtime profile. This is an explicit, deliberate
+ * opt-in for standing autonomy: the self-learning heartbeat (timer-driven,
+ * model-backed) and the trigger scheduler (autonomous event reactions) default
+ * ON. It is intentionally NOT implied by the plain `assistant` profile, because
+ * those subsystems spend compute on a timer and act without prompting — that
+ * should never start as a side effect of launching the app. Concierge
+ * auto-route stays opt-in regardless (silent chat rerouting is its own choice).
+ */
+export function proactiveProfileEnabled(): boolean {
+  const profile = (process.env.HARNESS_PROFILE ?? '').trim().toLowerCase();
+  return profile === 'assistant-proactive';
+}
+
+/**
+ * Whether the Jarvis ambient daemon should start on boot. An explicit
+ * HARNESS_AMBIENT_ENABLED value always wins; otherwise the assistant profile
+ * enables it. This preserves the old start-jarvis.bat behaviour (which set
+ * HARNESS_AMBIENT_ENABLED=1 directly) under the unified launcher.
+ */
+export function ambientEnabled(): boolean {
+  const fromEnv = readEnvFlag('HARNESS_AMBIENT_ENABLED');
+  if (fromEnv !== undefined) return fromEnv;
+  return assistantProfileEnabled();
+}
+
 /** Check whether a tool is effectively enabled right now, considering timed enables. */
 function isToolEnabled(name: string): boolean {
   if (!disabledTools.has(name)) return true;
@@ -561,8 +984,34 @@ function checkAutonomyExpiry(): void {
     permissionMode = prev;
     autonomyExpiresAt = 0;
     autonomyPreviousMode = 'default';
+    revokeAutoGrantedCapabilities('Auto-revoked: timed autonomy expired.');
     saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
   }
+}
+
+/**
+ * Revoke any capability grants that were issued automatically while dontAsk
+ * mode was active. Called when timed autonomy ends (expiry, manual clear, or
+ * kill switch) so /yolo cannot leave behind 8-hour grants that outlive it.
+ * The match tag is the `reason` string written by autoGrantGatedCapabilities.
+ */
+function revokeAutoGrantedCapabilities(revocationReason: string): number {
+  const AUTO_TAG = 'Auto-granted in dontAsk mode.';
+  const autoGranted = capabilityGrants.filter((g) => g.reason === AUTO_TAG);
+  if (autoGranted.length === 0) return 0;
+  capabilityGrants = sanitizeCapabilityGrants(
+    capabilityGrants.filter((g) => g.reason !== AUTO_TAG),
+  );
+  for (const grant of autoGranted) {
+    appendCapabilityAuditEvent(PROJECT_DIR, {
+      type: 'grant.revoked',
+      capabilityId: grant.capabilityId,
+      grantId: grant.id,
+      reason: revocationReason,
+    }).catch((err) => recordSwallowed('appendCapabilityAuditEvent', err));
+  }
+  logger.info('Permissions', `Revoked ${autoGranted.length} auto-granted capability grant(s): ${revocationReason}`);
+  return autoGranted.length;
 }
 
 function formatMinutesRemaining(expiresAtMs: number): string {
@@ -613,6 +1062,7 @@ function buildChatTools(parentClient: import('../core/chatClient').IChatClient):
     getParentClient: () => parentClient,
     getAvailableTools: () => baseTools,
     getCustomAgents: getCachedCustomAgentsSnapshot,
+    getIdentityPrefix: buildAgentIdentityPrefix,
     // Jarvis: share the project's knowledge graph with delegated subagents.
     async getRecallContext(prompt: string): Promise<string | undefined> {
       try {
@@ -835,8 +1285,43 @@ const defaultWebRuntime: WebRuntimeDeps = {
   rebuildSemanticMemory,
 };
 let webRuntime: WebRuntimeDeps = defaultWebRuntime;
+const pendingChatBackgroundTasks = new Set<Promise<unknown>>();
 
-type SkillApiSource = 'runtime' | 'repo';
+function queueChatBackgroundTask(label: string, task: Promise<unknown>): void {
+  const tracked = task.catch((err) => recordSwallowed(label, err));
+  pendingChatBackgroundTasks.add(tracked);
+  tracked.finally(() => pendingChatBackgroundTasks.delete(tracked));
+}
+
+export async function drainChatBackgroundTasksForTest(): Promise<void> {
+  while (pendingChatBackgroundTasks.size > 0) {
+    await Promise.allSettled(Array.from(pendingChatBackgroundTasks));
+  }
+}
+
+// Enrich shell-command approval cards with a friendly, model-generated
+// explanation and a safe "always allow" pattern. Wired here (not at broker
+// construction) because it depends on `webRuntime`/`currentModel`, which are
+// defined above only as this point. Advisory only — never gates a decision.
+permissionPrompts.setClassifier({
+  infer: async ({ systemPrompt, userMessage, timeoutMs }) => {
+    const client = webRuntime.createClient(currentModel || 'llama3.1:8b', ollamaHost);
+    const chat = client.chatOnce(
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
+      ],
+    );
+    const timeout = new Promise<never>((_resolve, reject) => {
+      setTimeout(() => reject(new Error('classifier inference timed out')), timeoutMs ?? 8_000);
+    });
+    const result = await Promise.race([chat, timeout]);
+    return result.message.content ?? '';
+  },
+});
+
+
+type SkillApiSource = 'runtime' | 'repo' | 'global';
 
 function skillFolderId(skill: SkillDefinition): string {
   return path.basename(path.dirname(skill.filePath));
@@ -868,6 +1353,10 @@ function skillSourceForApi(source: SkillApiSource, label: string, directory: str
 
 // Initialize skills directory for SkillTool
 setSkillsDir(SKILLS_DIR);
+// Let the agent also invoke repo (.github/skills) and global (~/.harness/skills)
+// skills. Ordered low-to-high precedence: global, then repo; the workspace tier
+// set above outranks both, so a workspace skill shadows a same-named global one.
+setLowerSkillTiers([GLOBAL_SKILLS_DIR, REPO_SKILLS_DIR]);
 setImportSkillsDir(SKILLS_DIR);
 setInstallSkillsDir(SKILLS_DIR);
 setRagRuntime({ projectDir: PROJECT_DIR, ollamaHost });
@@ -889,6 +1378,78 @@ app.get('/api/auth/config', (_req, res) => {
   });
 });
 
+// DNS-rebinding defence: when bound to loopback, only accept Host headers
+// pointing at a loopback name. A malicious page that tricks the browser into
+// resolving evil.example to 127.0.0.1 still sends Host: evil.example, so
+// rejecting non-loopback host names blocks the rebind even though the IP
+// matches. Skipped when LOCAL_HOST is non-loopback because the operator has
+// opted into external access (auth is the gate there).
+const HOST_HEADER_ENFORCED = isLoopbackHost(LOCAL_HOST);
+const HOST_HEADER_ALLOWED_NAMES = new Set<string>(['127.0.0.1', 'localhost', '::1', '[::1]']);
+app.use('/api', (req, res, next) => {
+  if (!HOST_HEADER_ENFORCED) {
+    next();
+    return;
+  }
+  const rawHost = req.headers.host;
+  if (typeof rawHost !== 'string' || rawHost.length === 0) {
+    res.status(421).json({ error: 'Missing Host header.' });
+    return;
+  }
+  // Strip port; preserve IPv6 brackets.
+  const hostname = rawHost.startsWith('[')
+    ? rawHost.slice(0, rawHost.indexOf(']') + 1).toLowerCase()
+    : rawHost.split(':')[0].toLowerCase();
+  if (!HOST_HEADER_ALLOWED_NAMES.has(hostname)) {
+    res.status(421).json({ error: 'Misdirected request: Host header not in allow-list.' });
+    return;
+  }
+  next();
+});
+
+// ── Cross-origin / CSRF defense (defense-in-depth) ──────────────────────
+// On loopback the API auth token is optional, so a malicious web page the
+// user happens to visit could try to drive the local agent through the
+// browser (classic CSRF). Auth here is a bearer token (not cookies) and we
+// emit no CORS headers (cross-origin JSON reads are preflight-blocked), so
+// the practical risk is already low — but state-changing requests get an
+// explicit belt-and-braces check:
+//   - reject when the browser flags the request as cross-site, and
+//   - reject when an Origin header is present but its host is off-allowlist.
+// Non-browser clients (CLI, Telegram bridge, the in-process autonomy loop)
+// send no Origin / Sec-Fetch-Site headers and pass through untouched, so the
+// loop / learn / continue-until-done paths are unaffected. Only enforced on
+// loopback; non-loopback relies on the auth token as the gate.
+const CSRF_GUARDED_METHODS = new Set<string>(['POST', 'PUT', 'PATCH', 'DELETE']);
+app.use('/api', (req, res, next) => {
+  if (!HOST_HEADER_ENFORCED || !CSRF_GUARDED_METHODS.has(req.method)) {
+    next();
+    return;
+  }
+  const secFetchSite = req.headers['sec-fetch-site'];
+  if (typeof secFetchSite === 'string' && secFetchSite.toLowerCase() === 'cross-site') {
+    res.status(403).json({ error: 'Cross-site request rejected.' });
+    return;
+  }
+  const origin = req.headers.origin;
+  if (typeof origin === 'string' && origin.length > 0) {
+    let originHost: string;
+    try {
+      // new URL('http://[::1]:4300').hostname === '[::1]', which matches the
+      // bracketed entry in HOST_HEADER_ALLOWED_NAMES.
+      originHost = new URL(origin).hostname.toLowerCase();
+    } catch {
+      res.status(403).json({ error: 'Malformed Origin header.' });
+      return;
+    }
+    if (!HOST_HEADER_ALLOWED_NAMES.has(originHost)) {
+      res.status(403).json({ error: 'Cross-origin request rejected: Origin not in allow-list.' });
+      return;
+    }
+  }
+  next();
+});
+
 app.use('/api', (req, res, next) => {
   const fullPath = `${req.baseUrl}${req.path}`;
   if (!API_AUTH_REQUIRED || API_AUTH_BYPASS_PATHS.has(fullPath)) {
@@ -907,29 +1468,23 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-app.get('/api/about', async (_req, res) => {
-  try {
-    res.json(await getAboutInfo());
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// ─── About / release verification ──────────────────────────────────────
+// Both /api/about and /api/about/verify and their five helpers
+// (getAboutInfo, getReleaseVerification, sha256FileIfExists,
+// readReleaseProvenance, readReleaseManifest) + RELEASE_PROVENANCE_PATH were
+// HTTP-only — extracted to ./aboutRoutes.ts. Router only needs harnessRoot.
+app.use(createAboutRouter({ harnessRoot: HARNESS_ROOT }));
 
-app.get('/api/about/verify', async (_req, res) => {
-  try {
-    res.json(await getReleaseVerification());
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// Project Atlas — read-only structural/historical map of the workspace
+// (which task built which file, when it last changed, current plan status).
+// Synthesizes IMPLEMENTATION_PLAN.md + .forge-history.jsonl; never writes.
+app.use(createAtlasRouter({ projectDir: PROJECT_DIR }));
 
 // Surface the autonomy loop's checkpoint so the UI can show a live progress
 // banner. Returns 204 when no autonomy run has occurred (file absent), 200
 // with the parsed checkpoint otherwise. Read-only; never blocks on disk.
 app.get('/api/autonomy/state', async (_req, res) => {
-  const statePath = path.join(process.cwd(), '.forge-state.json');
+  const statePath = path.join(PROJECT_DIR, '.forge-state.json');
   try {
     const raw = await fs.readFile(statePath, 'utf-8');
     const parsed = JSON.parse(raw);
@@ -956,14 +1511,24 @@ app.get('/api/autonomy/state', async (_req, res) => {
  *   data: { ...checkpoint }
  *   data: null  (when state file is absent or unreadable)
  */
+let _sseConnectionCount = 0;
+const MAX_SSE_CONNECTIONS = 10;
+const SSE_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
 app.get('/api/autonomy/state/stream', (req, res) => {
+  if (_sseConnectionCount >= MAX_SSE_CONNECTIONS) {
+    res.status(503).json({ error: 'Too many SSE connections' });
+    return;
+  }
+  _sseConnectionCount++;
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
-  const statePath = path.join(process.cwd(), '.forge-state.json');
+  const statePath = path.join(PROJECT_DIR, '.forge-state.json');
 
   const sendSnapshot = async (): Promise<void> => {
     try {
@@ -992,7 +1557,7 @@ app.get('/api/autonomy/state/stream', (req, res) => {
   let debounce: NodeJS.Timeout | null = null;
   let watcher: ReturnType<typeof fsWatch> | null = null;
   try {
-    watcher = fsWatch(process.cwd(), (_event, filename) => {
+    watcher = fsWatch(PROJECT_DIR, (_event, filename) => {
       if (!filename || filename.toString() !== '.forge-state.json') return;
       if (debounce) clearTimeout(debounce);
       debounce = setTimeout(() => { void sendSnapshot(); }, 100);
@@ -1003,11 +1568,14 @@ app.get('/api/autonomy/state/stream', (req, res) => {
 
   // Heartbeat every 25s to keep proxies / browsers from idling out.
   const heartbeat = setInterval(() => res.write(': keepalive\n\n'), 25_000);
+  const idleTimeout = setTimeout(() => res.destroy(), SSE_IDLE_TIMEOUT_MS);
 
   // Use res.on('close') (NOT req.on('close')) to detect client disconnect
   // on long-lived SSE responses — req-close fires too early on some
   // node versions.
   res.on('close', () => {
+    _sseConnectionCount--;
+    clearTimeout(idleTimeout);
     clearInterval(heartbeat);
     if (debounce) clearTimeout(debounce);
     watcher?.close();
@@ -1018,7 +1586,7 @@ app.get('/api/autonomy/state/stream', (req, res) => {
 // trailing lines to return (default 50, max 500). Returns 204 when no log
 // exists yet so the UI can hide the panel without surfacing an error.
 app.get('/api/autonomy/log', async (req, res) => {
-  const logPath = path.join(process.cwd(), '.forge-run.log');
+  const logPath = path.join(PROJECT_DIR, '.forge-run.log');
   const requested = parseInt(String(req.query.lines ?? '50'), 10);
   const lineCount = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 500) : 50;
   try {
@@ -1043,7 +1611,7 @@ app.get('/api/autonomy/log', async (req, res) => {
 // skipped, not surfaced as errors, since the file is append-only and a
 // half-written tail is recoverable on the next iteration.
 app.get('/api/autonomy/history', async (req, res) => {
-  const historyPath = path.join(process.cwd(), '.forge-history.jsonl');
+  const historyPath = path.join(PROJECT_DIR, '.forge-history.jsonl');
   const requested = parseInt(String(req.query.limit ?? '100'), 10);
   const limit = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 1000) : 100;
   try {
@@ -1108,7 +1676,18 @@ function buildMinimalWindowsSpawnEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
 }
 
 async function readAutonomyPlanPreview(planPath = path.join(PROJECT_DIR, 'IMPLEMENTATION_PLAN.md')): Promise<{ tasks: PlanPreviewTask[]; total: number; pending: number; done: number; failed: number }> {
-  const raw = await fs.readFile(planPath, 'utf-8');
+  let raw: string;
+  try {
+    raw = await fs.readFile(planPath, 'utf-8');
+  } catch (err) {
+    // A workspace that has never been planned in (or one where a botched
+    // revert wiped the plan) is a legitimate empty state, not a 500. The UI
+    // shows "No tasks yet" and the user can plan via the goal box.
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      return { tasks: [], total: 0, pending: 0, done: 0, failed: 0 };
+    }
+    throw err;
+  }
   const tasks: PlanPreviewTask[] = [];
   let current: PlanPreviewTask | null = null;
   for (const rawLine of raw.split(/\r?\n/)) {
@@ -1188,7 +1767,7 @@ app.get('/api/inbox', async (_req, res) => {
         id: `permission:${prompt.id}`,
         kind: 'permission',
         title: `Approve ${prompt.call.name}`,
-        detail: prompt.reason || 'Tool call waiting on your decision.',
+        detail: prompt.classification?.explanation || prompt.reason || 'Tool call waiting on your decision.',
         timestamp: prompt.createdAt,
         priority: 100,
         action: { kind: 'open_tab', payload: 'tools' },
@@ -1245,6 +1824,59 @@ app.get('/api/inbox', async (_req, res) => {
   }
 });
 
+// Parse a model's decomposition reply into clean { id, title } task steps.
+// Primary path: a JSON array of objects with a `title`. Fallback: plain
+// numbered / bulleted / checkbox lines. Titles are slugified to ids using
+// the same rule as the manual task endpoint, then capped at 12 steps so a
+// runaway reply can't flood the plan.
+function parseGoalIntoTasks(text: string): { id: string; title: string }[] {
+  const slug = (title: string): string =>
+    title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+  const titles: string[] = [];
+
+  const jsonStart = text.indexOf('[');
+  const jsonEnd = text.lastIndexOf(']');
+  if (jsonStart !== -1 && jsonEnd > jsonStart) {
+    try {
+      const parsed = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          const title = typeof item === 'string'
+            ? item
+            : (item && typeof item.title === 'string' ? item.title : '');
+          const trimmed = title.trim();
+          if (trimmed) titles.push(trimmed);
+        }
+      }
+    } catch {
+      // Fall through to line parsing.
+    }
+  }
+
+  if (titles.length === 0) {
+    for (const rawLine of text.split(/\r?\n/)) {
+      // Strip leading "- [ ] id —", "1.", "-", "*" markers, keep the title.
+      const line = rawLine
+        .replace(/^\s*[-*]\s*\[.\]\s*\S+\s*[—-]\s*/, '')
+        .replace(/^\s*\d+[.)]\s*/, '')
+        .replace(/^\s*[-*]\s*/, '')
+        .trim();
+      if (line && line.length <= 200 && !line.startsWith('#')) titles.push(line);
+    }
+  }
+
+  const tasks: { id: string; title: string }[] = [];
+  const seen = new Set<string>();
+  for (const title of titles) {
+    const id = slug(title);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    tasks.push({ id, title });
+    if (tasks.length >= 12) break;
+  }
+  return tasks;
+}
+
 app.post('/api/autonomy/tasks', async (req, res) => {
   try {
     const title = String(req.body?.title ?? '').trim();
@@ -1261,6 +1893,21 @@ app.post('/api/autonomy/tasks', async (req, res) => {
     const planPath = path.join(PROJECT_DIR, 'IMPLEMENTATION_PLAN.md');
     let existing = '';
     try { existing = await fs.readFile(planPath, 'utf-8'); } catch { existing = '# Implementation Plan\n'; }
+    // Reject the "pasted-back plan line" case: if the title's first
+    // whitespace-separated token is already a task id in the plan, we would
+    // otherwise slugify the whole pasted blob, bump a suffix, and produce a
+    // Frankenstein title like `slug--3 — slug--2 — slug- — …` that nests
+    // deeper on every re-add. Mirrors the /goal slash-command defense.
+    const existingIds = new Set<string>();
+    for (const planLine of existing.split(/\r?\n/)) {
+      const m = planLine.match(/^- \[.\] (\S+)\s+[—-]/);
+      if (m) existingIds.add(m[1].toLowerCase());
+    }
+    const leadingToken = title.split(/\s+/)[0]?.toLowerCase();
+    if (leadingToken && existingIds.has(leadingToken)) {
+      res.status(409).json({ error: `Task "${leadingToken}" already exists. To re-run it use the existing task; to add a new one, rephrase without the task id at the start.` });
+      return;
+    }
     const subBullets = [
       ...anchors.map((a) => `  - anchor: ${a}`),
       ...(target ? [`  - target: ${target}`] : []),
@@ -1269,6 +1916,131 @@ app.post('/api/autonomy/tasks', async (req, res) => {
     await fs.writeFile(planPath, existing.replace(/\n*$/, '') + entry, 'utf-8');
     const preview = await readAutonomyPlanPreview();
     res.json({ ok: true, id, title: description, ...preview });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Turn a plain-English goal into an ordered list of build steps. Powers the
+// non-technical "Build Mode": the user describes what they want, the model
+// decomposes it into tasks, and we append them to the same
+// IMPLEMENTATION_PLAN.md the autonomy loop already consumes. We APPEND (never
+// overwrite) so an existing plan is never destroyed.
+app.post('/api/autonomy/plan-from-goal', async (req, res) => {
+  try {
+    const goal = String(req.body?.goal ?? '').trim();
+    if (!goal) { res.status(400).json({ error: 'Please describe what you want to build.' }); return; }
+    if (goal.length > 4000) { res.status(400).json({ error: 'That description is very long — please shorten it to under 4000 characters.' }); return; }
+    const model = String(req.body?.model ?? currentModel ?? '').trim();
+    if (!model) { res.status(400).json({ error: 'No AI model is selected yet. Pick a model first, then try again.' }); return; }
+
+    const systemPrompt = [
+      'You are a planning assistant for a non-technical user. Break their request into a short, ordered list of concrete build steps an autonomous coding agent can carry out one at a time.',
+      'Rules:',
+      '- 3 to 10 steps. Fewer is better for a small request.',
+      '- Each step is one self-contained unit of work with a clear, plain-English title (max ~12 words).',
+      '- Order steps so each builds on the previous: scaffold/setup first, then features, then polish.',
+      '- Every step must CREATE or MODIFY real files or code that move the build forward.',
+      '- Never add steps that only read, inspect, analyze, summarize, or document — the agent reads whatever context it needs on its own. Those steps produce no buildable output and stall the run.',
+      '- Prefer concrete deliverables (e.g. "Create the data model in models.py") over vague phases (e.g. "Analyze the requirements").',
+      '- Do not include steps about asking the user questions, deployment, or anything outside building the thing.',
+      '- Respond with ONLY a JSON array, no prose and no code fences. Each element: {"title": "..."}.',
+    ].join('\n');
+
+    const client = webRuntime.createClient(model, ollamaHost);
+    let modelText = '';
+    try {
+      const result = await client.chatOnce([
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: goal },
+      ]);
+      modelText = result.message?.content ?? '';
+    } catch (modelErr) {
+      const detail = modelErr instanceof Error ? modelErr.message : String(modelErr);
+      res.status(502).json({ error: `I couldn't reach the AI model. Is it running? (${detail})` });
+      return;
+    }
+
+    const steps = parseGoalIntoTasks(modelText);
+    if (steps.length === 0) {
+      res.status(502).json({ error: 'The model did not return a usable plan. Try rephrasing your idea, or add steps manually below.' });
+      return;
+    }
+
+    // A single un-validated model response occasionally returns a bloated or
+    // repetitive plan (a real run once stalled on a ~38-task list full of
+    // near-duplicates). Dedupe by a normalized title and cap the count so one
+    // over-eager response can't flood IMPLEMENTATION_PLAN.md. First occurrence
+    // wins, so order is preserved.
+    const MAX_PLAN_STEPS = 12;
+    const seenTitles = new Set<string>();
+    const dedupedSteps: typeof steps = [];
+    for (const step of steps) {
+      const normTitle = step.title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      if (!normTitle || seenTitles.has(normTitle)) continue;
+      seenTitles.add(normTitle);
+      dedupedSteps.push(step);
+      if (dedupedSteps.length >= MAX_PLAN_STEPS) break;
+    }
+    if (dedupedSteps.length === 0) {
+      res.status(502).json({ error: 'The model did not return a usable plan. Try rephrasing your idea, or add steps manually below.' });
+      return;
+    }
+
+    // If the user's goal mentions paths outside the workspace (drive letters
+    // like H:\Model, or /Users/, /home/, /mnt/, /Volumes/ on POSIX), every
+    // generated step is auto-tagged kind:external. External tasks routinely
+    // write their output outside PROJECT_DIR and have no meaningful in-repo
+    // typecheck signal, so the autonomy loop validates them by artifact
+    // existence + runbook, not by `npm run typecheck`. Without this tag, a
+    // perfectly successful "read H:\Model and write inventory" task fails
+    // validation in any non-TS workspace and gets reverted. We also extract
+    // the specific path and stamp it on every step (as a `target:` sub-
+    // bullet AND inside the step title) so the agent's per-task prompt
+    // anchors every step at the same folder; without this, step 1 says
+    // "read H:\Model" but steps 2-N say generic things like "implement the
+    // model architecture" with no idea WHERE to write, and the model
+    // wanders out of scope.
+    const externalPathPattern = /(?:[A-Z]:[\\/]|\/(?:Users|home|mnt|Volumes)\/)/i;
+    const goalMentionsExternalPath = externalPathPattern.test(goal);
+    const externalPathExtractPattern = /[A-Z]:[\\/][^\s'"<>|?*]+|\/(?:Users|home|mnt|Volumes)\/[^\s'"<>|?*]+/i;
+    const externalPathMatch = goalMentionsExternalPath ? goal.match(externalPathExtractPattern) : null;
+    const externalTargetPath = externalPathMatch
+      ? externalPathMatch[0].replace(/[.,;:!?)\]]+$/, '')
+      : null;
+
+    const planPath = path.join(PROJECT_DIR, 'IMPLEMENTATION_PLAN.md');
+    let existing = '';
+    try { existing = await fs.readFile(planPath, 'utf-8'); } catch { existing = '# Implementation Plan\n'; }
+    const existingIds = new Set<string>();
+    for (const planLine of existing.split(/\r?\n/)) {
+      const m = planLine.match(/^- \[.\] (\S+)\s+[—-]/);
+      if (m) existingIds.add(m[1].toLowerCase());
+    }
+    const added: { id: string; title: string }[] = [];
+    const entries: string[] = [];
+    for (const step of dedupedSteps) {
+      let uniqueId = step.id;
+      let suffix = 2;
+      while (existingIds.has(uniqueId)) { uniqueId = `${step.id}-${suffix++}`; }
+      existingIds.add(uniqueId);
+      const stepIsExternal = goalMentionsExternalPath || externalPathPattern.test(step.title);
+      // Inject the external path into the step title when the model omitted
+      // it. Steps after the first commonly say "implement the model" with
+      // no folder reference; without this, the agent's per-task prompt
+      // (which embeds the title verbatim) gives no hint where to write.
+      const stepTitle = stepIsExternal && externalTargetPath && !step.title.includes(externalTargetPath)
+        ? `${step.title} in ${externalTargetPath}`
+        : step.title;
+      added.push({ id: uniqueId, title: stepTitle });
+      const kindLine = stepIsExternal ? '\n  - kind: external' : '';
+      const targetLine = stepIsExternal && externalTargetPath ? `\n  - target: ${externalTargetPath}` : '';
+      entries.push(`\n- [ ] ${uniqueId} — ${stepTitle}${kindLine}${targetLine}`);
+    }
+    await fs.writeFile(planPath, existing.replace(/\n*$/, '') + entries.join('') + '\n', 'utf-8');
+    const preview = await readAutonomyPlanPreview();
+    res.json({ ok: true, goal, added, ...preview });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -1352,27 +2124,51 @@ app.post('/api/autonomy/start', async (req, res) => {
     setEnv('HARNESS_UNPRODUCTIVE_TURN_LIMIT', requestedUnproductiveTurnLimit);
     await fs.rm(path.join(PROJECT_DIR, '.forge-stop'), { force: true }).catch((err) => recordSwallowed('fs.rm', err));
     autonomyStartedAt = new Date().toISOString();
-    // Windows: Node 20.12+/18.20.2+ refuses to spawn .bat/.cmd directly
-    // (CVE-2024-27980). npm on Windows is npm.cmd, so the previous
-    // spawn(npmCommand, ['run', 'autonomy']) died with EINVAL on every
-    // Start click. Use cmd.exe /d /s /c instead — Node 22 deprecates
-    // shell:true with array args (DEP0190), so explicit cmd.exe is the
-    // forward-compatible choice. Pinned by manual smoke 2026-05-07.
-    if (process.platform === 'win32') {
-      const comSpec = env.ComSpec || env.COMSPEC || process.env.ComSpec || process.env.COMSPEC || 'cmd.exe';
-      try {
-        autonomyChild = spawn(comSpec, ['/d', '/s', '/c', 'npm run autonomy'], { cwd: PROJECT_DIR, env });
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== 'EINVAL') throw error;
-        logger.warn('Autonomy', 'Primary Windows spawn failed with EINVAL; retrying with minimal env', { code });
-        const minimalEnv = buildMinimalWindowsSpawnEnv(env);
-        autonomyChild = spawn(comSpec, ['/d', '/s', '/c', 'npm run autonomy'], { cwd: PROJECT_DIR, env: minimalEnv });
-      }
-    } else {
-      autonomyChild = spawn('npm', ['run', 'autonomy'], { cwd: PROJECT_DIR, env });
+    // The autonomy loop (cookbook/task-loop.ts) lives in the harness repo,
+    // not in the user's project workspace. Previously we spawned
+    // `npm run autonomy` with cwd=PROJECT_DIR, which failed with
+    // "Missing script: autonomy" whenever PROJECT_DIR was an isolated
+    // workspace. Instead, launch the repo's loop directly with Node +
+    // ts-node while keeping cwd=PROJECT_DIR so the loop reads/writes the
+    // plan, logs, state, and git in the workspace. HARNESS_HOME lets the
+    // loop locate the compiled CLI (dist/cli/index.js) in the repo.
+    const harnessHome = path.join(__dirname, '..', '..');
+    const tsNodeRegister = path.join(harnessHome, 'node_modules', 'ts-node', 'register', 'transpile-only');
+    const taskLoopEntry = path.join(harnessHome, 'cookbook', 'task-loop.ts');
+    const loopArgs = ['-r', tsNodeRegister, taskLoopEntry];
+    env.HARNESS_HOME = harnessHome;
+    env.TS_NODE_TRANSPILE_ONLY = '1';
+    env.TS_NODE_PROJECT = path.join(harnessHome, 'tsconfig.json');
+    try {
+      autonomyChild = spawn(process.execPath, loopArgs, { cwd: PROJECT_DIR, env });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EINVAL') throw error;
+      logger.warn('Autonomy', 'Primary spawn failed with EINVAL; retrying with minimal env', { code });
+      const minimalEnv = buildMinimalWindowsSpawnEnv(env);
+      minimalEnv.HARNESS_HOME = harnessHome;
+      minimalEnv.TS_NODE_TRANSPILE_ONLY = '1';
+      minimalEnv.TS_NODE_PROJECT = path.join(harnessHome, 'tsconfig.json');
+      autonomyChild = spawn(process.execPath, loopArgs, { cwd: PROJECT_DIR, env: minimalEnv });
     }
-    const evidence = createRunEvidence({ id: `autonomy:${autonomyStartedAt}`, kind: 'autonomy', request: preview.tasks.find((task) => task.status === 'pending')?.title || 'Run next pending implementation task', runName: 'Ralph autonomy loop', command: 'npm run autonomy', success: true, summary: `Started with ${preview.pending} pending task(s).` });
+    // Mirror the child's stdout/stderr into .forge-run.log so failures that
+    // happen before task-loop.ts installs its uncaughtException handler
+    // (e.g. ts-node compile errors, missing modules) still surface in the
+    // autonomy log dialog as readable text instead of being lost on stderr.
+    const autonomyLogPath = path.join(PROJECT_DIR, '.forge-run.log');
+    const mirrorChildChunk = (prefix: 'STDOUT' | 'STDERR', chunk: Buffer): void => {
+      const text = chunk.toString('utf8');
+      for (const line of text.split(/\r?\n/)) {
+        if (!line) continue;
+        fs.appendFile(autonomyLogPath, `[${new Date().toISOString()}] ${prefix} ${line}\n`).catch((err) => recordSwallowed('autonomyChildMirror', err));
+      }
+    };
+    autonomyChild.stdout?.on('data', (chunk: Buffer) => mirrorChildChunk('STDOUT', chunk));
+    autonomyChild.stderr?.on('data', (chunk: Buffer) => mirrorChildChunk('STDERR', chunk));
+    autonomyChild.on('error', (err) => {
+      fs.appendFile(autonomyLogPath, `[${new Date().toISOString()}] FATAL spawn error: ${err.message}\n`).catch((swallowErr) => recordSwallowed('autonomyChildMirror', swallowErr));
+    });
+    const evidence = createRunEvidence({ id: `autonomy:${autonomyStartedAt}`, kind: 'autonomy', request: preview.tasks.find((task) => task.status === 'pending')?.title || 'Run next pending implementation task', runName: 'Ralph autonomy loop', command: 'node -r ts-node/register/transpile-only cookbook/task-loop.ts', success: true, summary: `Started with ${preview.pending} pending task(s).` });
     await appendRunEvidence(PROJECT_DIR, evidence);
     autonomyChild.on('exit', () => { autonomyChild = null; autonomyStartedAt = undefined; });
     res.json({ ok: true, startedAt: autonomyStartedAt, pid: autonomyChild.pid, pending: preview.pending, requestedMaxIterations, requestedMaxTurns, requestedUnproductiveTurnLimit, effectiveMaxIterations, checkpointIteration, evidence });
@@ -1431,6 +2227,31 @@ app.post('/api/autonomy/reset', async (_req, res) => {
 });
 
 // List available models from Ollama
+// Cache of the most recent tool-calling probe per model id. Tool-calling
+// capability is a property of the model+backend, so a single verified/failed
+// verdict stays valid until the user explicitly re-probes. Keeps /api/readiness
+// fast (no network call per poll) while still surfacing real, measured results.
+const toolCallProbeCache = new Map<string, ToolCallProbeResult>();
+
+// Actively verify whether the *current* model emits tool calls. This is an
+// on-demand, explicit action (never auto-run) so cloud models are not probed —
+// and charged — without the user asking. Result is cached for /api/readiness.
+app.post('/api/model/probe-tools', async (_req, res) => {
+  try {
+    await ensureSettingsLoaded();
+    if (!currentModel) {
+      res.status(400).json({ error: 'No model selected.' });
+      return;
+    }
+    const client = webRuntime.createClient(currentModel, ollamaHost);
+    const result = await probeToolCalling(client);
+    toolCallProbeCache.set(currentModel, result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 app.get('/api/models', async (_req, res) => {
   try {
     await ensureSettingsLoaded();
@@ -1549,8 +2370,11 @@ const REMOTE_MODEL_CATALOG: Record<string, Array<{ id: string; label: string }>>
     { id: 'Phi-3.5-MoE-instruct', label: 'Phi 3.5 MoE' },
   ],
   openrouter: [
-    { id: 'google/gemini-2.0-flash-exp:free', label: 'Gemini 2.0 Flash (free)' },
+    { id: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+    { id: 'anthropic/claude-sonnet-4.5', label: 'Claude Sonnet 4.5' },
+    { id: 'openai/gpt-5-mini', label: 'GPT-5 Mini' },
     { id: 'meta-llama/llama-3.3-70b-instruct:free', label: 'Llama 3.3 70B (free)' },
+    { id: 'google/gemma-4-31b-it:free', label: 'Gemma 4 31B (free)' },
   ],
   openai: [
     { id: 'gpt-4o', label: 'GPT-4o' },
@@ -1905,85 +2729,8 @@ async function storeConnectorSecret(name: string, value: string): Promise<void> 
   });
 }
 
-// File-write redirect rules. Lets the user route any agent file_write
-// whose path matches a glob into a specific directory (typically a
-// sibling repo). Solves the recurring "another agent keeps dropping
-// lottery scripts in the Harness root" problem at the tool layer
-// rather than relying on .gitignore cleanup.
-app.get('/api/file-redirects', async (_req, res) => {
-  try {
-    const { rules, source } = getFileWriteRedirects();
-    // Defense in depth: also report whether the env var is set so the
-    // UI can show "managed by env var" and disable the editor if so.
-    const envOverride = Boolean(process.env.HARNESS_FILE_WRITE_REDIRECTS?.trim());
-    res.json({ rules, source, envOverride });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/file-redirects', async (req, res) => {
-  try {
-    const incoming = req.body && Array.isArray(req.body.rules) ? req.body.rules : null;
-    if (!incoming) {
-      res.status(400).json({ error: 'Body must be { rules: [...] }' });
-      return;
-    }
-    // Validate + normalize each rule. Skip entries with empty match or
-    // empty redirect rather than rejecting the whole payload \u2014 makes
-    // the form forgiving when the user is mid-edit.
-    const sanitized: Array<{ match: string; redirect: string }> = [];
-    for (const entry of incoming) {
-      if (!entry || typeof entry !== 'object') continue;
-      const match = typeof entry.match === 'string' ? entry.match.trim() : '';
-      const redirect = typeof entry.redirect === 'string' ? entry.redirect.trim() : '';
-      if (!match || !redirect) continue;
-      sanitized.push({ match, redirect });
-    }
-    await withFileLock(FILE_REDIRECTS_PATH, () => atomicWriteFile(FILE_REDIRECTS_PATH, JSON.stringify(sanitized, null, 2)));
-    // Force the in-process cache to reload on the next file_write.
-    clearFileWriteRedirectCache();
-    res.json({ ok: true, count: sanitized.length });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// Preview endpoint: takes ad-hoc rules + a sample path and returns
-// which rule (if any) would catch it and where the file would land.
-// Lets the user verify their rules before saving — catches typos like
-// `lottery_*` (underscore) when they meant `lottery-*` (hyphen). The
-// rules in the body are NOT persisted; this is read-only.
-app.post('/api/file-redirects/preview', async (req, res) => {
-  try {
-    const samplePath = typeof req.body?.path === 'string' ? req.body.path.trim() : '';
-    const rawRules = Array.isArray(req.body?.rules) ? req.body.rules : null;
-    if (!samplePath || !rawRules) {
-      res.status(400).json({ error: 'Body must be { path: string, rules: [...] }' });
-      return;
-    }
-    // Same sanitization as POST so empty mid-edit rows are skipped here too.
-    const rules: Array<{ match: string; redirect: string }> = [];
-    for (const entry of rawRules) {
-      if (!entry || typeof entry !== 'object') continue;
-      const match = typeof entry.match === 'string' ? entry.match.trim() : '';
-      const redirect = typeof entry.redirect === 'string' ? entry.redirect.trim() : '';
-      if (!match || !redirect) continue;
-      rules.push({ match, redirect });
-    }
-    const result = previewFileWriteRedirect(samplePath, rules);
-    if (result) {
-      res.json({ matched: true, rule: result.rule, destination: result.destination });
-    } else {
-      res.json({ matched: false });
-    }
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// File-write redirect rules. Routes extracted to ./fileRedirectRoutes.ts.
+app.use(createFileRedirectRouter({ projectDir: PROJECT_DIR }));
 
 // Get/set current settings
 app.get('/api/settings', async (_req, res) => {
@@ -1997,41 +2744,13 @@ app.get('/api/settings', async (_req, res) => {
   }
 });
 
-app.get('/api/synthesis-stats', async (_req, res) => {
-  try {
-    const stats = await loadSynthesisStats(PROJECT_DIR);
-    const withAdaptive: Record<string, unknown> = {};
-    for (const [model, record] of Object.entries(stats)) {
-      const backend = model.includes('/') ? model.slice(0, model.indexOf('/')) : 'ollama';
-      const isLocal = backend === 'ollama' && !model.includes('cloud');
-      const defaultBudget = isLocal ? 180_000 : 600_000;
-      const toolSuccessRate = record.toolCalls && record.toolCalls > 0 ? (record.toolSuccesses ?? 0) / record.toolCalls : undefined;
-      const finalTextRate = record.total > 0 ? (record.finalTextResponses ?? 0) / record.total : undefined;
-      withAdaptive[model] = {
-        ...record,
-        adaptiveMaxTurns: adaptiveMaxTurns(stats, model, 25),
-        adaptiveTimeBudgetMs: adaptiveTimeBudget(stats, model, defaultBudget),
-        toolSuccessRate,
-        finalTextRate,
-      };
-    }
-    res.json({ stats: withAdaptive, defaultMaxTurns: 25 });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.delete('/api/synthesis-stats', async (req, res) => {
-  try {
-    const model = typeof req.query.model === 'string' ? req.query.model : undefined;
-    await clearSynthesisStats(PROJECT_DIR, model);
-    res.json({ cleared: model ?? 'all' });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// ─── Synthesis stats (adaptive maxTurns / time budget) ──────────────
+// GET reads the per-model stats file + computes adaptive limits; DELETE
+// clears one model (?model=) or all. Extracted to ./synthesisStatsRoutes.ts.
+// server.ts keeps loadSynthesisStats + adaptiveMaxTurns + adaptiveTimeBudget
+// imports (chat handler at line ~5829 still uses them); only clearSynthesisStats
+// was dropped from the server.ts import.
+app.use(createSynthesisStatsRouter({ projectDir: PROJECT_DIR }));
 
 app.post('/api/settings', async (req, res) => {
   await ensureSettingsLoaded();
@@ -2087,6 +2806,10 @@ app.post('/api/settings', async (req, res) => {
   if (req.body.automationScheduler !== undefined) {
     automationSchedulerSettings = sanitizeAutomationSchedulerSettings(req.body.automationScheduler);
   }
+  if (req.body.teammate !== undefined) {
+    teammateSettings = sanitizeTeammateSettings(req.body.teammate);
+    configureTeammateScheduler();
+  }
   if (req.body.modelDebugLog !== undefined) {
     modelDebugLog = sanitizeModelDebugLogSettings(req.body.modelDebugLog);
     applyModelDebugLogEnvironment(modelDebugLog);
@@ -2132,6 +2855,12 @@ app.post('/api/settings', async (req, res) => {
     if (whatsappAllowedRecipients) process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS = whatsappAllowedRecipients;
     else delete process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS;
   }
+  if (req.body.ccmemUrl !== undefined) {
+    const parsed = typeof req.body.ccmemUrl === 'string' ? req.body.ccmemUrl.trim() : '';
+    ccmemUrl = parsed;
+    setCcmemUrl(ccmemUrl || 'http://localhost:8765');
+  }
+  if (req.body.browserRedaction !== undefined) browserRedaction = sanitizeBrowserRedaction(req.body.browserRedaction);
   await saveSettingsToDisk();
   logger.info('Settings', 'Updated', {
     model: currentModel,
@@ -2348,27 +3077,6 @@ function summarizeForEvidence(value: unknown, maxLength = 220): string {
   return raw.replace(/\s+/g, ' ').slice(0, maxLength);
 }
 
-function summarizeServiceState(state: unknown): Record<string, number | boolean | string> {
-  const source = typeof state === 'object' && state !== null ? state as Record<string, unknown> : {};
-  const count = (key: string): number => Array.isArray(source[key]) ? (source[key] as unknown[]).length : 0;
-  return {
-    tasks: count('tasks'),
-    notes: count('notes'),
-    observations: count('observations'),
-    reminders: count('reminders'),
-    reviews: count('reviews'),
-    enabled: source.enabled !== false,
-    reminders_paused: source.reminders_paused === true,
-    updated_at: typeof source.updated_at === 'string' ? source.updated_at : '',
-  };
-}
-
-function parseNonNegativeInteger(value: unknown, fallback: number, max = 100): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
-  return Math.min(Math.floor(parsed), max);
-}
-
 function operatingServiceLifecycleAudit() {
   return {
     capture_points: ['chat_operate_intercept', 'run_evidence', 'automation_runs', 'service_state', 'discovery_detail'],
@@ -2432,6 +3140,35 @@ function checkToolEnabled(toolName: string): ReadinessCheck {
     : { id: `tool.${toolName}`, label: `${toolName} enabled`, status: 'ready', message: `${toolName} is available.` };
 }
 
+// Tool-calling readiness for the current model. Prefers a measured probe
+// result (cached from /api/model/probe-tools) over the static name heuristic,
+// so users see whether their model *actually* calls tools rather than a guess.
+function toolCallingReadinessCheck(): ReadinessCheck {
+  const id = 'model.toolCalling';
+  const label = 'Tool calling verified';
+  if (!currentModel) {
+    return { id, label, status: 'warn', message: 'No model selected.', action: 'Pick a model' };
+  }
+  const probed = toolCallProbeCache.get(currentModel);
+  if (probed) {
+    if (probed.verdict === 'verified') {
+      return { id, label, status: 'ready', message: probed.message };
+    }
+    if (probed.verdict === 'failed') {
+      return { id, label, status: 'blocked', message: probed.message, action: 'Pick a model' };
+    }
+    return { id, label, status: 'warn', message: probed.message, action: 'Probe model' };
+  }
+  const toolUse = inferModelCapabilities(currentModel).toolUse;
+  if (toolUse === 'strong') {
+    return { id, label, status: 'ready', message: `${currentModel} is expected to support tool calling (not yet verified). Probe to confirm.`, action: 'Probe model' };
+  }
+  if (toolUse === 'weak') {
+    return { id, label, status: 'warn', message: `${currentModel} may not reliably call tools. Probe to verify, or pick a stronger model for research/file tasks.`, action: 'Probe model' };
+  }
+  return { id, label, status: 'warn', message: `Tool calling not yet verified for ${currentModel}. Probe before research, file, or automation tasks.`, action: 'Probe model' };
+}
+
 async function buildAutonomyPreflight(planPreview?: Awaited<ReturnType<typeof readAutonomyPlanPreview>>): Promise<{ blocked: ReadinessCheck[]; warnings: ReadinessCheck[] }> {
   await ensureSettingsLoaded();
   const setup = await checkSetupHealth({ host: ollamaHost, visionModel: mediaTools.visionModel, audioTranscribeCommand: mediaTools.audioTranscribeCommand, pdfOcrCommand: mediaTools.pdfOcrCommand, projectDir: PROJECT_DIR });
@@ -2445,7 +3182,13 @@ async function buildAutonomyPreflight(planPreview?: Awaited<ReturnType<typeof re
     { id: 'model.health', label: 'Model backend health', status: modelHealthy ? 'ready' : 'blocked', message: modelHealthy ? `${modelBackend} backend is available.` : `${modelBackend} backend is not ready.` },
     { id: 'plan.pending', label: 'Pending plan tasks', status: planPreview && planPreview.pending > 0 ? 'ready' : 'blocked', message: planPreview ? `${planPreview.pending} pending task(s) in IMPLEMENTATION_PLAN.md.` : 'IMPLEMENTATION_PLAN.md could not be parsed.' },
     { id: 'kill.switch', label: 'Kill switch clear', status: killSwitchActive ? 'blocked' : 'ready', message: killSwitchActive ? `Kill switch active: ${killSwitchReason}` : 'Kill switch is clear.' },
-    { id: 'validation.scripts', label: 'Validation scripts', status: setup.local.package.ok ? 'ready' : 'blocked', message: setup.local.package.message },
+    // Validation scripts (npm test + typecheck/lint) are a code-quality
+    // signal, not a precondition for autonomy. A research task with
+    // kind:external has no use for them; gating all runs on their
+    // presence locked first-time users out of the loop entirely. The
+    // /api/readiness section reports the same check as 'warn'; mirror
+    // that here.
+    { id: 'validation.scripts', label: 'Validation scripts', status: setup.local.package.ok ? 'ready' : 'warn', message: setup.local.package.message, action: 'Run doctor' },
     checkToolEnabled('bash'),
     checkToolEnabled('file_edit'),
     checkToolEnabled('file_write'),
@@ -2461,12 +3204,6 @@ async function buildAutonomyPreflight(planPreview?: Awaited<ReturnType<typeof re
 // recorded since process start. Used to surface failures of the audit log
 // itself (emitEvent, saveSettingsToDisk, etc.) that would otherwise be
 // completely invisible. Bounded at 200 entries; oldest evicted first.
-app.get('/api/diagnostics/swallowed', (_req, res) => {
-  res.json({
-    count: getSwallowedFailureCount(),
-    failures: getSwallowedFailures(),
-  });
-});
 
 app.get('/api/readiness', async (_req, res) => {
   try {
@@ -2514,6 +3251,7 @@ app.get('/api/readiness', async (_req, res) => {
       readinessSection('chat', 'Chat', [
         { id: 'model.selected', label: 'Model selected', status: modelSelected ? 'ready' : 'blocked', message: modelSelected ? `Selected ${currentModel}.` : 'No model selected.', action: 'Pick a model' },
         { id: 'model.health', label: 'Model backend health', status: modelHealthy ? 'ready' : 'blocked', message: modelHealthy ? `${modelBackend} backend is available.` : `${modelBackend} backend is not ready.`, action: 'Open Settings' },
+        toolCallingReadinessCheck(),
         { id: 'context.window', label: 'Context window', status: effectiveCtx >= 4096 ? 'ready' : 'warn', message: ctxMessage },
       ]),
       readinessSection('coding', 'Coding', [
@@ -2556,7 +3294,7 @@ app.get('/api/readiness', async (_req, res) => {
         { id: 'autonomy.kill.switch', label: 'Kill switch clear', status: killSnapshot.active ? 'blocked' : 'ready', message: killSnapshot.active ? `Kill switch active: ${killSnapshot.reason}` : 'Kill switch is clear.' },
       ]),
     ];
-    res.json({ generatedAt: new Date().toISOString(), workspace: PROJECT_DIR, model: currentModel, permissionMode, killSwitch: { active: killSnapshot.active, reason: killSnapshot.reason }, grants: activeGrants.length, sections, nervousSystem: { available: true, modules: ['signals', 'sensory', 'reflexes', 'attention', 'motor', 'pain', 'recovery'] } });
+    res.json({ generatedAt: new Date().toISOString(), workspace: PROJECT_DIR, model: currentModel, permissionMode, killSwitch: { active: killSnapshot.active, reason: killSnapshot.reason }, sandbox: sandboxSwitch.snapshot(), grants: activeGrants.length, sections, nervousSystem: { available: true, modules: ['signals', 'sensory', 'reflexes', 'attention', 'motor', 'pain', 'recovery'] } });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     res.status(500).json({ error: msg });
@@ -2596,7 +3334,9 @@ app.get('/api/jarvis/status', async (_req, res) => {
       inbound: getInboundTriageStatus(),
       runtime: getRuntimeRegistryStatus(),
       mcpServer: mcp,
-      ambient: { ready: true, running: jarvisAmbientHandle?.isRunning() ?? false, watchers: jarvisAmbientHandle?.watchersActive() ?? [], note: 'Set HARNESS_AMBIENT_ENABLED=1 to start on boot.' },
+      assistantProfile: { enabled: assistantProfileEnabled(), ambient: ambientEnabled(), proactive: proactiveProfileEnabled() },
+      schedulers: schedulerRegistry.list(),
+      ambient: { ready: true, running: jarvisAmbientHandle?.isRunning() ?? false, watchers: jarvisAmbientHandle?.watchersActive() ?? [], note: 'Runs by default under HARNESS_PROFILE=assistant; set HARNESS_AMBIENT_ENABLED=1/0 to force.' },
       predictive: { ready: true, note: 'Predictive engine is pure; feed it ActionEvent[] from sessions.' },
       modelCouncil: { ready: true, note: 'Council is transport-agnostic; wire to OllamaClient or OpenAIClient at the call site.' },
     });
@@ -2611,8 +3351,8 @@ app.get('/api/jarvis/brief', async (_req, res) => {
     const [trust, knowledge, candidates, runs] = await Promise.all([
       loadTrustLadder(PROJECT_DIR),
       getKnowledgeGraphStatus(PROJECT_DIR),
-      listLearningCandidates(PROJECT_DIR, 20).catch(() => []),
-      readRunEvidence(PROJECT_DIR, 50).catch(() => []),
+      listLearningCandidates(PROJECT_DIR, 20).catch((err) => { recordSwallowed('jarvis.brief.listLearningCandidates', err); return []; }),
+      readRunEvidence(PROJECT_DIR, 50).catch((err) => { recordSwallowed('jarvis.brief.readRunEvidence', err); return []; }),
     ]);
     const ambientSignals = jarvisAmbientBus.recent();
     const pendingLearningCandidates = candidates.map((c) => ({ id: c.id, prompt: c.prompt, outcome: c.outcome, createdAt: c.createdAt }));
@@ -2758,6 +3498,47 @@ app.post('/api/jarvis/ambient/stop', (_req, res) => {
     jarvisAmbientHandle = null;
     schedulerRegistry.unregister('jarvis-ambient');
     res.json({ running: false });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Stop a single registered scheduler by name. Surfaces the SchedulerRegistry's
+// per-entry stop control in the Jarvis Live panel so an operator can halt one
+// noisy subsystem without the global kill switch (which only no-ops ticks) or a
+// full server restart. Stopping is reversible by restarting the server or, for
+// schedulers with their own toggle (ambient, curator), re-enabling them there.
+app.post('/api/jarvis/schedulers/:name/stop', async (req, res) => {
+  try {
+    const name = String(req.params.name ?? '');
+    if (!schedulerRegistry.list().some((entry) => entry.name === name)) {
+      res.status(404).json({ error: `Unknown scheduler: ${name}` });
+      return;
+    }
+    const result = await schedulerRegistry.stop(name);
+    res.json({ ok: result?.ok !== false, result, schedulers: schedulerRegistry.list() });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Restart a single registered scheduler by name. Complements the stop control
+// so an operator can bring a scheduler back without a full server restart.
+// Only schedulers that expose a restart() hook (the ones backed by an
+// idempotent configureX()) are restartable; the rest return 409.
+app.post('/api/jarvis/schedulers/:name/restart', async (req, res) => {
+  try {
+    const name = String(req.params.name ?? '');
+    if (!schedulerRegistry.list().some((entry) => entry.name === name)) {
+      res.status(404).json({ error: `Unknown scheduler: ${name}` });
+      return;
+    }
+    const result = await schedulerRegistry.restart(name);
+    if (result && result.ok === false) {
+      res.status(409).json({ error: result.error ?? `Scheduler ${name} is not restartable`, schedulers: schedulerRegistry.list() });
+      return;
+    }
+    res.json({ ok: true, result, schedulers: schedulerRegistry.list() });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
@@ -2913,7 +3694,7 @@ app.post('/api/jarvis/voice/transcribe', express.raw({ type: '*/*', limit: '50mb
     let args: string[];
     if (usePython) {
       cmd = pythonExe!;
-      args = [path.join(PROJECT_DIR, 'scripts', 'jarvis_whisper.py'), wavPath];
+      args = [resolveJarvisWhisperBridgePath(), wavPath];
     } else {
       cmd = binary!;
       args = ['-m', model!, '-f', wavPath, '--no-timestamps', '--no-prints'];
@@ -3071,21 +3852,28 @@ app.post('/api/whatsapp/setup', async (req, res) => {
   res.json({ ok: true, status: getWhatsAppConnectorStatus({ accessToken: connectorSecretValue('HARNESS_WHATSAPP_ACCESS_TOKEN'), phoneNumberId: whatsappPhoneNumberId, allowedRecipients: whatsappAllowedRecipients }) });
 });
 
-app.get('/api/connectors/status', (_req, res) => {
-  const smtpHost = process.env.HARNESS_SMTP_HOST?.trim();
-  const smtpUser = process.env.HARNESS_SMTP_USER?.trim();
-  const smtpPass = process.env.HARNESS_SMTP_PASS?.trim();
-  res.json({
-    connectors: {
+// ─── Connector status / contracts / ingress policy ───────────────────────
+// 3 read-only routes (GET /api/connectors/status, GET /api/connectors/contracts,
+// GET /api/message-ingress/policy) extracted to ./connectorRoutes.ts. The
+// status route reads server.ts mutable connector module state (telegram/
+// discord/whatsapp tokens + bot running flags); we pass it as a single
+// callable so the router stays decoupled. Contracts + ingress policy use
+// only services/capabilityTemplateStarters and were dropped from server.ts
+// import entirely (4 symbols).
+app.use(createConnectorRouter({
+  getConnectorStatusSnapshot: () => {
+    const smtpHost = process.env.HARNESS_SMTP_HOST?.trim();
+    const smtpUser = process.env.HARNESS_SMTP_USER?.trim();
+    const smtpPass = process.env.HARNESS_SMTP_PASS?.trim();
+    return {
       telegram: { connector: 'telegram', configured: Boolean(telegramBotToken), running: isTelegramBotRunning(), hasAllowedChatIds: Boolean(telegramAllowedChatIds), mode: 'chat-bridge' },
       discord: { connector: 'discord', configured: Boolean(connectorSecretValue('HARNESS_DISCORD_BOT_TOKEN')), running: isDiscordBotRunning(), hasAllowedChannelIds: Boolean(discordAllowedChannelIds), mode: 'chat-bridge' },
       slack: getSlackConnectorStatus(connectorSecretValue('HARNESS_SLACK_WEBHOOK_URL')),
       whatsapp: getWhatsAppConnectorStatus({ accessToken: connectorSecretValue('HARNESS_WHATSAPP_ACCESS_TOKEN'), phoneNumberId: whatsappPhoneNumberId || process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID, allowedRecipients: whatsappAllowedRecipients || process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS }),
       smtp: { connector: 'smtp', configured: Boolean(smtpHost && smtpUser && smtpPass), mode: 'outbound' },
-    },
-  });
-});
-
+    };
+  },
+}));
 app.get('/api/capability-templates', async (_req, res) => {
   try {
     await ensureSettingsLoaded();
@@ -3146,16 +3934,6 @@ app.get('/api/capability-templates/:id/starter', (req, res) => {
   }
 });
 
-app.get('/api/connectors/contracts', (_req, res) => {
-  try {
-    const contracts = listConnectorReadinessContracts();
-    res.json({ contracts, fixtures: listConnectorContractFixtures(), findings: validateConnectorReadinessContracts(contracts) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
 app.post('/api/capability-templates/:id/actions', async (req, res) => {
   try {
     await ensureSettingsLoaded();
@@ -3201,94 +3979,59 @@ app.post('/api/capability-templates/:id/actions', async (req, res) => {
   }
 });
 
-app.get('/api/message-ingress/policy', (_req, res) => {
+// ─── Static asset serving (desktop input evidence, research reports) ─
+// 3 file-serving routes (GET /api/desktop-input/evidence + /file/:name,
+// GET /api/research/report/:name) extracted to ./assetRoutes.ts. All
+// sendFile-based with dotfiles:'allow' for .harness/ paths; no module
+// state coupling.
+app.use(createAssetRouter({ projectDir: PROJECT_DIR }));
+
+// 3 webhook routes (GET /api/webhooks, POST /api/webhooks, DELETE
+// /api/webhooks/:id) extracted to ./webhookRoutes.ts. server.ts keeps
+// loadWebhooksFromEnv + sendWebhookNotification (non-HTTP boot/notify paths).
+app.use(createWebhookRouter());
+
+// Governed Agent Loop working-memory surface: GET /api/working-memory returns
+// the latest session's most recent continuity checkpoint as a unified
+// WorkingMemory object (read-only).
+app.use(createWorkingMemoryRouter({ projectDir: PROJECT_DIR }));
+
+// Governed Agent Loop review queue: human-gated list/approve/reject/drain for
+// staged brain-updates and needs-review answers (GET /api/review-queue,
+// POST /api/review-queue/:id/{approve,reject,drain}).
+app.use(createReviewQueueRouter());
+
+// Browser hardening surface: GET /api/browser/audit (page-action audit log),
+// GET/POST/DELETE /api/browser/sessions (cookie/session vault). Redaction
+// settings flow through POST /api/settings (browserRedaction).
+app.use(createBrowserHardeningRouter());
+
+// Replay execution: consume the drained needs-review answers and re-ask each
+// one through the harness, re-enqueuing the fresh governed answer for review.
+// This closes the loop (drain -> replay -> re-review) and auto-approves
+// nothing. With governance off it is a no-op (runReplayQuery yields null).
+app.post('/api/replay-candidates/run', async (_req, res) => {
   try {
-    res.json({ policy: getMessageIngressPolicy() });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
+    const result = await runReplayCandidates({ runOne: runReplayQuery });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
-app.get('/api/desktop-input/evidence', async (_req, res) => {
-  try {
-    const dir = path.join(PROJECT_DIR, '.harness', 'desktop');
-    const auditPath = path.join(dir, 'desktop-input-audit.jsonl');
-    const auditRaw = await fs.readFile(auditPath, 'utf-8').catch(() => '');
-    const audit = auditRaw.split(/\r?\n/)
-      .filter((line) => line.trim())
-      .slice(-50)
-      .map((line) => {
-        try { return JSON.parse(line) as Record<string, unknown>; } catch { return { malformed: true, raw: line.slice(0, 500) }; }
-      });
-    const files = await fs.readdir(dir).catch(() => []);
-    const screenshots = files
-      .filter((name) => /^desktop-input-(before|after)-[A-Za-z0-9_.-]+\.png$/.test(name))
-      .sort()
-      .slice(-50)
-      .map((name) => ({ name, url: `/api/desktop-input/evidence/file/${encodeURIComponent(name)}` }));
-    res.json({ auditPath: '.harness/desktop/desktop-input-audit.jsonl', audit, screenshots });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/desktop-input/evidence/file/:name', (req, res) => {
-  const name = String(req.params.name || '');
-  if (!/^desktop-input-(before|after)-[A-Za-z0-9_.-]+\.png$/.test(name)) {
-    res.status(404).json({ error: 'Desktop evidence file not found.' });
-    return;
-  }
-  res.sendFile(path.join(PROJECT_DIR, '.harness', 'desktop', name));
-});
-
-app.get('/api/webhooks', (_req, res) => {
-  res.json({ webhooks: listWebhooks() });
-});
-
-app.get('/api/nervous', (_req, res) => {
-  const snap = lastNervousSnapshot;
-  const state = snap?.runState ?? null;
-  const signals = snap?.signals ?? [];
-  const summary = snap?.summary ?? { totalSignals: 0, bySeverity: {}, byType: {}, runActive: false };
-  const recovery = snap?.recovery ?? null;
-  res.json({
-    active: state !== null,
-    permissionMode,
-    verificationBypassActive: shouldBypassNervousVerification(),
-    summary,
-    signals: signals.slice(-20).map((s) => ({ type: s.type, severity: s.severity, message: s.message, source: s.source, createdAt: s.createdAt })),
-    recovery: recovery ? { reason: recovery.reason, safeNextAction: recovery.safeNextAction } : null,
-  });
-});
-
-app.get('/api/nervous/history', async (_req, res) => {
-  try {
-    const history = await NervousSystemController.readPersistedSignals(PROJECT_DIR, 100);
-    res.json({ signals: history });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/webhooks', (req, res) => {
-  try {
-    const url = String(req.body?.url ?? '').trim();
-    if (!url) { res.status(400).json({ error: 'url is required' }); return; }
-    const secret = typeof req.body?.secret === 'string' ? req.body.secret.trim() : undefined;
-    const events = Array.isArray(req.body?.events) ? req.body.events.map(String) : [];
-    const webhook = addWebhook({ url, secret, events, enabled: true });
-    res.json({ ok: true, webhook: { ...webhook, secret: secret ? '***' : undefined } });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete('/api/webhooks/:id', (req, res) => {
-  const removed = removeWebhook(String(req.params.id));
-  if (!removed) { res.status(404).json({ error: 'Webhook not found' }); return; }
-  res.json({ ok: true });
-});
+// ─── Nervous-system snapshot API ─────────────────────────────────────
+// /api/nervous (live snapshot of last chat-handler controller) + /api/nervous/
+// history (persisted signal log). Extracted to ./nervousRoutes.ts. server.ts
+// still owns the lastNervousSnapshot module-level cache + shouldBypassNervousVerification
+// (3 non-HTTP callers in the tool-call loop); router takes callable deps so it
+// sees mutable state at request time.
+app.use(createNervousRouter({
+  projectDir: PROJECT_DIR,
+  getLastSnapshot: () => lastNervousSnapshot,
+  getPermissionMode: () => permissionMode,
+  isVerificationBypassActive: () => shouldBypassNervousVerification(),
+  readPersistedSignals: (projectDir, limit) => NervousSystemController.readPersistedSignals(projectDir, limit),
+}));
 
 app.get('/api/discovery', async (_req, res) => {
   await ensureSettingsLoaded();
@@ -3297,7 +4040,7 @@ app.get('/api/discovery', async (_req, res) => {
   try {
     const automationPolicy = getAutomationPolicyContext();
     const ttlMs = modelCatalog.ttlHours * 60 * 60 * 1000;
-    const [catalog, catalogStatus, extensions, automationJobs, dueAutomations, agenticServices, sessionSearch, runtimeSkills, repoSkills, curatorLog] = await Promise.all([
+    const [catalog, catalogStatus, extensions, automationJobs, dueAutomations, agenticServices, sessionSearch, runtimeSkills, repoSkills, globalSkills, curatorLog] = await Promise.all([
       getModelCatalog(PROJECT_DIR, { url: modelCatalog.url || undefined, ttlMs, fetchJson: fetchJsonFromUrl }),
       getModelCatalogCacheStatus(PROJECT_DIR, new Date(), ttlMs),
       discoverExtensionManifests(PROJECT_DIR),
@@ -3307,6 +4050,7 @@ app.get('/api/discovery', async (_req, res) => {
       getSessionSearchIndexStatus(PROJECT_DIR),
       scanSkillsDir(SKILLS_DIR),
       scanSkillsDir(REPO_SKILLS_DIR),
+      scanSkillsDir(GLOBAL_SKILLS_DIR),
       readCuratorLog(PROJECT_DIR, 10),
     ]);
     res.json({
@@ -3317,9 +4061,11 @@ app.get('/api/discovery', async (_req, res) => {
         skills: {
           runtime: { directory: SKILLS_DIR, total: runtimeSkills.skills.length, diagnosticCount: runtimeSkills.diagnostics.length, diagnostics: runtimeSkills.diagnostics },
           repo: { directory: REPO_SKILLS_DIR, total: repoSkills.skills.length, diagnosticCount: repoSkills.diagnostics.length, diagnostics: repoSkills.diagnostics },
+          global: { directory: GLOBAL_SKILLS_DIR, total: globalSkills.skills.length, diagnosticCount: globalSkills.diagnostics.length, diagnostics: globalSkills.diagnostics },
           sources: [
             skillSourceForApi('runtime', 'Runtime skills', SKILLS_DIR, runtimeSkills, true),
             skillSourceForApi('repo', 'Repo skills', REPO_SKILLS_DIR, repoSkills, false),
+            skillSourceForApi('global', 'Global skills', GLOBAL_SKILLS_DIR, globalSkills, false),
           ],
         },
       },
@@ -3370,359 +4116,169 @@ app.get('/api/capabilities/registry', async (_req, res) => {
 });
 
 // ─── Worker Queue status ────────────────────────────────────────────
-const workerQueue = new WorkerQueue();
+// Misc small routes (worker queue, mode classifier, swallowed-failure
+// diagnostics) extracted to ./miscRoutes.ts. classifyMode is still
+// imported by server.ts (chat handler ~5417 + agent routes ~2493).
+app.use(createMiscRouter());
 
-app.get('/api/worker/status', (_req, res) => {
-  res.json({ pending: workerQueue.pendingCount(), queue: workerQueue.pending(), history: workerQueue.history() });
-});
+// ─── Agentic services + lifecycle + templates + health ──────────────
+// All /api/services/* routes extracted to ./serviceRoutes.ts. server.ts
+// still imports listAgenticServices (system-overview + system-health),
+// keeps recordOperatingServiceEvidence + operatingServiceLifecycleAudit
+// here because they read server.ts module state (currentModel,
+// permissionMode, capabilityGrants).
+app.use(createServiceRouter({
+  projectDir: PROJECT_DIR,
+  getOperatingServiceLifecycleAudit: () => operatingServiceLifecycleAudit(),
+  recordOperatingServiceEvidence,
+}));
 
-// ─── Mode classification ────────────────────────────────────────────
-app.get('/api/modes/classify', (req, res) => {
-  const message = typeof req.query.message === 'string' ? req.query.message : '';
-  if (!message) { res.status(400).json({ error: 'message query parameter is required' }); return; }
-  res.json(classifyMode(message));
-});
+// ─── Tasks + Kanban ─────────────────────────────────────────────────
+// Structured task lifecycle and the Kanban board over them. Routes
+// extracted to ./taskRoutes.ts so server.ts holds wiring, not handlers.
+const runCodexTaskWithConductor: CodexTaskRunner = async ({ task, contract, prompt, onEvent, abortSignal }) => {
+  await ensureSettingsLoaded();
+  const requestedModel = currentModel || 'llama3.1:8b';
+  const routed = await resolveChatModelForRequest(requestedModel, prompt);
+  const activeModel = routed.model;
+  onEvent({ type: 'model', model: activeModel });
 
-app.get('/api/services', async (req, res) => {
-  try {
-    const limit = parseNonNegativeInteger(req.query.limit, 50, 200);
-    const offset = parseNonNegativeInteger(req.query.offset, 0, Number.MAX_SAFE_INTEGER);
-    const services = await listAgenticServices(PROJECT_DIR);
-    const page = services.slice(offset, offset + limit);
-    res.json({ total: services.length, limit, offset, lifecycle: operatingServiceLifecycleAudit(), services: page.map((item) => ({ service: item.service, stateSummary: summarizeServiceState(item.state) })) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
+  const activeContextMaxTokens = await resolveContextMaxTokens(activeModel);
+  const client = webRuntime.createClient(activeModel, ollamaHost, activeContextMaxTokens);
+  const tools = webRuntime.getTools();
+  const permissions = webRuntime.createPermissionEngine(permissionMode);
+  const session = webRuntime.createSession(PROJECT_DIR, activeModel);
+  await session.initialize();
+  const learningRecorder = new LearningRecorder(PROJECT_DIR);
+  const systemPrompt = await webRuntime.assembleSystemContext({
+    systemPrompt: [
+      'You are running Codex Task Mode for a single tracked coding task.',
+      'Work against the task contract. Keep changes scoped. Validate before declaring completion.',
+      'Report concise progress at the end of each step.',
+    ].join('\n'),
+    projectDir: PROJECT_DIR,
+    skillsDir: SKILLS_DIR,
+    recallProjectDir: PROJECT_DIR,
+    recallQuery: prompt.slice(0, 240),
+    ragProjectDir: PROJECT_DIR,
+    ragQuery: prompt.slice(0, 240),
+    ragOllamaHost: ollamaHost,
+    palaceProjectDir: PROJECT_DIR,
+    sessionSearchProjectDir: PROJECT_DIR,
+    sessionSearchQuery: prompt.slice(0, 240),
+    ccmemUrl: ccmemUrl || undefined,
+    ccmemQuery: prompt.slice(0, 240),
+  });
+
+  const config: LoopConfig = {
+    model: activeModel,
+    systemPrompt,
+    maxTurns: contract.max_turns,
+    taskContract: contract,
+    verify: { enabled: true, quick: true, timeout: 60_000 },
+    validateToolInput: true,
+    readBeforeWrite: { mode: 'warn', allowNewFiles: true },
+    repeatedToolFailureLimit: 3,
+    unproductiveTurnLimit: 5,
+    context: { enabled: true, maxTokens: activeContextMaxTokens, summarizerModel: summarizerModel || undefined },
+    outputValidation: { enabled: true, profile: 'coding-answer', customProfiles: customOutputValidationProfiles },
+    autoContinue: true,
+    taskType: contract.intent_type,
+    abortSignal,
+  };
+  const deps: QueryLoopDeps = {
+    client,
+    tools,
+    permissionCheck: async (call) => {
+      const result = permissions.evaluate(call);
+      if (result.decision === 'allow') return { allowed: true, reason: result.reason };
+      if (result.decision === 'deny') return { allowed: false, reason: result.reason };
+      return permissionPrompts.request(call, result.reason);
+    },
+    hooks: hookPipeline,
+    session,
+    summarizerClient: summarizerModel ? webRuntime.createClient(summarizerModel, ollamaHost, activeContextMaxTokens) : undefined,
+    tracer: runtimeTracer,
+    learningRecorder,
+    adversaryJudge: createLlmAdversaryJudge(client),
+  };
+
+  const outcome = await runConductor({
+    task: prompt,
+    planner: createLlmPlanner(client),
+    executor: createQueryLoopExecutor(config, deps, {
+      onLoopEvent: (event) => onEvent({ type: 'loop_event', event }),
+    }),
+    verifier: createCodeVerifier(PROJECT_DIR, { quick: true, timeout: 60_000 }),
+    persistDir: path.join(PROJECT_DIR, '.harness', 'conductor'),
+    runId: task.id,
+    abortSignal,
+    onEvent: (event) => onEvent(toCodexRunnerEvent(event)),
+  });
+
+  return {
+    status: outcome.status,
+    assistantText: outcome.assistantText,
+    toolCallCount: outcome.toolCallCount,
+    toolSuccessCount: outcome.toolSuccessCount,
+    verifications: outcome.verifications,
+    capabilityGaps: outcome.capabilityGaps,
+  };
+};
+
+function toCodexRunnerEvent(event: ConductorEvent): CodexTaskRunnerEvent {
+  switch (event.type) {
+    case 'plan': return { type: 'plan', plan: event.plan };
+    case 'step_start': return { type: 'step_start', step: event.step, index: event.index, total: event.total };
+    case 'step_result': return { type: 'step_result', step: event.step, result: event.result };
+    case 'verify': return { type: 'verify', step: event.step, result: event.result };
+    case 'remediation': return { type: 'remediation', failedStep: event.failedStep, attempt: event.attempt };
+    case 'capability_gap': return { type: 'capability_gap', gap: event.gap };
+    case 'done': return { type: 'done', status: event.status, steps: event.steps };
   }
-});
+}
 
-app.get('/api/services/export', async (req, res) => {
-  try {
-    const ids = typeof req.query.ids === 'string' ? req.query.ids.split(',').map((id) => id.trim()).filter(Boolean) : undefined;
-    const payload = await exportAgenticServices(PROJECT_DIR, ids);
-    await recordOperatingServiceEvidence('export', payload.services.map((item) => item.service.service_id), `Exported ${payload.services.length} operating service(s).`).catch((error) => logger.warn('Services', 'Failed to record service export evidence', { error: error instanceof Error ? error.message : String(error) }));
-    res.setHeader('Content-Disposition', `attachment; filename="operating-services-${new Date().toISOString().slice(0, 10)}.json"`);
-    res.json(payload);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/services/import', async (req, res) => {
-  try {
-    const overwrite = req.query.overwrite === 'true' || req.body?.overwrite === true;
-    const payload = req.body?.payload ?? req.body;
-    const result = await importAgenticServices(PROJECT_DIR, payload, { overwrite });
-    await recordOperatingServiceEvidence('import', [...result.imported, ...result.skipped], `Imported ${result.imported.length} and skipped ${result.skipped.length} operating service(s).`).catch((error) => logger.warn('Services', 'Failed to record service import evidence', { error: error instanceof Error ? error.message : String(error) }));
-    res.json({ ok: true, ...result });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ error: msg });
-  }
-});
-
-app.get('/api/services/:id', async (req, res) => {
-  try {
-    const serviceId = safeLocalId(req.params.id);
-    if (!serviceId) { res.status(400).json({ error: 'Invalid service id.' }); return; }
-    const service = await getAgenticService(PROJECT_DIR, serviceId);
-    if (!service) { res.status(404).json({ error: 'Service not found.' }); return; }
-    res.json(service);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// ─── Service Templates (must come before :id route) ─────────────────
-app.get('/api/services/templates', async (_req, res) => {
-  res.json(SERVICE_TEMPLATES);
-});
-
-// ─── Service Lifecycle ──────────────────────────────────────────────
-
-app.get('/api/services/:id/lifecycle', async (req, res) => {
-  try {
-    const serviceId = safeLocalId(req.params.id);
-    if (!serviceId) { res.status(400).json({ error: 'Invalid service id.' }); return; }
-    const lifecycle = await getServiceLifecycle(PROJECT_DIR, serviceId);
-    if (!lifecycle) { res.status(404).json({ error: 'No lifecycle found. Use POST to initialize.' }); return; }
-    res.json(lifecycle);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/services/:id/lifecycle', async (req, res) => {
-  try {
-    const serviceId = safeLocalId(req.params.id);
-    if (!serviceId) { res.status(400).json({ error: 'Invalid service id.' }); return; }
-    const targetStatus = req.body?.status as ServiceLifecycleStatus | undefined;
-    if (!targetStatus) { res.status(400).json({ error: 'status is required.' }); return; }
-    const existing = await getServiceLifecycle(PROJECT_DIR, serviceId);
-    if (!existing) {
-      const state = await initServiceLifecycle(PROJECT_DIR, serviceId, targetStatus);
-      await emitEvent(PROJECT_DIR, 'service', 'lifecycle_initialized', { service_id: serviceId, status: targetStatus }, 'user', serviceId).catch((err) => recordSwallowed('emitEvent', err));
-      res.json({ success: true, state });
-      return;
-    }
-    const result = await transitionService(PROJECT_DIR, serviceId, targetStatus, req.body?.error_message);
-    if (result.success) {
-      await emitEvent(PROJECT_DIR, 'service', 'lifecycle_transitioned', { service_id: serviceId, from: result.from, to: result.to }, 'user', serviceId).catch((err) => recordSwallowed('emitEvent', err));
-    }
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/services/:id/health', async (req, res) => {
-  try {
-    const serviceId = safeLocalId(req.params.id);
-    if (!serviceId) { res.status(400).json({ error: 'Invalid service id.' }); return; }
-    const health = await probeServiceHealth(PROJECT_DIR, serviceId);
-    res.json(health);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// ─── Tasks ──────────────────────────────────────────────────────────
-// Structured task lifecycle. Mutations also emit events through the event
-// store so live WebSocket clients refresh without polling.
-
-const VALID_TASK_STATUSES = new Set<TaskStatus>(['pending', 'assigned', 'in_progress', 'blocked', 'review', 'done', 'failed', 'cancelled']);
-const VALID_TASK_PRIORITIES = new Set<TaskPriority>(['low', 'normal', 'high']);
-
-app.get('/api/tasks', async (req, res) => {
-  try {
-    const status = typeof req.query.status === 'string' ? req.query.status as TaskStatus : undefined;
-    if (status && !VALID_TASK_STATUSES.has(status)) { res.status(400).json({ error: 'Invalid status filter.' }); return; }
-    const assigneeId = typeof req.query.assignee === 'string' ? req.query.assignee : undefined;
-    const tasks = await listTasks(PROJECT_DIR, { status, assigneeId });
-    const summary = await summarizeTasks(PROJECT_DIR);
-    res.json({ tasks, summary });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/tasks/:id', async (req, res) => {
-  try {
-    const task = await getTask(PROJECT_DIR, req.params.id);
-    if (!task) { res.status(404).json({ error: 'Task not found.' }); return; }
-    res.json({ task });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/tasks', async (req, res) => {
-  try {
-    const { title, description, priority, assigneeId, parentTaskId, dependsOn, tags, metadata } = req.body ?? {};
-    if (!title || typeof title !== 'string') { res.status(400).json({ error: 'title is required.' }); return; }
-    if (priority && !VALID_TASK_PRIORITIES.has(priority)) { res.status(400).json({ error: 'Invalid priority.' }); return; }
-    const task = await createTask(PROJECT_DIR, {
-      title, description, priority, assigneeId, parentTaskId,
-      dependsOn: Array.isArray(dependsOn) ? dependsOn : undefined,
-      tags: Array.isArray(tags) ? tags : undefined,
-      metadata: metadata && typeof metadata === 'object' ? metadata : undefined,
-    });
-    res.json({ task });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.patch('/api/tasks/:id', async (req, res) => {
-  try {
-    const { title, description, status, priority, assigneeId, dependsOn, tags, metadata } = req.body ?? {};
-    if (status && !VALID_TASK_STATUSES.has(status)) { res.status(400).json({ error: 'Invalid status.' }); return; }
-    if (priority && !VALID_TASK_PRIORITIES.has(priority)) { res.status(400).json({ error: 'Invalid priority.' }); return; }
-    const task = await updateTask(PROJECT_DIR, req.params.id, {
-      title, description, status, priority, assigneeId,
-      dependsOn: Array.isArray(dependsOn) ? dependsOn : undefined,
-      tags: Array.isArray(tags) ? tags : undefined,
-      metadata: metadata && typeof metadata === 'object' ? metadata : undefined,
-    });
-    res.json({ task });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    res.status(message.startsWith('Task not found') ? 404 : 500).json({ error: message });
-  }
-});
-
-app.post('/api/tasks/:id/check-in', async (req, res) => {
-  try {
-    const { progressPercent, message, status } = req.body ?? {};
-    if (typeof message !== 'string' || !message.trim()) { res.status(400).json({ error: 'message is required.' }); return; }
-    if (status && !VALID_TASK_STATUSES.has(status)) { res.status(400).json({ error: 'Invalid status.' }); return; }
-    const task = await recordCheckIn(PROJECT_DIR, req.params.id, {
-      progressPercent: typeof progressPercent === 'number' ? progressPercent : undefined,
-      message,
-      status: status as TaskStatus | undefined,
-    });
-    res.json({ task });
-  } catch (error) {
-    const errMsg = error instanceof Error ? error.message : String(error);
-    res.status(errMsg.startsWith('Task not found') ? 404 : 500).json({ error: errMsg });
-  }
-});
-
-app.delete('/api/tasks/:id', async (req, res) => {
-  try {
-    const removed = await deleteTask(PROJECT_DIR, req.params.id);
-    if (!removed) { res.status(404).json({ error: 'Task not found.' }); return; }
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+app.use(createTaskRoutesRouter({ projectDir: PROJECT_DIR, runCodexTask: runCodexTaskWithConductor }));
 
 // ─── Triggers ───────────────────────────────────────────────────────
-// Persisted in .harness/triggers/triggers.json. The TriggerScheduler is
-// started during boot when HARNESS_TRIGGERS_ENABLED is set.
-
-function sanitizeTriggerInput(value: unknown): TriggerDefinition | null {
-  if (!value || typeof value !== 'object') return null;
-  const v = value as Record<string, unknown>;
-  if (typeof v.id !== 'string' || !v.id.trim()) return null;
-  if (typeof v.command !== 'string' || !v.command.trim()) return null;
-  const intervalSeconds = Number(v.intervalSeconds);
-  if (!Number.isFinite(intervalSeconds) || intervalSeconds < 1) return null;
-  const args = Array.isArray(v.args) ? v.args.filter((arg): arg is string => typeof arg === 'string') : undefined;
-  const cwd = typeof v.cwd === 'string' && v.cwd.trim() ? v.cwd : undefined;
-  const enabled = v.enabled === undefined ? true : Boolean(v.enabled);
-  return { id: v.id.trim(), command: v.command.trim(), args, cwd, intervalSeconds: Math.floor(intervalSeconds), enabled };
-}
-
-app.get('/api/triggers', async (_req, res) => {
-  try {
-    const triggers = await loadTriggers(PROJECT_DIR);
-    res.json({ enabled: triggersEnabled(), triggers });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/triggers', async (req, res) => {
-  try {
-    const definition = sanitizeTriggerInput(req.body);
-    if (!definition) { res.status(400).json({ error: 'id, command, intervalSeconds are required.' }); return; }
-    const triggers = await loadTriggers(PROJECT_DIR);
-    if (triggers.some((trigger) => trigger.id === definition.id)) {
-      res.status(409).json({ error: `Trigger ${definition.id} already exists.` }); return;
-    }
-    triggers.push(definition);
-    await saveTriggers(PROJECT_DIR, triggers);
-    if (triggerScheduler) await triggerScheduler.invalidate().catch((err) => recordSwallowed('triggerScheduler.invalidate', err));
-    res.json({ trigger: definition });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.patch('/api/triggers/:id', async (req, res) => {
-  try {
-    const triggers = await loadTriggers(PROJECT_DIR);
-    const idx = triggers.findIndex((trigger) => trigger.id === req.params.id);
-    if (idx === -1) { res.status(404).json({ error: 'Trigger not found.' }); return; }
-    const updates = req.body ?? {};
-    const merged: TriggerDefinition = {
-      ...triggers[idx],
-      ...(typeof updates.command === 'string' ? { command: updates.command.trim() } : {}),
-      ...(Array.isArray(updates.args) ? { args: updates.args.filter((arg: unknown): arg is string => typeof arg === 'string') } : {}),
-      ...(typeof updates.cwd === 'string' ? { cwd: updates.cwd } : {}),
-      ...(updates.intervalSeconds !== undefined ? { intervalSeconds: Math.max(1, Math.floor(Number(updates.intervalSeconds))) } : {}),
-      ...(updates.enabled !== undefined ? { enabled: Boolean(updates.enabled) } : {}),
-    };
-    triggers[idx] = merged;
-    await saveTriggers(PROJECT_DIR, triggers);
-    if (triggerScheduler) await triggerScheduler.invalidate().catch((err) => recordSwallowed('triggerScheduler.invalidate', err));
-    res.json({ trigger: merged });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete('/api/triggers/:id', async (req, res) => {
-  try {
-    const triggers = await loadTriggers(PROJECT_DIR);
-    const idx = triggers.findIndex((trigger) => trigger.id === req.params.id);
-    if (idx === -1) { res.status(404).json({ error: 'Trigger not found.' }); return; }
-    triggers.splice(idx, 1);
-    await saveTriggers(PROJECT_DIR, triggers);
-    if (triggerScheduler) await triggerScheduler.invalidate().catch((err) => recordSwallowed('triggerScheduler.invalidate', err));
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Persisted in .harness/triggers/triggers.json. Routes extracted to
+// ./triggerRoutes.ts. server.ts still owns the TriggerScheduler instance
+// (configureTriggerScheduler / triggersEnabled) — the router just calls
+// back via the isEnabled + invalidateScheduler deps.
+app.use(createTriggerRouter({
+  projectDir: PROJECT_DIR,
+  isEnabled: () => triggersEnabled(),
+  invalidateScheduler: () => triggerScheduler ? triggerScheduler.invalidate() : Promise.resolve(),
+}));
 
 // ─── Artifacts catalog ───────────────────────────────────
-// Cross-session view of files written by the agent into agent-outputs/.
-// Read-only; the artifact root is the same directory file_write redirects
-// new bare-filename writes to, honouring HARNESS_AGENT_OUTPUT_DIR.
-function artifactRoot(): string {
-  const override = (process.env.HARNESS_AGENT_OUTPUT_DIR ?? '').trim();
-  if (override) {
-    return path.isAbsolute(override) ? override : path.resolve(PROJECT_DIR, override);
-  }
-  return path.join(PROJECT_DIR, 'agent-outputs');
-}
-
-app.get('/api/artifacts', async (req, res) => {
-  try {
-    const limit = req.query.limit ? Math.max(1, Math.min(1000, Number(req.query.limit))) : undefined;
-    const category = typeof req.query.category === 'string' ? req.query.category as ArtifactCategory : undefined;
-    const search = typeof req.query.search === 'string' ? req.query.search : undefined;
-    const root = artifactRoot();
-    const records = await listArtifacts(root, { limit, category, search });
-    res.json({ root, count: records.length, artifacts: records });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/artifacts/content', async (req, res) => {
-  try {
-    const relative = typeof req.query.path === 'string' ? req.query.path : '';
-    if (!relative) { res.status(400).json({ error: 'path query parameter required.' }); return; }
-    const result = await readArtifact(artifactRoot(), relative);
-    res.json(result);
-  } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Read-only cross-session view of agent-outputs/ (honours
+// HARNESS_AGENT_OUTPUT_DIR). Routes extracted to ./artifactRoutes.ts.
+app.use(createArtifactRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Active sub-agents ─────────────────────────────────
-app.get('/api/subagents', async (_req, res) => {
-  try {
-    const records = listActiveSubagents().map((record) => ({
-      id: record.id,
-      name: record.name,
-      promptSnippet: record.promptSnippet,
-      startedAtMs: record.startedAtMs,
-      durationMs: Date.now() - record.startedAtMs,
-      lastActivity: record.lastActivity,
-      updatedAtMs: record.updatedAtMs,
-    }));
-    res.json({ count: records.length, subagents: records });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Routes extracted to ./subagentRoutes.ts. The WS bridge below
+// (subscribeSubagentRegistry) still lives here because it wires
+// the in-process registry onto the event store.
+app.use(createSubagentRouter({
+  projectDir: PROJECT_DIR,
+  getAgentOutputDirOverride: () => agentOutputDir,
+}));
 
-app.post('/api/subagents/:id/cancel', async (req, res) => {
-  try {
-    const ok = cancelSubagent(req.params.id);
-    if (!ok) { res.status(404).json({ error: 'Sub-agent not found.' }); return; }
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// ─── Sessions, recovery, forking, import/export ───────
+// All /api/sessions/* routes extracted to ./sessionRoutes.ts.
+// Router takes a getCurrentModel callable so resume/fork/import
+// continue to see server.ts's live `currentModel` selection.
+app.use(createSessionRouter({
+  projectDir: PROJECT_DIR,
+  getCurrentModel: () => currentModel || '',
+}));
+
+// ─── Memory (semantic + curated) ──────────────────────
+// All /api/memory/* routes extracted to ./memoryRoutes.ts. server.ts
+// still imports rebuildSemanticMemory + searchSemanticMemory directly
+// for the chat handler + webRuntime registry hooks.
+app.use(createMemoryRouter({ projectDir: PROJECT_DIR }));
 
 // Bridge registry mutations onto the event store so live WebSocket
 // clients can react to start / end / cancel without polling. Server
@@ -3830,288 +4386,46 @@ app.get('/metrics', (_req, res) => {
 });
 
 // ─── Agents (built-in + custom) ─────────────────────────────────────
-// List, create, and delete custom agent definitions stored under
-// .harness/agents/. Built-in roles are also surfaced so the UI can render
-// the full catalogue in one view.
-
-app.get('/api/agents', async (_req, res) => {
-  try {
-    const customAgents = await loadAgentDefinitions(PROJECT_DIR);
-    const builtins = BUILTIN_AGENT_ROLES.map((agent) => ({
-      id: agent.id,
-      name: agent.name,
-      description: agent.description,
-      role: agent.role,
-      preset: agent.preset,
-      personality: agent.personality,
-      goal: agent.goal,
-      strengths: agent.strengths,
-      allowedTools: agent.allowedTools,
-      systemPrompt: agent.systemPrompt,
-      enabled: agent.enabled,
-      filePath: '<builtin>',
-      source: 'builtin',
-    }));
-    const customs = customAgents.map((agent) => ({ ...agent, source: 'custom' }));
-    // Custom agents shadow built-ins of the same id; surface the custom one.
-    const seen = new Set<string>();
-    const merged: Array<Record<string, unknown>> = [];
-    for (const agent of [...customs, ...builtins]) {
-      if (seen.has(agent.id)) continue;
-      seen.add(agent.id);
-      merged.push(agent);
-    }
-    res.json({ agents: merged });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/agents', async (req, res) => {
-  try {
-    const { id, name, description, role, model: agentModel, preset, personality, goal, systemPrompt, allowedTools } = req.body ?? {};
-    if (typeof id !== 'string' || !id.trim()) { res.status(400).json({ error: 'id is required.' }); return; }
-    if (typeof name !== 'string' || !name.trim()) { res.status(400).json({ error: 'name is required.' }); return; }
-    if (typeof systemPrompt !== 'string' || !systemPrompt.trim()) { res.status(400).json({ error: 'systemPrompt is required.' }); return; }
-    const { writeCustomAgent } = await import('../agents/agentLoader');
-    const filePath = await writeCustomAgent(PROJECT_DIR, {
-      id: id.trim(),
-      name: name.trim(),
-      description: typeof description === 'string' ? description.trim() : '',
-      role: typeof role === 'string' ? role : undefined,
-      model: typeof agentModel === 'string' ? agentModel : undefined,
-      preset: typeof preset === 'string' ? preset as never : undefined,
-      personality: typeof personality === 'string' ? personality : undefined,
-      goal: typeof goal === 'string' ? goal : undefined,
-      systemPrompt,
-      allowedTools: Array.isArray(allowedTools) ? allowedTools.filter((tool: unknown): tool is string => typeof tool === 'string') : undefined,
-    });
-    res.json({ id: id.trim(), filePath });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete('/api/agents/:id', async (req, res) => {
-  try {
-    const id = String(req.params.id || '').trim();
-    if (!/^[a-z0-9][a-z0-9-_]*$/i.test(id)) { res.status(400).json({ error: 'Invalid agent id.' }); return; }
-    const fp = path.join(PROJECT_DIR, '.harness', 'agents', `${id}.md`);
-    try {
-      await fs.unlink(fp);
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      if (msg.includes('ENOENT') || msg.includes('no such file')) { res.status(404).json({ error: 'Agent not found.' }); return; }
-      throw error;
-    }
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Run an agent directly from the More→Agents UI. Mirrors the squad/concierge
-// auto-route path: same parent client, same enabled tool set (minus the
-// recursive `agent` tool), same custom-agents snapshot. The run registers
-// in /api/subagents so the global active-subagents bar shows it and the
-// existing cancel endpoint can stop it.
-app.post('/api/agents/:id/run', async (req, res) => {
-  try {
-    const id = String(req.params.id || '').trim();
-    if (!/^[a-z0-9][a-z0-9-_]*$/i.test(id)) { res.status(400).json({ error: 'Invalid agent id.' }); return; }
-    const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
-    if (!prompt) { res.status(400).json({ error: 'prompt is required.' }); return; }
-    await refreshCustomAgentsIfStale();
-    const customAgents = getCachedCustomAgentsSnapshot();
-    const isKnown = customAgents.some((agent) => agent.id === id)
-      || BUILTIN_AGENT_ROLES.some((agent) => agent.id === id);
-    if (!isKnown) { res.status(404).json({ error: 'Agent not found.' }); return; }
-    if (!currentModel) {
-      res.status(400).json({ error: 'No model selected. Pick a model in the Chat tab before running an agent.' });
-      return;
-    }
-    const parentClient = webRuntime.createClient(currentModel, ollamaHost);
-    const baseTools = applyToolDisables(getRuntimeTools(PROJECT_DIR)).filter((tool) => tool.name !== 'agent');
-    const { runSubagent } = await import('../agents/subagent');
-    const runId = `agent-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const summary = await runSubagent(
-      { name: id, systemPrompt: '', agentId: id, customAgents, runId },
-      prompt,
-      parentClient,
-      baseTools,
-    );
-    res.json({ success: true, runId, summary });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// 4 routes (GET /api/agents, POST /api/agents, DELETE /api/agents/:id,
+// POST /api/agents/:id/run) extracted to ./agentRoutes.ts. server.ts keeps
+// BUILTIN_AGENT_ROLES + loadAgentDefinitions + refreshCustomAgentsIfStale +
+// getCachedCustomAgentsSnapshot (chat handler + concierge use them); router
+// takes callable deps so it sees mutable currentModel/ollamaHost/webRuntime/
+// runtime-tool state at request time.
+app.use(createAgentRouter({
+  projectDir: PROJECT_DIR,
+  getCurrentModel: () => currentModel,
+  getOllamaHost: () => ollamaHost,
+  refreshCustomAgentsIfStale,
+  getCachedCustomAgentsSnapshot,
+  createParentClient: (model, host) => webRuntime.createClient(model, host),
+  getBaseTools: () => applyToolDisables(getRuntimeTools(PROJECT_DIR)),
+}));
 
 // ─── Squads ─────────────────────────────────────────────────────────
-// Persistent agent rosters with regex-based routing rules. Each squad
-// lives under .harness/squads/<id>.json. Mutations emit events that the
-// WebSocket broadcaster forwards to live UI clients.
-
-app.get('/api/squads', async (_req, res) => {
-  try {
-    const squads = await listSquads(PROJECT_DIR);
-    res.json({ squads });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/squads/:id', async (req, res) => {
-  try {
-    const squad = await getSquad(PROJECT_DIR, req.params.id);
-    if (!squad) { res.status(404).json({ error: 'Squad not found.' }); return; }
-    res.json({ squad });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/squads', async (req, res) => {
-  try {
-    const squad = await createSquad(PROJECT_DIR, req.body ?? {});
-    res.json({ squad });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const status = message.includes('already exists') ? 409 : 400;
-    res.status(status).json({ error: message });
-  }
-});
-
-app.patch('/api/squads/:id', async (req, res) => {
-  try {
-    const squad = await updateSquad(PROJECT_DIR, req.params.id, req.body ?? {});
-    res.json({ squad });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const status = message.includes('not found') ? 404 : 400;
-    res.status(status).json({ error: message });
-  }
-});
-
-app.delete('/api/squads/:id', async (req, res) => {
-  try {
-    const removed = await deleteSquad(PROJECT_DIR, req.params.id);
-    if (!removed) { res.status(404).json({ error: 'Squad not found.' }); return; }
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/squads/:id/route', async (req, res) => {
-  try {
-    const squad = await getSquad(PROJECT_DIR, req.params.id);
-    if (!squad) { res.status(404).json({ error: 'Squad not found.' }); return; }
-    const message = typeof req.body?.message === 'string' ? req.body.message : '';
-    if (!message.trim()) { res.status(400).json({ error: 'message is required.' }); return; }
-    res.json({ result: routeMessage(squad, message) });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Persistent agent rosters with regex-based routing rules. Routes
+// extracted to ./squadRoutes.ts; server.ts still uses getSquad/
+// routeMessage in the chat handler and listSquads in system health.
+app.use(createSquadRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Identity ───────────────────────────────────────────────────────
-// SOUL.md / USER.md / structured.json under .harness/identity/. The
-// identity layer is rendered into the chat system prompt (when
-// non-empty) so the agent's persistent persona and the user's stored
-// preferences shape replies.
-
-app.get('/api/identity', async (_req, res) => {
-  try {
-    const snapshot = await readIdentitySnapshot(PROJECT_DIR);
-    res.json(snapshot);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-const VALID_IDENTITY_FILES = new Set<IdentityFileName>(['SOUL.md', 'USER.md']);
-
-app.put('/api/identity/:file', async (req, res) => {
-  try {
-    const fileName = req.params.file as IdentityFileName;
-    if (!VALID_IDENTITY_FILES.has(fileName)) { res.status(400).json({ error: 'file must be SOUL.md or USER.md.' }); return; }
-    const content = typeof req.body?.content === 'string' ? req.body.content : '';
-    await writeIdentityFile(PROJECT_DIR, fileName, content);
-    const reread = await readIdentityFile(PROJECT_DIR, fileName);
-    res.json({ file: fileName, content: reread });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/identity/structured', async (req, res) => {
-  try {
-    const category = typeof req.query.category === 'string' ? req.query.category : undefined;
-    const q = typeof req.query.q === 'string' ? req.query.q : undefined;
-    const entries = await queryStructured(PROJECT_DIR, { category, q });
-    res.json({ entries });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/identity/structured', async (req, res) => {
-  try {
-    const { id, category, summary, metadata } = req.body ?? {};
-    if (typeof category !== 'string' || !category.trim()) { res.status(400).json({ error: 'category is required.' }); return; }
-    if (typeof summary !== 'string' || !summary.trim()) { res.status(400).json({ error: 'summary is required.' }); return; }
-    const entry = await upsertStructuredEntry(PROJECT_DIR, {
-      id: typeof id === 'string' ? id : undefined,
-      category,
-      summary,
-      metadata: metadata && typeof metadata === 'object' ? metadata : undefined,
-    });
-    res.json({ entry });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete('/api/identity/structured/:id', async (req, res) => {
-  try {
-    const removed = await deleteStructuredEntry(PROJECT_DIR, req.params.id);
-    if (!removed) { res.status(404).json({ error: 'Structured entry not found.' }); return; }
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/identity/export', async (_req, res) => {
-  try {
-    const payload = await exportIdentity(PROJECT_DIR);
-    res.json(payload);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/identity/import', async (req, res) => {
-  try {
-    if (!requireEscalationAuth(req, res, 'identity import')) return;
-    const mergeStructured = req.body?.mergeStructured !== false;
-    const overwriteFiles = req.body?.overwriteFiles !== false;
-    const hasOverwriteContent = overwriteFiles && (
-      (typeof req.body?.snapshot?.soul === 'string' && req.body.snapshot.soul.trim().length > 0)
-      || (typeof req.body?.snapshot?.user === 'string' && req.body.snapshot.user.trim().length > 0)
-    );
-    if (hasOverwriteContent) {
-      const reason = requireAuditReason(req.body?.reason, res, 'Identity import with SOUL/USER overwrite');
-      if (!reason) return;
-      logger.info('Identity', 'Import requested with file overwrite', { reason, mergeStructured });
+// SOUL.md / USER.md / structured.json under .harness/identity/. Routes
+// extracted to ./identityRoutes.ts so server.ts holds wiring, not handlers.
+app.use(createIdentityRouter({
+  projectDir: PROJECT_DIR,
+  requireAuth: requireEscalationAuth,
+  requireAuditReason,
+  logger,
+  isAutoUpdateSchedulerRunning: () => identityAutoUpdateScheduler !== null,
+  runAutoUpdateNow: async () => {
+    if (!identityAutoUpdateScheduler) {
+      throw new Error('Identity auto-update scheduler is not running.');
     }
-    const summary = await importIdentity(PROJECT_DIR, req.body, { mergeStructured, overwriteFiles });
-    res.json({ summary });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ error: message });
-  }
-});
+    // Use a far-future clock so the maintenance-window + interval gates
+    // do not suppress the manual run. Kill switch and config still apply.
+    return identityAutoUpdateScheduler.tick(new Date(Date.now() + 365 * 24 * 60 * 60 * 1000));
+  },
+}));
 
 // ─── System Health ──────────────────────────────────────────────────
 // Aggregated dashboard endpoint surfacing live state across the daemon's
@@ -4125,6 +4439,28 @@ app.get('/api/system/health', async (_req, res) => {
       readConciergeLog(PROJECT_DIR, 20).catch(() => []),
       summarizeTasks(PROJECT_DIR).catch(() => null),
       listSquads(PROJECT_DIR).then((squads) => squads.length).catch(() => 0),
+    ]);
+    const [sessionHealth, evidenceHealth] = await Promise.all([
+      SessionStorage.inspectStorage(PROJECT_DIR).catch((error) => ({
+        status: 'error' as const,
+        sessionDir: path.join(PROJECT_DIR, '.harness', 'sessions'),
+        transcripts: 0,
+        metaFiles: 0,
+        corruptTranscriptFiles: 0,
+        corruptTranscriptLines: 0,
+        corruptMetaFiles: 0,
+        unreadableFiles: 1,
+        error: error instanceof Error ? error.message : String(error),
+      })),
+      inspectRunEvidence(PROJECT_DIR).catch((error) => ({
+        status: 'error' as const,
+        path: path.join(PROJECT_DIR, '.harness', 'evidence', 'runs.jsonl'),
+        totalLines: 0,
+        validEntries: 0,
+        corruptLines: 0,
+        unreadable: true,
+        error: error instanceof Error ? error.message : String(error),
+      })),
     ]);
     const lastHeartbeat = heartbeatHistory[heartbeatHistory.length - 1] ?? null;
     // Read kill-switch and scheduler status from their canonical sources
@@ -4172,6 +4508,15 @@ app.get('/api/system/health', async (_req, res) => {
       },
       tasks: taskSummary,
       events: { recent_count: recentEvents.length },
+      persistence: {
+        sessions: sessionHealth,
+        evidence: evidenceHealth,
+        settings: { ...settingsPersistenceStatus },
+        swallowed_failures: {
+          total_recorded: getSwallowedFailureTotalCount(),
+          dropped: getSwallowedFailureDroppedCount(),
+        },
+      },
       context: await buildContextHealth(),
       vision: await buildVisionHealth(),
       observability: {
@@ -4243,12 +4588,6 @@ async function buildVisionHealth(): Promise<{
 }> {
   const configured = (mediaTools.visionModel || process.env.HARNESS_VISION_MODEL || '').trim();
   const installed = await webRuntime.listModels(ollamaHost).catch((): string[] => []);
-  const isInstalled = (name: string): boolean => {
-    if (!name) return false;
-    if (installed.includes(name)) return true;
-    const bare = name.split(':')[0];
-    return installed.some((entry) => entry === bare || entry.startsWith(`${bare}:`));
-  };
   const visionInstalled = installed.filter((name) => isVisionCapableModelName(name));
   if (!configured) {
     const fallback = visionInstalled[0];
@@ -4260,7 +4599,9 @@ async function buildVisionHealth(): Promise<{
       reason: fallback ? undefined : 'No vision model is configured and no vision-capable model is installed.',
     };
   }
-  if (isInstalled(configured)) {
+  // A configured model is usable when installed locally OR when it is a cloud
+  // model (`:cloud`), which Ollama resolves remotely and never lists.
+  if (isVisionModelUsable(configured, installed)) {
     return { configured, effective: configured, installed: visionInstalled, ok: true };
   }
   const fallback = visionInstalled[0];
@@ -4350,234 +4691,86 @@ app.put('/api/system/model-profiles/:model', async (req, res) => {
 });
 
 // ─── Promise Ledger ─────────────────────────────────────────────────
+// Routes extracted to ./promiseRoutes.ts. server.ts still imports the
+// ledger functions directly because schedulers + session bootstrap use
+// them outside the HTTP surface (see checkObligations / createPromise
+// call sites elsewhere in this file).
+app.use(createPromiseRouter({ projectDir: PROJECT_DIR, recordSwallowed }));
 
-app.get('/api/promises', async (req, res) => {
+// ─── Task Contract ───────────────────────────────────────────────────
+
+/**
+ * POST /api/task-contract/parse
+ * Convert a freeform user message into a structured TaskContract.
+ * Deterministic — no model call required.
+ *
+ * Body: { message: string, allowed_paths?: string[], extra_blocked_paths?: string[],
+ *         validation?: string[], max_turns?: number, approval_required?: boolean }
+ * Returns: TaskContract
+ */
+app.post('/api/task-contract/parse', (req, res) => {
   try {
-    const status = req.query.status as PromiseStatus | undefined;
-    const service_id = typeof req.query.service_id === 'string' ? req.query.service_id : undefined;
-    const promises = await listPromises(PROJECT_DIR, { status, service_id });
-    res.json({ total: promises.length, promises });
+    const { message, allowed_paths, extra_blocked_paths, validation, max_turns, approval_required } = req.body ?? {};
+    if (typeof message !== 'string' || !message.trim()) {
+      res.status(400).json({ error: 'message is required and must be a non-empty string.' });
+      return;
+    }
+    const contract = buildTaskContract(message, {
+      allowed_paths: Array.isArray(allowed_paths) ? allowed_paths : undefined,
+      extra_blocked_paths: Array.isArray(extra_blocked_paths) ? extra_blocked_paths : undefined,
+      validation: Array.isArray(validation) ? validation : undefined,
+      max_turns: typeof max_turns === 'number' ? max_turns : undefined,
+      approval_required: typeof approval_required === 'boolean' ? approval_required : undefined,
+    });
+    res.json(contract);
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });
 
-app.post('/api/promises', async (req, res) => {
-  try {
-    const { commitment, service_id, schedule_id, capability_required, next_due_at, fallback_message, session_id } = req.body ?? {};
-    if (!commitment || typeof commitment !== 'string') { res.status(400).json({ error: 'commitment is required.' }); return; }
-    const promise = await createPromise(PROJECT_DIR, commitment, { service_id, schedule_id, capability_required, next_due_at, fallback_message, session_id });
-    await emitEvent(PROJECT_DIR, 'promise', 'promise_created', { promise_id: promise.promise_id, commitment }, 'user', promise.promise_id).catch((err) => recordSwallowed('emitEvent', err));
-    res.json(promise);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// ─── Repo Map + Injection Defence ───────────────────────────────────
+// Routes extracted to ./scanRoutes.ts. server.ts no longer imports
+// repoMap or injectionDefence — both used exclusively by the HTTP layer.
+app.use(createScanRouter({ projectDir: PROJECT_DIR }));
 
-app.post('/api/promises/:id/fulfil', async (req, res) => {
-  try {
-    const promiseId = req.params.id;
-    const result = await fulfilPromise(PROJECT_DIR, promiseId);
-    if (!result) { res.status(404).json({ error: 'Promise not found.' }); return; }
-    await emitEvent(PROJECT_DIR, 'promise', 'promise_fulfilled', { promise_id: promiseId }, 'system', promiseId).catch((err) => recordSwallowed('emitEvent', err));
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// ─── Memory conflict + staleness ─────────────────────────────────────
+// Routes extracted to ./memoryHealthRoutes.ts. server.ts no longer
+// imports memoryConflictDetector — used exclusively by the HTTP layer.
+app.use(createMemoryHealthRouter({ projectDir: PROJECT_DIR }));
 
-app.post('/api/promises/:id/fail', async (req, res) => {
-  try {
-    const promiseId = req.params.id;
-    const markFailed = req.body?.markFailed === true;
-    const result = await failPromise(PROJECT_DIR, promiseId, markFailed);
-    if (!result) { res.status(404).json({ error: 'Promise not found.' }); return; }
-    await emitEvent(PROJECT_DIR, 'promise', 'promise_failed', { promise_id: promiseId, markFailed }, 'system', promiseId).catch((err) => recordSwallowed('emitEvent', err));
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// ─── Config Profiles ─────────────────────────────────────────────────
+// Routes extracted to ./profileRoutes.ts. server.ts still imports the
+// other configProfiles surface (BUILTIN_PROFILES/applyProfile/filterToolsByProfile)
+// for non-HTTP wiring.
+app.use(createProfileRouter({ projectDir: PROJECT_DIR }));
 
-app.get('/api/promises/obligations', async (_req, res) => {
-  try {
-    const result = await checkObligations(PROJECT_DIR);
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// ─── Confidence Calibration + Golden Traces ─────────────────────────
+// Routes extracted to ./evalRoutes.ts. server.ts still imports
+// renderDriftReport directly for non-HTTP wiring.
+app.use(createEvalRouter({ projectDir: PROJECT_DIR }));
 
-app.post('/api/promises/:id/cancel', async (req, res) => {
-  try {
-    const promiseId = req.params.id;
-    const result = await updatePromise(PROJECT_DIR, promiseId, { status: 'cancelled' });
-    if (!result) { res.status(404).json({ error: 'Promise not found.' }); return; }
-    await emitEvent(PROJECT_DIR, 'promise', 'promise_cancelled', { promise_id: promiseId }, 'user', promiseId).catch((err) => recordSwallowed('emitEvent', err));
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// ─── Versioned Prompts ──────────────────────────────────────────────
+// Routes extracted to ./promptsRoutes.ts. server.ts no longer imports
+// versionedPrompts — it is used exclusively by the HTTP layer.
+app.use(createPromptsRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Event Store ────────────────────────────────────────────────────
-
-app.get('/api/events', async (req, res) => {
-  try {
-    const query = {
-      category: req.query.category as EventCategory | undefined,
-      type: typeof req.query.type === 'string' ? req.query.type : undefined,
-      subject_id: typeof req.query.subject_id === 'string' ? req.query.subject_id : undefined,
-      after: typeof req.query.after === 'string' ? req.query.after : undefined,
-      before: typeof req.query.before === 'string' ? req.query.before : undefined,
-      limit: typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) || 50 : 50,
-      actor: typeof req.query.actor === 'string' ? req.query.actor : undefined,
-    };
-    const events = await queryEvents(PROJECT_DIR, query);
-    res.json({ total: events.length, events });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/events/summary', async (_req, res) => {
-  try {
-    const summary = await summarizeEventStore(PROJECT_DIR);
-    res.json(summary);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/events/postmortem/:id', async (req, res) => {
-  try {
-    const subjectId = req.params.id;
-    const window = typeof req.query.window === 'string' ? parseInt(req.query.window, 10) || 30 : 30;
-    const postmortem = await generatePostmortem(PROJECT_DIR, subjectId, window);
-    res.json({ postmortem });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/events/snapshots', async (_req, res) => {
-  try {
-    const subjects = await listSnapshots(PROJECT_DIR);
-    res.json({ subjects });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/events/snapshots/:id', async (req, res) => {
-  try {
-    const snapshot = await getSnapshot(PROJECT_DIR, req.params.id);
-    if (!snapshot) { res.status(404).json({ error: 'Snapshot not found.' }); return; }
-    res.json(snapshot);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/events/stream', (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders();
-
-  const unsubscribe = subscribeEventStream((event) => {
-    res.write(`data: ${JSON.stringify(event)}\n\n`);
-  });
-
-  req.on('close', () => {
-    unsubscribe();
-  });
-});
-
-app.post('/api/events', async (req, res) => {
-  try {
-    const { category, type, data, actor, subject_id, parent_event_id } = req.body ?? {};
-    if (!category || !type) { res.status(400).json({ error: 'category and type are required.' }); return; }
-    const validCategories: EventCategory[] = ['service', 'promise', 'task', 'tool', 'model', 'route', 'approval', 'file', 'schedule', 'notification', 'permission', 'system'];
-    if (!validCategories.includes(category)) { res.status(400).json({ error: `Invalid category. Must be one of: ${validCategories.join(', ')}` }); return; }
-    const event = await emitEvent(PROJECT_DIR, category, type, data ?? {}, actor ?? 'external', subject_id, parent_event_id);
-    res.json(event);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Routes extracted to ./eventRoutes.ts. server.ts still imports emitEvent,
+// queryEvents, summarizeEventStore for cross-cutting non-HTTP wiring
+// (concierge auto-route, service lifecycle, subagent lifecycle, subsystems
+// health, tool failure alerts).
+app.use(createEventRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Done-State Verifier ────────────────────────────────────────────
-
-app.post('/api/verify/code', async (req, res) => {
-  try {
-    const quick = req.body?.quick === true;
-    const result = await verifyCode({ projectDir: PROJECT_DIR, quick });
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/verify/service/:id', async (req, res) => {
-  try {
-    const serviceId = safeLocalId(req.params.id);
-    if (!serviceId) { res.status(400).json({ error: 'Invalid service id.' }); return; }
-    const result = await verifyService(PROJECT_DIR, serviceId);
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Routes extracted to ./doneStateRoutes.ts. server.ts no longer imports
+// doneStateVerifier -- used exclusively by the HTTP layer.
+app.use(createDoneStateRouter({ projectDir: PROJECT_DIR }));
 
 // ─── Code Intelligence ──────────────────────────────────────────────
-
-app.post('/api/code-intelligence/build', async (_req, res) => {
-  try {
-    const graph = await buildRepoGraph(PROJECT_DIR);
-    await saveRepoGraph(PROJECT_DIR, graph);
-    const summary = summarizeRepo(graph);
-    await emitEvent(PROJECT_DIR, 'system', 'repo_graph_built', { files: summary.total_files, edges: summary.total_edges }, 'system').catch((err) => recordSwallowed('emitEvent', err));
-    res.json(summary);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/code-intelligence/summary', async (_req, res) => {
-  try {
-    const graph = await loadRepoGraph(PROJECT_DIR);
-    if (!graph) { res.status(404).json({ error: 'No repo graph built yet. POST /api/code-intelligence/build first.' }); return; }
-    res.json(summarizeRepo(graph));
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/code-intelligence/impact', async (req, res) => {
-  try {
-    const files = req.body?.files as string[] | undefined;
-    if (!Array.isArray(files) || files.length === 0) { res.status(400).json({ error: 'files array is required.' }); return; }
-    const graph = await loadRepoGraph(PROJECT_DIR);
-    if (!graph) { res.status(404).json({ error: 'No repo graph. POST /api/code-intelligence/build first.' }); return; }
-    const impact = analyzeImpact(graph, files);
-    res.json(impact);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/code-intelligence/diagram', async (_req, res) => {
-  try {
-    const graph = await loadRepoGraph(PROJECT_DIR);
-    if (!graph) { res.status(404).json({ error: 'No repo graph. Build first.' }); return; }
-    const { generateArchitectureDiagram } = await import('../core/codeIntelligence');
-    const mermaid = generateArchitectureDiagram(graph);
-    res.json({ mermaid });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Routes extracted to ./codeIntelRoutes.ts. server.ts still imports
+// buildRepoGraph/saveRepoGraph/loadRepoGraph/summarizeRepo for non-HTTP
+// wiring (setup health, subsystems health, heartbeat repo-graph rebuild).
+app.use(createCodeIntelRouter({ projectDir: PROJECT_DIR }));
 
 app.get('/api/subsystems/health', async (_req, res) => {
   try {
@@ -4661,16 +4854,7 @@ app.post('/api/models/catalog/refresh', async (_req, res) => {
   }
 });
 
-app.post('/api/sessions/search-index/rebuild', async (_req, res) => {
-  try {
-    const index = await rebuildSessionSearchIndexWithMetadata(PROJECT_DIR);
-    const status = await getSessionSearchIndexStatus(PROJECT_DIR);
-    res.json({ index, status });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// /api/sessions/search-index/rebuild moved to ./sessionRoutes.ts.
 
 app.get('/api/pdf/extract', async (req, res) => {
   const rawPath = typeof req.query.path === 'string' ? req.query.path : '';
@@ -4717,56 +4901,11 @@ app.get('/api/pdf/extract', async (req, res) => {
   }
 });
 
-app.get('/api/traces', (_req, res) => {
-  res.json(runtimeTracer.snapshot());
-});
-
-app.delete('/api/traces', (_req, res) => {
-  runtimeTracer.clear();
-  res.json({ ok: true });
-});
-
-app.get('/api/traces/exports', async (_req, res) => {
-  try {
-    await fs.mkdir(TRACES_DIR, { recursive: true });
-    const files = await fs.readdir(TRACES_DIR, { withFileTypes: true });
-    const exports = [];
-    for (const file of files.filter((entry) => entry.isFile() && entry.name.endsWith('.json'))) {
-      const stat = await fs.stat(path.join(TRACES_DIR, file.name));
-      exports.push({ id: file.name.replace(/\.json$/, ''), name: file.name, size: stat.size, createdAt: stat.birthtime.toISOString(), modifiedAt: stat.mtime.toISOString() });
-    }
-    exports.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
-    res.json({ exports });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/traces/exports', async (_req, res) => {
-  try {
-    await fs.mkdir(TRACES_DIR, { recursive: true });
-    const snapshot = runtimeTracer.snapshot();
-    const id = `trace-${new Date().toISOString().replace(/[:.]/g, '-')}`;
-    const filePath = path.join(TRACES_DIR, `${id}.json`);
-    await fs.writeFile(filePath, JSON.stringify({ id, exportedAt: new Date().toISOString(), ...snapshot }, null, 2), 'utf-8');
-    res.json({ id, path: filePath, spans: snapshot.spans.length, events: snapshot.events.length });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/traces/exports/:id', async (req, res) => {
-  const exportId = safeLocalId(req.params.id);
-  if (!exportId) { res.status(400).json({ error: 'Invalid trace export id.' }); return; }
-  try {
-    const raw = await fs.readFile(path.join(TRACES_DIR, `${exportId}.json`), 'utf-8');
-    res.type('application/json').send(raw);
-  } catch {
-    res.status(404).json({ error: 'Trace export not found.' });
-  }
-});
+// ─── Traces (in-memory tracer + on-disk exports) ─────────────────
+// Routes extracted to ./traceRoutes.ts. server.ts still imports
+// runtimeTracer + uses TRACES_DIR for non-HTTP wiring (cleanup at line
+// 5440, system health at line 10340, system overview at line 10483).
+app.use(createTraceRouter({ projectDir: PROJECT_DIR }));
 
 type DocumentFormat = 'markdown' | 'html' | 'pdf' | 'docx';
 type DocumentTemplate = 'brief' | 'report' | 'runbook' | 'spec' | 'adr' | 'release-notes' | 'handoff';
@@ -4836,6 +4975,11 @@ function evidenceMarkdown(evidence: EvidenceCard): string {
     `* Commands: ${evidence.commands.length}`,
   ];
   if (evidence.validation) lines.push(`* Validation: ${evidence.validation.status} (${Math.round(evidence.validation.score * 100)}%)`);
+  const verifiedTests = evidence.commands.reduce(
+    (acc, c) => (c.testCounts ? { passed: acc.passed + c.testCounts.passed, failed: acc.failed + c.testCounts.failed, total: acc.total + c.testCounts.total } : acc),
+    { passed: 0, failed: 0, total: 0 },
+  );
+  if (verifiedTests.total > 0) lines.push(`* Tests verified: ${verifiedTests.passed} passed, ${verifiedTests.failed} failed, ${verifiedTests.total} total`);
   if (evidence.mycelium?.route?.length) lines.push(`* Mycelium route: ${evidence.mycelium.route.join(' > ')}`);
   return lines.join('\n');
 }
@@ -4949,221 +5093,69 @@ app.get('/api/evidence/runs', async (_req, res) => {
   }
 });
 
-app.get('/api/documents/formats', async (_req, res) => {
-  try {
-    const converters = await localDocumentConverters();
-    res.json({ formats: { markdown: { available: true }, html: { available: true }, pdf: { available: converters.pandoc, converter: 'pandoc' }, docx: { available: converters.pandoc, converter: 'pandoc' } } });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// Document generation routes extracted to ./documentRoutes.ts.
+app.use(createDocumentRouter({
+  projectDir: PROJECT_DIR,
+  localDocumentConverters,
+  normalizeDocumentTemplate,
+  normalizeDocumentFormat,
+  createGeneratedDocument: (input) => createGeneratedDocument({
+    title: input.title,
+    template: input.template as DocumentTemplate,
+    format: input.format as DocumentFormat,
+    sourceLabel: input.sourceLabel,
+    content: input.content,
+    evidence: input.evidence as EvidenceCard | undefined,
+  }),
+}));
 
-app.get('/api/documents', async (_req, res) => {
-  try {
-    await fs.mkdir(DOCUMENTS_DIR, { recursive: true });
-    const files = await fs.readdir(DOCUMENTS_DIR, { withFileTypes: true });
-    const documents: GeneratedDocumentMetadata[] = [];
-    for (const file of files.filter((entry) => entry.isFile() && entry.name.endsWith('.json'))) {
-      try {
-        const metadata = JSON.parse(await fs.readFile(path.join(DOCUMENTS_DIR, file.name), 'utf-8')) as GeneratedDocumentMetadata;
-        documents.push(metadata);
-      } catch { /* ignore corrupt metadata */ }
-    }
-    documents.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    res.json({ documents });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// 8 /api/evals* routes moved to ./evalsRoutes.ts. server.ts retains
+// currentModel / ollamaHost mutables and the sanitizeModelName +
+// resolveContextMaxTokens helpers; the router gets a single
+// buildLiveAdapter bridge that captures the live-mode client creation.
+app.use(createEvalsRouter({
+  projectDir: PROJECT_DIR,
+  buildLiveAdapter: async (requestedModel) => {
+    const activeModel = sanitizeModelName(requestedModel ?? currentModel);
+    if (!activeModel) return null;
+    const activeContextMaxTokens = await resolveContextMaxTokens(activeModel);
+    const client = webRuntime.createClient(activeModel, ollamaHost, activeContextMaxTokens);
+    return async (example) => {
+      const response = await client.chat([{ role: 'user' as const, content: example.prompt ?? example.task }]);
+      const toolCalls = response.message.tool_calls?.map((call) => call.function.name) ?? [];
+      return { actualResponse: response.message.content ?? '', actualTools: toolCalls };
+    };
+  },
+  getRuntimeTracerSnapshot: () => runtimeTracer.snapshot(),
+}));
 
-app.post('/api/documents/generate', async (req, res) => {
-  try {
-    const title = String(req.body?.title || 'Harness Document').trim().slice(0, 160) || 'Harness Document';
-    const template = normalizeDocumentTemplate(req.body?.template);
-    const format = normalizeDocumentFormat(req.body?.format);
-    const sourceLabel = String(req.body?.sourceLabel || 'Harness chat').trim().slice(0, 120) || 'Harness chat';
-    const content = String(req.body?.content || '').slice(0, 200_000);
-    const evidence = req.body?.evidence && typeof req.body.evidence === 'object' ? req.body.evidence as EvidenceCard : undefined;
-    const document = await createGeneratedDocument({ title, template, format, sourceLabel, content, evidence });
-    res.json({ ok: true, document: document.metadata, content: document.content });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// ─── Benchmark routes (Gap #2) ───────────────────────────────────────
 
-app.get('/api/documents/:id/download', async (req, res) => {
-  const id = safeLocalId(req.params.id);
-  if (!id) { res.status(400).json({ error: 'Invalid document id.' }); return; }
-  try {
-    const metadata = JSON.parse(await fs.readFile(path.join(DOCUMENTS_DIR, `${id}.json`), 'utf-8')) as GeneratedDocumentMetadata;
-    const filePath = path.join(DOCUMENTS_DIR, metadata.filename);
-    const raw = await fs.readFile(filePath);
-    const contentType = metadata.format === 'html' ? 'text/html; charset=utf-8' : metadata.format === 'pdf' ? 'application/pdf' : metadata.format === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'text/markdown; charset=utf-8';
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="${metadata.filename}"`);
-    res.send(raw);
-  } catch {
-    res.status(404).json({ error: 'Document not found.' });
-  }
-});
+app.use(createBenchmarkRouter({
+  projectDir: PROJECT_DIR,
+  getCurrentModel: () => currentModel,
+  sanitizeModelName,
+  getBaseUrl: () => `http://127.0.0.1:${process.env.PORT ?? 3000}`,
+}));
 
-app.get('/api/evals/trace-examples', async (_req, res) => {
-  try {
-    const examples = await listEvalTraceExamples(PROJECT_DIR);
-    res.json({ examples });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/evals/trace-examples/download', async (_req, res) => {
-  try {
-    const raw = await readEvalTraceDataset(PROJECT_DIR);
-    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="trace-examples.jsonl"');
-    res.send(raw);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/evals/runs', async (_req, res) => {
-  try {
-    const runs = await listEvalTraceRuns(PROJECT_DIR);
-    res.json({ runs, trend: summarizeEvalTraceRuns(runs), outputValidationTrend: summarizeOutputValidationRuns(runs), profileFeedbackTrend: summarizeProfileFeedbackRuns(runs), contextLossTrend: summarizeContextLossRuns(runs), uploadsFallbackTrend: summarizeUploadsFallbackRuns(runs) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/evals/trace-examples/run', async (req, res) => {
-  try {
-    const mode = req.body?.mode === 'live' || req.body?.mode === 'mock' ? req.body.mode : 'stored';
-    const run = await runEvalTraceDataset(PROJECT_DIR, {
-      replayAdapter: mode === 'stored' ? undefined : async (example) => {
-        if (mode === 'mock') {
-          return {
-            actualResponse: req.body?.mockResponse?.toString() ?? example.actualResponse,
-            actualTools: Array.isArray(req.body?.mockTools) ? req.body.mockTools.map(String) : example.actualTools,
-          };
-        }
-        const activeModel = sanitizeModelName(req.body?.model ?? currentModel);
-        if (!activeModel) return { actualResponse: '', actualTools: [] };
-        const activeContextMaxTokens = await resolveContextMaxTokens(activeModel);
-        const client = webRuntime.createClient(activeModel, ollamaHost, activeContextMaxTokens);
-        const response = await client.chat([{ role: 'user' as const, content: example.prompt ?? example.task }]);
-        const toolCalls = response.message.tool_calls?.map((call) => call.function.name) ?? [];
-        return { actualResponse: response.message.content ?? '', actualTools: toolCalls };
-      },
-    });
-    const runs = await listEvalTraceRuns(PROJECT_DIR);
-    res.json({ run, trend: summarizeEvalTraceRuns(runs), mode });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.patch('/api/evals/trace-examples/:id/tags', async (req, res) => {
-  const exampleId = safeEvalExampleId(req.params.id);
-  if (!exampleId) { res.status(400).json({ error: 'Invalid eval example id.' }); return; }
-  try {
-    const tags = Array.isArray(req.body?.tags) ? req.body.tags.map(String) : String(req.body?.tags ?? '').split(',');
-    const example = await updateEvalTraceExampleTags(PROJECT_DIR, exampleId, tags);
-    res.json({ example });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(404).json({ error: msg });
-  }
-});
-
-app.delete('/api/evals/trace-examples/:id', async (req, res) => {
-  const exampleId = safeEvalExampleId(req.params.id);
-  if (!exampleId) { res.status(400).json({ error: 'Invalid eval example id.' }); return; }
-  try {
-    const deleted = await deleteEvalTraceExample(PROJECT_DIR, exampleId);
-    if (!deleted) { res.status(404).json({ error: 'Eval trace example not found.' }); return; }
-    res.json({ ok: true });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/evals/trace-examples', async (req, res) => {
-  try {
-    const example = createEvalTraceExample(runtimeTracer.snapshot(), {
-      task: req.body?.task?.toString() || 'web runtime trace',
-      expectedBehavior: req.body?.expectedBehavior?.toString() || undefined,
-      tags: Array.isArray(req.body?.tags) ? req.body.tags.map(String) : ['web', 'runtime'],
-    });
-    const filePath = await appendEvalTraceExample(PROJECT_DIR, example);
-    res.json({ example, path: filePath });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/evals/replay-examples', async (req, res) => {
-  try {
-    const example = createReplayEvalExample({
-      task: req.body?.task?.toString() || 'replay regression',
-      prompt: req.body?.prompt?.toString() || '',
-      expectedBehavior: req.body?.expectedBehavior?.toString() || undefined,
-      expectedResponseIncludes: Array.isArray(req.body?.expectedResponseIncludes) ? req.body.expectedResponseIncludes.map(String) : [],
-      expectedTools: Array.isArray(req.body?.expectedTools) ? req.body.expectedTools.map(String) : [],
-      actualResponse: req.body?.actualResponse?.toString() || undefined,
-      actualTools: Array.isArray(req.body?.actualTools) ? req.body.actualTools.map(String) : [],
-      sourceTraceId: req.body?.sourceTraceId?.toString() || undefined,
-      sourceSessionId: req.body?.sourceSessionId?.toString() || undefined,
-      sourceContext: req.body?.sourceContext?.toString() || undefined,
-      tags: Array.isArray(req.body?.tags) ? req.body.tags.map(String) : ['replay'],
-    });
-    const filePath = await appendEvalTraceExample(PROJECT_DIR, example);
-    res.json({ example, path: filePath });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/runtime/storage', async (_req, res) => {
-  try {
-    res.json(await getRuntimeStorageSummary());
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/runtime/cleanup', async (req, res) => {
-  try {
-    const cleaned: string[] = [];
-    if (Boolean(req.body.traces)) {
-      await fs.rm(TRACES_DIR, { recursive: true, force: true });
-      cleaned.push('traces');
-    }
-    if (Boolean(req.body.semanticIndex)) {
-      await fs.rm(path.join(PROJECT_DIR, '.harness', 'memory', 'semantic-index.json'), { force: true });
-      cleaned.push('semanticIndex');
-    }
-    res.json({ cleaned, storage: await getRuntimeStorageSummary() });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// ── Cost tracking rates + runtime storage ───────────────────────────
+// Routes extracted to ./runtimeCostRoutes.ts.
+app.use(createRuntimeCostRouter({ projectDir: PROJECT_DIR, tracesDir: TRACES_DIR }));
 
 app.get('/api/permissions/pending', (_req, res) => {
   res.json({ prompts: permissionPrompts.list() });
 });
+
+// ─── Daily-spend cap (Fix #6) ──────────────────────────────────────────
+// Status (read-only) + override (escalation-guarded, audit-logged). All four
+// dailyBudget imports (addOverride/checkBudgetState/getEnvCapUsd/readTodaySpend)
+// were HTTP-only — dropped from server.ts entirely. Router takes the two
+// escalation helpers as callable deps.
+app.use(createBudgetRouter({
+  projectDir: PROJECT_DIR,
+  requireEscalationAuth,
+  requireAuditReason,
+}));
 
 // Audit log: every tool call (PreToolUse + PostToolUse + PostToolUseFailure)
 // gets a JSONL entry in .harness/audit.log. Returns the most recent N entries.
@@ -5184,6 +5176,7 @@ app.get('/api/permissions/state', (_req, res) => {
     mode: permissionMode,
     allowedModes: ALLOWED_PERMISSION_MODES,
     killSwitch: { active: killSwitchActive, reason: killSwitchReason },
+    sandbox: sandboxSwitch.snapshot(),
     pendingCount: permissionPrompts.list().length,
     autonomyExpiresAt: autonomyExpiresAt > Date.now() ? new Date(autonomyExpiresAt).toISOString() : null,
     autonomyPreviousMode: autonomyExpiresAt > 0 ? autonomyPreviousMode : null,
@@ -5212,6 +5205,7 @@ app.post('/api/permissions/timed-autonomy', (req, res) => {
         permissionMode = autonomyPreviousMode;
         logger.info('Permissions', 'Timed autonomy cleared, reverted to ' + permissionMode);
         appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.cleared', reason: `Manually cleared, reverted to ${permissionMode}` }).catch((err) => recordSwallowed('appendCapabilityAuditEvent', err));
+        revokeAutoGrantedCapabilities('Auto-revoked: timed autonomy manually cleared.');
       }
       if (clearTools && timedToolEnables.size > 0) {
         timedToolEnables.clear();
@@ -5251,6 +5245,7 @@ app.post('/api/permissions/kill-switch', (req, res) => {
         autonomyExpiresAt = 0;
         autonomyPreviousMode = 'default';
         logger.info('Permissions', 'Cleared timed autonomy due to kill switch, reverted to ' + permissionMode);
+        revokeAutoGrantedCapabilities('Auto-revoked: kill switch engaged.');
       }
       logger.warn('Permissions', 'Kill switch engaged', { reason: killSwitchReason });
       runtimeTracer.recordEvent('permission.kill_switch_engaged', { reason: killSwitchReason });
@@ -5266,10 +5261,36 @@ app.post('/api/permissions/kill-switch', (req, res) => {
   }
 });
 
-// Read-only registry view for the Tools dashboard. Returns one entry per
-// registered tool with risk/category metadata grouped by toolset.
-app.get('/api/tools', (_req, res) => {
+// Engage or release the sandbox-mode switch. Soft containment that
+// narrows path / shell / network behaviour without disabling tools.
+// Mirrors the kill-switch endpoint structure intentionally so operators
+// can reason about the two controls the same way.
+app.post('/api/permissions/sandbox', (req, res) => {
   try {
+    const desired = Boolean(req.body?.active);
+    if (desired) {
+      const reason = typeof req.body?.reason === 'string' && req.body.reason.trim()
+        ? String(req.body.reason).trim().slice(0, 500)
+        : 'Sandbox engaged from dashboard.';
+      sandboxSwitch.engage(reason);
+      logger.warn('Permissions', 'Sandbox engaged', { reason });
+      runtimeTracer.recordEvent('permission.sandbox_engaged', { reason });
+    } else {
+      sandboxSwitch.release();
+      logger.info('Permissions', 'Sandbox released');
+      runtimeTracer.recordEvent('permission.sandbox_released', {});
+    }
+    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
+    res.json({ sandbox: sandboxSwitch.snapshot() });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+// Tools routes moved to ./toolsRoutes.ts. server.ts retains the disabledTools
+// + timedToolEnables mutables and bridges them via callable deps.
+app.use(createToolsRouter({
+  getToolStatus: () => {
     const registry = createToolRegistry(PROJECT_DIR);
     const tools = registry.listEntries().map((entry) => {
       const name = entry.tool.name;
@@ -5293,7 +5314,7 @@ app.get('/api/tools', (_req, res) => {
     const toolsets: Record<string, number> = {};
     for (const tool of tools) toolsets[tool.toolset] = (toolsets[tool.toolset] ?? 0) + 1;
     const capabilities = listCapabilityPolicies();
-    res.json({
+    return {
       tools,
       toolsets,
       disabled: Array.from(disabledTools).sort(),
@@ -5302,12 +5323,60 @@ app.get('/api/tools', (_req, res) => {
         summary: summarizeCapabilityAlignment(capabilities),
         coverage: mapToolsToCapabilityCoverage(),
       },
-    });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+    };
+  },
+  toggleTool: async (toolName, requestedEnabled, expiresInMinutes) => {
+    await ensureSettingsLoaded();
+    const registry = createToolRegistry(PROJECT_DIR);
+    if (!registry.get(toolName)) return null;
+    const currentlyEnabled = isToolEnabled(toolName);
+    const desiredEnabled = requestedEnabled === undefined ? !currentlyEnabled : requestedEnabled;
+    if (desiredEnabled) {
+      if (expiresInMinutes) {
+        disabledTools.add(toolName);
+        timedToolEnables.set(toolName, Date.now() + expiresInMinutes * 60_000);
+      } else {
+        disabledTools.delete(toolName);
+        timedToolEnables.delete(toolName);
+      }
+    } else {
+      disabledTools.add(toolName);
+      timedToolEnables.delete(toolName);
+    }
+    const timedExpiry = timedToolEnables.get(toolName);
+    const enabledUntil = timedExpiry !== undefined && Date.now() < timedExpiry ? new Date(timedExpiry).toISOString() : undefined;
+    logger.info('Tools', 'Tool toggled', { tool: toolName, enabled: desiredEnabled, expiresInMinutes });
+    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
+    return { name: toolName, enabled: desiredEnabled, enabledUntil, disabled: Array.from(disabledTools).sort() };
+  },
+  bulkToggleTools: async (names, desiredEnabled, expiresInMinutes) => {
+    await ensureSettingsLoaded();
+    const registry = createToolRegistry(PROJECT_DIR);
+    const results: Array<{ name: string; enabled: boolean; enabledUntil?: string }> = [];
+    for (const raw of names) {
+      const toolName = raw.trim();
+      if (!toolName || !registry.get(toolName)) continue;
+      if (desiredEnabled) {
+        if (expiresInMinutes) {
+          disabledTools.add(toolName);
+          timedToolEnables.set(toolName, Date.now() + expiresInMinutes * 60_000);
+        } else {
+          disabledTools.delete(toolName);
+          timedToolEnables.delete(toolName);
+        }
+      } else {
+        disabledTools.add(toolName);
+        timedToolEnables.delete(toolName);
+      }
+      const timedExpiry = timedToolEnables.get(toolName);
+      const enabledUntil = timedExpiry !== undefined && Date.now() < timedExpiry ? new Date(timedExpiry).toISOString() : undefined;
+      results.push({ name: toolName, enabled: desiredEnabled, enabledUntil });
+    }
+    logger.info('Tools', 'Bulk toggle', { count: results.length, enabled: desiredEnabled, expiresInMinutes });
+    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
+    return { toggled: results, disabled: Array.from(disabledTools).sort() };
+  },
+}));
 
 app.get('/api/capabilities', async (_req, res) => {
   try {
@@ -5408,529 +5477,53 @@ app.get('/api/capabilities/audit', async (_req, res) => {
   }
 });
 
-app.post('/api/automations/execute-due', async (_req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    if (killSwitchActive) {
-      res.status(403).json({ error: 'Kill switch is active.', results: [] });
-      return;
-    }
-    const policy = getAutomationPolicyContext();
-    const results = await executeDueJobs(PROJECT_DIR, policy);
-    const evidence = [];
-    for (const result of results) {
-      const card = createRunEvidence({ id: `automation:${result.jobId}:${new Date().toISOString()}`, kind: 'automation', request: result.run.prompt, runName: result.name, command: result.run.scriptOutput ? 'automation script context' : undefined, outputPath: result.run.outputPath, success: true, summary: result.run.scriptOutput.slice(0, 220) });
-      await appendRunEvidence(PROJECT_DIR, card);
-      evidence.push(card);
-    }
-    // Notify via Telegram if bot is running.
-    if (results.length > 0) {
-      const summary = results.map((r) => `• ${r.name}`).join('\n');
-      sendTelegramNotification('Automation jobs completed', `${results.length} job(s) ran:\n${summary}`).catch((err) => recordSwallowed('sendTelegramNotification', err));
-      sendWebhookNotification('automation.completed', { executed: results.length, jobs: results.map((r) => ({ id: r.jobId, name: r.name })) }).catch((err) => recordSwallowed('sendWebhookNotification', err));
-    }
-    res.json({ executed: results.length, results: results.map((r) => ({ jobId: r.jobId, name: r.name, scriptOutput: r.run.scriptOutput, outputPath: r.run.outputPath })), evidence });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/automations/:id/execute', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    if (killSwitchActive) { res.status(403).json({ error: 'Kill switch is active.' }); return; }
-    const jobId = safeLocalId(req.params.id);
-    if (!jobId) { res.status(400).json({ error: 'Invalid job id.' }); return; }
-    const jobs = await listAutomationJobs(PROJECT_DIR);
-    const job = jobs.find((j) => j.id === jobId);
-    if (!job) { res.status(404).json({ error: 'Job not found.' }); return; }
-    const policy = getAutomationPolicyContext();
-    const run = await prepareAutomationRun(PROJECT_DIR, job, new Date(), policy);
-    const card = createRunEvidence({ id: `automation:${jobId}:${new Date().toISOString()}`, kind: 'automation', request: run.prompt, runName: job.name, command: run.scriptOutput ? 'automation script context' : undefined, outputPath: run.outputPath, success: true, summary: (run.scriptOutput || '').slice(0, 220) });
-    await appendRunEvidence(PROJECT_DIR, card);
-    res.json({ ok: true, jobId, name: job.name, scriptOutput: run.scriptOutput, outputPath: run.outputPath, evidence: card });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// Preview an automation schedule string without persisting anything. Used by
-// the wizard's "Next run" hint so users see what they're about to commit.
-app.post('/api/automations/preview', (req, res) => {
-  const value = typeof req.body?.schedule === 'string' ? req.body.schedule : '';
-  if (!value.trim()) { res.status(400).json({ error: 'schedule is required.' }); return; }
-  try {
-    const now = new Date();
-    const schedule = parseAutomationSchedule(value, now);
-    const nextRunAt = computeNextAutomationRun(schedule, undefined, now);
-    res.json({ ok: true, schedule, nextRunAt });
-  } catch (error) {
-    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/automations/jobs/safety', async (_req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const jobs = await listAutomationJobs(PROJECT_DIR);
-    res.json({ audit: auditAutomationJobSafety(jobs) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/automations/jobs', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const name = String(req.body?.name ?? '').trim();
-    const prompt = String(req.body?.prompt ?? '').trim();
-    const schedule = String(req.body?.schedule ?? '').trim();
-    if (!name || !prompt || !schedule) {
-      res.status(400).json({ error: 'name, prompt, and schedule are required.' });
-      return;
-    }
-    const scriptCommand = typeof req.body?.scriptCommand === 'string' ? req.body.scriptCommand : undefined;
-    const job = await createAutomationJob(PROJECT_DIR, { name, prompt, schedule, scriptCommand });
-    logger.info('Automation', 'Job created', { jobId: job.id, name: job.name });
-    res.json({ job });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ error: msg });
-  }
-});
-
-app.delete('/api/automations/jobs/:id', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const jobId = String(req.params.id ?? '').trim();
-    const deleted = await deleteAutomationJob(PROJECT_DIR, jobId);
-    if (!deleted) { res.status(404).json({ error: 'Automation job not found.' }); return; }
-    logger.info('Automation', 'Job deleted', { jobId });
-    res.json({ deleted: jobId });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.patch('/api/automations/jobs/:id', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const jobId = String(req.params.id ?? '').trim();
-    const updated = await updateAutomationJob(PROJECT_DIR, jobId, req.body ?? {});
-    if (!updated) { res.status(404).json({ error: 'Automation job not found.' }); return; }
-    logger.info('Automation', 'Job updated', { jobId, name: updated.name });
-    res.json({ job: updated });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ error: msg });
-  }
-});
-
-app.get('/api/automations/runs', async (_req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const entries = await readAutomationRunLog(PROJECT_DIR);
-    const evidence = await readRunEvidence(PROJECT_DIR);
-    res.json({ runs: entries, evidence: evidence.filter((card) => card.kind === 'automation') });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/automations/output', async (req, res) => {
-  try {
-    const rawPath = typeof req.query.path === 'string' ? req.query.path : '';
-    if (!rawPath) { res.status(400).json({ error: 'path is required' }); return; }
-    const resolved = path.resolve(PROJECT_DIR, rawPath);
-    const automationsDir = path.resolve(PROJECT_DIR, '.harness', 'automations');
-    if (!resolved.startsWith(automationsDir)) { res.status(403).json({ error: 'Path must be inside .harness/automations/' }); return; }
-    const content = await fs.readFile(resolved, 'utf-8');
-    res.json({ path: rawPath, content: content.slice(0, 50_000) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(404).json({ error: msg });
-  }
-});
+// 9 /api/automations* routes moved to ./automationRoutes.ts. server.ts
+// retains getAutomationPolicyContext + createRunEvidence locally because
+// both close over module-level state (killSwitchActive, capabilityGrants,
+// currentModel, permissionMode). The router gets buildEvidenceCard +
+// getPolicyContext bridges plus a thin notifyAutomationCompleted closure
+// that fans out to Telegram and webhooks without exposing those modules.
+app.use(createAutomationRouter({
+  projectDir: PROJECT_DIR,
+  ensureSettingsLoaded,
+  isKillSwitchActive: () => killSwitchActive,
+  getPolicyContext: () => getAutomationPolicyContext(),
+  buildEvidenceCard: (input) => createRunEvidence(input),
+  notifyAutomationCompleted: (results) => {
+    const summary = results.map((r) => `• ${r.name}`).join('\n');
+    sendTelegramNotification('Automation jobs completed', `${results.length} job(s) ran:\n${summary}`)
+      .catch((err) => recordSwallowed('sendTelegramNotification', err));
+    sendWebhookNotification('automation.completed', { executed: results.length, jobs: results })
+      .catch((err) => recordSwallowed('sendWebhookNotification', err));
+  },
+}));
 
 // ─── Mycelium graph API ──────────────────────────────────────────
-app.get('/api/mycelium', async (_req, res) => {
-  try {
-    const { loadMyceliumGraph: load } = await import('../mycelium/graph');
-    const graph = await load(PROJECT_DIR);
-    res.json({
-      stats: graph.stats(),
-      nodes: graph.listNodes(),
-      edges: graph.listEdges(),
-      episodes: graph.listEpisodes(20),
-      archivedEdges: graph.listArchivedEdges().slice(-20),
-    });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// Last episode + its selection reasons / route ordering for the UI.
-app.get('/api/mycelium/last-route', async (_req, res) => {
-  try {
-    const { loadMyceliumGraph: load } = await import('../mycelium/graph');
-    const graph = await load(PROJECT_DIR);
-    const episodes = graph.listEpisodes(1);
-    const lastEpisode = episodes[episodes.length - 1] ?? null;
-    if (!lastEpisode) {
-      res.json({ episode: null, nodes: [], edges: [] });
-      return;
-    }
-    // Hydrate the route's node references and any edges between them.
-    const nodes = lastEpisode.route
-      .map((id) => graph.getNode(id))
-      .filter((n): n is NonNullable<typeof n> => Boolean(n));
-    const idSet = new Set(lastEpisode.route);
-    const edges = graph.listEdges().filter((e) => idSet.has(e.source) && idSet.has(e.target));
-    res.json({ episode: lastEpisode, nodes, edges });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.delete('/api/mycelium', async (_req, res) => {
-  try {
-    const { MyceliumGraph, saveMyceliumGraph: save } = await import('../mycelium/graph');
-    await save(PROJECT_DIR, new MyceliumGraph());
-    logger.info('Mycelium', 'Graph reset');
-    res.json({ reset: true });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// Apply explicit user feedback (👍 / 👎) to the most recent route. The
-// feedback is recorded as a fresh episode tagged with userFeedback so the
-// router learns from human judgment, not just the heuristic verifier.
-app.post('/api/mycelium/feedback', async (req, res) => {
-  const vote = req.body?.vote;
-  const note = typeof req.body?.note === 'string' ? req.body.note : undefined;
-  if (vote !== 'up' && vote !== 'down' && vote !== 'neutral') {
-    res.status(400).json({ error: 'vote must be "up", "down", or "neutral"' });
-    return;
-  }
-  try {
-    const router = await createMycelialRouter(PROJECT_DIR);
-    // Re-hydrate lastRoute from the most recent episode so feedback works
-    // across requests (the chat handler's router instance is per-request).
-    const lastEpisode = router.getGraph().listEpisodes(1)[0];
-    if (!lastEpisode) {
-      res.status(404).json({ error: 'no recent episode to apply feedback to' });
-      return;
-    }
-    // The router doesn't expose setLastRoute; reconstruct via a private cast.
-    (router as unknown as { lastRoute: string[] }).lastRoute = lastEpisode.route;
-    (router as unknown as { lastQuery: string }).lastQuery = lastEpisode.query;
-    const result = router.applyUserFeedback(vote, note);
-    await router.save();
-    res.json(result);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    logger.warn('Mycelium', 'Feedback failed', { error: msg });
-    res.status(500).json({ error: msg });
-  }
-});
+// Routes extracted to ./myceliumRoutes.ts. server.ts still imports
+// createMycelialRouter for the chat handler and heartbeat seeding.
+app.use(createMyceliumRouter({ projectDir: PROJECT_DIR }));
 
 // Enable or disable a single tool at runtime. Disabled tools are filtered out
 // of the agent's tool list before each chat turn.
 // Pass { enabled: true, expiresInMinutes: N } to enable for a limited time.
-app.post('/api/tools/:name/toggle', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const toolName = String(req.params.name || '').trim();
-    if (!toolName) { res.status(400).json({ error: 'tool name required' }); return; }
-    const registry = createToolRegistry(PROJECT_DIR);
-    if (!registry.get(toolName)) { res.status(404).json({ error: 'unknown tool' }); return; }
-    const currentlyEnabled = isToolEnabled(toolName);
-    const desiredEnabled = req.body?.enabled === undefined ? !currentlyEnabled : Boolean(req.body.enabled);
-    const expiresInMinutes = typeof req.body?.expiresInMinutes === 'number' && req.body.expiresInMinutes > 0
-      ? Math.min(req.body.expiresInMinutes, 1440) : undefined;
-
-    if (desiredEnabled) {
-      if (expiresInMinutes) {
-        // Time-limited enable: keep in disabledTools but add timed override
-        disabledTools.add(toolName);
-        timedToolEnables.set(toolName, Date.now() + expiresInMinutes * 60_000);
-      } else {
-        // Permanent enable
-        disabledTools.delete(toolName);
-        timedToolEnables.delete(toolName);
-      }
-    } else {
-      disabledTools.add(toolName);
-      timedToolEnables.delete(toolName);
-    }
-    const timedExpiry = timedToolEnables.get(toolName);
-    const enabledUntil = timedExpiry !== undefined && Date.now() < timedExpiry ? new Date(timedExpiry).toISOString() : undefined;
-    logger.info('Tools', 'Tool toggled', { tool: toolName, enabled: desiredEnabled, expiresInMinutes });
-    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
-    res.json({ name: toolName, enabled: desiredEnabled, enabledUntil, disabled: Array.from(disabledTools).sort() });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Batch enable/disable multiple tools in a single call.
-app.post('/api/tools/bulk-toggle', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const names = Array.isArray(req.body?.names) ? req.body.names : [];
-    const desiredEnabled = Boolean(req.body?.enabled);
-    const expiresInMinutes = typeof req.body?.expiresInMinutes === 'number' && req.body.expiresInMinutes > 0
-      ? Math.min(req.body.expiresInMinutes, 1440) : undefined;
-    const registry = createToolRegistry(PROJECT_DIR);
-    const results: Array<{ name: string; enabled: boolean; enabledUntil?: string }> = [];
-    for (const raw of names) {
-      const toolName = String(raw).trim();
-      if (!toolName || !registry.get(toolName)) continue;
-      if (desiredEnabled) {
-        if (expiresInMinutes) {
-          disabledTools.add(toolName);
-          timedToolEnables.set(toolName, Date.now() + expiresInMinutes * 60_000);
-        } else {
-          disabledTools.delete(toolName);
-          timedToolEnables.delete(toolName);
-        }
-      } else {
-        disabledTools.add(toolName);
-        timedToolEnables.delete(toolName);
-      }
-      const timedExpiry = timedToolEnables.get(toolName);
-      const enabledUntil = timedExpiry !== undefined && Date.now() < timedExpiry ? new Date(timedExpiry).toISOString() : undefined;
-      results.push({ name: toolName, enabled: desiredEnabled, enabledUntil });
-    }
-    logger.info('Tools', 'Bulk toggle', { count: results.length, enabled: desiredEnabled, expiresInMinutes });
-    saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
-    res.json({ toggled: results, disabled: Array.from(disabledTools).sort() });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// /api/tools/:name/toggle + /api/tools/bulk-toggle moved to ./toolsRoutes.ts (createToolsRouter mount above).
 
 // --- Workflows ---
-// Read the workflow file index. Workflows live under .harness/workflows/<name>.
-app.get('/api/workflows', async (_req, res) => {
-  try {
-    const workflows = await workflowRegistry.list();
-    res.json({ workflows: workflows.map((wf) => ({ ...wf, stepCount: wf.steps.length })) });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/workflows/:name', async (req, res) => {
-  const name = String(req.params.name || '').trim();
-  if (!name) { res.status(400).json({ error: 'workflow name required' }); return; }
-  try {
-    if (req.query.raw === '1') {
-      const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '');
-      if (!safeName || safeName !== name) { res.status(400).json({ error: 'invalid workflow name' }); return; }
-      // Workflows can be .yaml, .yml, or .json — try in priority order.
-      for (const ext of ['.yaml', '.yml', '.json']) {
-        const filePath = path.join(WORKFLOWS_DIR, `${safeName}${ext}`);
-        const content = await fs.readFile(filePath, 'utf-8').catch(() => null);
-        if (content !== null) { res.json({ name: safeName, filePath, content }); return; }
-      }
-      res.status(404).json({ error: 'workflow file not found' });
-      return;
-    }
-    const definition = await workflowRegistry.load(name);
-    if (!definition) { res.status(404).json({ error: 'workflow not found' }); return; }
-    res.json(definition);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Replace a workflow YAML/JSON file's content. Body: { content: string, ext?: '.yaml'|'.yml'|'.json' }
-app.put('/api/workflows/:name', async (req, res) => {
-  const rawName = String(req.params.name || '').trim();
-  const name = rawName.replace(/[^a-zA-Z0-9_-]/g, '');
-  if (!name || name !== rawName) { res.status(400).json({ error: 'invalid workflow name' }); return; }
-  const content = typeof req.body?.content === 'string' ? req.body.content : '';
-  if (!content.trim()) { res.status(400).json({ error: 'content is required' }); return; }
-  if (content.length > 200_000) { res.status(413).json({ error: 'content too large (max 200KB)' }); return; }
-  try {
-    await fs.mkdir(WORKFLOWS_DIR, { recursive: true });
-    // Find existing file by extension; default to .yaml when creating new.
-    let target: string | null = null;
-    for (const ext of ['.yaml', '.yml', '.json']) {
-      const candidate = path.join(WORKFLOWS_DIR, `${name}${ext}`);
-      if (await fs.stat(candidate).catch(() => null)) { target = candidate; break; }
-    }
-    if (!target) target = path.join(WORKFLOWS_DIR, `${name}.yaml`);
-    // Validate by writing to a temp path under WORKFLOWS_DIR and asking the
-    // registry to load it. If parsing or tool resolution fails, reject without
-    // touching the original file. Only skipped when ?skipValidate=1.
-    const skipValidate = req.query.skipValidate === '1';
-    if (!skipValidate) {
-      const tempName = `__tmp__${name}__${Date.now()}`;
-      const tempExt = path.extname(target) || '.yaml';
-      const tempPath = path.join(WORKFLOWS_DIR, `${tempName}${tempExt}`);
-      try {
-        await fs.writeFile(tempPath, content, 'utf-8');
-        const definition = await workflowRegistry.load(tempName);
-        if (!definition) { res.status(400).json({ error: 'Workflow content failed to parse.' }); return; }
-        const knownTools = new Set(createToolRegistry(PROJECT_DIR).listEntries().map((entry) => entry.tool.name));
-        const unknown = definition.steps.map((s) => s.tool).filter((t) => t && !knownTools.has(t));
-        if (unknown.length > 0) {
-          res.status(400).json({ error: 'Unknown tool(s): ' + Array.from(new Set(unknown)).join(', ') });
-          return;
-        }
-      } finally {
-        await fs.unlink(tempPath).catch((err) => recordSwallowed('fs.unlink', err));
-      }
-    }
-    await fs.writeFile(target, content, 'utf-8');
-    res.json({ ok: true, name, filePath: target });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Create a new workflow YAML file from a structured payload. The wizard UI
-// posts here; YAML is hand-emitted so we don't need to add a YAML serializer
-// dependency. Body: { name, description?, steps: [{ id, tool, input?, description?, continueOnError? }] }
-app.post('/api/workflows', async (req, res) => {
-  const rawName = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
-  const name = rawName.replace(/[^a-zA-Z0-9_-]/g, '');
-  if (!name || name !== rawName) {
-    res.status(400).json({ error: 'name must contain only letters, numbers, dashes, and underscores.' });
-    return;
-  }
-  const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
-  if (steps.length === 0) { res.status(400).json({ error: 'At least one step is required.' }); return; }
-  // Validate every step's tool exists in the live registry so users see typos
-  // at create time instead of run time.
-  const knownTools = new Set(createToolRegistry(PROJECT_DIR).listEntries().map((entry) => entry.tool.name));
-  const unknownTools: string[] = [];
-  for (const raw of steps) {
-    const tool = String(raw?.tool || '').trim();
-    if (tool && !knownTools.has(tool)) unknownTools.push(tool);
-  }
-  if (unknownTools.length > 0) {
-    res.status(400).json({ error: 'Unknown tool(s): ' + Array.from(new Set(unknownTools)).join(', ') });
-    return;
-  }
-  const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
-  const filePath = path.join(WORKFLOWS_DIR, `${name}.yaml`);
-  try {
-    await fs.mkdir(WORKFLOWS_DIR, { recursive: true });
-    const existing = await fs.stat(filePath).catch(() => null);
-    if (existing && req.body?.overwrite !== true) {
-      res.status(409).json({ error: 'Workflow already exists. Pass overwrite=true to replace it.' });
-      return;
-    }
-    const lines: string[] = [`name: ${JSON.stringify(name)}`];
-    if (description) lines.push(`description: ${JSON.stringify(description)}`);
-    lines.push('steps:');
-    for (const raw of steps) {
-      const stepId = String(raw?.id || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
-      const tool = String(raw?.tool || '').trim();
-      if (!stepId || !tool) {
-        res.status(400).json({ error: 'Each step needs a non-empty id and tool.' });
-        return;
-      }
-      lines.push(`  - id: ${JSON.stringify(stepId)}`);
-      lines.push(`    tool: ${JSON.stringify(tool)}`);
-      if (raw?.description) lines.push(`    description: ${JSON.stringify(String(raw.description))}`);
-      if (raw?.continueOnError === true) lines.push('    continueOnError: true');
-      const input = raw?.input;
-      if (input && typeof input === 'object') {
-        lines.push('    input:');
-        for (const [k, v] of Object.entries(input)) {
-          lines.push(`      ${JSON.stringify(k)}: ${JSON.stringify(v)}`);
-        }
-      }
-    }
-    await fs.writeFile(filePath, lines.join('\n') + '\n', 'utf-8');
-    res.json({ ok: true, name, filePath });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Start a run. Optional body: { dryRun: boolean, variables: object }.
-app.post('/api/workflows/:name/run', async (req, res) => {
-  const name = String(req.params.name || '').trim();
-  if (!name) { res.status(400).json({ error: 'workflow name required' }); return; }
-  try {
-    const definition = await workflowRegistry.load(name);
-    if (!definition) { res.status(404).json({ error: 'workflow not found' }); return; }
-    const dryRun = Boolean(req.body?.dryRun);
-    const variables = typeof req.body?.variables === 'object' && req.body.variables !== null ? req.body.variables : undefined;
-    const run = workflowRegistry.startRun(definition, { dryRun, variables });
-    const tools = applyToolDisables(getRuntimeTools(PROJECT_DIR));
-    const permissions = webRuntime.createPermissionEngine(permissionMode);
-    // Execute asynchronously so the HTTP request returns immediately with the
-    // initial run state. Errors are captured on the run object itself.
-    workflowRegistry.execute(run.id, { tools, permissions }).catch((error) => {
-      logger.warn('Workflow', 'Workflow run threw', { runId: run.id, error: error instanceof Error ? error.message : String(error) });
-    });
-    res.json({ run });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/workflows/runs', (_req, res) => {
-  res.json({ runs: workflowRegistry.listRuns() });
-});
-
-app.get('/api/workflows/runs/:id', (req, res) => {
-  try {
-    const run = workflowRegistry.getRun(String(req.params.id || ''));
-    if (!run) { res.status(404).json({ error: 'run not found' }); return; }
-    res.json({ run });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/workflows/runs/:id/pause', (req, res) => {
-  try {
-    const ok = workflowRegistry.pause(String(req.params.id || ''), typeof req.body?.reason === 'string' ? req.body.reason : undefined);
-    if (!ok) { res.status(409).json({ error: 'run is not running' }); return; }
-    res.json({ ok: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/workflows/runs/:id/resume', async (req, res) => {
-  const id = String(req.params.id || '');
-  const run = workflowRegistry.getRun(id);
-  if (!run) { res.status(404).json({ error: 'run not found' }); return; }
-  if (!workflowRegistry.resume(id)) { res.status(409).json({ error: 'run is not paused' }); return; }
-  const tools = applyToolDisables(getRuntimeTools(PROJECT_DIR));
-  const permissions = webRuntime.createPermissionEngine(permissionMode);
-  workflowRegistry.execute(id, { tools, permissions }).catch((error) => {
-    logger.warn('Workflow', 'Workflow run threw on resume', { runId: id, error: error instanceof Error ? error.message : String(error) });
-  });
-  res.json({ ok: true });
-});
-
-app.post('/api/workflows/runs/:id/cancel', (req, res) => {
-  try {
-    const ok = workflowRegistry.cancel(String(req.params.id || ''), typeof req.body?.reason === 'string' ? req.body.reason : undefined);
-    if (!ok) { res.status(409).json({ error: 'run cannot be cancelled' }); return; }
-    res.json({ ok: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// 10 routes extracted to ./workflowRoutes.ts. server.ts keeps the
+// workflowRegistry instance + WORKFLOWS_DIR const here because
+// restoreRuns() runs at boot (line 8267) and system-overview (line 9084)
+// surfaces the workflows directory. The router takes a buildRunContext
+// callable so it sees server.ts's mutable permissionMode + webRuntime
+// bindings at execute time.
+app.use(createWorkflowRouter({
+  projectDir: PROJECT_DIR,
+  workflowsDir: WORKFLOWS_DIR,
+  workflowRegistry,
+  buildRunContext: () => ({
+    tools: applyToolDisables(getRuntimeTools(PROJECT_DIR)),
+    permissions: webRuntime.createPermissionEngine(permissionMode),
+  }),
+}));
 
 app.post('/api/permissions/:id/resolve', (req, res) => {
   try {
@@ -5981,7 +5574,8 @@ async function loadExplicitSkillContext(messageText: string): Promise<{ skill?: 
   const invocation = parseExplicitSkillInvocation(messageText);
   if (!invocation) return { context: '' };
 
-  const skills = await loadSkillsDir(SKILLS_DIR).catch(() => []);
+  // Workspace skills outrank global/repo ones of the same name (last wins).
+  const skills = await loadSkillsFromDirs([GLOBAL_SKILLS_DIR, REPO_SKILLS_DIR, SKILLS_DIR]).catch(() => []);
   const skill = skills.find((candidate) => candidate.name.toLowerCase() === invocation.name.toLowerCase());
   if (!skill) return { context: '' };
 
@@ -6004,6 +5598,17 @@ app.post('/api/chat', async (req, res) => {
   const { message, model } = req.body;
   if (!message) { res.status(400).json({ error: 'message is required' }); return; }
 
+  // Experiment prompt-mutation lever: when explicitly enabled, a request may
+  // supply its own system prompt so the experiment runner can evaluate
+  // prompt-scope variants. Gated behind an env flag because overriding the
+  // system prompt from request bodies is a privilege a normal chat client
+  // must not have.
+  const requestPromptOverride = (process.env.HARNESS_EXPERIMENT_PROMPT_OVERRIDE === '1'
+    && typeof req.body?.systemPrompt === 'string'
+    && req.body.systemPrompt.length > 0)
+    ? String(req.body.systemPrompt).slice(0, 20_000)
+    : '';
+
   // Best-effort: if the user message contains a trigger phrase from any
   // installed skill, record a use event for that skill so the curator can
   // see real-world relevance, not just explicit `skill` tool calls.
@@ -6025,6 +5630,89 @@ app.post('/api/chat', async (req, res) => {
 
   // Tier 0: Deterministic shortcut — bypass model entirely for simple computations.
   if (messageText) {
+    // Tier 0a: /goal slash command — expand intent into autonomy tasks
+    // and append them to IMPLEMENTATION_PLAN.md. Runs before the
+    // deterministic shortcut so the command pattern always wins, and
+    // before the model so we never pay tokens for a structural command.
+    try {
+      const goalResult = await tryGoalSlashCommand(messageText, { projectDir: PROJECT_DIR });
+      if (goalResult.handled) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+        res.write(`data: ${JSON.stringify({ type: 'text', content: goalResult.response })}\n\n`);
+        if (goalResult.mutated && goalResult.tasks.length > 0) {
+          // Side-channel hint for the chat UI: render a one-click Start
+          // button under the response so beginners do not have to hunt
+          // for the Autonomy tab. The response markdown still says
+          // "Start the autonomy loop to begin work." — the button is
+          // additive, not a replacement, and degrades gracefully when
+          // the client does not handle this event.
+          res.write(`data: ${JSON.stringify({ type: 'goal_appended', taskCount: goalResult.tasks.length, planPath: 'IMPLEMENTATION_PLAN.md' })}\n\n`);
+        }
+        res.write(`data: ${JSON.stringify({ type: 'done', reason: 'goal_slash_command' })}\n\n`);
+        emitEvent(PROJECT_DIR, 'system', 'goal_slash_command', {
+          mutated: goalResult.mutated,
+          taskCount: goalResult.tasks.length,
+          intent: messageText.slice(0, 200),
+        }, 'system').catch((err) => recordSwallowed('emitEvent', err));
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
+    } catch (err) {
+      recordSwallowed('tryGoalSlashCommand', err);
+      // Fall through to normal chat path on error.
+    }
+
+    // Tier 0b: Morning priority — `priority: <answer>` / `/priority …`.
+    // Stores the day's top priority and acknowledges. Skips the model
+    // entirely (no token spend, no loop).
+    try {
+      const priorityAnswer = parsePrioritySetCommand(messageText);
+      if (priorityAnswer) {
+        const stored = await setPriorityForToday(PROJECT_DIR, priorityAnswer);
+        const reply = `✅ Top priority for **${stored.date}** set: **${stored.answer}**\n\nThis will appear at the top of your daily brief until the day ends.`;
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+        res.write(`data: ${JSON.stringify({ type: 'text', content: reply })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'done', reason: 'morning_priority_set' })}\n\n`);
+        emitEvent(PROJECT_DIR, 'system', 'morning_priority_set', { date: stored.date }, 'system').catch((err) => recordSwallowed('emitEvent', err));
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
+    } catch (err) {
+      recordSwallowed('setPriorityForToday', err);
+    }
+
+    // Tier 0c: All other slash commands — /wiki, /research, /memory-wiki,
+    // /kanban, /brief. Runs the service-layer handler and streams back
+    // the result without invoking a model.
+    try {
+      const pdfAttachments = await resolveAttachmentPdfPaths(req.body?.attachments);
+      const slashResult = await routeSlashCommand(messageText, PROJECT_DIR, { pdfAttachments });
+      if (slashResult.handled) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+        res.write(`data: ${JSON.stringify({ type: 'text', content: slashResult.response })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'done', reason: slashResult.reason })}\n\n`);
+        if (slashResult.eventPayload) {
+          emitEvent(PROJECT_DIR, 'system', slashResult.reason, slashResult.eventPayload, 'system').catch((err) => recordSwallowed('emitEvent', err));
+        }
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
+    } catch (err) {
+      recordSwallowed('routeSlashCommand', err);
+    }
+
     const shortcut = tryDeterministicShortcut(messageText);
     if (shortcut.handled) {
       res.setHeader('Content-Type', 'text/event-stream');
@@ -6115,6 +5803,14 @@ app.post('/api/chat', async (req, res) => {
   }
 
   if (operateResult?.handled) {
+    const serviceVerification = operateResult.service
+      ? await verifyService(PROJECT_DIR, operateResult.service.service_id)
+      : undefined;
+    const completionReason = serviceVerification?.overall === 'fail'
+      ? 'completed_with_verification_failures'
+      : serviceVerification && serviceVerification.overall !== 'pass'
+        ? 'completed_with_verification_warnings'
+        : 'completed';
     const evidenceCard: EvidenceCard = {
       id: crypto.randomUUID(),
       kind: 'chat',
@@ -6125,7 +5821,7 @@ app.post('/api/chat', async (req, res) => {
       backend: 'local',
       permissionMode,
       capabilityGrantCount: listActiveCapabilityGrants(capabilityGrants).length,
-      toolSuccessRate: 1,
+      toolSuccessRate: serviceVerification?.overall === 'fail' ? 0 : 1,
       tools: [],
       files: operateResult.service
         ? [
@@ -6136,7 +5832,7 @@ app.post('/api/chat', async (req, res) => {
         : [],
       commands: [],
       artifacts: [],
-      recovery: { stopReason: 'completed' },
+      recovery: { stopReason: completionReason },
     };
     await appendRunEvidence(PROJECT_DIR, evidenceCard).catch((err) => recordSwallowed('appendRunEvidence', err));
     res.setHeader('Content-Type', 'text/event-stream');
@@ -6149,8 +5845,11 @@ app.post('/api/chat', async (req, res) => {
     }
     res.write(`data: ${JSON.stringify({ type: 'text', content: operateResult.response })}\n\n`);
     res.write(`data: ${JSON.stringify({ type: 'agentic_mode', mode: 'OPERATE_MODE', classification: operateResult.classification, service: operateResult.service, state: operateResult.state, schedule: operateResult.schedule })}\n\n`);
+    if (serviceVerification) {
+      res.write(`data: ${JSON.stringify({ type: 'verification', overall: serviceVerification.overall, checks: serviceVerification.checks })}\n\n`);
+    }
     res.write(`data: ${JSON.stringify({ type: 'evidence', evidence: evidenceCard })}\n\n`);
-    res.write(`data: ${JSON.stringify({ type: 'done', reason: 'completed', turns: 0 })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'done', reason: completionReason, turns: 0 })}\n\n`);
     res.write('data: [DONE]\n\n');
     res.end();
     return;
@@ -6159,7 +5858,18 @@ app.post('/api/chat', async (req, res) => {
   const requestedModel = model || currentModel;
   if (!requestedModel) { res.status(400).json({ error: 'No model selected.' }); return; }
   const routedModel = await resolveChatModelForRequest(requestedModel, messageText);
-  const activeModel = routedModel.model;
+  let activeModel = routedModel.model;
+  // One-shot readiness escalation: a prior low-readiness turn in this session
+  // may have queued a stronger model (only when the opt-in policy flag and a
+  // sessionId are both present). Honor it once, then clear it.
+  if (modelRouting.autoEscalateOnLowReadiness && sessionIdHint) {
+    const queuedModel = pendingReadinessEscalations.get(sessionIdHint);
+    if (queuedModel && queuedModel !== activeModel) {
+      pendingReadinessEscalations.delete(sessionIdHint);
+      activeModel = queuedModel;
+      emitEvent(PROJECT_DIR, 'model', 'escalation_applied', { applied: queuedModel, requested: requestedModel, sessionId: sessionIdHint }, 'system').catch((err) => recordSwallowed('emitEvent', err));
+    }
+  }
 
   const skipValidationThisTurn = req.body?.skipValidation === true;
   if (process.env.NODE_ENV !== 'test' && !rateLimiter.tryConsume()) {
@@ -6183,7 +5893,7 @@ app.post('/api/chat', async (req, res) => {
     res.write(`data: ${JSON.stringify({ type: 'mode_classification', ...modeClassification })}\n\n`);
   }
   if (routedModel.routed) {
-    res.write(`data: ${JSON.stringify({ type: 'model_routed', from: routedModel.from, to: routedModel.model, reason: routedModel.reason })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'model_routed', from: routedModel.from, to: routedModel.model, tier: routedModel.tier, taskType: routedModel.taskType, risk: routedModel.risk, reason: routedModel.reason, reasons: routedModel.reasons })}\n\n`);
   }
 
   const abortController = new AbortController();
@@ -6201,7 +5911,7 @@ app.post('/api/chat', async (req, res) => {
     ? { ...outputValidation, enabled: false, selectionSource: 'manual-selected' as const, selectionReason: 'Validation skipped for this turn by user request.' }
     : effectiveOutputValidationForMessage(message, stashedModeClassification?.mode);
   const client = webRuntime.createClient(activeModel, ollamaHost, activeContextMaxTokens);
-  const tools = webRuntime.getTools();
+  let tools = webRuntime.getTools();
   const permissions = webRuntime.createPermissionEngine(permissionMode);
   const projectDir = PROJECT_DIR;
 
@@ -6242,7 +5952,7 @@ app.post('/api/chat', async (req, res) => {
   const writableNote = writableExternals.length > 0
     ? `\n6. file_read, file_write, file_edit, file_move, file_delete, and list_files work in the project directory AND in these user-allowed external folders: ${writableExternals.join(', ')}.${outputNote} You can write directly to any path inside those folders when the user asks for that location. Use file_move when the user asks you to move files; do NOT emulate moves with read+write (that leaves the original behind).`
     : `\n6. file_read, file_write, file_edit, file_move, file_delete, and list_files work inside the project directory. To access files outside the project, ask the user to set an Agent Files folder in Settings (it gets auto-added to the allowed-write list); only fall back to bash/dir/cat/type when the user has not configured a folder.`;
-  const basePrompt = systemPromptOverride ||
+  const basePrompt = requestPromptOverride || systemPromptOverride ||
     'You are a self-learning AI assistant with full web access and local tool use. IMPORTANT RULES:\n' +
     '1. When the user asks about something on the web (weather, news, docs, prices, etc.), ALWAYS use web_search to find it, then web_read to fetch the actual content. NEVER just suggest links — fetch the data yourself and show the results.\n' +
     '2. You can read files, write files, edit code, move files, delete files, run commands, search files with grep, search the web, and read web pages.\n' +
@@ -6255,10 +5965,7 @@ app.post('/api/chat', async (req, res) => {
     '\n9. Treat configured external folders as user-owned data and tools. For existing apps under allowed external folders, use their CLI commands and data files for routine requests. Do not rewrite scripts, setup files, notification formatters, or skill implementations there unless the user explicitly asks you to modify that tool\'s code. For bullet journal task requests, prefer the journal CLI or task data over file_write/file_edit on journal.py, telegram_sender.py, or related program files.';
 
   // Inject name and personality before the base prompt
-  const identityPrefix = [
-    agentName ? `Your name is ${agentName}.` : '',
-    agentPersonality || '',
-  ].filter(Boolean).join(' ');
+  const identityPrefix = buildAgentIdentityPrefix();
   const promptWithPersonality = identityPrefix
     ? `${identityPrefix}\n\n${basePrompt}`
     : basePrompt;
@@ -6268,7 +5975,7 @@ app.post('/api/chat', async (req, res) => {
   // Jarvis: pass the latest user message as the recall query so the
   // knowledge graph can inject relevant entity/fact hits automatically.
   const recallQuery = typeof messageText === 'string' ? messageText.slice(0, 240) : undefined;
-  const baseSystemPrompt = await webRuntime.assembleSystemContext({ systemPrompt: withRoutingPolicy(evolvedPrompt), projectDir, skillsDir: SKILLS_DIR, recallProjectDir: PROJECT_DIR, recallQuery, ragProjectDir: PROJECT_DIR, ragQuery: recallQuery, ragOllamaHost: ollamaHost, palaceProjectDir: PROJECT_DIR, sessionSearchProjectDir: PROJECT_DIR, sessionSearchQuery: recallQuery });
+  const baseSystemPrompt = await webRuntime.assembleSystemContext({ systemPrompt: withRoutingPolicy(evolvedPrompt), projectDir, skillsDir: SKILLS_DIR, recallProjectDir: PROJECT_DIR, recallQuery, ragProjectDir: PROJECT_DIR, ragQuery: recallQuery, ragOllamaHost: ollamaHost, palaceProjectDir: PROJECT_DIR, sessionSearchProjectDir: PROJECT_DIR, sessionSearchQuery: recallQuery, ccmemUrl: ccmemUrl || undefined, ccmemQuery: recallQuery });
   const attachmentsBlock = await buildAttachmentsContextBlock(req.body?.attachments);
   const explicitSkill = messageText ? await loadExplicitSkillContext(messageText) : { context: '' };
 
@@ -6282,15 +5989,15 @@ app.post('/api/chat', async (req, res) => {
     // Seed the generic safety / agent / verifier / workflow / prompt nodes
     // exactly once. seedGeneric() is idempotent so this is cheap on repeat.
     myceliumRouter.seedGeneric();
-    const tools = webRuntime.getTools();
     myceliumRouter.seedToolNodes(tools.map((t) => ({ name: t.name, description: t.description })));
     // Seed skills from runtime and repo directories
     try {
-      const [runtimeSkills, repoSkills] = await Promise.all([
+      const [runtimeSkills, repoSkills, globalSkills] = await Promise.all([
         loadSkillsDir(SKILLS_DIR).catch(() => []),
         loadSkillsDir(REPO_SKILLS_DIR).catch(() => []),
+        loadSkillsDir(GLOBAL_SKILLS_DIR).catch(() => []),
       ]);
-      const allSkills = [...runtimeSkills, ...repoSkills];
+      const allSkills = [...runtimeSkills, ...repoSkills, ...globalSkills];
       myceliumRouter.seedSkillNodes(allSkills.map((s) => ({ name: s.name, description: s.description, domain: s.domain })));
     } catch (err) { recordSwallowed('mycelium.seedSkillNodes', err); }
     // Seed semantic memory entries
@@ -6312,6 +6019,16 @@ app.post('/api/chat', async (req, res) => {
         `[Task type: ${myceliumResult.classification.type}; high_risk: ${myceliumResult.classification.highRisk}; exploration: ${myceliumResult.classification.explorationRate}]\n` +
         formatMyceliumContextText(myceliumResult.contextText, MYCELIUM_CONTEXT_MAX_CHARS) +
         safetyBlock;
+    }
+    // Promote the advisory route into an actual tool shortlist for this
+    // turn. Off by default; opt in with HARNESS_CHAT_MYCELIUM_SHORTLIST=1.
+    // deriveToolShortlist returns the full set when routedToolNames is
+    // empty, so cold-graph turns degrade to today's behaviour.
+    if (process.env.HARNESS_CHAT_MYCELIUM_SHORTLIST === '1' && myceliumResult.nodes.length > 0) {
+      try {
+        const shortlist = deriveToolShortlist(toolNamesFromRoute(myceliumResult), tools);
+        if (shortlist.length > 0) tools = shortlist;
+      } catch (err) { recordSwallowed('mycelium.chatShortlist', err); }
     }
   } catch (error) {
     logger.warn('Mycelium', 'Context routing failed', { error: error instanceof Error ? error.message : String(error) });
@@ -6430,10 +6147,31 @@ CONTEXT HYGIENE (critical for long tasks):
   const squadNote = await buildSquadRoutingNote(squadId, typeof message === 'string' ? message : '').catch(() => null);
   const identityBlock = await renderIdentityForPrompt(PROJECT_DIR, { maxChars: 4000 }).catch(() => '');
   const recentAuditBlock = await renderRecentAuditForPrompt(PROJECT_DIR).catch(() => '');
-  const systemPrompt = [baseSystemPrompt, identityBlock, attachmentsBlock, explicitSkill.context, myceliumContext, codeIntelContext, nervousContext, recentAuditBlock, squadNote, conciergeNote, toolSynthesisNudge].filter(Boolean).join('\n\n');
+
+  // Skill-gap hint ("if nothing exists, create it"): when the message looks
+  // like a task but NO installed skill matches its triggers, tell the agent it
+  // MAY author one with create_skill. This is a soft, model-initiated nudge —
+  // never a forced auto-write. Without it, a no-match is silently a no-op, so
+  // the harness can never grow a new skill from an unmet need. Kept conservative
+  // (only fires on action-verb messages) to avoid nudging on questions/chat.
+  let skillGapNote = '';
+  try {
+    const msgForSkill = typeof message === 'string' ? message : '';
+    const taskShaped = /\b(build|create|make|implement|write|add|generate|scaffold|set\s?up|automate|scrape|crawl|download|convert|refactor|integrate|deploy|configure|install|parse|extract|monitor|schedule)\b/i.test(msgForSkill);
+    if (msgForSkill && taskShaped) {
+      const installedSkills = await loadSkillsFromDirs([GLOBAL_SKILLS_DIR, REPO_SKILLS_DIR, SKILLS_DIR]).catch(() => []);
+      if (!matchSkillTrigger(installedSkills, msgForSkill)) {
+        skillGapNote = '--- Skill gap ---\nNo installed skill matched this request. If this task is a reusable, repeatable procedure you expect to recur, you MAY capture it as a skill with the create_skill tool after completing the work. Only do this for genuinely reusable workflows — never for a one-off request.';
+      }
+    }
+  } catch (err) { recordSwallowed('skillGapNote', err); }
+
+  const systemPrompt = [baseSystemPrompt, identityBlock, attachmentsBlock, explicitSkill.context, myceliumContext, codeIntelContext, nervousContext, recentAuditBlock, squadNote, conciergeNote, skillGapNote, toolSynthesisNudge].filter(Boolean).join('\n\n');
 
   const synthesisStats = await loadSynthesisStats(PROJECT_DIR);
   const effectiveMaxTurns = adaptiveMaxTurns(synthesisStats, activeModel, 25);
+  const chatTaskContract = messageText ? buildTaskContract(messageText) : undefined;
+  const requiresExecutionProof = chatTaskContract?.mode === 'code_edit' || chatTaskContract?.mode === 'debug';
 
   // Wall-clock budget: local Ollama models are slow per-turn so a generous
   // turn budget hammers the GPU. Cloud APIs are fast so they can afford
@@ -6448,9 +6186,19 @@ CONTEXT HYGIENE (critical for long tasks):
   const config: LoopConfig = {
     model: activeModel,
     systemPrompt,
-    maxTurns: effectiveMaxTurns,
+    maxTurns: requiresExecutionProof
+      ? Math.min(effectiveMaxTurns, chatTaskContract.max_turns)
+      : effectiveMaxTurns,
     maxTimeMs: effectiveTimeBudgetMs,
     abortSignal: abortController.signal,
+    ...(requiresExecutionProof ? {
+      taskContract: chatTaskContract,
+      verify: { enabled: true, quick: false, timeout: 60_000 },
+      validateToolInput: true,
+      readBeforeWrite: { mode: 'warn' as const, allowNewFiles: true },
+      repeatedToolFailureLimit: 3,
+      unproductiveTurnLimit: 5,
+    } : {}),
     context: { maxTokens: activeContextMaxTokens, summarizerModel },
     outputValidation: {
       enabled: activeOutputValidation.enabled,
@@ -6458,7 +6206,7 @@ CONTEXT HYGIENE (critical for long tasks):
       customProfiles: customOutputValidationProfiles,
     },
     autoContinue: true,
-    taskType: myceliumClassification?.type,
+    taskType: requiresExecutionProof ? chatTaskContract.intent_type : myceliumClassification?.type,
   };
 
   const keepAlive = setInterval(() => {
@@ -6534,6 +6282,34 @@ CONTEXT HYGIENE (critical for long tasks):
     summarizerClient: summarizerModel ? webRuntime.createClient(summarizerModel, ollamaHost, activeContextMaxTokens) : undefined,
     tracer: runtimeTracer,
     learningRecorder: chatLearningRecorder,
+    // Bridge inspector requireApproval into the same prompt broker the
+    // permission engine uses, so users see one queue. Routed through the
+    // current `permissionMode`: dontAsk auto-allows (matches existing
+    // permission behaviour); ask/acceptEdits surface the prompt.
+    onApprovalRequired: async (info) => {
+      if (permissionMode === 'dontAsk') {
+        runtimeTracer.recordEvent('inspector.auto_approved', {
+          tool: info.call.name,
+          inspector: info.inspectorName,
+          reason: info.reason,
+        });
+        return true;
+      }
+      runtimeTracer.recordEvent('permission.prompt_created', {
+        tool: info.call.name,
+        reason: info.reason,
+        source: `inspector.${info.inspectorName}`,
+      });
+      const result = await permissionPrompts.request(
+        info.call,
+        `Inspector '${info.inspectorName}': ${info.reason}${info.warning ? ` (${info.warning})` : ''}`,
+      );
+      return result.allowed;
+    },
+    // LLM-graded safety judge for AdversaryInspector. Reuses the chat
+    // client; only invoked when HARNESS_INSPECTOR_ADVERSARY=1 and
+    // <project>/.harness/adversary.md exists.
+    adversaryJudge: createLlmAdversaryJudge(client),
   };
 
   const messages: Message[] = [];
@@ -6581,6 +6357,10 @@ CONTEXT HYGIENE (critical for long tasks):
   // Per-tool success/total counters so the verifier can spot silent failures
   // in failure-prone tools (web_fetch, pdf_*) that the aggregate ratio dilutes.
   const toolStats = new Map<string, { success: number; total: number }>();
+  // Honest run model locality, folded once the cost rollup is built; read
+  // after the loop to decide the offline-guarantee badge. Defaults to
+  // 'unknown' so a run that never reaches the rollup never claims offline.
+  let runLocality: ModelLocality = 'unknown';
 
   try {
     if (droppedForTokens > 0) {
@@ -6601,6 +6381,7 @@ CONTEXT HYGIENE (critical for long tasks):
     }
     const seenFallbackKeys = new Set<string>();
     let suppressedFallbacks = 0;
+    const runUsageSamples: RunUsageSample[] = [];
     for await (const event of webRuntime.runQueryLoop(config, deps, messages)) {
       if (event.type === 'tool_result') {
         toolCallCount++;
@@ -6616,7 +6397,8 @@ CONTEXT HYGIENE (critical for long tasks):
         });
         evidenceFiles.push(...evidenceFilesFromTool(event.call.name, event.call.input));
         if (event.call.name === 'bash' && typeof event.call.input.command === 'string') {
-          evidenceCommands.push({ command: event.call.input.command, success: Boolean(event.result?.success), outputSummary: summarizeForEvidence(event.result?.output) });
+          const testCounts = parseJestSummary(String(event.result?.output ?? '')) ?? undefined;
+          evidenceCommands.push({ command: event.call.input.command, success: Boolean(event.result?.success), outputSummary: summarizeForEvidence(event.result?.output), testCounts });
         }
         if (event.call?.name) {
           toolCallSequence.push(event.call.name);
@@ -6680,6 +6462,26 @@ CONTEXT HYGIENE (critical for long tasks):
         autoContinueCount++;
         chatLearningRecorder.recordAutoContinue(activeModel);
       }
+      if (event.type === 'usage') {
+        // Accumulate per-call locality + tokens for an honest run-level cost
+        // rollup emitted once the loop completes (see run_cost below).
+        runUsageSamples.push({
+          locality: event.locality ?? 'unknown',
+          promptTokens: event.promptTokens,
+          completionTokens: event.completionTokens,
+        });
+      }
+      if (event.type === 'governed_shadow') {
+        // Live producer for the governed review queue. The event only fires
+        // when HARNESS_GOVERNED_SHADOW is on, so this stays dormant by default.
+        // Enqueue is fire-and-forget and never blocks or alters the stream;
+        // nothing is written to the brain here — items wait for human approval.
+        try {
+          enqueueFromGoverned(event.governed);
+        } catch (err) {
+          recordSwallowed('enqueueFromGoverned', err);
+        }
+      }
       for (const fallbackEvent of drainRemoteProviderFallbackEvents()) {
         res.write(`data: ${JSON.stringify(fallbackEvent)}\n\n`);
       }
@@ -6713,6 +6515,23 @@ CONTEXT HYGIENE (critical for long tasks):
           })}\n\n`);
         }
       }
+    }
+    // Honest run-level cost rollup: claims a $0 all-local run only when every
+    // model call was provably local; a single cloud call makes the run billed.
+    const runCost = summarizeRunCost(runUsageSamples);
+    runLocality = runCost.locality;
+    res.write(`data: ${JSON.stringify({
+      type: 'run_cost',
+      ...runCost,
+    })}\n\n`);
+    // Honest answer-confidence signal: surfaces an explicit abstention or a
+    // model-stated confidence band, and stays silent ('unstated') rather than
+    // fabricating a number when the answer expressed none.
+    if (assistantTextBuffer.trim()) {
+      res.write(`data: ${JSON.stringify({
+        type: 'answer_confidence',
+        ...assessAnswerConfidence(assistantTextBuffer),
+      })}\n\n`);
     }
     for (const fallbackEvent of drainRemoteProviderFallbackEvents()) {
       res.write(`data: ${JSON.stringify(fallbackEvent)}\n\n`);
@@ -6774,26 +6593,74 @@ CONTEXT HYGIENE (critical for long tasks):
   }
 
   // Auto-reflection: analyze this session's tool usage (runs silently, non-blocking)
-  recordToolUseStats(PROJECT_DIR, activeModel, {
+  queueChatBackgroundTask('recordToolUseStats', recordToolUseStats(PROJECT_DIR, activeModel, {
     toolCalls: toolCallCount,
     toolSuccesses: toolSuccessCount,
     finalTextResponse: assistantTextBuffer.trim().length > 0,
-  }).catch((err) => recordSwallowed('server.ts:6571', err));
+  }));
 
-  chatLearningRecorder.onSessionEnd().then(({ reflection, newPatterns }) => {
+  queueChatBackgroundTask('chatLearningRecorder.onSessionEnd', chatLearningRecorder.onSessionEnd().then(({ reflection, newPatterns }) => {
     if (reflection.insights.length > 0) {
       logger.info('Learning', `Session reflection: ${reflection.insights.join('; ')}`);
     }
     if (newPatterns.length > 0) {
       logger.info('Learning', `${newPatterns.length} patterns ready for skill promotion`);
     }
-  }).catch((err) => recordSwallowed('server.ts:6580', err));
-  persistSessionLearning(session, projectDir).catch((err) => recordSwallowed('persistSessionLearning', err));
-  webRuntime.rebuildSemanticMemory(projectDir).catch((err) => recordSwallowed('webRuntime.rebuildSemanticMemory', err));
+  }));
+  queueChatBackgroundTask('persistSessionLearning', persistSessionLearning(session, projectDir));
+  queueChatBackgroundTask('webRuntime.rebuildSemanticMemory', webRuntime.rebuildSemanticMemory(projectDir));
+
+  // Build gate (advisory test-and-learn): if this turn wrote source files,
+  // run a cheap validation and feed the REAL pass/fail into the readiness
+  // score and the learning signal below. Runs before the mycelium block so
+  // both consume it. Never blocks the response.
+  const gateChangedFiles = evidenceFiles
+    .filter((f) => f.action === 'write' || f.action === 'edit')
+    .map((f) => f.path);
+  const buildGateResult = await runChatBuildGate(PROJECT_DIR, gateChangedFiles);
+  const gateFailed = buildGateResult.ran && !buildGateResult.passed;
+  if (buildGateResult.ran) {
+    res.write(`data: ${JSON.stringify({ type: 'validation_gate', ran: true, passed: buildGateResult.passed, kind: buildGateResult.kind, summary: buildGateResult.summary, checks: buildGateResult.results.map((r) => ({ label: r.label, passed: r.passed })) })}\n\n`);
+    emitEvent(PROJECT_DIR, 'system', 'validation_gate', {
+      session_id: session.getSessionId(),
+      passed: buildGateResult.passed,
+      kind: buildGateResult.kind,
+      summary: buildGateResult.summary,
+      checks: buildGateResult.results.map((r) => ({ label: r.label, passed: r.passed, exitCode: r.exitCode })),
+    }, 'agent', session.getSessionId()).catch((err) => recordSwallowed('chat.validationGate', err));
+    if (gateFailed) {
+      logger.warn('BuildGate', `Validation failed for chat turn: ${buildGateResult.summary}`);
+      // The harness already has a real test-and-learn loop that iterates the
+      // agent to convergence (runGoalLoop + the 'queryloop' runner, reachable
+      // at POST /api/goals/:id/start). When a multi-file build fails its gate,
+      // surface that loop as a ready-to-launch fix — advisory only, mirroring
+      // escalation_advisory. We never auto-start it: the gate is advisory by
+      // design, and auto-iterating spends tokens without the user asking.
+      const sourceFileCount = gateChangedFiles.filter((f) => /\.(ts|tsx|js|jsx|mjs|cjs|py)$/i.test(f)).length;
+      if (sourceFileCount >= 2) {
+        res.write(`data: ${JSON.stringify({
+          type: 'fix_loop_advisory',
+          reason: `Build validation failed (${buildGateResult.summary}). A fix loop can iterate the agent until it passes.`,
+          failedChecks: buildGateResult.results.filter((r) => !r.passed).map((r) => r.label),
+          goal: {
+            target: `Fix the failing build validation: ${buildGateResult.summary}`,
+            validation: buildGateResult.results.filter((r) => !r.passed).map((r) => r.label),
+          },
+          launch: { method: 'POST', path: '/api/goals (create) then /api/goals/:id/start', runner: 'queryloop' },
+        })}\n\n`);
+        emitEvent(PROJECT_DIR, 'system', 'fix_loop_suggested', {
+          session_id: session.getSessionId(),
+          summary: buildGateResult.summary,
+          failed_checks: buildGateResult.results.filter((r) => !r.passed).map((r) => r.label),
+        }, 'agent', session.getSessionId()).catch((err) => recordSwallowed('chat.fixLoopAdvisory', err));
+      }
+    }
+  }
 
   // Mycelium reinforcement: strengthen or weaken routes based on outcome.
   // Run a heuristic verifier first so the reward reflects safety + tool reliability.
   let nsPainMultiplier = 1.0;
+  let myceliumEpisodeId: string | undefined;
   if (myceliumRouter) {
     const hasOutput = assistantTextBuffer.trim().length > 0;
     const toolSuccessRate = toolCallCount > 0 ? toolSuccessCount / toolCallCount : 0.5;
@@ -6846,12 +6713,27 @@ CONTEXT HYGIENE (critical for long tasks):
     const nsPainResult = nervousVerifier.painMultiplier;
     nsPainMultiplier = nsPainResult;
 
+    // A failed build gate is strong evidence the turn's code does not work,
+    // even when the model produced confident prose. Pull the reward down so the
+    // router learns from execution, not just from emitting output.
+    const gateRewardFactor = gateFailed ? 0.4 : 1.0;
+
+    // Per-(model, taskType) reliability: record whether this turn produced a
+    // usable result so the readiness gate can supply a real model_reliability
+    // signal on future turns. Historical-only; this turn already read priors.
+    queueChatBackgroundTask('recordModelOutcome', recordModelOutcome(
+      PROJECT_DIR,
+      activeModel,
+      myceliumClassification?.type ?? 'general',
+      hasOutput && !verifierBlocked && !gateFailed,
+    ));
+
     myceliumRouter.reinforce({
-      taskSuccess: (hasOutput ? 0.7 : 0.2) * nsPainMultiplier,
-      correctness: (hasOutput ? 0.6 + toolSuccessRate * 0.3 : 0.1) * nsPainMultiplier,
+      taskSuccess: (hasOutput ? 0.7 : 0.2) * nsPainMultiplier * gateRewardFactor,
+      correctness: (hasOutput ? 0.6 + toolSuccessRate * 0.3 : 0.1) * nsPainMultiplier * gateRewardFactor,
       usefulness: (hasOutput ? 0.5 + toolSuccessRate * 0.3 : 0.1) * nsPainMultiplier,
       costEfficiency: toolCallCount <= 5 ? 0.8 : toolCallCount <= 15 ? 0.5 : 0.2,
-      userSatisfaction: verifierScore * nsPainMultiplier,
+      userSatisfaction: verifierScore * nsPainMultiplier * gateRewardFactor,
     }, {
       blocked: verifierBlocked,
       blockReason: verifierBlockReason,
@@ -6876,6 +6758,24 @@ CONTEXT HYGIENE (critical for long tasks):
       await myceliumRouter.save();
     } catch (error) {
       logger.warn('Mycelium', 'Failed to save graph', { error: error instanceof Error ? error.message : String(error) });
+    }
+    // Bind this turn's recorded episode id so a later thumbs vote attaches to
+    // exactly this route, not whatever episode is most recent at vote time.
+    // Also append the reward to the durable ledger so the learning curve
+    // (is the system improving?) can be computed from real history.
+    if (myceliumRouter.getLastRoute().length > 0) {
+      const recordedEpisode = graph.listEpisodes(1)[0];
+      myceliumEpisodeId = recordedEpisode?.id;
+      if (recordedEpisode) {
+        queueChatBackgroundTask('appendRewardEntry', appendRewardEntry(PROJECT_DIR, {
+          ts: recordedEpisode.timestamp,
+          taskType: recordedEpisode.taskType,
+          reward: recordedEpisode.reward,
+          components: recordedEpisode.rewardComponents,
+          model: activeModel,
+          gatePassed: buildGateResult.ran ? buildGateResult.passed : undefined,
+        }));
+      }
     }
   }
 
@@ -6911,6 +6811,7 @@ CONTEXT HYGIENE (critical for long tasks):
       route: myceliumRouter.getLastRoute(),
       protectedEdges: myceliumRouter.getLastExplanation()?.protectedRequired.length,
       selectionReasons: myceliumRouter.getLastExplanation()?.whySelected.reduce<Record<string, string>>((acc, reason, index) => ({ ...acc, [`reason${index + 1}`]: reason }), {}),
+      episodeId: myceliumEpisodeId,
     } : undefined,
     artifacts: [],
     recovery: {
@@ -6924,6 +6825,22 @@ CONTEXT HYGIENE (critical for long tasks):
     },
   };
   res.write(`data: ${JSON.stringify({ type: 'evidence', evidence: evidenceCard })}\n\n`);
+  // Honest, auditable provenance for the run: which model produced it, when,
+  // and from what sources. Derived from the just-built evidence card so it
+  // never fabricates a model/time and marks sources proven only on evidence.
+  res.write(`data: ${JSON.stringify({ type: 'run_provenance', ...buildRunProvenance(evidenceCard) })}\n\n`);
+  // Honest offline guarantee: paints an 'offline' badge ONLY when the run's
+  // model was provably local AND no network-category tool was used. A cloud
+  // model or network tool proves 'online'; an unrecorded locality or an
+  // unresolvable tool category yields 'unknown' rather than a false claim.
+  {
+    const offlineRegistry = createToolRegistry(PROJECT_DIR);
+    const offlineToolRefs = evidenceCard.tools.map((t) => ({
+      name: t.name,
+      category: offlineRegistry.get(t.name)?.permissionCategory,
+    }));
+    res.write(`data: ${JSON.stringify({ type: 'offline', ...assessOfflineGuarantee({ modelLocality: runLocality, tools: offlineToolRefs }) })}\n\n`);
+  }
 
   // Promise detection: scan assistant output for commitment language and auto-record promises.
   if (assistantTextBuffer.trim()) {
@@ -6966,10 +6883,24 @@ CONTEXT HYGIENE (critical for long tasks):
   }, 'agent', session.getSessionId()).catch((err) => recordSwallowed('server.ts:6748', err));
 
   // Execution Readiness Gate: compute and emit readiness score for this turn.
+  // Reliability is historical (prior turns); this turn's outcome is recorded
+  // asynchronously above and feeds future turns.
+  const readinessReliability = await loadModelReliability(PROJECT_DIR);
+  const readinessTaskType = myceliumClassification?.type ?? 'general';
   const readinessInput: ReadinessInput = {
-    model_confidence: lastValidationScore !== undefined ? lastValidationScore : undefined,
-    verifier_score: typeof nsPainMultiplier === 'number' ? Math.max(0, 1 - (1 - nsPainMultiplier)) : undefined,
+    // Output-validation score is genuinely a schema/output-validity signal, so
+    // it feeds schema_validity (its true home) rather than double-counting as
+    // model_confidence, which we have no honest source for.
+    schema_validity: lastValidationScore !== undefined ? lastValidationScore : undefined,
+    // Prefer the build gate's real execution result when it ran (ground truth:
+    // did the code the agent wrote actually compile/import/test?). Fall back to
+    // the nervous-system pain proxy only when no validation was run this turn.
+    verifier_score: buildGateVerifierScore(buildGateResult) ?? (typeof nsPainMultiplier === 'number' ? Math.max(0, 1 - (1 - nsPainMultiplier)) : undefined),
+    ambiguity_score: myceliumClassification
+      ? (myceliumClassification.matchedKeywords.length > 0 ? 0.2 : 0.6)
+      : undefined,
     risk_score: myceliumClassification?.highRisk ? 0.8 : 0.2,
+    model_reliability: modelReliabilityScore(readinessReliability, activeModel, readinessTaskType),
     tool_reliability: toolCallCount > 0 ? toolSuccessCount / toolCallCount : undefined,
   };
   const readiness = calculateReadiness(readinessInput);
@@ -6988,6 +6919,13 @@ CONTEXT HYGIENE (critical for long tasks):
         const suggested = `${strongBackends[0]}/${OPENAI_COMPATIBLE_PRESETS[strongBackends[0]].defaultModel}`;
         res.write(`data: ${JSON.stringify({ type: 'escalation_advisory', currentModel: activeModel, suggestedModel: suggested, readinessScore: readiness.score, reason: 'Readiness score below threshold. Consider switching to a stronger model.' })}\n\n`);
         emitEvent(PROJECT_DIR, 'model', 'escalation_suggested', { current: activeModel, suggested, readiness_score: readiness.score }, 'system').catch((err) => recordSwallowed('emitEvent', err));
+        // When the opt-in policy enables auto-escalation and the client passed a
+        // sessionId, queue the stronger model so the NEXT turn in this session
+        // runs on it. Default-off: advisory-only otherwise.
+        if (modelRouting.autoEscalateOnLowReadiness && sessionIdHint) {
+          pendingReadinessEscalations.set(sessionIdHint, suggested);
+          emitEvent(PROJECT_DIR, 'model', 'escalation_queued', { current: activeModel, queued: suggested, readiness_score: readiness.score, sessionId: sessionIdHint }, 'system').catch((err) => recordSwallowed('emitEvent', err));
+        }
       }
     }
   }
@@ -6997,441 +6935,52 @@ CONTEXT HYGIENE (critical for long tasks):
 });
 
 // --- API: Sessions, Recovery, Forking, Semantic Recall ---
-app.get('/api/sessions', async (_req, res) => {
-  try {
-    const sessions = await SessionStorage.listSessions(PROJECT_DIR);
-    res.json({ sessions });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// All /api/sessions/* routes moved to ./sessionRoutes.ts (see the
+// createSessionRouter mount near the other extracted routers).
 
 // Runs view: same source as /api/sessions but enriched with derived fields
 // (duration, age) the dashboard renders without per-row computation.
-app.get('/api/runs', async (_req, res) => {
-  try {
-    const sessions = await SessionStorage.listSessions(PROJECT_DIR);
-    const evidence = await readRunEvidence(PROJECT_DIR, 200);
-    const now = Date.now();
-    const runs = sessions.map((session) => {
-      const startMs = Date.parse(session.createdAt);
-      const endMs = session.updatedAt ? Date.parse(session.updatedAt) : Number.NaN;
-      const durationMs = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs ? endMs - startMs : null;
-      const ageMs = Number.isFinite(startMs) ? Math.max(0, now - startMs) : null;
-      return {
-        sessionId: session.sessionId,
-        title: session.title || 'Untitled run',
-        model: session.model,
-        status: session.status || 'unknown',
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt,
-        durationMs,
-        ageMs,
-        checkpointCount: session.checkpointCount ?? 0,
-        lastError: session.lastError,
-        parentSessionId: session.parentSessionId,
-      };
-    });
-    const counts: Record<string, number> = {};
-    for (const run of runs) counts[run.status] = (counts[run.status] ?? 0) + 1;
-    res.json({ runs, total: runs.length, counts, evidence });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// Extracted to ./runsRoutes.ts. server.ts still imports SessionStorage +
+// readRunEvidence for many other callers (chat handler, jarvis brief, etc).
+app.use(createRunsRouter({ projectDir: PROJECT_DIR }));
 
-app.get('/api/sessions/recover', async (_req, res) => {
-  try {
-    const sessions = await SessionStorage.listRecoverableSessions(PROJECT_DIR);
-    res.json({ sessions });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/sessions/:id', async (req, res) => {
-  try {
-    const sessionId = safeLocalId(req.params.id);
-    if (!sessionId) { res.status(400).json({ error: 'Invalid session id.' }); return; }
-    const activeModel = currentModel || req.query.model?.toString() || 'unknown';
-    const result = await resumeSession(PROJECT_DIR, sessionId, activeModel);
-    res.json(result);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/sessions/:id/fork', async (req, res) => {
-  try {
-    const sessionId = safeLocalId(req.params.id);
-    if (!sessionId) { res.status(400).json({ error: 'Invalid session id.' }); return; }
-    const activeModel = req.body.model || currentModel;
-    if (!activeModel) { res.status(400).json({ error: 'No model selected.' }); return; }
-    const result = await forkSession(PROJECT_DIR, sessionId, activeModel);
-    res.json({ sessionId: result.newStorage.getSessionId(), messageCount: result.messages.length });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/sessions/:id/export', async (req, res) => {
-  try {
-    const sessionId = safeLocalId(req.params.id);
-    if (!sessionId) { res.status(400).json({ error: 'Invalid session id.' }); return; }
-    const storage = new SessionStorage(PROJECT_DIR, '', sessionId);
-    const [meta, events] = await Promise.all([storage.getMeta(), storage.readAll()]);
-    const exportData = { meta, events, exportedAt: new Date().toISOString() };
-    res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Content-Disposition', `attachment; filename="session-${sessionId.slice(0, 8)}.json"`);
-    res.json(exportData);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/sessions/import', async (req, res) => {
-  try {
-    const body = req.body;
-    if (!body?.meta || !Array.isArray(body?.events)) {
-      res.status(400).json({ error: 'Invalid session export: must have meta and events array.' });
-      return;
-    }
-    const model = body.meta.model || currentModel || 'imported';
-    const storage = new SessionStorage(PROJECT_DIR, model);
-    await storage.initialize();
-    if (body.meta.title) storage.setMeta('title', body.meta.title);
-    for (const event of body.events) {
-      if (event.type && event.data) {
-        await storage.append(event.type, event.data);
-      }
-    }
-    await storage.markStatus(body.meta.status || 'completed');
-    await rebuildSessionSearchIndexWithMetadata(PROJECT_DIR);
-    res.json({ sessionId: storage.getSessionId(), eventCount: body.events.length });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/memory/rebuild', async (_req, res) => {
-  try {
-    const entries = await rebuildSemanticMemory(PROJECT_DIR);
-    res.json({ entries: entries.length });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/memory/search', async (req, res) => {
-  try {
-    const query = req.query.q?.toString() ?? '';
-    const results = await searchSemanticMemory(PROJECT_DIR, query.slice(0, 500));
-    res.json({ results });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/memory/entries/:id', async (req, res) => {
-  const entryId = safeLocalId(req.params.id);
-  if (!entryId) { res.status(400).json({ error: 'Invalid memory entry id.' }); return; }
-  try {
-    const entry = await getSemanticMemoryEntry(PROJECT_DIR, entryId);
-    if (!entry) { res.status(404).json({ error: 'Memory entry not found.' }); return; }
-    res.json({ entry });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/memory/entries/:id/context', async (req, res) => {
-  const entryId = safeLocalId(req.params.id);
-  if (!entryId) { res.status(400).json({ error: 'Invalid memory entry id.' }); return; }
-  try {
-    const context = await getSemanticMemoryContext(PROJECT_DIR, entryId, clampNumber(req.query.window, 1, 10, 3));
-    if (!context) { res.status(404).json({ error: 'Memory entry not found.' }); return; }
-    res.json(context);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/memory/palace', async (_req, res) => {
-  try {
-    const palace = await buildMemoryPalace(PROJECT_DIR);
-    res.json(palace);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// Learning console routes — read evolved prompts/reflections/candidates and
+// apply routing calibration. Extracted to ./learningRoutes.ts. Mutable
+// modelRouting state is bridged via callable deps so server.ts stays the
+// single owner of policy persistence (used by /api/settings + boot load).
+app.use(createLearningRouter({
+  projectDir: PROJECT_DIR,
+  getModelRouting: () => modelRouting,
+  applyRoutingCalibration: async (suggestedPolicy) => {
+    await ensureSettingsLoaded();
+    modelRouting = sanitizeModelRoutingPolicy({ ...modelRouting, ...suggestedPolicy });
+    await saveSettingsToDisk();
+    return getCurrentSettings();
+  },
+}));
 
 // --- API: Snapshots (skills, memory, config) ---
-// Lightweight point-in-time copies of `.harness/skills`, MEMORY.md,
-// USER.md, SOUL.md so users can roll back self-improvement edits or
-// recover a tree they accidentally clobbered.
-
-app.get('/api/snapshots', async (_req, res) => {
-  try {
-    res.json({ snapshots: await snapshots.list(PROJECT_DIR) });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/snapshots', async (req, res) => {
-  try {
-    const reason = typeof req.body?.reason === 'string' ? req.body.reason : 'manual';
-    const meta = await snapshots.take(PROJECT_DIR, reason);
-    res.json({ snapshot: meta });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/snapshots/:id/diff', async (req, res) => {
-  try {
-    const diff = await snapshots.diff(PROJECT_DIR, req.params.id);
-    if (!diff) { res.status(404).json({ error: 'snapshot not found' }); return; }
-    res.json(diff);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/snapshots/:id/restore', async (req, res) => {
-  try {
-    const result = await snapshots.restore(PROJECT_DIR, req.params.id);
-    if (!result) { res.status(404).json({ error: 'snapshot not found' }); return; }
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete('/api/snapshots/:id', async (req, res) => {
-  try {
-    const ok = await snapshots.remove(PROJECT_DIR, req.params.id);
-    if (!ok) { res.status(404).json({ error: 'snapshot not found' }); return; }
-    res.json({ ok: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// Routes extracted to ./snapshotRoutes.ts. server.ts still imports
+// snapshots for the pre-recovery snapshot call in the chat handler.
+app.use(createSnapshotRouter({ projectDir: PROJECT_DIR }));
 
 // --- API: Local RAG indexes ---
-// Build, query, and drop semantic indexes over arbitrary local files.
-// Backend is auto-detected: prefers Ollama embeddings when reachable,
-// falls back to a deterministic feature-hash so the UI works offline.
+// Routes extracted to ./ragRoutes.ts. server.ts keeps `ragIndex` for
+// listIndexes() in the system-overview/registry paths.
+app.use(createRagRouter({ projectDir: PROJECT_DIR, getOllamaHost: () => ollamaHost }));
 
-app.get('/api/rag/indexes', async (_req, res) => {
-  try {
-    res.json({ indexes: await ragIndex.listIndexes(PROJECT_DIR) });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// MCP runtime + catalog routes \u2014 extracted to ./mcpRoutes.ts. Mutable
+// capabilityGrants + killSwitchActive bridged via read-only callables;
+// ensureSettingsLoaded passed in so the start route still hydrates settings
+// before evaluating capability grants.
+app.use(createMcpRouter({
+  projectDir: PROJECT_DIR,
+  getCapabilityGrants: () => capabilityGrants,
+  isKillSwitchActive: () => killSwitchActive,
+  ensureSettingsLoaded,
+}));
 
-app.post('/api/rag/build', async (req, res) => {
-  try {
-    const name = String(req.body?.name || '').trim();
-    const paths = Array.isArray(req.body?.paths) ? req.body.paths.map((p: unknown) => String(p)) : [];
-    const backend = req.body?.backend === 'ollama' || req.body?.backend === 'hash' ? req.body.backend : undefined;
-    if (!name) { res.status(400).json({ error: 'name is required' }); return; }
-    if (paths.length === 0) { res.status(400).json({ error: 'at least one path is required' }); return; }
-    const result = await ragIndex.build(PROJECT_DIR, name, paths, { backend, ollamaHost });
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/rag/preview', async (req, res) => {
-  try {
-    const paths = Array.isArray(req.body?.paths) ? req.body.paths.map((p: unknown) => String(p)) : [];
-    if (paths.length === 0) { res.status(400).json({ error: 'at least one path is required' }); return; }
-    const preview = await ragIndex.previewBuild(PROJECT_DIR, paths);
-    const backend = await ragIndex.selectBackend(ollamaHost, undefined);
-    res.json({ ...preview, backend });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Streamed build with progress events (SSE) so the UI can show file-by-file
-// progress for long indexing runs. Body shape matches POST /api/rag/build.
-app.post('/api/rag/build/stream', async (req, res) => {
-  const name = String(req.body?.name || '').trim();
-  const paths = Array.isArray(req.body?.paths) ? req.body.paths.map((p: unknown) => String(p)) : [];
-  const backend = req.body?.backend === 'ollama' || req.body?.backend === 'hash' ? req.body.backend : undefined;
-  if (!name) { res.status(400).json({ error: 'name is required' }); return; }
-  if (paths.length === 0) { res.status(400).json({ error: 'at least one path is required' }); return; }
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders();
-  const writeEvent = (event: string, data: unknown): void => {
-    res.write(`event: ${event}\n`);
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-  };
-  let aborted = false;
-  res.on('close', () => { aborted = true; });
-  try {
-    for await (const event of ragIndex.iterateBuild(PROJECT_DIR, name, paths, { backend, ollamaHost })) {
-      if (aborted) break;
-      writeEvent(event.stage, event);
-    }
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    writeEvent('error', { message: msg });
-  } finally {
-    if (!res.writableEnded) res.end();
-  }
-});
-
-app.post('/api/rag/search', async (req, res) => {
-  try {
-    const name = String(req.body?.name || '').trim();
-    const query = String(req.body?.query || '').trim();
-    const k = Number.isFinite(req.body?.k) ? Math.max(1, Math.min(20, Number(req.body.k))) : 5;
-    if (!name || !query) { res.status(400).json({ error: 'name and query are required' }); return; }
-    const results = await ragIndex.search(PROJECT_DIR, name, query, { k, ollamaHost });
-    res.json({ results });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete('/api/rag/indexes/:name', async (req, res) => {
-  try {
-    const ok = await ragIndex.dropIndex(PROJECT_DIR, req.params.name);
-    if (!ok) { res.status(404).json({ error: 'index not found' }); return; }
-    res.json({ ok: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// --- API: MCP catalog + local runtime manager ---
-// The catalog stays static and offline-friendly. Runtime definitions are
-// persisted locally and started only behind the existing arbitrary-shell
-// capability grant because MCP servers are external processes.
-
-app.get('/api/mcp/catalog', (_req, res) => {
-  res.json({ catalog: MCP_CATALOG });
-});
-
-app.get('/api/mcp/runtime', async (_req, res) => {
-  try {
-    res.json({ servers: await listMcpServers(PROJECT_DIR) });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/mcp/runtime/servers', async (req, res) => {
-  try {
-    const server = await upsertMcpServer(PROJECT_DIR, req.body ?? {});
-    res.json({ server, servers: await listMcpServers(PROJECT_DIR) });
-  } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/mcp/runtime/from-catalog', async (req, res) => {
-  try {
-    const catalogName = safeLocalId(req.body?.name);
-    if (!catalogName) { res.status(400).json({ error: 'Invalid MCP catalog name.' }); return; }
-    const entry = MCP_CATALOG.find((item) => item.name === catalogName);
-    if (!entry) { res.status(404).json({ error: 'MCP catalog entry not found.' }); return; }
-    const existing = (await listMcpServers(PROJECT_DIR)).find((server) => server.id === catalogName);
-    if (existing && req.body?.overwrite !== true) {
-      res.status(409).json({ error: 'MCP runtime server already exists. Pass overwrite=true to replace it.' });
-      return;
-    }
-    const parsed = parseMcpInstallCommand(entry.install);
-    const server = await upsertMcpServer(PROJECT_DIR, {
-      id: catalogName,
-      catalogName: entry.name,
-      command: parsed.command,
-      args: parsed.args,
-      env: Object.fromEntries((entry.requiresEnv || []).map((key) => [key, ''])),
-      tools: [],
-      enabled: true,
-    });
-    res.json({ server, servers: await listMcpServers(PROJECT_DIR), requiresEnv: entry.requiresEnv });
-  } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.delete('/api/mcp/runtime/servers/:id', async (req, res) => {
-  try {
-    const removed = await removeMcpServer(PROJECT_DIR, req.params.id);
-    if (!removed) { res.status(404).json({ error: 'MCP server not found.' }); return; }
-    res.json({ ok: true, servers: await listMcpServers(PROJECT_DIR) });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/mcp/runtime/servers/:id/start', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const evaluation = evaluateCapabilityGrant('arbitrary-shell', capabilityGrants, { killSwitchActive });
-    if (evaluation.decision !== 'allow') {
-      res.status(403).json({ error: `MCP server start blocked by arbitrary-shell: ${evaluation.reason}`, evaluation });
-      return;
-    }
-    const server = await startMcpServer(PROJECT_DIR, req.params.id);
-    await appendCapabilityAuditEvent(PROJECT_DIR, { type: 'mcp_server.started', serverId: server.id, command: server.command });
-    res.json({ server, servers: await listMcpServers(PROJECT_DIR) });
-  } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/mcp/runtime/servers/:id/stop', async (req, res) => {
-  try {
-    const stopped = await stopMcpServer(req.params.id);
-    await appendCapabilityAuditEvent(PROJECT_DIR, { type: 'mcp_server.stopped', serverId: String(req.params.id ?? '') });
-    res.json({ stopped, servers: await listMcpServers(PROJECT_DIR) });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/mcp/runtime/servers/:id/discover-tools', async (req, res) => {
-  try {
-    if (killSwitchActive) { res.status(403).json({ error: 'Kill switch is active.' }); return; }
-    const server = await discoverMcpServerTools(PROJECT_DIR, req.params.id);
-    res.json({ server, servers: await listMcpServers(PROJECT_DIR) });
-  } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/mcp/runtime/servers/:id/tools/:toolName/invoke', async (req, res) => {
-  try {
-    if (killSwitchActive) { res.status(403).json({ error: 'Kill switch is active.' }); return; }
-    const input = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body as Record<string, unknown> : {};
-    const result = await invokeMcpServerTool(PROJECT_DIR, req.params.id, req.params.toolName, input);
-    res.json({ result });
-  } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// MCP routes moved to ./mcpRoutes.ts (createMcpRouter mount above).
 
 // Pull a model from Ollama
 app.post('/api/models/pull', async (req, res) => {
@@ -7461,398 +7010,34 @@ app.post('/api/models/pull', async (req, res) => {
 });
 
 // --- API: Chat History ---
-app.get('/api/history', async (_req, res) => {
-  try {
-    await fs.mkdir(HISTORY_DIR, { recursive: true });
-    const files = await fs.readdir(HISTORY_DIR);
-    const chats = [];
-    for (const f of files.filter(f => f.endsWith('.json')).sort().reverse().slice(0, 50)) {
-      try {
-        const raw = await fs.readFile(path.join(HISTORY_DIR, f), 'utf-8');
-        const data = JSON.parse(raw);
-        chats.push({ id: f.replace('.json', ''), title: data.title ?? 'Untitled', date: data.date, messageCount: data.messages?.length ?? 0 });
-      } catch { /* skip corrupt */ }
-    }
-    res.json({ chats });
-  } catch { res.json({ chats: [] }); }
-});
-
-app.get('/api/history/:id', async (req, res) => {
-  try {
-    const chatId = safeLocalId(req.params.id);
-    if (!chatId) { res.status(400).json({ error: 'Invalid chat id.' }); return; }
-    const raw = await fs.readFile(path.join(HISTORY_DIR, `${chatId}.json`), 'utf-8');
-    res.json(JSON.parse(raw));
-  } catch { res.status(404).json({ error: 'Chat not found' }); }
-});
-
-app.post('/api/history', async (req, res) => {
-  const { id, title, messages, date } = req.body;
-  try {
-    await fs.mkdir(HISTORY_DIR, { recursive: true });
-    const chatId = safeLocalId(id) || Date.now().toString(36);
-    await fs.writeFile(path.join(HISTORY_DIR, `${chatId}.json`), JSON.stringify({ title, messages, date: date || new Date().toISOString() }, null, 2));
-    res.json({ id: chatId });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.delete('/api/history/:id', async (req, res) => {
-  try {
-    const chatId = safeLocalId(req.params.id);
-    if (!chatId) { res.status(400).json({ error: 'Invalid chat id.' }); return; }
-    await fs.unlink(path.join(HISTORY_DIR, `${chatId}.json`));
-    res.json({ ok: true });
-  } catch { res.status(404).json({ error: 'Not found' }); }
-});
+// Routes extracted to ./historyRoutes.ts. server.ts keeps HISTORY_DIR
+// const for the system-overview report (line 10391).
+app.use(createHistoryRouter({ projectDir: PROJECT_DIR }));
 
 // --- API: Skills ---
-app.get('/api/skills', async (_req, res) => {
-  try {
-    await fs.mkdir(SKILLS_DIR, { recursive: true });
-    const [runtime, repo] = await Promise.all([
-      scanSkillsDir(SKILLS_DIR),
-      scanSkillsDir(REPO_SKILLS_DIR),
-    ]);
-    res.json({
-      skills: runtime.skills.map(mapSkillForApi('runtime')),
-      diagnostics: runtime.diagnostics,
-      sources: [
-        skillSourceForApi('runtime', 'Runtime skills', SKILLS_DIR, runtime, true),
-        skillSourceForApi('repo', 'Repo skills', REPO_SKILLS_DIR, repo, false),
-      ],
-    });
-  } catch { res.json({ skills: [], diagnostics: [], sources: [] }); }
-});
-
-app.get('/api/skills/:name', async (req, res) => {
-  try {
-    const skillName = safeLocalId(req.params.name);
-    if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
-    if (req.query.raw === '1') {
-      const skillFile = path.join(SKILLS_DIR, skillName, 'SKILL.md');
-      try {
-        const content = await fs.readFile(skillFile, 'utf-8');
-        res.json({ name: skillName, filePath: skillFile, content });
-        return;
-      } catch {
-        res.status(404).json({ error: 'Skill not found' });
-        return;
-      }
-    }
-    const skills = await loadSkillsDir(SKILLS_DIR);
-    const skill = skills.find(s => s.name === skillName);
-    if (!skill) { res.status(404).json({ error: 'Skill not found' }); return; }
-    res.json(skill);
-  } catch { res.status(500).json({ error: 'Failed to load skill' }); }
-});
-
-app.delete('/api/skills/:name', async (req, res) => {
-  try {
-    const skillName = safeLocalId(req.params.name);
-    if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
-    const skillDir = path.join(SKILLS_DIR, skillName);
-    await fs.rm(skillDir, { recursive: true });
-    invalidateSkillsCache();
-    res.json({ ok: true });
-  } catch { res.status(404).json({ error: 'Skill not found' }); }
-});
-
-// Replace SKILL.md content for a runtime skill. Body accepts EITHER:
-//   { content: string }     -> raw markdown (must start with frontmatter)
-//   { fields: { name, description, domain, triggers, whenToUse, requiredTools, riskLevel, body } }
-//                           -> structured form, server rebuilds frontmatter
-// Before writing, the previous content is snapshotted into
-// `.harness/skills/_history/<name>/<ISO>.md` so users can revert via the
-// /history endpoints below.
-app.put('/api/skills/:name', async (req, res) => {
-  const skillName = safeLocalId(req.params.name);
-  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
-  const skillFile = path.join(SKILLS_DIR, skillName, 'SKILL.md');
-  let content: string;
-  if (req.body?.fields && typeof req.body.fields === 'object') {
-    const f = req.body.fields as Record<string, unknown>;
-    content = buildRuntimeSkillFile({
-      name: skillName,
-      description: sanitizeSkillText(f.description, 'Describe what this skill does.', 500),
-      domain: sanitizeSkillText(f.domain, 'general', 120),
-      triggers: sanitizeSkillList(f.triggers, 20, 120),
-      whenToUse: sanitizeSkillText(f.whenToUse, '', 800),
-      requiredTools: sanitizeSkillList(f.requiredTools, 40, 80),
-      riskLevel: sanitizeSkillRiskLevel(f.riskLevel),
-      body: sanitizeSkillBody(f.body),
-    });
-  } else {
-    content = typeof req.body?.content === 'string' ? req.body.content : '';
-    if (!content.trim()) { res.status(400).json({ error: 'content or fields is required.' }); return; }
-    if (content.length > 200_000) { res.status(413).json({ error: 'Skill content too large (max 200KB).' }); return; }
-    if (!/^---\n[\s\S]*?\n---/.test(content)) {
-      res.status(400).json({ error: 'Content must start with YAML frontmatter (--- ... ---).' });
-      return;
-    }
-  }
-  try {
-    const existing = await fs.stat(skillFile).catch(() => null);
-    if (!existing) { res.status(404).json({ error: 'Skill not found' }); return; }
-    const previous = await fs.readFile(skillFile, 'utf-8').catch(() => '');
-    if (previous && previous !== content) await snapshotSkillHistory(skillName, previous);
-    await fs.writeFile(skillFile, content, 'utf-8');
-    invalidateSkillsCache();
-    res.json({ ok: true, name: skillName, filePath: skillFile });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// List previous SKILL.md snapshots for a runtime skill.
-app.get('/api/skills/:name/history', async (req, res) => {
-  const skillName = safeLocalId(req.params.name);
-  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
-  try {
-    const dir = path.join(SKILLS_DIR, '_history', skillName);
-    const entries = await fs.readdir(dir).catch(() => [] as string[]);
-    const versions = entries
-      .filter((name) => name.endsWith('.md'))
-      .sort()
-      .reverse()
-      .map((name) => ({ timestamp: name.replace(/\.md$/, ''), filePath: path.join(dir, name) }));
-    res.json({ name: skillName, versions });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Read a single historical snapshot.
-app.get('/api/skills/:name/history/:ts', async (req, res) => {
-  const skillName = safeLocalId(req.params.name);
-  const ts = String(req.params.ts || '').replace(/[^A-Za-z0-9._:\-]/g, '');
-  if (!skillName || !ts) { res.status(400).json({ error: 'Invalid identifier.' }); return; }
-  try {
-    const filePath = path.join(SKILLS_DIR, '_history', skillName, `${ts}.md`);
-    const content = await fs.readFile(filePath, 'utf-8');
-    res.json({ name: skillName, timestamp: ts, filePath, content });
-  } catch {
-    res.status(404).json({ error: 'Snapshot not found' });
-  }
-});
-
-// Install a read-only repo skill (.github/skills/<name>) into runtime (.harness/skills/<name>).
-app.post('/api/skills/install', async (req, res) => {
-  const skillName = safeLocalId(req.body?.name);
-  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
-  const overwrite = Boolean(req.body?.overwrite);
-  try {
-    const sourceScan = await scanSkillsDir(REPO_SKILLS_DIR);
-    const sourceSkill = sourceScan.skills.find((s) => skillFolderId(s) === skillName || s.name === skillName);
-    if (!sourceSkill) {
-      const directSourceDir = path.join(REPO_SKILLS_DIR, skillName);
-      const directSourceStat = await fs.stat(directSourceDir).catch(() => null);
-      if (directSourceStat?.isDirectory()) {
-        res.status(400).json({ error: 'Source skill is malformed and cannot be installed. Fix SKILL.md frontmatter first.' });
-        return;
-      }
-      res.status(404).json({ error: 'Source skill not found in .github/skills.' });
-      return;
-    }
-    const sourceDir = path.dirname(sourceSkill.filePath);
-    const destinationId = skillFolderId(sourceSkill);
-    const destDir = path.join(SKILLS_DIR, destinationId);
-    const sourceStat = await fs.stat(sourceDir).catch(() => null);
-    if (!sourceStat || !sourceStat.isDirectory()) {
-      res.status(404).json({ error: 'Source skill not found in .github/skills.' });
-      return;
-    }
-    const destStat = await fs.stat(destDir).catch(() => null);
-    if (destStat && !overwrite) {
-      res.status(409).json({ error: 'Runtime skill already exists. Pass overwrite=true to replace it.' });
-      return;
-    }
-    if (destStat) await fs.rm(destDir, { recursive: true, force: true });
-    await fs.mkdir(SKILLS_DIR, { recursive: true });
-    await fs.cp(sourceDir, destDir, { recursive: true });
-    invalidateSkillsCache();
-    res.json({ ok: true, id: destinationId, name: sourceSkill.name, source: sourceDir, destination: destDir, overwrote: Boolean(destStat) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// Create a starter SKILL.md scaffold for a runtime skill folder that is missing one.
-app.post('/api/skills/scaffold', async (req, res) => {
-  const skillName = safeLocalId(req.body?.name);
-  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
-  const skillDir = path.join(SKILLS_DIR, skillName);
-  const skillFile = path.join(skillDir, 'SKILL.md');
-  try {
-    await fs.mkdir(skillDir, { recursive: true });
-    const existing = await fs.stat(skillFile).catch(() => null);
-    if (existing) {
-      res.status(409).json({ error: 'SKILL.md already exists. Edit the file directly to repair frontmatter.' });
-      return;
-    }
-    const description = typeof req.body?.description === 'string' && req.body.description.trim()
-      ? String(req.body.description).trim()
-      : 'Describe what this skill does.';
-    const domain = typeof req.body?.domain === 'string' && req.body.domain.trim()
-      ? String(req.body.domain).trim()
-      : 'general';
-    const scaffold = `---\nname: ${skillName}\ndescription: ${description}\ndomain: ${domain}\ntriggers: []\n---\n\n# ${skillName}\n\nDescribe how to use this skill here.\n`;
-    await fs.writeFile(skillFile, scaffold, 'utf-8');
-    invalidateSkillsCache();
-    res.json({ ok: true, name: skillName, filePath: skillFile });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/skills/create', async (req, res) => {
-  const skillName = safeLocalId(req.body?.name);
-  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
-  const overwrite = req.body?.overwrite === true;
-  const skillDir = path.join(SKILLS_DIR, skillName);
-  const skillFile = path.join(skillDir, 'SKILL.md');
-  try {
-    const existing = await fs.stat(skillFile).catch(() => null);
-    if (existing && !overwrite) {
-      res.status(409).json({ error: 'Runtime skill already exists. Pass overwrite=true to replace it.' });
-      return;
-    }
-    await fs.mkdir(skillDir, { recursive: true });
-    const scaffold = buildRuntimeSkillFile({
-      name: skillName,
-      description: sanitizeSkillText(req.body?.description, 'Describe what this skill does.', 500),
-      domain: sanitizeSkillText(req.body?.domain, 'general', 120),
-      triggers: sanitizeSkillList(req.body?.triggers, 20, 120),
-      whenToUse: sanitizeSkillText(req.body?.whenToUse, '', 800),
-      requiredTools: sanitizeSkillList(req.body?.requiredTools, 40, 80),
-      riskLevel: sanitizeSkillRiskLevel(req.body?.riskLevel),
-      body: sanitizeSkillBody(req.body?.content),
-    });
-    await fs.writeFile(skillFile, scaffold, 'utf-8');
-    invalidateSkillsCache();
-    res.json({ ok: true, name: skillName, filePath: skillFile, overwritten: Boolean(existing) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/skills/automation/repair', async (_req, res) => {
-  try {
-    await fs.mkdir(SKILLS_DIR, { recursive: true });
-    const [runtime, repo] = await Promise.all([
-      scanSkillsDir(SKILLS_DIR),
-      scanSkillsDir(REPO_SKILLS_DIR),
-    ]);
-    const runtimeNames = new Set(runtime.skills.map((skill) => skill.name));
-    const runtimeIds = new Set(runtime.skills.map(skillFolderId));
-    const installed: Array<{ id: string; name: string; source: string; destination: string }> = [];
-    const scaffolded: Array<{ id: string; filePath: string }> = [];
-    const skipped: Array<{ id: string; reason: string }> = [];
-
-    for (const skill of repo.skills) {
-      const id = skillFolderId(skill);
-      const destination = path.join(SKILLS_DIR, id);
-      const destinationExists = await fs.stat(destination).catch(() => null);
-      if (runtimeNames.has(skill.name) || runtimeIds.has(id) || destinationExists) {
-        skipped.push({ id, reason: 'runtime skill already exists' });
-        continue;
-      }
-      await fs.cp(path.dirname(skill.filePath), destination, { recursive: true });
-      installed.push({ id, name: skill.name, source: path.dirname(skill.filePath), destination });
-      runtimeNames.add(skill.name);
-      runtimeIds.add(id);
-    }
-
-    for (const diagnostic of runtime.diagnostics) {
-      if (diagnostic.reason !== 'missing-skill-file') {
-        skipped.push({ id: diagnostic.name, reason: `manual repair required: ${diagnostic.reason}` });
-        continue;
-      }
-      const id = safeLocalId(diagnostic.name);
-      if (!id) {
-        skipped.push({ id: diagnostic.name, reason: 'invalid runtime skill folder name' });
-        continue;
-      }
-      const skillDir = path.join(SKILLS_DIR, id);
-      const skillFile = path.join(skillDir, 'SKILL.md');
-      const existing = await fs.stat(skillFile).catch(() => null);
-      if (existing) {
-        skipped.push({ id, reason: 'SKILL.md already exists' });
-        continue;
-      }
-      const scaffold = `---\nname: ${id}\ndescription: Describe what this skill does.\ndomain: general\ntriggers: []\n---\n\n# ${id}\n\nDescribe how to use this skill here.\n`;
-      await fs.mkdir(skillDir, { recursive: true });
-      await fs.writeFile(skillFile, scaffold, 'utf-8');
-      scaffolded.push({ id, filePath: skillFile });
-    }
-
-    if (installed.length > 0 || scaffolded.length > 0) invalidateSkillsCache();
-    res.json({ ok: true, installed, scaffolded, skipped });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// Pin / unpin a skill so the curator never archives it.
-app.post('/api/skills/:name/pin', async (req, res) => {
-  const skillName = safeLocalId(req.params.name);
-  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
-  const desired = req.body?.pinned === undefined ? true : Boolean(req.body.pinned);
-  try {
-    const record = await setSkillPinned(PROJECT_DIR, skillName, desired);
-    res.json({ ok: true, record });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Enable / disable a runtime skill by rewriting the `enabled:` line in its SKILL.md
-// frontmatter. Disabled skills stay on disk but are skipped by trigger matching.
-app.post('/api/skills/:name/enabled', async (req, res) => {
-  const skillName = safeLocalId(req.params.name);
-  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
-  const enabled = req.body?.enabled === undefined ? true : Boolean(req.body.enabled);
-  const skillFile = path.join(SKILLS_DIR, skillName, 'SKILL.md');
-  try {
-    const content = await fs.readFile(skillFile, 'utf-8');
-    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-    if (!fmMatch) { res.status(400).json({ error: 'SKILL.md is missing YAML frontmatter.' }); return; }
-    const yaml = fmMatch[1];
-    const enabledLine = `enabled: ${enabled ? 'true' : 'false'}`;
-    let newYaml: string;
-    if (/^enabled:\s*.*$/m.test(yaml)) {
-      newYaml = yaml.replace(/^enabled:\s*.*$/m, enabledLine);
-    } else {
-      newYaml = `${yaml}\n${enabledLine}`;
-    }
-    const newContent = content.replace(/^---\n[\s\S]*?\n---/, `---\n${newYaml}\n---`);
-    await fs.writeFile(skillFile, newContent, 'utf-8');
-    invalidateSkillsCache();
-    res.json({ ok: true, name: skillName, enabled });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(error && typeof error === 'object' && (error as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : 500).json({ error: msg });
-  }
-});
-
-app.get('/api/skills/usage', async (_req, res) => {
-  try {
-    const records = await listSkillUsage(PROJECT_DIR);
-    res.json({ records });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// 13 routes extracted to ./skillRoutes.ts. server.ts keeps SKILLS_DIR /
+// REPO_SKILLS_DIR / GLOBAL_SKILLS_DIR + skillFolderId/mapSkillForApi/
+// skillSourceForApi here because /api/system-overview also surfaces the
+// skill source list. The router duplicates those three small helpers; the
+// skill-authoring primitives (buildRuntimeSkillFile + sanitizeSkill* +
+// snapshotSkillHistory) live in ../extensibility/skillAuthoring and are
+// shared with the create_skill tool so both paths meet the same bar.
+app.use(createSkillRouter({
+  projectDir: PROJECT_DIR,
+  skillsDir: SKILLS_DIR,
+  repoSkillsDir: REPO_SKILLS_DIR,
+  globalSkillsDir: GLOBAL_SKILLS_DIR,
+}));
 
 // --- API: Curator ---
-app.get('/api/curator', async (_req, res) => {
-  try {
+// 7 /api/curator* routes moved to ./curatorRoutes.ts. server.ts retains
+// curatorSettings/lastUserActivityMs/curatorScheduler mutables + the
+// curatorConfigFromSettings/curatorDeps helpers (still used by the
+// curator scheduler wired in at line ~1101) and bridges them via three
+// thick callables.
+app.use(createCuratorRouter({
+  projectDir: PROJECT_DIR,
+  getCuratorStatus: async () => {
     const log = await readCuratorLog(PROJECT_DIR, 50);
     const proposals = await readCuratorProposals(PROJECT_DIR);
     let archived: string[] = [];
@@ -7861,243 +7046,32 @@ app.get('/api/curator', async (_req, res) => {
       const entries = await fs.readdir(archiveDir, { withFileTypes: true });
       archived = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
     } catch { /* archive dir does not exist yet */ }
-    res.json({
+    return {
       settings: curatorSettings,
       lastUserActivityAt: new Date(lastUserActivityMs).toISOString(),
       schedulerRunning: Boolean(curatorScheduler),
       log,
       proposals,
       archived,
-    });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Manually trigger a curator preview (dry-run, never mutates).
-app.post('/api/curator/preview', async (_req, res) => {
-  try {
-    const summary = await runDeterministicPhase(PROJECT_DIR, curatorConfigFromSettings(), curatorDeps(), { dryRun: true });
-    res.json({ summary });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Manually trigger a curator run. Honors the kill switch.
-app.post('/api/curator/run', async (_req, res) => {
-  try {
+    };
+  },
+  runCuratorPreview: async () => {
+    return runDeterministicPhase(PROJECT_DIR, curatorConfigFromSettings(), curatorDeps(), { dryRun: true });
+  },
+  runCuratorPhase: async () => {
     const summary = await runCurator(PROJECT_DIR, curatorConfigFromSettings(), curatorDeps());
     if (!summary.dryRun) {
       curatorSettings = { ...curatorSettings, lastRunAt: new Date().toISOString() };
       await saveSettingsToDisk().catch((err) => recordSwallowed('saveSettingsToDisk', err));
     }
-    res.json({ summary });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Restore an archived skill.
-app.post('/api/curator/restore/:name', async (req, res) => {
-  const skillName = safeLocalId(req.params.name);
-  if (!skillName) { res.status(400).json({ error: 'Invalid skill name.' }); return; }
-  try {
-    const result = await restoreSkill(PROJECT_DIR, skillName);
-    res.json({ ok: true, ...result });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Return the last LLM phase output as a structured proposal list. UI uses
-// this to render Approve / Dismiss buttons per cluster instead of asking the
-// user to read raw markdown.
-app.get('/api/curator/proposals', async (_req, res) => {
-  try {
-    const raw = await readCuratorProposals(PROJECT_DIR);
-    const proposals = raw ? parseMergeProposals(raw) : [];
-    res.json({ proposals, raw });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Apply a single merge proposal: writes a new umbrella SKILL.md and archives
-// the source skills (pinned ones are skipped). Body: { proposal, umbrellaName?, description?, dryRun? }.
-app.post('/api/curator/proposals/apply', async (req, res) => {
-  const proposal = req.body?.proposal;
-  if (!proposal || !Array.isArray(proposal.mergeSkills) || proposal.mergeSkills.length < 2) {
-    res.status(400).json({ error: 'proposal must include at least 2 mergeSkills' });
-    return;
-  }
-  const opts = {
-    umbrellaName: typeof req.body?.umbrellaName === 'string' ? req.body.umbrellaName : undefined,
-    description: typeof req.body?.description === 'string' ? req.body.description : undefined,
-    dryRun: Boolean(req.body?.dryRun),
-  };
-  try {
-    const result = await applyMergeProposal(PROJECT_DIR, {
-      umbrellaName: typeof proposal.umbrellaName === 'string' ? proposal.umbrellaName : 'umbrella',
-      heading: typeof proposal.heading === 'string' ? proposal.heading : '',
-      mergeSkills: proposal.mergeSkills.map((item: unknown) => String(item)),
-      rationale: typeof proposal.rationale === 'string' ? proposal.rationale : undefined,
-      proposedDescription: typeof proposal.proposedDescription === 'string' ? proposal.proposedDescription : undefined,
-    }, opts);
-    res.json({ ok: true, result });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Clear the proposals file (Dismiss all).
-app.delete('/api/curator/proposals', async (_req, res) => {
-  try {
-    await clearCuratorProposals(PROJECT_DIR);
-    res.json({ ok: true });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+    return summary;
+  },
+}));
 
 // --- API: Agent Memory ---
-app.get('/api/memory', async (_req, res) => {
-  const memDir = path.join(PROJECT_DIR, '.harness', 'memory');
-  const result: Record<string, string> = {};
-  for (const file of ['decisions.md', 'patterns.md', 'notes.md']) {
-    try {
-      result[file.replace('.md', '')] = await fs.readFile(path.join(memDir, file), 'utf-8');
-    } catch { /* not yet created */ }
-  }
-  res.json(result);
-});
+// Moved to ./memoryRoutes.ts (createMemoryRouter mount above).
 
-// --- API: Learning ---
-app.get('/api/learning', async (_req, res) => {
-  const learningDir = path.join(PROJECT_DIR, '.harness', 'learning');
-  const result: Record<string, unknown> = {};
-  try {
-    result.patterns = JSON.parse(await fs.readFile(path.join(learningDir, 'detected-patterns.json'), 'utf-8'));
-  } catch { result.patterns = []; }
-  try {
-    const raw = await fs.readFile(path.join(learningDir, 'reflections.jsonl'), 'utf-8');
-    result.reflections = raw.trim().split('\n').map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean).slice(-20);
-  } catch { result.reflections = []; }
-  try {
-    result.evolvedPrompt = await fs.readFile(path.join(learningDir, 'evolved-prompt.md'), 'utf-8');
-  } catch { result.evolvedPrompt = ''; }
-  try {
-    result.digest = await fs.readFile(path.join(learningDir, 'consolidated-digest.md'), 'utf-8');
-  } catch { result.digest = ''; }
-  const subagentRouting = await listSubagentRoutingMetrics(PROJECT_DIR, 100);
-  result.candidates = await listReviewedLearningCandidates(PROJECT_DIR);
-  result.subagentRouting = subagentRouting;
-  result.routingSummary = summarizeRoutingMetrics(subagentRouting);
-  result.routingCalibration = calibrateModelRoutingPolicy(subagentRouting, modelRouting);
-  const evalRuns = await listEvalTraceRuns(PROJECT_DIR);
-  result.evalExamples = await listEvalTraceExamples(PROJECT_DIR);
-  result.evalRuns = evalRuns;
-  result.evalRunTrend = summarizeEvalTraceRuns(evalRuns);
-  result.outputValidationTrend = summarizeOutputValidationRuns(evalRuns);
-  result.profileFeedbackTrend = summarizeProfileFeedbackRuns(evalRuns);
-  result.contextLossTrend = summarizeContextLossRuns(evalRuns);
-  try {
-    const raw = await fs.readFile(path.join(learningDir, 'tool-usage.jsonl'), 'utf-8');
-    const lines = raw.trim().split('\n');
-    result.totalToolCalls = lines.length;
-    // Tool usage breakdown
-    const counts: Record<string, number> = {};
-    for (const line of lines) { try { const e = JSON.parse(line); counts[e.tool] = (counts[e.tool] || 0) + 1; } catch {} }
-    result.toolBreakdown = counts;
-  } catch { result.totalToolCalls = 0; result.toolBreakdown = {}; }
-  res.json(result);
-});
-
-app.get('/api/learning/routing', async (_req, res) => {
-  try {
-    const metrics = await listSubagentRoutingMetrics(PROJECT_DIR, 100);
-    res.json({ metrics, summary: summarizeRoutingMetrics(metrics), calibration: calibrateModelRoutingPolicy(metrics, modelRouting) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/learning/output-validation-trends/download', async (_req, res) => {
-  try {
-    const runs = await listEvalTraceRuns(PROJECT_DIR, 1000);
-    const payload = createOutputValidationTrendExport(runs);
-    const stamp = payload.generatedAt.replace(/[:.]/g, '-');
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="output-validation-trends-${stamp}.json"`);
-    res.send(JSON.stringify(payload, null, 2));
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/learning/routing/apply-calibration', async (_req, res) => {
-  await ensureSettingsLoaded();
-  try {
-    const metrics = await listSubagentRoutingMetrics(PROJECT_DIR, 100);
-    const calibration = calibrateModelRoutingPolicy(metrics, modelRouting);
-    modelRouting = sanitizeModelRoutingPolicy({ ...modelRouting, ...calibration.suggestedPolicy });
-    await saveSettingsToDisk();
-    res.json({ settings: getCurrentSettings(), calibration });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/learning/candidates/review', async (req, res) => {
-  const candidateId = String(req.body?.id ?? '').trim();
-  const action = req.body?.action === 'promote' || req.body?.action === 'reject' ? req.body.action : null;
-  if (!candidateId || !action) { res.status(400).json({ error: 'Candidate id and review action are required.' }); return; }
-  try {
-    const review = await reviewLearningCandidate(PROJECT_DIR, candidateId, action, req.body?.reason?.toString());
-    const candidates = await listReviewedLearningCandidates(PROJECT_DIR);
-    res.json({ review, candidates });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ error: msg });
-  }
-});
-
-app.get('/api/learning/candidates/:id/provenance', async (req, res) => {
-  const candidateId = safeEvalExampleId(req.params.id);
-  if (!candidateId) { res.status(400).json({ error: 'Invalid learning candidate id.' }); return; }
-  try {
-    res.json(await getLearningCandidateProvenance(PROJECT_DIR, candidateId));
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(404).json({ error: msg });
-  }
-});
-
-app.get('/api/learning/candidates/:id/gate', async (req, res) => {
-  const candidateId = safeEvalExampleId(req.params.id);
-  if (!candidateId) { res.status(400).json({ error: 'Invalid learning candidate id.' }); return; }
-  try {
-    const verdict = await evaluatePromotionGateForCandidate(PROJECT_DIR, candidateId);
-    if (!verdict.candidateFound) { res.status(404).json({ error: verdict.reason }); return; }
-    res.json({
-      gate_enabled: process.env.HARNESS_PROMOTION_GATE_ENABLED === '1',
-      candidate_id: verdict.candidateId,
-      allowed: verdict.allowed,
-      reason: verdict.reason,
-      pass_count: verdict.passCount,
-      considered_runs: verdict.consideredRuns,
-      required_passes: verdict.requiredPasses,
-      pass_at_all: verdict.passAtAll,
-      safety_violations: verdict.safetyViolations,
-    });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// Learning routes moved to ./learningRoutes.ts (createLearningRouter mount above).
 
 // --- API: File Upload ---
 app.post('/api/upload', express.raw({ type: '*/*', limit: '10mb' }), async (req, res) => {
@@ -8110,7 +7084,7 @@ app.post('/api/upload', express.raw({ type: '*/*', limit: '10mb' }), async (req,
   const mimeType = req.headers['content-type']?.toString() || 'application/octet-stream';
   const mediaKind = inferMediaKind(safe, mimeType);
   if (mediaKind === 'other') {
-    res.status(415).json({ error: 'Unsupported upload type. Allowed kinds: image, audio, pdf, text, data.' });
+    res.status(415).json({ error: 'Unsupported upload type. Allowed kinds: image, audio, pdf, text, data, document.' });
     return;
   }
 
@@ -8127,110 +7101,32 @@ app.post('/api/upload', express.raw({ type: '*/*', limit: '10mb' }), async (req,
   }
 });
 
-function inferMediaKind(fileName: string, mimeType: string): 'image' | 'audio' | 'pdf' | 'text' | 'data' | 'other' {
+function inferMediaKind(fileName: string, mimeType: string): 'image' | 'audio' | 'pdf' | 'text' | 'data' | 'document' | 'other' {
   const lowerName = fileName.toLowerCase();
   const lowerMime = mimeType.toLowerCase();
   if (lowerMime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(lowerName)) return 'image';
   if (lowerMime.startsWith('audio/') || /\.(mp3|wav|m4a|flac|ogg|aac|opus)$/.test(lowerName)) return 'audio';
   if (lowerMime === 'application/pdf' || lowerName.endsWith('.pdf')) return 'pdf';
+  if (/\.(docx|xlsx|pptx)$/.test(lowerName)) return 'document';
   if (lowerMime.startsWith('text/') || /\.(txt|md|csv|json|log|ts|js|py|cs|rs|html|css)$/.test(lowerName)) return 'text';
   if (/\.(jsonl|xml|yaml|yml|parquet|sqlite|db)$/.test(lowerName)) return 'data';
   return 'other';
 }
 
 // --- API: Save chat output to agent-outputs/ ---
-// UI-initiated "💾 Save reply" path: writes a chat reply (or any
-// piece of text) to the agent-outputs/ corral. Path resolution is
-// deliberately strict — basename only, no traversal, never overwrites
-// an existing file (auto-suffixes -2, -3, …). Reuses getAgentOutputDir
-// so the user's HARNESS_AGENT_OUTPUT_DIR setting is honoured.
-const SAVE_OUTPUT_MAX_BYTES = 1_000_000; // 1 MB cap; replies are text, this is generous
-app.post('/api/save-output', express.json({ limit: '2mb' }), async (req, res) => {
-  try {
-    const content = typeof req.body?.content === 'string' ? req.body.content : '';
-    if (!content) { res.status(400).json({ error: 'content is required' }); return; }
-    if (Buffer.byteLength(content, 'utf-8') > SAVE_OUTPUT_MAX_BYTES) {
-      res.status(413).json({ error: `content exceeds ${SAVE_OUTPUT_MAX_BYTES} byte cap` });
-      return;
-    }
-    const requested = typeof req.body?.filename === 'string' ? req.body.filename.trim() : '';
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const fallback = `reply-${stamp}.md`;
-    const baseRaw = requested ? path.basename(requested) : fallback;
-    const safeBase = baseRaw.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 200) || fallback;
-    const outDir = getAgentOutputDir();
-    await fs.mkdir(outDir, { recursive: true });
-    const ext = path.extname(safeBase);
-    const stem = ext ? safeBase.slice(0, -ext.length) : safeBase;
-    let candidate = path.join(outDir, safeBase);
-    let suffix = 2;
-    // Never overwrite — keeps the "save what the model just produced" path
-    // safe even when the same auto-name collides within the same minute.
-    while (await fileExists(candidate)) {
-      candidate = path.join(outDir, `${stem}-${suffix}${ext || '.md'}`);
-      suffix += 1;
-      if (suffix > 100) { res.status(500).json({ error: 'Could not allocate a unique filename' }); return; }
-    }
-    await fs.writeFile(candidate, content, 'utf-8');
-    const rel = path.relative(PROJECT_DIR, candidate).split(path.sep).join('/');
-    logger.info('SaveOutput', `Saved chat output → ${rel} (${Buffer.byteLength(content, 'utf-8')} bytes)`);
-    res.json({ path: candidate, relativePath: rel.startsWith('..') ? candidate : rel, name: path.basename(candidate), bytes: Buffer.byteLength(content, 'utf-8') });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
+// ─── Save chat reply / output ───────────────────────────────────────────────
+// POST /api/save-output — writes a chat reply (or arbitrary text) to the
+// agent-outputs/ corral. Basename-only path resolution, never overwrites
+// existing files (auto-suffixes -2, -3, …), 1 MB cap. Helper fileExists +
+// the getAgentOutputDir import moved into ./saveOutputRoutes.ts.
+app.use(createSaveOutputRouter({ projectDir: PROJECT_DIR }));
 
-async function fileExists(fp: string): Promise<boolean> {
-  try { await fs.access(fp); return true; } catch { return false; }
-}
+// Uploads listing / delete / manual cleanup. pruneUploads stays in server.ts
+// because the auto-prune timer also calls it; router invokes it via a
+// callable dep.
+app.use(createUploadsRouter({ getUploadsDir, pruneUploads }));
 
-app.get('/api/uploads', async (_req, res) => {
-  const uploadsDir = getUploadsDir();
-  try {
-    await fs.mkdir(uploadsDir, { recursive: true });
-    const entries = await fs.readdir(uploadsDir, { withFileTypes: true });
-    const files = [];
-    let totalBytes = 0;
-    let oldestMs: number | null = null;
-    for (const e of entries.filter(e => e.isFile())) {
-      const stat = await fs.stat(path.join(uploadsDir, e.name));
-      const mtime = stat.mtime.getTime();
-      totalBytes += stat.size;
-      if (oldestMs === null || mtime < oldestMs) oldestMs = mtime;
-      files.push({ name: e.name, path: path.join(uploadsDir, e.name), size: stat.size, modified: stat.mtime.toISOString() });
-    }
-    res.json({
-      files,
-      directory: uploadsDir,
-      totalBytes,
-      oldest: oldestMs !== null ? new Date(oldestMs).toISOString() : null,
-    });
-  } catch { res.json({ files: [], directory: uploadsDir, totalBytes: 0, oldest: null }); }
-});
-
-app.delete('/api/uploads/:name', async (req, res) => {
-  const safe = safeLocalId(path.basename(req.params.name));
-  if (!safe) { res.status(400).json({ error: 'Invalid upload name.' }); return; }
-  try {
-    await fs.unlink(path.join(getUploadsDir(), safe));
-    res.json({ ok: true });
-  } catch { res.status(404).json({ error: 'Not found' }); }
-});
-
-app.post('/api/uploads/cleanup', async (req, res) => {
-  const days = clampNumber(req.body?.olderThanDays, 0, 3650, 30);
-  if (days <= 0) {
-    res.status(400).json({ error: 'olderThanDays must be greater than 0 for manual cleanup.' });
-    return;
-  }
-  try {
-    const result = await pruneUploads(days);
-    res.json(result);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// Uploads routes moved to ./uploadsRoutes.ts (createUploadsRouter mount above).
 
 async function pruneUploads(olderThanDays: number): Promise<{ removed: Array<{ name: string; size: number; modified: string }>; removedBytes: number; olderThanDays: number; lastPrunedAt: string }> {
   const cutoffMs = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
@@ -8276,6 +7172,7 @@ function configureUploadsAutoPrune(): void {
     name: 'uploads-auto-prune',
     stop: () => stopUploadsAutoPrune(),
     isRunning: () => uploadsAutoPruneTimer !== null,
+    restart: () => configureUploadsAutoPrune(),
   });
 }
 
@@ -8349,6 +7246,7 @@ function configureCuratorScheduler(): void {
     name: 'curator',
     stop: () => stopCuratorScheduler(),
     isRunning: () => curatorScheduler !== null,
+    restart: () => configureCuratorScheduler(),
   });
 }
 
@@ -8360,8 +7258,43 @@ export function stopCuratorScheduler(): void {
   schedulerRegistry.unregister('curator');
 }
 
+// Adaptive identity scheduler. Always-on once started: per-tick behaviour
+// is governed by the on-disk auto-update.json config (default: both flags
+// off, so the tick is a no-op model-call-free read). Kill switch wins.
+function configureIdentityAutoUpdateScheduler(): void {
+  if (identityAutoUpdateScheduler) {
+    identityAutoUpdateScheduler.stop();
+    identityAutoUpdateScheduler = null;
+  }
+  schedulerRegistry.unregister('identity-auto-update');
+  identityAutoUpdateScheduler = new IdentityAutoUpdateScheduler({
+    projectDir: PROJECT_DIR,
+    callModel: curatorDeps().callModel,
+    getLastUserActivityMs: () => lastUserActivityMs,
+    isEnabled: () => !killSwitch.isActive(),
+  });
+  identityAutoUpdateScheduler.start();
+  schedulerRegistry.register({
+    name: 'identity-auto-update',
+    stop: () => stopIdentityAutoUpdateScheduler(),
+    isRunning: () => identityAutoUpdateScheduler !== null,
+    restart: () => configureIdentityAutoUpdateScheduler(),
+  });
+}
+
+export function stopIdentityAutoUpdateScheduler(): void {
+  if (identityAutoUpdateScheduler) {
+    identityAutoUpdateScheduler.stop();
+    identityAutoUpdateScheduler = null;
+  }
+  schedulerRegistry.unregister('identity-auto-update');
+}
+
 function heartbeatEnabled(): boolean {
-  return resolveFeatureFlag('HARNESS_HEARTBEAT_ENABLED', 'heartbeatEnabled');
+  const fromEnv = readEnvFlag('HARNESS_HEARTBEAT_ENABLED');
+  if (fromEnv !== undefined) return fromEnv;
+  if (systemFeatureFlags.heartbeatEnabled === true) return true;
+  return proactiveProfileEnabled();
 }
 
 function configureSelfLearningHeartbeat(): void {
@@ -8369,6 +7302,7 @@ function configureSelfLearningHeartbeat(): void {
     selfLearningHeartbeat.stop();
     selfLearningHeartbeat = null;
   }
+  schedulerRegistry.unregister('self-learning-heartbeat');
   if (!heartbeatEnabled()) return;
   const intervalMinutes = Number(process.env.HARNESS_HEARTBEAT_INTERVAL_MIN ?? '15') || 15;
   // Default action set plus a work_assigned_tasks action that delegates to
@@ -8429,6 +7363,7 @@ function configureSelfLearningHeartbeat(): void {
     name: 'self-learning-heartbeat',
     stop: () => stopSelfLearningHeartbeat(),
     isRunning: () => selfLearningHeartbeat !== null,
+    restart: () => configureSelfLearningHeartbeat(),
   });
 }
 
@@ -8441,7 +7376,10 @@ export function stopSelfLearningHeartbeat(): void {
 }
 
 function triggersEnabled(): boolean {
-  return resolveFeatureFlag('HARNESS_TRIGGERS_ENABLED', 'triggersEnabled');
+  const fromEnv = readEnvFlag('HARNESS_TRIGGERS_ENABLED');
+  if (fromEnv !== undefined) return fromEnv;
+  if (systemFeatureFlags.triggersEnabled === true) return true;
+  return proactiveProfileEnabled();
 }
 
 function configureTriggerScheduler(): void {
@@ -8461,6 +7399,7 @@ function configureTriggerScheduler(): void {
     name: 'triggers',
     stop: () => stopTriggerScheduler(),
     isRunning: () => triggerScheduler !== null,
+    restart: () => configureTriggerScheduler(),
   });
 }
 
@@ -8509,6 +7448,7 @@ function configureOtlpExporter(): void {
     name: 'otlp-exporter',
     stop: () => stopOtlpExporter(),
     isRunning: () => otlpExporterHandle !== null,
+    restart: () => configureOtlpExporter(),
   });
 }
 
@@ -8539,12 +7479,27 @@ function configureAutomationScheduler(): void {
       sendTelegramNotification('Promise breach', msg).catch((err) => recordSwallowed('sendTelegramNotification', err));
       sendWebhookNotification('promise.breach', { breaches }).catch((err) => recordSwallowed('sendWebhookNotification', err));
     },
+    // While the user is away, re-investigate any drained needs-review answers
+    // and re-enqueue the results for human review. Auto-approves nothing —
+    // replayed answers re-enter the same human-gated queue (shadow-first).
+    onIdle: () => {
+      runReplayCandidates({ runOne: runReplayQuery })
+        .then((r) => {
+          if (r.consumed > 0) {
+            logger.info('Governed', 'Idle replay completed', { ...r });
+            // Persist an audit trail so a human can see what the loop did unattended.
+            appendReplayLedgerEntry({ at: new Date().toISOString(), ...r }).catch((err) => recordSwallowed('scheduler.idleReplayLedger', err));
+          }
+        })
+        .catch((err) => recordSwallowed('scheduler.idleReplay', err));
+    },
   });
   automationScheduler.start();
   schedulerRegistry.register({
     name: 'automation',
     stop: () => stopAutomationScheduler(),
     isRunning: () => automationScheduler !== null,
+    restart: () => configureAutomationScheduler(),
   });
 }
 
@@ -8555,6 +7510,170 @@ export function stopAutomationScheduler(): void {
   }
   schedulerRegistry.unregister('automation');
 }
+
+// ─── Teammate Scheduler ───────────────────────────────────────────────────
+// Lazily creates / restarts the Teammate scheduler so changes to the
+// dailyBrief settings block take effect without a server restart. The
+// scheduler is a no-op when settings.enabled is false; we still keep the
+// instance alive so manual `runNow` calls work from the API.
+
+// Runs a briefing prompt through the model on a NON-INTERACTIVE path: only the
+// read-only web tools are exposed and every call is auto-allowed, so an
+// unattended scheduled run never blocks on a permission prompt. Returns the
+// model's accumulated text.
+async function runBriefingChat(prompt: string): Promise<string> {
+  const model = currentModel || 'llama3.1:8b';
+  const client = webRuntime.createClient(model, ollamaHost);
+  const webTools = webRuntime.getTools().filter((t) => t.name === 'web_search' || t.name === 'web_read');
+  const config: LoopConfig = {
+    model,
+    systemPrompt: 'You are a concise briefing assistant. Use the web tools to gather current facts. Never fabricate weather, news, or other facts you have not looked up.',
+    maxTurns: 6,
+    maxTimeMs: 120_000,
+  };
+  const deps: QueryLoopDeps = {
+    client,
+    tools: webTools,
+    permissionCheck: async () => ({ allowed: true }),
+  };
+  let text = '';
+  for await (const event of webRuntime.runQueryLoop(config, deps, [{ role: 'user', content: prompt }])) {
+    if (event.type === 'text') text += event.content;
+  }
+  return text.trim();
+}
+
+// Re-asks a single drained needs-review answer through the harness on the same
+// non-interactive, read-only-web path as the briefing runner, and returns the
+// governed shadow answer if governance is enabled (else null). Auto-approves
+// nothing — the caller re-enqueues the result for human review.
+async function runReplayQuery(candidate: ReplayCandidate): Promise<GovernedAnswer | null> {
+  const model = currentModel || 'llama3.1:8b';
+  const client = webRuntime.createClient(model, ollamaHost);
+  const webTools = webRuntime.getTools().filter((t) => t.name === 'web_search' || t.name === 'web_read');
+  const config: LoopConfig = {
+    model,
+    systemPrompt: 'You are re-investigating a previously low-confidence answer. Use the web tools to verify or correct it. Never fabricate facts you have not looked up.',
+    maxTurns: 6,
+    maxTimeMs: 120_000,
+  };
+  const deps: QueryLoopDeps = {
+    client,
+    tools: webTools,
+    permissionCheck: async () => ({ allowed: true }),
+  };
+  const prompt = `Re-investigate and verify this claim, correcting it if it is wrong:\n\n${candidate.content}`;
+  let governed: GovernedAnswer | null = null;
+  for await (const event of webRuntime.runQueryLoop(config, deps, [{ role: 'user', content: prompt }])) {
+    if (event.type === 'governed_shadow') governed = event.governed;
+  }
+  return governed;
+}
+
+// Best-effort calendar source for the briefing: reads a local .ics file and
+// maps it to lightweight events. Throws are caught upstream by the briefing
+// builder, which then simply omits the agenda.
+async function loadCalendarEventsFromPath(rawPath: string, projectDir: string): Promise<BriefingCalendarEvent[]> {
+  const filePath = path.isAbsolute(rawPath) ? rawPath : path.resolve(projectDir, rawPath);
+  if (!filePath.toLowerCase().endsWith('.ics')) return [];
+  const content = await fs.readFile(filePath, 'utf-8');
+  return parseIcsEvents(content).map((e) => ({
+    start: new Date(e.start),
+    summary: e.summary,
+    location: e.location,
+  }));
+}
+
+function configureTeammateScheduler(): void {
+  if (teammateScheduler) {
+    teammateScheduler.stop();
+    teammateScheduler = null;
+  }
+  schedulerRegistry.unregister('teammate');
+  teammateScheduler = new TeammateScheduler({
+    projectDir: PROJECT_DIR,
+    getSettings: () => teammateSettings,
+    updateSettings: async (next) => {
+      teammateSettings = next;
+      await saveSettingsToDisk().catch((err) => recordSwallowed('teammate.saveSettings', err));
+    },
+    // Per-run snapshot producer. When a custom briefing prompt is configured,
+    // run it through the model + web search; otherwise fall back to the default
+    // activity brief. Read live settings so config changes take effect per run.
+    snapshot: async (dir) => {
+      const s = teammateSettings;
+      const prompt = (s.briefingPrompt ?? '').trim();
+      if (!prompt) {
+        return snapshotDailyBrief({ projectDir: dir, ambientSignals: jarvisAmbientBus.recent(), windowDescription: 'scheduled' });
+      }
+      const calendarPath = (s.calendarPath ?? '').trim();
+      return buildMorningBriefing({
+        prompt,
+        maxWords: s.briefingMaxWords,
+        runChat: runBriefingChat,
+        calendar: calendarPath ? () => loadCalendarEventsFromPath(calendarPath, dir) : undefined,
+      });
+    },
+    delivery: {
+      sendTelegram: async (markdown) => {
+        await sendTelegramNotification('Daily brief', markdown);
+      },
+      sendDiscord: async (markdown) => {
+        await sendWebhookNotification('teammate.brief', { channel: 'discord', markdown });
+      },
+      sendSlack: async (markdown) => {
+        await sendWebhookNotification('teammate.brief', { channel: 'slack', markdown });
+      },
+    },
+    isHalted: () => killSwitch.isActive(),
+  });
+  if (teammateSettings.enabled) teammateScheduler.start();
+  schedulerRegistry.register({
+    name: 'teammate',
+    stop: () => stopTeammateScheduler(),
+    isRunning: () => teammateScheduler !== null,
+    restart: () => configureTeammateScheduler(),
+  });
+  // Refresh nextRunAt so the UI's status card is accurate even before the
+  // first tick fires.
+  const nextRunAt = teammateScheduler.computeNextRunAt();
+  if (nextRunAt !== teammateSettings.nextRunAt) {
+    teammateSettings = { ...teammateSettings, nextRunAt };
+    saveSettingsToDisk().catch((err) => recordSwallowed('teammate.refreshNextRunAt', err));
+  }
+}
+
+export function stopTeammateScheduler(): void {
+  if (teammateScheduler) {
+    teammateScheduler.stop();
+    teammateScheduler = null;
+  }
+  schedulerRegistry.unregister('teammate');
+}
+
+// Teammate routes moved to ./teammateRoutes.ts (createTeammateRouter mount below).
+app.use(createTeammateRouter({
+  getStatus: () => ({
+    settings: teammateSettings,
+    nextRunAt: teammateScheduler ? teammateScheduler.computeNextRunAt() : '',
+    schedulerRunning: teammateScheduler !== null && teammateSettings.enabled,
+    telegramConfigured: Boolean((telegramBotToken || process.env.HARNESS_TELEGRAM_BOT_TOKEN || '').trim()),
+    discordConfigured: Boolean((connectorSecretValue('HARNESS_DISCORD_BOT_TOKEN') || '').trim()),
+    slackConfigured: Boolean((connectorSecretValue('HARNESS_SLACK_WEBHOOK_URL') || '').trim()),
+  }),
+  applyTeammateConfig: async (body) => {
+    const next = sanitizeTeammateSettings(body);
+    teammateSettings = next;
+    configureTeammateScheduler();
+    await saveSettingsToDisk();
+    return { settings: teammateSettings, nextRunAt: teammateScheduler ? teammateScheduler.computeNextRunAt() : '' };
+  },
+  runTeammateNow: async () => {
+    if (!teammateScheduler) configureTeammateScheduler();
+    return teammateScheduler!.runNow();
+  },
+  isKillSwitchActive: () => killSwitch.isActive(),
+}));
 
 /**
  * Stop every registered scheduler in reverse-registration order. Intended
@@ -8570,73 +7689,12 @@ export function getSchedulerStatuses(): Array<{ name: string; running: boolean }
   return schedulerRegistry.list();
 }
 
-// --- API: File Tree ---
-app.get('/api/files', async (req, res) => {
-  const dir = resolveProjectPath((req.query.path as string) || PROJECT_DIR);
-  if (!dir) { res.status(400).json({ error: 'Path is outside the project directory.' }); return; }
-  try {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    const items = entries
-      .filter(e => !e.name.startsWith('.') && e.name !== 'node_modules' && e.name !== 'dist')
-      .map(e => {
-        const absolute = path.join(dir, e.name);
-        const relative = path.relative(PROJECT_DIR, absolute).split(path.sep).join('/');
-        return { name: e.name, type: e.isDirectory() ? 'dir' : 'file', path: absolute, relative };
-      })
-      .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
-    res.json({ items, cwd: dir, projectDir: PROJECT_DIR });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(400).json({ error: msg });
-  }
-});
-
-// --- API: Directory Browser (for the Agent Files folder picker) ---
-// Lists subdirectories of any path on disk so the user can navigate to
-// the destination folder for agent file_write outputs without typing.
-// NOT confined to PROJECT_DIR — the whole point is the user picking a
-// folder OUTSIDE the project (e.g. C:/AI/Lottery-Toolkit/inbox).
-//
-// Returns: { cwd, parent, presets, dirs[] }. presets are platform-aware
-// quick-jump locations (home, Desktop, Documents, Downloads, project,
-// project/agent-outputs). dirs is the immediate subdirectory listing.
-app.get('/api/browse-dirs', async (req, res) => {
-  try {
-    const queryPath = typeof req.query.path === 'string' ? req.query.path.trim() : '';
-    const home = os.homedir();
-    const cwd = queryPath
-      ? path.resolve(queryPath)
-      : home;
-    let parent: string | null = path.dirname(cwd);
-    if (parent === cwd) parent = null;
-    const presets: Array<{ label: string; path: string }> = [
-      { label: 'Home', path: home },
-      { label: 'Desktop', path: path.join(home, 'Desktop') },
-      { label: 'Documents', path: path.join(home, 'Documents') },
-      { label: 'Downloads', path: path.join(home, 'Downloads') },
-      { label: 'Project root', path: PROJECT_DIR },
-      { label: 'agent-outputs (default)', path: path.join(PROJECT_DIR, 'agent-outputs') },
-    ];
-    let dirs: Array<{ name: string; path: string }> = [];
-    try {
-      const entries = await fs.readdir(cwd, { withFileTypes: true });
-      dirs = entries
-        .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
-        .map((e) => ({ name: e.name, path: path.join(cwd, e.name) }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-    } catch (error) {
-      // If the path is unreadable (permission denied, doesn't exist), still
-      // return the presets so the UI stays useful.
-      const msg = error instanceof Error ? error.message : String(error);
-      res.json({ cwd, parent, presets, dirs: [], error: msg });
-      return;
-    }
-    res.json({ cwd, parent, presets, dirs });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// ─── File / Directory Browse ────────────────────────────────────────
+// /api/files (project-confined file tree) + /api/browse-dirs (free-roam
+// directory picker for agent_outputs folder selection). Extracted to
+// ./fileBrowseRoutes.ts; resolveProjectPath helper moved into router
+// (it had no other callers in server.ts).
+app.use(createFileBrowseRouter({ projectDir: PROJECT_DIR }));
 
 // --- Start ---
 
@@ -8672,8 +7730,12 @@ function sanitizeModelName(value: unknown): string {
 interface ChatModelRoutingDecision {
   model: string;
   routed: boolean;
+  tier?: string;
+  taskType?: string;
+  risk?: string;
   from?: string;
   reason?: string;
+  reasons?: string[];
 }
 
 const PREFERRED_AGENTIC_FALLBACK_MODELS = [
@@ -8686,37 +7748,81 @@ const PREFERRED_AGENTIC_FALLBACK_MODELS = [
 ];
 
 export async function resolveChatModelForRequest(requestedModel: string, messageText: string): Promise<ChatModelRoutingDecision> {
-  if (!shouldAutoRouteFromModel(requestedModel, messageText)) return { model: requestedModel, routed: false };
   const available = await webRuntime.listModels(ollamaHost).catch(() => []);
-  const fallback = chooseAgenticFallbackModel(requestedModel, available, modelRouting);
-  if (!fallback) return { model: requestedModel, routed: false };
-  return {
-    model: fallback,
-    routed: true,
-    from: requestedModel,
-    reason: `${requestedModel} is not reliable for tool/current-information turns; routed to available agentic model ${fallback}.`,
-  };
-}
-
-function shouldAutoRouteFromModel(modelName: string, messageText: string): boolean {
-  return isKnownWeakAgenticModel(modelName) && promptNeedsAgenticTools(messageText);
+  const candidates = buildChatModelCandidatePool(requestedModel, available, modelRouting);
+  return selectModelForChatTurn({
+    requestedModel,
+    message: messageText,
+    candidates,
+    requestedModelWeak: isKnownWeakAgenticModel(requestedModel),
+  }, modelRouting);
 }
 
 function isKnownWeakAgenticModel(modelName: string): boolean {
   return /^gemma4:(e4b|26b)$/i.test(modelName.trim());
 }
 
-function promptNeedsAgenticTools(messageText: string): boolean {
-  const text = messageText.toLowerCase();
-  return /\b(news|today|latest|current|recent|weather|price|prices|score|scores|search|web|browse|look up|read file|write file|edit file|run command|repo|codebase)\b/.test(text);
+function buildChatModelCandidatePool(requestedModel: string, availableModels: string[], policy: ModelRoutingPolicy = {}): ChatModelCandidatePool {
+  const localAgentic = preferredLocalAgenticModels(requestedModel, availableModels, policy);
+  const available = new Set(availableModels.map((name) => name.toLowerCase()));
+  return {
+    small: firstConfiguredChatModel([
+      policyChatModel(policy.smallModel, available),
+      providerModel('openrouter', 'openai/gpt-5-mini'),
+      providerModel('openrouter', 'meta-llama/llama-3.3-70b-instruct:free'),
+      providerModel('gemini', 'gemini-2.0-flash-lite'),
+    ]),
+    default: firstConfiguredChatModel([
+      policyChatModel(policy.defaultModel, available),
+      providerModel('openrouter', 'google/gemini-2.5-flash'),
+      providerModel('gemini', 'gemini-2.5-flash'),
+      providerModel('openai', 'gpt-4o-mini'),
+      ...localAgentic,
+    ]),
+    strong: firstConfiguredChatModel([
+      policyChatModel(policy.strongModel, available),
+      providerModel('openrouter', 'anthropic/claude-sonnet-4.5'),
+      providerModel('anthropic', 'claude-sonnet-4-20250514'),
+      providerModel('openrouter', 'openai/gpt-5-mini'),
+      providerModel('openai', 'gpt-4o'),
+      ...localAgentic,
+    ]),
+    fallback: firstConfiguredChatModel([
+      policyChatModel(policy.fallbackModel, available),
+      providerModel('openrouter', 'meta-llama/llama-3.3-70b-instruct:free'),
+      ...localAgentic,
+    ]),
+    localAgentic,
+  };
 }
 
-function chooseAgenticFallbackModel(requestedModel: string, availableModels: string[], policy: ModelRoutingPolicy = {}): string | undefined {
+function policyChatModel(model: string | undefined, availableLocalModels: Set<string>): string | undefined {
+  const name = sanitizeModelName(model);
+  if (!name) return undefined;
+  const slash = name.indexOf('/');
+  if (slash > 0) {
+    const backend = name.slice(0, slash).toLowerCase();
+    const preset = OPENAI_COMPATIBLE_PRESETS[backend];
+    return preset && readApiKey(preset) ? name : undefined;
+  }
+  return availableLocalModels.has(name.toLowerCase()) ? name : undefined;
+}
+
+function providerModel(backend: string, model: string): string | undefined {
+  const preset = OPENAI_COMPATIBLE_PRESETS[backend];
+  return preset && readApiKey(preset) ? `${backend}/${model}` : undefined;
+}
+
+function firstConfiguredChatModel(candidates: Array<string | undefined>): string | undefined {
+  return candidates.map((name) => sanitizeModelName(name)).find((name) => name.length > 0);
+}
+
+function preferredLocalAgenticModels(requestedModel: string, availableModels: string[], policy: ModelRoutingPolicy = {}): string[] {
   const available = new Set(availableModels.map((name) => name.toLowerCase()));
   const candidates = [policy.strongModel, policy.defaultModel, policy.fallbackModel, ...PREFERRED_AGENTIC_FALLBACK_MODELS]
     .map((name) => sanitizeModelName(name))
     .filter((name) => name && name.toLowerCase() !== requestedModel.toLowerCase());
-  return candidates.find((name) => available.has(name.toLowerCase()));
+  return candidates.filter((name) => available.has(name.toLowerCase()));
 }
 
 /**
@@ -8810,18 +7916,6 @@ function safeLocalId(value: unknown): string | null {
   return id.length > 0 && SAFE_ID_PATTERN.test(id) ? id : null;
 }
 
-function safeEvalExampleId(value: unknown): string | null {
-  const id = String(value ?? '').trim();
-  return id.length > 0 && /^[a-zA-Z0-9:._-]+$/.test(id) ? id : null;
-}
-
-function resolveProjectPath(value: string): string | null {
-  const resolved = path.resolve(value);
-  const relative = path.relative(PROJECT_DIR, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  return resolved;
-}
-
 function getCurrentSettings(): WebSettings {
   return {
     model: currentModel,
@@ -8853,12 +7947,14 @@ function getCurrentSettings(): WebSettings {
     walkthrough,
     curator: curatorSettings,
     automationScheduler: automationSchedulerSettings,
+    teammate: teammateSettings,
     modelDebugLog,
     disabledTools: Array.from(disabledTools).sort(),
     timedToolEnables: Object.fromEntries(Array.from(timedToolEnables.entries()).filter(([, exp]) => Date.now() < exp).map(([name, exp]) => [name, new Date(exp).toISOString()])),
     autonomyExpiresAt: autonomyExpiresAt > Date.now() ? new Date(autonomyExpiresAt).toISOString() : '',
     autonomyPreviousMode,
     killSwitch: { active: killSwitchActive, reason: killSwitchReason },
+    sandbox: sandboxSwitch.snapshot(),
     capabilityGrants,
     allowedExternalPaths: getAllowedExternalPaths(),
     agentOutputDir,
@@ -8870,6 +7966,8 @@ function getCurrentSettings(): WebSettings {
     whatsappAccessToken: '',
     whatsappPhoneNumberId: whatsappPhoneNumberId || process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID || '',
     whatsappAllowedRecipients: whatsappAllowedRecipients || process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS || '',
+    ccmemUrl,
+    browserRedaction,
   };
 }
 
@@ -9095,6 +8193,9 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
   if (settings.automationScheduler !== undefined) {
     automationSchedulerSettings = sanitizeAutomationSchedulerSettings(settings.automationScheduler);
   }
+  if (settings.teammate !== undefined) {
+    teammateSettings = sanitizeTeammateSettings(settings.teammate);
+  }
   if (settings.modelDebugLog !== undefined) {
     modelDebugLog = sanitizeModelDebugLogSettings(settings.modelDebugLog);
     applyModelDebugLogEnvironment(modelDebugLog);
@@ -9131,7 +8232,15 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
     const ks = settings.killSwitch as { active?: unknown; reason?: unknown };
     restoreKillSwitchState(ks);
   }
+  if (settings.sandbox !== undefined && typeof settings.sandbox === 'object' && settings.sandbox !== null) {
+    const sb = settings.sandbox as { active?: unknown; reason?: unknown };
+    sandboxSwitch.restore({
+      active: Boolean(sb?.active),
+      reason: typeof sb?.reason === 'string' ? sb.reason : '',
+    });
+  }
   if (settings.capabilityGrants !== undefined) capabilityGrants = sanitizeCapabilityGrants(settings.capabilityGrants);
+  if (settings.browserRedaction !== undefined) browserRedaction = sanitizeBrowserRedaction(settings.browserRedaction);
   if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 0, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (settings.webReadMaxChars !== undefined) {
     webReadMaxChars = sanitizeWebReadMaxChars(settings.webReadMaxChars, DEFAULT_WEB_READ_MAX_CHARS);
@@ -9176,6 +8285,10 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
     if (whatsappPhoneNumberId) process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID = whatsappPhoneNumberId;
     if (whatsappAllowedRecipients) process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS = whatsappAllowedRecipients;
   }
+  if (settings.ccmemUrl !== undefined) {
+    ccmemUrl = String(settings.ccmemUrl).trim().slice(0, 500);
+    setCcmemUrl(ccmemUrl || 'http://localhost:8765');
+  }
 }
 
 function sanitizeModelRoutingPolicy(value: unknown): ModelRoutingPolicy {
@@ -9188,7 +8301,16 @@ function sanitizeModelRoutingPolicy(value: unknown): ModelRoutingPolicy {
   if (source.promptLengthEscalationThreshold !== undefined) policy.promptLengthEscalationThreshold = Math.floor(clampNumber(source.promptLengthEscalationThreshold, 1000, 200_000, 6000));
   if (source.failureEscalationThreshold !== undefined) policy.failureEscalationThreshold = Math.floor(clampNumber(source.failureEscalationThreshold, 1, 20, 2));
   if (source.confidenceEscalationThreshold !== undefined) policy.confidenceEscalationThreshold = clampNumber(source.confidenceEscalationThreshold, 0, 1, 0.45);
+  if (source.autoEscalateOnLowReadiness !== undefined) policy.autoEscalateOnLowReadiness = source.autoEscalateOnLowReadiness === true;
+  if (source.chatRoutingMode !== undefined) policy.chatRoutingMode = sanitizeChatRoutingMode(source.chatRoutingMode);
   return policy;
+}
+
+function sanitizeChatRoutingMode(value: unknown): ChatRoutingMode {
+  const mode = String(value ?? '').trim();
+  return mode === 'off' || mode === 'costSaver' || mode === 'balanced' || mode === 'quality'
+    ? mode
+    : 'balanced';
 }
 
 function sanitizeMediaToolSettings(value: unknown): MediaToolSettings {
@@ -9239,129 +8361,7 @@ function suggestionReason(profile: OutputValidationProfile, matched = true, mode
   }
 }
 
-function parseMcpInstallCommand(install: string): { command: string; args: string[] } {
-  const parts = splitShellLikeArgs(install).map((part) => part === '${PWD}' ? '.' : part);
-  const command = parts[0]?.trim();
-  if (!command) throw new Error('MCP catalog entry is missing an install command.');
-  return { command, args: parts.slice(1) };
-}
 
-function splitShellLikeArgs(input: string): string[] {
-  const args: string[] = [];
-  let current = '';
-  let quote: 'single' | 'double' | null = null;
-  for (let index = 0; index < input.length; index++) {
-    const char = input[index];
-    if (quote === 'single') {
-      if (char === "'") quote = null;
-      else current += char;
-      continue;
-    }
-    if (quote === 'double') {
-      if (char === '"') quote = null;
-      else current += char;
-      continue;
-    }
-    if (char === "'") { quote = 'single'; continue; }
-    if (char === '"') { quote = 'double'; continue; }
-    if (/\s/.test(char)) {
-      if (current) {
-        args.push(current);
-        current = '';
-      }
-      continue;
-    }
-    current += char;
-  }
-  if (current) args.push(current);
-  return args;
-}
-
-function buildRuntimeSkillFile(input: {
-  name: string;
-  description: string;
-  domain: string;
-  triggers: string[];
-  whenToUse: string;
-  requiredTools: string[];
-  riskLevel?: 'low' | 'medium' | 'high';
-  body: string;
-}): string {
-  const lines = [
-    '---',
-    `name: ${yamlScalar(input.name)}`,
-    `description: ${yamlScalar(input.description)}`,
-    `domain: ${yamlScalar(input.domain)}`,
-    ...yamlList('triggers', input.triggers),
-  ];
-  if (input.whenToUse) lines.push(`when_to_use: ${yamlScalar(input.whenToUse)}`);
-  if (input.requiredTools.length > 0) lines.push(...yamlList('required_tools', input.requiredTools));
-  if (input.riskLevel) lines.push(`risk_level: ${yamlScalar(input.riskLevel)}`);
-  lines.push('---', '', input.body);
-  return `${lines.join('\n').trimEnd()}\n`;
-}
-
-function yamlList(key: string, values: string[]): string[] {
-  if (values.length === 0) return [`${key}: []`];
-  return [`${key}:`, ...values.map((value) => `  - ${yamlScalar(value)}`)];
-}
-
-function yamlScalar(value: string): string {
-  return JSON.stringify(value.replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
-}
-
-function sanitizeSkillText(value: unknown, fallback: string, maxLength: number): string {
-  const text = typeof value === 'string' ? value.trim() : '';
-  return (text || fallback).replace(/[\r\n]+/g, ' ').slice(0, maxLength);
-}
-
-function sanitizeSkillBody(value: unknown): string {
-  const body = typeof value === 'string' && value.trim()
-    ? value.trim()
-    : '# Instructions\n\nDescribe when to use this skill, the steps to follow, and how to validate the result.';
-  return body.slice(0, 20_000);
-}
-
-function sanitizeSkillList(value: unknown, maxItems: number, maxLength: number): string[] {
-  const source = Array.isArray(value)
-    ? value
-    : typeof value === 'string'
-      ? value.split(',')
-      : [];
-  const seen = new Set<string>();
-  const output: string[] = [];
-  for (const item of source) {
-    const text = String(item ?? '').trim().replace(/[\r\n]+/g, ' ').slice(0, maxLength);
-    if (!text || seen.has(text.toLowerCase())) continue;
-    seen.add(text.toLowerCase());
-    output.push(text);
-    if (output.length >= maxItems) break;
-  }
-  return output;
-}
-
-function sanitizeSkillRiskLevel(value: unknown): 'low' | 'medium' | 'high' | undefined {
-  const risk = String(value ?? '').trim().toLowerCase();
-  return risk === 'low' || risk === 'medium' || risk === 'high' ? risk : undefined;
-}
-
-// Save a snapshot of a skill's previous SKILL.md before overwriting. Caps at
-// the most recent 20 versions per skill so undo history stays bounded.
-async function snapshotSkillHistory(skillName: string, previousContent: string): Promise<void> {
-  try {
-    const dir = path.join(SKILLS_DIR, '_history', skillName);
-    await fs.mkdir(dir, { recursive: true });
-    const ts = new Date().toISOString().replace(/[:.]/g, '-');
-    await fs.writeFile(path.join(dir, `${ts}.md`), previousContent, 'utf-8');
-    const files = (await fs.readdir(dir)).filter((name) => name.endsWith('.md')).sort();
-    while (files.length > 20) {
-      const oldest = files.shift();
-      if (oldest) await fs.unlink(path.join(dir, oldest)).catch((err) => recordSwallowed('fs.unlink', err));
-    }
-  } catch {
-    // History writes are best-effort; never block the primary save.
-  }
-}
 
 function sanitizeModelCatalogSettings(value: unknown): ModelCatalogSettings {
   const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
@@ -9525,6 +8525,33 @@ function withRoutingPolicy(prompt: string): string {
   return prompt + '\n\n--- Helper Model Routing Policy ---\n' + entries.map(([key, value]) => `${key}: ${value}`).join('\n');
 }
 
+/**
+ * Resolve the subset of session attachments that are readable PDFs to their
+ * absolute paths in the uploads dir. Mirrors the name-sanitisation and
+ * existence checks in buildAttachmentsContextBlock so /research can read the
+ * exact files the user attached.
+ */
+async function resolveAttachmentPdfPaths(raw: unknown): Promise<string[]> {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const uploadsDir = getUploadsDir();
+  const out: string[] = [];
+  for (const entry of raw.slice(0, 20)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const name = typeof (entry as { name?: unknown }).name === 'string' ? (entry as { name: string }).name : null;
+    if (!name) continue;
+    const safeName = path.basename(name).replace(/[^a-zA-Z0-9._-]/g, '_');
+    if (!safeName || path.extname(safeName).toLowerCase() !== '.pdf') continue;
+    const absolute = path.join(uploadsDir, safeName);
+    try {
+      const stat = await fs.stat(absolute);
+      if (stat.isFile()) out.push(absolute);
+    } catch {
+      // Missing on disk — skip.
+    }
+  }
+  return out;
+}
+
 async function buildAttachmentsContextBlock(raw: unknown): Promise<string | null> {
   if (!Array.isArray(raw) || raw.length === 0) return null;
   const uploadsDir = getUploadsDir();
@@ -9566,7 +8593,7 @@ async function buildAttachmentsContextBlock(raw: unknown): Promise<string | null
   return [
     '--- Session Attachments (authoritative) ---',
     'The user attached the following files via the Harness UI. These paths are exact and verified by the harness.',
-    'Always pass the exact "path" string to file_read, pdf_read, image_analyze, or audio_transcribe — never strip the .harness/uploads/ prefix and never pass only the bare filename.',
+    'Always pass the exact "path" string to file_read, pdf_read, document_read, image_analyze, or audio_transcribe — never strip the .harness/uploads/ prefix and never pass only the bare filename.',
     'You may also call list_uploads at any time to re-list every available attachment.',
     'A short head preview is included inline for text-like attachments so you can often answer without reading the whole file.',
     ...lines,
@@ -9655,32 +8682,52 @@ async function persistSessionLearning(session: SessionStorage, projectDir: strin
 }
 
 let _saveSettingsLock: Promise<void> = Promise.resolve();
+let settingsPersistenceStatus: {
+  status: 'never_saved' | 'ok' | 'error';
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastErrorAt: string | null;
+  lastError: string | null;
+} = { status: 'never_saved', lastAttemptAt: null, lastSuccessAt: null, lastErrorAt: null, lastError: null };
 async function saveSettingsToDisk(): Promise<void> {
   // Serialize saves to prevent concurrent write races
   _saveSettingsLock = _saveSettingsLock.then(_doSaveSettings, _doSaveSettings);
   return _saveSettingsLock;
 }
 async function _doSaveSettings(): Promise<void> {
-  await fs.mkdir(path.dirname(SETTINGS_PATH), { recursive: true });
-  const { outputValidationProfiles, customOutputValidationProfiles: profiles, ...settings } = getCurrentSettings();
-  void outputValidationProfiles;
-  void profiles;
-  // Merge with any fields that exist in the file but are not tracked in-memory
-  // (e.g. fields added by newer code not yet loaded). This prevents a running
-  // server from clobbering file edits made to fields it does not manage.
-  let merged: Record<string, unknown> = settings;
+  const attemptAt = new Date().toISOString();
+  settingsPersistenceStatus = { ...settingsPersistenceStatus, lastAttemptAt: attemptAt };
   try {
-    const raw = await fs.readFile(SETTINGS_PATH, 'utf-8');
-    const existing = JSON.parse(raw) as Record<string, unknown>;
-    merged = { ...existing, ...settings };
-  } catch { /* file missing or invalid — use settings as-is */ }
-  const json = JSON.stringify(merged, null, 2);
-  // Validate before writing — never write invalid JSON
-  try { JSON.parse(json); } catch { logger.warn('Settings', 'Skipped save: serialized JSON is invalid'); return; }
-  // Atomic write: write to temp file then rename
-  const tmpPath = SETTINGS_PATH + '.tmp';
-  await fs.writeFile(tmpPath, json, 'utf-8');
-  await renameSettingsFileWithRetry(tmpPath, SETTINGS_PATH);
+    await fs.mkdir(path.dirname(SETTINGS_PATH), { recursive: true });
+    const { outputValidationProfiles, customOutputValidationProfiles: profiles, ...settings } = getCurrentSettings();
+    void outputValidationProfiles;
+    void profiles;
+    // Merge with any fields that exist in the file but are not tracked in-memory
+    // (e.g. fields added by newer code not yet loaded). This prevents a running
+    // server from clobbering file edits made to fields it does not manage.
+    let merged: Record<string, unknown> = settings;
+    try {
+      const raw = await fs.readFile(SETTINGS_PATH, 'utf-8');
+      const existing = JSON.parse(raw) as Record<string, unknown>;
+      merged = { ...existing, ...settings };
+    } catch { /* file missing or invalid — use settings as-is */ }
+    const json = JSON.stringify(merged, null, 2);
+    // Validate before writing — never write invalid JSON
+    try { JSON.parse(json); } catch { logger.warn('Settings', 'Skipped save: serialized JSON is invalid'); return; }
+    // Atomic write: write to temp file then rename
+    const tmpPath = SETTINGS_PATH + '.tmp';
+    await fs.writeFile(tmpPath, json, 'utf-8');
+    await renameSettingsFileWithRetry(tmpPath, SETTINGS_PATH);
+    settingsPersistenceStatus = { status: 'ok', lastAttemptAt: attemptAt, lastSuccessAt: new Date().toISOString(), lastErrorAt: null, lastError: null };
+  } catch (error) {
+    settingsPersistenceStatus = {
+      ...settingsPersistenceStatus,
+      status: 'error',
+      lastErrorAt: new Date().toISOString(),
+      lastError: error instanceof Error ? error.message : String(error),
+    };
+    throw error;
+  }
 }
 
 async function renameSettingsFileWithRetry(tmpPath: string, targetPath: string): Promise<void> {
@@ -9707,129 +8754,8 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function getRuntimeStorageSummary(): Promise<{ traces: { count: number; bytes: number }; semanticIndex: { exists: boolean; bytes: number } }> {
-  return {
-    traces: await directoryJsonStats(TRACES_DIR),
-    semanticIndex: await fileStats(path.join(PROJECT_DIR, '.harness', 'memory', 'semantic-index.json')),
-  };
-}
-
-async function getAboutInfo(): Promise<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string; manifestName: string; manifestUrl: string }> {
-  const packageJson = JSON.parse(await fs.readFile(path.join(PROJECT_DIR, 'package.json'), 'utf-8')) as { version?: string };
-  const rawProvenance = await readReleaseProvenance();
-  const provenance = packageJson.version && rawProvenance.version && rawProvenance.version !== packageJson.version ? {} : rawProvenance;
-  const version = packageJson.version ?? provenance.version ?? 'unknown';
-  const releaseUrl = provenance.releaseUrl ?? `https://github.com/Bradliebs/ollama-agent-harness/releases/tag/v${version}`;
-  const manifestName = provenance.manifestName ?? `ollama-agent-harness-v${version}.zip.sha256.json`;
-  return {
-    version,
-    commit: provenance.commit ?? process.env.GITHUB_SHA ?? '',
-    assetName: provenance.assetName ?? `ollama-agent-harness-v${version}.zip`,
-    assetSha256: provenance.assetSha256 ?? '',
-    releaseUrl,
-    generatedAt: provenance.generatedAt ?? '',
-    manifestName,
-    manifestUrl: releaseUrl && manifestName ? `${releaseUrl.replace(/\/tag\/[^/]+$/, `/download/v${version}`)}/${manifestName}` : '',
-  };
-}
-
-async function getReleaseVerification(): Promise<{ status: 'verified' | 'warning'; message: string; version: string; commit: string; assetName: string; releaseUrl: string; expectedSha256: string; localArchiveSha256: string; localArchivePath: string }> {
-  const about = await getAboutInfo();
-  const localArchivePath = path.join(PROJECT_DIR, 'release', about.assetName);
-  const localArchiveSha256 = await sha256FileIfExists(localArchivePath);
-  if (about.assetSha256 && localArchiveSha256) {
-    const verified = about.assetSha256.toLowerCase() === localArchiveSha256.toLowerCase();
-    return {
-      status: verified ? 'verified' : 'warning',
-      message: verified ? 'Local release archive matches the recorded SHA-256.' : 'Local release archive SHA-256 does not match the recorded release provenance.',
-      version: about.version,
-      commit: about.commit,
-      assetName: about.assetName,
-      releaseUrl: about.releaseUrl,
-      expectedSha256: about.assetSha256,
-      localArchiveSha256,
-      localArchivePath: path.relative(PROJECT_DIR, localArchivePath),
-    };
-  }
-  return {
-    status: 'warning',
-    message: about.assetSha256
-      ? 'Recorded SHA-256 is available, but no local release archive was found to compare.'
-      : 'This install has release provenance, but the release asset SHA-256 is only available on the GitHub release page.',
-    version: about.version,
-    commit: about.commit,
-    assetName: about.assetName,
-    releaseUrl: about.releaseUrl,
-    expectedSha256: about.assetSha256,
-    localArchiveSha256,
-    localArchivePath: path.relative(PROJECT_DIR, localArchivePath),
-  };
-}
-
-async function sha256FileIfExists(filePath: string): Promise<string> {
-  try {
-    const content = await fs.readFile(filePath);
-    return crypto.createHash('sha256').update(content).digest('hex');
-  } catch {
-    return '';
-  }
-}
-
-async function readReleaseProvenance(): Promise<Partial<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string; manifestName: string }>> {
-  let provenance: Partial<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string; manifestName: string }> = {};
-  try {
-    provenance = JSON.parse(await fs.readFile(RELEASE_PROVENANCE_PATH, 'utf-8')) as Partial<{ version: string; commit: string; assetName: string; assetSha256: string; releaseUrl: string; generatedAt: string; manifestName: string }>;
-  } catch {
-    provenance = {};
-  }
-  const manifest = await readReleaseManifest(provenance.assetName);
-  return { ...provenance, ...manifest };
-}
-
-async function readReleaseManifest(assetName?: string): Promise<Partial<{ assetName: string; assetSha256: string; generatedAt: string; manifestName: string }>> {
-  const candidates = [
-    path.join(PROJECT_DIR, 'release-manifest.json'),
-    assetName ? path.join(PROJECT_DIR, 'release', `${assetName}.sha256.json`) : '',
-  ].filter(Boolean);
-  for (const candidate of candidates) {
-    try {
-      return JSON.parse(await fs.readFile(candidate, 'utf-8')) as Partial<{ assetName: string; assetSha256: string; generatedAt: string; manifestName: string }>;
-    } catch {
-      // Try the next companion manifest location.
-    }
-  }
-  return {};
-}
-
-async function directoryJsonStats(dirPath: string): Promise<{ count: number; bytes: number }> {
-  try {
-    const entries = await fs.readdir(dirPath, { withFileTypes: true });
-    let count = 0;
-    let bytes = 0;
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-      const stat = await fs.stat(path.join(dirPath, entry.name));
-      count++;
-      bytes += stat.size;
-    }
-    return { count, bytes };
-  } catch {
-    return { count: 0, bytes: 0 };
-  }
-}
-
-async function fileStats(filePath: string): Promise<{ exists: boolean; bytes: number }> {
-  try {
-    const stat = await fs.stat(filePath);
-    return { exists: stat.isFile(), bytes: stat.isFile() ? stat.size : 0 };
-  } catch {
-    return { exists: false, bytes: 0 };
-  }
-}
-
 async function checkSourceDistFreshness(): Promise<void> {
-  const sourceKey = path.join(PROJECT_DIR, 'src', 'web', 'server.ts');
-  const distKey = path.join(PROJECT_DIR, 'dist', 'web', 'server.js');
+  const { sourceKey, distKey } = resolveHarnessSourceDistFreshnessPaths();
   try {
     const [srcStat, distStat] = await Promise.all([fs.stat(sourceKey), fs.stat(distKey)]);
     if (srcStat.mtimeMs > distStat.mtimeMs + 1000) {
@@ -9839,7 +8765,7 @@ async function checkSourceDistFreshness(): Promise<void> {
   } catch { /* dist or source missing — skip check */ }
 }
 
-export async function startServer(): Promise<void> {
+export async function startServer(): Promise<ReturnType<typeof app.listen>> {
   const startupProfile = createStartupProfile();
   startupProfile.record('module-route-init', MODULE_LOAD_STARTED_AT);
   // Project-dir self-check. The v0.4.10 install_skill bug was one instance
@@ -9863,6 +8789,10 @@ export async function startServer(): Promise<void> {
   }
   await ensureSettingsLoaded();
   startupProfile.record('settings-load');
+  // Surface any active/paused goal that survived the restart so operators
+  // see it in the boot log even before they open the UI. Best-effort; a
+  // failure here must not block startup.
+  try { await surfaceResumableGoalOnBoot(PROJECT_DIR); } catch { /* ignore */ }
   const staleSessionCount = await SessionStorage.markStaleRunningSessions(PROJECT_DIR, MODULE_LOAD_STARTED_AT).catch(() => 0);
   if (staleSessionCount > 0) logger.warn('Sessions', `Marked ${staleSessionCount} stale running session(s) as aborted after restart`);
   startupProfile.record('stale-session-cleanup');
@@ -9899,6 +8829,62 @@ export async function startServer(): Promise<void> {
   const port = await findAvailablePort(preferred);
   startupProfile.record('port-selection');
 
+  // Wire model-backed /research analysis. When unavailable, /research falls
+  // back to its token-free stub, so this is best-effort.
+  registerResearchHooks({
+    callModel: async (prompt: string): Promise<string> => {
+      const model = currentModel || summarizerModel;
+      if (!model) throw new Error('No model configured for /research analysis');
+      const client = webRuntime.createClient(model, ollamaHost);
+      const response = await client.chat([{ role: 'user', content: prompt }]);
+      return response.message?.content ?? '';
+    },
+  });
+
+  // Wire YOLO mode hooks so /yolo in chat can set dontAsk + start autonomy.
+  registerYoloHooks({
+    currentMode: permissionMode,
+    setPermissionMode: (mode: string, reason: string) => {
+      const prev = permissionMode;
+      permissionMode = mode as PermissionMode;
+      appendCapabilityAuditEvent(PROJECT_DIR, { type: 'grant.created', reason: `permission.mode → ${mode}: ${reason} (was ${prev})` }).catch((err) => recordSwallowed('appendCapabilityAuditEvent', err));
+    },
+    engageTimedAutonomy: (minutes: number, reason: string) => {
+      if (minutes > 0) {
+        autonomyPreviousMode = permissionMode !== 'dontAsk' ? permissionMode : autonomyPreviousMode || 'default';
+        permissionMode = 'dontAsk' as PermissionMode;
+        autonomyExpiresAt = Date.now() + minutes * 60_000;
+        appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.engaged', reason: `${reason} (${minutes}m, reverts to ${autonomyPreviousMode})` }).catch((err) => recordSwallowed('appendCapabilityAuditEvent', err));
+      } else {
+        if (autonomyPreviousMode) permissionMode = autonomyPreviousMode as PermissionMode;
+        autonomyExpiresAt = 0;
+        appendCapabilityAuditEvent(PROJECT_DIR, { type: 'autonomy.timed.cleared', reason }).catch((err) => recordSwallowed('appendCapabilityAuditEvent', err));
+      }
+    },
+    startAutonomyRun: async (settings) => {
+      try {
+        const url = `http://${LOCAL_HOST}:${port}/api/autonomy/start`;
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            maxIterations: settings.maxIterations,
+            maxTurns: settings.maxTurns,
+            timeBudgetMs: settings.timeBudgetMs,
+            unproductiveTurnLimit: settings.unproductiveTurnLimit,
+            permissionMode: 'dontAsk',
+          }),
+          signal: AbortSignal.timeout(10_000),
+        });
+        const data = await r.json() as Record<string, unknown>;
+        if (!r.ok) return { started: false, error: data.error as string ?? `HTTP ${r.status}` };
+        return { started: true, pid: data.pid as number | undefined };
+      } catch (err) {
+        return { started: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  });
+
   const httpServer = app.listen(port, LOCAL_HOST, () => {
     startupProfile.record('listen-ready');
     logger.info('Startup', 'Web startup phases', startupProfile.summary());
@@ -9912,6 +8898,12 @@ export async function startServer(): Promise<void> {
     console.log(`  Ollama host:           ${ollamaHost}`);
     console.log(`  WebSocket:             ws://${LOCAL_HOST}:${port}/ws`);
     console.log(`  API auth:              ${API_AUTH_REQUIRED ? (API_AUTH_TOKEN ? 'required' : 'required (token missing)') : 'disabled'}`);
+    if (assistantProfileEnabled()) {
+      console.log(`  Profile:               assistant (voice + ambient + channels on by default)`);
+    }
+    if (proactiveProfileEnabled()) {
+      console.log(`  Proactive autonomy:    on (heartbeat + triggers default on; set HARNESS_HEARTBEAT_ENABLED=0 / HARNESS_TRIGGERS_ENABLED=0 to force off)`);
+    }
     if (API_AUTH_INSECURE_OVERRIDE) {
       console.log('  Security warning:      HARNESS_API_AUTH_REQUIRED=0 while HARNESS_API_AUTH_TOKEN is set');
       logger.warn('Security', 'API auth explicitly disabled despite configured token', {
@@ -9965,6 +8957,24 @@ export async function startServer(): Promise<void> {
       logger.warn('Startup', 'Failed to start trigger scheduler', { error: error instanceof Error ? error.message : String(error) });
     }
 
+    // Start the teammate scheduler. Always wires up the API, but only ticks
+    // when teammate.enabled is true (controlled by the welcome card / wizard).
+    try {
+      configureTeammateScheduler();
+      if (teammateSettings.enabled) console.log(`  Teammate brief:        on at ${teammateSettings.scheduleTime}`);
+    } catch (error) {
+      logger.warn('Startup', 'Failed to start teammate scheduler', { error: error instanceof Error ? error.message : String(error) });
+    }
+
+    // Start the identity auto-update scheduler. Always-on once started;
+    // .harness/identity/auto-update.json governs whether the tick does anything.
+    try {
+      configureIdentityAutoUpdateScheduler();
+      console.log(`  Identity heartbeat:    on`);
+    } catch (error) {
+      logger.warn('Startup', 'Failed to start identity auto-update scheduler', { error: error instanceof Error ? error.message : String(error) });
+    }
+
     // Attach OTLP exporter (no-op unless HARNESS_OTEL_EXPORT_ENABLED + endpoint set).
     try {
       configureOtlpExporter();
@@ -9977,7 +8987,7 @@ export async function startServer(): Promise<void> {
     // Watches IMPLEMENTATION_PLAN.md + git working tree and emits NervousSignals
     // onto an isolated bus exposed via /api/jarvis/status and /api/jarvis/brief.
     try {
-      if (process.env.HARNESS_AMBIENT_ENABLED === '1') {
+      if (ambientEnabled()) {
         jarvisAmbientHandle = startAmbientDaemon(jarvisAmbientBus, {
           watchDir: PROJECT_DIR,
           fileFilters: ['IMPLEMENTATION_PLAN.md', 'src/', 'cookbook/', '.harness/'],
@@ -10052,13 +9062,34 @@ export async function startServer(): Promise<void> {
       logger.warn('Startup', 'Failed to start Jarvis ambient action subscriber', { error: error instanceof Error ? error.message : String(error) });
     }
 
-    // Load webhooks from env.
+    // Load webhooks: persisted registry first, then any env-configured webhook.
+    initWebhookStore(PROJECT_DIR);
     loadWebhooksFromEnv();
+
+    // Load the governed-loop review queue from disk.
+    initReviewQueue(PROJECT_DIR);
+    // Point the replay consumer at the same project's drained-answer seam.
+    initReplayConsumer(PROJECT_DIR);
+    // Durable audit trail for idle replays that run while the user is away.
+    initReplayLedger(PROJECT_DIR);
+
+    // ccmem auth: env var wins; otherwise pick up the token persisted by
+    // start.bat / start.sh so a harness launched on its own (e.g. `npm run
+    // serve`) can still talk to an authenticated memory sidecar. Best-effort:
+    // if there is no token file, ccmem simply runs unauthenticated.
+    if (!process.env.HARNESS_CCMEM_TOKEN?.trim()) {
+      try {
+        const tokenFromFile = readFileSync(path.join(PROJECT_DIR, '.harness', 'ccmem', 'token'), 'utf-8').trim();
+        if (tokenFromFile) setCcmemToken(tokenFromFile);
+      } catch {
+        // No persisted token — leave the client unauthenticated.
+      }
+    }
 
     // Auto-build code intelligence graph (non-blocking).
     loadRepoGraph(PROJECT_DIR).then((existing) => {
       if (!existing) {
-        buildRepoGraph(PROJECT_DIR, { maxFiles: 5_000, ignoreDirs: ['hermes-agent-main', 'agent-outputs', 'journal', 'Bracknell_Food_Business'] }).then((graph) => {
+        buildRepoGraph(PROJECT_DIR, { maxFiles: 5_000, ignoreDirs: ['apex-agent-main', 'agent-outputs', 'journal', 'Bracknell_Food_Business'] }).then((graph) => {
           saveRepoGraph(PROJECT_DIR, graph).then(async () => {
             const summary = summarizeRepo(graph);
             console.log(`  Code intelligence:     ${summary.total_files} files, ${summary.total_edges} edges`);
@@ -10089,6 +9120,7 @@ export async function startServer(): Promise<void> {
       openBrowser(url);
     }
   });
+  return httpServer;
 }
 
 function createStartupProfile(): { record: (phase: string, since?: number) => void; summary: () => Record<string, number> } {
@@ -10117,6 +9149,24 @@ export function setWebRuntimeOverrides(overrides: Partial<WebRuntimeDeps>): () =
   return () => { webRuntime = defaultWebRuntime; };
 }
 
+async function shutdownServer(server: ReturnType<typeof app.listen>, signal: NodeJS.Signals): Promise<void> {
+  logger.info('Process', 'Graceful shutdown requested', { signal });
+  const closeHttp = new Promise<void>((resolve) => {
+    server.close((error?: Error) => {
+      if (error) recordSwallowed('server.shutdown.http.close', error);
+      resolve();
+    });
+  });
+  const stopSubsystems = (async () => {
+    try { await stopAllSchedulers(); } catch (error) { recordSwallowed('server.shutdown.schedulers', error); }
+    try { stopTelegramBot(); } catch (error) { recordSwallowed('server.shutdown.telegram', error); }
+    try { stopDiscordBot(); } catch (error) { recordSwallowed('server.shutdown.discord', error); }
+    try { jarvisAmbientHandle?.stop(); jarvisAmbientHandle = null; } catch (error) { recordSwallowed('server.shutdown.ambient', error); }
+  })();
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, 5_000));
+  await Promise.race([Promise.allSettled([closeHttp, stopSubsystems]).then(() => undefined), timeout]);
+}
+
 if (require.main === module) {
   // Process-level safety net. Installed only when this file is the entry
   // point so importing server.ts from tests does not register handlers
@@ -10141,7 +9191,16 @@ if (require.main === module) {
     // Give the logger a tick to flush stderr before we go.
     setTimeout(() => process.exit(1), 50);
   });
-  startServer().catch((error) => {
+  startServer().then((server) => {
+    let shuttingDown = false;
+    const handleSignal = (signal: NodeJS.Signals): void => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      shutdownServer(server, signal).finally(() => process.exit(0));
+    };
+    process.once('SIGINT', handleSignal);
+    process.once('SIGTERM', handleSignal);
+  }).catch((error) => {
     console.error(error);
     process.exit(1);
   });

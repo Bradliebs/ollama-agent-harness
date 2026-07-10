@@ -128,7 +128,11 @@ async function ensureTargetServer() {
     : ['-r', 'ts-node/register', 'src/web/server.ts'];
   const server = spawn(process.execPath, serverArgs, {
     cwd: process.cwd(),
-    env: { ...process.env, PORT: url.port || '4301', NO_OPEN: '1' },
+    // The seed graph is written under process.cwd()/.harness/mycelium. When the
+    // server is launched from the harness repo it redirects PROJECT_DIR to an
+    // isolated workspace unless HARNESS_PROJECT_DIR is set, which would make it
+    // read an empty graph (0 nodes). Pin it to the seed location.
+    env: { ...process.env, PORT: url.port || '4301', NO_OPEN: '1', HARNESS_PROJECT_DIR: process.env.HARNESS_PROJECT_DIR || process.cwd() },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const outputChunks = [];

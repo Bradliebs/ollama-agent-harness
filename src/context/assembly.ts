@@ -9,6 +9,7 @@ import { listIndexes as listRagIndexes, search as searchRagIndex } from '../pers
 import { buildMemoryPalace } from '../persistence/semanticMemory';
 import { searchSessions } from '../persistence/sessionSearchIndex';
 import { recordSwallowed } from '../observability/silentFailureSink';
+import * as ccmem from '../services/conceptMemoryClient';
 
 const PROJECT_MEMORY_MAX_CHARS = 8_000;
 const AGENT_MEMORY_MAX_CHARS = 4_000;
@@ -48,6 +49,16 @@ export interface ContextConfig {
   /** When set with a non-empty `sessionSearchQuery`, inject prior-session hits. */
   sessionSearchProjectDir?: string;
   sessionSearchQuery?: string;
+  /**
+   * When set, query the Concept Cells memory service (ccmem) for semantically
+   * relevant memories and inject the top hits. Uses `recallQuery` as the
+   * search text when ccmemQuery is not explicitly provided.
+   * Requires cc_service running at the configured URL (default localhost:8765).
+   */
+  ccmemUrl?: string;
+  ccmemQuery?: string;
+  /** Max concept memory hits to inject (default 5). */
+  ccmemTopK?: number;
 }
 
 export async function assembleSystemContext(config: ContextConfig): Promise<string> {
@@ -63,9 +74,7 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
     try {
       const content = await fs.readFile(filePath, 'utf-8');
       parts.push(`\n--- ${path.basename(filePath)} ---\n${trimContextText(content, PROJECT_MEMORY_MAX_CHARS, 'middle')}`);
-    } catch {
-      // File doesn't exist — skip silently
-    }
+    } catch (err) { recordSwallowed('assembly.readMemoryFile', err); }
   }
 
   // Load agent memory (auto-memory from .harness/memory/)
@@ -74,9 +83,7 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
     try {
       const content = await fs.readFile(path.join(autoMemoryDir, file), 'utf-8');
       parts.push(`\n--- Agent Memory: ${file} ---\n${trimContextText(content, AGENT_MEMORY_MAX_CHARS, 'tail')}`);
-    } catch {
-      // Not yet created — skip
-    }
+    } catch (err) { recordSwallowed('assembly.readAgentMemory', err); }
   }
 
   // Inject skill descriptions so the model knows what skills are available
@@ -95,9 +102,14 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
       const omitted = skills.length > listedSkills.length ? `\n...(${skills.length - listedSkills.length} more skill(s) omitted from prompt; use list_skills when needed)` : '';
       parts.push(`\n--- Available Skills ---\nYou can invoke these skills using the "skill" tool. Use "create_skill" to create new ones.\n${skillList}${omitted}`);
     }
-  } catch {
-    // No skills directory — skip
-  }
+  } catch (err) { recordSwallowed('assembly.loadSkills', err); }
+
+  // Track memory sources that FAILED unexpectedly this turn (threw — not the
+  // benign "returned no hits" case) so we can warn the model its recall may be
+  // incomplete instead of letting it silently treat "no hit" as "no such fact".
+  // ccmem is intentionally excluded: its client never throws (returns empty on
+  // error), so flagging its catch would be dead code.
+  const degraded: string[] = [];
 
   // Inject knowledge-graph recall when caller opts in (jarvis layer).
   // Pulls the top hits matching `recallQuery` from `recallProjectDir` as a
@@ -112,7 +124,7 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
       if (lines.length > 0) {
         parts.push(`\n--- Knowledge graph recall: ${config.recallQuery} ---\n${lines.join('\n')}\n_When citing these facts in your answer, reference the source id in parentheses._`);
       }
-    } catch (err) { recordSwallowed('assembly.kgRecall', err); }
+    } catch (err) { recordSwallowed('assembly.kgRecall', err); degraded.push('knowledge-graph'); }
   }
 
   // Auto-consult RAG + memory palace + prior-session search are built into
@@ -145,21 +157,24 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
                 : h.content;
               lines.push(`- [${idx.name}#${h.source}:${h.chunkNo}] (score ${h.score.toFixed(2)}) ${snippet.replace(/\s+/g, ' ').trim()}`);
             }
-          } catch (err) { recordSwallowed(`assembly.ragSearch.${idx.name}`, err); }
+          } catch (err) { recordSwallowed(`assembly.ragSearch.${idx.name}`, err); degraded.push(`rag:${idx.name}`); }
         }
         if (lines.length > 0) {
           recallParts.push(`\n--- RAG recall: ${ragQueryText.slice(0, 120)} ---\n${lines.join('\n')}\n_Cite the index/source/chunk id in parentheses when using these snippets._`);
         }
       }
-    } catch (err) { recordSwallowed('assembly.ragListIndexes', err); }
+    } catch (err) { recordSwallowed('assembly.ragListIndexes', err); degraded.push('rag'); }
   }
 
-  // Memory palace summary: surface top rooms (by entry count) with a few
-  // anchor samples each. Gives the model awareness of long-term memory
-  // organisation without dumping the whole index.
+  // Memory palace summary: surface rooms ranked by relevance to the current
+  // user query (when one is available), falling back to entry-count ordering
+  // when no query is supplied. Each room shows its highest-relevance anchor
+  // samples so the model sees prior memory tied to what's being asked, not
+  // just the largest pile of historical events.
   if (config.palaceProjectDir) {
     try {
-      const palace = await buildMemoryPalace(config.palaceProjectDir);
+      const palaceQuery = (config.recallQuery ?? config.sessionSearchQuery ?? '').trim();
+      const palace = await buildMemoryPalace(config.palaceProjectDir, palaceQuery || undefined);
       if (palace.rooms.length > 0) {
         const lines = palace.rooms.slice(0, PALACE_AUTO_MAX_ROOMS).map((room) => {
           const anchorLines = room.anchors.slice(0, PALACE_AUTO_ANCHORS_PER_ROOM).map((a) => {
@@ -172,7 +187,7 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
         });
         recallParts.push(`\n--- Memory palace summary (${palace.roomCount} rooms, ${palace.entryCount} entries) ---\n${lines.join('\n')}`);
       }
-    } catch (err) { recordSwallowed('assembly.memoryPalace', err); }
+    } catch (err) { recordSwallowed('assembly.memoryPalace', err); degraded.push('memory-palace'); }
   }
 
   // Prior-session hits: search the cross-session text index for the same
@@ -191,12 +206,40 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
         });
         recallParts.push(`\n--- Prior sessions matching: ${sessionSearchText.slice(0, 120)} ---\n${lines.join('\n')}`);
       }
-    } catch (err) { recordSwallowed('assembly.sessionSearch', err); }
+    } catch (err) { recordSwallowed('assembly.sessionSearch', err); degraded.push('prior-sessions'); }
+  }
+
+  // Concept memory recall: semantically relevant memories from ccmem.
+  // Uses MiniLM embeddings so it surfaces related memories even when
+  // keywords don't match (e.g. "auth" finds "JWT", "login", "token").
+  const ccmemQueryText = (config.ccmemQuery ?? config.recallQuery ?? '').trim();
+  if (config.ccmemUrl && ccmemQueryText.length > 0) {
+    try {
+      ccmem.setCcmemUrl(config.ccmemUrl);
+      const topK = config.ccmemTopK ?? 5;
+      const hits = await ccmem.recall(ccmemQueryText, topK);
+      if (hits.length > 0) {
+        const lines = hits.map((h) => {
+          const label = h.label ? ` [${h.label}]` : '';
+          const snippet = (h.source ?? '').replace(/\s+/g, ' ').trim();
+          const trimmed = snippet.length > 300 ? `${snippet.slice(0, 300)}...` : snippet;
+          return `- (margin ${h.margin.toFixed(3)})${label} ${trimmed}`;
+        });
+        recallParts.push(`\n--- Concept memory recall: ${ccmemQueryText.slice(0, 120)} ---\n${lines.join('\n')}`);
+      }
+    } catch (err) { recordSwallowed('assembly.ccmemRecall', err); }
   }
 
   if (recallParts.length > 0) {
     const combined = recallParts.join('\n');
     parts.push(trimContextText(combined, RECALL_SECTIONS_COMBINED_MAX_CHARS, 'tail'));
+  }
+
+  // Point-of-use degraded-memory signal. Only appears when a recall source
+  // actually threw, so the default (all sources healthy) prompt is unchanged.
+  if (degraded.length > 0) {
+    const unique = [...new Set(degraded)];
+    parts.push(`\n--- \u26a0\ufe0f Memory degraded ---\n${unique.length} memory source(s) failed this turn (${unique.join(', ')}); recalled context above may be incomplete. Do not treat the absence of a fact here as proof it is not in memory.`);
   }
 
   return parts.join('\n');
@@ -227,8 +270,9 @@ export function buildInitialMessages(
   userMessage: string,
   projectDir: string,
 ): Message[] {
+  const safeProjectDir = typeof projectDir === 'string' && projectDir.trim().length > 0 ? projectDir : process.cwd();
   return [
-    assembleUserContext(projectDir),
+    assembleUserContext(safeProjectDir),
     { role: 'user' as const, content: userMessage },
   ];
 }

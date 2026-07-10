@@ -1,10 +1,19 @@
 import type { ToolCall } from '../types';
+import type { CommandClassification, ClassifierDeps } from './commandClassifier';
+import { classifyCommand } from './commandClassifier';
 
 export interface PendingPermissionPrompt {
   id: string;
   call: ToolCall;
   reason?: string;
   createdAt: string;
+  /**
+   * Friendly, model-generated explanation of a shell command and a safe
+   * broadening pattern. Populated asynchronously after the prompt is created
+   * (only for commands), so it may be absent on the first poll and appear on
+   * a subsequent one.
+   */
+  classification?: CommandClassification;
 }
 
 interface PendingPromptState extends PendingPermissionPrompt {
@@ -29,9 +38,19 @@ function resolveDefaultTimeout(): number {
 export class PermissionPromptBroker {
   private pending = new Map<string, PendingPromptState>();
   private readonly timeoutMs: number;
+  private classifierDeps?: ClassifierDeps;
 
-  constructor(timeoutMs?: number) {
+  constructor(timeoutMs?: number, classifierDeps?: ClassifierDeps) {
     this.timeoutMs = timeoutMs ?? resolveDefaultTimeout();
+    this.classifierDeps = classifierDeps;
+  }
+
+  /**
+   * Attach (or replace) the command classifier after construction. Used by
+   * the server, which builds the broker before the model runtime exists.
+   */
+  setClassifier(deps: ClassifierDeps): void {
+    this.classifierDeps = deps;
   }
 
   request(call: ToolCall, reason?: string): Promise<{ allowed: boolean; reason?: string }> {
@@ -56,6 +75,9 @@ export class PermissionPromptBroker {
         resolve,
         timer,
       });
+      // Fire-and-forget: enrich shell-command prompts with a friendly
+      // explanation. Never blocks or fails the approval flow.
+      void this.classify(id, call);
     });
   }
 
@@ -79,6 +101,31 @@ export class PermissionPromptBroker {
     }
     this.pending.clear();
   }
+
+  private async classify(id: string, call: ToolCall): Promise<void> {
+    if (!this.classifierDeps) return;
+    const command = extractCommand(call);
+    if (!command) return;
+    try {
+      const classification = await classifyCommand(command, this.classifierDeps);
+      // The prompt may have resolved while the model was thinking — only
+      // attach if it's still pending.
+      const state = this.pending.get(id);
+      if (state) state.classification = classification;
+    } catch {
+      // Advisory only — never surface classifier failures into the flow.
+    }
+  }
+}
+
+/**
+ * Pull a shell command string out of a tool call. Only shell-style tools
+ * carry a `command`; everything else returns undefined so we skip classifying.
+ */
+function extractCommand(call: ToolCall): string | undefined {
+  if (call.name !== 'bash' && call.name !== 'shell' && call.name !== 'docker_exec') return undefined;
+  const command = (call.input as Record<string, unknown> | undefined)?.command;
+  return typeof command === 'string' && command.trim() ? command : undefined;
 }
 
 function createPromptId(): string {

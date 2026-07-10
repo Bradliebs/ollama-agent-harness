@@ -11,7 +11,7 @@ describe('Error Recovery', () => {
 
     it('retries on transient failure then succeeds', async () => {
       const fn = jest.fn()
-        .mockRejectedValueOnce(new Error('transient'))
+        .mockRejectedValueOnce(new Error('connection refused'))
         .mockResolvedValueOnce('ok');
       const result = await withRetry(fn, 3, 10);
       expect(result).toBe('ok');
@@ -19,8 +19,8 @@ describe('Error Recovery', () => {
     });
 
     it('throws after max attempts exhausted', async () => {
-      const fn = jest.fn().mockRejectedValue(new Error('persistent'));
-      await expect(withRetry(fn, 2, 10)).rejects.toThrow('persistent');
+      const fn = jest.fn().mockRejectedValue(new Error('connection refused persistently'));
+      await expect(withRetry(fn, 2, 10)).rejects.toThrow('connection refused');
       expect(fn).toHaveBeenCalledTimes(2);
     });
 
@@ -29,6 +29,12 @@ describe('Error Recovery', () => {
         new PermissionDeniedError('bash', 'denied'),
       );
       await expect(withRetry(fn, 3, 10)).rejects.toThrow('Permission denied');
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry unclassified errors (no implicit retry)', async () => {
+      const fn = jest.fn().mockRejectedValue(new Error('something weird happened'));
+      await expect(withRetry(fn, 3, 10)).rejects.toThrow('something weird');
       expect(fn).toHaveBeenCalledTimes(1);
     });
   });

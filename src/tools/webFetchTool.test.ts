@@ -43,7 +43,9 @@ describe('WebFetchTool PDF passthrough', () => {
 
     const result = await WebFetchTool.execute({ url: 'https://example.com/file.txt' });
 
-    expect(result).toMatchObject({ success: true, output: 'hello world' });
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('hello world');
+    expect(result.output).toContain('<external_content source="web"');
   });
 
   it('surfaces HTTP errors for non-2xx responses', async () => {

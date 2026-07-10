@@ -194,6 +194,9 @@ export class MyceliumGraph {
       reason,
       archivedAt: new Date().toISOString(),
     });
+    if (this.archivedEdges.length > 1000) {
+      this.archivedEdges = this.archivedEdges.slice(-1000);
+    }
     this.edges = this.edges.filter((e) => !(e.source === source && e.target === target));
     return true;
   }
@@ -257,6 +260,13 @@ export class MyceliumGraph {
 
   listEpisodes(limit = 50): MyceliumEpisode[] {
     return this.episodes.slice(-limit);
+  }
+
+  /** Look up a single episode by its stable id. Used by the feedback
+   * endpoint to attach user votes to the exact route they rated, rather
+   * than whatever episode happens to be most recent. */
+  getEpisodeById(id: string): MyceliumEpisode | undefined {
+    return this.episodes.find((e) => e.id === id);
   }
 
   // ─── Activation ───────────────────────────────────────────

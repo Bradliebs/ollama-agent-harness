@@ -41,7 +41,10 @@ export async function withRetry<T>(
   fn: () => Promise<T>,
   maxAttempts: number = 3,
   baseDelayMs: number = 1000,
+  onAttempt?: (info: { attempt: number; classified: import('./retryClass').ClassifiedError; nextDelayMs: number }) => void,
 ): Promise<T> {
+  // Local import keeps the cycle one-directional (retryClass imports errors).
+  const { classifyError, isRetryable, computeRetryDelayMs } = await import('./retryClass');
   let lastError: Error | undefined;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -49,15 +52,19 @@ export async function withRetry<T>(
       return await fn();
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
+      const classified = classifyError(error);
 
-      // Non-recoverable errors should not be retried
-      if (error instanceof HarnessError && !error.recoverable) {
+      // Non-retryable classes (auth / policyDenied / permanent / unknown)
+      // surface immediately. Preserves the original HarnessError.recoverable
+      // contract because `recoverable === false` classifies as `permanent`.
+      if (!isRetryable(classified.class)) {
         throw error;
       }
 
       if (attempt < maxAttempts) {
-        const delay = baseDelayMs * Math.pow(2, attempt - 1);
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        const delayMs = computeRetryDelayMs(classified, attempt, baseDelayMs);
+        try { onAttempt?.({ attempt, classified, nextDelayMs: delayMs }); } catch { /* swallowed — telemetry only */ }
+        if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
     }
   }

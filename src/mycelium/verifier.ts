@@ -6,6 +6,7 @@
 // (tests, lint, schema check, etc.) is connected.
 
 import type { ContextPackage } from './contextPackage';
+import { runPanel, type Signal, type SignalContext, type PanelConfig, type PanelResult } from '../verification/panel';
 
 export interface VerifierInput {
   /** The final assistant response text. */
@@ -47,6 +48,17 @@ export interface VerifierInput {
      */
     toolSuccessRatios?: Record<string, number>;
   };
+  /**
+   * Opt-in: when provided, the signal panel runs and its result is attached
+   * as `panelResult` on the output. The existing `score`/`components`/`notes`
+   * are computed exactly as before regardless, so legacy callers see no
+   * change. Caller supplies the signal set so the verifier stays
+   * dependency-free on a config loader.
+   */
+  panel?: {
+    signals: Signal[];
+    config?: PanelConfig;
+  };
 }
 
 export interface VerifierResult {
@@ -57,6 +69,8 @@ export interface VerifierResult {
   appliedVerifiers: string[];
   /** True if the verifier judged the run actively unsafe / required block. */
   failedHardCheck: boolean;
+  /** Populated when `input.panel` was provided. Pure side-channel; legacy callers ignore. */
+  panelResult?: PanelResult;
 }
 
 const HARD_BLOCK_TERMS = [
@@ -181,7 +195,21 @@ export function heuristicVerifier(input: VerifierInput): VerifierResult {
     + 0.10 * components.constraint_coverage,
   );
 
-  return { score, components, notes, appliedVerifiers: Array.from(appliedVerifiersSet), failedHardCheck };
+  const result: VerifierResult = { score, components, notes, appliedVerifiers: Array.from(appliedVerifiersSet), failedHardCheck };
+  if (input.panel) {
+    const ctx: SignalContext = {
+      response,
+      toolCallCount,
+      toolSuccessCount,
+      errored: errored ?? false,
+      refused: refused ?? false,
+      highRisk: contextPackage.high_risk ?? false,
+      dryRun: contextPackage.dry_run ?? false,
+      realSignals,
+    };
+    result.panelResult = runPanel(input.panel.signals, input.panel.config ?? {}, ctx);
+  }
+  return result;
 }
 
 function clamp(value: number, min = 0, max = 1): number {

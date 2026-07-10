@@ -1,3 +1,5 @@
+import { load } from 'cheerio';
+import { wrapUntrusted } from '../safety/untrustedWrap';
 import type { Tool, ToolResult } from '../types';
 
 const MAX_RESULTS = 8;
@@ -61,7 +63,7 @@ export const WebSearchTool: Tool = {
         `${i + 1}. **${r.title}**\n   ${r.url}\n   ${r.snippet}`
       ).join('\n\n');
 
-      return { success: true, output: `Search results for "${query}":\n\n${output}` };
+      return { success: true, output: `Search results for "${query}":\n\n${wrapUntrusted('web', output)}` };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return { success: false, output: `Search failed: ${msg}`, error: msg };
@@ -86,20 +88,20 @@ function parseDuckDuckGoResults(html: string, max: number): SearchResult[] {
 
     // Extract title and URL
     const linkMatch = block.match(/class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)</);
-    if (!linkMatch) continue;
+    if (!linkMatch || !linkMatch[1] || !linkMatch[2]) continue;
 
     let url = linkMatch[1];
     const title = decodeHtmlEntities(linkMatch[2].trim());
 
     // DuckDuckGo wraps URLs in a redirect — extract the actual URL
     const uddgMatch = url.match(/uddg=([^&]*)/);
-    if (uddgMatch) {
-      url = decodeURIComponent(uddgMatch[1]);
+    if (uddgMatch && uddgMatch[1]) {
+      try { url = decodeURIComponent(uddgMatch[1]); } catch { /* keep raw redirect url */ }
     }
 
     // Extract snippet
     const snippetMatch = block.match(/class="result__snippet"[^>]*>([\s\S]*?)<\//);
-    const snippet = snippetMatch
+    const snippet = snippetMatch && snippetMatch[1]
       ? decodeHtmlEntities(snippetMatch[1].replace(/<[^>]*>/g, '').trim())
       : '';
 
@@ -149,7 +151,7 @@ export const WebReadTool: Tool = {
       // If it's plain text or JSON, return as-is
       if (!contentType.includes('html')) {
         const truncated = truncateForWebRead(body);
-        return { success: true, output: truncated };
+        return { success: true, output: wrapUntrusted('web', truncated, { label: url }) };
       }
 
       // Extract readable content from HTML
@@ -160,7 +162,7 @@ export const WebReadTool: Tool = {
       const combined = fallback ? `${text}\n\n${fallback}` : text;
       const truncated = truncateForWebRead(combined);
 
-      return { success: true, output: `Content from ${url}:\n\n${truncated}` };
+      return { success: true, output: `Content from ${url}:\n\n${wrapUntrusted('web', truncated, { label: url })}` };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return { success: false, output: `Failed to read: ${msg}`, error: msg };
@@ -175,30 +177,29 @@ function truncateForWebRead(text: string): string {
 }
 
 function extractReadableText(html: string): string {
-  let text = html;
+  const $ = load(html);
 
-  // Remove scripts, styles, and head
-  text = text.replace(/<script[\s\S]*?<\/script>/gi, '');
-  text = text.replace(/<style[\s\S]*?<\/style>/gi, '');
-  text = text.replace(/<head[\s\S]*?<\/head>/gi, '');
-  text = text.replace(/<nav[\s\S]*?<\/nav>/gi, '');
-  text = text.replace(/<footer[\s\S]*?<\/footer>/gi, '');
-  text = text.replace(/<header[\s\S]*?<\/header>/gi, '');
+  // Remove non-content elements
+  $('script, style, head, nav, footer, header, noscript, iframe, svg, form, aside').remove();
 
-  // Convert common elements to text equivalents
-  text = text.replace(/<br\s*\/?>/gi, '\n');
-  text = text.replace(/<\/p>/gi, '\n\n');
-  text = text.replace(/<\/div>/gi, '\n');
-  text = text.replace(/<\/li>/gi, '\n');
-  text = text.replace(/<\/h[1-6]>/gi, '\n\n');
-  text = text.replace(/<h[1-6][^>]*>/gi, '\n## ');
-  text = text.replace(/<li[^>]*>/gi, '• ');
+  // Preserve structural markers in the extracted text
+  $('br').replaceWith('\n');
+  $('h1, h2, h3, h4, h5, h6').each((_, el) => {
+    $(el).prepend('\n## ').append('\n\n');
+  });
+  $('li').each((_, el) => {
+    $(el).prepend('• ').append('\n');
+  });
+  $('p, div').each((_, el) => {
+    $(el).append('\n');
+  });
 
-  // Remove all remaining HTML tags
-  text = text.replace(/<[^>]*>/g, '');
+  const bodyText = $('body').text();
+  let text = bodyText.length > 0 ? bodyText : $.root().text();
 
-  // Decode HTML entities
-  text = decodeHtmlEntities(text);
+  // Strip null bytes and C0/DEL control chars (preserve tab/newline/CR) so
+  // invisible bytes cannot be smuggled into snippets shown in the UI.
+  text = text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
 
   // Clean up whitespace
   text = text.replace(/[ \t]+/g, ' ');
@@ -277,6 +278,14 @@ function weatherSourceLabel(url: string): string {
 }
 
 function decodeHtmlEntities(text: string): string {
+  const sanitize = (code: number): string => {
+    // Strip null bytes and C0 control chars (except tab/newline) that would
+    // smuggle invisible bytes into snippets shown in the UI.
+    if (!Number.isFinite(code) || code === 0) return '';
+    if (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) return '';
+    if (code === 0x7f) return '';
+    return String.fromCharCode(code);
+  };
   return text
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
@@ -284,6 +293,6 @@ function decodeHtmlEntities(text: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&nbsp;/g, ' ')
-    .replace(/&#(\d+);/g, (_, num) => String.fromCharCode(parseInt(num)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    .replace(/&#(\d+);/g, (_, num) => sanitize(parseInt(num, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => sanitize(parseInt(hex, 16)));
 }

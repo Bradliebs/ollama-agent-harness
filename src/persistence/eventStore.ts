@@ -23,6 +23,7 @@ export type EventCategory =
   | 'tool'
   | 'model'
   | 'route'
+  | 'experiment'
   | 'approval'
   | 'file'
   | 'schedule'
@@ -294,14 +295,16 @@ export async function getEvent(projectDir: string, eventId: string): Promise<Har
   const fp = eventsFilePath(projectDir);
   try { await fs.access(fp); } catch { return null; }
   const rl = readline.createInterface({ input: createReadStream(fp, 'utf-8'), crlfDelay: Infinity });
+  let found: HarnessEvent | null = null;
   for await (const line of rl) {
     if (!line.trim()) continue;
     try {
       const ev = JSON.parse(line) as HarnessEvent;
-      if (ev.event_id === eventId) { rl.close(); return ev; }
+      if (ev.event_id === eventId) { found = ev; break; }
     } catch { /* skip */ }
   }
-  return null;
+  rl.close();
+  return found;
 }
 
 // ─── Snapshots ──────────────────────────────────────────────────────

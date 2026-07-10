@@ -118,7 +118,12 @@ async function listHarnessDocumentFiles(projectDir: string): Promise<string[]> {
 // The snapshot/diff exists to catch documents created by API mutations
 // the test failed to clean up — not to police independent timer work.
 function isBackgroundTimerArtifact(name: string): boolean {
-  return name.startsWith('jarvis-brief-ambient-');
+  return name.startsWith('jarvis-brief-ambient-')
+    // TeammateScheduler runNow() in tests writes daily-brief-<iso>.md as a
+    // best-effort snapshot. These are timer-style artifacts (not produced
+    // by API calls the test under inspection made) and must be ignored
+    // from the cross-test runtime-state diff for the same reason.
+    || name.startsWith('daily-brief-');
 }
 
 function harnessAutomationJobsPath(projectDir: string): string {

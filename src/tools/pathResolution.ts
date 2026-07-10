@@ -2,6 +2,23 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { logger } from '../core/logger';
+import { isSandboxActive } from './sandboxGuards';
+
+// ─── Project root override ──────────────────────────────────────────
+// When the server detects workspace isolation (HARNESS_PROJECT_DIR or
+// harness-repo redirect), it calls setProjectRoot() so that all path
+// resolution honours the workspace instead of the launch-time cwd.
+let _projectRoot: string | null = null;
+
+/** Override the project root used by all path resolution functions. */
+export function setProjectRoot(dir: string): void {
+  _projectRoot = path.resolve(dir);
+}
+
+/** Return the effective project root (explicit override or process.cwd()). */
+export function getProjectRoot(): string {
+  return _projectRoot ?? process.cwd();
+}
 
 const DEFAULT_UPLOADS_DIRNAME = path.join('.harness', 'uploads');
 
@@ -13,11 +30,49 @@ let allowedExternalPaths: string[] = [];
 export function setAllowedExternalPaths(paths: string[]): void {
   allowedExternalPaths = paths
     .map((p) => path.resolve(p.trim()))
-    .filter((p) => p.length > 3); // reject empty or root-level
+    .filter((p) => {
+      const segments = p.split(path.sep).filter(Boolean);
+      // Require at least 2 path segments to prevent near-root paths
+      // e.g. reject C:\, C:\x but allow C:\Users\..., /home/user/...
+      return segments.length >= 2;
+    });
 }
 
 export function getAllowedExternalPaths(): string[] {
   return [...allowedExternalPaths];
+}
+
+// ─── Autonomous build targets ───────────────────────────────────────
+// Folders explicitly designated as the destination of an autonomous build
+// run. Inside these, the permission engine allows the agent to write program
+// files (.py/.js/.sh/...) without the protected-external-file confirmation —
+// the user chose this folder as the build target, so producing code there is
+// the whole point. Every OTHER allowed-external folder keeps the confirmation
+// gate (so autonomy cannot silently overwrite an unrelated project's scripts).
+// Populated two ways:
+//   • setAutonomousBuildTargets() — in-process callers and unit tests.
+//   • HARNESS_BUILD_TARGETS env (path-delimited) — the autonomy task-loop sets
+//     this when spawning the per-task CLI, so the child process inherits the
+//     authorised target without extra startup wiring.
+let autonomousBuildTargets: string[] = [];
+
+function normaliseBuildTargets(paths: string[]): string[] {
+  const resolved = paths
+    .map((p) => path.resolve(p.trim()))
+    .filter((p) => p.split(path.sep).filter(Boolean).length >= 2);
+  return [...new Set(resolved)];
+}
+
+export function setAutonomousBuildTargets(paths: string[]): void {
+  autonomousBuildTargets = normaliseBuildTargets(paths);
+}
+
+export function getAutonomousBuildTargets(): string[] {
+  const fromEnv = (process.env.HARNESS_BUILD_TARGETS ?? '')
+    .split(path.delimiter)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return normaliseBuildTargets([...autonomousBuildTargets, ...fromEnv]);
 }
 
 /**
@@ -33,12 +88,12 @@ export function getAllowedExternalPaths(): string[] {
 export function getUploadsDir(): string {
   const override = process.env.HARNESS_UPLOADS_DIR?.trim();
   if (override) {
-    return path.isAbsolute(override) ? override : path.resolve(process.cwd(), override);
+    return path.isAbsolute(override) ? override : path.resolve(getProjectRoot(), override);
   }
   if (process.env.HARNESS_GLOBAL_UPLOADS === '1') {
     return path.join(os.homedir(), '.harness', 'uploads');
   }
-  return path.join(process.cwd(), DEFAULT_UPLOADS_DIRNAME);
+  return path.join(getProjectRoot(), DEFAULT_UPLOADS_DIRNAME);
 }
 
 const DEFAULT_AGENT_OUTPUT_DIRNAME = 'agent-outputs';
@@ -53,9 +108,9 @@ const DEFAULT_AGENT_OUTPUT_DIRNAME = 'agent-outputs';
 export function getAgentOutputDir(): string {
   const override = process.env.HARNESS_AGENT_OUTPUT_DIR?.trim();
   if (override) {
-    return path.isAbsolute(override) ? override : path.resolve(process.cwd(), override);
+    return path.isAbsolute(override) ? override : path.resolve(getProjectRoot(), override);
   }
-  return path.join(process.cwd(), DEFAULT_AGENT_OUTPUT_DIRNAME);
+  return path.join(getProjectRoot(), DEFAULT_AGENT_OUTPUT_DIRNAME);
 }
 
 /**
@@ -76,7 +131,7 @@ export function maybeRedirectAgentOutput(rawPath: string): string | null {
   if (!basename) return null;
 
   // Never redirect edits to existing project files.
-  const directTarget = path.resolve(process.cwd(), trimmed);
+  const directTarget = path.resolve(getProjectRoot(), trimmed);
   if (fs.existsSync(directTarget)) return null;
 
   const explicitOverride = Boolean(process.env.HARNESS_AGENT_OUTPUT_DIR?.trim());
@@ -181,7 +236,7 @@ export function getFileWriteRedirects(): { rules: FileWriteRedirectRule[]; sourc
   }
   // Fall back to the JSON file managed by the UI Settings panel.
   try {
-    const raw = fs.readFileSync(path.resolve(process.cwd(), REDIRECTS_FILE), 'utf-8');
+    const raw = fs.readFileSync(path.resolve(getProjectRoot(), REDIRECTS_FILE), 'utf-8');
     const parsed = parseRedirectRules(raw);
     if (parsed) {
       cachedRedirects = parsed;
@@ -273,7 +328,15 @@ export function previewFileWriteRedirect(
     if (re.test(normalizedPath) || re.test(basename)) {
       const targetDir = path.isAbsolute(rule.redirect)
         ? rule.redirect
-        : path.resolve(process.cwd(), rule.redirect);
+        : path.resolve(getProjectRoot(), rule.redirect);
+      // Safety: relative paths that resolve outside the workspace are traversal
+      // attacks (e.g. redirect: '../../../system32'). Block them. Absolute paths
+      // are explicit user config and are allowed unconditionally.
+      if (!path.isAbsolute(rule.redirect)) {
+        const safeTargetDir = isInsideOrEqualPath(targetDir, getProjectRoot()) ||
+          allowedExternalPaths.some((p) => isInsideOrEqualPath(targetDir, p));
+        if (!safeTargetDir) continue;
+      }
       return { rule, destination: path.join(targetDir, basename) };
     }
   }
@@ -292,7 +355,15 @@ function matchRedirectRules(rawPath: string, rules: FileWriteRedirectRule[]): st
     if (re.test(normalizedPath) || re.test(basename)) {
       const targetDir = path.isAbsolute(rule.redirect)
         ? rule.redirect
-        : path.resolve(process.cwd(), rule.redirect);
+        : path.resolve(getProjectRoot(), rule.redirect);
+      // Safety: relative paths that resolve outside the workspace are traversal
+      // attacks (e.g. redirect: '../../../system32'). Block them. Absolute paths
+      // are explicit user config and are allowed unconditionally.
+      if (!path.isAbsolute(rule.redirect)) {
+        const safeTargetDir = isInsideOrEqualPath(targetDir, getProjectRoot()) ||
+          allowedExternalPaths.some((p) => isInsideOrEqualPath(targetDir, p));
+        if (!safeTargetDir) return null;
+      }
       return path.join(targetDir, basename);
     }
   }
@@ -329,12 +400,21 @@ function recordFallback(requested: string, resolved: string): void {
 /**
  * Resolve a tool path against the project root. Returns the absolute path
  * when it is inside the project directory, or null when it would escape.
+ *
+ * Sandbox mode (see `tools/sandboxGuards`) tightens this: when sandbox is
+ * active the operator's pre-approved external paths are IGNORED, so the
+ * only valid resolution is inside the workspace. This guarantees a
+ * sandboxed agent cannot write to a previously-whitelisted external
+ * directory.
  */
 export function resolveProjectPath(value: unknown): string | null {
   const raw = String(value ?? '');
-  const resolved = path.resolve(raw);
-  const relative = path.relative(process.cwd(), resolved);
+  const root = getProjectRoot();
+  const resolved = path.resolve(root, raw);
+  const relative = path.relative(root, resolved);
   if (!relative.startsWith('..') && !path.isAbsolute(relative)) return resolved;
+  // Sandbox mode: never permit the allowed-external escape hatch.
+  if (isSandboxActive()) return null;
   // Check allowed external paths
   for (const allowed of allowedExternalPaths) {
     if (isInside(resolved, allowed) || resolved === allowed) return resolved;

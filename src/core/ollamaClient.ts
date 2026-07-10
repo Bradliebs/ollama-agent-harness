@@ -3,7 +3,7 @@ import type { ChatRequest, ChatResponse, Message, Tool, ToolCall } from 'ollama'
 import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import { appendFileSync } from 'fs';
-import type { ChatResult, IChatClient, StreamChunk, TokenUsage } from './chatClient';
+import type { ChatResult, IChatClient, ModelLocality, StreamChunk, TokenUsage } from './chatClient';
 
 export type { ChatResult, StreamChunk, TokenUsage } from './chatClient';
 
@@ -130,6 +130,7 @@ export class OllamaClient implements IChatClient {
   async *chatStream(
     messages: Message[],
     tools?: Tool[],
+    abortSignal?: AbortSignal,
   ): AsyncGenerator<StreamChunk> {
     const stream = await this.client.chat({
       model: this.model,
@@ -141,6 +142,7 @@ export class OllamaClient implements IChatClient {
     });
 
     for await (const chunk of stream) {
+      if (abortSignal?.aborted) return;
       yield {
         content: chunk.message?.content ?? '',
         done: chunk.done ?? false,
@@ -184,6 +186,10 @@ export class OllamaClient implements IChatClient {
 
   getModel(): string {
     return this.model;
+  }
+
+  getLocality(): ModelLocality {
+    return 'local';
   }
 }
 
@@ -603,7 +609,7 @@ export async function longLivedFetch(input: string | URL | Request, init: Reques
     });
 
     request.setTimeout(0);
-    request.on('error', reject);
+    request.on('error', (err) => { try { request.destroy(); } catch { /* ignore */ } reject(err); });
     if (init.signal) {
       if (init.signal.aborted) {
         request.destroy(new Error('aborted'));
@@ -617,14 +623,22 @@ export async function longLivedFetch(input: string | URL | Request, init: Reques
 }
 
 function normalizeFetchHeaders(headers: RequestInit['headers'] | undefined): Record<string, string> {
-  if (!headers) return {};
+  if (!headers) return Object.create(null);
+  const out: Record<string, string> = Object.create(null);
+  const assign = (key: string, value: unknown) => {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') return;
+    out[key] = String(value);
+  };
   if (headers instanceof Headers) {
-    const normalized: Record<string, string> = {};
-    headers.forEach((value, key) => { normalized[key] = value; });
-    return normalized;
+    headers.forEach((value, key) => assign(key, value));
+    return out;
   }
-  if (Array.isArray(headers)) return Object.fromEntries(headers.map(([key, value]) => [key, String(value)]));
-  return Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, String(value)]));
+  if (Array.isArray(headers)) {
+    for (const [key, value] of headers) assign(key, value);
+    return out;
+  }
+  for (const [key, value] of Object.entries(headers)) assign(key, value);
+  return out;
 }
 
 function hasHeader(headers: Record<string, string>, name: string): boolean {

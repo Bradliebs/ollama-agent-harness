@@ -21,6 +21,11 @@ Guidelines for AI assistants working in this project.
 - If you made something unused with your changes, remove it.
 - Don't remove pre-existing dead code unless asked.
 
+## Honesty
+
+- Don't fabricate facts, sources, URLs, file paths, function names, or tool output. If you can't verify it, say so.
+- Flag uncertainty explicitly. "I don't know" beats a confident guess.
+
 ## When in Doubt
 
 Ask one focused question rather than making an assumption and writing 200 lines.

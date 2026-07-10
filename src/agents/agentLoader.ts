@@ -12,8 +12,26 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { atomicWriteFile } from '../persistence/atomicFile';
 import type { HelperTaskType } from './modelRouting';
+import { assertValidAgentId, isValidAgentId } from './agentId';
 
 export type AgentRole = 'researcher' | 'developer' | 'qa' | 'writer' | 'architect' | 'security';
+
+/**
+ * Declarative reference to a child agent that this agent can delegate to.
+ * When set on a definition, each entry is exposed to the parent agent as a
+ * dedicated `subagent_<name>` tool, pre-bound to `agentId` and with `values`
+ * substituted into the prompt via `{{key}}` templates.
+ */
+export interface SubAgentRef {
+  /** Unique name within the parent. Surfaces as `subagent_<name>`. */
+  name: string;
+  /** Built-in role id or custom agent id to delegate to. */
+  agentId: string;
+  /** Pre-bound values merged into the child prompt via `{{key}}` substitution. */
+  values?: Record<string, string>;
+  /** Optional human-readable description. Used in the tool description. */
+  description?: string;
+}
 
 export interface AgentDefinition {
   /** Stable id used by callers — matches the file basename without extension. */
@@ -35,6 +53,12 @@ export interface AgentDefinition {
   strengths?: string[];
   /** Tool-name allowlist. When set, the subagent only sees these tools. */
   allowedTools?: string[];
+  /**
+   * Declarative sub-agent delegation surface. When set, the runtime exposes
+   * each entry as a dedicated `subagent_<name>` tool the LLM can call.
+   * Composition mirrors goose's sub-recipes: pre-bound role + values map.
+   */
+  subAgents?: SubAgentRef[];
   /** System prompt — the body of the markdown file (frontmatter stripped). */
   systemPrompt: string;
   /** True unless explicitly disabled in frontmatter. */
@@ -46,7 +70,7 @@ export interface AgentDefinition {
 export interface AgentLoadDiagnostic {
   id: string;
   filePath: string;
-  reason: 'missing-frontmatter' | 'unreadable-file';
+  reason: 'missing-frontmatter' | 'unreadable-file' | 'invalid-agent-id' | 'unknown-sub-agent-ref';
   message: string;
 }
 
@@ -162,9 +186,37 @@ export async function scanAgentDefinitions(projectDir: string): Promise<AgentDir
         diagnostics.push({ id, filePath, reason: 'missing-frontmatter', message: 'Agent file is missing YAML frontmatter.' });
         continue;
       }
+      if (!isValidAgentId(definition.id)) {
+        diagnostics.push({
+          id: definition.id,
+          filePath,
+          reason: 'invalid-agent-id',
+          message: `Agent id ${JSON.stringify(definition.id)} is not a valid identifier (alphanumeric with - or _ only).`,
+        });
+        continue;
+      }
       agents.push(definition);
     } catch (error) {
       diagnostics.push({ id, filePath, reason: 'unreadable-file', message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  // Cross-agent validation: surface sub-recipe references that point at ids
+  // we never loaded so authors don't have to wait for tool-invocation time to
+  // discover a typo or a deleted agent.
+  const knownIds = new Set<string>([
+    ...agents.map((agent) => agent.id),
+    ...BUILTIN_AGENT_ROLES.map((agent) => agent.id),
+  ]);
+  for (const agent of agents) {
+    if (!agent.subAgents) continue;
+    for (const ref of agent.subAgents) {
+      if (knownIds.has(ref.agentId)) continue;
+      diagnostics.push({
+        id: agent.id,
+        filePath: agent.filePath,
+        reason: 'unknown-sub-agent-ref',
+        message: `Agent ${JSON.stringify(agent.id)} declares sub-agent ${JSON.stringify(ref.name)} that targets unknown agent id ${JSON.stringify(ref.agentId)}.`,
+      });
     }
   }
   return { agents, diagnostics };
@@ -204,6 +256,7 @@ export function parseAgentFile(content: string, filePath: string, fallbackId?: s
     goal: typeof frontmatter.goal === 'string' ? frontmatter.goal : undefined,
     strengths: Array.isArray(frontmatter.strengths) ? (frontmatter.strengths as string[]).filter((item) => typeof item === 'string') : undefined,
     allowedTools: Array.isArray(frontmatter.allowed_tools) ? (frontmatter.allowed_tools as string[]).filter((item) => typeof item === 'string') : undefined,
+    subAgents: Array.isArray(frontmatter.sub_agents) ? coerceSubAgents(frontmatter.sub_agents) : undefined,
     systemPrompt: body || (typeof frontmatter.system_prompt === 'string' ? frontmatter.system_prompt : ''),
     enabled,
     filePath,
@@ -233,7 +286,7 @@ export interface CreateCustomAgentInput {
 }
 
 export async function writeCustomAgent(projectDir: string, input: CreateCustomAgentInput): Promise<string> {
-  if (!/^[a-z0-9][a-z0-9-_]*$/i.test(input.id)) throw new Error('Agent id must be alphanumeric with - or _ only.');
+  assertValidAgentId(input.id);
   if (!input.systemPrompt.trim()) throw new Error('systemPrompt is required.');
   const dir = path.join(projectDir, '.harness', 'agents');
   await fs.mkdir(dir, { recursive: true });
@@ -266,41 +319,163 @@ function escapeYaml(value: string): string {
 function parseSimpleYaml(yaml: string): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   const lines = yaml.split('\n');
-  let currentListKey: string | null = null;
+  // List/object parser state. Supports:
+  //   key: value
+  //   key:
+  //     - scalar
+  //   key:
+  //     - field: value           (object item)
+  //       other: value
+  //       nested:
+  //         k: v
+  // The object/nested distinction uses the first field's indent as the object
+  // base; anything deeper is treated as a nested map field.
+  let listKey: string | null = null;
+  let currentObject: Record<string, unknown> | null = null;
+  let objectFieldIndent = -1;
+  let nestedMapKey: string | null = null;
+  let nestedMap: Record<string, unknown> | null = null;
+
+  const flushNested = () => {
+    if (currentObject && nestedMapKey && nestedMap) {
+      currentObject[nestedMapKey] = nestedMap;
+    }
+    nestedMapKey = null;
+    nestedMap = null;
+  };
+  const flushObject = () => {
+    flushNested();
+    if (currentObject && listKey) {
+      const list = (result[listKey] as unknown[] | undefined) ?? [];
+      list.push(currentObject);
+      result[listKey] = list;
+    }
+    currentObject = null;
+    objectFieldIndent = -1;
+  };
+  const resetList = () => {
+    flushObject();
+    listKey = null;
+  };
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (!line.trim()) { currentListKey = null; continue; }
-    if (currentListKey && /^\s+-\s+/.test(line)) {
-      const value = line.replace(/^\s+-\s+/, '').replace(/^"|"$/g, '').trim();
-      const list = (result[currentListKey] as string[] | undefined) ?? [];
-      list.push(value);
-      result[currentListKey] = list;
+    if (!line.trim()) { resetList(); continue; }
+
+    // List item start.
+    const listItemMatch = line.match(/^(\s+)-\s+(.*)$/);
+    if (listKey && listItemMatch) {
+      const rest = listItemMatch[2];
+      flushObject();
+      const colonIdx = rest.indexOf(':');
+      if (colonIdx === -1) {
+        // Scalar list item.
+        const value = rest.replace(/^"|"$/g, '').trim();
+        const list = (result[listKey] as unknown[] | undefined) ?? [];
+        list.push(value);
+        result[listKey] = list;
+        continue;
+      }
+      // Object list item — first field.
+      const key = rest.slice(0, colonIdx).trim();
+      const rawValue = rest.slice(colonIdx + 1).trim();
+      currentObject = {};
+      objectFieldIndent = -1;
+      if (rawValue === '') {
+        // First field is itself a nested map header.
+        nestedMapKey = key;
+        nestedMap = {};
+      } else {
+        currentObject[key] = coerceYamlScalar(rawValue);
+      }
       continue;
     }
-    currentListKey = null;
+
+    // Continuation of an open object: indented `key: value`.
+    if (listKey && currentObject) {
+      const contMatch = line.match(/^(\s+)([A-Za-z_][\w-]*)\s*:\s*(.*)$/);
+      if (contMatch) {
+        const indent = contMatch[1].length;
+        const key = contMatch[2];
+        const rawValue = contMatch[3];
+        // Anchor object field indent on the first continuation line.
+        if (objectFieldIndent === -1) objectFieldIndent = indent;
+        const isNestedField = nestedMapKey !== null && nestedMap !== null && indent > objectFieldIndent;
+        if (isNestedField) {
+          if (rawValue !== '') {
+            nestedMap![key] = coerceYamlScalar(rawValue);
+          }
+          // Nested-map header inside a nested map is unsupported; ignore quietly.
+          continue;
+        }
+        // New field on currentObject (closes any open nested map first).
+        flushNested();
+        if (rawValue === '') {
+          nestedMapKey = key;
+          nestedMap = {};
+        } else {
+          currentObject[key] = coerceYamlScalar(rawValue);
+        }
+        continue;
+      }
+      // Anything else ends the open object/list.
+      resetList();
+    }
+
+    // Top-level key. Any non-list-item line closes a running list.
+    resetList();
     const colon = line.indexOf(':');
     if (colon === -1) continue;
     const key = line.slice(0, colon).trim();
     const rawValue = line.slice(colon + 1).trim();
     if (rawValue === '') {
-      currentListKey = key;
+      listKey = key;
       result[key] = [];
       continue;
     }
-    if (rawValue.startsWith('"') && rawValue.endsWith('"')) {
-      result[key] = rawValue.slice(1, -1);
-      continue;
-    }
-    if (rawValue === 'true' || rawValue === 'false') {
-      result[key] = rawValue === 'true';
-      continue;
-    }
-    const numeric = Number(rawValue);
-    if (rawValue !== '' && !Number.isNaN(numeric) && /^-?\d+(\.\d+)?$/.test(rawValue)) {
-      result[key] = numeric;
-      continue;
-    }
-    result[key] = rawValue;
+    result[key] = coerceYamlScalar(rawValue);
   }
+  resetList();
   return result;
+}
+
+function coerceYamlScalar(rawValue: string): unknown {
+  if (rawValue.startsWith('"') && rawValue.endsWith('"')) {
+    return rawValue.slice(1, -1);
+  }
+  if (rawValue === 'true' || rawValue === 'false') {
+    return rawValue === 'true';
+  }
+  const numeric = Number(rawValue);
+  if (rawValue !== '' && !Number.isNaN(numeric) && /^-?\d+(\.\d+)?$/.test(rawValue)) {
+    return numeric;
+  }
+  return rawValue;
+}
+
+function coerceSubAgents(raw: unknown[]): SubAgentRef[] {
+  const out: SubAgentRef[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const obj = entry as Record<string, unknown>;
+    const name = typeof obj.name === 'string' ? obj.name.trim() : '';
+    const agentIdRaw = obj.agent_id ?? obj.agentId;
+    const agentId = typeof agentIdRaw === 'string' ? agentIdRaw.trim() : '';
+    if (!name || !agentId) continue;
+    if (!isValidAgentId(agentId)) continue;
+    const ref: SubAgentRef = { name, agentId };
+    if (typeof obj.description === 'string' && obj.description.trim()) {
+      ref.description = obj.description;
+    }
+    if (obj.values && typeof obj.values === 'object' && !Array.isArray(obj.values)) {
+      const values: Record<string, string> = {};
+      for (const [k, v] of Object.entries(obj.values as Record<string, unknown>)) {
+        if (v === null || v === undefined) continue;
+        values[k] = typeof v === 'string' ? v : String(v);
+      }
+      if (Object.keys(values).length > 0) ref.values = values;
+    }
+    out.push(ref);
+  }
+  return out;
 }
