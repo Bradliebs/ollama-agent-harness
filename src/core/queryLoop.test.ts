@@ -2,6 +2,7 @@ import type { Message } from 'ollama';
 import { queryLoop } from './queryLoop';
 import { detectPartialResult } from './queryLoop';
 import { RuntimeTracer } from './tracing';
+import { buildTaskContract } from './taskContractBuilder';
 import type { LoopConfig, Tool, ToolCall, ToolResult } from '../types';
 
 jest.mock('../learning/engine', () => ({
@@ -73,6 +74,17 @@ describe('queryLoop runtime behavior', () => {
 
     expect(events.map((event) => event.type)).toEqual(['turn_complete', 'text', 'done']);
     expect(events[1]).toEqual({ type: 'text', content: 'All done.' });
+  });
+
+  it('does not complete a contracted code task that produced no file change', async () => {
+    const client = makeClient([{ role: 'assistant', content: 'Implemented the parser.' }]);
+    const taskContract = buildTaskContract('Implement a CSV parser module');
+
+    const events = await collectEvents(client, [], { config: { taskContract, verify: { enabled: true } } });
+
+    expect(events.find((event) => event.type === 'done')).toMatchObject({
+      reason: 'completed_without_required_changes',
+    });
   });
 
   describe('governance shadow pass (HARNESS_GOVERNED_SHADOW)', () => {
