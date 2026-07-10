@@ -44,9 +44,19 @@ fs.copyFileSync(
 );
 const plannerSkillDir = path.join(serverTestProjectDir, '.github', 'skills', 'planner');
 fs.mkdirSync(plannerSkillDir, { recursive: true });
-fs.copyFileSync(
-  path.join(serverTestSourceRoot, '.github', 'skills', 'planner', 'SKILL.md'),
+fs.writeFileSync(
   path.join(plannerSkillDir, 'SKILL.md'),
+  [
+    '---',
+    'name: copilotforge-planner',
+    'description: Planner fixture for server tests.',
+    'domain: planning',
+    '---',
+    '',
+    '# Planner',
+    '',
+  ].join('\n'),
+  'utf-8',
 );
 fs.writeFileSync(
   path.join(serverTestProjectDir, 'IMPLEMENTATION_PLAN.md'),
