@@ -12,7 +12,7 @@ import type { Tool, ToolResult } from '../types';
 
 const MAX_ICS_SIZE = 5_000_000;
 
-interface CalendarEvent {
+export interface CalendarEvent {
   summary: string;
   start: string;
   end: string;
@@ -90,7 +90,7 @@ export const CalendarReadTool: Tool = {
   },
 };
 
-function parseIcsEvents(content: string): CalendarEvent[] {
+export function parseIcsEvents(content: string): CalendarEvent[] {
   const events: CalendarEvent[] = [];
   const blocks = content.split('BEGIN:VEVENT');
 

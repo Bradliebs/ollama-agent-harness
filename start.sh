@@ -3,6 +3,12 @@ set -e
 
 cd "$(dirname "$0")"
 
+# Unified launcher: run the assistant profile by default so voice, ambient
+# awareness and chat channels are on without a separate launcher. Override by
+# exporting HARNESS_PROFILE or individual HARNESS_* flags before launching.
+: "${HARNESS_PROFILE:=assistant}"
+export HARNESS_PROFILE
+
 echo ""
 echo "  ============================================"
 echo "  🤖  Ollama Agent Harness — Setup & Launch"
@@ -60,7 +66,43 @@ if [ ! -f "dist/web/server.js" ]; then
   echo "  ✅ Build complete"
 fi
 
-# Step 6: Launch
+# Step 6: Workspace — agent files go here, NOT in the harness repo
+if [ -z "$HARNESS_PROJECT_DIR" ]; then
+  DEFAULT_WS="$HOME/apex-workspace"
+  echo ""
+  echo "  Where should the agent work? (its files, memory, outputs go here)"
+  echo "  Press Enter for default: $DEFAULT_WS"
+  echo ""
+  read -rp "  Workspace folder: " WORKSPACE
+  WORKSPACE="${WORKSPACE:-$DEFAULT_WS}"
+  mkdir -p "$WORKSPACE"
+  export HARNESS_PROJECT_DIR="$WORKSPACE"
+  echo "  ✅ Workspace: $HARNESS_PROJECT_DIR"
+else
+  echo "  ✅ Workspace: $HARNESS_PROJECT_DIR"
+fi
+
+# Shared auth token for the local memory bank (ccmem). Generated once and
+# persisted under the workspace so restarts reuse it; exported so a ccmem
+# sidecar launched from this environment and the harness share it. Best-effort:
+# if ccmem runs without this token it simply stays unauthenticated and the
+# harness still works, just without same-host access protection.
+CCMEM_DIR="$HARNESS_PROJECT_DIR/.harness/ccmem"
+mkdir -p "$CCMEM_DIR" 2>/dev/null || true
+CCMEM_TOKEN_FILE="$CCMEM_DIR/token"
+if [ ! -f "$CCMEM_TOKEN_FILE" ]; then
+  if command -v openssl &>/dev/null; then
+    openssl rand -hex 16 > "$CCMEM_TOKEN_FILE" 2>/dev/null || true
+  elif [ -r /dev/urandom ]; then
+    head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$CCMEM_TOKEN_FILE" 2>/dev/null || true
+  fi
+  chmod 600 "$CCMEM_TOKEN_FILE" 2>/dev/null || true
+fi
+if [ -s "$CCMEM_TOKEN_FILE" ]; then
+  export HARNESS_CCMEM_TOKEN="$(tr -d ' \r\n' < "$CCMEM_TOKEN_FILE")"
+fi
+
+# Step 7: Launch
 PORT="${PORT:-4300}"
 echo ""
 echo "  🚀 Starting Ollama Agent Harness..."

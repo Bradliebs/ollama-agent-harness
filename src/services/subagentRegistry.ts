@@ -13,9 +13,14 @@
 type RegistryEvent =
   | { kind: 'start'; record: ActiveSubagent }
   | { kind: 'end'; id: string }
-  | { kind: 'cancel'; id: string };
+  | { kind: 'cancel'; id: string }
+  | { kind: 'activity'; id: string; lastActivity: string; updatedAtMs: number };
 
 const registryListeners = new Set<(event: RegistryEvent) => void>();
+
+/** Maximum tool-call history kept per active sub-agent. Bounded so a
+ *  long-running agent does not balloon memory. */
+const MAX_ACTIVITY_HISTORY = 30;
 
 /**
  * Subscribe to registry change events. Used by the server to bridge
@@ -33,6 +38,11 @@ function emitRegistryEvent(event: RegistryEvent): void {
   }
 }
 
+export interface SubagentActivityEntry {
+  label: string;
+  at: number;
+}
+
 export interface ActiveSubagent {
   id: string;
   /** Display label (typically the agent_id or `name`). */
@@ -42,6 +52,12 @@ export interface ActiveSubagent {
   /** ms since epoch when the run started. */
   startedAtMs: number;
   controller: AbortController;
+  /** Short label of what the sub-agent is currently doing, e.g. "\uD83D\uDD27 read_file". */
+  lastActivity?: string;
+  /** ms since epoch when lastActivity was last updated. */
+  updatedAtMs?: number;
+  /** Most recent activity labels, oldest-first. Capped at MAX_ACTIVITY_HISTORY. */
+  activityHistory: SubagentActivityEntry[];
 }
 
 const active = new Map<string, ActiveSubagent>();
@@ -61,6 +77,7 @@ export function registerSubagent(input: RegisterSubagentInput): ActiveSubagent {
     promptSnippet: (input.prompt || '').slice(0, 200),
     startedAtMs: input.startedAtMs ?? Date.now(),
     controller: input.controller,
+    activityHistory: [],
   };
   active.set(record.id, record);
   emitRegistryEvent({ kind: 'start', record });
@@ -79,6 +96,26 @@ export function listActiveSubagents(): ActiveSubagent[] {
 
 export function getActiveSubagent(id: string): ActiveSubagent | undefined {
   return active.get(id);
+}
+
+/**
+ * Record what the sub-agent is currently doing — short labels like
+ * "\uD83D\uDD27 read_file" or "thinking\u2026". Safe to call from inside the
+ * event stream; no-ops when the id is not registered (e.g. when the run
+ * had no runId).
+ */
+export function updateSubagentActivity(id: string, label: string): void {
+  const record = active.get(id);
+  if (!record) return;
+  const trimmed = (label || '').slice(0, 120);
+  const updatedAtMs = Date.now();
+  record.lastActivity = trimmed;
+  record.updatedAtMs = updatedAtMs;
+  record.activityHistory.push({ label: trimmed, at: updatedAtMs });
+  if (record.activityHistory.length > MAX_ACTIVITY_HISTORY) {
+    record.activityHistory.splice(0, record.activityHistory.length - MAX_ACTIVITY_HISTORY);
+  }
+  emitRegistryEvent({ kind: 'activity', id, lastActivity: trimmed, updatedAtMs });
 }
 
 /**

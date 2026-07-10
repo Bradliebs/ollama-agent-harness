@@ -6,13 +6,39 @@ export { RuntimeTracer, runtimeTracer } from './core/tracing';
 export { describeOutputValidationProfileSuggestion, getOutputValidationInstructions, normalizeCustomOutputValidationProfiles, OUTPUT_VALIDATION_PROFILES, OUTPUT_VALIDATION_PROFILE_TEMPLATES, parseOutputValidationProfile, suggestOutputValidationProfile, validateOutput, withOutputValidationInstructions } from './core/outputValidation';
 export type { BuiltInOutputValidationProfile, CustomOutputValidationCheck, CustomOutputValidationProfile, OutputValidationFinding, OutputValidationProfile, OutputValidationProfileInfo, OutputValidationProfileTemplate, OutputValidationResult, OutputValidationStatus } from './core/outputValidation';
 export { HarnessError, OllamaConnectionError, ContextOverflowError, ToolExecutionError, PermissionDeniedError, withRetry, errorToToolResult } from './core/errors';
+export { classifyError, isRetryable, computeRetryDelayMs } from './core/retryClass';
+export type { RetryClass, ClassifiedError } from './core/retryClass';
 export { ToolDispatcher, getBuiltinTools, FileReadTool, FileWriteTool, FileEditTool, ListFilesTool, MakeDirectoryTool, BashTool, WebFetchTool, ImageAnalyzeTool, AudioTranscribeTool, PdfReadTool, PdfMetadataTool, PdfRenderPageTool, PdfExtractTablesTool, ToolRegistry, createBuiltinToolRegistry } from './tools';
 export { PermissionEngine } from './permissions/engine';
 export { assembleSystemContext, assembleToolSchemas, assembleUserContext, buildInitialMessages, estimateTokenCount } from './context/assembly';
-export { applyBudgetReduction, applySnip, applyAutoCompact, compactIfNeeded, validateCompactionSummary, DEFAULT_COMPACTION_CONFIG } from './context/compaction';
+export { applyBudgetReduction, applySnip, applyAutoCompact, compactIfNeeded, validateCompactionSummary, DEFAULT_COMPACTION_CONFIG, COMPACTION_STRATEGIES, isCompactionBoundary, AUTO_COMPACT_BOUNDARY_PREFIX } from './context/compaction';
+export type { CompactionStrategy } from './context/compaction';
 export { SessionStorage } from './persistence/sessionStorage';
 export { resumeSession, forkSession, getLatestSession } from './persistence/resume';
 export { createContinuityCheckpoint } from './persistence/continuity';
+export { classifyConfidenceMode, DEFAULT_REVIEW_THRESHOLD } from './governed/confidenceMode';
+export type { ConfidenceMode, ConfidenceModeSignals, ConfidenceModeResult } from './governed/confidenceMode';
+export { buildWorkingMemory } from './governed/workingMemory';
+export type { WorkingMemory, WorkingMemoryExtras } from './governed/workingMemory';
+export { selfCritique, DEFAULT_STALE_SOURCE_MS } from './governed/selfCritique';
+export type { SelfCritiqueInput, SelfCritiqueResult, SelfCritiqueFinding, SelfCritiqueStatus } from './governed/selfCritique';
+export { governAnswer } from './governed/governedAnswer';
+export type { GovernedAnswer, GovernedAnswerInput, BrainUpdateProposal } from './governed/governedAnswer';
+export {
+  initReviewQueue,
+  enqueueReviewItem,
+  listReviewItems,
+  resolveReviewItem,
+  enqueueFromGoverned,
+  getGovernanceMetrics,
+} from './governed/reviewQueue';
+export type { ReviewItem, ReviewItemKind, ReviewItemStatus, EnqueueReviewInput, GovernanceMetrics } from './governed/reviewQueue';
+export { initReplayConsumer, readReplayCandidates, consumeReplayCandidates } from './governed/replayConsumer';
+export type { ReplayCandidate } from './governed/replayConsumer';
+export { runReplayCandidates } from './governed/replayRunner';
+export type { ReplayRunResult, RunReplayOptions } from './governed/replayRunner';
+export { initReplayLedger, appendReplayLedgerEntry, readReplayLedger } from './governed/replayLedger';
+export type { ReplayLedgerEntry } from './governed/replayLedger';
 export { rebuildSemanticMemory, searchSemanticMemory } from './persistence/semanticMemory';
 export { getSessionSearchIndexStatus, rebuildSessionSearchIndex, rebuildSessionSearchIndexWithMetadata, searchSessions } from './persistence/sessionSearchIndex';
 export type { SessionSearchEntry, SessionSearchIndexFile, SessionSearchIndexMetadata, SessionSearchIndexStatus, SessionSearchResult } from './persistence/sessionSearchIndex';
@@ -32,6 +58,17 @@ export { buildContextPackage, buildRouteExplanation, formatRouteExplanation } fr
 export type { ContextPackage, ContextPackageItem, RouteExplanation } from './mycelium/contextPackage';
 export { heuristicVerifier } from './mycelium/verifier';
 export type { VerifierInput, VerifierResult } from './mycelium/verifier';
+export { runPanel } from './verification/panel';
+export type { Signal, SignalAxis, SignalContext, SignalResult, PanelConfig, PanelResult, PerSignalReport, PerAxisReport } from './verification/panel';
+export { BUILTIN_SIGNALS, outputValidationSignal, testResultsSignal, lintErrorsSignal, schemaCheckSignal, toolSuccessSignal, safetyHardCheckSignal } from './verification/builtinSignals';
+export { planSurgicalRepair, planSurgicalRepairForChecks } from './verification/critic';
+export type { SurgicalRepairOptions, SurgicalRepairPlan, RepairableCheck } from './verification/critic';
+export { writeMetricsJson, aggregatePanels } from './verification/metrics';
+export type { BenchmarkRunMetrics, BenchmarkTaskMetrics } from './verification/metrics';
+export { resolveModelByRole, loadModelsConfig, LOOP_ROLES } from './models/roleRouting';
+export type { LoopRole, ModelsConfig, ResolveModelByRoleOptions, ResolveModelByRoleResult } from './models/roleRouting';
+export { createSubagentWorktree } from './agents/worktree';
+export type { CreateSubagentWorktreeOptions, SubagentWorktreeHandle, SubagentWorktreeFailure, SubagentWorktreeResult } from './agents/worktree';
 export { BUILTIN_MODEL_CATALOG, getModelCatalog, getModelCatalogCacheStatus, listCatalogModels, readModelCatalogCache, validateModelCatalogManifest, writeModelCatalogCache } from './models/modelCatalog';
 export type { GetModelCatalogOptions, ModelCatalogCacheStatus, ModelCatalogManifest, ModelCatalogModel, ModelCatalogProvider } from './models/modelCatalog';
 export { ModelRegistry, BUILTIN_MODEL_REGISTRY } from './models/modelRegistry';
@@ -51,8 +88,8 @@ export type { ServiceCommandType, ExtractedCommand, CommandExtractionResult, Sta
 export { DEFAULT_EXECUTORS, registerDefaultExecutors } from './services/workerExecutors';
 export { discoverExtensionManifests } from './extensibility/extensionManifest';
 export type { ExtensionManifest, ExtensionManifestKind } from './extensibility/extensionManifest';
-export { AgentTool, appendSubagentRoutingMetric, createSubagentTool, listSubagentRoutingMetrics, runSubagent, resolveSubagentConfig } from './agents/subagent';
-export type { SubagentRoutingMetric } from './agents/subagent';
+export { AgentTool, appendSubagentRoutingMetric, createSubagentTool, createSubAgentToolsFromDefinition, DEFAULT_SUBAGENT_MAX_DEPTH, listSubagentRoutingMetrics, renderSubAgentPrompt, runSubagent, resolveSubagentConfig } from './agents/subagent';
+export type { SubAgentToolFactoryDeps, SubagentRoutingMetric } from './agents/subagent';
 export { HELPER_AGENT_PRESETS, calibrateModelRoutingPolicy, createHelperAgentConfig, getHelperAgentPreset, selectModelForTask, summarizeRoutingMetrics } from './agents/modelRouting';
 export type { HelperAgentPreset, HelperTaskType, ModelRoutingCalibration, ModelRoutingDecision, ModelRoutingInput, ModelRoutingPolicy, ModelTier, RoutingMetricBucket, RoutingMetricInput, RoutingMetricsSummary, TaskRisk } from './agents/modelRouting';
 export { appendLearningCandidate, extractLearningCandidate, getLearningCandidateProvenance, listLearningCandidateReviews, listLearningCandidates, listReviewedLearningCandidates, promoteLearningCandidate, reviewLearningCandidate } from './learning/sessionLearning';
@@ -61,6 +98,8 @@ export { appendEvalTraceExample, createEvalTraceExample, createOutputValidationT
 export type { EvalTraceExample, EvalTraceOptions, EvalTraceRun, EvalTraceRunResult, EvalTraceRunTrend, OutputValidationEvalRunOptions, OutputValidationRunTrend, OutputValidationSelectionSource, OutputValidationTrendExport, ReplayEvalActuals, ReplayEvalOptions, ReplayEvalRunOptions, ReplayEvalSourceLinks, TraceSnapshot } from './learning/evalTrace';
 export { loadSkillsDir, parseSkillFile, matchSkillTrigger } from './extensibility/skillLoader';
 export { HookPipeline } from './extensibility/hookPipeline';
+export { renderTemplate, renderTemplateDetailed } from './prompts/template';
+export type { RenderResult, TemplateContext, TemplateValue } from './prompts/template';
 export type { LoopConfig, LoopEvent, OutputValidationEvent, Tool, ToolResult, ToolCall, PermissionRule, PermissionMode, SessionEvent, SessionMeta, ContinuityCheckpoint, Hook, HookContext, HookResult } from './types';
 
 // ─── Promise Ledger ─────────────────────────────────────────────────
@@ -91,7 +130,8 @@ export type { HeartbeatAction, HeartbeatActionResult, HeartbeatRunRecord, Identi
 
 // ─── Custom Agents ──────────────────────────────────────────────────
 export { BUILTIN_AGENT_ROLES, loadAgentDefinitions, parseAgentFile, resolveAgentDefinition, scanAgentDefinitions, writeCustomAgent } from './agents/agentLoader';
-export type { AgentDefinition, AgentLoadDiagnostic, AgentDirectoryScan, AgentRole as CustomAgentRole, CreateCustomAgentInput } from './agents/agentLoader';
+export type { AgentDefinition, AgentLoadDiagnostic, AgentDirectoryScan, AgentRole as CustomAgentRole, CreateCustomAgentInput, SubAgentRef } from './agents/agentLoader';
+export { AGENT_ID_PATTERN, assertValidAgentId, isValidAgentId, requireAgentDefinition, UnknownAgentError } from './agents/agentId';
 
 // ─── Triggers ───────────────────────────────────────────────────────
 export { TriggerScheduler, loadTriggers, normalizeEnvelope, saveTriggers } from './services/triggerScheduler';
@@ -102,8 +142,24 @@ export { classifyIntent, logConciergeDecision, readConciergeLog } from './servic
 export type { ConciergeLogEntry, TriageOptions, TriageResult } from './services/concierge';
 
 // ─── Audit Hook ─────────────────────────────────────────────────────
-export { auditFilePath, createAuditHooks, readAuditLog, renderRecentAuditForPrompt } from './permissions/audit';
+export { appendAuditEntry, auditFilePath, createAuditHooks, readAuditLog, renderRecentAuditForPrompt } from './permissions/audit';
 export type { AuditEntry, AuditHookOptions, RenderRecentAuditOptions } from './permissions/audit';
+
+// ─── Shell Risk Classifier ──────────────────────────────────────────
+export { classifyShellCommand, mergeRules, splitCommandSegments } from './permissions/shellRiskClassifier';
+export type { RiskClassification, RiskTier } from './permissions/shellRiskClassifier';
+export { DEFAULT_DANGEROUS_RULES, DEFAULT_SAFE_RULES, DEFAULT_SHELL_RULES } from './permissions/defaultShellRules';
+export type { ShellRule } from './permissions/defaultShellRules';
+export { createShellRiskHooks, resolveShellRules } from './permissions/shellRiskHook';
+export type { ShellRiskHookOptions } from './permissions/shellRiskHook';
+
+// ─── Job Ledger ─────────────────────────────────────────────────────
+export { collectRunningEntries, completeJob, DEFAULT_STALE_AFTER_MS, heartbeatJob, jobLedgerPath, listOrphanedRuns, readLedger, recoverOrphanedJobs, startJob } from './automation/jobLedger';
+export type { LedgerEvent, LedgerJobKind, LedgerJobStatus, OrphanedEntry, RecoverOrphanedJobsOptions, RunningEntry, StartedJob, StartJobInput } from './automation/jobLedger';
+
+// ─── Session View Snapshot ──────────────────────────────────────────
+export { createSessionViewEmitter, DEFAULT_RECENT_EVENT_LIMIT, DEFAULT_SESSION_VIEW_THROTTLE_MS, resolveSessionViewThrottleMs } from './web/snapshotEmitter';
+export type { BroadcastFn, RecentEvent, SessionView, SessionViewEmitter, SessionViewEmitterOptions, SubscribeFn } from './web/snapshotEmitter';
 
 // ─── Docker Sandbox ─────────────────────────────────────────────────
 export { createDockerExecTool } from './tools/dockerExecTool';
@@ -117,10 +173,20 @@ export { clearSquadForSession, getSquadForSession, resolveSessionSquad, setSquad
 // ─── Identity Layer ─────────────────────────────────────────────────
 export { deleteStructuredEntry, exportIdentity, importIdentity, queryStructured, readIdentityFile, readIdentitySnapshot, readStructuredStore, renderIdentityForPrompt, runIdentityGc, upsertStructuredEntry, writeIdentityFile } from './services/identity';
 export type { IdentityExport, IdentityFileName, IdentityGcOptions, IdentityGcSummary, IdentitySnapshot, ImportIdentityOptions, ImportIdentitySummary, StructuredEntry, StructuredStore, UpsertStructuredInput } from './services/identity';
+export { captureIdentitySnapshot, listIdentityHistory, loadIdentityHistory, restoreIdentityFromHistory } from './services/identityHistory';
+export type { IdentitySnapshotMeta, IdentitySnapshotRecord } from './services/identityHistory';
+export { acceptSoulProposal, applyUserProposal, discardSoulProposal, parseProposalResponse, proposeSoulUpdate, proposeUserUpdate, readSoulProposal } from './services/identityProposals';
+export type { IdentityProposal, SoulProposalRecord } from './services/identityProposals';
+export { readIdentityAutoUpdateConfig, runIdentityAutoUpdateTick, writeIdentityAutoUpdateConfig } from './services/identityAutoUpdate';
+export type { IdentityAutoUpdateConfig, IdentityAutoUpdateDeps, IdentityAutoUpdateResult } from './services/identityAutoUpdate';
+export { gatherIdentityObservations } from './services/identityObservations';
+export type { ObservationsOptions, ObservationsResult } from './services/identityObservations';
+export { IdentityAutoUpdateScheduler } from './services/identityAutoUpdateScheduler';
+export type { IdentityAutoUpdateSchedulerOptions } from './services/identityAutoUpdateScheduler';
 
 // ─── Subagent Orchestrator ──────────────────────────────────────────
-export { orchestrate, mergeResults, getAgentRoleDefaults } from './agents/orchestrator';
-export type { AgentRole, AgentBudget, WorkstreamTask, WorkstreamResult, OrchestrationResult } from './agents/orchestrator';
+export { orchestrate, mergeResults, mergeVerified, attachVerification, verifyCodeBranch, getAgentRoleDefaults } from './agents/orchestrator';
+export type { AgentRole, AgentBudget, WorkstreamTask, WorkstreamResult, OrchestrationResult, BranchVerifier } from './agents/orchestrator';
 
 // ─── Code Intelligence ──────────────────────────────────────────────
 export { buildRepoGraph, analyzeImpact, summarizeRepo, saveRepoGraph, loadRepoGraph } from './core/codeIntelligence';

@@ -194,6 +194,20 @@ export const BUILTIN_CONNECTOR_CONTRACTS: ConnectorReadinessContract[] = [
     ],
   },
   {
+    id: 'microsoft',
+    label: 'Microsoft 365 Mail and Calendar',
+    purpose: 'Read Outlook mailbox and calendar data for briefs, then optionally draft messages or calendar changes after review.',
+    requiredSecrets: ['MICROSOFT_CLIENT_ID', 'MICROSOFT_CLIENT_SECRET'],
+    requiredSettings: ['allowed account emails', 'OAuth scope allowlist'],
+    requiredControls: ['explicit-grant', 'audit-log', 'redaction', 'allowlist', 'human-confirmation', 'kill-switch'],
+    readinessChecks: ['OAuth token present', 'read scopes only by default', 'account allowlist configured', 'draft mode available for writes'],
+    operations: [
+      { name: 'mail.search', mode: 'read', requiredControls: ['allowlist', 'redaction', 'audit-log'], evidence: ['query', 'message ids', 'redacted summary'] },
+      { name: 'calendar.list', mode: 'read', requiredControls: ['allowlist', 'redaction', 'audit-log'], evidence: ['calendar id', 'time window', 'event ids'] },
+      { name: 'mail.draft', mode: 'draft', requiredControls: ['allowlist', 'redaction', 'human-confirmation', 'audit-log'], evidence: ['draft id', 'recipient allowlist match', 'preview hash'] },
+    ],
+  },
+  {
     id: 'github',
     label: 'GitHub',
     purpose: 'Read pull request diffs and checks, then optionally prepare comments after human approval.',
@@ -274,6 +288,7 @@ export const BUILTIN_MESSAGE_INGRESS_POLICY: MessageIngressPolicy = {
 
 export const CONNECTOR_CONTRACT_FIXTURES: ConnectorContractFixture[] = [
   { connectorId: 'google', requiredOperationModes: ['read', 'draft'], requiredControls: ['explicit-grant', 'audit-log', 'allowlist', 'redaction', 'human-confirmation', 'kill-switch'] },
+  { connectorId: 'microsoft', requiredOperationModes: ['read', 'draft'], requiredControls: ['explicit-grant', 'audit-log', 'allowlist', 'redaction', 'human-confirmation', 'kill-switch'] },
   { connectorId: 'github', requiredOperationModes: ['read', 'draft'], requiredControls: ['explicit-grant', 'audit-log', 'allowlist', 'dry-run', 'human-confirmation', 'kill-switch'] },
   { connectorId: 'notion', requiredOperationModes: ['read', 'draft'], requiredControls: ['explicit-grant', 'audit-log', 'allowlist', 'dry-run', 'human-confirmation', 'rollback', 'kill-switch'] },
   { connectorId: 'telegram', requiredOperationModes: ['ingest', 'notify'], requiredControls: ['explicit-grant', 'audit-log', 'allowlist', 'redaction', 'human-confirmation', 'kill-switch'] },

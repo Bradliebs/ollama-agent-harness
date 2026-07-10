@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { prepareAutomationRun, type AutomationPolicyContext, type AutomationRunResult } from './runner';
+import { completeJob, startJob, type LedgerJobKind } from './jobLedger';
 
 export type AutomationScheduleKind = 'once' | 'interval' | 'cron';
 
@@ -270,13 +271,30 @@ export async function updateAutomationJob(projectDir: string, jobId: string, inp
   });
 }
 
-export async function executeDueJobs(projectDir: string, policy: AutomationPolicyContext = {}, now = new Date()): Promise<DueJobResult[]> {
+export async function executeDueJobs(
+  projectDir: string,
+  policy: AutomationPolicyContext = {},
+  now = new Date(),
+  ledgerKind: LedgerJobKind = 'manual',
+): Promise<DueJobResult[]> {
   const due = await listDueAutomationJobs(projectDir, now);
   const results: DueJobResult[] = [];
   for (const job of due) {
-    const run = await prepareAutomationRun(projectDir, job, now, policy);
-    const markedJob = await markAutomationJobRun(projectDir, job.id, { success: true, outputPath: run.outputPath }, now);
-    results.push({ jobId: job.id, name: job.name, run, markedJob });
+    const ledgerEntry = await startJob(projectDir, { jobId: job.id, name: job.name, kind: ledgerKind }, now);
+    try {
+      const run = await prepareAutomationRun(projectDir, job, now, policy);
+      const markedJob = await markAutomationJobRun(projectDir, job.id, { success: true, outputPath: run.outputPath }, now);
+      await completeJob(projectDir, { jobId: job.id, runId: ledgerEntry.runId, success: true });
+      results.push({ jobId: job.id, name: job.name, run, markedJob });
+    } catch (error) {
+      await completeJob(projectDir, {
+        jobId: job.id,
+        runId: ledgerEntry.runId,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
   return results;
 }

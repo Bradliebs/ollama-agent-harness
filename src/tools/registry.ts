@@ -1,13 +1,14 @@
 import type { Tool, ToolPermissionCategory, ToolRiskLevel } from '../types';
 import { BashTool } from './bashTool';
-import { FileEditTool, FileReadTool, FileWriteTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool, MakeDirectoryTool } from './fileTools';
+import { FileEditTool, FileReadTool, FileWriteTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool, MakeDirectoryTool, AddWorkspacePathTool } from './fileTools';
 import { GrepTool } from './grepTool';
 import { AnalyzePatternsTool, ConsolidateTool, EvolveTool, ImproveSkillTool, PromotePatternTool, ReflectTool } from './learningTools';
-import { MemoryReadTool, MemoryWriteTool } from './memoryTools';
+import { MemoryReadTool, MemoryWriteTool, SemanticRecallTool } from './memoryTools';
 import { AudioTranscribeTool, ImageAnalyzeTool } from './multimodalTools';
 import { PdfExtractTablesTool, PdfMetadataTool, PdfReadTool, PdfRenderPageTool } from './pdfTool';
 import { CuratorPreviewTool } from './curatorTools';
 import { DocumentExportTool } from './documentTools';
+import { DocumentReadTool } from './documentReadTool';
 import { RagListIndexesTool, RagSearchTool } from './ragTools';
 import { CreateSkillTool, ListSkillsTool, SkillTool } from './skillTools';
 import { WebFetchTool } from './webFetchTool';
@@ -17,15 +18,19 @@ import { DesktopInputReplayTool } from './desktopInputTools';
 import { BrowserBookmarksTool, BrowserNavigateTool, BrowserClickTool, BrowserFillTool, BrowserReadTool, BrowserScreenshotTool, BrowserCloseTool } from './browserTools';
 import { InstallSkillTool } from './skillInstallTool';
 import { ImportSkillTool } from './skillImportTool';
-import { EmailDraftTool, EmailSendTool } from './emailTools';
+import { EmailDraftTool, EmailSendTool, EmailInboxTool, EmailDeleteTool } from './emailTools';
 import { SlackNotifyTool } from './slackTools';
 import { TelegramNotifyTool } from './telegramTools';
 import { createRecallTool } from './recallTool';
+import { createCodeGraphTool } from './codeGraphTool';
+import { createShoppingListTool } from './shoppingListTool';
+import { createReadingListTool } from './readingListTool';
 import { CalendarReadTool, CalendarWriteTool } from './calendarTools';
 import { createMcpToolEntries } from './mcpTools';
 import { TaskManageTool, TaskProgressTool } from './taskTools';
 import { CreateCustomAgentTool } from './agentTools';
 import { SquadInspectTool } from './squadTools';
+import { ListAgentsTool, DeleteAgentTool, CreateSquadTool, UpdateSquadTool, DeleteSquadTool, SquadRouteTool } from './agentManagementTools';
 import { createDockerExecTool } from './dockerExecTool';
 export interface ToolRegistryEntry {
   tool: Tool;
@@ -82,6 +87,9 @@ export function createToolRegistry(projectDir?: string): ToolRegistry {
   if (projectDir) {
     for (const entry of createMcpToolEntries(projectDir)) registry.register(entry);
     registry.register({ tool: createRecallTool(projectDir), toolset: 'memory', source: 'runtime', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false });
+    registry.register({ tool: createCodeGraphTool(projectDir), toolset: 'code-graph', source: 'runtime', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false });
+    registry.register({ tool: createShoppingListTool(projectDir), toolset: 'personal', source: 'runtime', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false });
+    registry.register({ tool: createReadingListTool(projectDir), toolset: 'personal', source: 'runtime', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false });
   }
   return registry;
 }
@@ -95,6 +103,7 @@ export const BUILTIN_TOOL_ENTRIES: ToolRegistryEntry[] = [
   { tool: MakeDirectoryTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'write', canDryRun: false },
   { tool: ListFilesTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
   { tool: ListUploadsTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
+  { tool: AddWorkspacePathTool, toolset: 'files', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
   { tool: BashTool, toolset: 'shell', source: 'builtin', enabledByDefault: true, riskLevel: 'high', permissionCategory: 'shell', canDryRun: false },
   { tool: WebFetchTool, toolset: 'web', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'network', canDryRun: false },
   { tool: WebSearchTool, toolset: 'web', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'network', canDryRun: false },
@@ -105,6 +114,7 @@ export const BUILTIN_TOOL_ENTRIES: ToolRegistryEntry[] = [
   { tool: CreateSkillTool, toolset: 'skills', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'skills', canDryRun: false },
   { tool: MemoryWriteTool, toolset: 'memory', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false },
   { tool: MemoryReadTool, toolset: 'memory', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false },
+  { tool: SemanticRecallTool, toolset: 'memory', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false },
   { tool: ReflectTool, toolset: 'learning', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'learning', canDryRun: false },
   { tool: AnalyzePatternsTool, toolset: 'learning', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'learning', canDryRun: false },
   { tool: PromotePatternTool, toolset: 'learning', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'learning', canDryRun: false },
@@ -133,14 +143,23 @@ export const BUILTIN_TOOL_ENTRIES: ToolRegistryEntry[] = [
   { tool: ImportSkillTool, toolset: 'skills', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'skills', canDryRun: false },
   { tool: EmailDraftTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'write', canDryRun: false },
   { tool: EmailSendTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'network', canDryRun: false },
+  { tool: EmailInboxTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'low', permissionCategory: 'network', canDryRun: false },
+  { tool: EmailDeleteTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'network', canDryRun: true },
   { tool: SlackNotifyTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'network', canDryRun: false },
   { tool: TelegramNotifyTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'network', canDryRun: false },
   { tool: CalendarReadTool, toolset: 'communications', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
   { tool: CalendarWriteTool, toolset: 'communications', source: 'builtin', enabledByDefault: false, riskLevel: 'medium', permissionCategory: 'write', canDryRun: false },
   { tool: DocumentExportTool, toolset: 'documents', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'write', canDryRun: false },
+  { tool: DocumentReadTool, toolset: 'documents', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
   { tool: TaskManageTool, toolset: 'tasks', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false },
   { tool: TaskProgressTool, toolset: 'tasks', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'memory', canDryRun: false },
   { tool: CreateCustomAgentTool, toolset: 'agents', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'skills', canDryRun: false },
+  { tool: ListAgentsTool, toolset: 'agents', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
+  { tool: DeleteAgentTool, toolset: 'agents', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'skills', canDryRun: false },
+  { tool: CreateSquadTool, toolset: 'agents', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'skills', canDryRun: false },
+  { tool: UpdateSquadTool, toolset: 'agents', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'skills', canDryRun: false },
+  { tool: DeleteSquadTool, toolset: 'agents', source: 'builtin', enabledByDefault: true, riskLevel: 'medium', permissionCategory: 'skills', canDryRun: false },
+  { tool: SquadRouteTool, toolset: 'agents', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
   { tool: SquadInspectTool, toolset: 'agents', source: 'builtin', enabledByDefault: true, riskLevel: 'low', permissionCategory: 'read', canDryRun: false },
   { tool: createDockerExecTool(), toolset: 'shell', source: 'builtin', enabledByDefault: false, riskLevel: 'high', permissionCategory: 'shell', canDryRun: false },
 ];

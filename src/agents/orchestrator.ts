@@ -10,6 +10,8 @@
 import type { Tool } from '../types';
 import type { IChatClient } from '../core/chatClient';
 import { runSubagent, type SubagentConfig } from './subagent';
+import { verifyCode, type VerificationStatus } from '../core/doneStateVerifier';
+import { planVerifiedMerge, type BranchVerification } from './verifiedMerge';
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -48,6 +50,12 @@ export interface WorkstreamResult {
   success: boolean;
   duration_ms: number;
   error?: string;
+  /**
+   * Verification verdict for this branch's work, if one was produced. Distinct
+   * from `success`, which only means the branch ran to completion. The verified
+   * merge path (mergeVerified) gates on this, not on `success`.
+   */
+  verification?: VerificationStatus;
 }
 
 export interface OrchestrationResult {
@@ -57,6 +65,55 @@ export interface OrchestrationResult {
   tasks_succeeded: number;
   tasks_failed: number;
 }
+
+// ─── Branch verification ──────────────────────────────────
+
+/**
+ * Produces a verification verdict for a completed branch, or undefined when the
+ * branch's work cannot be judged. Injected so the verdict is earned by a real
+ * check rather than assumed — the caller decides how a branch is proven.
+ */
+export type BranchVerifier = (
+  result: WorkstreamResult,
+  projectDir?: string,
+) => Promise<VerificationStatus | undefined>;
+
+/**
+ * Attach a verification verdict to a branch result, if a verifier is supplied.
+ * Only completed branches are verified — a failed/empty branch has nothing to
+ * verify and won't merge regardless. A verifier that returns undefined or throws
+ * leaves the verdict absent: "proof unobtainable" is not "verified pass", so the
+ * branch stays unmergeable under mergeVerified. Verification never crashes a branch.
+ */
+export async function attachVerification(
+  result: WorkstreamResult,
+  verify: BranchVerifier | undefined,
+  projectDir?: string,
+): Promise<WorkstreamResult> {
+  if (!verify || !result.success) return result;
+  try {
+    const verification = await verify(result, projectDir);
+    return verification ? { ...result, verification } : result;
+  } catch {
+    return result;
+  }
+}
+
+const CODE_PRODUCING_ROLES: ReadonlySet<AgentRole> = new Set(['coder', 'debugger']);
+
+/**
+ * Opt-in default BranchVerifier: runs the real code verifier against projectDir
+ * for code-producing roles only. Returns undefined — no verdict — for non-code
+ * roles or when no projectDir is available, so verdicts are never fabricated for
+ * work the verifier cannot actually judge. NOTE: verifyCode inspects repository
+ * state, not an isolated per-branch diff; use with sandboxed branches (or
+ * sequential code branches) for the verdict to attribute to a single branch.
+ */
+export const verifyCodeBranch: BranchVerifier = async (result, projectDir) => {
+  if (!projectDir || !CODE_PRODUCING_ROLES.has(result.role)) return undefined;
+  const verification = await verifyCode({ projectDir, quick: true });
+  return verification.overall;
+};
 
 // ─── Role presets ───────────────────────────────────────────────────
 
@@ -123,6 +180,7 @@ export async function orchestrate(
   parentClient: IChatClient,
   availableTools: Tool[],
   projectDir?: string,
+  verify?: BranchVerifier,
 ): Promise<OrchestrationResult> {
   const started = Date.now();
   const results = new Map<string, WorkstreamResult>();
@@ -146,7 +204,7 @@ export async function orchestrate(
 
     // Execute ready tasks in parallel
     const batch = await Promise.allSettled(
-      ready.map((task) => executeTask(task, parentClient, availableTools, results, projectDir)),
+      ready.map((task) => executeTask(task, parentClient, availableTools, results, projectDir, verify)),
     );
 
     for (let i = 0; i < ready.length; i++) {
@@ -169,8 +227,12 @@ export async function orchestrate(
   }
 
   const allResults = tasks.map((t) => results.get(t.id)!);
+  // Populate merged_output: when a verifier is supplied, merge only proven
+  // branches (mergeVerified); otherwise fall back to the completion-based merge.
+  const merged_output = verify ? mergeVerified(allResults) : mergeResults(allResults);
   return {
     results: allResults,
+    merged_output,
     total_duration_ms: Date.now() - started,
     tasks_succeeded: allResults.filter((r) => r.success).length,
     tasks_failed: allResults.filter((r) => !r.success).length,
@@ -183,6 +245,7 @@ async function executeTask(
   availableTools: Tool[],
   priorResults: Map<string, WorkstreamResult>,
   projectDir?: string,
+  verify?: BranchVerifier,
 ): Promise<WorkstreamResult> {
   const roleDefaults = ROLE_DEFAULTS[task.role];
   const budget: AgentBudget = { ...roleDefaults.budget, ...task.budget };
@@ -207,23 +270,28 @@ async function executeTask(
   };
 
   const started = Date.now();
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
-    const timeoutPromise = new Promise<string>((_, reject) =>
-      setTimeout(() => reject(new Error(`Agent budget exceeded: ${budget.maxTimeMs}ms`)), budget.maxTimeMs),
-    );
+    const timeoutPromise = new Promise<string>((_, reject) => {
+      timeoutHandle = setTimeout(
+        () => reject(new Error(`Agent budget exceeded: ${budget.maxTimeMs}ms`)),
+        budget.maxTimeMs,
+      );
+    });
 
     const output = await Promise.race([
       runSubagent(config, enrichedPrompt, parentClient, availableTools),
       timeoutPromise,
     ]);
 
-    return {
+    const base: WorkstreamResult = {
       id: task.id,
       role: task.role,
       output,
       success: output.length > 0,
       duration_ms: Date.now() - started,
     };
+    return attachVerification(base, verify, projectDir);
   } catch (err: unknown) {
     return {
       id: task.id,
@@ -233,6 +301,11 @@ async function executeTask(
       duration_ms: Date.now() - started,
       error: err instanceof Error ? err.message : String(err),
     };
+  } finally {
+    // Clear the budget timer whichever way the race settled. Without this the
+    // timeout handle survives until budget.maxTimeMs elapses, leaking an open
+    // handle that keeps Jest (and any host process) alive after work is done.
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
 }
 
@@ -244,4 +317,36 @@ export function mergeResults(results: WorkstreamResult[]): string {
   return successful
     .map((r) => `## ${r.role} (${r.id})\n\n${r.output}`)
     .join('\n\n---\n\n');
+}
+
+/**
+ * Verified merge: include a branch's output ONLY if it completed AND its work
+ * verified `pass`. Unlike mergeResults (which merges on `success`, i.e. mere
+ * completion), this gates on the verification verdict via planVerifiedMerge —
+ * speculative parallel work is not merged without proof. Rejected branches are
+ * listed with their reason so the exclusion is visible rather than silent.
+ */
+export function mergeVerified(results: WorkstreamResult[]): string {
+  const branches: BranchVerification[] = results.map((r) => ({
+    id: r.id,
+    completed: r.success,
+    verification: r.verification,
+  }));
+  const plan = planVerifiedMerge(branches);
+
+  const byId = new Map(results.map((r) => [r.id, r]));
+  const merged = plan.mergeable
+    .map((d) => byId.get(d.id)!)
+    .map((r) => `## ${r.role} (${r.id})\n\n${r.output}`)
+    .join('\n\n---\n\n');
+
+  if (plan.rejected.length === 0) {
+    return merged || '(no verified workstreams to merge)';
+  }
+
+  const rejectedNote = plan.rejected
+    .map((d) => `- ${d.id}: ${d.reason}`)
+    .join('\n');
+  const header = merged || '(no verified workstreams to merge)';
+  return `${header}\n\n---\n\n### Excluded (unverified)\n${rejectedNote}`;
 }

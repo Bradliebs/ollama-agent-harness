@@ -22,6 +22,10 @@ export interface EvidenceCommandSummary {
   command: string;
   success?: boolean;
   outputSummary?: string;
+  // Structured proof parsed from the command's own output. Present only
+  // when the command emitted a recognisable test summary (e.g. Jest), so
+  // evidence can show "11 passed, 1 failed" rather than a bare boolean.
+  testCounts?: { passed: number; failed: number; total: number };
 }
 
 export interface EvidenceMyceliumSummary {
@@ -30,6 +34,9 @@ export interface EvidenceMyceliumSummary {
   route?: string[];
   protectedEdges?: number;
   selectionReasons?: Record<string, string>;
+  /** Stable id of the episode recorded for this turn. Lets the client bind
+   * a thumbs vote to the exact route it rated (see /api/mycelium/feedback). */
+  episodeId?: string;
 }
 
 export interface EvidenceRecoverySummary {

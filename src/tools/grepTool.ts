@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
+import { resolveProjectPath } from './pathResolution';
 
 const MAX_SEARCH_FILE_BYTES = 1_000_000;
 const MAX_MATCHES = 200;
@@ -119,14 +120,6 @@ async function searchFile(filePath: string, pattern: string, results: string[]):
   } catch {
     // Binary file or unreadable — skip
   }
-}
-
-function resolveProjectPath(value: unknown): string | null {
-  const raw = String(value ?? '');
-  const resolved = path.resolve(raw);
-  const relative = path.relative(process.cwd(), resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  return resolved;
 }
 
 function matchGlob(name: string, glob: string): boolean {

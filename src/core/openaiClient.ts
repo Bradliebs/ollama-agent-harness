@@ -1,7 +1,8 @@
 import type { Message, Tool, ToolCall } from 'ollama';
 import { appendFileSync } from 'fs';
-import type { ChatResult, IChatClient, StreamChunk, TokenUsage } from './chatClient';
+import type { ChatResult, IChatClient, ModelLocality, StreamChunk, TokenUsage } from './chatClient';
 import { liftInlineToolCalls } from './ollamaClient';
+import { recordSwallowed } from '../observability/silentFailureSink';
 
 /**
  * OpenAI Chat Completions-compatible backend.
@@ -109,7 +110,7 @@ export class OpenAIClient implements IChatClient {
 
   /** Move to the next key in the pool. No-op when only one key configured. */
   private rotateKey(): void {
-    if (this.apiKeys.length > 1) this.keyIndex = (this.keyIndex + 1) % this.apiKeys.length;
+    if (this.apiKeys.length > 1) this.keyIndex++;
   }
 
   async chat(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): Promise<ChatResult> {
@@ -128,7 +129,7 @@ export class OpenAIClient implements IChatClient {
    * accumulated by index because OpenAI streams them as fragmented JSON
    * over multiple chunks (`name` arrives once, `arguments` builds up).
    */
-  async *chatStream(messages: Message[], tools?: Tool[]): AsyncGenerator<StreamChunk> {
+  async *chatStream(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): AsyncGenerator<StreamChunk> {
     const body: Record<string, unknown> = {
       model: this.model,
       messages: toOpenAIMessages(messages),
@@ -175,8 +176,8 @@ export class OpenAIClient implements IChatClient {
     const decoder = new TextDecoder();
     let buffer = '';
 
+    const reader = (response.body as unknown as ReadableStream<Uint8Array>).getReader();
     try {
-      const reader = (response.body as unknown as ReadableStream<Uint8Array>).getReader();
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -222,6 +223,7 @@ export class OpenAIClient implements IChatClient {
       }
     } finally {
       clearTimeout(timeoutHandle);
+      reader.releaseLock();
     }
 
     // Emit a final done chunk carrying any accumulated tool calls.
@@ -272,6 +274,10 @@ export class OpenAIClient implements IChatClient {
 
   getModel(): string {
     return this.model;
+  }
+
+  getLocality(): ModelLocality {
+    return 'cloud';
   }
 
   private async invoke(
@@ -477,9 +483,17 @@ function fromOpenAIToolCall(tc: { id?: string; function: { name: string; argumen
       const maybe = JSON.parse(tc.function.arguments);
       if (maybe && typeof maybe === 'object' && !Array.isArray(maybe)) {
         parsedArgs = maybe as Record<string, unknown>;
+      } else {
+        recordSwallowed('openai.fromToolCall.nonObjectArgs', new Error('Tool call arguments did not parse to an object'), {
+          tool: tc.function.name,
+          raw: String(tc.function.arguments).slice(0, 200),
+        });
       }
-    } catch {
-      // OpenAI sometimes returns invalid JSON args; fall back to empty.
+    } catch (err) {
+      recordSwallowed('openai.fromToolCall.parseError', err, {
+        tool: tc.function.name,
+        raw: String(tc.function.arguments).slice(0, 200),
+      });
     }
   }
   return {

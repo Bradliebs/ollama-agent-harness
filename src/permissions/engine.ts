@@ -1,7 +1,7 @@
 import type { PermissionRule, PermissionMode, PermissionResult, ToolCall } from '../types';
 import * as path from 'path';
 import { BUILTIN_TOOL_ENTRIES } from '../tools/registry';
-import { getAllowedExternalPaths } from '../tools/pathResolution';
+import { getAllowedExternalPaths, getAutonomousBuildTargets } from '../tools/pathResolution';
 import { KillSwitch } from './killSwitch';
 
 /**
@@ -45,14 +45,18 @@ const PROTECTED_EXTERNAL_EXTENSIONS = new Set(['.bat', '.cmd', '.cjs', '.js', '.
  * harmless to auto-approve under `acceptEdits`, and blocking them wastes
  * autonomous turns when an agent tries to record reflections or consolidate
  * memory between substantive tool calls.
+ *
+ * Exported (read-only by convention) so the IterationBudget refund logic
+ * in `queryLoop.ts` can recognise meta-only turns without forking the list.
  */
-const META_TOOLS = new Set([
+export const META_TOOLS = new Set([
   'reflect',
   'analyze_patterns',
   'promote_pattern',
   'consolidate',
   'evolve',
   'improve_skill',
+  'create_skill',
   'memory_write',
   'memory_read',
 ]);
@@ -244,9 +248,25 @@ function isProtectedExternalProgramPath(rawPath: string): boolean {
   if (isInsideOrEqualPath(target, process.cwd())) return false;
   const externalRoot = getAllowedExternalPaths().find((allowedPath) => isInsideOrEqualPath(target, allowedPath));
   if (!externalRoot) return false;
+  // An explicitly-designated autonomous build target authorises program-file
+  // writes inside it — the user chose this folder as the build destination, so
+  // producing code there is the point. Every OTHER allowed-external folder keeps
+  // the confirmation gate, so autonomy still cannot overwrite an unrelated
+  // project's executable files without an answerable confirmation.
+  if (getAutonomousBuildTargets().some((buildRoot) => isInsideOrEqualPath(target, buildRoot))) return false;
   const basename = path.basename(target).toLowerCase();
-  const extension = path.extname(target).toLowerCase();
-  return PROTECTED_EXTERNAL_FILENAMES.has(basename) || PROTECTED_EXTERNAL_EXTENSIONS.has(extension);
+  if (PROTECTED_EXTERNAL_FILENAMES.has(basename)) return true;
+  // Check every dotted suffix so that 'malware.bat.txt' or 'evil.tar.sh' is
+  // still treated as protected — a trailing-extension-only check (`.txt`)
+  // would let attackers chain extensions to bypass.
+  const segments = basename.split('.');
+  for (let i = 1; i < segments.length; i++) {
+    const ext = '.' + segments.slice(i).join('.');
+    const lastExt = '.' + segments[i];
+    if (PROTECTED_EXTERNAL_EXTENSIONS.has(ext)) return true;
+    if (PROTECTED_EXTERNAL_EXTENSIONS.has(lastExt)) return true;
+  }
+  return false;
 }
 
 function isInsideOrEqualPath(child: string, parent: string): boolean {

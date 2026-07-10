@@ -21,6 +21,44 @@ describe('BashTool safety guardrails', () => {
     expect(result.error).toContain('file_read/list_files');
   });
 
+  it('redirects unix-only commands on Windows with an actionable message', async () => {
+    // Pin the "spawn ls ENOENT" regression: previously `ls` (and cat,
+    // grep, etc.) would fall through to spawn and surface an opaque
+    // ENOENT. Agents would retry the same command, burn iterations, and
+    // never recover. The gate must name the right replacement tool.
+    if (process.platform !== 'win32') return;
+
+    const ls = await BashTool.execute({ command: 'ls -la' });
+    expect(ls.success).toBe(false);
+    expect(ls.error).toContain("'ls' is a Unix command not available on Windows");
+    expect(ls.error).toContain('list_files');
+
+    const cat = await BashTool.execute({ command: 'cat package.json' });
+    expect(cat.success).toBe(false);
+    expect(cat.error).toContain('file_read');
+
+    const grep = await BashTool.execute({ command: 'grep TODO src/index.ts' });
+    expect(grep.success).toBe(false);
+    expect(grep.error).toContain('grep tool');
+
+    const rm = await BashTool.execute({ command: 'rm foo.txt' });
+    expect(rm.success).toBe(false);
+    expect(rm.error).toContain('file_delete');
+  });
+
+  it('does not redirect when the executable is path-qualified (WSL/MSYS users opt in)', async () => {
+    if (process.platform !== 'win32') return;
+
+    // A path-qualified invocation will still fail to spawn here (the
+    // path doesn't exist), but it must NOT be intercepted by the
+    // unix-redirect gate — agents on WSL/MSYS legitimately point at
+    // their own ls. The spawn failure surfaces as the regular ENOENT
+    // path with whatever message the OS gives.
+    const result = await BashTool.execute({ command: 'C:/wsl/bin/ls' });
+    expect(result.success).toBe(false);
+    expect(result.error).not.toContain('Unix command not available');
+  });
+
   it('blocks shell control operators', async () => {
     const result = await BashTool.execute({ command: 'echo safe && whoami' });
 
@@ -296,5 +334,32 @@ describe('buildWindowsCmdInvocation', () => {
   it('quotes args containing cmd.exe metacharacters so cmd cannot reinterpret them', () => {
     expect(buildWindowsCmdInvocation('npm', ['run', 'build & deploy']))
       .toBe('npm run "build & deploy"');
+  });
+});
+
+import * as os from 'os';
+import { getProjectRoot, setProjectRoot } from './pathResolution';
+
+describe('BashTool subprocess working directory', () => {
+  it('spawns children in the project root, not the harness launch dir', async () => {
+    // Regression: subprocess outputs (e.g. Python wb.save('x.xlsx'),
+    // shell redirects) inherited process.cwd() — the harness repo root —
+    // and polluted it. The spawn must set cwd to getProjectRoot() so a
+    // relative write lands in the resolved workspace. Override the root to
+    // a temp dir so this differs from process.cwd() and the assertion is
+    // meaningful.
+    const original = getProjectRoot();
+    const tmp = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'bash-cwd-')));
+    try {
+      setProjectRoot(tmp);
+      const result = await BashTool.execute({
+        command: 'node -e "process.stdout.write(process.cwd())"',
+      });
+      expect(result.success).toBe(true);
+      expect(result.output).toContain(tmp);
+    } finally {
+      setProjectRoot(original);
+      await fsp.rm(tmp, { recursive: true, force: true });
+    }
   });
 });

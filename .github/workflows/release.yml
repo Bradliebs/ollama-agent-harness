@@ -58,6 +58,7 @@ jobs:
 
       - name: Validate
         run: |
+          npm run verify:versions
           npm run typecheck
           npm test -- --runInBand
           npm run build

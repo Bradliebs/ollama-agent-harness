@@ -38,7 +38,7 @@ describe('modelCatalog', () => {
 
     await expect(getModelCatalog(projectDir, { url: 'https://example.test/catalog.json', fetchJson: async () => { throw new Error('offline'); } })).resolves.toEqual(stale);
     const emptyProject = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-catalog-empty-'));
-    await expect(getModelCatalog(emptyProject)).resolves.toEqual(BUILTIN_MODEL_CATALOG);
+    await expect(getModelCatalog(emptyProject)).resolves.toEqual({ ...BUILTIN_MODEL_CATALOG, stale: true });
   });
 
   it('reports cache freshness', async () => {

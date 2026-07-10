@@ -13,6 +13,7 @@
 import type { Server as HttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { subscribeEventStream, type HarnessEvent } from '../persistence/eventStore';
+import { createSessionViewEmitter, type SessionViewEmitter } from './snapshotEmitter';
 
 export interface HarnessWsServer {
   wss: WebSocketServer;
@@ -41,6 +42,13 @@ export interface WsServerOptions {
    * original single-event semantics).
    */
   coalesceWindowMs?: number;
+  /**
+   * Throttle window for the SessionView snapshot channel (ms). When > 0,
+   * a coalesced `session_view` snapshot is broadcast at most every N ms
+   * alongside the raw event stream. 0 disables the snapshot channel
+   * entirely. Defaults to `HARNESS_SESSION_VIEW_THROTTLE_MS` env or 80.
+   */
+  sessionViewThrottleMs?: number;
 }
 
 const WS_PATH = '/ws';
@@ -105,6 +113,20 @@ export function attachWsServer(httpServer: HttpServer, options: WsServerOptions 
     }
   });
 
+  // Optional throttled SessionView snapshot channel. Broadcast alongside
+  // raw events so clients filter by `type: 'session_view'`. Off by default;
+  // enabled when caller passes a positive `sessionViewThrottleMs` or sets
+  // `HARNESS_SESSION_VIEW_THROTTLE_MS` env var.
+  const sessionViewThrottleMs = resolveSnapshotChannelThrottle(options.sessionViewThrottleMs);
+  let sessionViewEmitter: SessionViewEmitter | null = null;
+  if (sessionViewThrottleMs > 0) {
+    sessionViewEmitter = createSessionViewEmitter({
+      subscribe: subscribeEventStream,
+      broadcast: (message) => broadcastToClients(message),
+      throttleMs: sessionViewThrottleMs,
+    });
+  }
+
   function broadcastToClients(message: unknown): void {
     const payload = JSON.stringify(message);
     for (const client of clients.keys()) {
@@ -162,6 +184,10 @@ export function attachWsServer(httpServer: HttpServer, options: WsServerOptions 
 
   async function close(): Promise<void> {
     unsubscribe();
+    if (sessionViewEmitter) {
+      sessionViewEmitter.stop();
+      sessionViewEmitter = null;
+    }
     if (coalesceTimer) {
       clearTimeout(coalesceTimer);
       coalesceTimer = null;
@@ -186,4 +212,17 @@ export function attachWsServer(httpServer: HttpServer, options: WsServerOptions 
 function defaultBackpressureCheck(ws: WebSocket): boolean {
   // ws exposes bufferedAmount (bytes still in the kernel send buffer).
   return ws.bufferedAmount > SOCKET_BUFFER_LIMIT_BYTES;
+}
+
+// Snapshot channel is opt-in. Returns the throttle ms (>0 = enabled) or 0
+// (= disabled) based on caller option then env var. Default OFF preserves
+// the historical raw-event-only contract for existing wsServer clients.
+function resolveSnapshotChannelThrottle(explicit?: number): number {
+  if (explicit !== undefined) {
+    return Number.isFinite(explicit) && explicit >= 0 ? Math.floor(explicit) : 0;
+  }
+  const raw = process.env.HARNESS_SESSION_VIEW_THROTTLE_MS;
+  if (raw === undefined) return 0;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
 }

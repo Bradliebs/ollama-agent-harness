@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { appendRunEvidence, clearEvidenceAppendHooks, readRunEvidence, setEvidenceAppendHook, type StoredRunEvidence } from './evidenceStore';
+import { appendRunEvidence, clearEvidenceAppendHooks, inspectRunEvidence, readRunEvidence, readRunEvidenceDetailed, setEvidenceAppendHook, type StoredRunEvidence } from './evidenceStore';
 
 function makeEvidence(overrides: Partial<StoredRunEvidence> = {}): StoredRunEvidence {
   return {
@@ -80,6 +80,22 @@ describe('evidenceStore', () => {
     const result = await readRunEvidence(tmpDir);
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe('good');
+  });
+
+  it('reports corrupt evidence lines in detailed reads and health', async () => {
+    const filePath = path.join(tmpDir, '.harness', 'evidence', 'runs.jsonl');
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    const good = JSON.stringify(makeEvidence({ id: 'good' }));
+    await fs.writeFile(filePath, `${good}\n{bad json\n`, 'utf-8');
+
+    const detailed = await readRunEvidenceDetailed(tmpDir);
+    const health = await inspectRunEvidence(tmpDir);
+
+    expect(detailed.entries).toHaveLength(1);
+    expect(detailed.diagnostics.validEntries).toBe(1);
+    expect(detailed.diagnostics.corruptLines).toBe(1);
+    expect(health.status).toBe('warning');
+    expect(health.corruptLines).toBe(1);
   });
 
   it('handles an empty evidence file', async () => {

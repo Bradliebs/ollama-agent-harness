@@ -25,6 +25,24 @@ export interface BriefInputs {
   knowledgeGraph: KnowledgeGraphStatus;
   trustLadder: TrustLadderSnapshot;
   evidenceSummaries?: Array<{ title: string; status: string; at: string }>;
+  /**
+   * Morning Priority Prompt — when present, the brief opens with a
+   * compact "What's your top priority today?" section. Composed by the
+   * 09:00 trigger (see `scripts/morning-priority.js`) and persisted in
+   * `.harness/priorities/today.json` so it survives the day.
+   */
+  morningPriority?: MorningPriorityInputs;
+}
+
+export interface MorningPriorityInputs {
+  /** ISO date the prompt is for, e.g. "2026-05-23". */
+  forDate: string;
+  /** The answer if the user has already responded today; undefined otherwise. */
+  answer?: string;
+  /** Optional one-line context the brief should reference. */
+  reminder?: string;
+  /** Up to N priorities from previous days, newest first, for continuity. */
+  recentPriorities?: Array<{ date: string; answer: string }>;
 }
 
 export function composeDailyBrief(inputs: BriefInputs): string {
@@ -33,6 +51,31 @@ export function composeDailyBrief(inputs: BriefInputs): string {
   lines.push('');
   lines.push(`_${inputs.windowDescription}_`);
   lines.push('');
+
+  // Morning Priority — shown first when present so the user opens the
+  // brief and immediately sees the day's anchor question.
+  if (inputs.morningPriority) {
+    const mp = inputs.morningPriority;
+    lines.push(`## 🌅 Top priority for ${mp.forDate}`);
+    if (mp.answer && mp.answer.trim()) {
+      lines.push(`> **${mp.answer.trim()}**`);
+    } else {
+      lines.push('> _Not set yet._ Reply `priority: <your top thing>` to set it.');
+    }
+    if (mp.reminder) lines.push('');
+    if (mp.reminder) lines.push(`_${mp.reminder.trim()}_`);
+    if (mp.recentPriorities && mp.recentPriorities.length > 0) {
+      lines.push('');
+      lines.push('<details><summary>Recent priorities</summary>');
+      lines.push('');
+      for (const p of mp.recentPriorities.slice(0, 5)) {
+        lines.push(`- ${p.date} — ${oneLine(p.answer)}`);
+      }
+      lines.push('');
+      lines.push('</details>');
+    }
+    lines.push('');
+  }
 
   // Ambient highlights
   lines.push('## Ambient signals');

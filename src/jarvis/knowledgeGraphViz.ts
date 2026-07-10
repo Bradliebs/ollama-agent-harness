@@ -12,6 +12,14 @@ import type { GraphEdge, GraphEntity, GraphRecord } from './knowledgeGraph';
 const MAX_NODES = 30;
 const MAX_EDGES = 60;
 
+const PERSON_TYPES = new Set(['person', 'user', 'actor', 'team', 'stakeholder']);
+
+function nodeShape(type: string, id: string, label: string): string {
+  const t = type.toLowerCase();
+  if (PERSON_TYPES.has(t)) return `  ${id}(["${label}"])`;
+  return `  ${id}["${label}"]`;
+}
+
 export interface MermaidGraphOptions {
   focus?: string;
 }
@@ -50,8 +58,8 @@ export function composeMermaidGraph(records: GraphRecord[], options: MermaidGrap
 
   for (const e of workingEntities) {
     const id = sanitizeId(e.id);
-    const label = sanitizeLabel(`${e.type}: ${e.name}`);
-    lines.push(`  ${id}["${label}"]`);
+    const label = sanitizeLabel(e.name.length > 40 ? `${e.type}: ${e.name}` : e.name);
+    lines.push(nodeShape(e.type, id, label));
   }
   for (const e of workingEdges) {
     const from = sanitizeId(e.from);

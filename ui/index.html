@@ -14,6 +14,8 @@
   <style>
     :root{--bg:#0f0f0f;--surface:#1a1a1a;--surface2:#242424;--surface3:#2a2a2a;--border:#333;--text:#e0e0e0;--text-dim:#888;--accent:#7c5cff;--accent-hover:#9b80ff;--accent-bg:rgba(124,92,255,.1);--success:#4caf50;--error:#ef5350;--warning:#ff9800;--tool-bg:#1e2a1e;--tool-border:#2e4a2e;--r:12px;--rs:8px}
     .light{--bg:#f5f5f5;--surface:#ffffff;--surface2:#f0f0f0;--surface3:#e8e8e8;--border:#d0d0d0;--text:#1a1a1a;--text-dim:#666;--accent:#5b3fd4;--accent-hover:#7c5cff;--accent-bg:rgba(91,63,212,.08);--tool-bg:#e8f5e9;--tool-border:#a5d6a7}
+    ::view-transition-old(root),::view-transition-new(root){animation-duration:.3s;mix-blend-mode:normal}
+    @media (prefers-reduced-motion:reduce){::view-transition-old(root),::view-transition-new(root){animation:none}}
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;overflow:hidden}
     .layout{display:flex;width:100%;height:100%}
@@ -22,7 +24,7 @@
     .left-panel-resizer:hover,.left-panel-resizer.dragging{background:var(--accent)}
     .left-panel.hidden{margin-left:calc(-1 * var(--left-panel-width))}
     .left-panel-close{display:none}
-    .main-panel{flex:1;display:flex;flex-direction:column;min-width:380px;position:relative}
+    .main-panel{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
     .right-panel{width:440px;background:var(--surface);border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto;transition:margin-right .3s}
     .right-panel.hidden{margin-right:-440px}
     .panel-header{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:5}
@@ -57,6 +59,12 @@
     .history-date{font-size:11px;color:var(--text-dim)}
     .history-del{opacity:0;background:none;border:none;color:var(--error);cursor:pointer;font-size:14px;padding:0 4px}
     .history-item:hover .history-del{opacity:.6}
+    .history-search-wrap{padding:6px 8px 2px;position:sticky;top:0;background:var(--sidebar-bg,var(--surface));z-index:1}
+    .history-search{width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:5px 8px 5px 28px;font-size:12px;outline:none}
+    .history-search:focus{border-color:var(--accent)}
+    .history-search-wrap::before{content:"🔍";position:absolute;left:15px;top:50%;transform:translateY(-50%);font-size:11px;pointer-events:none}
+    .history-match-snippet{font-size:10px;color:var(--text-dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    mark.history-hl{background:var(--accent-bg);color:var(--accent);border-radius:2px;padding:0 1px}
     .file-item{padding:6px 10px;border-radius:6px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:6px;transition:background .15s}
     .file-item:hover{background:var(--surface2)}
     .file-icon{font-size:14px;width:18px;text-align:center;flex-shrink:0}
@@ -124,7 +132,33 @@
     .more-menu-item{padding:8px 10px;cursor:pointer;border-radius:4px;font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:8px}
     .more-menu-item:hover{background:var(--surface2);color:var(--text)}
     .more-menu-item.active{color:var(--accent);background:var(--accent-bg)}
+    .more-menu-section{padding:8px 10px 4px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-dim);opacity:.65;border-top:1px solid var(--border);margin-top:4px}
+    .more-menu-section:first-child{border-top:none;margin-top:0}
     .more-menu-icon{font-size:14px;width:18px;text-align:center}
+    /* Toasts — non-blocking notifications used in place of alert(). Stacked
+       bottom-right above the sub-agents bar. Errors persist; info/success
+       auto-dismiss after 4s. See showToast() in ui/app.js. */
+    .toast-host{position:fixed;right:16px;bottom:56px;z-index:99999;display:flex;flex-direction:column;gap:8px;max-width:420px;pointer-events:none}
+    .toast{background:var(--surface);border:1px solid var(--border);border-left-width:4px;border-radius:8px;padding:10px 12px 10px 12px;font-size:13px;color:var(--text);box-shadow:0 4px 14px rgba(0,0,0,.4);display:flex;align-items:flex-start;gap:8px;pointer-events:auto;animation:toast-in .15s ease-out}
+    @keyframes toast-in{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
+    .toast-info{border-left-color:var(--accent)}
+    .toast-success{border-left-color:var(--success,#4caf50)}
+    .toast-error{border-left-color:var(--error,#ef5350)}
+    .toast-warning{border-left-color:var(--warning,#ff9800)}
+    .toast-msg{flex:1;line-height:1.4;word-break:break-word}
+    .toast-close{background:none;border:0;color:var(--text-dim);cursor:pointer;font-size:16px;padding:0 4px;line-height:1}
+    .toast-close:hover{color:var(--text)}
+    /* Async confirm/prompt modal — non-blocking replacements for the
+       browser's window.confirm / window.prompt. Focus-trapped to the
+       OK button (or input for prompts); Esc cancels; Enter submits.
+       See confirmToast() / promptToast() in ui/app.js. */
+    .harness-modal-host{position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center}
+    .harness-modal-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.5);backdrop-filter:blur(2px)}
+    .harness-modal{position:relative;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 20px;min-width:320px;max-width:520px;box-shadow:0 8px 32px rgba(0,0,0,.5);animation:toast-in .12s ease-out}
+    .harness-modal-body{color:var(--text);font-size:14px;line-height:1.5;margin-bottom:14px;word-break:break-word}
+    .harness-modal-input{width:100%;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;margin-bottom:14px;box-sizing:border-box}
+    .harness-modal-input:focus{outline:none;border-color:var(--accent)}
+    .harness-modal-actions{display:flex;gap:8px;justify-content:flex-end}
     /* No-model banner — shown in the chat area when modelSelect.value is empty. */
     .no-model-banner{display:flex;gap:14px;align-items:flex-start;padding:14px 18px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:var(--rs);max-width:680px;margin:0 auto 18px}
     .no-model-banner.hidden-by-default{display:none}
@@ -143,16 +177,24 @@
     .inbox-strip-summary .inbox-toggle:hover{background:var(--accent-bg);border-color:var(--accent)}
     .inbox-strip-list{margin-top:8px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:6px}
     .inbox-strip-list.collapsed{display:none}
-    .inbox-item{display:flex;flex-direction:column;gap:2px;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;cursor:pointer;transition:all .15s;text-align:left;color:var(--text)}
-    .inbox-item:hover{background:var(--accent-bg);border-color:var(--accent)}
+    .inbox-item{display:flex;flex-direction:column;gap:2px;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;transition:all .15s;text-align:left;color:var(--text)}
+    .inbox-item:hover{border-color:var(--accent)}
     .inbox-item .inbox-row{display:flex;align-items:center;gap:6px}
     .inbox-item .inbox-kind-icon{font-size:13px}
     .inbox-item .inbox-title{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .inbox-item .inbox-detail{font-size:11px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.3;max-height:2.6em}
     .inbox-item.priority-high{border-left:3px solid var(--warning)}
+    .inbox-actions{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+    .inbox-action-btn{font-size:11px;padding:3px 8px;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);cursor:pointer;transition:all .12s}
+    .inbox-action-btn:hover{background:var(--accent-bg);border-color:var(--accent)}
+    .inbox-action-btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+    .inbox-action-btn.primary:hover{filter:brightness(1.1)}
+    .inbox-action-btn.danger{color:var(--warning);border-color:rgba(255,176,80,.35)}
+    .inbox-action-btn.danger:hover{background:rgba(255,176,80,.12);border-color:var(--warning)}
+    .inbox-action-btn:disabled{opacity:.5;cursor:wait}
     .no-model-hint{font-size:12px;color:var(--text-dim);margin-top:6px;line-height:1.4}
     .no-model-hint code{background:var(--surface2);padding:1px 5px;border-radius:3px;font-family:'Cascadia Code','Fira Code',monospace;font-size:11px}
-    .topbar{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+    .topbar{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;min-width:0;overflow:hidden}
     .unattended-btn{white-space:nowrap;border-color:rgba(255,176,80,.45);background:rgba(255,176,80,.08)}
     .unattended-btn.active{border-color:rgba(80,200,120,.65);background:rgba(80,200,120,.12);color:#8ff0a4}
     /* On narrow viewports, hide the 'Harness' word in the logo so the topbar
@@ -160,7 +202,10 @@
     .logo .logo-word{transition:max-width .15s,opacity .15s}
     @media(max-width:1100px){
       .logo .logo-word{max-width:0;opacity:0;overflow:hidden}
-      .topbar-btns .btn-icon[onclick*="newChat"]{display:none}
+      /* Narrow viewports: collapse the label but keep the icon tappable so
+         there is always a visible way to start a new chat. */
+      .new-chat-btn .new-chat-label{max-width:0;opacity:0;overflow:hidden}
+      .new-chat-btn{width:34px;padding:0;gap:0}
     }
     /* Files-tab filter input — small inline filter above the tree. */
     .file-search-input{width:calc(100% - 12px);margin:4px 6px 8px;padding:5px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:12px;outline:none}
@@ -182,7 +227,7 @@
     @keyframes pet-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-2px)}}
     @keyframes pet-pop{0%{transform:scale(1)}40%{transform:scale(1.3)}100%{transform:scale(1)}}
     @keyframes pet-shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-2px)}75%{transform:translateX(2px)}}
-    .model-wrap{position:relative;flex:1;max-width:350px}
+    .model-wrap{position:relative;flex:1 1 160px;min-width:120px;max-width:350px}
     .model-wrap::after{content:'▾';position:absolute;right:10px;top:50%;transform:translateY(-50%);color:var(--text-dim);pointer-events:none;font-size:12px}
     .model-select{width:100%;padding:8px 32px 8px 12px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:var(--rs);font-size:13px;appearance:none;cursor:pointer;outline:none}
     .model-select:hover{border-color:var(--accent)}
@@ -193,11 +238,25 @@
     .status-pill.loading .status-dot{background:var(--warning);animation:pulse 1s infinite}
     .status-pill.loading{border-color:rgba(255,176,80,.35);color:#ffb050}
     .status-pill.error{border-color:rgba(255,80,80,.4);color:#ff8080}
-    .connector-badges{display:flex;align-items:center;gap:4px}
+    .connector-badges{display:flex;align-items:center;gap:4px;min-width:0;overflow:hidden}
     .connector-badge{display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:999px;font-size:10px;border:1px solid var(--border);background:var(--surface2);cursor:default;white-space:nowrap}
     .connector-badge .cb-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
     .connector-badge.cb-on .cb-dot{background:var(--success)}
     .connector-badge.cb-off .cb-dot{background:var(--text-dim);opacity:.4}
+    .connector-gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin:6px 0}
+    .connector-card{border:1px solid var(--border);border-radius:8px;background:var(--surface2);padding:10px;display:flex;flex-direction:column;gap:6px}
+    .connector-card .conn-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+    .connector-card .conn-icon{font-size:15px}
+    .connector-card .conn-label{font-weight:600;font-size:12px}
+    .connector-card .conn-pill{margin-left:auto;font-size:9px;padding:1px 6px;border-radius:999px;border:1px solid var(--border);white-space:nowrap}
+    .connector-card .conn-pill.conn-on{color:var(--success);border-color:var(--success)}
+    .connector-card .conn-pill.conn-partial{color:var(--warning,#c79b1e)}
+    .connector-card .conn-pill.conn-off{color:var(--text-dim)}
+    .connector-card .conn-purpose{font-size:11px;color:var(--text-dim);line-height:1.35}
+    .connector-card .conn-ops{display:flex;flex-wrap:wrap;gap:3px}
+    .connector-card .conn-op{font-size:9px;padding:1px 5px;border-radius:4px;background:var(--surface);border:1px solid var(--border);color:var(--text-dim)}
+    .connector-card .conn-secrets,.connector-card .conn-note{font-size:10px;color:var(--text-dim)}
+    .connector-card .conn-actions{margin-top:2px}
     .status-center{display:flex;align-items:center;gap:8px;padding:4px 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface2);min-width:220px;max-width:360px}
     .status-center-summary{display:flex;flex-direction:column;gap:1px;min-width:0}
     .status-center-state{font-size:11px;color:var(--text)}
@@ -267,6 +326,25 @@
     .full-autonomy-button{margin-bottom:4px;background:rgba(80,200,120,.15);border-color:#50c878;color:#50c878}
     .timed-autonomy-button{margin-bottom:8px;background:rgba(255,176,80,.15);border-color:#ffb050;color:#ffb050}
     .timed-autonomy-banner{margin-bottom:8px;padding:8px 10px;background:rgba(255,176,80,.1);border:1px solid #ffb050;border-radius:6px;font-size:12px;color:#ffb050}
+    .build-mode-card{margin-bottom:14px;padding:14px;background:rgba(80,200,120,.06);border:1px solid #50c878;border-radius:8px}
+    .build-mode-head{display:flex;flex-direction:column;gap:2px;margin-bottom:8px}
+    .build-mode-head strong{font-size:14px;color:#50c878}
+    .build-mode-head span{font-size:12px;color:var(--text-dim)}
+    .build-goal-input{width:100%;box-sizing:border-box;padding:8px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:inherit;resize:vertical}
+    .build-examples{margin-top:6px;font-size:11px;color:var(--text-dim);display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+    .build-mode-actions{margin-top:8px}
+    .build-plan-btn{background:rgba(80,200,120,.15);border-color:#50c878;color:#50c878}
+    .build-mode-status{margin-top:8px;font-size:12px;color:var(--text-dim);min-height:1em}
+    .build-mode-status.ok{color:#50c878}
+    .build-mode-status.warn{color:#ffb050}
+    .build-review{margin-top:4px}
+    .build-review-title{font-size:12px;font-weight:600;margin:8px 0 4px}
+    .build-review-list{margin:0 0 4px;padding-left:20px;font-size:12px;line-height:1.5}
+    .build-time-choice{margin-top:10px}
+    .build-time-label{font-size:12px;color:var(--text-dim);margin-bottom:4px}
+    .build-time-buttons{display:flex;gap:6px;flex-wrap:wrap}
+    .build-time-btn.selected{background:rgba(80,200,120,.25);border-color:#50c878;color:#50c878;font-weight:600}
+    .build-it-btn{margin-top:10px;width:100%;background:#50c878;border-color:#50c878;color:#08130c;font-weight:700;font-size:14px;padding:8px}
     .text-dim{color:var(--text-dim)}
     .text-warning-xs{color:#ffb050;font-size:11px}
     .accent-link{color:var(--accent)}
@@ -407,10 +485,28 @@
     .sk-install{background:var(--surface);border:1px solid var(--border);color:var(--text-dim);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px}
     .sk-install:hover{border-color:var(--accent);color:var(--accent)}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-    .topbar-btns{display:flex;gap:6px;margin-left:auto}
+    .topbar-btns{display:flex;gap:6px;margin-left:auto;flex-shrink:0}
     .btn-icon{background:var(--surface2);border:1px solid var(--border);color:var(--text-dim);width:34px;height:34px;border-radius:var(--rs);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;transition:all .2s}
     .btn-icon:hover{border-color:var(--accent);color:var(--text)}
+    /* New-chat button shows a text label alongside the icon. */
+    .new-chat-btn{width:auto;gap:6px;padding:0 10px}
+    .new-chat-btn .new-chat-label{font-size:13px;white-space:nowrap;transition:max-width .15s,opacity .15s}
     .chat-area{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;scroll-behavior:smooth}
+    .session-tabs{display:flex;align-items:center;gap:2px;padding:2px 8px 0;background:var(--surface);border-bottom:1px solid var(--border);min-height:32px;overflow-x:auto;scrollbar-width:thin;flex-shrink:0;max-width:100%}
+    .session-tab{display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:6px 6px 0 0;cursor:pointer;font-size:12px;color:var(--text-dim);background:transparent;border:1px solid transparent;border-bottom:none;white-space:nowrap;max-width:180px;transition:all .15s;position:relative}
+    .session-tab:hover{background:var(--surface2);color:var(--text)}
+    .session-tab.active{background:var(--bg,#111);color:var(--text);border-color:var(--border);font-weight:600}
+    .session-tab .tab-title{overflow:hidden;text-overflow:ellipsis;max-width:120px}
+    .session-tab .tab-badge{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+    .session-tab .tab-badge.streaming{background:var(--accent);animation:tab-pulse 1s infinite}
+    .session-tab .tab-badge.done{background:#4caf50}
+    .session-tab .tab-badge.idle{display:none}
+    .session-tab .tab-close{opacity:0;background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:11px;padding:0 2px;line-height:1}
+    .session-tab:hover .tab-close{opacity:.6}
+    .session-tab .tab-close:hover{opacity:1;color:var(--error)}
+    .session-tab-add{background:var(--surface);border:1px dashed var(--border);color:var(--text-dim);cursor:pointer;padding:3px 10px;border-radius:6px 6px 0 0;font-size:12px;line-height:1.4;transition:all .15s;white-space:nowrap;position:sticky;right:0;z-index:2;flex-shrink:0}
+    .session-tab-add:hover{border-color:var(--accent);color:var(--accent)}
+    @keyframes tab-pulse{0%,100%{opacity:1}50%{opacity:.4}}
     /* Artifact panel: side preview for code blocks, HTML, SVG, markdown.
        Slides in from the right of the main-panel, leaving chat composer
        layout untouched. Hidden by default; toggled per artifact. */
@@ -528,6 +624,18 @@
     .setting-row input,.setting-row select,.setting-row textarea{width:100%;padding:7px 10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:6px;font-size:13px;outline:none;font-family:inherit}
     .setting-row textarea{min-height:80px;resize:vertical}
     .setting-row input:focus,.setting-row textarea:focus{border-color:var(--accent)}
+    /* SettingsRow pattern (borrowed from Scout): a bold label + a small
+       plain-English description on the left, the control right-aligned. Opt-in
+       via `.setting-row.inline` so existing stacked rows stay untouched. */
+    .setting-row.inline{display:flex;align-items:center;justify-content:space-between;gap:14px}
+    .setting-row.inline .setting-main{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+    .setting-row.inline .setting-main label{display:block;margin-bottom:0;font-size:13px;font-weight:600;color:var(--text)}
+    .setting-row.inline>input,.setting-row.inline>select,.setting-row.inline>button{width:auto;flex-shrink:0}
+    .setting-row.inline>input[type=number]{width:90px;text-align:right}
+    /* Muted description line. Works inside an inline row's .setting-main and as a
+       standalone hint under a stacked control. */
+    .setting-desc{font-size:12px;color:var(--text-dim);line-height:1.35}
+    .setting-row>.setting-desc{margin-top:3px}
     .uploads-cleanup-row{display:flex;align-items:center;gap:6px;margin-top:8px}
     .uploads-cleanup-row input{width:80px}
     .uploads-list-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}
@@ -614,8 +722,8 @@
     .compare-keep-btn:hover{filter:brightness(1.1)}
     @media(max-width:900px){.compare-row{grid-template-columns:1fr}}
     /* Session totals HUD next to the context HUD */
-    .session-hud{display:flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid var(--border);border-radius:7px;background:var(--surface2);font-size:11px;color:var(--text-dim);white-space:nowrap}
-    .session-hud .session-hud-val{color:var(--text)}
+    .session-hud{display:flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid var(--border);border-radius:7px;background:var(--surface2);font-size:11px;color:var(--text-dim);white-space:nowrap;min-width:0;overflow:hidden}
+    .session-hud .session-hud-val{color:var(--text);overflow:hidden;text-overflow:ellipsis}
     .session-hud.empty{opacity:.55}
     .streaming-badge{display:none;align-items:center;gap:4px;padding:3px 8px;border-radius:7px;background:var(--danger,#e55);color:#fff;font-size:10px;font-weight:600;animation:pulse-stream 1.5s ease-in-out infinite}
     .streaming-badge.active{display:flex}
@@ -629,6 +737,14 @@
     .slash-palette-item:hover,.slash-palette-item.active{background:var(--accent-bg)}
     .slash-palette-item .sp-cmd{color:var(--accent);font-weight:600;font-size:13px;font-family:'Cascadia Code','Fira Code',monospace}
     .slash-palette-item .sp-desc{color:var(--text-dim);font-size:12px}
+    /* Plain-English suggestion chip: maps a beginner's natural request to an
+       existing feature without needing slash commands. Non-blocking — it sits
+       above the composer and never intercepts the message being typed. */
+    .intent-chip{position:absolute;left:12px;right:12px;bottom:80px;max-width:760px;margin:0 auto;background:var(--surface);border:1px solid var(--accent);border-radius:var(--r);box-shadow:0 8px 30px rgba(0,0,0,.4);padding:10px 14px;font-size:13px;color:var(--text);z-index:59;display:flex;align-items:center;gap:10px}
+    .intent-chip.hidden{display:none}
+    .intent-chip-btn{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer;font-weight:600}
+    .intent-chip-btn:hover{opacity:.9}
+    .intent-chip-dismiss{background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:14px;margin-left:auto;line-height:1}
     /* Voice input toggle: pulse-red when actively recording. */
     .btn-icon.recording{border-color:var(--error);color:var(--error);animation:voicePulse 1.2s infinite}
     @keyframes voicePulse{0%,100%{box-shadow:0 0 0 0 rgba(239,83,80,.5)}50%{box-shadow:0 0 0 6px rgba(239,83,80,0)}}
@@ -673,6 +789,7 @@
     .task-first-title{font-size:15px;font-weight:700;color:var(--text);margin-bottom:3px}
     .task-first-subtitle{font-size:12px;color:var(--text-dim);line-height:1.4}
     .task-first-status{display:flex;flex-wrap:wrap;gap:5px;justify-content:flex-end;min-width:160px}
+    .task-first-status-col{display:flex;flex-direction:column;align-items:flex-end;gap:6px;min-width:160px}
     .task-first-pill{border:1px solid var(--border);border-radius:999px;padding:3px 8px;background:var(--surface2);font-size:10.5px;color:var(--text-dim);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .task-first-pill.ready{border-color:rgba(80,200,120,.45);color:#50c878}
     .task-first-pill.warn{border-color:rgba(255,176,80,.45);color:#ffb050}
@@ -681,6 +798,16 @@
     .task-first-input-row textarea{width:100%;min-height:58px;resize:vertical;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:7px;padding:9px 10px;font-family:inherit;font-size:13px;line-height:1.4;outline:none}
     .task-first-input-row textarea:focus{border-color:var(--accent)}
     .task-first-actions{display:flex;flex-direction:column;gap:6px;min-width:120px}
+    .codex-run-panel{border:1px solid var(--border);background:var(--surface2);border-radius:7px;padding:9px;display:flex;flex-direction:column;gap:7px}
+    .codex-run-top{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:var(--text)}
+    .codex-run-top span{color:var(--text-dim);white-space:nowrap}
+    .codex-run-progress{height:6px;background:var(--surface);border:1px solid var(--border);border-radius:999px;overflow:hidden}
+    .codex-run-progress>div{height:100%;width:0;background:var(--accent);transition:width .2s ease}
+    .codex-run-log{max-height:104px;overflow:auto;font-size:11px;color:var(--text-dim);line-height:1.4;display:flex;flex-direction:column;gap:3px}
+    .codex-run-log div{overflow-wrap:anywhere}
+    .codex-run-diff{border-top:1px solid var(--border);padding-top:7px}
+    .codex-run-diff>summary{cursor:pointer;font-size:11px;color:var(--text);font-weight:600}
+    .codex-run-diff pre{margin-top:6px;max-height:220px;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:7px;font-family:'Cascadia Code','Fira Code',monospace;font-size:10.5px;line-height:1.45;color:var(--text-dim);white-space:pre-wrap}
     .task-first-presets{display:flex;flex-wrap:wrap;gap:6px}
     .task-first-preset{background:var(--surface2);border:1px solid var(--border);border-radius:999px;color:var(--text-dim);padding:4px 9px;font-size:11px;cursor:pointer}
     .task-first-preset:hover{border-color:var(--accent);color:var(--accent)}
@@ -822,6 +949,72 @@
     .skill-modal-tab{padding:4px 10px;border:1px solid var(--border);border-radius:6px;font-size:11px;cursor:pointer;color:var(--text-dim);background:var(--surface2)}
     .skill-modal-tab.active{color:var(--accent);border-color:var(--accent);background:var(--accent-bg)}
     .skill-modal-form{display:flex;flex-direction:column;gap:8px;flex:1;overflow-y:auto;padding-right:4px}
+    /* Topbar emergency STOP button — always visible safety net. */
+    .stop-btn{color:var(--error)!important;border:1px solid rgba(239,83,80,.35)!important;background:rgba(239,83,80,.08)!important;font-weight:700}
+    .stop-btn:hover{background:rgba(239,83,80,.18)!important;border-color:var(--error)!important}
+    /* Settings Simple/Advanced toggle. */
+    .settings-mode-toggle{display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+    .settings-mode-toggle .settings-mode-btn{border:none;border-radius:0;font-size:11px;padding:3px 8px;background:var(--surface2);color:var(--text-dim)}
+    .settings-mode-toggle .settings-mode-btn.active{background:var(--accent-bg);color:var(--accent);font-weight:600}
+    /* Simple-mode: hide non-essential settings sections + advanced More menu items. */
+    body.simple-mode .right-panel .settings-section:not(.essential){display:none}
+    body.simple-mode .more-menu-item.more-advanced{display:none}
+    body.simple-mode .more-menu-section.more-advanced-section{display:none}
+    body.simple-mode .right-panel .settings-section.essential::after{content:'';display:none}
+    body.simple-mode .right-panel::after{content:'Advanced settings are hidden. Switch to Advanced (top right) to see them all.';display:block;padding:14px;color:var(--text-dim);font-size:11.5px;text-align:center;border-top:1px dashed var(--border);margin-top:8px}
+    /* Simple mode also trims the welcome screen of dense diagnostic panels
+       that aren't useful for first-time users. */
+    body.simple-mode #missionControlPanel{display:none}
+    body.simple-mode #dailyBriefPanel{display:none}
+    body.simple-mode #jarvisGhostHint{display:none}
+    body.simple-mode #jarvisVoiceControls{display:none}
+    /* First-visit onboarding modal. */
+    .onboard-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:9999}
+    .onboard-modal.hidden-by-default{display:none}
+    .onboard-dialog{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;width:min(560px,92vw);max-height:88vh;overflow-y:auto;box-shadow:0 18px 50px rgba(0,0,0,.55)}
+    .onboard-dialog h2{font-size:20px;margin-bottom:8px;color:var(--text)}
+    .onboard-dialog p{color:var(--text-dim);font-size:13px;line-height:1.5;margin-bottom:16px}
+    .onboard-steps{display:flex;flex-direction:column;gap:10px;margin-bottom:18px}
+    .onboard-step{display:flex;gap:12px;align-items:flex-start;padding:11px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px}
+    .onboard-step-num{flex-shrink:0;width:24px;height:24px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+    .onboard-step strong{display:block;font-size:13px;color:var(--text);margin-bottom:2px}
+    .onboard-step span{font-size:12px;color:var(--text-dim);line-height:1.45}
+    .onboard-examples{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}
+    .onboard-example{text-align:left;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:9px 11px;color:var(--text);cursor:pointer;font-size:12.5px;transition:all .15s}
+    .onboard-example:hover{border-color:var(--accent);color:var(--accent)}
+    .onboard-actions{display:flex;gap:8px;justify-content:flex-end;align-items:center}
+    .onboard-actions label{font-size:12px;color:var(--text-dim);margin-right:auto;display:flex;align-items:center;gap:5px}
+    /* Teammate card on the welcome screen. */
+    .teammate-card{margin:0 0 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:8px}
+    .teammate-card.active{border-color:rgba(80,200,120,.55)}
+    .teammate-card.paused{border-color:rgba(255,176,80,.45)}
+    .teammate-card-row{display:flex;align-items:center;gap:12px;width:100%}
+    .teammate-card-icon{font-size:22px;line-height:1;flex-shrink:0;width:28px;text-align:center}
+    .teammate-card-body{flex:1;display:flex;flex-direction:column;gap:2px;min-width:0}
+    .teammate-card-body strong{font-size:13px;color:var(--text)}
+    .teammate-card-body span{font-size:12px;color:var(--text-dim);line-height:1.4}
+    .teammate-card-actions{display:flex;gap:6px;flex-shrink:0}
+    /* Teammate setup wizard. Re-uses onboard-modal positioning. */
+    .teammate-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:9999}
+    .teammate-modal.hidden-by-default{display:none}
+    .teammate-dialog{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;width:min(540px,92vw);max-height:88vh;overflow-y:auto;box-shadow:0 18px 50px rgba(0,0,0,.55)}
+    .teammate-dialog h2{font-size:18px;margin-bottom:6px;color:var(--text)}
+    .teammate-dialog p.lead{color:var(--text-dim);font-size:12.5px;line-height:1.5;margin-bottom:14px}
+    .teammate-field{margin-bottom:14px}
+    .teammate-field label{display:block;font-size:12px;font-weight:600;color:var(--text);margin-bottom:5px}
+    .teammate-field .hint{font-size:11px;color:var(--text-dim);margin-top:4px;line-height:1.4}
+    .teammate-field input[type="time"],.teammate-field input[type="text"],.teammate-field input[type="number"],.teammate-field select,.teammate-field textarea{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:7px 9px;font-size:13px;font-family:inherit;outline:none}
+    .teammate-field textarea{min-height:64px;resize:vertical}
+    .teammate-channels{display:flex;flex-wrap:wrap;gap:6px}
+    .teammate-channel-chip{display:flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--border);border-radius:999px;background:var(--surface2);color:var(--text-dim);font-size:12px;cursor:pointer;-webkit-user-select:none;user-select:none}
+    .teammate-channel-chip.active{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+    .teammate-channel-chip.disabled{opacity:.45;cursor:not-allowed}
+    .teammate-channel-chip input{margin:0}
+    .teammate-days{display:flex;gap:4px}
+    .teammate-day-chip{padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text-dim);font-size:11px;cursor:pointer;text-transform:uppercase;-webkit-user-select:none;user-select:none}
+    .teammate-day-chip.active{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+    .teammate-actions{display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:8px}
+    .teammate-actions .left{margin-right:auto;font-size:11.5px;color:var(--text-dim)}
     .skill-modal-form .automation-field input,.skill-modal-form .automation-field select,.skill-modal-form .automation-field textarea{background:var(--surface2)}
     .skill-modal-form-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
     .skill-modal-history{max-height:140px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px}
@@ -878,6 +1071,41 @@
     .automation-schedule-preview{font-size:11px;color:var(--text-dim);min-height:14px;font-family:'Cascadia Code','Fira Code',monospace}
     .automation-schedule-preview.error{color:var(--error)}
     .automation-schedule-preview.ok{color:var(--success)}
+    .harness-badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;line-height:16px}
+    .harness-badge.fresh{background:#1b5e20;color:#a5d6a7}
+    .harness-badge.aging{background:#e65100;color:#ffcc80}
+    .harness-badge.stale{background:#b71c1c;color:#ef9a9a}
+    .harness-badge.info{background:var(--accent-bg);color:var(--accent)}
+    .injection-warning{background:rgba(255,152,0,.15);border:1px solid var(--warning);border-radius:var(--rs);padding:6px 10px;margin:4px 0;font-size:11px;color:var(--warning)}
+    .calibration-bar{display:flex;align-items:center;gap:6px;font-size:11px;margin:2px 0}
+    .calibration-bar-fill{height:6px;border-radius:3px;background:var(--accent)}
+    .calibration-bar-track{flex:1;height:6px;border-radius:3px;background:var(--surface3)}
+    .repo-map-card{background:var(--surface2);border:1px solid var(--border);border-radius:var(--rs);padding:8px 10px;font-size:11px;line-height:1.5}
+    .repo-map-card strong{color:var(--text);font-weight:600}
+    .golden-trace-item{background:var(--surface2);border:1px solid var(--border);border-radius:var(--rs);padding:6px 10px;margin:3px 0;font-size:11px;cursor:pointer;transition:border-color .15s}
+    .golden-trace-item:hover{border-color:var(--accent)}
+    .prompt-version-item{background:var(--surface2);border:1px solid var(--border);border-radius:var(--rs);padding:6px 10px;margin:3px 0;font-size:11px}
+    .prompt-version-item.active-version{border-color:var(--accent);background:var(--accent-bg)}
+    .goal-run-banner{background:var(--surface2);border:1px solid var(--border);border-radius:var(--rs);padding:8px 10px;margin-bottom:6px;font-size:12px}
+    .goal-run-id{color:var(--text-dim);font-size:10px;margin-left:6px}
+    .goal-run-controls{display:flex;gap:6px;margin-bottom:6px}
+    .goal-run-controls button{background:var(--surface3);border:1px solid var(--border);border-radius:var(--rs);padding:3px 10px;font-size:11px;color:var(--text);cursor:pointer}
+    .goal-run-controls button:hover:not(:disabled){border-color:var(--accent)}
+    .goal-run-controls button:disabled{opacity:.5;cursor:not-allowed}
+    .goal-run-status{font-size:11px;color:var(--text-dim);margin-bottom:6px;font-style:italic}
+    .goal-run-cards{display:flex;flex-direction:column;gap:6px}
+    .iter-card{background:var(--surface2);border:1px solid var(--border);border-radius:var(--rs);padding:8px 10px;font-size:11px}
+    .iter-card-header{font-weight:600;color:var(--text);margin-bottom:4px;display:flex;align-items:center;gap:8px}
+    .iter-card-status{font-weight:400;color:var(--text-dim);font-size:10px}
+    .iter-card-counters{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0}
+    .iter-card-pill{background:var(--surface3);border:1px solid var(--border);border-radius:10px;padding:2px 8px;font-size:10px;color:var(--text-dim)}
+    .iter-card-error{color:#e88;margin-top:4px;font-family:var(--mono,monospace);font-size:10px}
+    .iter-card-verif{margin-top:4px;font-size:10px;color:var(--text-dim)}
+    .iter-card-verif.ok{color:#9c9}
+    .iter-card-verif.fail{color:#e88}
+    .iter-card-notes{margin-top:6px}
+    .iter-card-notes summary{cursor:pointer;color:var(--text-dim);font-size:10px}
+    .iter-card-notes pre{background:var(--surface3);border-radius:4px;padding:6px;font-size:10px;white-space:pre-wrap;max-height:200px;overflow:auto;margin:4px 0 0}
   </style>
 </head>
 <body>
@@ -892,47 +1120,58 @@
       </div>
     </div>
     <div class="tab-bar">
-      <div class="tab active" onclick="showLeftTab('history',this)" title="Chat history">
+      <div class="tab active" onclick="showLeftTab('history',this)" title="Your past conversations">
         <div class="tab-icon">💬</div><div class="tab-label">Chats</div>
       </div>
-      <div class="tab" onclick="showLeftTab('files',this)" title="Project files">
+      <div class="tab" onclick="showLeftTab('files',this)" title="Browse files in this project">
         <div class="tab-icon">📁</div><div class="tab-label">Files</div>
       </div>
-      <div class="tab" onclick="showLeftTab('skills',this)" title="Installed skills">
-        <div class="tab-icon">⚡</div><div class="tab-label">Skills</div>
+      <div class="tab" onclick="showLeftTab('skills',this)" title="Reusable instructions the AI can follow">
+        <div class="tab-icon">⚡</div><div class="tab-label">Abilities</div>
       </div>
-      <div class="tab" onclick="showLeftTab('memory',this)" title="Memory entries">
+      <div class="tab" onclick="showLeftTab('memory',this)" title="What the AI remembers across sessions">
         <div class="tab-icon">🧠</div><div class="tab-label">Memory</div>
       </div>
-      <div class="tab" onclick="showLeftTab('workflows',this)" title="Workflows: declarative tool sequences">
-        <div class="tab-icon">⚙</div><div class="tab-label">Flows</div>
+      <div class="tab" onclick="showLeftTab('workflows',this)" title="Saved sequences of AI actions">
+        <div class="tab-icon">⚙</div><div class="tab-label">Automations</div>
       </div>
-      <div class="tab tab-more" id="tabMoreBtn" onclick="toggleMoreMenu(event)" title="More views">
+      <div class="tab tab-more" id="tabMoreBtn" onclick="toggleMoreMenu(event)" title="More tools and settings">
         <div class="tab-icon">⋯</div><div class="tab-label">More</div>
       </div>
       <div class="more-menu hidden-by-default" id="moreMenu">
-        <div class="more-menu-item" data-tab="palace" onclick="selectFromMore('palace')"><span class="more-menu-icon">🏛</span> Palace</div>
-        <div class="more-menu-item" data-tab="discovery" onclick="selectFromMore('discovery')"><span class="more-menu-icon">🔮</span> Discover</div>
-        <div class="more-menu-item" data-tab="learning" onclick="selectFromMore('learning')"><span class="more-menu-icon">📈</span> Learning</div>
-        <div class="more-menu-item" data-tab="snapshots" onclick="selectFromMore('snapshots')"><span class="more-menu-icon">📦</span> Snapshots</div>
-        <div class="more-menu-item" data-tab="rag" onclick="selectFromMore('rag')"><span class="more-menu-icon">🔎</span> RAG</div>
-        <div class="more-menu-item" data-tab="tools" onclick="selectFromMore('tools')"><span class="more-menu-icon">🛠</span> Tools</div>
-        <div class="more-menu-item" data-tab="runs" onclick="selectFromMore('runs')"><span class="more-menu-icon">📜</span> Runs</div>
-        <div class="more-menu-item" data-tab="autonomy" onclick="selectFromMore('autonomy')"><span class="more-menu-icon">🚀</span> Autonomy</div>
-        <div class="more-menu-item" data-tab="mycelium" onclick="selectFromMore('mycelium')"><span class="more-menu-icon">🍄</span> Mycelium</div>
-        <div class="more-menu-item" data-tab="promises" onclick="selectFromMore('promises')"><span class="more-menu-icon">🤝</span> Promises</div>
-        <div class="more-menu-item" data-tab="events" onclick="selectFromMore('events')"><span class="more-menu-icon">📋</span> Events</div>
-        <div class="more-menu-item" data-tab="codeintel" onclick="selectFromMore('codeintel')"><span class="more-menu-icon">🧬</span> Code Intel</div>
-        <div class="more-menu-item" data-tab="tasks" onclick="selectFromMore('tasks')"><span class="more-menu-icon">✅</span> Tasks</div>
-        <div class="more-menu-item" data-tab="audit" onclick="selectFromMore('audit')"><span class="more-menu-icon">🛡</span> Audit</div>
-        <div class="more-menu-item" data-tab="triggers" onclick="selectFromMore('triggers')"><span class="more-menu-icon">⚡</span> Triggers</div>
-        <div class="more-menu-item" data-tab="agents" onclick="selectFromMore('agents')"><span class="more-menu-icon">🤖</span> Agents</div>
-        <div class="more-menu-item" data-tab="squads" onclick="selectFromMore('squads')"><span class="more-menu-icon">👥</span> Squads</div>
-        <div class="more-menu-item" data-tab="identity" onclick="selectFromMore('identity')"><span class="more-menu-icon">🪪</span> Identity</div>
-        <div class="more-menu-item" data-tab="artifacts" onclick="selectFromMore('artifacts')"><span class="more-menu-icon">📎</span> Artifacts</div>
-        <div class="more-menu-item" data-tab="health" onclick="selectFromMore('health')"><span class="more-menu-icon">💓</span> Health</div>
+        <div class="more-menu-section">Build &amp; use</div>
+        <div class="more-menu-item" data-tab="agents" onclick="selectFromMore('agents')" title="Custom AI sub-agents. Create one and invoke it from the Chat tab or click ▶ Run on its card."><span class="more-menu-icon">🤖</span> Agents</div>
+        <div class="more-menu-item" data-tab="squads" onclick="selectFromMore('squads')" title="Group several agents into a roster with routing rules."><span class="more-menu-icon">👥</span> Squads</div>
+        <div class="more-menu-item" data-tab="triggers" onclick="selectFromMore('triggers')" title="Run things automatically on a schedule or event."><span class="more-menu-icon">⚡</span> Triggers</div>
+        <div class="more-menu-item" data-tab="tasks" onclick="selectFromMore('tasks')" title="To-do list the agent can read and update."><span class="more-menu-icon">✅</span> Tasks</div>
+        <div class="more-menu-item" data-tab="identity" onclick="selectFromMore('identity')" title="Agent name, avatar, personality — and saved profiles."><span class="more-menu-icon">🪪</span> Identity</div>
+
+        <div class="more-menu-section">Search &amp; knowledge</div>
+        <div class="more-menu-item" data-tab="rag" onclick="selectFromMore('rag')" title="Build a searchable index of your project files."><span class="more-menu-icon">🔎</span> Search Files</div>
+        <div class="more-menu-item" data-tab="palace" onclick="selectFromMore('palace')" title="The AI's long-term notes about you and your project."><span class="more-menu-icon">🏛</span> Memory Bank</div>
+        <div class="more-menu-item" data-tab="discovery" onclick="selectFromMore('discovery')" title="Patterns the AI has learned from past sessions."><span class="more-menu-icon">🔮</span> Discoveries</div>
+        <div class="more-menu-item more-advanced" data-tab="codeintel" onclick="selectFromMore('codeintel')" title="Code intelligence: symbols, references, and structure."><span class="more-menu-icon">🧬</span> Code Intel</div>
+
+        <div class="more-menu-section">History &amp; diagnostics</div>
+        <div class="more-menu-item" data-tab="atlas" onclick="selectFromMore('atlas')" title="Map of your project: which task built each file and when it last changed."><span class="more-menu-icon">🗺</span> Project Atlas</div>
+        <div class="more-menu-item" data-tab="runs" onclick="selectFromMore('runs')" title="Past session and automation runs."><span class="more-menu-icon">📜</span> Runs</div>
+        <div class="more-menu-item more-advanced" data-tab="events" onclick="selectFromMore('events')" title="Live system event stream — useful for debugging."><span class="more-menu-icon">📋</span> Events</div>
+        <div class="more-menu-item" data-tab="audit" onclick="selectFromMore('audit')" title="Every action the AI has taken, with timestamps."><span class="more-menu-icon">🛡</span> Activity Log</div>
+        <div class="more-menu-item more-advanced" data-tab="learning" onclick="selectFromMore('learning')" title="Performance trends from validation runs."><span class="more-menu-icon">📈</span> Learning</div>
+        <div class="more-menu-item" data-tab="health" onclick="selectFromMore('health')" title="Is everything running? Service status at a glance."><span class="more-menu-icon">💓</span> Health</div>
+
+        <div class="more-menu-section">Admin &amp; backup</div>
+        <div class="more-menu-item" data-tab="tools" onclick="selectFromMore('tools')" title="Enabled tools and their permissions."><span class="more-menu-icon">🛠</span> Tools</div>
+        <div class="more-menu-item" data-tab="snapshots" onclick="selectFromMore('snapshots')" title="Save and restore your AI's settings and memory."><span class="more-menu-icon">📦</span> Backups</div>
+        <div class="more-menu-item" data-tab="artifacts" onclick="selectFromMore('artifacts')" title="Files the AI has produced this session."><span class="more-menu-icon">📎</span> Generated Files</div>
+
+        <div class="more-menu-section more-advanced-section">Advanced</div>
+        <div class="more-menu-item more-advanced" data-tab="autonomy" onclick="selectFromMore('autonomy')" title="Long-running self-directed loops. Use with care."><span class="more-menu-icon">🚀</span> Autonomy</div>
+        <div class="more-menu-item more-advanced" data-tab="mycelium" onclick="selectFromMore('mycelium')" title="Adaptive model routing network."><span class="more-menu-icon">🍄</span> AI Router</div>
+        <div class="more-menu-item more-advanced" data-tab="promises" onclick="selectFromMore('promises')" title="Promises the agent has made to itself across sessions."><span class="more-menu-icon">🤝</span> Commitments</div>
       </div>
     </div>
+    <div class="history-search-wrap"><input id="historySearch" class="history-search" type="search" placeholder="Search chats…" oninput="onHistorySearch(this.value)" autocomplete="off"></div>
     <div class="history-list" id="historyList"></div>
     <div class="file-tree initial-hidden" id="fileTree"></div>
     <div class="skill-list initial-hidden" id="skillList"></div>
@@ -944,6 +1183,7 @@
     <div class="memory-view initial-hidden" id="ragView"></div>
     <div class="memory-view initial-hidden" id="toolsDashboardView"></div>
     <div class="memory-view initial-hidden" id="runsView"></div>
+    <div class="memory-view initial-hidden" id="atlasView"></div>
     <div class="memory-view initial-hidden" id="autonomyView"></div>
     <div class="memory-view initial-hidden" id="workflowsView"></div>
     <div class="memory-view initial-hidden" id="myceliumView"></div>
@@ -983,6 +1223,18 @@
         <span class="session-hud-val" id="sessionHudTokens">0t</span>
         <span class="meta-sep">·</span>
         <span class="session-hud-val" id="sessionHudTime">0s</span>
+        <span class="meta-sep" id="sessionHudCostSep" style="display:none">·</span>
+        <span class="session-hud-val" id="sessionHudCost" style="display:none"></span>
+        <span class="meta-sep" id="sessionHudConfSep" style="display:none">·</span>
+        <span class="session-hud-val" id="sessionHudConf" style="display:none"></span>
+        <span class="meta-sep" id="sessionHudProvSep" style="display:none">·</span>
+        <span class="session-hud-val" id="sessionHudProv" style="display:none"></span>
+        <span class="meta-sep" id="sessionHudOfflineSep" style="display:none">·</span>
+        <span class="session-hud-val" id="sessionHudOffline" style="display:none"></span>
+        <span class="meta-sep" id="sessionHudReviewSep" style="display:none">·</span>
+        <span class="session-hud-val" id="sessionHudReview" style="display:none"></span>
+        <span class="meta-sep" id="sessionHudLoopSep" style="display:none">·</span>
+        <span class="session-hud-val" id="sessionHudLoop" style="display:none"></span>
       </div>
       <div class="session-hud autonomy-hud-action hidden-by-default" id="autonomyHud" title="Autonomy loop progress (.forge-state.json)" onclick="toggleAutonomyLog()">
         <span>🤖 Autonomy</span>
@@ -1001,8 +1253,9 @@
       <div class="status-pill loading" id="statusPill" title="Connecting..."><span class="status-dot"></span><span id="statusLabel">Connecting</span></div>
       <div class="connector-badges hidden-by-default" id="connectorBadges" title="Connector status"></div>
       <div class="topbar-btns">
+        <button class="btn-icon stop-btn" id="topbarStopBtn" onclick="topbarEmergencyStop()" title="Emergency stop — halt the AI and block all tool calls">⏹</button>
         <button class="btn-icon" id="themeToggle" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
-        <button class="btn-icon" onclick="newChat()" title="New chat">✨</button>
+        <button class="btn-icon new-chat-btn" onclick="newChat()" title="Start a new chat (clears the current conversation)">✨<span class="new-chat-label">New chat</span></button>
         <button class="btn-icon" onclick="toggleRight()" title="Settings">⚙️</button>
       </div>
     </div>
@@ -1013,6 +1266,10 @@
          the user to know which tab to open. Hidden when empty. Populated
          by loadInbox() from /api/inbox. -->
     <div class="inbox-strip initial-hidden" id="inboxStrip" aria-live="polite"></div>
+
+    <div class="session-tabs" id="sessionTabs">
+      <button class="session-tab-add" onclick="createSessionTab()" title="New parallel session">+</button>
+    </div>
 
     <div class="chat-area" id="chatArea">
       <div class="welcome" id="welcome">
@@ -1034,19 +1291,36 @@
           <div class="quick-start-actions"><button id="quickStartBtn" class="btn-sm primary" onclick="startQuickTest()">Start quick test</button><button class="btn-sm" onclick="openFirstRunGuide()">Open setup guide</button></div>
         </div>
 
-        <div class="beginner-readiness warn" id="beginnerReadiness">
-          <div><strong id="beginnerReadinessTitle">Checking first-chat readiness</strong><span id="beginnerReadinessMessage">Harness is checking Ollama and installed models before your first message.</span></div>
-          <span class="readiness-badge" id="beginnerReadinessBadge">Checking</span>
+        <!-- Teammate status card: makes the "agent works for you between
+             sessions" promise visible on every page load. Populated by
+             loadTeammateStatus() in app.js. Hidden until the status fetch
+             completes so it doesn't flash an empty card. -->
+        <div class="teammate-card initial-hidden" id="teammateCard">
+          <div class="teammate-card-row">
+            <div class="teammate-card-icon" id="teammateCardIcon">🤝</div>
+            <div class="teammate-card-body">
+              <strong id="teammateCardTitle">Your teammate</strong>
+              <span id="teammateCardSubtitle">Loading…</span>
+            </div>
+            <div class="teammate-card-actions">
+              <button class="btn-sm primary" id="teammateCardCta" onclick="openTeammateWizard()">Set up</button>
+              <button class="btn-sm" id="teammateRunNowBtn" onclick="teammateRunNow()" style="display:none">Run now</button>
+            </div>
+          </div>
         </div>
 
         <div class="quick-suggestions" id="quickSuggestions">
           <!-- Populated by quickStartChipsMarkup() at DOMContentLoaded so
                the chip set lives in one place (ui/app.js) and stays in
                sync between the static landing page and welcomeMarkup()
-               re-renders triggered by /new and /reset. -->
+               re-renders triggered by /new and /reset.
+               Note: the previous beginner-readiness banner and
+               model-capability-hint were removed in the v0.5.10 welcome
+               trim — both duplicated information already shown in the
+               no-model banner / model dropdown UI. setBeginnerReadiness()
+               and renderModelCapabilityHint() no-op safely when their
+               target elements are absent. -->
         </div>
-
-        <div class="model-capability-hint" id="modelCapabilityHint">Choose a model to see whether Harness detects text, image, or audio support.</div>
 
         <div class="mission-control" id="missionControlPanel">
           <div class="readiness-empty">Loading work area...</div>
@@ -1120,9 +1394,11 @@
         <div class="slash-palette-header">Slash commands · ↑↓ to choose, Enter to run, Esc to close</div>
         <div class="slash-palette-list" id="slashPaletteList"></div>
       </div>
+      <div class="intent-chip hidden" id="intentChip" role="status" aria-live="polite"></div>
       <div class="input-row">
         <button class="btn-icon attach-btn" onclick="document.getElementById('fileInput').click()" title="Attach files">📎</button>
         <button class="btn-icon attach-btn" id="voiceBtn" onclick="toggleVoiceInput()" title="Voice input (browser STT)">🎤</button>
+        <button class="btn-icon attach-btn" onclick="promptAddWorkspaceFolder()" title="Point AI at a folder outside the project (adds to Allowed External Paths)">📂</button>
         <input type="file" id="fileInput" class="initial-hidden" multiple onchange="handleFileAttach(this.files)">
         <textarea id="chatInput" placeholder="Ask anything... drop files here or click 📎 (Shift+Enter for newline)" rows="1"
           onkeydown="handleKey(event)" oninput="autoSize(this)"
@@ -1161,21 +1437,43 @@
   <div class="right-panel hidden" id="rightPanel">
     <div class="panel-header">
       <h3>Settings</h3>
-      <button class="btn-sm" onclick="toggleRight()">✕</button>
+      <div style="display:flex;align-items:center;gap:6px">
+        <div class="settings-mode-toggle" id="settingsModeToggle" title="Simple mode hides advanced settings — good for first-time use">
+          <button class="btn-sm settings-mode-btn active" id="settingsModeSimple" type="button" onclick="setSettingsMode('simple')">Simple</button>
+          <button class="btn-sm settings-mode-btn" id="settingsModeAdvanced" type="button" onclick="setSettingsMode('advanced')">Advanced</button>
+        </div>
+        <button class="btn-sm" onclick="toggleRight()">✕</button>
+      </div>
     </div>
     <div id="promiseWidget" class="promise-widget initial-hidden"></div>
-    <div class="settings-section open" id="aboutSection">
+    <div class="settings-section open essential" id="aboutSection" data-essential="1">
       <h4>About</h4>
       <div class="settings-section-body">
         <div class="about-version" id="aboutVersion">Loading…</div>
         <div class="about-summary" id="aboutSummary"></div>
+        <div class="setting-row settings-row-spaced" style="margin-top:10px">
+          <button class="btn-sm" onclick="replayOnboardingTour()" title="Show the welcome tour again">▶ Replay welcome tour</button>
+        </div>
       </div>
     </div>
-    <div class="settings-section">
+    <div class="settings-section essential" data-essential="1">
       <h4>Connection<button class="settings-reset-btn" onclick="event.stopPropagation();resetSettingsSection('connection')" title="Reset to defaults">↺ Reset</button></h4>
       <div class="setting-row">
         <label>Ollama Host</label>
-        <input type="text" id="ollamaHost" title="Ollama Host" value="http://localhost:11434" onchange="updateSetting('ollamaHost',this.value)" />
+        <input type="text" id="ollamaHost" title="Where Ollama is running (default localhost:11434 — leave alone unless you know you've moved it)" value="http://localhost:11434" onchange="updateSetting('ollamaHost',this.value)" />
+      </div>
+    </div>
+    <div class="settings-section" id="settingsConnectors">
+      <h4>🔌 Connectors</h4>
+      <div class="setting-row settings-note">
+        Services the agent can connect to. Live connectors show real status; others are design-stage
+        (the contract — required secrets, scopes, and safety controls — is defined but the live integration is not built yet).
+        Email send/read already works today for Gmail and Outlook via SMTP/IMAP below.
+      </div>
+      <div id="connectorGallery" class="connector-gallery"></div>
+      <div class="setting-row settings-row-spaced">
+        <button class="btn-sm" onclick="loadConnectorGallery()">🔄 Refresh</button>
+        <span id="connectorGalleryStatus" class="settings-status-inline"></span>
       </div>
     </div>
     <div class="settings-section" id="settingsSmtp">
@@ -1315,6 +1613,82 @@
       </div>
       <div id="slackStatus" class="settings-status-line">Loading...</div>
     </div>
+    <div class="settings-section" id="settingsWebhooks">
+      <h4>Outgoing Webhooks</h4>
+      <div class="setting-row settings-note">
+        POST a JSON payload to your own endpoints when jobs and autonomy runs finish. Failed deliveries retry with backoff and land in a dead-letter queue you can redeliver or discard.
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="text" id="webhookUrlInput" placeholder="https://your-endpoint.example/hook" class="settings-flex-input">
+        <button class="btn-sm primary" onclick="addWebhook()">Add</button>
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="password" id="webhookSecretInput" placeholder="Optional HMAC secret" class="settings-flex-input">
+        <input type="text" id="webhookEventsInput" placeholder="Events (comma-separated, blank = all)" class="settings-flex-input">
+      </div>
+      <div id="webhookList" class="settings-status-line">Loading...</div>
+      <div id="webhookDeadLetters"></div>
+    </div>
+    <div class="settings-section" id="settingsGovernedLoop">
+      <h4>Governed Agent Loop</h4>
+      <div class="setting-row settings-note">
+        Shadow telemetry from the governed pass: the current working memory, plus a human-gated review queue of staged brain-updates and answers flagged for review. Approving a brain-update is the only thing that writes a fact.
+      </div>
+      <div id="governedWorkingMemory" class="settings-status-line">Loading...</div>
+      <div id="governedReviewQueue"></div>
+      <div class="setting-row settings-action-row" style="margin-top:8px">
+        <button class="btn-sm" id="governedReplayBtn" onclick="runReplayNow()">Replay drained answers</button>
+        <span id="governedReplayStatus" class="muted"></span>
+      </div>
+      <div id="governedReplayCandidates"></div>
+      <div id="governedMetrics"></div>
+    </div>
+
+    <div class="settings-section" id="settingsBrowserAudit">
+      <h4>Browser Audit Log</h4>
+      <div class="setting-row settings-note">
+        Every browser navigate, click, fill, read, and screenshot is recorded to
+        .harness/browser-audit.jsonl with a timestamp, launch mode, target URL, and outcome.
+        Page text and cookie values are never written here.
+      </div>
+      <div class="setting-row settings-action-row">
+        <button class="btn-sm" onclick="loadBrowserAuditLog()">Refresh</button>
+      </div>
+      <div id="browserAuditLogList" class="settings-status-line">Loading...</div>
+    </div>
+
+    <div class="settings-section" id="settingsBrowserSessions">
+      <h4>Browser Cookie / Session Vault</h4>
+      <div class="setting-row settings-note">
+        Save the current browser login as a named, scoped session (cookies + storage) under
+        .harness/browser-sessions instead of pointing at a raw profile dir. Set
+        HARNESS_BROWSER_SESSION=&lt;name&gt; to auto-restore it. Listing shows metadata only.
+      </div>
+      <div class="setting-row settings-action-row">
+        <input type="text" id="browserSessionNameInput" placeholder="Session name (e.g. github-login)" class="settings-flex-input">
+        <button class="btn-sm primary" onclick="saveBrowserSession()">Save current login</button>
+      </div>
+      <div class="setting-row settings-action-row">
+        <button class="btn-sm" onclick="loadBrowserSessions()">Refresh</button>
+        <span id="browserSessionStatus" class="muted"></span>
+      </div>
+      <div id="browserSessionsList" class="settings-status-line">Loading...</div>
+    </div>
+
+    <div class="settings-section" id="settingsBrowserRedaction">
+      <h4>Browser Redaction</h4>
+      <div class="setting-row settings-note">
+        Keep secrets out of the browser audit log. These apply at write time.
+      </div>
+      <div class="setting-row">
+        <label><input type="checkbox" id="browserRedactValues" onchange="saveBrowserRedaction()"> Redact form-fill values (e.g. passwords)</label>
+      </div>
+      <div class="setting-row">
+        <label><input type="checkbox" id="browserRedactUrlOrigin" onchange="saveBrowserRedaction()"> Log URL origin only (drop path &amp; query string)</label>
+      </div>
+      <div id="browserRedactionStatus" class="settings-status-line"></div>
+    </div>
+
     <div class="settings-section" id="settingsWhatsapp">
       <h4>WhatsApp Status</h4>
       <div class="setting-row settings-note">
@@ -1342,12 +1716,12 @@
       </div>
       <div id="desktopInputEvidence" class="settings-status-line">Loading...</div>
     </div>
-    <div class="settings-section">
+    <div class="settings-section essential" data-essential="1">
       <h4>Generation<button class="settings-reset-btn" onclick="event.stopPropagation();resetSettingsSection('modelGen')" title="Reset to defaults">↺ Reset</button></h4>
       <div class="setting-row">
         <label>Temperature</label>
         <div class="slider-row">
-          <input type="range" min="0" max="2" step="0.1" value="0.7" id="tempSlider" title="Temperature"
+          <input type="range" min="0" max="2" step="0.1" value="0.7" id="tempSlider" title="Higher = more creative and varied; lower = more focused and predictable. Default 0.7 is a good starting point."
             oninput="document.getElementById('tempVal').textContent=this.value;updateSetting('temperature',this.value)">
           <span class="slider-val" id="tempVal">0.7</span>
         </div>
@@ -1557,45 +1931,84 @@
     </div>
     <div class="settings-section" id="curatorSettingsSection">
       <h4>Skill Curator</h4>
-      <div class="setting-row">
-        <label for="curatorEnabled">Enable scheduler</label>
-        <input type="checkbox" id="curatorEnabled" onchange="updateCuratorSetting('enabled', this.checked)" />
+      <div class="setting-row inline">
+        <div class="setting-main">
+          <label for="curatorEnabled">Enable scheduler</label>
+          <span class="setting-desc">Periodically archives stale, unused skills while the system is idle.</span>
+        </div>
+        <label class="skill-toggle">
+          <input type="checkbox" id="curatorEnabled" onchange="updateCuratorSetting('enabled', this.checked)" />
+          <span class="skill-toggle-track"></span>
+          <span class="skill-toggle-thumb"></span>
+        </label>
       </div>
-      <div class="setting-row">
-        <label for="curatorIntervalHours">Interval (hours)</label>
+      <div class="setting-row inline">
+        <div class="setting-main">
+          <label for="curatorIntervalHours">Interval (hours)</label>
+          <span class="setting-desc">How often the curator runs a sweep.</span>
+        </div>
         <input type="number" id="curatorIntervalHours" min="1" max="8760" value="168" onchange="updateCuratorSetting('intervalHours', Number(this.value))" />
       </div>
-      <div class="setting-row">
-        <label for="curatorIdleMinutes">Idle threshold (minutes)</label>
+      <div class="setting-row inline">
+        <div class="setting-main">
+          <label for="curatorIdleMinutes">Idle threshold (minutes)</label>
+          <span class="setting-desc">Wait until the system has been idle this long before running.</span>
+        </div>
         <input type="number" id="curatorIdleMinutes" min="1" max="1440" value="120" onchange="updateCuratorSetting('idleThresholdMinutes', Number(this.value))" />
       </div>
-      <div class="setting-row">
-        <label for="curatorStaleDays">Stale after (days)</label>
+      <div class="setting-row inline">
+        <div class="setting-main">
+          <label for="curatorStaleDays">Stale after (days)</label>
+          <span class="setting-desc">Skills untouched for this many days become archive candidates.</span>
+        </div>
         <input type="number" id="curatorStaleDays" min="1" max="3650" value="60" onchange="updateCuratorSetting('staleDays', Number(this.value))" />
       </div>
-      <div class="setting-row">
-        <label for="curatorMinViews">Min views before archive</label>
+      <div class="setting-row inline">
+        <div class="setting-main">
+          <label for="curatorMinViews">Min views before archive</label>
+          <span class="setting-desc">Keep a skill until it has been surfaced at least this many times.</span>
+        </div>
         <input type="number" id="curatorMinViews" min="0" max="1000" value="1" onchange="updateCuratorSetting('minViewsBeforeArchive', Number(this.value))" />
       </div>
-      <div class="setting-row">
-        <label for="curatorMaxArchive">Max archives per run</label>
+      <div class="setting-row inline">
+        <div class="setting-main">
+          <label for="curatorMaxArchive">Max archives per run</label>
+          <span class="setting-desc">Cap how many skills the curator can archive in a single sweep.</span>
+        </div>
         <input type="number" id="curatorMaxArchive" min="1" max="100" value="5" onchange="updateCuratorSetting('maxArchivePerRun', Number(this.value))" />
       </div>
-      <div class="setting-row">
-        <label for="curatorEnableLlm">Enable LLM merge phase</label>
-        <input type="checkbox" id="curatorEnableLlm" onchange="updateCuratorSetting('enableLlmPhase', this.checked)" />
+      <div class="setting-row inline">
+        <div class="setting-main">
+          <label for="curatorEnableLlm">Enable LLM merge phase</label>
+          <span class="setting-desc">Let a model consolidate overlapping skills — slower, but higher quality.</span>
+        </div>
+        <label class="skill-toggle">
+          <input type="checkbox" id="curatorEnableLlm" onchange="updateCuratorSetting('enableLlmPhase', this.checked)" />
+          <span class="skill-toggle-track"></span>
+          <span class="skill-toggle-thumb"></span>
+        </label>
       </div>
       <div class="trace-detail">Settings persist in <code>.harness/settings.json</code>. The scheduler always honors the kill switch and only runs when the system has been idle for the threshold above.</div>
       <div id="curatorSettingsStatus" class="trace-detail initial-hidden"></div>
     </div>
     <div class="settings-section" id="automationSchedulerSettingsSection">
       <h4>Automation Scheduler</h4>
-      <div class="setting-row">
-        <label for="automationSchedulerEnabled">Enable scheduler</label>
-        <input type="checkbox" id="automationSchedulerEnabled" checked onchange="updateAutomationSchedulerSetting('enabled', this.checked)" />
+      <div class="setting-row inline">
+        <div class="setting-main">
+          <label for="automationSchedulerEnabled">Enable scheduler</label>
+          <span class="setting-desc">Runs due automation jobs automatically when the system is idle.</span>
+        </div>
+        <label class="skill-toggle">
+          <input type="checkbox" id="automationSchedulerEnabled" checked onchange="updateAutomationSchedulerSetting('enabled', this.checked)" />
+          <span class="skill-toggle-track"></span>
+          <span class="skill-toggle-thumb"></span>
+        </label>
       </div>
-      <div class="setting-row">
-        <label for="automationSchedulerIdleMinutes">Idle threshold (minutes)</label>
+      <div class="setting-row inline">
+        <div class="setting-main">
+          <label for="automationSchedulerIdleMinutes">Idle threshold (minutes)</label>
+          <span class="setting-desc">Wait until the system has been idle this long before running jobs.</span>
+        </div>
         <input type="number" id="automationSchedulerIdleMinutes" min="1" max="60" value="2" onchange="updateAutomationSchedulerSetting('idleThresholdMinutes', Number(this.value))" />
       </div>
       <div class="trace-detail">Runs due automation jobs when the system has been idle. Respects the kill switch and active capability grants.</div>
@@ -1633,7 +2046,7 @@
       <div id="aboutPanel" class="trace-detail">Version information loading...</div>
       <div id="releaseVerificationPanel" class="trace-detail initial-hidden"></div>
     </div>
-    <div class="settings-section">
+    <div class="settings-section essential" data-essential="1">
       <h4>Agent Identity</h4>
       <div class="setting-row">
         <label for="agentNameInput">Name</label>
@@ -1711,6 +2124,106 @@
       </div>
     </div>
     <div class="settings-section">
+      <h4>🛡️ Harness Controls</h4>
+      <div class="settings-section-body">
+        <!-- Run Profile -->
+        <div class="setting-row">
+          <label>Run Profile</label>
+          <select id="runProfileSelect" onchange="applyRunProfile(this.value)">
+            <option value="">— None —</option>
+          </select>
+          <div class="setting-hint" id="runProfileDescription"></div>
+        </div>
+        <!-- Injection Defence -->
+        <div class="setting-row">
+          <label>Injection Defence</label>
+          <div style="display:flex;gap:6px">
+            <div class="mode-opt injection-mode-option active" onclick="setInjectionMode('off',this)">
+              <div class="mode-t">Off</div>
+            </div>
+            <div class="mode-opt injection-mode-option" onclick="setInjectionMode('flag',this)">
+              <div class="mode-t">⚠️ Flag</div>
+            </div>
+            <div class="mode-opt injection-mode-option" onclick="setInjectionMode('block',this)">
+              <div class="mode-t">🛑 Block</div>
+            </div>
+          </div>
+        </div>
+        <!-- Read-before-write gate -->
+        <div class="setting-row">
+          <label>Read-before-write Gate</label>
+          <div style="display:flex;gap:6px">
+            <div class="mode-opt rbw-mode-option active" onclick="setRbwMode('off',this)">
+              <div class="mode-t">Off</div>
+            </div>
+            <div class="mode-opt rbw-mode-option" onclick="setRbwMode('warn',this)">
+              <div class="mode-t">⚠️ Warn</div>
+            </div>
+            <div class="mode-opt rbw-mode-option" onclick="setRbwMode('enforce',this)">
+              <div class="mode-t">🔒 Enforce</div>
+            </div>
+          </div>
+        </div>
+        <!-- Repo Map -->
+        <div class="setting-row">
+          <label>Repo Map</label>
+          <div id="repoMapInfo" class="setting-hint">Not loaded</div>
+          <button class="btn-sm" onclick="refreshRepoMap(false)">Load</button>
+          <button class="btn-sm" onclick="refreshRepoMap(true)">🔄 Rescan</button>
+        </div>
+        <!-- Memory Staleness -->
+        <div class="setting-row">
+          <label>Memory Health</label>
+          <div id="memoryHealthInfo" class="setting-hint">—</div>
+          <button class="btn-sm" onclick="checkMemoryHealth()">Check</button>
+        </div>
+        <!-- Task Contract -->
+        <div class="setting-row">
+          <label>Task Contract (current)</label>
+          <div id="taskContractInfo" class="setting-hint" style="font-size:11px;white-space:pre-wrap;max-height:100px;overflow:auto;">No active contract</div>
+        </div>
+      </div>
+    </div>
+
+    <details class="settings-advanced-fold">
+      <summary>🔬 Evaluation &amp; Prompts</summary>
+      <!-- Confidence Calibration -->
+      <div class="settings-section">
+        <h4>📊 Confidence Calibration</h4>
+        <div class="settings-section-body">
+          <div id="calibrationReports" class="setting-hint">No reports yet</div>
+          <button class="btn-sm" onclick="loadCalibrationReports()">Load Reports</button>
+        </div>
+      </div>
+      <!-- Golden Traces -->
+      <div class="settings-section">
+        <h4>🏆 Golden Traces</h4>
+        <div class="settings-section-body">
+          <div id="goldenTracesList" class="setting-hint">No traces</div>
+          <button class="btn-sm" onclick="loadGoldenTraces()">Load Traces</button>
+        </div>
+      </div>
+      <!-- Versioned Prompts -->
+      <div class="settings-section">
+        <h4>📝 Versioned Prompts</h4>
+        <div class="settings-section-body">
+          <div class="setting-row">
+            <label>Prompt Registry</label>
+            <select id="promptRegistrySelect" onchange="loadPromptRegistry(this.value)">
+              <option value="">— Select —</option>
+            </select>
+          </div>
+          <div id="promptVersionInfo" class="setting-hint">Select a registry</div>
+          <div style="display:flex;gap:6px;margin-top:6px">
+            <button class="btn-sm" onclick="loadPromptRegistries()">Refresh</button>
+            <button class="btn-sm" onclick="rollbackActivePrompt()">↩ Rollback</button>
+            <button class="btn-sm" onclick="saveNewPromptVersion()">💾 Save Version</button>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <div class="settings-section">
       <h4>System Prompt</h4>
       <div class="setting-row">
         <textarea id="sysPrompt" placeholder="Leave empty for default..." onchange="updateSetting('systemPrompt',this.value)"></textarea>
@@ -1734,7 +2247,7 @@
         <div class="mode-d">Only reads auto-approved.</div>
       </div>
     </div>
-    <div class="settings-section">
+    <div class="settings-section essential" data-essential="1">
       <h4>Download Model</h4>
       <div class="setting-row">
         <label>Model name (e.g. llama3.1:8b)</label>
@@ -1874,9 +2387,80 @@
   </div>
 </div>
 
+  <!-- First-visit onboarding modal. Shown once, then dismissed forever via localStorage. -->
+  <div class="onboard-modal hidden-by-default" id="onboardModal" role="dialog" aria-modal="true" aria-labelledby="onboardTitle">
+    <div class="onboard-dialog">
+      <h2 id="onboardTitle">👋 Welcome to the Ollama Agent Harness</h2>
+      <p>This is a local AI assistant that can chat with you, read your files, run code, search the web, and more — all on your own computer.</p>
+      <div class="onboard-steps">
+        <div class="onboard-step"><div class="onboard-step-num">1</div><div><strong>Pick a model</strong><span>Use the dropdown at the top. If it's empty, install one by running <code>ollama pull llama3.2</code> in a terminal.</span></div></div>
+        <div class="onboard-step"><div class="onboard-step-num">2</div><div><strong>Type a question</strong><span>The chat box is at the bottom of the screen.</span></div></div>
+        <div class="onboard-step"><div class="onboard-step-num">3</div><div><strong>Approve actions</strong><span>The first time the AI tries to read a file or run a command, you'll see an Approve / Deny prompt. The default Safety Mode asks before everything.</span></div></div>
+      </div>
+      <p style="margin-bottom:8px"><strong style="color:var(--text)">Try one of these:</strong></p>
+      <div class="onboard-examples" id="onboardExamples">
+        <button type="button" class="onboard-example" data-prompt="Summarise what files are in this project and what it does.">📂 Summarise this project</button>
+        <button type="button" class="onboard-example" data-prompt="Help me write a small Python script that prints today's date.">🐍 Write a Python script</button>
+        <button type="button" class="onboard-example" data-prompt="What's the weather in London today?">🌤 Look up today's weather</button>
+      </div>
+      <div class="onboard-actions">
+        <label><input type="checkbox" id="onboardDontShow" checked> Don't show this again</label>
+        <button type="button" class="btn-sm" onclick="dismissOnboardModal(false)">Skip</button>
+        <button type="button" class="btn-sm primary" onclick="dismissOnboardModal(true)">Got it</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Teammate setup wizard. -->
+  <div class="teammate-modal hidden-by-default" id="teammateModal" role="dialog" aria-modal="true" aria-labelledby="teammateTitle">
+    <div class="teammate-dialog">
+      <h2 id="teammateTitle">🤝 Set up your teammate</h2>
+      <p class="lead">Your teammate writes a Daily Brief summarising activity, runs, and pending decisions — and delivers it on the schedule you pick, even when the chat tab is closed.</p>
+      <div class="teammate-field">
+        <label for="teammateTime">When should the brief land?</label>
+        <input type="time" id="teammateTime" value="08:00">
+        <div class="hint">Your local time. The teammate fires once per scheduled minute.</div>
+      </div>
+      <div class="teammate-field">
+        <label>Which days?</label>
+        <div class="teammate-days" id="teammateDays"></div>
+        <div class="hint">Defaults to all 7 days. Click to toggle.</div>
+      </div>
+      <div class="teammate-field">
+        <label>Where should it land?</label>
+        <div class="teammate-channels" id="teammateChannels"></div>
+        <div class="hint">A copy is always saved to <code>.harness/documents/</code>. Telegram, Discord and Slack require connectors configured in Settings.</div>
+      </div>
+      <div class="teammate-field">
+        <label for="teammateBriefingPrompt">Custom briefing (optional)</label>
+        <textarea id="teammateBriefingPrompt" placeholder="e.g. The weather for London today, my next 3 calendar events, and 3 top tech headlines."></textarea>
+        <div class="hint">Leave blank for the default activity brief. When set, your teammate runs this through the model with live web search and delivers the result.</div>
+      </div>
+      <div class="teammate-field">
+        <label for="teammateBriefingMaxWords">Keep it under (words)</label>
+        <input type="number" id="teammateBriefingMaxWords" min="20" max="1000" value="150">
+        <div class="hint">Only applies to a custom briefing.</div>
+      </div>
+      <div class="teammate-field">
+        <label for="teammateCalendarPath">Calendar file (optional)</label>
+        <input type="text" id="teammateCalendarPath" placeholder=".ics file path, e.g. C:\\Users\\you\\calendar.ics">
+        <div class="hint">Path to a local <code>.ics</code> file. Upcoming events are added to the briefing. Leave blank to skip.</div>
+      </div>
+      <div class="teammate-actions">
+        <span class="left" id="teammateNextRunHint"></span>
+        <button type="button" class="btn-sm" onclick="dismissTeammateWizard()">Cancel</button>
+        <button type="button" class="btn-sm" onclick="teammateSaveAndRunNow()">Save & test now</button>
+        <button type="button" class="btn-sm primary" onclick="teammateSave()">Save</button>
+      </div>
+    </div>
+  </div>
+
 <script src="./marked.min.js"></script>
 <script src="./chatHistory.js?v=3"></script>
 <script src="./toolActivity.js?v=1"></script>
-<script src="./app.js?v=19"></script>
+<script src="./execMetrics.js?v=1"></script>
+<script src="./followUps.js?v=1"></script>
+<script src="./personaBundle.js?v=1"></script>
+<script src="./app.js?v=31"></script>
 </body>
 </html>

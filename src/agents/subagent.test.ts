@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { appendSubagentRoutingMetric, createSubagentTool, listSubagentRoutingMetrics, resolveSubagentConfig, type SubagentConfig } from './subagent';
+import { UnknownAgentError } from './agentId';
 
 describe('subagent presets', () => {
   it('resolves preset config with routed model defaults', () => {
@@ -86,6 +87,72 @@ describe('subagent presets', () => {
     };
     const resolved = resolveSubagentConfig(config, 'find docs');
     expect(resolved.systemPrompt).toBe('CUSTOM');
+  });
+
+  it('throws UnknownAgentError when agentId resolves to nothing', () => {
+    const config: SubagentConfig = { name: '', systemPrompt: '', agentId: 'not_a_real_agent' };
+    expect(() => resolveSubagentConfig(config, 'anything')).toThrow(UnknownAgentError);
+  });
+
+  it('treats a disabled custom agent as missing (no silent fallthrough)', () => {
+    const config: SubagentConfig = {
+      name: '',
+      systemPrompt: '',
+      agentId: 'shadow',
+      customAgents: [{
+        id: 'shadow', name: 'Shadow', description: 'd', systemPrompt: 'sp', enabled: false, filePath: '<test>',
+      }],
+    };
+    expect(() => resolveSubagentConfig(config, 'x')).toThrow(UnknownAgentError);
+  });
+
+  it('the UnknownAgentError lists known agents to help the caller', () => {
+    const config: SubagentConfig = { name: '', systemPrompt: '', agentId: 'typo' };
+    let caught: UnknownAgentError | undefined;
+    try {
+      resolveSubagentConfig(config, 'x');
+    } catch (err) {
+      caught = err as UnknownAgentError;
+    }
+    expect(caught).toBeDefined();
+    expect(caught!.available).toContain('researcher');
+    expect(caught!.available).toContain('developer');
+  });
+
+  it('prepends identityPrefix to a resolved built-in agent system prompt', () => {
+    const config: SubagentConfig = {
+      name: '',
+      systemPrompt: '',
+      agentId: 'researcher',
+      identityPrefix: 'Your name is Oracle. Be imaginative and bold.',
+    };
+    const resolved = resolveSubagentConfig(config, 'find docs');
+    expect(resolved.systemPrompt.startsWith('Your name is Oracle.')).toBe(true);
+    // Role definition is still intact after the persona preamble.
+    expect(resolved.systemPrompt).toContain('Researcher');
+  });
+
+  it('identityPrefix is a no-op when empty', () => {
+    const config: SubagentConfig = {
+      name: '',
+      systemPrompt: '',
+      agentId: 'researcher',
+      identityPrefix: '',
+    };
+    const resolved = resolveSubagentConfig(config, 'find docs');
+    expect(resolved.systemPrompt.startsWith('You are a Researcher')).toBe(true);
+  });
+
+  it('identityPrefix is not double-prepended on repeated resolves', () => {
+    const config: SubagentConfig = {
+      name: '',
+      systemPrompt: '',
+      agentId: 'researcher',
+      identityPrefix: 'Your name is Oracle.',
+    };
+    const once = resolveSubagentConfig(config, 'x');
+    const twice = resolveSubagentConfig(once, 'x');
+    expect(twice.systemPrompt).toBe(once.systemPrompt);
   });
 });
 

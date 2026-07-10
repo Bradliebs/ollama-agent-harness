@@ -17,8 +17,8 @@ describe('knowledge graph mermaid', () => {
 
   it('renders nodes and edges', () => {
     const out = composeMermaidGraph([entity('a', 'alpha'), entity('b', 'beta'), edge('a', 'b', 'uses')]);
-    expect(out).toMatch(/n_a\["file: alpha"\]/);
-    expect(out).toMatch(/n_b\["file: beta"\]/);
+    expect(out).toMatch(/n_a\["alpha"\]/);
+    expect(out).toMatch(/n_b\["beta"\]/);
     expect(out).toMatch(/n_a -->\|uses\| n_b/);
   });
 
@@ -43,7 +43,7 @@ describe('knowledge graph mermaid', () => {
     const records: GraphRecord[] = [];
     for (let i = 0; i < 50; i++) records.push(entity(`e${i}`, `name${i}`));
     const out = composeMermaidGraph(records);
-    const nodeLines = out.split('\n').filter((l) => /n_e\d+\["file:/.test(l));
+    const nodeLines = out.split('\n').filter((l) => /n_e\d+\["name\d+"\]/.test(l));
     expect(nodeLines.length).toBeLessThanOrEqual(30);
   });
 });

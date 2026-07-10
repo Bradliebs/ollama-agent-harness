@@ -1,7 +1,7 @@
 {
-  "assetName": "ollama-agent-harness-v0.5.9.zip",
-  "commit": "628965d65f48a3f726b2368aae2931d282c677af",
-  "version": "0.5.9",
-  "builtAt": "2026-05-16T17:43:18.860Z",
-  "releaseUrl": "https://github.com/Bradliebs/ollama-agent-harness/releases/tag/v0.5.9"
+  "assetName": "ollama-agent-harness-v0.6.5.zip",
+  "commit": "b526991e7ca27703bb645fea3e6403c66d03ee40",
+  "version": "0.6.5",
+  "builtAt": "2026-06-05T08:10:56.101Z",
+  "releaseUrl": "https://github.com/Bradliebs/ollama-agent-harness/releases/tag/v0.6.5"
 }

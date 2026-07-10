@@ -2,11 +2,26 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
-import { getAgentOutputDir } from './pathResolution';
+import { getAgentOutputDir, getProjectRoot } from './pathResolution';
+import { isSandboxActive, isShellBinaryAllowed } from './sandboxGuards';
 
 const MAX_OUTPUT_SIZE = 50_000;
-const MAX_COMMAND_LENGTH = 500;
+const MAX_COMMAND_LENGTH = 2000;
 
+// NOTE: BLOCKED_PATTERNS is a footgun hint, NOT a security boundary. It is a
+// deny-list and deny-lists are inherently incomplete (it catches `rm -rf /`
+// but not `rm -rf ~` or `rm -rf /home/user`, etc.). Do NOT treat a clean
+// pass here as "safe to run", and do not grow this list expecting it to
+// become containment — that reinforces a false mental model.
+//
+// The actual containment for this tool is, in order of importance:
+//   1. `shell: false` on spawn (no shell metacharacter interpretation),
+//   2. single-command-only enforcement (findUnquotedShellOperator rejects
+//      ;, |, &&, ||, redirects, command substitution outside quotes), and
+//   3. the deny-first PermissionEngine, which asks before bash runs in
+//      default mode.
+// These patterns only exist to short-circuit the most obvious self-inflicted
+// disasters with a clearer message; they are not the safety perimeter.
 const BLOCKED_PATTERNS = [
   /\brm\s+(-[a-zA-Z]*)?r[a-zA-Z]*f\b.*\/\s*$/,   // rm -rf /
   /\bmkfs\b/,
@@ -256,6 +271,55 @@ function unsupportedWindowsBuiltin(executable: string): string | null {
   return `Blocked: ${executable} is a Windows shell built-in, but bash runs direct executables only. Use file_read/list_files for inspection, file_write/file_edit for files, make_directory to create folders, or a direct executable such as git, npm, node, or powershell.exe.`;
 }
 
+// Unix-only commands that don't exist on default Windows installs and
+// previously surfaced as opaque `spawn <cmd> ENOENT` errors. Each entry
+// names the right tool/replacement so the model can recover on the next
+// turn instead of retrying the same unix-ism. Only fires on Windows;
+// Linux/macOS spawn these for real.
+const UNIX_ONLY_REDIRECTS: Record<string, string> = {
+  ls: "use the list_files tool (cross-platform) instead of shelling out",
+  cat: "use the file_read tool instead of shelling out",
+  head: "use file_read and slice the result in your reasoning; head isn't on Windows",
+  tail: "use file_read; tail isn't on Windows without extra tooling",
+  grep: "use the grep tool (separate from bash) for pattern search",
+  rg: "use the grep tool for pattern search",
+  ack: "use the grep tool for pattern search",
+  find: "use list_files to enumerate files; Windows 'find' is a different program and rarely what you want",
+  pwd: "the cwd is the project root; no shell call needed",
+  touch: "use file_write with empty content to create the file",
+  mv: "use the file_move tool",
+  cp: "use file_read + file_write, or call 'powershell.exe Copy-Item' explicitly",
+  rm: "use the file_delete tool",
+  sed: "use the file_edit tool for in-place text edits; sed isn't on Windows",
+  awk: "awk isn't on Windows; use 'node -e' or 'python -c' for text transformation",
+  wc: "wc isn't on Windows; use file_read and count lines/words yourself, or 'node -e'",
+  cut: "cut isn't on Windows; transform with 'node -e' or 'python -c'",
+  tr: "tr isn't on Windows; transform with 'node -e' or 'python -c'",
+  uniq: "uniq isn't on Windows; sort + dedupe via 'node -e' or 'python -c'",
+  diff: "diff isn't standard on Windows; use 'git diff' for tracked files",
+  less: "less isn't on Windows; use file_read to inspect files",
+  more: "avoid shelling for pagers; use file_read to inspect files",
+  man: "man isn't on Windows; consult the tool's --help or its docs",
+  basename: "basename isn't on Windows; compute it inline (node path.basename / python os.path.basename)",
+  dirname: "dirname isn't on Windows; compute it inline (node path.dirname / python os.path.dirname)",
+  realpath: "realpath isn't on Windows; use 'node -e' with path.resolve or 'python -c' with os.path.realpath",
+  du: "du isn't on Windows; use 'powershell.exe Get-ChildItem | Measure-Object Length -Sum'",
+  df: "df isn't on Windows; use 'powershell.exe Get-PSDrive'",
+  file: "the 'file' command isn't on Windows; inspect extensions and magic bytes via file_read",
+};
+
+function unsupportedUnixCommand(executable: string): string | null {
+  if (process.platform !== 'win32') return null;
+  // Path-qualified invocations target a specific binary the agent chose;
+  // assume they know it exists (e.g. WSL paths, MSYS2 installs).
+  if (executable.includes('\\') || executable.includes('/')) return null;
+  if (WINDOWS_NATIVE_EXT_PATTERN.test(executable)) return null;
+  const normalized = executable.toLowerCase();
+  const redirect = UNIX_ONLY_REDIRECTS[normalized];
+  if (!redirect) return null;
+  return `Blocked: '${executable}' is a Unix command not available on Windows. ${redirect}.`;
+}
+
 function formatOutput(stdout: string, stderr: string): string {
   const output = [
     stdout ? `STDOUT:\n${stdout.slice(0, MAX_OUTPUT_SIZE)}` : '',
@@ -367,9 +431,22 @@ export const BashTool: Tool = {
 
     return new Promise((resolve) => {
       const executable = argv[0]!;
+      // Sandbox: only the curated read/test/build binaries are permitted.
+      // Checked here (after argv parsing) rather than during isSafeCommand
+      // because sandbox state is a runtime predicate, not a static rule.
+      if (isSandboxActive() && !isShellBinaryAllowed(executable)) {
+        const msg = `Blocked by sandbox: '${executable}' is not in the sandbox shell allowlist. Disengage sandbox to run this command.`;
+        resolve({ success: false, output: msg, error: msg });
+        return;
+      }
       const blockedBuiltin = unsupportedWindowsBuiltin(executable);
       if (blockedBuiltin) {
         resolve({ success: false, output: blockedBuiltin, error: blockedBuiltin });
+        return;
+      }
+      const blockedUnix = unsupportedUnixCommand(executable);
+      if (blockedUnix) {
+        resolve({ success: false, output: blockedUnix, error: blockedUnix });
         return;
       }
       const rawArgs = argv.slice(1);
@@ -405,6 +482,7 @@ export const BashTool: Tool = {
       }
 
       const child = spawn(spawnExecutable, spawnArgs, {
+        cwd: getProjectRoot(),
         shell: false,
         windowsHide: true,
         windowsVerbatimArguments: useVerbatim,
@@ -416,16 +494,21 @@ export const BashTool: Tool = {
         else stderr = (stderr + text).slice(0, MAX_OUTPUT_SIZE + 1_000);
       };
 
+      let killEscalationId: NodeJS.Timeout | undefined;
       const settle = (result: ToolResult): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timeoutId);
+        if (killEscalationId) clearTimeout(killEscalationId);
         resolve(result);
       };
 
       const timeoutId = setTimeout(() => {
         timedOut = true;
         child.kill('SIGTERM');
+        killEscalationId = setTimeout(() => {
+          try { child.kill('SIGKILL'); } catch { /* already dead */ }
+        }, 5_000);
       }, timeout);
 
       child.stdout?.on('data', (chunk) => appendLimited('stdout', chunk));

@@ -1,7 +1,7 @@
 import type { Server } from 'http';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { app, stopUploadsAutoPrune } from './server';
+import { app, drainChatBackgroundTasksForTest, stopUploadsAutoPrune } from './server';
 
 jest.setTimeout(15_000);
 
@@ -36,6 +36,7 @@ describe('GET /api/autonomy/state', () => {
   });
 
   afterAll(async () => {
+    await drainChatBackgroundTasksForTest();
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
@@ -98,6 +99,7 @@ describe('GET /api/autonomy/log', () => {
   });
 
   afterAll(async () => {
+    await drainChatBackgroundTasksForTest();
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
@@ -157,6 +159,7 @@ describe('GET /api/autonomy/history', () => {
   });
 
   afterAll(async () => {
+    await drainChatBackgroundTasksForTest();
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
@@ -233,6 +236,7 @@ describe('GET /api/autonomy/state/stream (SSE)', () => {
   });
 
   afterAll(async () => {
+    await drainChatBackgroundTasksForTest();
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });

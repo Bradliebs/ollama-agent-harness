@@ -68,6 +68,29 @@ describe('AutomationScheduler.tick', () => {
     expect(result).toMatchObject({ executed: 0, reason: 'within check interval' });
   });
 
+  it('fires the onIdle hook when the system is idle, not when it is active', async () => {
+    const idleDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-auto-sched-'));
+    const onIdle = jest.fn();
+    const idleScheduler = makeScheduler(idleDir, {
+      getLastUserActivityMs: () => Date.now() - 30 * 60_000, // idle 30m
+      idleThresholdMinutes: 10,
+      onIdle,
+    });
+    await idleScheduler.tick(new Date(Date.now() + CHECK_INTERVAL_MS + 1));
+    expect(onIdle).toHaveBeenCalledTimes(1);
+
+    const activeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-auto-sched-'));
+    const onIdleActive = jest.fn();
+    const now = Date.now() + CHECK_INTERVAL_MS + 1;
+    const activeScheduler = makeScheduler(activeDir, {
+      getLastUserActivityMs: () => now, // active right now → not idle
+      idleThresholdMinutes: 10,
+      onIdle: onIdleActive,
+    });
+    await activeScheduler.tick(new Date(now));
+    expect(onIdleActive).not.toHaveBeenCalled();
+  });
+
   it('executes due jobs when conditions are met', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-auto-sched-'));
     const t0 = new Date('2026-05-01T00:00:00.000Z');

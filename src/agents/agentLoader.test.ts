@@ -6,6 +6,7 @@ import {
   loadAgentDefinitions,
   parseAgentFile,
   resolveAgentDefinition,
+  scanAgentDefinitions,
   writeCustomAgent,
 } from './agentLoader';
 
@@ -90,5 +91,105 @@ describe('agentLoader', () => {
     const customs = await loadAgentDefinitions(projectDir);
     const resolved = resolveAgentDefinition('researcher', customs);
     expect(resolved?.systemPrompt).toBe('Custom system prompt.');
+  });
+
+  it('emits invalid-agent-id diagnostic and drops the agent', async () => {
+    const dir = path.join(projectDir, '.harness', 'agents');
+    await fs.mkdir(dir, { recursive: true });
+    // Frontmatter id with a space — file basename is fine, but the loaded
+    // id fails AGENT_ID_PATTERN, so the agent is dropped with a diagnostic.
+    await fs.writeFile(path.join(dir, 'broken.md'), '---\nid: "bad id"\nname: Broken\ndescription: nope\n---\nbody', 'utf-8');
+    const scan = await scanAgentDefinitions(projectDir);
+    expect(scan.agents.find((a) => a.id === 'bad id')).toBeUndefined();
+    expect(scan.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'bad id', reason: 'invalid-agent-id' }),
+      ]),
+    );
+  });
+
+  it('emits unknown-sub-agent-ref diagnostic when a sub-recipe targets a missing id', async () => {
+    const dir = path.join(projectDir, '.harness', 'agents');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      path.join(dir, 'composer.md'),
+      [
+        '---',
+        'id: composer',
+        'name: Composer',
+        'description: Composes',
+        'sub_agents:',
+        '  - name: real',
+        '    agent_id: researcher',
+        '  - name: bogus',
+        '    agent_id: nonexistent_agent',
+        '---',
+        'compose',
+      ].join('\n'),
+      'utf-8',
+    );
+    const scan = await scanAgentDefinitions(projectDir);
+    expect(scan.agents.find((a) => a.id === 'composer')).toBeDefined();
+    expect(scan.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'composer',
+          reason: 'unknown-sub-agent-ref',
+          message: expect.stringContaining('nonexistent_agent'),
+        }),
+      ]),
+    );
+    // The valid ref should NOT produce a diagnostic.
+    const diagnosticsForResearcher = scan.diagnostics.filter(
+      (d) => d.reason === 'unknown-sub-agent-ref' && d.message.includes('researcher'),
+    );
+    expect(diagnosticsForResearcher).toHaveLength(0);
+  });
+
+  it('does not emit unknown-sub-agent-ref when the target is built-in', async () => {
+    const dir = path.join(projectDir, '.harness', 'agents');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      path.join(dir, 'orchestrator.md'),
+      [
+        '---',
+        'id: orchestrator',
+        'name: Orchestrator',
+        'description: orchestrates',
+        'sub_agents:',
+        '  - name: investigate',
+        '    agent_id: researcher',
+        '---',
+        'go',
+      ].join('\n'),
+      'utf-8',
+    );
+    const scan = await scanAgentDefinitions(projectDir);
+    expect(scan.diagnostics.filter((d) => d.reason === 'unknown-sub-agent-ref')).toHaveLength(0);
+  });
+
+  it('drops sub-recipe refs whose agent_id has invalid syntax', async () => {
+    const dir = path.join(projectDir, '.harness', 'agents');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      path.join(dir, 'parent.md'),
+      [
+        '---',
+        'id: parent',
+        'name: Parent',
+        'description: parent',
+        'sub_agents:',
+        '  - name: bad_syntax',
+        '    agent_id: "has spaces"',
+        '  - name: good',
+        '    agent_id: researcher',
+        '---',
+        'body',
+      ].join('\n'),
+      'utf-8',
+    );
+    const scan = await scanAgentDefinitions(projectDir);
+    const parent = scan.agents.find((a) => a.id === 'parent');
+    expect(parent?.subAgents).toEqual([{ name: 'good', agentId: 'researcher' }]);
   });
 });

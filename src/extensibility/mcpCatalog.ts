@@ -5,8 +5,8 @@
 // limit, no authentication). New entries land via PR.
 //
 // Each entry is a copy-paste-ready install hint plus a description.
-// The Harness doesn't run MCP servers itself today; this surface is a
-// discovery aid so users know what to wire when an MCP integration ships.
+// The Harness runs stdio MCP servers itself (see src/extensibility/mcpRuntime.ts);
+// this catalog is a discovery aid listing servers users can wire and provision.
 
 export interface McpCatalogEntry {
   /** Stable short name. */
@@ -119,5 +119,53 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
     install: 'npx -y @modelcontextprotocol/server-google-maps',
     homepage: 'https://github.com/modelcontextprotocol/servers/tree/main/src/google-maps',
     requiresEnv: ['GOOGLE_MAPS_API_KEY'],
+  },
+  {
+    name: 'google-calendar',
+    description: 'Read, create, update, delete Google Calendar events across multiple accounts. Needs Google Cloud OAuth (one-time setup).',
+    tags: ['calendar', 'google', 'community'],
+    install: 'npx -y @cocal/google-calendar-mcp',
+    homepage: 'https://github.com/nspady/google-calendar-mcp',
+    requiresEnv: ['GOOGLE_OAUTH_CREDENTIALS'],
+  },
+  {
+    name: 'gmail',
+    description: 'Read, search, send, and manage Gmail messages and labels. Uses the same Google Cloud OAuth keys file as google-calendar.',
+    tags: ['mail', 'gmail', 'google', 'community'],
+    install: 'npx -y @gongrzhe/server-gmail-autoauth-mcp',
+    homepage: 'https://github.com/GongRzhe/Gmail-MCP-Server',
+    requiresEnv: [],
+  },
+  {
+    name: 'ms-365',
+    description: 'Microsoft 365 / Outlook: mail, calendar, OneDrive, contacts, To Do. Device-code login on first run — no Azure setup needed for personal accounts.',
+    tags: ['calendar', 'mail', 'microsoft', 'outlook', 'community'],
+    install: 'npx -y @softeria/ms-365-mcp-server --preset outlook',
+    homepage: 'https://github.com/Softeria/ms-365-mcp-server',
+    requiresEnv: [],
+  },
+  {
+    name: 'playwright',
+    description: 'Modern browser automation — handles JS-heavy sites, screenshots, scraping, form-fill. Better than puppeteer for current web.',
+    tags: ['browser', 'automation', 'scraping', 'community'],
+    install: 'npx -y @executeautomation/playwright-mcp-server',
+    homepage: 'https://github.com/executeautomation/mcp-playwright',
+    requiresEnv: [],
+  },
+  {
+    name: 'duckduckgo',
+    description: 'Web search via DuckDuckGo — no API key required. Complements brave-search.',
+    tags: ['search', 'web', 'community'],
+    install: 'npx -y duckduckgo-mcp-server',
+    homepage: 'https://github.com/zhsama/duckduckgo-mpc-server',
+    requiresEnv: [],
+  },
+  {
+    name: 'youtube',
+    description: 'Fetch YouTube transcripts and video metadata. Useful for "summarize this video" workflows.',
+    tags: ['youtube', 'video', 'transcript', 'community'],
+    install: 'npx -y @anaisbetts/mcp-youtube',
+    homepage: 'https://github.com/anaisbetts/mcp-youtube',
+    requiresEnv: [],
   },
 ];

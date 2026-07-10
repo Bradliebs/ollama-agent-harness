@@ -1,12 +1,13 @@
 import type { Message } from 'ollama';
 import type { ContinuityCheckpoint, ToolCall } from '../types';
+import type { CompactionStrategy } from '../context/compaction';
 import { estimateTokenCount } from '../context/assembly';
 
 export interface CheckpointInput {
   sessionId: string;
   messages: Message[];
   summary: string;
-  strategy: string;
+  strategy: CompactionStrategy;
   maxTokens: number;
   pendingToolCalls?: ToolCall[];
 }

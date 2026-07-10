@@ -1,4 +1,4 @@
-import { calibrateModelRoutingPolicy, createHelperAgentConfig, createModelRoutingPolicyFromRegistry, getHelperAgentPreset, selectModelForTask, summarizeRoutingMetrics } from './modelRouting';
+import { calibrateModelRoutingPolicy, createHelperAgentConfig, createModelRoutingPolicyFromRegistry, getHelperAgentPreset, selectModelForChatTurn, selectModelForTask, summarizeRoutingMetrics } from './modelRouting';
 
 describe('model routing', () => {
   it('selects the small model for bounded read-only helper work', () => {
@@ -80,5 +80,37 @@ describe('model routing', () => {
       strongModel: 'gpt-4.1',
       fallbackModel: 'llama3.1:8b',
     });
+  });
+
+  it('routes high-risk coding turns to the strong chat model in balanced mode', () => {
+    const decision = selectModelForChatTurn({
+      requestedModel: 'local-small',
+      message: 'Fix this TypeScript bug, edit the file, and run the tests.',
+      candidates: { small: 'cheap', default: 'balanced', strong: 'sonnet', fallback: 'free' },
+    }, { chatRoutingMode: 'balanced' });
+
+    expect(decision).toMatchObject({ model: 'sonnet', routed: true, tier: 'strong', taskType: 'coding', risk: 'high' });
+    expect(decision.reasons).toEqual(expect.arrayContaining(['coding task', 'state-modifying turn']));
+  });
+
+  it('keeps simple chat on the small model in cost-saver mode', () => {
+    const decision = selectModelForChatTurn({
+      requestedModel: 'expensive-default',
+      message: 'Say hello in one sentence.',
+      candidates: { small: 'cheap', default: 'balanced', strong: 'sonnet' },
+    }, { chatRoutingMode: 'costSaver' });
+
+    expect(decision).toMatchObject({ model: 'cheap', routed: true, tier: 'small', taskType: 'chat', risk: 'low' });
+  });
+
+  it('preserves the selected model when chat routing is disabled', () => {
+    const decision = selectModelForChatTurn({
+      requestedModel: 'manual-choice',
+      message: 'Research the latest SDK release notes.',
+      candidates: { strong: 'sonnet' },
+    }, { chatRoutingMode: 'off' });
+
+    expect(decision).toMatchObject({ model: 'manual-choice', routed: false });
+    expect(decision.reasons).toContain('chat routing disabled');
   });
 });
