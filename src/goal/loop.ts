@@ -46,6 +46,7 @@ export type GoalLoopReason =
   | 'externally_paused'    // pause / abandon detected mid-flight
   | 'externally_blocked'
   | 'externally_abandoned'
+  | 'verification_inadequate' // execution-grounded goal has no deterministic proof check
   | 'goal_missing'         // goal disappeared from store
   | 'not_runnable';        // goal is in a state the loop cannot drive
 
@@ -121,12 +122,9 @@ export async function* runGoalLoop(deps: RunGoalLoopDeps): AsyncGenerator<GoalLo
   const startedAtMs = now().getTime();
   yield { type: 'loop_start', goalId, budget, at: new Date(startedAtMs).toISOString() };
 
-  // Honest verification check: if this is an execution-grounded task (code/edit/
-  // data) with no deterministic proof check, surface it so callers/UI can warn
-  // that a "complete" here would only look done. Observability only — the loop
-  // still respects the goal's declared checks and does not block on this. The same
-  // verdict is attached to the completion `loop_end` so the terminal record is
-  // self-contained.
+  // Execution-grounded tasks must declare deterministic proof before work starts.
+  // Otherwise the loop could spend its budget and mark a model-judged result done
+  // even though no executable check proves the requested behavior.
   const adequacy = assessVerificationAdequacy(goal.target, goal.verification, deps.verificationStrategies);
   yield {
     type: 'verification_adequacy',
@@ -134,6 +132,19 @@ export async function* runGoalLoop(deps: RunGoalLoopDeps): AsyncGenerator<GoalLo
     adequacy,
     at: now().toISOString(),
   };
+  if (!adequacy.adequate) {
+    const blockedAt = now();
+    await transitionGoal(projectDir, goalId, 'blocked', {
+      block: {
+        reason: adequacy.reason,
+        blockedAt: blockedAt.toISOString(),
+        needs: `Add a required ${adequacy.taskKind} proof check before resuming this goal.`,
+      },
+    }, blockedAt);
+    yield { type: 'transitioned', goalId, from: 'active', to: 'blocked', at: blockedAt.toISOString() };
+    yield { type: 'loop_end', goalId, reason: 'verification_inadequate', iterations: 0, verified: false, at: blockedAt.toISOString() };
+    return;
+  }
   // Snapshot of the same verdict for persistence on completion (see GoalCompletionVerdict).
   const completionVerdict = (): GoalCompletionVerdict => ({
     verified: adequacy.adequate,

@@ -26,8 +26,10 @@ export interface ConductorStep {
   id: number;
   intent: string;
   suggestedToolsets: string[];
-  /** `code` steps are verified by running the toolchain after they mutate files. */
+  /** `code` steps are verified by running the toolchain. */
   verify: { kind: 'code' | 'none' };
+  /** Whether the step itself must successfully mutate a file. Defaults to true for code steps. */
+  requiresChange?: boolean;
   done: boolean;
   /** Set when this step was inserted to fix a failed verification of step `id`. */
   remediationFor?: number;
@@ -176,13 +178,14 @@ export async function runConductor(options: ConductorOptions): Promise<Conductor
     }
 
     let verifyPassed = true;
-    if (step.verify.kind === 'code' && result.fileChanged) {
-      const v = await verifier(step);
-      if (v) {
-        verifications.push(v);
-        emit({ type: 'verify', step, result: v });
-        verifyPassed = v.overall !== 'fail';
-      }
+    if (step.verify.kind === 'code') {
+      const changeRequired = step.requiresChange !== false;
+      const verification = !changeRequired || result.fileChanged
+        ? await verifier(step) ?? failedCodeVerification('No verifier result was produced for a required code step.')
+        : failedCodeVerification('The code step completed without a successful file mutation.');
+      verifications.push(verification);
+      emit({ type: 'verify', step, result: verification });
+      verifyPassed = verification.overall === 'pass';
     }
 
     if (!verifyPassed) {
@@ -193,6 +196,7 @@ export async function runConductor(options: ConductorOptions): Promise<Conductor
           intent: buildRemediationIntent(verifications),
           suggestedToolsets: step.suggestedToolsets,
           verify: step.verify,
+          requiresChange: step.requiresChange,
           done: false,
           remediationFor: step.id,
         });
@@ -236,6 +240,15 @@ export async function runConductor(options: ConductorOptions): Promise<Conductor
   }
 }
 
+function failedCodeVerification(detail: string): VerificationResult {
+  return {
+    domain: 'code',
+    overall: 'fail',
+    checks: [{ name: 'required_code_change', domain: 'code', status: 'fail', detail }],
+    timestamp: new Date().toISOString(),
+  };
+}
+
 // ─── Plan parsing ───────────────────────────────────────────────────
 
 export const PLANNER_SYSTEM_PROMPT = [
@@ -245,11 +258,14 @@ export const PLANNER_SYSTEM_PROMPT = [
   'Rules:',
   '- 1 to 8 steps. Fewer is better. Each step is a single coherent unit of work.',
   '- Mark a step with "verify":"code" when it writes or edits source code that',
-  '  can be typechecked or tested; otherwise use "verify":"none".',
+  '  can be typechecked or tested, or when the step explicitly runs code verification.',
+  '- Set "requiresChange":false for verification-only steps that run tests or checks',
+  '  without editing files. Code-editing steps default to true.',
+  '- Otherwise use "verify":"none".',
   '- suggestedToolsets is an optional hint (e.g. ["filesystem"], ["web"]).',
   '',
   'Respond with ONLY a JSON object, no prose, no markdown fences:',
-  '{"steps":[{"intent":"...","suggestedToolsets":["filesystem"],"verify":"code"}]}',
+  '{"steps":[{"intent":"...","suggestedToolsets":["filesystem"],"verify":"code","requiresChange":true}]}',
 ].join('\n');
 
 /**
@@ -273,6 +289,7 @@ export function parsePlan(text: string, task: string): ConductorPlan {
           intent,
           suggestedToolsets: normalizeToolsets(e.suggestedToolsets),
           verify: { kind: e.verify === 'code' ? 'code' : 'none' },
+          requiresChange: typeof e.requiresChange === 'boolean' ? e.requiresChange : undefined,
           done: false,
         });
       }
