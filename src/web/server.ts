@@ -4580,15 +4580,20 @@ app.get('/api/system/health', async (_req, res) => {
 // model's actual window, and (b) whether the configured vision model
 // is actually installed. Both diagnoses are surfaced as small banners
 // in the UI so users can spot misconfigurations without reading logs.
-// Context caps the harness has shipped as defaults at various points.
-// Auto-bump only when the configured value matches one of these — that
-// way an explicit user choice (1024 in tests, or 16k for a deliberate
-// throttle) is respected while a stale default (8192 / 4096) gets
-// rescued when the model exposes a larger window.
-const LEGACY_CONTEXT_DEFAULTS = new Set<number>([8192, 4096]);
-
+//
+// Only `0` (and anything ≤ 0) means "auto": use the model's full
+// detected window. 8192/4096 used to be silently reinterpreted as
+// "stale legacy default" and auto-bumped to the full window too — but
+// that meant an explicit choice of 8192 (e.g. the "Local Small" preset,
+// or anyone deliberately capping a CPU-only box's RAM) was ignored and
+// the harness would ask Ollama for the model's *maximum* context
+// instead, which can be 128k+ tokens and blow past available RAM
+// (llama-server OOM during KV-cache allocation). Any configured value
+// > 0 is now honoured as a real cap. Migrating settings.json away from
+// a genuinely stale 8192/4096 default is handled separately, and only
+// on explicit request, by `harness doctor --fix` (see doctorFix.ts).
 function isAutoContextMode(configured: number): boolean {
-  return !configured || configured <= 0 || LEGACY_CONTEXT_DEFAULTS.has(configured);
+  return !configured || configured <= 0;
 }
 
 function resolveEffectiveContextMaxTokensFromKnown(configured: number, detected: number | null): number {

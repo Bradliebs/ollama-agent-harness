@@ -470,6 +470,17 @@ Full flag list: `harness --help`. Backend selection: `--backend cerebras`
    `qwen2.5-coder:7b/14b` have known tool-emission issues mitigated by
    the JSON-in-content fallback parser.
 
+### Chat fails instantly with "llama-server reported out-of-memory during startup"
+
+The harness auto-detects and requests the model's *full* advertised
+context window by default, which can be 128k+ tokens on recent models —
+the KV-cache buffer that Ollama/llama.cpp then tries to allocate scales
+with that window and can require far more RAM than a CPU-only box has.
+Set an explicit, non-zero **Max context tokens** cap in Settings →
+Context Continuity (any value works, including 4096/8192 — those are
+honoured as real caps, not silently ignored) sized to what the machine
+can actually hold, and retry.
+
 ### `image_analyze` says "vision not configured"
 
 1. Look at the System Health Vision banner — it tells you whether the

@@ -3847,6 +3847,66 @@ describe('web server API validation', () => {
     }
   });
 
+  it('honors an explicit contextMaxTokens of 8192/4096 as a real cap instead of auto-bumping to the detected window', async () => {
+    // Regression test: 8192 and 4096 used to be treated as "stale legacy
+    // defaults" and silently ignored in favour of the model's full detected
+    // context window (e.g. 131072 for a model that advertises a large
+    // window). That meant an explicit, deliberate cap — like the UI's
+    // "Local Small" preset — was never actually sent to Ollama as num_ctx,
+    // which could ask llama-server to allocate a KV cache far larger than
+    // the machine's RAM and crash the model load with an OOM error.
+    for (const explicitCap of [8192, 4096]) {
+      const createClient = jest.fn(() => ({}) as never);
+      const getModelContextWindow = jest.fn().mockResolvedValue(131072);
+      const restore = setWebRuntimeOverrides({
+        createClient,
+        getModelContextWindow,
+        getTools: () => [],
+        createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+        createSession: () => ({
+          initialize: jest.fn().mockResolvedValue(undefined),
+          markStatus: jest.fn().mockResolvedValue(undefined),
+          append: jest.fn().mockResolvedValue(undefined),
+          readAll: jest.fn().mockResolvedValue([]),
+          getSessionId: jest.fn().mockReturnValue('test-session'),
+        }) as never,
+        startNewSession: jest.fn(),
+        getEvolvedPrompt: async (basePrompt) => basePrompt,
+        assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+        runQueryLoop: async function* (): AsyncGenerator<LoopEvent> {
+          yield { type: 'text', content: 'mocked response' };
+          yield { type: 'done', reason: 'completed', turns: 1 };
+        },
+        onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+        rebuildSemanticMemory: async () => [],
+      });
+
+      try {
+        await request('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contextMaxTokens: explicitCap }),
+        });
+        const response = await request('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: 'hello', model: 'test-model' }),
+        });
+
+        expect(response.status).toBe(200);
+        const body = await response.text();
+        expect(body).toContain('data: {"type":"text","content":"mocked response"}');
+        expect(createClient).toHaveBeenCalledWith('test-model', expect.any(String), explicitCap);
+        const settings = await request('/api/settings');
+        await expect(settings.json()).resolves.toMatchObject({
+          context: { configuredMaxTokens: explicitCap, detectedMaxTokens: 131072, effectiveMaxTokens: explicitCap },
+        });
+      } finally {
+        restore();
+      }
+    }
+  });
+
   it('applies an execution contract and verification to actionable coding chat', async () => {
     let capturedConfig: LoopConfig | undefined;
     const restore = setWebRuntimeOverrides({
