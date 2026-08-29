@@ -11,6 +11,30 @@ keywords:
 estimated_reading_time: 18
 ---
 
+## Unreleased
+
+### Fix: explicit `contextMaxTokens` of 8192/4096 was silently ignored
+
+`resolveEffectiveContextMaxTokensFromKnown` (`src/web/server.ts`) treated
+`contextMaxTokens` values of `8192` and `4096` as "stale legacy defaults"
+and auto-bumped them to the model's full detected context window — even
+when a user (or the Settings UI's "Local Small" preset) had deliberately
+set one of those values as a cap. On a model that advertises a large
+window (128k+ tokens, common on recent releases), this meant the harness
+asked Ollama for a `num_ctx` far larger than intended, and llama-server
+could fail to start with `ggml_backend_cpu_buffer_type_alloc_buffer:
+failed to allocate buffer` (tens to hundreds of GB requested for the
+KV cache).
+
+Only `0` (and anything ≤ 0) now means "auto-detect the full window";
+any configured value above `0`, including 4096/8192, is honoured as a
+real cap. Rescuing a genuinely stale on-disk `8192`/`4096` default is
+still available, but only as an explicit, opt-in action via
+`harness doctor --fix` (unchanged) — it is no longer applied silently
+at request time.
+
+Thanks to jkalonji for reporting and fixing this.
+
 ## Ollama Agent Harness v0.6.6
 
 A governance pass beside the product path, plus operator surfaces for what the
