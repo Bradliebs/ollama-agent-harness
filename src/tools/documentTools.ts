@@ -495,10 +495,12 @@ async function writePdf(filePath: string, title: string, content: Record<string,
     const range = doc.bufferedPageRange();
     for (let i = 0; i < range.count; i++) {
       doc.switchToPage(range.start + i);
-      doc.fontSize(8).fillColor('#94A3B8').font('Helvetica')
-        .text(`Page ${i + 1} of ${range.count}`,
-          LEFT_MARGIN, doc.page.height - BOTTOM_MARGIN + 20,
-          { width: pageWidth, align: 'center' });
+      const footer = `Page ${i + 1} of ${range.count}`;
+      doc.fontSize(8).fillColor('#94A3B8').font('Helvetica');
+      doc.text(footer,
+        LEFT_MARGIN + (pageWidth - doc.widthOfString(footer)) / 2,
+        doc.page.height - BOTTOM_MARGIN + 20,
+        { lineBreak: false });
     }
 
     doc.end();
