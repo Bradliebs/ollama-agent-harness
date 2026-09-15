@@ -20,11 +20,16 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Dependency security and contracts
+        run: |
+          npm audit --audit-level=moderate
+          node --test scripts/dependency-contract.test.js
 
       - name: Typecheck
         run: npm run typecheck
@@ -32,8 +37,20 @@ jobs:
       - name: Test
         run: npm test -- --runInBand
 
+      - name: Launch contract
+        run: node --test scripts/check-runtime.test.js scripts/background-server.test.js
+
       - name: Build
         run: npm run build
+
+      - name: Background lifecycle integration
+        run: node --test scripts/background-server.integration.test.js
+
+      - name: Interrupted session resume integration
+        run: node --test scripts/resume.integration.test.js
+
+      - name: Development and frozen holdout contracts
+        run: node --test scripts/outcome-cases.test.js scripts/local-outcomes.integration.test.js scripts/holdout-cases.test.js scripts/cloud-mode.test.js
 
       - name: Smoke transport
         run: npm run smoke:transport
@@ -43,6 +60,9 @@ jobs:
 
       - name: Install browser for interactive smoke
         run: npx playwright install --with-deps chromium
+
+      - name: Built app outcome
+        run: node --test scripts/app-outcome.integration.test.js
 
       - name: Start UI
         run: |
@@ -68,3 +88,46 @@ jobs:
 
       - name: Smoke release archive
         run: npm run release:dry-run
+
+  portable-core:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            node: 24
+          - os: macos-latest
+            node: 24
+          - os: ubuntu-latest
+            node: 22.13.0
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: node --test scripts/dependency-contract.test.js
+      - run: npm run typecheck
+      - run: node --test scripts/check-runtime.test.js scripts/background-server.test.js
+      - run: npm test -- --runInBand --runTestsByPath src/setup/health.test.ts src/web/uiWiring.test.ts src/core/chatClientFactory.test.ts
+      - run: npm run build
+      - run: node --test scripts/background-server.integration.test.js
+      - run: node --test scripts/resume.integration.test.js
+      - run: node --test scripts/outcome-cases.test.js scripts/local-outcomes.integration.test.js scripts/holdout-cases.test.js scripts/cloud-mode.test.js
+      - run: npm run smoke:transport
+      - run: npx playwright install --with-deps chromium
+      - run: node --test scripts/app-outcome.integration.test.js
+      - name: Beginner setup and first-response smoke
+        run: npm run smoke:beginner
+      - name: Install NSIS on disposable Windows runner
+        if: runner.os == 'Windows'
+        run: choco install nsis --yes --no-progress
+      - name: Compile Windows installer
+        if: runner.os == 'Windows'
+        run: '& "${env:ProgramFiles(x86)}\NSIS\makensis.exe" installer/harness-installer.nsi'
+      - name: Active reinstall and uninstall preserve user data
+        if: runner.os == 'Windows'
+        run: npm run smoke:installer -- .\Harness-Setup.exe --install-dir "${{ runner.temp }}\Harness install"
