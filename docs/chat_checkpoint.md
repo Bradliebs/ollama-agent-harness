@@ -1,6 +1,31 @@
-# Chat Checkpoint — Governance of Learning
+---
+title: Chat Checkpoint
+description: Current modernization handoff with historical governance notes
+ms.date: 2026-09-15
+---
+
+## Current Checkpoint
+
+Branch: `dev`. Package version: `0.6.5`; modernization work is unreleased.
+Use [Modernization Status](MODERNIZATION-STATUS.md) as the current handoff.
+Git history and the remote branch determine commit/push status, not this note.
+
+- Cloud-only testing uses `glm-5.2:cloud`; local inference remains paused while
+  the user's separate GPU tests run. Do not restart Ollama or change GPU work.
+- Development v2 passed 36/36; the original frozen holdouts remain 12/24 and
+  were not retuned or rerun. The development prompts changed, not the graders.
+- Full Jest: 316 suites, 3,759 tests passed, one skipped, exit 0. The 41 offline
+  benchmark checks, 31 process/app/dependency checks, beginner browser smoke,
+  typecheck and release archive dry run passed.
+- Pending: live-model UI/app/recovery qualification, disposable Windows
+  installation testing, hosted CI/macOS and real-user usability. No new release.
+
+## Historical Governance Checkpoint
 
 _Last updated: 2026-06-11 • Repo: `ollama-agent-harness` • Branch: `dev` (v0.6.5)_
+
+The sections below describe the June checkpoint only; their branch, test and
+uncommitted-work statements are historical, not current operational guidance.
 
 ## Goal
 

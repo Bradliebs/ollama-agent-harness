@@ -2,7 +2,7 @@
 title: System Overview
 description: End-to-end overview of the Ollama Agent Harness — what it is, how it runs, and what has been built
 author: Bradliebs
-ms.date: 2026-05-31
+ms.date: 2026-09-15
 ms.topic: overview
 keywords:
   - ollama
@@ -12,11 +12,18 @@ keywords:
 estimated_reading_time: 8
 ---
 
-# Ollama Agent Harness — End-to-End Overview
-
 ## What it is
 
-A **local-first agentic runtime** (TypeScript / Node.js, currently **v0.6.4**) that wraps Ollama models with a browser UI, tool dispatch, permissions, persistence, and self-improvement infrastructure. Everything runs on your machine — no cloud accounts, no API keys beyond Ollama itself. You chat with a model; it can call tools (read/write files, run bash, search the web, analyze images, transcribe audio, generate documents, send emails), and the harness manages permissions, context, and history around that loop.
+A **local-first agentic runtime** (TypeScript / Node.js, package version **v0.6.5**
+with unreleased development changes) with a browser UI, tool dispatch,
+permissions, persistence and self-improvement infrastructure. Local inference
+needs no cloud account. Explicitly selected cloud models, remote Ollama hosts
+and network tools transmit data outside the machine and may incur charges.
+Tools run under the local user's permissions; cloud inference does not move
+filesystem execution to the provider.
+
+The current validation checkpoint is [Modernization Status](MODERNIZATION-STATUS.md).
+It separates offline checks, live cloud workflow evidence and outstanding release gates.
 
 The architecture deliberately borrows patterns from the Claude Code paper (*"Dive into Claude Code: The Design Space of Today's and Future AI Agent Systems"*), which is the design north star recorded in [FORGE.md](../FORGE.md).
 
@@ -24,10 +31,10 @@ The architecture deliberately borrows patterns from the Claude Code paper (*"Div
 
 These show up everywhere in the code:
 
-- **Local-first** — every storage path lives under `.harness/` in the working directory. No server-side cloud database.
-- **Model-agnostic** — Ollama is the default, but a chat-client factory abstracts Cerebras, Groq, GitHub Models, OpenAI, Mistral, OpenRouter, Replicate, and Cloudflare. No code path assumes a specific vendor.
-- **Env-gated additions** — new behaviour defaults OFF behind `HARNESS_*_ENABLED` flags, so existing installs keep working.
-- **Test-as-spec** — the test suite (1477+ tests across 132 suites) is the ground truth; when docs and tests disagree, the test wins.
+- **Local-first**: workspace state normally lives under the resolved project directory's `.harness/`; `HARNESS_PROJECT_DIR` can separate it from the installation. Background ownership and maintenance markers remain installation-local.
+- **Shared client contract**: Ollama is the default; a chat-client factory also abstracts cloud backends. Provider adapters and model routing still have provider-specific behavior.
+- **Explicit opt-ins**: experimental autonomy features keep their documented default-off gates. Runtime fixes and minimum-version requirements are not universally feature-flagged.
+- **Evidence-driven validation**: the 2026-09-14 full run passed 3,759 tests across 316 suites, with one skipped and exit code 0. Test expectations must also match stated task contracts; passing fixtures alone do not establish live-model reliability.
 - **Minimal scaffolding / deny-first safety / append-only state** — a simple while-loop agent core, deny rules override allow rules, and JSONL transcripts that compact by appending rather than deleting.
 
 ## How it runs
@@ -36,7 +43,7 @@ These show up everywhere in the code:
 flowchart LR
     A[Install Node + Ollama] -->|pull a model| B[Start harness<br/>start.bat / ./start.sh]
     B -->|opens browser| C[Chat UI<br/>127.0.0.1:4300]
-    C -->|message| D[Local model responds]
+    C -->|message| D[Selected local or cloud model responds]
     D -->|needs a tool?| E[Tools: read/write/search/run]
     E -->|result| D
     D -->|learns| F[Memory: skills, patterns, history]
@@ -55,7 +62,7 @@ Three user surfaces: the **web chat UI**, a **terminal client (TUI)**, and a **C
 | **permissions/** | Three-layer security: declarative engine allowlist per mode, opt-in capability registry (with kill-switch + audit), and a JSONL audit log that injects failure signals into the prompt. |
 | **persistence/** | Sessions, an append-only event store, a promise ledger (tracked obligations), and cross-session continuity. |
 | **services/** | The largest subsystem (~22 modules): self-learning heartbeat, trigger scheduler, concierge intent router, multi-agent squads, identity (SOUL/USER), semantic memory intelligence, per-model profiles, capability registry, artifact catalog. |
-| **web/** | A single large Express app — REST + SSE streaming chat + WebSocket fanout, serving the static SPA from `ui/`. |
+| **web/** | Express app with extracted route modules, REST and SSE streaming chat, and WebSocket fanout, serving the static SPA from `ui/`. |
 | **mycelium/** | A long-term, reward-weighted routing graph that classifies intent and routes through safety/agent/verifier/workflow nodes, updating edge weights with reward. |
 | **learning/ + eval/** | Extracts skill candidates from finished sessions, gates them through a multiplicative safety promotion gate, and runs adversarial probes (prompt-injection, secret-exfil, tool-misuse, safety-refusal) via a simulator. |
 | **observability/** | Prometheus `/metrics`, OpenInference/OTLP span export. |

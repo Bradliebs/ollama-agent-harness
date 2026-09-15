@@ -2,7 +2,7 @@
 title: AutoResearch Experiments
 description: How to run paired baseline-vs-candidate experiments with frozen evaluator identity and promotion evidence
 author: Bradliebs
-ms.date: 2026-06-09
+ms.date: 2026-09-15
 ms.topic: how-to
 keywords:
   - autoresearch
@@ -24,6 +24,17 @@ Use this lane when you want to test whether a model, prompt, skill, tool
 configuration, routing policy, or retrieval setting is better than the current
 baseline. It is a measurement and evidence path. It does not silently promote a
 candidate into durable policy.
+
+This paired experiment lane is separate from the twelve-task development and
+eight-task frozen workflow cohorts in
+[Workflow Outcome Benchmarks](VALIDATION-PROFILES.md#workflow-outcome-benchmarks).
+Do not combine their scores or treat a revised development prompt as an unchanged
+baseline comparison. [Modernization Status](MODERNIZATION-STATUS.md) records
+the current cloud results and their limits.
+
+CLI/history efficiency reporting includes all-attempt elapsed time per passing
+attempt, including failed work and replicate counts. Missing pass-count, token
+or price evidence remains unknown rather than becoming a zero-cost success.
 
 > [!WARNING]
 > Small task sets are smoke tests, not shipping evidence. Treat a winning

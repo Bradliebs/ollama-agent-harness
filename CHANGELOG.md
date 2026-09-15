@@ -2,16 +2,45 @@
 title: Ollama Agent Harness Changelog
 description: Release notes generated from local RPI changes logs for Ollama Agent Harness
 author: Bradliebs
-ms.date: 2026-06-22
+ms.date: 2026-09-15
 ms.topic: reference
 keywords:
-	- ollama
-	- release notes
-	- changelog
+  - ollama
+  - release notes
+  - changelog
 estimated_reading_time: 18
 ---
 
+## Unreleased Modernization
+
+Development branch changes; package and installer metadata remain at v0.6.5.
+No release tag, publication or installer runtime qualification is implied.
+
+- Require Node 22.13.0 or newer, recommend Node 24 LTS, and align setup,
+  launcher, installer and CI runtime checks.
+- Require explicit model selection and distinguish configured credentials from
+  verified inference in beginner setup. Confirm partial-session recovery.
+- Use an owning background supervisor for start/stop, preserve occupied ports,
+  and hold a maintenance lease across installer file operations.
+- Preserve tool-call IDs and transcript metadata on resume; separate torn JSONL
+  tails from subsequent appends without rewriting history.
+- Harden Ollama cancellation, structured retry status and benchmark deadlines;
+  record raw request usage, retry linkage and context bytes without inventing
+  missing token counts or costs.
+- Update document dependencies and PDF cleanup; support newline MCP stdio,
+  opt-in legacy Content-Length framing, pagination and cancellation.
+- Add versioned development outcomes, frozen AI-authored holdouts and explicit
+  cloud-only benchmark mode. Development v2 passed 36/36; original holdouts
+  remain 12/24. Prompts changed between development cohorts; no speedup claim.
+- Drain pending webhook and skill-usage writes before test fixture cleanup.
+  Full Jest passed 316 suites and 3,759 tests with one skipped and exit code 0.
+
+See [Modernization Status](docs/MODERNIZATION-STATUS.md) for the complete
+validation record and remaining installation, hosted CI and live-workflow gates.
+
 ## Ollama Agent Harness v0.6.6
+
+Planned release notes, not a published version in this checkout.
 
 A governance pass beside the product path, plus operator surfaces for what the
 agent learned while you were away. Shadow-first end-to-end: no default behaviour

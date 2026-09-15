@@ -2,7 +2,7 @@
 title: Ollama Agent Harness
 description: Local-first Ollama agent harness with tools, documents, Telegram, email, tracing, learning, and a browser UI
 author: Bradliebs
-ms.date: 2026-06-05
+ms.date: 2026-09-15
 ms.topic: overview
 keywords:
   - ollama
@@ -18,7 +18,7 @@ estimated_reading_time: 7
 
 ## What is this?
 
-Ollama Agent Harness is a local-first agent runtime that wraps Ollama models with a browser UI, tool dispatch, permissions, session management, and learning infrastructure. Everything runs on your machine. No cloud accounts, no API keys beyond Ollama itself.
+Ollama Agent Harness is a local-first agent runtime with a browser UI, tool dispatch, permissions, session management, and learning infrastructure. Local Ollama inference needs no cloud account. Configured cloud models, remote Ollama hosts, and network tools transmit data outside your machine; cloud execution may incur charges.
 
 You chat with a model, it can call tools (read/write files, run bash, search the web, analyze images, transcribe audio, generate documents, send emails), and the harness manages permissions, context, and history.
 
@@ -26,7 +26,13 @@ You chat with a model, it can call tools (read/write files, run bash, search the
 
 ### What's new since v0.6.5 (in development)
 
-Landed on `main` but not yet cut into a numbered release:
+Development work on `dev`; package metadata remains `0.6.5`. These changes are
+not yet a new numbered release.
+
+* Windows-first setup requires Node 22.13.0 or newer (24 LTS recommended), explicit model selection, and a confirmed Quick Test. Background launch preserves occupied ports; Stop targets only the owned server.
+* Interrupted-session recovery reports partial transcripts and preserves append-only history. Ollama cancellation and retries, MCP stdio interoperability, and document dependencies have additional regression coverage.
+* Cloud-only workflow testing can leave local GPUs available. The revised development cohort passed 36/36; the original frozen holdouts passed 12/24. These are different datasets, not a reliability guarantee or a like-for-like improvement.
+* Full Jest verification passed 316 suites and 3,759 tests, with one skipped and exit code 0. Installer execution and hosted cross-platform CI remain separate gates. See [Modernization Status](docs/MODERNIZATION-STATUS.md) for evidence and limitations.
 
 * **Governed Agent Loop v1** — a shadow-first governance pass beside the product path: confidence-mode labels, per-answer self-critique, a working-memory snapshot, and a human-gated review queue that writes to durable memory only on explicit approval. Idle replays re-ask drained answers and re-enter the same review queue. See [`docs/GOVERNED-LOOP.md`](docs/GOVERNED-LOOP.md).
 * **New HTTP surface** for the loop and supporting subsystems: `/api/working-memory`, `/api/review-queue/*`, `/api/replay-*`, `/api/governed-metrics`, plus `/api/webhooks/*` (including dead-letter redelivery) and `/api/mycelium/*` (router inspection, learning curve, feedback).
@@ -52,7 +58,7 @@ A small family of end-to-end experiences composed from existing harness primitiv
 flowchart LR
     A["🖥️ Install\nNode.js + Ollama"] -->|pull a model| B["🤖 Start Harness\nstart.bat / ./start.sh"]
     B -->|opens browser| C["🌐 Chat UI\nhttp://127.0.0.1:4300"]
-    C -->|type a message| D["💬 AI Responds\nusing local model"]
+    C -->|type a message| D["💬 AI Responds\nusing selected local or cloud model"]
     D -->|needs a file?| E["🔧 Tools\nread, write, search, run"]
     E -->|result| D
     D -->|learns| F["🧠 Memory\nskills, patterns, history"]
@@ -92,8 +98,8 @@ graph TD
 
 ### Prerequisites
 
-* [Node.js](https://nodejs.org/) 18+
-* [Ollama](https://ollama.com/) running locally with at least one model pulled (e.g. `ollama pull llama3.2`)
+* [Node.js](https://nodejs.org/) 24 LTS recommended, minimum 22.13.0
+* For local inference: [Ollama](https://ollama.com/) with a model you choose (e.g. `ollama pull llama3.2`). Alternatively, explicitly configure a supported cloud provider.
 
 ### Option A — Windows installer (easiest)
 
@@ -103,7 +109,7 @@ Download **Harness-Setup.exe** from the [latest release](https://github.com/Brad
 
 1. Clone this repo
 2. Double-click `start.bat` (Windows) or run `./start.sh` (Mac/Linux)
-3. Open **http://127.0.0.1:4300** in your browser
+3. Open the URL printed by the server, normally **http://127.0.0.1:4300**. An occupied port causes selection of another port, not termination of its owner.
 
 These launchers run the **assistant profile** (`HARNESS_PROFILE=assistant`) — the
 same harness with its proactive "Jarvis" features (ambient daily brief, voice,
@@ -116,7 +122,9 @@ npm install
 npm run ui
 ```
 
-Open **http://127.0.0.1:4300** in your browser. That is the full UI — start chatting in the main panel. This dev path runs a plain harness; set `HARNESS_PROFILE=assistant` first to turn the proactive assistant features on.
+Open the URL printed by the server. The terminal development path can use a
+different default port from the launchers. This dev path runs a plain harness;
+set `HARNESS_PROFILE=assistant` first to turn the proactive assistant features on.
 
 ### CLI mode
 
@@ -451,6 +459,8 @@ Skills are structured prompts that teach the model domain-specific tasks. They l
 ### MCP runtime
 
 The Tools dashboard includes a curated MCP catalog and a local MCP runtime panel. Runtime server definitions are persisted under `.harness/mcp/servers.json`; starting a server launches an external process and therefore requires an active `arbitrary-shell` capability grant. The first runtime layer supports configure, list, start, stop, status, and visible configured-tool metadata. Protocol-level tool invocation can build on this process manager without bypassing grants or audit logs.
+
+Stdio uses newline-delimited UTF-8 JSON by default and negotiates protocol version `2024-11-05`. Tool discovery follows pagination. Existing custom servers that require Content-Length framing must set `"framing": "content-length"` in their server definition. Unsupported negotiated versions fail explicitly. Compatibility tests include the official TypeScript SDK server; this does not claim support for newer optional MCP capabilities.
 
 ### Sessions and context
 

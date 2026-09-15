@@ -2,7 +2,7 @@
 title: Operating Services
 description: Contract for deterministic Agentic Service Mode services, persisted state, scheduler behavior, and model-agnostic routing
 author: Bradliebs
-ms.date: 2026-05-08
+ms.date: 2026-09-15
 ms.topic: concept
 keywords:
   - agentic service mode
@@ -17,6 +17,21 @@ estimated_reading_time: 5
 Operating services are local, deterministic service agents that keep state across chat turns. They handle ongoing requests such as reminders, bullet journals, site checks, and daily follow-ups without asking a chat model to scaffold an app or write task files.
 
 The harness routes these requests to `OPERATE_MODE` before model selection. This matters because the harness supports many model backends, and different models phrase tool plans differently. Service setup and service commands must work even when no model is selected.
+
+## Host Lifecycle
+
+Operating-service state is distinct from the process that hosts it. Windows
+background mode uses [start-background.bat](../start-background.bat) and an owning
+supervisor; [stop-server.bat](../stop-server.bat) requests shutdown through that
+supervisor, never by trusting a saved PID. The selected port can differ from 4300
+when another process already owns it. Tray navigation resolves the owned port.
+
+Stop active work before upgrading. Installation and uninstallation hold an
+exclusive maintenance lease and refuse unresolved ownership. For stale markers,
+supervisor loss and recovery procedures, see
+[Background Lifecycle](MODERNIZATION-STATUS.md#background-lifecycle). These
+safeguards do not make in-flight tool side effects transactional or provide
+exactly-once replay after interruption.
 
 ## Storage Contract
 

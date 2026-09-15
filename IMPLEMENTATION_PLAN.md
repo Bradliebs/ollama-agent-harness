@@ -1,4 +1,13 @@
-# Implementation Plan
+---
+title: Implementation Plan
+description: Completed task ledger with current modernization handoff
+ms.date: 2026-09-15
+---
+
+Current runtime changes, validation evidence and open qualification gates are
+tracked in [Modernization Status](docs/MODERNIZATION-STATUS.md). The task ledger
+below retains its existing completion flags; this documentation update does not
+enqueue new autonomous work or imply release approval.
 
 - [x] init-project — Initialize TypeScript project with tsconfig.json, package.json, and directory structure
 - [x] setup-ollama-client — Create the Ollama client abstraction layer with streaming and tool calling support

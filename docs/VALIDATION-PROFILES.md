@@ -1,4 +1,10 @@
-# Output validation profiles
+---
+title: Output Validation Profiles
+description: Answer-format profiles and independently checked workflow outcomes
+ms.date: 2026-09-15
+---
+
+## Output Validation Profiles
 
 The harness can score every final assistant answer against a deterministic
 contract called a **validation profile**. The profile is selected per turn —
@@ -80,3 +86,42 @@ You can add custom deterministic profiles in JSON via the **Custom profiles**
 section. Each custom profile lists `checks` with `code`, `severity` (`fail` or
 `warn`), `requiresAny` keywords, and an optional `scorePenalty`. Custom
 profiles are saved to `.harness/output-validation-profiles.json`.
+
+## Workflow Outcome Benchmarks
+
+Answer profiles are not independent proof that a file or application is correct.
+The bounded runner in [scripts/local-core-baseline.js](../scripts/local-core-baseline.js)
+uses real permission-checked tools and independently inspects generated artifacts.
+It has twelve development tasks and eight frozen separately AI-authored holdouts.
+Each live cohort uses three attempts per task, 60-second file-task deadlines,
+a 30-minute overall budget and a stop after three consecutive infrastructure failures.
+
+Build first, then validate the runner offline:
+
+```powershell
+npm run build
+node --test scripts/outcome-cases.test.js scripts/local-outcomes.integration.test.js scripts/holdout-cases.test.js scripts/cloud-mode.test.js
+```
+
+Live cloud development testing requires an already listed, authenticated Ollama
+cloud model and a new report path:
+
+```powershell
+node scripts/local-core-baseline.js --cloud --outcomes results/new-cloud-development.json glm-5.2:cloud
+```
+
+The runner uses `http://127.0.0.1:11434`. It requires an explicit model name,
+checks Ollama cloud destination metadata in parent and worker processes, performs
+no downloads and provides no local fallback. It trusts the daemon to honor its
+advertised route. Cloud requests transmit synthetic fixtures and tool results and
+consume the signed-in account's allowance; costs are not computed.
+
+Without `--cloud`, the runner permits only its named local models and rejects
+remote metadata. Do not run local cohorts while another workload needs the GPU.
+
+Development reports include a dataset version and digest. The clarified
+`development-v2` cohort passed 36/36; the older development cohort scored 29/36
+under different prompts. The frozen holdout cohort remains 12/24. Do not compare
+these as an unchanged-task improvement, relax graders to recover failures, or
+tune against the holdouts. Full evidence and remaining gaps are in
+[Modernization Status](MODERNIZATION-STATUS.md).

@@ -1,26 +1,38 @@
-# Start Here — Complete Beginner Guide
+---
+title: Start Here
+description: Windows-first setup with explicit local or cloud model selection and a confirmed first task
+ms.date: 2026-09-15
+---
 
 ## What is this?
 
-This is a local AI assistant that runs entirely on your computer. No cloud subscriptions, no API keys, no data leaving your machine. You chat with it in your browser, and it can read files, write code, search the web, and learn from your preferences.
+This assistant runs in your browser with a server on your computer. Choose a local Ollama model for local inference, or configure a cloud provider. Cloud models send conversation data and permitted tool results to that provider and may incur charges. Web search, email, remote Ollama hosts, and other network tools also communicate outside your computer.
 
-## Setup (10 minutes, one time only)
+Windows is the primary installation target. Linux and macOS retain the portable core; native packaging and platform validation are separate release gates.
+
+Normal harness use does not require administrator privileges or `sudo`. Run it
+as your ordinary user. Installing system-wide prerequisites or maintaining a
+separate Linux service may require a deliberate administrator action.
+
+## Setup
+
+Download and account setup time depends on your connection and chosen model. No model is downloaded by opening the setup panel.
 
 ### Step 1: Install Node.js
 
 Node.js is the engine that runs this app. You only need to install it once.
 
 1. Go to **<https://nodejs.org/>**
-2. Click the big green **LTS** button (the one that says "Recommended for Most Users")
+2. Choose **Node.js 24 LTS**. The minimum supported version is **22.13.0**.
 3. Run the downloaded installer
 4. Click **Next** through every screen (all defaults are fine)
 5. When it finishes, you're done with this step
 
-**How to check it worked:** Open a terminal (see "How to open a terminal" below), type `node --version`, and press Enter. You should see a version number like `v20.x.x`.
+**How to check it worked:** Open a terminal (see "How to open a terminal" below), type `node --version`, and press Enter. Check that it meets the minimum above, for example `v24.x.x`.
 
-### Step 2: Install Ollama
+### Step 2: Choose local or cloud inference
 
-Ollama runs the AI models on your computer.
+For local inference, install Ollama and download a model you choose. The example below is a starting point, not a measured recommendation for every tool task or computer.
 
 1. Go to **<https://ollama.com/>**
 2. Click **Download** and install it
@@ -34,6 +46,15 @@ Ollama runs the AI models on your computer.
 
 **How to check it worked:** Type `ollama list` in the terminal. You should see `llama3.2` in the list.
 
+For a supported cloud provider, you can skip the local model download, start the harness, and configure that provider's credentials in Settings before selecting its model. A configured key is not proof that the provider works. Ollama-hosted cloud models still need a reachable Ollama service and send data remotely.
+
+If your GPU is busy with other work, select an Ollama cloud model instead of
+loading a local model. Sign in on the same Ollama installation the harness uses;
+see [Ollama Cloud Models](docs/MODEL-PRESETS.md#adding-an-ollama-cloud-model).
+Cloud selection moves that model's inference off your GPU, not every optional
+vision, audio or helper workload. Do not restart a shared Ollama service while
+another session depends on it.
+
 ### Step 3: Start the Harness
 
 **Option A — Double-click (easiest):**
@@ -41,7 +62,9 @@ Ollama runs the AI models on your computer.
 1. Find the file called `start.bat` in this folder
 2. Double-click it
 3. A black window will appear showing the setup progress
-4. When it says "Starting Ollama Agent Harness", open your browser and go to **<http://127.0.0.1:4300>**
+4. Use the address printed after the server starts, normally **<http://127.0.0.1:4300>**. If the port is occupied, the server selects another one without stopping the process using it.
+
+The launcher asks for a workspace for your files and memory. Keep it outside the installation folder. A source checkout rebuilds on launch; a complete prebuilt release does not need a source build.
 
 **Option B — Terminal:**
 
@@ -49,19 +72,33 @@ Ollama runs the AI models on your computer.
 2. Type these commands one at a time:
 
    ```
-   npm install
+   npm ci
    npm run ui
    ```
 
 3. Open the URL shown in the terminal (usually **<http://127.0.0.1:3000>**). Always use the exact address the terminal prints — if a port is busy, it picks the next free one.
 
-### Step 4: Start chatting
+### Step 4: Confirm your first task
 
-1. In the browser, look at the **top bar** — pick a model from the dropdown (select `llama3.2`)
-2. Type a message in the text box at the bottom
-3. Press Enter or click the arrow button
+1. Select the model you configured in the top bar.
+2. Open first-run setup and check Chat status. "Configured, not verified" means configuration checks passed, not that inference or tools have been tested. Optional audio, vision, and OCR are not text-chat requirements.
+3. Choose **Quick Test** and review the model, provider, and workspace confirmation. Cancel sends no task. Cloud execution may incur charges.
+4. Inspect the response and tool evidence. "Response received" is not independent verification of task correctness. An incomplete or failed request remains "not verified"; fix the reported issue and retry.
 
-That's it. You're using a local AI assistant.
+For ordinary chat, type in the message box and send. Use Stop to interrupt work. Review permission requests before allowing file changes, commands, or external actions.
+
+### Optional background mode on Windows
+
+Use [start-background.bat](start-background.bat) to keep the server running after
+the launch window closes. Repeating it does not start a second managed server for
+the same installation. The browser opens when the server is ready; its chosen URL
+and startup errors are also recorded in `.harness/background.log`.
+
+Stop active work in the UI before running [stop-server.bat](stop-server.bat).
+It stops the server through its owning supervisor, not by trusting a saved PID.
+An old PID file or abandoned ownership marker requires manual reconciliation;
+follow [Background Lifecycle](docs/MODERNIZATION-STATUS.md#background-lifecycle)
+before removing either file. Stop the server before upgrading or uninstalling.
 
 ## How to open a terminal
 
