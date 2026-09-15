@@ -58,6 +58,52 @@ describe('OllamaClient context configuration', () => {
     });
   });
 
+  it('reports each retry and keeps absent provider usage distinct from explicit zero', async () => {
+    const previousAttempts = process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS;
+    const previousDelay = process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS;
+    process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS = '2';
+    process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS = '0';
+    const onRequestEvent = jest.fn();
+    const client = new OllamaClient({ model: 'fixture', onRequestEvent });
+    mockChat.mockRejectedValueOnce(Object.assign(new Error('temporarily unavailable'), { status_code: 503 }))
+      .mockResolvedValueOnce({ message: { role: 'assistant', content: 'ok' }, eval_count: 0 });
+    try {
+      await client.chat([{ role: 'user', content: 'hello' }]);
+      expect(onRequestEvent.mock.calls.map(([event]) => event)).toEqual([
+        { phase: 'start', requestId: 1 },
+        { phase: 'error', requestId: 1, durationMs: expect.any(Number), usage: { promptTokens: null, completionTokens: null }, error: 'temporarily unavailable' },
+        { phase: 'start', requestId: 2 },
+        { phase: 'complete', requestId: 2, durationMs: expect.any(Number), usage: { promptTokens: null, completionTokens: 0 } },
+      ]);
+    } finally {
+      if (previousAttempts === undefined) delete process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS;
+      else process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS = previousAttempts;
+      if (previousDelay === undefined) delete process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS;
+      else process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS = previousDelay;
+    }
+  });
+
+  it('does not retry a permanent HTTP status even when the error text looks transient', async () => {
+    const error = Object.assign(new Error('HTTP 503 Internal Server Error'), { status_code: 400 });
+    mockChat.mockRejectedValue(error);
+    await expect(new OllamaClient({ model: 'fixture' }).chat([{ role: 'user', content: 'hello' }])).rejects.toBe(error);
+    expect(mockChat).toHaveBeenCalledTimes(1);
+    expect(drainOllamaChatRetryEvents()).toEqual([]);
+  });
+
+  it('reports terminal stream counts instead of assuming missing counts are zero', async () => {
+    async function* chunks() {
+      yield { message: { role: 'assistant', content: 'ok' }, done: false };
+      yield { message: { role: 'assistant', content: '' }, done: true, prompt_eval_count: 12, eval_count: 2 };
+    }
+    mockChat.mockResolvedValue(chunks());
+    const onRequestEvent = jest.fn();
+    await new OllamaClient({ model: 'fixture', onRequestEvent }).chat([{ role: 'user', content: 'hello' }]);
+    expect(onRequestEvent).toHaveBeenLastCalledWith({
+      phase: 'complete', requestId: 1, durationMs: expect.any(Number), usage: { promptTokens: 12, completionTokens: 2 },
+    });
+  });
+
   it('falls back to thinking when a reasoning model streams empty content', async () => {
     // glm-5.2:cloud-style: reasoning streamed in `thinking`, `content` empty.
     // Without a fallback the user asks a question and sees a blank reply.

@@ -1,5 +1,6 @@
 import { selectTasks, runBenchmarkTask, summarizeByTier } from './benchmark';
 import type { BenchmarkTask, BenchmarkRun } from './benchmark';
+import { createServer } from 'http';
 
 // ─── scoreTask (internal via runBenchmarkTask with stubbed fetch) ────
 
@@ -108,6 +109,37 @@ describe('runBenchmarkTask', () => {
     const result = await runBenchmarkTask(task, { fetchImpl: throwingFetch as unknown as typeof fetch });
     expect(result.status).toBe('error');
     expect(result.failureCategory).toBe('ERROR');
+  });
+
+  it.each([
+    [{ type: 'text', content: 'ready' }],
+    [{ type: 'error', message: 'provider failed' }, { type: 'text', content: 'ready' }, { type: 'done', reason: 'completed' }],
+    [{ type: 'text', content: 'ready' }, { type: 'done', reason: 'aborted' }],
+  ])('does not pass incomplete or failed streams despite matching text: %j', async (...events) => {
+    const fetchImpl: typeof fetch = async () => new Response(events.map((event) => `data: ${JSON.stringify(event)}\n`).join(''));
+    const result = await runBenchmarkTask({ id: 'stream', tier: 'regression', description: 'completion', input: 'x', expectIncludes: ['ready'] }, { fetchImpl });
+    expect(result.status).toBe('fail');
+  });
+
+  it.each([false, true])('aborts a stalled request with headers sent=%s', async (sendHeaders) => {
+    const server = createServer((_request, response) => {
+      if (sendHeaders) {
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        response.write('data: {"type":"text","content":"ready"}\n');
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('No test port');
+    try {
+      const result = await runBenchmarkTask({ id: 'timeout', tier: 'regression', description: 'deadline', input: 'x' }, {
+        baseUrl: `http://127.0.0.1:${address.port}`, perTaskTimeoutMs: 100,
+      });
+      expect(result).toMatchObject({ status: 'fail', failureCategory: 'TIMEOUT' });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 
