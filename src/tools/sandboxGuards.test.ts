@@ -87,9 +87,38 @@ describe('sandboxGuards', () => {
       expect(isShellBinaryAllowed('jest')).toBe(true);
     });
 
-    it('allows path-qualified allowlisted binaries by basename', () => {
-      expect(isShellBinaryAllowed('/usr/bin/git')).toBe(true);
-      expect(isShellBinaryAllowed('C:\\Program Files\\Git\\bin\\git.exe')).toBe(true);
+    it.each([
+      '/usr/bin/git',
+      'C:\\Program Files\\Git\\bin\\git.exe',
+      'C:/Program Files/Git/bin/git.exe',
+      'C:\\Tools\\GIT.EXE',
+      'C:\\Tools\\npm.cmd',
+      '\\\\server\\tools\\git.exe',
+    ])('allows path-qualified allowlisted binary %s', (executable) => {
+      expect(isShellBinaryAllowed(executable)).toBe(true);
+    });
+
+    it('handles Windows executable paths with POSIX host path semantics', () => {
+      jest.doMock('path', () => ({ ...jest.requireActual<typeof path>('path'), basename: path.posix.basename }));
+      try {
+        jest.isolateModules(() => {
+          const guards: typeof import('./sandboxGuards') = require('./sandboxGuards');
+          expect(guards.isShellBinaryAllowed('C:\\Program Files\\Git\\bin\\git.exe')).toBe(true);
+          expect(guards.isShellBinaryAllowed('C:\\Tools\\curl.exe')).toBe(false);
+        });
+      } finally {
+        jest.dontMock('path');
+      }
+    });
+
+    it.each([
+      '/usr/bin/curl',
+      'C:\\Windows\\System32\\powershell.exe',
+      'C:/Tools/curl.exe',
+      '\\\\server\\tools\\curl.exe',
+      'C:\\Tools\\git.exe.bak',
+    ])('rejects path-qualified non-allowlisted binary %s', (executable) => {
+      expect(isShellBinaryAllowed(executable)).toBe(false);
     });
 
     it('rejects non-allowlisted binaries', () => {
