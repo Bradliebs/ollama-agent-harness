@@ -34,6 +34,11 @@ exit /b 1
 
 :HAS_NODE
 for /f "tokens=*" %%v in ('node --version') do echo   [OK] Node.js %%v found
+node scripts\check-runtime.js
+if errorlevel 1 (
+  pause
+  exit /b 1
+)
 
 :: Step 2: Check Ollama
 ollama --version >nul 2>nul
@@ -77,6 +82,12 @@ goto DEPS_OK
 :DEPS_OK
 
 :: Step 4: Build
+node scripts\check-runtime.js --launch-mode
+if errorlevel 1 (
+  pause
+  exit /b 1
+)
+if not exist src\web\server.ts goto BUILD_OK
 echo.
 echo   Building from source...
 call npm run build
@@ -92,6 +103,8 @@ if errorlevel 1 (
   exit /b 1
 )
 echo   [OK] Build complete
+
+:BUILD_OK
 
 :: Step 5: Workspace — agent files go here, NOT in the harness repo
 echo.
@@ -183,25 +196,14 @@ if not errorlevel 1 (
 
 :: Step 7: Launch
 echo.
-echo   Closing any Harness servers that are already running...
-:: Kill every prior Harness server regardless of which port it grabbed.
-:: Matches only "dist\web\server.js" node processes, so editors, Ollama and
-:: other node apps are never touched.
-powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -match 'dist.web.server' } | ForEach-Object { Write-Host ('   Stopping Harness server PID ' + $_.ProcessId); Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
-:: Backstop: free the target port (4300) even if a non-Harness process holds it.
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":4300.*LISTEN"') do (
-	echo   Freeing port 4300 held by PID %%p
-	taskkill /PID %%p /F >nul 2>nul
-)
-echo.
 echo   Starting Ollama Agent Harness...
 echo   Your browser will open automatically.
-echo   If not, go to: http://127.0.0.1:4300
+echo   The server will print its URL and choose a free port if needed.
 echo.
 echo   Press Ctrl+C to stop the server.
 echo   ============================================
 echo.
 
-set PORT=4300
+if not defined PORT set PORT=4300
 call npm run serve
 pause

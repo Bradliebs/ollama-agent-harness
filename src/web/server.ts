@@ -1237,17 +1237,21 @@ if ((process.env.HARNESS_AUDIT_LOG ?? '').trim().toLowerCase() !== 'off') {
 }
 const permissionPrompts = new PermissionPromptBroker();
 const capabilityRegistry: CapabilityRegistry = createDefaultCapabilityRegistry();
+function resolveWebChatSelection(model: string): { backend: string; model: string } {
+  const slash = model.indexOf('/');
+  const backend = slash > 0 ? model.slice(0, slash).toLowerCase() : '';
+  return backend && OPENAI_COMPATIBLE_PRESETS[backend]
+    ? { backend, model: model.slice(slash + 1) }
+    : { backend: 'ollama', model };
+}
+
 const defaultWebRuntime: WebRuntimeDeps = {
   createClient: (model, host, numCtx) => {
     // Model id may be backend-prefixed: "mistral/mistral-medium-latest"
     // dispatches to the Mistral preset; bare names route to Ollama.
-    const slash = model.indexOf('/');
-    if (slash > 0) {
-      const backend = model.slice(0, slash).toLowerCase();
-      const realModel = model.slice(slash + 1);
-      if (OPENAI_COMPATIBLE_PRESETS[backend]) {
-        return createChatClient({ backend, model: realModel, host, numCtx });
-      }
+    const selection = resolveWebChatSelection(model);
+    if (selection.backend !== 'ollama') {
+      return createChatClient({ ...selection, host, numCtx });
     }
     return new OllamaClient({ model, host, numCtx });
   },
@@ -1285,6 +1289,8 @@ const defaultWebRuntime: WebRuntimeDeps = {
   rebuildSemanticMemory,
 };
 let webRuntime: WebRuntimeDeps = defaultWebRuntime;
+const activeChatControllers = new Set<AbortController>();
+let shutdownRequested = false;
 const pendingChatBackgroundTasks = new Set<Promise<unknown>>();
 
 function queueChatBackgroundTask(label: string, task: Promise<unknown>): void {
@@ -3028,6 +3034,8 @@ app.get('/api/setup/health', async (req, res) => {
     : mediaTools.pdfOcrCommand;
   res.json(await checkSetupHealth({
     host: parsedHost,
+    chat: resolveWebChatSelection(currentModel),
+    projectDir: PROJECT_DIR,
     visionModel: requestedVisionModel,
     audioTranscribeCommand: requestedAudioCommand,
     audioSamplePath: requestedAudioSamplePath || undefined,
@@ -5592,6 +5600,7 @@ async function loadExplicitSkillContext(messageText: string): Promise<{ skill?: 
 
 // Chat endpoint — runs the agent loop and streams events as SSE
 app.post('/api/chat', async (req, res) => {
+  if (shutdownRequested) { res.status(503).json({ error: 'Server is shutting down.' }); return; }
   await ensureSettingsLoaded();
   checkAutonomyExpiry();
   lastUserActivityMs = Date.now();
@@ -5897,11 +5906,15 @@ app.post('/api/chat', async (req, res) => {
   }
 
   const abortController = new AbortController();
+  activeChatControllers.add(abortController);
+  if (shutdownRequested) abortController.abort();
+  res.once('finish', () => activeChatControllers.delete(abortController));
   // Use res.on('close') instead of req.on('close') on POST SSE routes:
   // req 'close' can fire as soon as the request body is fully consumed,
   // before any SSE event is written, which would abort the stream
   // immediately and surface as `TypeError: terminated` on the client.
   res.on('close', () => {
+    activeChatControllers.delete(abortController);
     if (!res.writableEnded) abortController.abort();
   });
 
@@ -9145,8 +9158,10 @@ export function setWebRuntimeOverrides(overrides: Partial<WebRuntimeDeps>): () =
   return () => { webRuntime = defaultWebRuntime; };
 }
 
-async function shutdownServer(server: ReturnType<typeof app.listen>, signal: NodeJS.Signals): Promise<void> {
+async function shutdownServer(server: ReturnType<typeof app.listen>, signal: NodeJS.Signals | 'supervisor'): Promise<void> {
   logger.info('Process', 'Graceful shutdown requested', { signal });
+  shutdownRequested = true;
+  for (const controller of activeChatControllers) controller.abort();
   const closeHttp = new Promise<void>((resolve) => {
     server.close((error?: Error) => {
       if (error) recordSwallowed('server.shutdown.http.close', error);
@@ -9161,6 +9176,33 @@ async function shutdownServer(server: ReturnType<typeof app.listen>, signal: Nod
   })();
   const timeout = new Promise<void>((resolve) => setTimeout(resolve, 5_000));
   await Promise.race([Promise.allSettled([closeHttp, stopSubsystems]).then(() => undefined), timeout]);
+}
+
+export function registerShutdownHandlers(server: ReturnType<typeof app.listen>): void {
+  let shuttingDown = false;
+  const handleShutdown = (signal: NodeJS.Signals | 'supervisor'): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    shutdownServer(server, signal).finally(() => process.exit(0));
+  };
+  process.once('SIGINT', handleShutdown);
+  process.once('SIGTERM', handleShutdown);
+  if (process.send) {
+    const reportReady = (): void => {
+      const address = server.address();
+      if (process.connected && address && typeof address === 'object') {
+        process.send?.({ type: 'harness:ready', port: address.port });
+      }
+    };
+    if (server.listening) reportReady();
+    else server.once('listening', reportReady);
+    process.on('message', message => {
+      if (typeof message === 'object' && message !== null && 'type' in message && message.type === 'harness:shutdown') {
+        handleShutdown('supervisor');
+      }
+    });
+    process.once('disconnect', () => handleShutdown('supervisor'));
+  }
 }
 
 if (require.main === module) {
@@ -9187,16 +9229,7 @@ if (require.main === module) {
     // Give the logger a tick to flush stderr before we go.
     setTimeout(() => process.exit(1), 50);
   });
-  startServer().then((server) => {
-    let shuttingDown = false;
-    const handleSignal = (signal: NodeJS.Signals): void => {
-      if (shuttingDown) return;
-      shuttingDown = true;
-      shutdownServer(server, signal).finally(() => process.exit(0));
-    };
-    process.once('SIGINT', handleSignal);
-    process.once('SIGTERM', handleSignal);
-  }).catch((error) => {
+  startServer().then(registerShutdownHandlers).catch((error) => {
     console.error(error);
     process.exit(1);
   });

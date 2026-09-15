@@ -6,7 +6,7 @@ import { AudioTranscribeTool } from '../tools/multimodalTools';
 import { findInstalledVisionModel, isCloudModelName } from '../models/visionModels';
 import { PdfReadTool } from '../tools/pdfTool';
 import { createBuiltinToolRegistry } from '../tools/registry';
-import { OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiKey } from '../core/chatClientFactory';
+import { OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiKey, resolveProviderBaseUrl } from '../core/chatClientFactory';
 import { FALLBACK_COOLDOWN_MS } from '../core/fallbackChatClient';
 import { loadSynthesisStats, adaptiveMaxTurns } from '../core/synthesisStats';
 
@@ -17,6 +17,15 @@ export interface SetupHealthInput {
   audioSamplePath?: string;
   pdfOcrCommand?: string;
   projectDir?: string;
+  chat?: { backend: string; model: string };
+}
+
+export interface ChatSetupHealth {
+  backend: string;
+  model: string;
+  state: 'configured' | 'blocked' | 'needs-model';
+  verified: false;
+  message: string;
 }
 
 export interface LocalHealthCheck {
@@ -46,6 +55,7 @@ export interface BackendHealthCheck {
 }
 
 export interface SetupHealthResult {
+  chat?: ChatSetupHealth;
   ollama: { ok: boolean; message: string; modelCount: number };
   vision: { ok: boolean; message: string };
   audio: { ok: boolean; message: string };
@@ -111,6 +121,7 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
       : false;
     const detectedVisionModel = input.visionModel ? '' : findInstalledVisionModel(modelNames);
     return {
+      ...(input.chat ? { chat: checkChatSetup(input.chat, backends, modelNames) } : {}),
       ollama: {
         ok: true,
         message: modelNames.length > 0 ? `Connected to Ollama with ${modelNames.length} model(s).` : 'Connected to Ollama, but no models are installed.',
@@ -141,6 +152,7 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
+      ...(input.chat ? { chat: checkChatSetup(input.chat, backends) } : {}),
       ollama: { ok: false, message: `Cannot connect to Ollama: ${message}`, modelCount: 0 },
       vision: input.visionModel ? { ok: false, message: 'Vision model could not be checked because Ollama is unavailable.' } : { ok: false, message: 'No vision model configured.' },
       audio,
@@ -154,6 +166,36 @@ export async function checkSetupHealth(input: SetupHealthInput): Promise<SetupHe
       ...(Object.keys(synthesisStats).length > 0 ? { synthesisStats } : {}),
     };
   }
+}
+
+function checkChatSetup(
+  selection: NonNullable<SetupHealthInput['chat']>,
+  backends: BackendHealthCheck[],
+  installedModels?: string[],
+): ChatSetupHealth {
+  const backend = selection.backend.trim().toLowerCase();
+  const model = selection.model.trim();
+  const base = { backend, model, verified: false as const };
+  if (!model) return { ...base, state: 'needs-model', message: 'Choose a chat model.' };
+  if (backend === 'ollama') {
+    if (!installedModels) return { ...base, state: 'blocked', message: 'Start Ollama or check its host to use the selected model.' };
+    if (!isCloudModelName(model) && !installedModels.some((name) => name === model || name === `${model}:latest`)) {
+      return { ...base, state: 'needs-model', message: `The selected model '${model}' is not installed in Ollama.` };
+    }
+    return { ...base, state: 'configured', message: isCloudModelName(model)
+      ? 'Ollama is reachable. The selected cloud model has not been tested; using it sends the conversation remotely.'
+      : 'The selected model is installed. A chat response has not been verified yet.' };
+  }
+  const auth = backends.find((entry) => entry.id === backend);
+  if (!auth) return { ...base, state: 'blocked', message: 'The selected chat provider is not supported.' };
+  if (!auth.ok) return { ...base, state: 'blocked', message: auth.message };
+  const preset = backend === 'replicate' ? REPLICATE_PRESET : OPENAI_COMPATIBLE_PRESETS[backend];
+  try {
+    resolveProviderBaseUrl(preset);
+  } catch (error) {
+    return { ...base, state: 'blocked', message: error instanceof Error ? error.message : String(error) };
+  }
+  return { ...base, state: 'configured', message: `${auth.label} credentials are configured. Connectivity, model access, and a chat response have not been verified. Using this provider sends the conversation remotely.` };
 }
 
 /**

@@ -954,34 +954,33 @@ async function loadModels() {
     sel.disabled = false;
     sel.onchange = () => {
       renderModelCapabilityHint();
+      document.getElementById('sendBtn').disabled = !sel.value;
+      updateNoModelEmptyState();
       if (sel.value) {
         updateSetting('model', sel.value);
-        document.getElementById('sendBtn').disabled = false;
-        updateNoModelEmptyState();
         setStatus('ok', 'Connected', 'Connected · model: ' + sel.value);
       }
     };
-    // Pick a default model so users don't stare at "— Select model —" on first
-    // run. Priority: saved setting that still matches an installed model →
-    // first model in the list. Either way, fire change so the send button
-    // enables and the capability hint updates.
     let defaultModel = '';
     try {
-      const settings = await fetch('/api/settings').then((r) => r.json());
+      const response = await fetch('/api/settings');
+      if (!response.ok) throw new Error('Settings request failed: ' + response.status);
+      const settings = await response.json();
       const saved = settings && typeof settings.model === 'string' ? settings.model : '';
       if (saved && models.some((m) => m.name === saved)) defaultModel = saved;
-      else if (saved) console.warn('[loadModels] saved model "' + saved + '" not in installed list — falling back to first model');
+      else if (saved) console.warn('[loadModels] saved model "' + saved + '" is unavailable; select a model to continue');
     } catch (error) {
-      // Settings endpoint failed — let users know why their saved model didn't stick.
-      console.warn('[loadModels] /api/settings failed (' + (error && error.message ? error.message : error) + ') — falling back to first model');
+      console.warn('[loadModels] /api/settings failed (' + (error && error.message ? error.message : error) + '); select a model to continue');
     }
-    if (!defaultModel && models.length > 0) defaultModel = models[0].name;
     if (defaultModel) {
       sel.value = defaultModel;
       sel.dispatchEvent(new Event('change'));
       // Surface the active model in the status pill tooltip so users can
       // verify which one is wired up without opening the dropdown.
       setStatus('ok', 'Connected', 'Connected · model: ' + defaultModel);
+    } else {
+      document.getElementById('sendBtn').disabled = true;
+      setStatus('warn', 'Choose model', 'Select a local or cloud model to continue');
     }
     renderModelCapabilityHint();
     // Compare-with selector mirrors the primary model list.
@@ -1093,7 +1092,12 @@ function openFirstRunGuide() {
   }
 }
 
-function startQuickTest() {
+async function startQuickTest() {
+  if (isSending) return;
+  if (compareEnabled) {
+    showToast('Turn off model comparison before running a quick test.');
+    return;
+  }
   const sel = document.getElementById('modelSelect');
   if (!sel || !sel.value) {
     updateNoModelEmptyState();
@@ -1103,8 +1107,31 @@ function startQuickTest() {
   }
   const input = document.getElementById('chatInput');
   if (!input) return;
+  let workspace;
+  try {
+    const response = await fetch('/api/readiness');
+    if (!response.ok) throw new Error('Workspace could not be checked.');
+    const readiness = await readApiJson(response, 'Readiness API');
+    workspace = readiness.workspace;
+    if (!workspace) throw new Error('Workspace could not be checked.');
+  } catch (error) {
+    showToast(String(error.message || error));
+    return;
+  }
+  if (isSending) return;
+  const selectedModel = availableModels.find((entry) => entry.name === sel.value);
+  const backend = selectedModel?.backend || 'ollama';
+  const remote = backend !== 'ollama' || /(?:-cloud|:cloud)$/.test(sel.value);
+  if (!confirm('Run quick test?\nModel: ' + sel.value + '\nProvider: ' + backend + '\nWorkspace: ' + workspace
+    + (remote ? '\nThis sends conversation and permitted tool results to a remote provider. Charges may apply.' : '\nThis uses your configured Ollama host.')
+    + '\nNormal permission checks still apply.')) return;
   input.value = 'List files in this project and suggest the best first task for a beginner.';
-  sendMessage();
+  const outcome = await sendMessage();
+  if (!outcome) return;
+  const result = addMsg('assistant', outcome.state === 'responded'
+    ? 'Quick test: response received from ' + outcome.model + '. Review the reply and tool evidence above; task correctness has not been independently verified.'
+    : 'Quick test: ' + outcome.state + '. Check the error or tool evidence, then retry when ready.');
+  result.dataset.quickTestOutcome = outcome.state;
 }
 
 async function readApiJson(response, endpointLabel) {
@@ -4227,17 +4254,19 @@ async function checkFirstRunHealth() {
     setVisionReadinessStatus(data.vision);
     if (detail) {
       detail.classList.remove('initial-hidden');
-      detail.innerHTML = renderSetupHealthRow('Ollama', data.ollama) + renderSetupHealthRow('Vision', data.vision) + renderSetupHealthRow('Audio', data.audio) + (data.pdfOcr ? renderSetupHealthRow('PDF OCR', data.pdfOcr) : '');
+      const chatLabel = data.chat?.state === 'configured' ? 'Chat (configured, not verified)' : 'Chat (needs attention)';
+      const ollamaLabel = data.chat?.backend && data.chat.backend !== 'ollama' ? 'Ollama (optional for selected chat)' : 'Ollama';
+      detail.innerHTML = renderSetupHealthRow(chatLabel, data.chat) + renderSetupHealthRow(ollamaLabel, data.ollama) + renderSetupHealthRow('Vision (optional)', data.vision) + renderSetupHealthRow('Audio (optional)', data.audio) + (data.pdfOcr ? renderSetupHealthRow('PDF OCR (optional)', data.pdfOcr) : '');
     }
-    if (data.ollama?.ok && Number(data.ollama.modelCount || 0) > 0) {
-      setBeginnerReadiness('ready', 'Ready for first chat', data.ollama.message || 'Ollama is connected and at least one model is installed.', 'Ready');
-      if (status) status.textContent = 'Setup check finished. You can start a chat.';
-    } else if (data.ollama?.ok) {
-      setBeginnerReadiness('warn', 'Install one model', data.ollama.message || 'Ollama is connected, but no models are installed.', 'Needs model');
-      if (status) status.textContent = 'Setup check found no installed models.';
+    if (data.chat?.state === 'configured') {
+      setBeginnerReadiness('warn', 'Chat configured', data.chat.message, 'Not verified');
+      if (status) status.textContent = 'Configuration checked. No chat request was sent.';
+    } else if (data.chat?.state === 'needs-model') {
+      setBeginnerReadiness('warn', 'Choose an available model', data.chat.message, 'Needs model');
+      if (status) status.textContent = 'The selected chat model needs attention.';
     } else {
-      setBeginnerReadiness('blocked', 'Start Ollama first', data.ollama?.message || 'Harness cannot connect to Ollama yet.', 'Blocked');
-      if (status) status.textContent = 'Setup check found an Ollama connection issue.';
+      setBeginnerReadiness('blocked', 'Chat setup needs attention', data.chat?.message || 'Selected chat setup could not be checked.', 'Blocked');
+      if (status) status.textContent = 'The selected chat provider needs attention.';
     }
     markWalkthroughStep('setup');
   } catch (error) {
@@ -4825,6 +4854,8 @@ async function sendMessage(opts) {
   let toolOnlyFailureCount = 0;
   let toolOnlySummaries = [];
   let doneReason = '';
+  let responseFailed = false;
+  let responseStopped = false;
   const clientEvidenceTools = [];
   const clientEvidenceCommands = [];
   const updateTokRate = () => {
@@ -4839,6 +4870,7 @@ async function sendMessage(opts) {
   tokRateTimer = setInterval(updateTokRate, 250);
   try {
     const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text, model, skipValidation: skipValidationOnce, history: outboundChatHistory(), attachments: attachmentsForTurn }), signal: activeChatController.signal });
+    if (!res.ok) throw new Error('Chat request failed (HTTP ' + res.status + '). Check provider settings and retry.');
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
@@ -5121,6 +5153,7 @@ async function sendMessage(opts) {
             appendToolItem(toolBox, '🔁', 'auto-continue #' + ev.continuationCount, ev.reason + ' — continuing autonomously', false);
             break;
           case 'error':
+            responseFailed = true;
             notePetError();
             thinkEl.remove();
             msgEl = addMsg('assistant', '⚠️ ' + ev.message);
@@ -5206,6 +5239,8 @@ async function sendMessage(opts) {
     autoSaveChat();
     loadSettings();
   } catch (e) {
+    responseFailed = true;
+    responseStopped = e.name === 'AbortError';
     if (thinkEl.parentNode) thinkEl.remove();
     notePetError();
     if (e.name === 'AbortError') {
@@ -5235,6 +5270,10 @@ async function sendMessage(opts) {
   const skipOnceReset = document.getElementById('skipValidationOnce');
   if (skipOnceReset) skipOnceReset.checked = false;
   document.getElementById('chatInput').focus();
+  return {
+    state: responseStopped ? 'stopped' : !responseFailed && doneReason === 'completed' && streamedChars > 0 && toolOnlyFailureCount === 0 ? 'responded' : 'not verified',
+    model,
+  };
 }
 
 function refreshSkillSurfacesAfterToolResult(call, result, toolBox) {
@@ -5740,12 +5779,19 @@ async function recoverSession(id) {
     const r = await fetch('/api/sessions/' + id);
     const d = await r.json();
     if (d.error) { showToast(d.error); return; }
+    if (!r.ok || !Array.isArray(d.messages)) { showToast('Unable to load this session. The current chat was not changed.'); return; }
+    if (d.diagnostics?.missing || d.diagnostics?.unreadable) {
+      showToast('This session transcript is missing or unreadable. The current chat was not changed.');
+      return;
+    }
+    if (d.diagnostics?.corruptLines > 0 && !confirm('This transcript has ' + d.diagnostics.corruptLines + ' unreadable event(s). Recent actions may be missing. Restore the readable messages?')) return;
     lastSessionId = id;
     chatMessages = [];
     document.getElementById('chatArea').innerHTML = '';
     for (const m of d.messages || []) {
       if (m.role === 'system') addMsg('assistant', m.content);
-      else { addMsg(m.role, m.content); chatMessages.push({ role: m.role, content: m.content }); }
+      else addMsg(m.role, m.content);
+      chatMessages.push({ ...m });
     }
     loadHistory();
   } catch (e) { showToast(e.message); }

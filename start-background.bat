@@ -11,37 +11,27 @@ echo   The server will keep running even after you
 echo   close this window.
 echo.
 
-:: Build first
+node scripts\check-runtime.js --launch-mode
+if errorlevel 1 goto BUILD_FAIL
+if not exist src\web\server.ts goto BUILD_OK
 echo   Building from source...
 call npm run build
 if errorlevel 1 goto BUILD_FAIL
 echo   [OK] Build complete
+:BUILD_OK
 
-:: Start in background using PowerShell Start-Process
 echo.
-echo   Checking for an existing Harness server on port 4300...
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":4300.*LISTEN"') do (
-	echo   Stopping stale server PID %%p
-	taskkill /PID %%p /F >nul 2>nul
-)
-echo.
-echo   Starting server in background on port 4300...
-set PORT=4300
-set NO_OPEN=1
+echo   Starting server in background. Its browser opens when ready.
+if not defined PORT set PORT=4300
+if not defined HARNESS_PROJECT_DIR set "HARNESS_PROJECT_DIR=%USERPROFILE%\apex-workspace"
 if not defined HARNESS_PROFILE set "HARNESS_PROFILE=assistant"
-powershell -Command "Start-Process -FilePath 'node' -ArgumentList 'dist/web/server.js' -WorkingDirectory '%~dp0' -WindowStyle Hidden -PassThru | ForEach-Object { $_.Id } | Out-File -FilePath '%~dp0.harness\server.pid' -Encoding ascii"
+node scripts\background-server.js start
+if errorlevel 1 goto LAUNCH_FAIL
 echo.
-
-:: Read the PID
-set /p SERVER_PID=<.harness\server.pid
-echo   [OK] Server started in background (PID %SERVER_PID%)
-echo.
-echo   Open in your browser:  http://127.0.0.1:4300
+echo   The server selects another port if the preferred port is occupied.
 echo.
 echo   To stop the server later, run:
 echo     stop-server.bat
-echo   Or:
-echo     taskkill /PID %SERVER_PID% /F
 echo.
 echo   ============================================
 echo.
@@ -50,5 +40,10 @@ exit /b 0
 
 :BUILD_FAIL
 echo   [X] Build failed.
+pause
+exit /b 1
+
+:LAUNCH_FAIL
+echo   [X] Background launch failed. See the error above.
 pause
 exit /b 1

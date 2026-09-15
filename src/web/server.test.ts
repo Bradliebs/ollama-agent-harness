@@ -3262,6 +3262,37 @@ describe('web server API validation', () => {
     }
   });
 
+  it.each([
+    ['groq/llama-3.1-8b-instant', 'groq', 'llama-3.1-8b-instant', 'configured'],
+    ['my-namespace/local-model', 'ollama', 'my-namespace/local-model', 'blocked'],
+  ])('reports setup health using the chat route for %s', async (model, backend, resolvedModel, state) => {
+    const originalKey = process.env.GROQ_API_KEY;
+    const settings = await (await request('/api/settings')).json() as { model: string };
+    try {
+      process.env.GROQ_API_KEY = 'setup-test-key';
+      const saved = await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      });
+      expect(saved.status).toBe(200);
+      const response = await request('/api/setup/health?ollamaHost=http%3A%2F%2F127.0.0.1%3A1');
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        chat: { backend, model: resolvedModel, state, verified: false },
+        ollama: { ok: false },
+      });
+    } finally {
+      if (originalKey === undefined) delete process.env.GROQ_API_KEY;
+      else process.env.GROQ_API_KEY = originalKey;
+      await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: settings.model }),
+      });
+    }
+  });
+
   it('rejects invalid setup health hosts', async () => {
     const response = await request('/api/setup/health?ollamaHost=file%3A%2F%2Fbad');
 
