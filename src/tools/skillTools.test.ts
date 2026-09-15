@@ -1,19 +1,28 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import * as skillUsage from '../extensibility/skillUsage';
 import { CreateSkillTool, ListSkillsTool, SkillTool, invalidateSkillsCache, setSkillsDir } from './skillTools';
 
 describe('skill tools', () => {
   let projectDir: string;
   let skillsDir: string;
+  let recordView: jest.SpiedFunction<typeof skillUsage.recordSkillView>;
+  let recordUse: jest.SpiedFunction<typeof skillUsage.recordSkillUse>;
 
   beforeEach(async () => {
+    recordView = jest.spyOn(skillUsage, 'recordSkillView');
+    recordUse = jest.spyOn(skillUsage, 'recordSkillUse');
     projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-skills-'));
     skillsDir = path.join(projectDir, '.harness', 'skills');
     setSkillsDir(skillsDir);
   });
 
   afterEach(async () => {
+    await Promise.all([...recordView.mock.results, ...recordUse.mock.results]
+      .filter(result => result.type === 'return').map(result => result.value));
+    recordView.mockRestore();
+    recordUse.mockRestore();
     invalidateSkillsCache();
     setSkillsDir('');
     await fs.rm(projectDir, { recursive: true, force: true });
