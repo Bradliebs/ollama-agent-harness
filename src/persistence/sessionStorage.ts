@@ -68,7 +68,16 @@ export class SessionStorage {
       data,
     };
     const line = JSON.stringify(event) + '\n';
-    await fs.appendFile(this.transcriptPath, line, 'utf-8');
+    const transcript = await fs.open(this.transcriptPath, 'a+');
+    try {
+      const { size } = await transcript.stat();
+      const lastByte = Buffer.alloc(1);
+      if (size > 0) await transcript.read(lastByte, 0, 1, size - 1);
+      const separator = size > 0 && lastByte[0] !== 10 ? '\n' : '';
+      await transcript.appendFile(separator + line, 'utf-8');
+    } finally {
+      await transcript.close();
+    }
     const patch: Partial<SessionMeta> = { updatedAt: event.timestamp };
     if (data.kind === 'continuity_checkpoint') {
       patch.checkpointCount = (this.meta.checkpointCount ?? 0) + 1;

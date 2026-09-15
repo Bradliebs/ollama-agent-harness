@@ -31,6 +31,38 @@ describe('SessionStorage', () => {
     expect(events).toEqual([]);
   });
 
+  test('preserves a valid final event without a newline when appending', async () => {
+    await storage.append('user_message', { kind: 'message', message: { role: 'user', content: 'first' } });
+    const transcriptPath = storage.getTranscriptPath();
+    const prefix = (await fs.readFile(transcriptPath, 'utf8')).trimEnd();
+    await fs.writeFile(transcriptPath, prefix, 'utf8');
+
+    await storage.append('assistant_message', { kind: 'message', message: { role: 'assistant', content: 'second' } });
+
+    const result = await storage.readAllDetailed();
+    expect(result.events.map(event => event.data)).toEqual([
+      { kind: 'message', message: { role: 'user', content: 'first' } },
+      { kind: 'message', message: { role: 'assistant', content: 'second' } },
+    ]);
+    expect(result.diagnostics.corruptLines).toBe(0);
+    expect((await fs.readFile(transcriptPath, 'utf8')).startsWith(prefix + '\n')).toBe(true);
+  });
+
+  test('concurrent appends after a torn tail keep each new event readable', async () => {
+    await fs.writeFile(storage.getTranscriptPath(), '{"id":"interrupted', 'utf8');
+    const messages = Array.from({ length: 8 }, (_, index) => ({ role: 'user' as const, content: `request ${index}` }));
+    await Promise.all(messages.map(message => {
+      const writer = new SessionStorage(TEST_DIR, 'llama3', storage.getSessionId());
+      return writer.append('user_message', { kind: 'message', message });
+    }));
+
+    const result = await storage.readAllDetailed();
+    expect(result.events).toHaveLength(messages.length);
+    expect(result.events.map(event => event.data)).toEqual(expect.arrayContaining(messages.map(message => ({ kind: 'message', message }))));
+    expect(result.diagnostics.corruptLines).toBe(1);
+    expect((await fs.readFile(storage.getTranscriptPath(), 'utf8')).startsWith('{"id":"interrupted\n')).toBe(true);
+  });
+
   test('verify-session-resume-truncated: recovers gracefully from truncated last line', async () => {
     // Write a complete event first
     await storage.append('user_message', { kind: 'message', message: { role: 'user', content: 'first message' } });
