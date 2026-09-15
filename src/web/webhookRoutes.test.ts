@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   addWebhook,
+  flushWebhookWritesForTest,
   initWebhookStore,
   listDeadLetters,
   removeWebhook,
@@ -58,7 +59,8 @@ describe('webhook dead-letter route API', () => {
     targetStatus = 500;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await flushWebhookWritesForTest();
     fs.rmSync(storeDir, { recursive: true, force: true });
   });
 
