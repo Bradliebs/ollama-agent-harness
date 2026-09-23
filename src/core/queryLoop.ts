@@ -23,6 +23,7 @@ import type { SideEffectRecorder } from '../persistence/sideEffectRecording';
 import { validateOutput, withOutputValidationInstructions, detectSelfCertification } from './outputValidation';
 import type { OutputValidationProfile } from './outputValidation';
 import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
+import { SourceLedger, appendSourcesFooter, guessedUrlHint } from './sourceLedger';
 import { verifyCode } from './doneStateVerifier';
 import { classifyModelLocality } from '../observability/costProvenance';
 import { governAnswer } from '../governed/governedAnswer';
@@ -228,6 +229,7 @@ export async function* queryLoop(
   // Routes into the synthesis path instead of accepting an empty `completed`.
   let emptyFinalAfterTools = false;
   const blockedWebUrls = new Map<string, string>();
+  const sourceLedger = new SourceLedger();
 
   if (session) {
     await appendStatus(session, 'running', undefined, tracer);
@@ -519,7 +521,12 @@ export async function* queryLoop(
         validationScore = validation.score;
       }
       yield { type: 'turn_complete', turn, durationMs: Date.now() - turnStarted, toolCalls: 0 };
-      yield { type: 'text', content: assistantMessage.content };
+      yield {
+        type: 'text',
+        content: typeof assistantMessage.content === 'string'
+          ? appendSourcesFooter(assistantMessage.content, sourceLedger.list())
+          : assistantMessage.content,
+      };
 
       // Opt-in governance shadow pass. Runs BESIDE the answer above (which is
       // already emitted unchanged) and only when HARNESS_GOVERNED_SHADOW is on,
@@ -711,6 +718,12 @@ export async function* queryLoop(
         validateInput: config.validateToolInput === true,
       }));
     const toolResults = [...skippedToolResults, ...dispatchedToolResults];
+    for (const { call, result } of toolResults) sourceLedger.recordSearchResults(call, result);
+    for (const entry of toolResults) {
+      sourceLedger.recordRead(entry.call, entry.result);
+      const hint = guessedUrlHint(entry.call, entry.result, sourceLedger);
+      if (hint) entry.result = { ...entry.result, output: `${entry.result.output ?? ''}\n${hint}` };
+    }
     let producedFileChange = false;
     for (const { call, result } of toolResults) {
       yield { type: 'tool_call', call };
@@ -1060,7 +1073,7 @@ export async function* queryLoop(
       }
     }
 
-    yield { type: 'text', content: synthesisText || synthMessage.content };
+    yield { type: 'text', content: synthesisText ? appendSourcesFooter(synthesisText, sourceLedger.list()) : synthMessage.content };
 
     // Self-certification check on synthesis output too
     const synthSelfCert = detectSelfCertification(synthesisText, allToolCallNames);
