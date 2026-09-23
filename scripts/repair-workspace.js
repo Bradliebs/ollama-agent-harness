@@ -23,6 +23,15 @@ const TEST_MODEL_KEY = /^test-model(::|$)/;
 const TEST_DEBUG_LOG_PATH = '.harness/test-model-debug.jsonl';
 const DEFAULT_DEBUG_LOG_PATH = '.harness/model-debug.jsonl';
 const KNOWLEDGE_COMPACT_BYTES = 20 * 1024 * 1024;
+// Fixtures written by src/web/server.test.ts and scripts/ui-smoke.js when they
+// ran against a real workspace. Matched exactly so user content is left alone.
+const FIXTURE_PLAN_TITLES = new Set(['Set up the project', 'Build the to-do list UI', 'Add save and load', 'Nested guard probe', 'Kanban move test task']);
+const FIXTURE_DOCUMENT = /-(server-test-(brief|report|adr)|evidence-learning-handoff)-[0-9a-f]{6}\.(md|json|html)$/;
+const FIXTURE_SKILLS = new Set(['scaffold-test-skill', 'direct-create-skill']);
+const FIXTURE_UPLOAD = /^(sample\.png|voice\.wav|attachment-vision-\d+\.png)$/;
+const FIXTURE_UPLOAD_MAX_BYTES = 16;
+// RFC 2606 reserves example.com/.org for tests; nobody monitors them for real.
+const FIXTURE_SERVICE_PURPOSE = /https?:\/\/(www\.)?example\.(com|org|net)\b|^send me a telegram reminder$/i;
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf-8'));
@@ -108,6 +117,68 @@ function planRepair(workspace) {
     actions.push({ kind: 'compact-knowledge', file: knowledgePath, bytes: fs.statSync(knowledgePath).size });
   }
 
+  actions.push(...planFixtureCleanup(workspace, harness));
+  return actions;
+}
+
+/** Test and smoke-run leftovers: plan tasks, documents, skills, uploads, services and their jobs. */
+function planFixtureCleanup(workspace, harness) {
+  const actions = [];
+  const planPath = path.join(workspace, 'IMPLEMENTATION_PLAN.md');
+  if (fs.existsSync(planPath)) {
+    const text = fs.readFileSync(planPath, 'utf-8');
+    const lines = text.split(/\r?\n/);
+    const kept = lines.filter((line) => {
+      const match = line.match(/^- \[ \] \S+ — (.+)$/);
+      return !(match && FIXTURE_PLAN_TITLES.has(match[1].trim()));
+    });
+    if (kept.length !== lines.length) {
+      const eol = text.includes('\r\n') ? '\r\n' : '\n';
+      actions.push({ kind: 'write-text', file: planPath, text: kept.join(eol), summary: `remove ${lines.length - kept.length} test fixture task(s)` });
+    }
+  }
+  const quarantine = (file, why) => actions.push({ kind: 'quarantine', file, summary: why });
+  const docsDir = path.join(harness, 'documents');
+  if (fs.existsSync(docsDir)) {
+    for (const name of fs.readdirSync(docsDir)) if (FIXTURE_DOCUMENT.test(name)) quarantine(path.join(docsDir, name), 'test fixture document');
+  }
+  for (const name of FIXTURE_SKILLS) {
+    const dir = path.join(harness, 'skills', name);
+    if (fs.existsSync(dir)) quarantine(dir, 'test fixture skill');
+  }
+  const uploadsDir = path.join(harness, 'uploads');
+  if (fs.existsSync(uploadsDir)) {
+    for (const name of fs.readdirSync(uploadsDir)) {
+      const file = path.join(uploadsDir, name);
+      if (FIXTURE_UPLOAD.test(name) && fs.statSync(file).size <= FIXTURE_UPLOAD_MAX_BYTES) quarantine(file, 'test fixture upload');
+    }
+  }
+  const servicesDir = path.join(harness, 'services');
+  const fixtureServices = new Set();
+  if (fs.existsSync(servicesDir)) {
+    for (const name of fs.readdirSync(servicesDir)) {
+      const manifest = path.join(servicesDir, name, 'service.json');
+      if (!fs.existsSync(manifest)) continue;
+      let purpose = '';
+      try { purpose = String(readJson(manifest).purpose || '').trim(); } catch { continue; }
+      if (FIXTURE_SERVICE_PURPOSE.test(purpose)) {
+        fixtureServices.add(name);
+        quarantine(path.join(servicesDir, name), `test fixture service (${purpose.slice(0, 60)})`);
+      }
+    }
+  }
+  const jobsPath = path.join(harness, 'automations', 'jobs.json');
+  if (fixtureServices.size > 0 && fs.existsSync(jobsPath)) {
+    const data = readJson(jobsPath);
+    const jobs = Array.isArray(data) ? data : Array.isArray(data.jobs) ? data.jobs : null;
+    if (jobs) {
+      const isFixtureJob = (job) => [...fixtureServices].some((id) => String(job.prompt || '').includes(`service_id: ${id}`));
+      const keep = jobs.filter((job) => !isFixtureJob(job));
+      if (keep.length !== jobs.length) {
+        actions.push({ kind: 'write-json', file: jobsPath, data: Array.isArray(data) ? keep : { ...data, jobs: keep }, summary: `remove ${jobs.length - keep.length} automation job(s) for test fixture services` });
+      }
+    }
+  }
   return actions;
 }
 
@@ -127,11 +198,14 @@ async function applyRepair(workspace, actions, now = new Date(), options = {}) {
   const stamp = timestamp(now);
   const backupDir = path.join(harness, 'snapshots', `repair-${stamp}`);
   fs.mkdirSync(backupDir, { recursive: true });
+  const backupPath = (file) => {
+    const rel = path.relative(harness, file);
+    return rel.startsWith('..') ? path.join(backupDir, 'workspace-root', path.relative(workspace, file)) : path.join(backupDir, rel);
+  };
   for (const action of actions) {
-    if (action.kind === 'warn' || !fs.existsSync(action.file)) continue;
-    const rel = path.relative(harness, action.file);
-    fs.mkdirSync(path.dirname(path.join(backupDir, rel)), { recursive: true });
-    fs.copyFileSync(action.file, path.join(backupDir, rel));
+    if (action.kind === 'warn' || action.kind === 'quarantine' || !fs.existsSync(action.file)) continue;
+    fs.mkdirSync(path.dirname(backupPath(action.file)), { recursive: true });
+    fs.copyFileSync(action.file, backupPath(action.file));
   }
   for (const action of actions) {
     if (action.kind === 'restore-soul') {
@@ -144,6 +218,12 @@ async function applyRepair(workspace, actions, now = new Date(), options = {}) {
       const tmp = `${action.file}.repair-tmp`;
       fs.writeFileSync(tmp, JSON.stringify(action.data, null, 2), 'utf-8');
       fs.renameSync(tmp, action.file);
+    } else if (action.kind === 'write-text') {
+      fs.writeFileSync(action.file, action.text, 'utf-8');
+    } else if (action.kind === 'quarantine') {
+      const target = backupPath(action.file);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.renameSync(action.file, target);
     } else if (action.kind === 'compact-knowledge') {
       const compact = options.compactKnowledgeGraph || loadKnowledgeCompactor();
       action.stats = await compact(workspace);
@@ -154,7 +234,8 @@ async function applyRepair(workspace, actions, now = new Date(), options = {}) {
 
 function describe(action) {
   if (action.kind === 'restore-soul') return `restore ${action.file} from identity/history/${action.snapshot} (${action.text.length} chars)`;
-  if (action.kind === 'write-json') return `${action.file}: ${action.summary}`;
+  if (action.kind === 'write-json' || action.kind === 'write-text') return `${action.file}: ${action.summary}`;
+  if (action.kind === 'quarantine') return `move ${action.file} to the backup (${action.summary})`;
   if (action.kind === 'compact-knowledge') return `compact ${action.file} (${(action.bytes / 1024 / 1024).toFixed(1)} MB of repeated entity records)`;
   return `WARNING: ${action.message}`;
 }

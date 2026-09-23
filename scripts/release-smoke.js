@@ -120,7 +120,9 @@ async function assertCompiledServerStarts(cwd) {
   const port = 4329;
   const child = spawn('node', ['dist/web/server.js'], {
     cwd,
-    env: { ...process.env, PORT: String(port), NO_OPEN: '1', HARNESS_DISABLE_STARTUP_CONNECTORS: '1' },
+    // Pin the workspace to the throwaway release dir so a user-level
+    // HARNESS_PROJECT_DIR never points this probe at a real workspace.
+    env: { ...process.env, PORT: String(port), NO_OPEN: '1', HARNESS_DISABLE_STARTUP_CONNECTORS: '1', HARNESS_PROJECT_DIR: cwd },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';

@@ -107,3 +107,49 @@ test('a large knowledge graph is backed up and compacted', async () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('test and smoke fixtures are moved to the backup, user content stays', async () => {
+  const root = makeWorkspace();
+  try {
+    const h = path.join(root, '.harness');
+    fs.writeFileSync(path.join(root, 'IMPLEMENTATION_PLAN.md'), [
+      '# Implementation Plan',
+      '- [x] real-task — Real finished task',
+      '- [ ] set-up-the-project — Set up the project',
+      '- [ ] ac24b381-a1b8-4579-8600-dc454f9f7dfe — Kanban move test task',
+      '- [ ] my-task — Book the Algarve flights',
+      '',
+    ].join('\n'));
+    fs.mkdirSync(path.join(h, 'documents'), { recursive: true });
+    fs.writeFileSync(path.join(h, 'documents', '2026-07-09T12-10-23-526Z-server-test-brief-b075ec.md'), 'x');
+    fs.writeFileSync(path.join(h, 'documents', '2026-09-01T10-00-00-000Z-trip-plan-abc123.md'), 'mine');
+    fs.mkdirSync(path.join(h, 'skills', 'scaffold-test-skill'), { recursive: true });
+    fs.mkdirSync(path.join(h, 'skills', 'my-skill'), { recursive: true });
+    fs.mkdirSync(path.join(h, 'uploads'), { recursive: true });
+    fs.writeFileSync(path.join(h, 'uploads', 'sample.png'), 'png');
+    fs.writeFileSync(path.join(h, 'uploads', 'holiday.png'), 'a real photo');
+    for (const [id, purpose] of [['site_monitor_1', 'Check https://example.com/rooms daily'], ['bullet_journal', 'Maintain a persistent bullet journal']]) {
+      fs.mkdirSync(path.join(h, 'services', id), { recursive: true });
+      fs.writeFileSync(path.join(h, 'services', id, 'service.json'), JSON.stringify({ service_id: id, purpose }));
+    }
+    fs.mkdirSync(path.join(h, 'automations'), { recursive: true });
+    fs.writeFileSync(path.join(h, 'automations', 'jobs.json'), JSON.stringify({ jobs: [
+      { id: 'j1', prompt: 'service_id: site_monitor_1\nmode: operate' },
+      { id: 'j2', prompt: 'service_id: bullet_journal\nmode: operate' },
+    ] }));
+
+    const backupDir = await applyRepair(root, planRepair(root), new Date('2026-09-23T11:00:00.000Z'));
+
+    assert.equal(fs.readFileSync(path.join(root, 'IMPLEMENTATION_PLAN.md'), 'utf-8'), '# Implementation Plan\n- [x] real-task — Real finished task\n- [ ] my-task — Book the Algarve flights\n');
+    assert.deepEqual(fs.readdirSync(path.join(h, 'documents')), ['2026-09-01T10-00-00-000Z-trip-plan-abc123.md']);
+    assert.deepEqual(fs.readdirSync(path.join(h, 'skills')), ['my-skill']);
+    assert.deepEqual(fs.readdirSync(path.join(h, 'uploads')), ['holiday.png']);
+    assert.deepEqual(fs.readdirSync(path.join(h, 'services')), ['bullet_journal']);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(h, 'automations', 'jobs.json'), 'utf-8')).jobs.map((j) => j.id), ['j2']);
+    assert.ok(fs.existsSync(path.join(backupDir, 'services', 'site_monitor_1', 'service.json')));
+    assert.ok(fs.existsSync(path.join(backupDir, 'workspace-root', 'IMPLEMENTATION_PLAN.md')));
+    assert.deepEqual(planRepair(root), []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

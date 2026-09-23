@@ -61,6 +61,13 @@ No release tag, publication or installer runtime qualification is implied.
 - Make `start.bat` the single launcher with `background`, `stop`, `tray` and
   `watchdog` modes; the watchdog no longer kills whatever holds port 4300.
 - Move the atomic settings writer out of `server.ts` into `settingsFile.ts`.
+- Run UI, Mycelium and release smoke servers in throwaway or pinned workspaces;
+  `smoke:ui` refuses to reuse a running server without `--reuse`. Earlier smoke
+  runs had created daily site-monitor automations for example.com.
+- Extend the repair script to move test and smoke leftovers (plan tasks,
+  documents, skills, uploads, services and their automation jobs) into the backup.
+- Move project-dir resolution into `projectDir.ts`, and citation rendering and
+  the identity panel into `ui/citations.js` and `ui/identityPanel.js`.
 
 See [Modernization Status](docs/MODERNIZATION-STATUS.md) for the complete
 validation record and remaining installation, hosted CI and live-workflow gates.

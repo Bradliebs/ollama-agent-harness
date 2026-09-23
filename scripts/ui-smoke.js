@@ -7,6 +7,10 @@ const path = require('path');
 
 const args = process.argv.slice(2);
 const freshLocalServer = args.includes('--fresh') || truthy(process.env.HARNESS_UI_SMOKE_FRESH);
+// The smoke creates chats, services and uploads through the API. Only run it
+// against an already-running server when asked, because on the default port
+// that is usually the user's live assistant.
+const reuseRunningServer = args.includes('--reuse') || truthy(process.env.HARNESS_UI_SMOKE_REUSE);
 const providedTargetUrl = args.find((arg) => !arg.startsWith('--')) || process.env.HARNESS_UI_URL || '';
 const defaultSmokePort = process.env.HARNESS_UI_SMOKE_PORT || '4300';
 const targetUrl = providedTargetUrl || `http://127.0.0.1:${defaultSmokePort}/`;
@@ -1053,6 +1057,9 @@ async function ensureTargetServer() {
     if (freshLocalServer && !providedTargetUrl) {
       throw new Error(`Fresh UI smoke requested, but ${targetUrl} is already reachable. Stop the existing server or provide HARNESS_UI_URL for an explicit target.`);
     }
+    if (!providedTargetUrl && !reuseRunningServer) {
+      throw new Error(`A server is already running at ${targetUrl} (possibly your live assistant). The smoke writes chats, services and uploads into its workspace. Stop it, pass --reuse to run against it anyway, or set HARNESS_UI_SMOKE_PORT to a free port.`);
+    }
     return () => {};
   }
   if (providedTargetUrl) {
@@ -1063,9 +1070,11 @@ async function ensureTargetServer() {
   const serverArgs = fs.existsSync('src/web/server.ts')
     ? ['-r', 'ts-node/register', 'src/web/server.ts']
     : ['dist/web/server.js'];
+  // Throwaway workspace so the smoke never writes into HARNESS_PROJECT_DIR.
+  const smokeWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-ui-smoke-'));
   const server = spawn(process.execPath, serverArgs, {
     cwd: process.cwd(),
-    env: { ...process.env, PORT: url.port || '4300', NO_OPEN: '1', HARNESS_UI_SMOKE_CHAT: '1' },
+    env: { ...process.env, PORT: url.port || '4300', NO_OPEN: '1', HARNESS_UI_SMOKE_CHAT: '1', HARNESS_PROJECT_DIR: smokeWorkspace },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const outputChunks = [];
@@ -1077,13 +1086,17 @@ async function ensureTargetServer() {
   server.stdout.on('data', collectOutput);
   server.stderr.on('data', collectOutput);
 
+  const cleanup = async () => {
+    await stopStartedServer(server, getOutput);
+    fs.rmSync(smokeWorkspace, { recursive: true, force: true });
+  };
   try {
     await waitForTarget(server, getOutput);
   } catch (error) {
-    await stopStartedServer(server, getOutput);
+    await cleanup();
     throw error;
   }
-  return () => stopStartedServer(server, getOutput);
+  return cleanup;
 }
 
 async function canReachTarget() {

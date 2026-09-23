@@ -131,8 +131,9 @@ async function ensureTargetServer() {
     // The seed graph is written under process.cwd()/.harness/mycelium. When the
     // server is launched from the harness repo it redirects PROJECT_DIR to an
     // isolated workspace unless HARNESS_PROJECT_DIR is set, which would make it
-    // read an empty graph (0 nodes). Pin it to the seed location.
-    env: { ...process.env, PORT: url.port || '4301', NO_OPEN: '1', HARNESS_PROJECT_DIR: process.env.HARNESS_PROJECT_DIR || process.cwd() },
+    // read an empty graph (0 nodes). Pin it to the seed location; a user-level
+    // HARNESS_PROJECT_DIR must not redirect the smoke into a real workspace.
+    env: { ...process.env, PORT: url.port || '4301', NO_OPEN: '1', HARNESS_PROJECT_DIR: process.env.HARNESS_SMOKE_PROJECT_DIR || process.cwd() },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const outputChunks = [];
