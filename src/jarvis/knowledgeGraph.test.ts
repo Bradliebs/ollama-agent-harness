@@ -23,6 +23,14 @@ describe('knowledge graph', () => {
     expect(found?.attributes).toMatchObject({ role: 'engineer', team: 'platform' });
   });
 
+  it('does not append when a re-observation changes nothing', async () => {
+    const dir = await tmpDir();
+    for (let i = 0; i < 5; i++) await upsertEntity(dir, 'file', 'IMPLEMENTATION_PLAN.md', { source: 'ambient' }, 'ambient');
+    await upsertEntity(dir, 'file', 'IMPLEMENTATION_PLAN.md', { source: 'ambient', size: 10 }, 'ambient');
+    const raw = await fs.readFile(path.join(dir, '.harness', 'jarvis', 'knowledge.jsonl'), 'utf8');
+    expect(raw.trim().split('\n')).toHaveLength(2);
+  });
+
   it('recall returns token-overlap matches sorted by score', async () => {
     const dir = await tmpDir();
     await appendRecord(dir, { kind: 'fact', subject: 'release', predicate: 'depends_on', object: 'changelog', confidence: 0.9, source: 'test' });
