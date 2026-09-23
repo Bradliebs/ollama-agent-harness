@@ -35,6 +35,7 @@ import { getSwallowedFailureDroppedCount, getSwallowedFailureTotalCount, recordS
 import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { assertTestSafeProjectDir } from '../persistence/testWorkspaceGuard';
 import { writeSettingsFile } from './settingsFile';
+import { resolveProjectDir } from './projectDir';
 import { summarizeTasks } from '../services/taskStore';
 import { createTaskRoutesRouter, type CodexTaskRunner, type CodexTaskRunnerEvent } from './taskRoutes';
 import { createPromiseRouter } from './promiseRoutes';
@@ -219,40 +220,7 @@ app.use(express.static(path.join(__dirname, '..', '..', 'ui'), {
   },
 }));
 
-/**
- * Workspace isolation: the agent must NEVER write into the harness source tree.
- * If no HARNESS_PROJECT_DIR is set and the harness is launched from its own
- * source repo, we redirect to ~/apex-workspace (created on first run). We detect
- * the repo by the presence of src/web/server.ts and src/tools/dispatcher.ts.
- * Set HARNESS_PROJECT_DIR to pin a stable home (recommended) so the data dir
- * never drifts between launches.
- */
-function resolveProjectDir(): string {
-  if (process.env.HARNESS_PROJECT_DIR) {
-    return path.resolve(process.env.HARNESS_PROJECT_DIR);
-  }
-  // Detect if cwd is the harness source repo
-  const cwd = process.cwd();
-  const isHarnessRepo =
-    existsSync(path.join(cwd, 'src', 'web', 'server.ts')) &&
-    existsSync(path.join(cwd, 'src', 'tools', 'dispatcher.ts'));
-  // Tests write fixtures into cwd/.harness; don't redirect under jest.
-  // (jest sets NODE_ENV='test' automatically; --runInBand does not set JEST_WORKER_ID.)
-  if (isHarnessRepo && (process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID)) {
-    return cwd;
-  }
-  if (isHarnessRepo) {
-    const safeDefault = path.join(os.homedir(), 'apex-workspace');
-    if (!existsSync(safeDefault)) {
-      mkdirSync(safeDefault, { recursive: true });
-    }
-    console.log(`⚠️  Workspace isolation: cwd is the harness repo — redirecting to ${safeDefault}`);
-    console.log(`   Set HARNESS_PROJECT_DIR to override (e.g. your app folder).`);
-    return safeDefault;
-  }
-  return cwd;
-}
-
+// Workspace resolution lives in ./projectDir (HARNESS_PROJECT_DIR, else never the harness checkout).
 const PROJECT_DIR = assertTestSafeProjectDir(resolveProjectDir());
 setProjectRoot(PROJECT_DIR);
 // Surface the resolved project dir at startup. A silently-moved home is what

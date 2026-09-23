@@ -63,4 +63,15 @@ describe('ui wiring for turn states and identity health', () => {
   it('serves the identity health endpoint', () => {
     expect(identityRoutes).toContain("router.get('/api/identity/health'");
   });
+
+  it('loads citation and identity panel modules moved out of app.js before it', () => {
+    const appIdx = indexHtml.indexOf('src="./app.js');
+    for (const [file, fn] of [['citations.js', 'function attachCitations('], ['identityPanel.js', 'async function refreshIdentityAutoUpdatePanel(']]) {
+      const idx = indexHtml.indexOf(`src="./${file}`);
+      expect(idx).toBeGreaterThan(-1);
+      expect(idx).toBeLessThan(appIdx);
+      expect(fs.readFileSync(path.join(root, 'ui', file), 'utf-8')).toContain(fn);
+      expect(appJs).not.toContain(fn);
+    }
+  });
 });
