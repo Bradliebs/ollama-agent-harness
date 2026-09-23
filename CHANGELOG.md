@@ -68,6 +68,12 @@ No release tag, publication or installer runtime qualification is implied.
   documents, skills, uploads, services and their automation jobs) into the backup.
 - Move project-dir resolution into `projectDir.ts`, and citation rendering and
   the identity panel into `ui/citations.js` and `ui/identityPanel.js`.
+- Move the email, output-validation, capability and Jarvis routes (44) out of
+  `server.ts` into router modules, and eight UI panels (about 3,500 lines) out
+  of `app.js` into their own files. Route and function sets are unchanged.
+- Hide inbox entries for runs of automation jobs that no longer exist.
+- Extend the repair script to clear connector secrets and settings saved by the
+  server tests (a fake Discord token failed to log in on every start).
 
 See [Modernization Status](docs/MODERNIZATION-STATUS.md) for the complete
 validation record and remaining installation, hosted CI and live-workflow gates.
