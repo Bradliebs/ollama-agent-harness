@@ -5,6 +5,7 @@ import { OllamaClient } from '../core/ollamaClient';
 import type { IChatClient } from '../core/chatClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
 import { withFileLock } from '../persistence/atomicFile';
+import { assertTestSafeProjectDir } from '../persistence/testWorkspaceGuard';
 import { revertRun } from '../persistence/runReverter';
 import { createHelperAgentConfig, type HelperTaskType, type ModelRoutingDecision, type ModelRoutingInput, type ModelRoutingPolicy } from './modelRouting';
 import { resolveAgentDefinition, type AgentDefinition, type SubAgentRef } from './agentLoader';
@@ -326,9 +327,9 @@ export async function runSubagent(
     // Persistent run record so the Agents tab can show a history view
     // and the user can answer "what has this agent done lately?" without
     // grepping session events.
-    const projectDir = effectiveConfig.metricsProjectDir
+    const projectDir = assertTestSafeProjectDir(effectiveConfig.metricsProjectDir
       ?? process.env.HARNESS_PROJECT_DIR
-      ?? process.cwd();
+      ?? process.cwd());
     const now = Date.now();
     await appendSubagentRun(projectDir, {
       runId: runId ?? `subagent-${now}-${Math.random().toString(36).slice(2, 8)}`,

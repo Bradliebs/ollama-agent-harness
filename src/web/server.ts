@@ -33,6 +33,8 @@ import { createToolFailureAlerts, type ToolFailureAlertTracker } from '../servic
 import { formatPrometheusMetrics, type PrometheusMetric } from '../observability/prometheus';
 import { getSwallowedFailureDroppedCount, getSwallowedFailureTotalCount, recordSwallowed } from '../observability/silentFailureSink';
 import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
+import { assertTestSafeProjectDir } from '../persistence/testWorkspaceGuard';
+import { writeSettingsFile } from './settingsFile';
 import { summarizeTasks } from '../services/taskStore';
 import { createTaskRoutesRouter, type CodexTaskRunner, type CodexTaskRunnerEvent } from './taskRoutes';
 import { createPromiseRouter } from './promiseRoutes';
@@ -99,7 +101,7 @@ import { PermissionPromptBroker } from '../permissions/promptBroker';
 import { KillSwitch } from '../permissions/killSwitch';
 import { SandboxSwitch } from '../permissions/sandboxSwitch';
 import { setSandboxStateProvider } from '../tools/sandboxGuards';
-import { createCapabilityGrant, evaluateCapabilityGrant, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, summarizeCapabilityAlignment, autoGrantGatedCapabilities, type CapabilityGrant } from '../permissions/capabilities';
+import { createCapabilityGrant, evaluateCapabilityGrant, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, pruneStaleCapabilityGrants, summarizeCapabilityAlignment, autoGrantGatedCapabilities, type CapabilityGrant } from '../permissions/capabilities';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { rebuildSemanticMemory, searchSemanticMemory } from '../persistence/semanticMemory';
 import * as snapshots from '../persistence/snapshots';
@@ -251,7 +253,7 @@ function resolveProjectDir(): string {
   return cwd;
 }
 
-const PROJECT_DIR = resolveProjectDir();
+const PROJECT_DIR = assertTestSafeProjectDir(resolveProjectDir());
 setProjectRoot(PROJECT_DIR);
 // Surface the resolved project dir at startup. A silently-moved home is what
 // makes the harness appear to "lose" its memory/identity, so make it visible.
@@ -278,7 +280,6 @@ const GLOBAL_SKILLS_DIR = (process.env.HARNESS_GLOBAL_SKILLS_DIR ?? '').trim()
 const TRACES_DIR = path.join(PROJECT_DIR, '.harness', 'traces');
 const DOCUMENTS_DIR = path.join(PROJECT_DIR, '.harness', 'documents');
 const SETTINGS_PATH = path.join(PROJECT_DIR, '.harness', 'settings.json');
-const SETTINGS_SAVE_RETRY_DELAYS_MS = [25, 75, 150, 300, 600];
 const API_KEYS_PATH = path.join(PROJECT_DIR, '.harness', 'api-keys.json');
 const OUTPUT_VALIDATION_PROFILES_PATH = path.join(PROJECT_DIR, '.harness', 'output-validation-profiles.json');
 // Harness install root — the directory containing the harness's own
@@ -5434,7 +5435,7 @@ app.post('/api/capabilities/grants', async (req, res) => {
       res.status(status).json({ error: result.evaluation.reason, evaluation: result.evaluation });
       return;
     }
-    capabilityGrants = sanitizeCapabilityGrants([...capabilityGrants, result.grant]);
+    capabilityGrants = pruneStaleCapabilityGrants(sanitizeCapabilityGrants([...capabilityGrants, result.grant]));
     await saveSettingsToDisk();
     await appendCapabilityAuditEvent(PROJECT_DIR, { type: 'grant.created', capabilityId, grantId: result.grant.id, reason: result.grant.reason });
     logger.info('Capabilities', 'Capability grant created', { capabilityId, grantId: result.grant.id, expiresAt: result.grant.expiresAt });
@@ -5932,7 +5933,7 @@ app.post('/api/chat', async (req, res) => {
   if (permissionMode === 'dontAsk') {
     const newGrants = autoGrantGatedCapabilities(capabilityGrants);
     if (newGrants.length > 0) {
-      capabilityGrants = sanitizeCapabilityGrants([...capabilityGrants, ...newGrants]);
+      capabilityGrants = pruneStaleCapabilityGrants(sanitizeCapabilityGrants([...capabilityGrants, ...newGrants]));
       for (const grant of newGrants) {
         await appendCapabilityAuditEvent(PROJECT_DIR, { type: 'grant.created', capabilityId: grant.capabilityId, grantId: grant.id, reason: 'Auto-granted in dontAsk mode.' });
       }
@@ -8248,7 +8249,7 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
       reason: typeof sb?.reason === 'string' ? sb.reason : '',
     });
   }
-  if (settings.capabilityGrants !== undefined) capabilityGrants = sanitizeCapabilityGrants(settings.capabilityGrants);
+  if (settings.capabilityGrants !== undefined) capabilityGrants = pruneStaleCapabilityGrants(sanitizeCapabilityGrants(settings.capabilityGrants));
   if (settings.browserRedaction !== undefined) browserRedaction = sanitizeBrowserRedaction(settings.browserRedaction);
   if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 0, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (settings.webReadMaxChars !== undefined) {
@@ -8707,26 +8708,10 @@ async function _doSaveSettings(): Promise<void> {
   const attemptAt = new Date().toISOString();
   settingsPersistenceStatus = { ...settingsPersistenceStatus, lastAttemptAt: attemptAt };
   try {
-    await fs.mkdir(path.dirname(SETTINGS_PATH), { recursive: true });
     const { outputValidationProfiles, customOutputValidationProfiles: profiles, ...settings } = getCurrentSettings();
     void outputValidationProfiles;
     void profiles;
-    // Merge with any fields that exist in the file but are not tracked in-memory
-    // (e.g. fields added by newer code not yet loaded). This prevents a running
-    // server from clobbering file edits made to fields it does not manage.
-    let merged: Record<string, unknown> = settings;
-    try {
-      const raw = await fs.readFile(SETTINGS_PATH, 'utf-8');
-      const existing = JSON.parse(raw) as Record<string, unknown>;
-      merged = { ...existing, ...settings };
-    } catch { /* file missing or invalid — use settings as-is */ }
-    const json = JSON.stringify(merged, null, 2);
-    // Validate before writing — never write invalid JSON
-    try { JSON.parse(json); } catch { logger.warn('Settings', 'Skipped save: serialized JSON is invalid'); return; }
-    // Atomic write: write to temp file then rename
-    const tmpPath = SETTINGS_PATH + '.tmp';
-    await fs.writeFile(tmpPath, json, 'utf-8');
-    await renameSettingsFileWithRetry(tmpPath, SETTINGS_PATH);
+    if (!await writeSettingsFile(SETTINGS_PATH, settings)) return;
     settingsPersistenceStatus = { status: 'ok', lastAttemptAt: attemptAt, lastSuccessAt: new Date().toISOString(), lastErrorAt: null, lastError: null };
   } catch (error) {
     settingsPersistenceStatus = {
@@ -8739,29 +8724,6 @@ async function _doSaveSettings(): Promise<void> {
   }
 }
 
-async function renameSettingsFileWithRetry(tmpPath: string, targetPath: string): Promise<void> {
-  for (let attempt = 0; attempt <= SETTINGS_SAVE_RETRY_DELAYS_MS.length; attempt += 1) {
-    try {
-      await fs.rename(tmpPath, targetPath);
-      return;
-    } catch (error) {
-      if (!isTransientSettingsRenameError(error) || attempt === SETTINGS_SAVE_RETRY_DELAYS_MS.length) throw error;
-      const code = (error as NodeJS.ErrnoException).code || 'unknown';
-      logger.warn('Settings', 'Retrying settings save after transient rename failure', { code, attempt: attempt + 1 });
-      await delay(SETTINGS_SAVE_RETRY_DELAYS_MS[attempt]);
-    }
-  }
-}
-
-function isTransientSettingsRenameError(error: unknown): boolean {
-  if (process.platform !== 'win32') return false;
-  const code = (error as NodeJS.ErrnoException).code;
-  return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 async function checkSourceDistFreshness(): Promise<void> {
   const { sourceKey, distKey } = resolveHarnessSourceDistFreshnessPaths();
@@ -9048,7 +9010,7 @@ export async function startServer(): Promise<ReturnType<typeof app.listen>> {
             try {
               if (action.kind === 'kg_ingest_file') {
                 const files = (action.payload?.files as string[] | undefined) ?? [];
-                for (const file of files) {
+                for (const file of new Set(files)) {
                   await upsertEntity(PROJECT_DIR, 'file', file, { source: 'ambient' }, 'ambient');
                 }
               } else if (action.kind === 'save_brief') {
