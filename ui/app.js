@@ -3722,11 +3722,11 @@ function updateTopbarName(name) {
   let pet = document.getElementById('topbarPet');
   let word = logo.querySelector('.logo-word');
   if (!pet || !word) {
-    logo.innerHTML = '<span class="pet pet-idle" id="topbarPet" title="Harness mood: idle">' + avatar + '</span><span class="logo-word"> ' + (name || 'Harness') + '</span>';
+    logo.innerHTML = '<span class="pet pet-idle" id="topbarPet" title="Harness mood: idle">' + avatar + '</span><span class="logo-word"> ' + (name || window.harnessPersonaName || 'Harness') + '</span>';
     return;
   }
   pet.textContent = avatar;
-  word.textContent = ' ' + (name || 'Harness');
+  word.textContent = ' ' + (name || window.harnessPersonaName || 'Harness');
 }
 
 let currentAgentAvatar = '';
@@ -4766,13 +4766,15 @@ async function sendMessage(opts) {
     chatMessages = chatMessages.slice(0, opts.regenerateFromIndex);
     const area = document.getElementById('chatArea');
     const allMsgs = Array.from(area.querySelectorAll('.msg, .tool-activity, .followup-chips'));
-    // Find the user message DOM index that corresponds to opts.regenerateFromIndex - 1
+    // Find the user message DOM node that corresponds to chat index
+    // opts.regenerateFromIndex - 1 (by its ordinal among user messages)
     // and remove every node that follows it.
+    const targetUserOrdinal = chatMessages.filter((m) => m.role === 'user').length - 1;
     let userMsgCount = 0;
     let truncateAt = -1;
     for (let i = 0; i < allMsgs.length; i++) {
       if (allMsgs[i].classList.contains('msg') && allMsgs[i].classList.contains('user')) {
-        if (userMsgCount === opts.regenerateFromIndex - 1) {
+        if (userMsgCount === targetUserOrdinal) {
           truncateAt = i + 1;
           break;
         }
@@ -5213,7 +5215,8 @@ async function sendMessage(opts) {
     if (msgEl && evidenceCard) attachEvidenceCard(msgEl, evidenceCard);
     // Citations: render numbered source list under the assistant reply
     // and rewrite any URL mentions in the visible text to [n] superscripts.
-    if (msgEl && turnCitations.length > 0) {
+    // Skip when the server already appended a **Sources** footer to the text.
+    if (msgEl && turnCitations.length > 0 && !/\n\*\*Sources\*\*\n/.test(assistantText || '')) {
       attachCitations(msgEl, turnCitations, assistantText);
     }
     // Per-message actions: 🔁 Regenerate + 📋 Copy. Index points at the
@@ -5251,6 +5254,13 @@ async function sendMessage(opts) {
       msgEl = addMsg('assistant', '⚠️ ' + e.message);
       evidenceCard = buildClientStoppedEvidence(text, model, clientEvidenceTools, clientEvidenceCommands, 'client_error');
       attachEvidenceCard(msgEl, evidenceCard);
+    }
+  }
+  if (typeof classifyTurn === 'function') {
+    const turnState = classifyTurn({ stopped: responseStopped, failed: responseFailed, doneReason, hasText: Boolean(assistantText) });
+    if (turnState) {
+      if (!msgEl) msgEl = addMsg('assistant', 'No reply came back from the model.');
+      appendTurnState(msgEl, turnState, { doneReason, onRetry: retryLastPrompt });
     }
   }
   if (tokRateTimer) clearInterval(tokRateTimer);
@@ -6108,7 +6118,7 @@ function addMsg(role, text) {
   const el = document.createElement('div');
   el.className = 'msg ' + role;
   const av = role === 'user' ? 'Y' : getAgentAvatar();
-  const label = role === 'user' ? 'You' : (currentAgentName || 'Assistant');
+  const label = role === 'user' ? 'You' : (currentAgentName || window.harnessPersonaName || 'Assistant');
   el.innerHTML = '<div class="msg-avatar">' + av + '</div><div class="msg-body"><div class="msg-role">' + esc(label) + '</div><div class="msg-content"></div></div>';
   if (role === 'user') el.querySelector('.msg-content').textContent = text;
   else renderMd(el.querySelector('.msg-content'), text);
@@ -6981,6 +6991,17 @@ async function copyRich(markdown) {
   await navigator.clipboard.writeText(text);
 }
 
+/** Re-run the most recent user prompt, dropping any reply that followed it. */
+function retryLastPrompt() {
+  if (isSending) return;
+  let userIdx = -1;
+  for (let i = chatMessages.length - 1; i >= 0; i--) {
+    if (chatMessages[i].role === 'user') { userIdx = i; break; }
+  }
+  if (userIdx < 0) return;
+  sendMessage({ regenerateFromIndex: userIdx + 1 });
+}
+
 function attachMessageActions(msgEl, messageIndex) {
   if (!msgEl) return;
   const body = msgEl.querySelector('.msg-body');
@@ -7672,7 +7693,7 @@ async function searchHistory(q) {
   } catch(e){}
 }
 
-async function loadChat(id) { try { const r = await fetch('/api/history/' + id); const d = await r.json(); currentChatId = id; chatMessages = d.messages || []; document.getElementById('chatArea').innerHTML = ''; chatMessages.forEach((m, i) => { const el = addMsg(m.role, m.content); if (m.role === 'assistant' && m.content) attachMessageActions(el, i); }); saveChatSession(); loadHistory(); } catch(e){} }
+async function loadChat(id) { try { const r = await fetch('/api/history/' + id); const d = await r.json(); currentChatId = id; chatMessages = d.messages || []; document.getElementById('chatArea').innerHTML = ''; let lastEl = null; chatMessages.forEach((m, i) => { const el = addMsg(m.role, m.content); lastEl = el; if (m.role === 'assistant' && m.content) attachMessageActions(el, i); }); if (lastEl && chatMessages.length && chatMessages[chatMessages.length - 1].role === 'user' && typeof appendTurnState === 'function') { appendTurnState(lastEl, 'interrupted', { detail: 'This chat ended before a reply was saved.', onRetry: retryLastPrompt }); } saveChatSession(); loadHistory(); } catch(e){} }
 async function autoSaveChat() { if (chatMessages.length < 2) return; const title = chatMessages[0].content.slice(0, 60); try { const r = await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: currentChatId, title, messages: chatMessages }) }); const d = await r.json(); if (!currentChatId) currentChatId = d.id; saveChatSession(); loadHistory(); } catch(e){} }
 async function deleteChat(id) { await fetch('/api/history/' + id, { method: 'DELETE' }); if (id === currentChatId) newChat(); loadHistory(); }
 function newChat() {
@@ -15877,6 +15898,7 @@ async function acceptIdentitySoulProposal() {
     if (data.error) throw new Error(data.error);
     showToast('SOUL updated. Snapshot: ' + (data.snapshotId || 'taken'));
     await loadIdentity();
+    if (typeof checkIdentityHealth === 'function') checkIdentityHealth();
   } catch (error) {
     showToast('Accept failed: ' + (error && error.message ? error.message : error));
   }
@@ -15890,6 +15912,7 @@ async function discardIdentitySoulProposal() {
     if (data.error) throw new Error(data.error);
     showToast(data.discarded ? 'Proposal discarded.' : 'No proposal to discard.');
     refreshIdentityAutoUpdatePanel();
+    if (typeof checkIdentityHealth === 'function') checkIdentityHealth();
   } catch (error) {
     showToast('Discard failed: ' + (error && error.message ? error.message : error));
   }
@@ -15904,6 +15927,7 @@ async function restoreIdentitySnapshot(id) {
     const backupId = data.backup && data.backup.id ? data.backup.id : 'taken';
     showToast('Restored. Backup of prior state: ' + backupId);
     await loadIdentity();
+    if (typeof checkIdentityHealth === 'function') checkIdentityHealth();
   } catch (error) {
     showToast('Restore failed: ' + (error && error.message ? error.message : error));
   }
