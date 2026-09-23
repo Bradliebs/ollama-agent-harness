@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { logger } from '../core/logger';
 import { isSandboxActive } from './sandboxGuards';
+import { assertTestSafeProjectDir } from '../persistence/testWorkspaceGuard';
 
 // ─── Project root override ──────────────────────────────────────────
 // When the server detects workspace isolation (HARNESS_PROJECT_DIR or
@@ -12,12 +13,24 @@ let _projectRoot: string | null = null;
 
 /** Override the project root used by all path resolution functions. */
 export function setProjectRoot(dir: string): void {
-  _projectRoot = path.resolve(dir);
+  _projectRoot = path.resolve(assertTestSafeProjectDir(dir));
 }
 
 /** Return the effective project root (explicit override or process.cwd()). */
 export function getProjectRoot(): string {
   return _projectRoot ?? process.cwd();
+}
+
+/**
+ * Root for workspace data (.harness/memory, agents, squads, learning). Same as
+ * getProjectRoot() when the server has set an override; otherwise honours
+ * HARNESS_PROJECT_DIR before process.cwd() so CLI runs keep writing where the
+ * web server reads.
+ */
+export function getWorkspaceDataRoot(): string {
+  if (_projectRoot) return _projectRoot;
+  const envDir = process.env.HARNESS_PROJECT_DIR?.trim();
+  return envDir ? envDir : process.cwd();
 }
 
 const DEFAULT_UPLOADS_DIRNAME = path.join('.harness', 'uploads');

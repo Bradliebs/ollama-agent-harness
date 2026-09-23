@@ -2,6 +2,7 @@ import * as fsPromises from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { BrowserNavigateTool, BrowserClickTool, BrowserFillTool, BrowserReadTool, BrowserScreenshotTool, BrowserCloseTool, BrowserBookmarksTool } from './browserTools';
+import { getProjectRoot, setProjectRoot } from './pathResolution';
 
 // Browser page tools require Playwright with Chromium installed.
 // These tests validate input validation and error handling without
@@ -161,5 +162,37 @@ describe('browser-page-access enforcement', () => {
     expect(entry.detail).toContain('capability blocked');
     // The fill value must never reach the audit log.
     expect(raw).not.toContain('topsecretpw');
+  });
+
+  it('reads grants and writes audit from the workspace project root, not the launch cwd', async () => {
+    // The server runs with cwd = install dir and a separate HARNESS_PROJECT_DIR.
+    // A grant sitting in the install dir must not count; the workspace decides.
+    const workspace = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'harness-browser-ws-'));
+    const now = Date.now();
+    await fsPromises.mkdir(path.join(tmpDir, '.harness'), { recursive: true });
+    await fsPromises.writeFile(path.join(tmpDir, '.harness', 'settings.json'), JSON.stringify({
+      capabilityGrants: [{
+        id: 'cwd-grant',
+        capabilityId: 'browser-page-access',
+        controls: ['explicit-grant', 'time-limit', 'audit-log', 'kill-switch', 'human-confirmation'],
+        reason: 'grant in the install dir',
+        grantedAt: new Date(now - 60_000).toISOString(),
+        expiresAt: new Date(now + 3_600_000).toISOString(),
+      }],
+    }));
+    await fsPromises.mkdir(path.join(workspace, '.harness'), { recursive: true });
+    await fsPromises.writeFile(path.join(workspace, '.harness', 'settings.json'), JSON.stringify({ capabilityGrants: [] }));
+    const previousRoot = getProjectRoot();
+    setProjectRoot(workspace);
+    try {
+      const result = await BrowserNavigateTool.execute({ url: 'https://example.com/page' });
+      expect(result.success).toBe(false);
+      expect(result.output).toContain('browser-page-access grant');
+      const audit = await fsPromises.readFile(path.join(workspace, '.harness', 'browser-audit.jsonl'), 'utf-8');
+      expect(audit).toContain('browser_navigate');
+    } finally {
+      setProjectRoot(previousRoot);
+      await fsPromises.rm(workspace, { recursive: true, force: true });
+    }
   });
 });

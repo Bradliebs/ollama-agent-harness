@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as nodemailer from 'nodemailer';
 import type { Tool, ToolResult } from '../types';
 import { logger } from '../core/logger';
+import { getProjectRoot } from './pathResolution';
 
 // ─── Email draft tool ───────────────────────────────────────────────
 //
@@ -64,7 +65,7 @@ export const EmailDraftTool: Tool = {
       body,
     ];
 
-    const projectDir = process.cwd();
+    const projectDir = getProjectRoot();
     const draftsDir = path.join(projectDir, DRAFTS_DIR);
     await fs.mkdir(draftsDir, { recursive: true });
 
@@ -168,7 +169,7 @@ export const EmailSendTool: Tool = {
       for (const rawPath of rawAttachments) {
         const filePath = String(rawPath).trim();
         if (!filePath) continue;
-        const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath);
+        const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(getProjectRoot(), filePath);
         try {
           await fs.access(resolved);
           mailAttachments.push({ filename: path.basename(resolved), path: resolved });
@@ -189,7 +190,7 @@ export const EmailSendTool: Tool = {
       logger.info('Email', 'Sent', { to, subject, messageId: info.messageId, attachments: mailAttachments.length });
 
       // Also save a copy as .eml for records.
-      const projectDir = process.cwd();
+      const projectDir = getProjectRoot();
       const sentDir = path.join(projectDir, '.harness', 'email', 'sent');
       await fs.mkdir(sentDir, { recursive: true });
       const safeSubject = subject.replace(/[^a-zA-Z0-9 -]/g, '').slice(0, 50).trim().replace(/\s+/g, '-') || 'sent';

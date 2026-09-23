@@ -13,11 +13,10 @@
 
 import type { Tool, ToolResult } from '../types';
 import { getSquad, listSquads, planHandoff, routeMessage } from '../services/squad';
+import { getWorkspaceDataRoot } from './pathResolution';
 
 function projectDir(): string {
-  return process.env.HARNESS_PROJECT_DIR && process.env.HARNESS_PROJECT_DIR.trim()
-    ? process.env.HARNESS_PROJECT_DIR
-    : process.cwd();
+  return getWorkspaceDataRoot();
 }
 
 function asString(value: unknown): string | undefined {

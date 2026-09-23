@@ -16,6 +16,7 @@ import {
   type TaskPriority,
   type TaskStatus,
 } from '../services/taskStore';
+import { getProjectRoot } from './pathResolution';
 
 const VALID_STATUSES: TaskStatus[] = [
   'pending', 'assigned', 'in_progress', 'blocked', 'review', 'done', 'failed', 'cancelled',
@@ -24,7 +25,7 @@ const VALID_STATUSES: TaskStatus[] = [
 const VALID_PRIORITIES: TaskPriority[] = ['low', 'normal', 'high'];
 
 function projectDir(): string {
-  return process.cwd();
+  return getProjectRoot();
 }
 
 function asString(value: unknown): string | undefined {

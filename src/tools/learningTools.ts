@@ -9,13 +9,10 @@ import {
   getUnpromotedPatterns,
   markPatternPromoted,
 } from '../learning/engine';
+import { getWorkspaceDataRoot } from './pathResolution';
 
-// Mirror web/server.ts PROJECT_DIR resolution so learning tools write to
-// the same `.harness/` folder that context assembly reads from.
 function learningProjectDir(): string {
-  return process.env.HARNESS_PROJECT_DIR && process.env.HARNESS_PROJECT_DIR.trim()
-    ? process.env.HARNESS_PROJECT_DIR
-    : process.cwd();
+  return getWorkspaceDataRoot();
 }
 
 /**

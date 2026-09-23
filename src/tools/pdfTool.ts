@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { promisify } from 'util';
 import type { Tool, ToolResult } from '../types';
-import { resolveProjectPath, resolveProjectReadPath } from './pathResolution';
+import { getProjectRoot, resolveProjectPath, resolveProjectReadPath } from './pathResolution';
 
 const DEFAULT_MAX_CHARS = 100_000;
 const MAX_ALLOWED_CHARS = 1_000_000;
@@ -603,7 +603,7 @@ export const PdfRenderPageTool: Tool = {
       outputPath = resolved;
     } else {
       const baseName = path.basename(filePath, path.extname(filePath));
-      outputPath = path.resolve(process.cwd(), '.harness', 'pdf-renders', `${baseName}-p${pageNum}.png`);
+      outputPath = path.resolve(getProjectRoot(), '.harness', 'pdf-renders', `${baseName}-p${pageNum}.png`);
     }
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
     try {
@@ -623,7 +623,7 @@ export const PdfRenderPageTool: Tool = {
         const match = candidates.find((f) => f.startsWith(base) && /\.(png|jpg|jpeg)$/i.test(f));
         if (match) finalPath = path.join(dir, match);
       }
-      const rel = path.relative(process.cwd(), finalPath);
+      const rel = path.relative(getProjectRoot(), finalPath);
       return { success: true, output: `Rendered page ${pageNum} to ${rel}` };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);

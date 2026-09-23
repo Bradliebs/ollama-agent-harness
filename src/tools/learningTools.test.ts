@@ -10,18 +10,22 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { ReflectTool } from './learningTools';
+import { getProjectRoot, setProjectRoot } from './pathResolution';
 
 describe('ReflectTool defensive input handling', () => {
   const originalCwd = process.cwd();
   let workDir: string;
+  let originalProjectRoot: string;
 
   beforeEach(async () => {
     workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'reflect-tool-'));
-    process.chdir(workDir);
+    originalProjectRoot = getProjectRoot();
+    setProjectRoot(workDir);
   });
 
   afterEach(async () => {
     process.chdir(originalCwd);
+    setProjectRoot(originalProjectRoot);
     await fs.rm(workDir, { recursive: true, force: true });
   });
 
