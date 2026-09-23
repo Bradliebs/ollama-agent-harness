@@ -1,7 +1,7 @@
 ---
 title: Start Here
 description: Windows-first setup with explicit local or cloud model selection and a confirmed first task
-ms.date: 2026-09-15
+ms.date: 2026-09-23
 ---
 
 ## What is this?

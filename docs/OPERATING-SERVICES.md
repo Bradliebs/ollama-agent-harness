@@ -2,7 +2,7 @@
 title: Operating Services
 description: Contract for deterministic Agentic Service Mode services, persisted state, scheduler behavior, and model-agnostic routing
 author: Bradliebs
-ms.date: 2026-09-15
+ms.date: 2026-09-23
 ms.topic: concept
 keywords:
   - agentic service mode
@@ -21,8 +21,9 @@ The harness routes these requests to `OPERATE_MODE` before model selection. This
 ## Host Lifecycle
 
 Operating-service state is distinct from the process that hosts it. Windows
-background mode uses [start-background.bat](../start-background.bat) and an owning
-supervisor; [stop-server.bat](../stop-server.bat) requests shutdown through that
+background mode uses `start.bat background` (which runs
+[start-background.bat](../start-background.bat)) and an owning supervisor;
+`start.bat stop` ([stop-server.bat](../stop-server.bat)) requests shutdown through that
 supervisor, never by trusting a saved PID. The selected port can differ from 4300
 when another process already owns it. Tray navigation resolves the owned port.
 

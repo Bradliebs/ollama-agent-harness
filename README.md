@@ -2,7 +2,7 @@
 title: Ollama Agent Harness
 description: Local-first Ollama agent harness with tools, documents, Telegram, email, tracing, learning, and a browser UI
 author: Bradliebs
-ms.date: 2026-09-15
+ms.date: 2026-09-23
 ms.topic: overview
 keywords:
   - ollama
@@ -32,11 +32,15 @@ not yet a new numbered release.
 * Windows-first setup requires Node 22.13.0 or newer (24 LTS recommended), explicit model selection, and a confirmed Quick Test. Background launch preserves occupied ports; Stop targets only the owned server.
 * Interrupted-session recovery reports partial transcripts and preserves append-only history. Ollama cancellation and retries, MCP stdio interoperability, and document dependencies have additional regression coverage.
 * Cloud-only workflow testing can leave local GPUs available. The revised development cohort passed 36/36; the original frozen holdouts passed 12/24. These are different datasets, not a reliability guarantee or a like-for-like improvement.
-* Full Jest verification passed 316 suites and 3,759 tests, with one skipped and exit code 0. Installer execution and hosted cross-platform CI remain separate gates. See [Modernization Status](docs/MODERNIZATION-STATUS.md) for evidence and limitations.
+* Full Jest verification passed 329 suites and 3,841 tests, with one skipped and exit code 0. Installer execution and hosted cross-platform CI remain separate gates. See [Modernization Status](docs/MODERNIZATION-STATUS.md) for evidence and limitations.
 
 * **Governed Agent Loop v1** — a shadow-first governance pass beside the product path: confidence-mode labels, per-answer self-critique, a working-memory snapshot, and a human-gated review queue that writes to durable memory only on explicit approval. Idle replays re-ask drained answers and re-enter the same review queue. See [`docs/GOVERNED-LOOP.md`](docs/GOVERNED-LOOP.md).
 * **New HTTP surface** for the loop and supporting subsystems: `/api/working-memory`, `/api/review-queue/*`, `/api/replay-*`, `/api/governed-metrics`, plus `/api/webhooks/*` (including dead-letter redelivery) and `/api/mycelium/*` (router inspection, learning curve, feedback).
 * **Workspace vs install** clarification — set `HARNESS_PROJECT_DIR` to keep user data out of the install dir, and promote user-wide credentials (e.g. SMTP) to OS env vars so they stop going stale per workspace. See [Workspace vs install](#workspace-vs-install).
+* **Research answers cite sources** — answers built from web pages end with a numbered **Sources** list when the model included no links. `web_read` retries sites that block automated readers, and a 404 on a URL that never came from `web_search` is flagged as a guess.
+* **Persona and turn status in the UI** — the top bar shows the assistant's name from `SOUL.md`, with a badge when the persona is missing or a proposal needs review. Failed, stopped, interrupted and empty replies get a **Retry** strip.
+* **Workspace safety** — tests and smoke scripts no longer write into a real workspace, and [`scripts/repair-workspace.js`](scripts/repair-workspace.js) cleans up one that earlier runs polluted. See [Repairing a workspace](#repairing-a-workspace).
+* **One launcher** — `start.bat` with `background`, `stop`, `tray` or `watchdog`.
 
 ### What's new in v0.6.5
 
@@ -141,7 +145,10 @@ npm run typecheck
 npm test -- --runInBand
 ```
 
-With the UI server running, smoke-test the browser:
+With the UI server running, smoke-test the browser. The smoke creates chats,
+services and uploads through the API, so it refuses to reuse a running server
+unless you name it explicitly or pass `--reuse`; never point it at the server
+holding your real workspace:
 
 ```powershell
 npm run smoke:ui -- http://127.0.0.1:4300/
@@ -149,7 +156,7 @@ npm run smoke:ui -- http://127.0.0.1:4300/
 
 To validate the current checkout without accidentally reusing a stale local UI
 server, run the fresh smoke. It starts its own server on the default smoke port
-and fails if that port is already occupied:
+in a throwaway workspace, and fails if that port is already occupied:
 
 ```powershell
 npm run smoke:ui:fresh
@@ -510,6 +517,20 @@ The harness separates the **install directory** (where the code lives, e.g. `H:\
 
 One consequence: `.harness/api-keys.json` is **per workspace**. Credentials you want to share across every workspace (SMTP, third-party API keys) should be set as OS environment variables instead — the harness reads env vars whenever a key is absent from `api-keys.json`, so promoting a credential to an env var and removing it from per-workspace files prevents drift.
 
+Tests never use `HARNESS_PROJECT_DIR`: under Jest the server refuses any project directory outside the checkout or the OS temp directory, so a user-wide setting cannot send test fixtures into your real workspace.
+
+### Repairing a workspace
+
+Before these guards existed, test and smoke runs wrote fixtures into real workspaces: a placeholder `SOUL.md`, test capability grants and connector secrets, `test-model` stats, plan tasks, documents, uploads and daily example.com automations. The repair script finds and reverses that:
+
+```powershell
+node scripts/repair-workspace.js                 # dry run: lists every change
+node scripts/repair-workspace.js --apply         # back up, then apply
+node scripts/repair-workspace.js --dir D:\path --apply
+```
+
+It targets `HARNESS_PROJECT_DIR` by default and refuses to apply while something listens on port 4300 or 3000 (a running server would overwrite `settings.json`); pass `--force` when that listener is not the harness. Originals are copied or moved to `.harness/snapshots/repair-<timestamp>/`. It also compacts `.harness/jarvis/knowledge.jsonl` when it has grown past 20 MB (this needs `npm run build`).
+
 ### Runtime state
 
 All runtime state goes under `.harness/` in your project directory:
@@ -531,6 +552,9 @@ All runtime state goes under `.harness/` in your project directory:
 | `.harness/email/sent/` | Sent email archive |
 | `.harness/documents/` | Generated documents (Markdown, HTML, PDF, DOCX) |
 | `.harness/evidence/` | Run evidence cards (automation, autonomy) |
+| `.harness/identity/` | `SOUL.md` persona, `USER.md` notes, proposals and history snapshots |
+| `.harness/jarvis/knowledge.jsonl` | Personal knowledge graph |
+| `.harness/snapshots/` | Backups, including `repair-<timestamp>/` from the repair script |
 | `.harness/telegram-chat-ids.json` | Telegram notification recipients |
 
 ## Releasing

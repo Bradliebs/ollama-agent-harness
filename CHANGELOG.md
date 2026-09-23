@@ -2,7 +2,7 @@
 title: Ollama Agent Harness Changelog
 description: Release notes generated from local RPI changes logs for Ollama Agent Harness
 author: Bradliebs
-ms.date: 2026-09-15
+ms.date: 2026-09-23
 ms.topic: reference
 keywords:
   - ollama
@@ -74,6 +74,8 @@ No release tag, publication or installer runtime qualification is implied.
 - Hide inbox entries for runs of automation jobs that no longer exist.
 - Extend the repair script to clear connector secrets and settings saved by the
   server tests (a fake Discord token failed to log in on every start).
+- After these changes full Jest passed 329 suites and 3,841 tests with one
+  skipped; the build and script tests (`node --test`) also passed.
 
 See [Modernization Status](docs/MODERNIZATION-STATUS.md) for the complete
 validation record and remaining installation, hosted CI and live-workflow gates.
