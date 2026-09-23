@@ -89,12 +89,24 @@ For ordinary chat, type in the message box and send. Use Stop to interrupt work.
 
 ### Optional background mode on Windows
 
-Use [start-background.bat](start-background.bat) to keep the server running after
+`start.bat` is the one launcher to use. Add a mode word for the other ways to run:
+
+| Command                | What it does                                              |
+|------------------------|-----------------------------------------------------------|
+| `start.bat`            | Interactive setup and launch (default)                    |
+| `start.bat background` | Keep the server running after the launch window closes    |
+| `start.bat stop`       | Stop the background server                                |
+| `start.bat tray`       | Start the system tray client                              |
+| `start.bat watchdog`   | Run in the foreground and restart the server after a crash |
+
+The separate `start-*.bat` files still work for existing shortcuts.
+
+Use `start.bat background` to keep the server running after
 the launch window closes. Repeating it does not start a second managed server for
 the same installation. The browser opens when the server is ready; its chosen URL
 and startup errors are also recorded in `.harness/background.log`.
 
-Stop active work in the UI before running [stop-server.bat](stop-server.bat).
+Stop active work in the UI before running `start.bat stop`.
 It stops the server through its owning supervisor, not by trusting a saved PID.
 An old PID file or abandoned ownership marker requires manual reconciliation;
 follow [Background Lifecycle](docs/MODERNIZATION-STATUS.md#background-lifecycle)
@@ -297,5 +309,5 @@ Talk to Oracle from your phone:
 
 ### Background server
 
-Use `start-background.bat` to keep the server running after closing the terminal.
-Use `stop-server.bat` to stop it later.
+Use `start.bat background` to keep the server running after closing the terminal.
+Use `start.bat stop` to stop it later.

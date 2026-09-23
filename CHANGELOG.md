@@ -34,6 +34,33 @@ No release tag, publication or installer runtime qualification is implied.
   remain 12/24. Prompts changed between development cohorts; no speedup claim.
 - Drain pending webhook and skill-usage writes before test fixture cleanup.
   Full Jest passed 316 suites and 3,759 tests with one skipped and exit code 0.
+- Refuse, under Jest, any project directory outside the checkout or OS temp
+  directory. Add `scripts/repair-workspace.js` (dry run by default, `--apply`
+  backs up first) to restore a test-clobbered `SOUL.md` and strip test grants,
+  test-model stats and the test debug-log path from a live workspace.
+- Append a numbered **Sources** list to answers built from web reads that carry
+  no links, and flag 404s on URLs that never came from `web_search` as guesses.
+- Send browser-like headers from `web_read` and retry once on 401/403/429.
+- Read browser grants, redaction settings, audit logs and saved sessions from
+  the workspace project root instead of the launch directory, so dontAsk grants
+  actually enable browser tools.
+- Point email, desktop, task, calendar, PDF, skill import, memory, learning,
+  agent and squad tools at the workspace rather than the launch directory.
+- Prune capability grants that ended more than a day ago; dontAsk mode had
+  accumulated dozens of dead grants in `settings.json`.
+- Stop no-op knowledge-graph upserts from appending: the ambient watcher had
+  written the same file entity 870k times (156 MB). The repair script compacts
+  an oversized log after a backup.
+- Cap semantic and session-search index entries and stored text per entry.
+- Show the persona name from `SOUL.md` in the top bar, with a badge when the
+  persona is missing, placeholder text, or has a pending or outdated proposal.
+- Mark failed, stopped, interrupted and empty replies with a Retry strip, and
+  flag reopened chats that ended before a reply was saved. Fix Regenerate
+  removing the wrong messages in longer chats.
+- Hide more diagnostic panels and top-bar gauges in Simple mode.
+- Make `start.bat` the single launcher with `background`, `stop`, `tray` and
+  `watchdog` modes; the watchdog no longer kills whatever holds port 4300.
+- Move the atomic settings writer out of `server.ts` into `settingsFile.ts`.
 
 See [Modernization Status](docs/MODERNIZATION-STATUS.md) for the complete
 validation record and remaining installation, hosted CI and live-workflow gates.

@@ -3,6 +3,17 @@ setlocal enabledelayedexpansion
 title Ollama Agent Harness
 cd /d "%~dp0"
 
+REM Single entry point. Optional modes keep the other launchers reachable:
+REM   start.bat             interactive setup and launch (default)
+REM   start.bat background  keep running after this window closes
+REM   start.bat stop        stop the background server
+REM   start.bat tray        system tray client
+REM   start.bat watchdog    foreground server that restarts after a crash
+if /I "%~1"=="background" goto MODE_BACKGROUND
+if /I "%~1"=="stop" goto MODE_STOP
+if /I "%~1"=="tray" goto MODE_TRAY
+if /I "%~1"=="watchdog" goto MODE_WATCHDOG
+
 REM Unified launcher: run the assistant profile by default so voice, ambient
 REM awareness and chat channels are on without a separate start-jarvis.bat.
 REM Override by setting HARNESS_PROFILE or the individual HARNESS_* flags before
@@ -207,3 +218,20 @@ echo.
 if not defined PORT set PORT=4300
 call npm run serve
 pause
+exit /b 0
+
+:MODE_BACKGROUND
+call "%~dp0start-background.bat"
+exit /b %errorlevel%
+
+:MODE_STOP
+call "%~dp0stop-server.bat" %2
+exit /b %errorlevel%
+
+:MODE_TRAY
+call "%~dp0start-tray.bat"
+exit /b %errorlevel%
+
+:MODE_WATCHDOG
+call "%~dp0start-watchdog.bat"
+exit /b %errorlevel%

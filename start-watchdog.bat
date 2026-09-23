@@ -15,11 +15,8 @@ echo.
 call npm run build
 if errorlevel 1 goto BUILD_FAIL
 
-:: Kill any stale process on port 4300
-for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":4300.*LISTEN"') do (
-    echo   Killing stale process PID %%p on port 4300
-    taskkill /PID %%p /F >nul 2>nul
-)
+:: Never kill whatever holds port 4300: it may be an unrelated app. The
+:: server picks another free port and prints it if 4300 is taken.
 
 :: Clean stale Telegram lock
 del /f /q ".harness\telegram-poller.lock.json" >nul 2>nul

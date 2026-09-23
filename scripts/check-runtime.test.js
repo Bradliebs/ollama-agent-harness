@@ -48,6 +48,13 @@ test('stop shortcut does not kill an arbitrary listener when ownership is missin
   assert.match(source, /background-server\.js stop/);
 });
 
+test('watchdog reachable from start.bat never kills whatever holds the port', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'start-watchdog.bat'), 'utf8');
+  assert.doesNotMatch(source, /taskkill|Stop-Process/i);
+  const launcher = fs.readFileSync(path.join(__dirname, '..', 'start.bat'), 'utf8');
+  for (const mode of ['background', 'stop', 'tray', 'watchdog']) assert.match(launcher, new RegExp(`if /I "%~1"=="${mode}" goto MODE_`));
+});
+
 test('background launch preserves occupied ports and supports prebuilt installs', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'start-background.bat'), 'utf8');
   assert.doesNotMatch(source, /netstat|taskkill \/PID %%p/i);
