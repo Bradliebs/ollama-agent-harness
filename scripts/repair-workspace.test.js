@@ -153,3 +153,22 @@ test('test and smoke fixtures are moved to the backup, user content stays', asyn
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('test connector secrets and settings are cleared; real keys stay', async () => {
+  const root = makeWorkspace();
+  try {
+    const h = path.join(root, '.harness');
+    fs.writeFileSync(path.join(h, 'api-keys.json'), JSON.stringify({ HARNESS_DISCORD_BOT_TOKEN: 'discord-test-token', HARNESS_WHATSAPP_ACCESS_TOKEN: 'wa-token', OPENROUTER_API_KEY: 'sk-or-real' }));
+    const settings = JSON.parse(fs.readFileSync(path.join(h, 'settings.json'), 'utf-8'));
+    fs.writeFileSync(path.join(h, 'settings.json'), JSON.stringify({ ...settings, discordAllowedChannelIds: '777', whatsappPhoneNumberId: '1234567890', telegramAllowedChatIds: '42' }));
+    await applyRepair(root, planRepair(root), new Date('2026-09-23T11:30:00.000Z'));
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(h, 'api-keys.json'), 'utf-8')), { OPENROUTER_API_KEY: 'sk-or-real' });
+    const after = JSON.parse(fs.readFileSync(path.join(h, 'settings.json'), 'utf-8'));
+    assert.equal(after.discordAllowedChannelIds, '');
+    assert.equal(after.whatsappPhoneNumberId, '');
+    assert.equal(after.telegramAllowedChatIds, '42');
+    assert.deepEqual(planRepair(root), []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

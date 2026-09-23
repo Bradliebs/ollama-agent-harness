@@ -32,6 +32,18 @@ const FIXTURE_UPLOAD = /^(sample\.png|voice\.wav|attachment-vision-\d+\.png)$/;
 const FIXTURE_UPLOAD_MAX_BYTES = 16;
 // RFC 2606 reserves example.com/.org for tests; nobody monitors them for real.
 const FIXTURE_SERVICE_PURPOSE = /https?:\/\/(www\.)?example\.(com|org|net)\b|^send me a telegram reminder$/i;
+// Connector values the server tests saved through /api/settings. A fake Discord
+// token makes every startup fail to log in. Values are compared, never printed.
+const FIXTURE_CONNECTOR_SECRETS = {
+  HARNESS_DISCORD_BOT_TOKEN: ['discord-test-token', 'legacy-discord-token'],
+  HARNESS_SLACK_WEBHOOK_URL: ['https://hooks.slack.com/services/T000/B000/secret', 'https://hooks.slack.com/services/T111/B222/legacy', 'https://hooks.slack.com/services/Tstartup/Bstartup/secret'],
+  HARNESS_WHATSAPP_ACCESS_TOKEN: ['wa-token', 'legacy-whatsapp-token'],
+};
+const FIXTURE_CONNECTOR_SETTINGS = {
+  discordAllowedChannelIds: ['123,456', '777'],
+  whatsappPhoneNumberId: ['1234567890'],
+  whatsappAllowedRecipients: ['+447700900123', '+447700900123,bad-value'],
+};
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf-8'));
@@ -84,8 +96,10 @@ function planRepair(workspace) {
     const grants = Array.isArray(settings.capabilityGrants) ? settings.capabilityGrants : [];
     const testGrants = grants.filter((grant) => TEST_GRANT_REASON.test(String(grant?.reason ?? '')));
     const debugPathIsTest = settings.modelDebugLog?.path === TEST_DEBUG_LOG_PATH;
-    if (testGrants.length > 0 || debugPathIsTest) {
+    const fixtureConnectorKeys = Object.keys(FIXTURE_CONNECTOR_SETTINGS).filter((key) => FIXTURE_CONNECTOR_SETTINGS[key].includes(settings[key]));
+    if (testGrants.length > 0 || debugPathIsTest || fixtureConnectorKeys.length > 0) {
       const next = { ...settings };
+      for (const key of fixtureConnectorKeys) next[key] = '';
       if (testGrants.length > 0) next.capabilityGrants = grants.filter((grant) => !testGrants.includes(grant));
       if (debugPathIsTest) next.modelDebugLog = { ...settings.modelDebugLog, path: DEFAULT_DEBUG_LOG_PATH };
       actions.push({
@@ -95,8 +109,19 @@ function planRepair(workspace) {
         summary: [
           testGrants.length > 0 ? `remove ${testGrants.length} test capability grant(s): ${[...new Set(testGrants.map((g) => g.reason))].join('; ')}` : null,
           debugPathIsTest ? `reset modelDebugLog.path ${TEST_DEBUG_LOG_PATH} -> ${DEFAULT_DEBUG_LOG_PATH}` : null,
+          fixtureConnectorKeys.length > 0 ? `clear test connector settings: ${fixtureConnectorKeys.join(', ')}` : null,
         ].filter(Boolean).join(', '),
       });
+    }
+  }
+
+  const apiKeysPath = path.join(harness, 'api-keys.json');
+  if (fs.existsSync(apiKeysPath)) {
+    const keys = readJson(apiKeysPath);
+    const fixtureNames = Object.keys(FIXTURE_CONNECTOR_SECRETS).filter((name) => FIXTURE_CONNECTOR_SECRETS[name].includes(keys[name]));
+    if (fixtureNames.length > 0) {
+      const next = Object.fromEntries(Object.entries(keys).filter(([name]) => !fixtureNames.includes(name)));
+      actions.push({ kind: 'write-json', file: apiKeysPath, data: next, summary: `remove test connector secrets: ${fixtureNames.join(', ')}` });
     }
   }
 

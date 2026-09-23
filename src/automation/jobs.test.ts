@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { createAutomationJob, executeDueJobs, listAutomationJobs, listDueAutomationJobs, markAutomationJobRun, parseAutomationSchedule } from './jobs';
+import { createAutomationJob, executeDueJobs, listAutomationJobs, listDueAutomationJobs, markAutomationJobRun, parseAutomationSchedule, readRecentRunsForActiveJobs } from './jobs';
 import { buildAutomationPrompt, listShellCommandAllowlistPresets, matchShellCommandPreset, prepareAutomationRun } from './runner';
 import { createCapabilityGrant, type CapabilityGrant } from '../permissions/capabilities';
 import { readCapabilityAuditEvents } from '../permissions/capabilityAudit';
@@ -182,5 +182,26 @@ describe('automation jobs', () => {
     expect(results[0].run.scriptOutput).toContain('Script blocked by');
     const events = await readCapabilityAuditEvents(projectDir);
     expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'automation_script.denied' })]));
+  });
+});
+
+describe('readRecentRunsForActiveJobs', () => {
+  it('drops runs whose job has been deleted', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-active-runs-'));
+    try {
+      const job = await createAutomationJob(dir, { name: 'Keep me', prompt: 'hi', schedule: 'every 24h' } as never);
+      const logDir = path.join(dir, '.harness', 'automations');
+      await fs.mkdir(logDir, { recursive: true });
+      const lines = [
+        { jobId: 'deleted-job', name: 'Gone', ranAt: '2026-09-18T09:00:00.000Z', success: true },
+        { jobId: job.id, name: 'Keep me', ranAt: '2026-09-18T09:01:00.000Z', success: true },
+        { jobId: 'deleted-job', name: 'Gone', ranAt: '2026-09-18T09:02:00.000Z', success: true },
+      ].map((entry) => JSON.stringify(entry)).join('\n');
+      await fs.writeFile(path.join(logDir, 'runs.jsonl'), lines + '\n');
+      const runs = await readRecentRunsForActiveJobs(dir, 5);
+      expect(runs.map((run) => run.jobId)).toEqual([job.id]);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -178,6 +178,16 @@ export async function readAutomationRunLog(projectDir: string, limit = 50): Prom
   }
 }
 
+/**
+ * Most recent runs whose job still exists. The run log is append-only, so
+ * runs of deleted jobs would otherwise keep surfacing in the inbox.
+ */
+export async function readRecentRunsForActiveJobs(projectDir: string, count: number, scanLimit = 50): Promise<AutomationRunLogEntry[]> {
+  const [runs, jobs] = await Promise.all([readAutomationRunLog(projectDir, scanLimit), listAutomationJobs(projectDir)]);
+  const activeIds = new Set(jobs.map((job) => job.id));
+  return runs.filter((run) => activeIds.has(run.jobId)).slice(0, count);
+}
+
 function automationRunLogPath(projectDir: string): string {
   return path.join(projectDir, '.harness', 'automations', 'runs.jsonl');
 }
