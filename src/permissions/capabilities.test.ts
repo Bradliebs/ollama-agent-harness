@@ -1,4 +1,4 @@
-import { CAPABILITY_POLICIES, commandMatchesGrantAllowlist, createCapabilityGrant, evaluateCapabilityGrant, evaluateCapabilityPolicy, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, summarizeCapabilityAlignment } from './capabilities';
+import { CAPABILITY_POLICIES, commandMatchesGrantAllowlist, createCapabilityGrant, evaluateCapabilityGrant, evaluateCapabilityPolicy, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, pruneStaleCapabilityGrants, revokeCapabilityGrant, sanitizeCapabilityGrants, summarizeCapabilityAlignment, type CapabilityGrant } from './capabilities';
 
 describe('capability policies', () => {
   it('covers every requested high-level capability surface', () => {
@@ -273,5 +273,36 @@ describe('capability policies', () => {
       const elapsed = Date.parse(grant!.expiresAt) - Date.parse(grant!.grantedAt);
       expect(elapsed).toBe(24 * 60 * 60_000);
     });
+  });
+});
+
+describe('pruneStaleCapabilityGrants', () => {
+  const now = new Date('2026-09-23T12:00:00.000Z');
+  const grant = (id: string, expiresAt: string, revokedAt?: string): CapabilityGrant => ({
+    id,
+    capabilityId: 'arbitrary-shell',
+    controls: ['explicit-grant'],
+    reason: 'r',
+    grantedAt: '2026-09-01T00:00:00.000Z',
+    expiresAt,
+    ...(revokedAt ? { revokedAt } : {}),
+  });
+
+  it('keeps active grants and grants that ended within the retention window', () => {
+    const grants = [
+      grant('active', '2026-09-23T18:00:00.000Z'),
+      grant('expired-recently', '2026-09-23T01:00:00.000Z'),
+      grant('revoked-recently', '2026-09-24T00:00:00.000Z', '2026-09-23T11:00:00.000Z'),
+    ];
+    expect(pruneStaleCapabilityGrants(grants, now).map((g) => g.id)).toEqual(['active', 'expired-recently', 'revoked-recently']);
+  });
+
+  it('drops grants that expired or were revoked more than a day ago', () => {
+    const grants = [
+      grant('active', '2026-09-23T18:00:00.000Z'),
+      grant('expired-old', '2026-09-20T00:00:00.000Z'),
+      grant('revoked-old', '2027-01-01T00:00:00.000Z', '2026-09-21T00:00:00.000Z'),
+    ];
+    expect(pruneStaleCapabilityGrants(grants, now).map((g) => g.id)).toEqual(['active']);
   });
 });
