@@ -735,6 +735,83 @@ async function handleYolo(text: string, _projectDir: string): Promise<SlashResul
   return ok(lines.join('\n'), 'yolo_engaged', { minutes: effectiveMinutes, pid: startResult.pid });
 }
 
+// ─── /auto ──────────────────────────────────────────────────────────
+//
+// Autonomous lead agent: hand it one task and it plans the work into a graph
+// of sub-agent workstreams, dispatches them in parallel, verifies the merged
+// result, and re-plans until done — no human interaction. Wired via
+// registerLeadAgentHooks from server.ts (which owns the model + tool pool).
+
+const AUTO_PATTERN = /^\s*\/auto\b\s*(.*)$/si;
+
+export interface LeadAgentRunSummary {
+  status: string;
+  finalOutput: string;
+  attempts: number;
+  capabilityGaps: { need: string; reason: string }[];
+}
+
+export interface LeadAgentHooks {
+  /** Runs the lead agent to completion for `task` and resolves with a summary. */
+  run: (task: string) => Promise<LeadAgentRunSummary>;
+}
+
+let leadAgentHooks: LeadAgentHooks | null = null;
+
+/** Call from server.ts startup to wire the server-scoped lead-agent runner. */
+export function registerLeadAgentHooks(hooks: LeadAgentHooks): void {
+  leadAgentHooks = hooks;
+}
+
+async function handleAuto(text: string, _projectDir: string): Promise<SlashResult> {
+  const m = text.match(AUTO_PATTERN);
+  if (!m) return NOT_HANDLED;
+  const task = m[1].trim();
+
+  if (!task || /^help$/i.test(task)) {
+    return ok(
+      [
+        '**`/auto` — autonomous lead agent.**',
+        '',
+        'Hand it a task and it plans the work, spawns sub-agents to do it in',
+        'parallel, verifies the result, and re-plans until done — no human',
+        'interaction. Sub-agents run with full auto-approve.',
+        '',
+        '```',
+        '/auto build a REST API for a todo list with tests',
+        '/auto refactor the auth module and add unit tests',
+        '```',
+        '',
+        'Runs are bounded by attempt + time budgets and honour the kill switch.',
+      ].join('\n'),
+      'auto_usage',
+    );
+  }
+
+  if (!leadAgentHooks) {
+    return ok('❌ The lead agent is not wired yet. Restart the harness server.', 'auto_error');
+  }
+
+  try {
+    const summary = await leadAgentHooks.run(task);
+    const lines: string[] = [];
+    const icon = summary.status === 'completed' ? '✅'
+      : summary.status === 'completed_with_failures' ? '⚠️'
+      : summary.status === 'no_plan' ? '🚫' : '⏹️';
+    lines.push(`${icon} **Lead agent ${summary.status.replace(/_/g, ' ')}** after ${summary.attempts} attempt(s).`);
+    if (summary.capabilityGaps.length > 0) {
+      lines.push('', '**Capability gaps** (add via MCP panel, then re-run):');
+      for (const g of summary.capabilityGaps) lines.push(`- ${g.reason} (${g.need})`);
+    }
+    if (summary.finalOutput.trim()) {
+      lines.push('', '---', '', summary.finalOutput.trim());
+    }
+    return ok(lines.join('\n'), 'auto_done', { status: summary.status, attempts: summary.attempts });
+  } catch (err) {
+    return ok(`❌ Lead agent run failed: ${err instanceof Error ? err.message : String(err)}`, 'auto_error');
+  }
+}
+
 // ─── Master router ──────────────────────────────────────────────────
 
 type SlashHandler = (text: string, projectDir: string, context?: SlashCommandContext) => Promise<SlashResult>;
@@ -746,6 +823,7 @@ const handlers: SlashHandler[] = [
   handleKanban,
   handleBrief,
   handleYolo,
+  handleAuto,
 ];
 
 /**
