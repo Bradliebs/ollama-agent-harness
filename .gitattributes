@@ -1,0 +1,3 @@
+# Frozen benchmark dataset: hashed byte-for-byte by scripts/holdout-cases.js.
+# Store it verbatim so every platform checks out the same bytes and digest.
+scripts/fixtures/modernization-holdout.json -text

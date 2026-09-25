@@ -124,7 +124,11 @@ test(`built web server preserves an occupied port and stops active chat on ${shu
         exitWatcher?.close();
       }
     }
-    await reader.cancel();
+    // A Windows supervisor exit kills the server abruptly, so the open chat
+    // stream can already be terminated; that is the expected outcome there.
+    await reader.cancel().catch((error) => {
+      if (!(shutdownMode === 'supervisor-exit' && process.platform === 'win32')) throw error;
+    });
     if (shutdownMode === 'stop' || process.platform !== 'win32') {
       assert.match(fs.readFileSync(path.join(root, '.harness', 'background.log'), 'utf8'), /Graceful shutdown requested/);
       assert.match(fs.readFileSync(path.join(root, '.harness', 'background.log'), 'utf8'), /Lifecycle fixture observed cancellation/);
