@@ -34,7 +34,7 @@ async function main() {
 
   let keepInstall = options.keep;
   try {
-    run(installerPath, ['/S', `/D=${installDir}`], process.cwd(), 20 * 60 * 1000);
+    runInstaller(installerPath, installDir);
     await waitFor(() => fs.existsSync(path.join(installDir, 'uninstall.exe')), 30_000, 'Timed out waiting for installer output.');
 
     const installed = verifyInstall(installDir);
@@ -42,7 +42,7 @@ async function main() {
     const stateMarker = path.join(installDir, '.harness', 'preserve.txt');
     fs.mkdirSync(path.dirname(stateMarker), { recursive: true });
     fs.writeFileSync(stateMarker, 'Installer must preserve local state.');
-    await verifyServerStarts(installDir, workspace, () => run(installerPath, ['/S', `/D=${installDir}`], process.cwd(), 20 * 60 * 1000));
+    await verifyServerStarts(installDir, workspace, () => runInstaller(installerPath, installDir));
     verifyInstall(installDir);
 
     if (!keepInstall) await verifyServerStarts(installDir, workspace, () => uninstallAndVerify(installDir));
@@ -177,13 +177,21 @@ function assertFile(root, relativePath) {
   if (!fs.existsSync(filePath)) throw new Error(`Missing installed file: ${relativePath}`);
 }
 
-function run(command, args, cwd, timeout, capture = false, env = process.env) {
+// NSIS only honours /D= when it is the last argument and unquoted (spaces are
+// allowed). Node quotes any argument containing a space, which makes NSIS
+// ignore /D and install to its default folder, so pass the arguments verbatim.
+function runInstaller(installerPath, installDir) {
+  return run(installerPath, ['/S', `/D=${installDir}`], process.cwd(), 20 * 60 * 1000, false, process.env, true);
+}
+
+function run(command, args, cwd, timeout, capture = false, env = process.env, verbatim = false) {
   const result = spawnSync(command, args, {
     cwd,
     env,
     encoding: 'utf-8',
     stdio: capture ? 'pipe' : 'inherit',
     timeout,
+    ...(verbatim ? { windowsVerbatimArguments: true, argv0: `"${command}"` } : {}),
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
