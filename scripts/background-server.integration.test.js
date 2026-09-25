@@ -10,7 +10,9 @@ const { start, stop, status } = require('./background-server');
 
 for (const shutdownMode of ['stop', 'supervisor-exit']) {
 test(`built web server preserves an occupied port and stops active chat on ${shutdownMode}`, { timeout: 30000 }, async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "harness lifecycle ' "));
+  // Long-form path: fs.watch on a Windows 8.3 short path (e.g. the runner's
+  // C:\Users\RUNNER~1 temp dir) trips a libuv assertion in fs-event.c.
+  const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "harness lifecycle ' "));
   const sentinel = http.createServer((_request, response) => response.end('unrelated listener'));
   await new Promise(resolve => sentinel.listen(0, '127.0.0.1', resolve));
   const preferred = sentinel.address().port;
