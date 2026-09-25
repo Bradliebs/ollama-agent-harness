@@ -7,7 +7,7 @@
 // src/web/server.ts plus src/tools/dispatcher.ts. Tests keep cwd so fixtures
 // land in the repo-local .harness.
 
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, realpathSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -18,6 +18,22 @@ export interface ProjectDirOptions {
   exists?: (p: string) => boolean;
   mkdir?: (p: string) => void;
   log?: (message: string) => void;
+  platform?: NodeJS.Platform;
+  realpath?: (p: string) => string;
+}
+
+/**
+ * Expand a Windows 8.3 short path (e.g. C:\Users\RUNNER~1) to its long form.
+ * fs.watch on a short path aborts the whole process with a libuv assertion
+ * (src\win\fs-event.c) when events arrive under the long name.
+ */
+export function expandShortPath(dir: string, platform: NodeJS.Platform = process.platform, realpath: (p: string) => string = realpathSync.native): string {
+  if (platform !== 'win32' || !/~\d/.test(dir)) return dir;
+  try {
+    return realpath(dir);
+  } catch {
+    return dir;
+  }
 }
 
 export function isHarnessCheckout(dir: string, exists: (p: string) => boolean = existsSync): boolean {
@@ -25,6 +41,11 @@ export function isHarnessCheckout(dir: string, exists: (p: string) => boolean = 
 }
 
 export function resolveProjectDir(options: ProjectDirOptions = {}): string {
+  const dir = resolveProjectDirRaw(options);
+  return expandShortPath(dir, options.platform, options.realpath);
+}
+
+function resolveProjectDirRaw(options: ProjectDirOptions): string {
   const env = options.env ?? process.env;
   if (env.HARNESS_PROJECT_DIR) return path.resolve(env.HARNESS_PROJECT_DIR);
   const cwd = options.cwd ?? process.cwd();
