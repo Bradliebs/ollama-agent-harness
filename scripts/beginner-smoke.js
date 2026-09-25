@@ -52,7 +52,7 @@ async function main() {
         actionable,
       };
     });
-    if (!result.ok) throw new Error(`Beginner smoke failed: ${JSON.stringify(result, null, 2)}`);
+    if (!result.ok) throw new Error(`Beginner smoke failed: ${JSON.stringify(result, null, 2)}\n--- server output (tail) ---\n${server.output().slice(-4000)}`);
     const scenarios = [
       { state: 'configured', status: 'Configuration checked. No chat request was sent.', message: 'Groq credentials configured; inference not verified.' },
       { state: 'blocked', status: 'The selected chat provider needs attention.', message: 'Groq requires GROQ_API_KEY.' },
