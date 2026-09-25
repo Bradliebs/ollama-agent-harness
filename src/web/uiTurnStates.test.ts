@@ -55,7 +55,11 @@ describe('ui wiring for turn states and identity health', () => {
   });
 
   it('marks unfinished turns and interrupted chats with a Retry strip', () => {
-    expect(appJs).toContain('classifyTurn({ stopped: responseStopped, failed: responseFailed, doneReason, hasText: Boolean(assistantText) })');
+    expect(appJs).toContain('classifyTurn({ stopped: responseStopped, failed: turnFailed, doneReason, hasText: Boolean(assistantText) })');
+    // Recoverable loop warnings (e.g. repeated web_read failures) must not mark
+    // a turn that went on to answer as failed.
+    expect(appJs).toContain("if (ev.recoverable === false) {");
+    expect(appJs).toContain("const turnFailed = Boolean(turnFatalError) || doneReason === 'error'");
     expect(appJs).toContain("appendTurnState(lastEl, 'interrupted'");
     expect(appJs).toContain('function retryLastPrompt()');
   });

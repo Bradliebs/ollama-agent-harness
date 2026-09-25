@@ -4858,6 +4858,10 @@ async function sendMessage(opts) {
   let toolOnlySummaries = [];
   let doneReason = '';
   let responseFailed = false;
+  // Non-recoverable failure for this turn (drives the Retry strip). Recoverable
+  // errors are loop warnings addressed to the model, e.g. repeated tool failures.
+  let turnFatalError = '';
+  let lastErrorMessage = '';
   let responseStopped = false;
   const clientEvidenceTools = [];
   const clientEvidenceCommands = [];
@@ -5157,9 +5161,18 @@ async function sendMessage(opts) {
             break;
           case 'error':
             responseFailed = true;
-            notePetError();
-            thinkEl.remove();
-            msgEl = addMsg('assistant', '⚠️ ' + ev.message);
+            lastErrorMessage = ev.message || '';
+            if (ev.recoverable === false) {
+              turnFatalError = lastErrorMessage;
+              notePetError();
+              thinkEl.remove();
+              msgEl = addMsg('assistant', '⚠️ ' + ev.message);
+            } else {
+              // Keep the run's warnings in the tool activity box so the answer
+              // that follows is not glued under a warning bubble.
+              toolBox = ensureToolBox(toolBox);
+              appendToolItem(toolBox, '⚠️', 'warning', ev.message, true);
+            }
             break;
           case 'done':
             doneReason = ev.reason || '';
@@ -5252,16 +5265,19 @@ async function sendMessage(opts) {
       evidenceCard = buildClientStoppedEvidence(text, model, clientEvidenceTools, clientEvidenceCommands, 'user_stopped');
       attachEvidenceCard(msgEl, evidenceCard);
     } else {
+      turnFatalError = e.message || 'Request failed';
+      lastErrorMessage = turnFatalError;
       msgEl = addMsg('assistant', '⚠️ ' + e.message);
       evidenceCard = buildClientStoppedEvidence(text, model, clientEvidenceTools, clientEvidenceCommands, 'client_error');
       attachEvidenceCard(msgEl, evidenceCard);
     }
   }
   if (typeof classifyTurn === 'function') {
-    const turnState = classifyTurn({ stopped: responseStopped, failed: responseFailed, doneReason, hasText: Boolean(assistantText) });
+    const turnFailed = Boolean(turnFatalError) || doneReason === 'error' || (responseFailed && !doneReason && !assistantText);
+    const turnState = classifyTurn({ stopped: responseStopped, failed: turnFailed, doneReason, hasText: Boolean(assistantText) });
     if (turnState) {
-      if (!msgEl) msgEl = addMsg('assistant', 'No reply came back from the model.');
-      appendTurnState(msgEl, turnState, { doneReason, onRetry: retryLastPrompt });
+      if (!msgEl) msgEl = addMsg('assistant', lastErrorMessage ? '⚠️ ' + lastErrorMessage : 'No reply came back from the model.');
+      appendTurnState(msgEl, turnState, { doneReason, onRetry: retryLastPrompt, detail: turnState === 'failed' && lastErrorMessage ? lastErrorMessage : undefined });
     }
   }
   if (tokRateTimer) clearInterval(tokRateTimer);
