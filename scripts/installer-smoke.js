@@ -150,7 +150,8 @@ async function verifyServerStarts(installDir, workspace, maintenance) {
       await maintenance();
       if ((await status(installDir)).state !== 'unmanaged') throw new Error('Maintenance left the managed server running.');
       if (fs.existsSync(path.join(installDir, '.harness/background-owner.json'))) throw new Error('Maintenance left unresolved server ownership.');
-      if (fs.existsSync(path.join(installDir, '.harness/maintenance.json'))) throw new Error('Successful maintenance left its launch-blocking lease behind.');
+      const lease = path.join(installDir, '.harness/maintenance.json');
+      if (fs.existsSync(lease)) throw new Error(`Successful maintenance left its launch-blocking lease behind: ${fs.readFileSync(lease, 'utf8')} (checked ${new Date().toISOString()}).`);
     }
   } finally {
     await stop(installDir);
