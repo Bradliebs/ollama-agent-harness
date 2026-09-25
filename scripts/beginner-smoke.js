@@ -11,7 +11,9 @@ const root = path.resolve(__dirname, '..');
 async function main() {
   const { chromium } = require('playwright');
   const port = await getFreePort();
-  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-beginner-smoke-project-'));
+  // Long-form temp path: the server expands 8.3 short paths (RUNNER~1) and the
+  // quick-test confirmation must name the same directory.
+  const projectDir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'harness-beginner-smoke-project-'));
   const server = startHarnessServer(projectDir, port);
   let browser;
   try {
@@ -148,7 +150,7 @@ async function main() {
       await page.evaluate(() => startQuickTest());
       const state = await page.locator('[data-quick-test-outcome]').last().getAttribute('data-quick-test-outcome');
       if (state !== outcome.state || !confirmation.includes(projectDir) || !confirmation.includes('Charges may apply')) {
-        throw new Error(`Quick-test outcome mismatch: ${state}; expected ${outcome.state}`);
+        throw new Error(`Quick-test outcome mismatch: state ${state} (expected ${outcome.state}); confirmation: ${JSON.stringify(confirmation)}`);
       }
     }
     if (chatRequests !== outcomes.length) throw new Error(`Unexpected quick-test request count: ${chatRequests}`);
