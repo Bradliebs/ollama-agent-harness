@@ -324,6 +324,7 @@ test('tray discovers the owned port and clears its URL after stop', { skip: proc
     setInterval(() => {}, 1000);
   `);
   const tray = path.join(__dirname, 'tray.ps1');
+  // Timeout allows for Windows PowerShell cold starts on hosted runners (over 5s).
   const invoke = () => spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `
     $tokens = $null; $parseErrors = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:HARNESS_TEST_TRAY, [ref]$tokens, [ref]$parseErrors)
@@ -334,7 +335,6 @@ test('tray discovers the owned port and clears its URL after stop', { skip: proc
     $Script:HarnessBase = 'http://127.0.0.1:4300'
     Get-HarnessStatus
     @{ state = $Script:ManagedState; url = $Script:HarnessBase } | ConvertTo-Json -Compress
-  // Windows PowerShell cold starts on hosted runners can exceed 5s.
   `], { encoding: 'utf8', timeout: 20000, env: { ...process.env, HARNESS_TEST_ROOT: root, HARNESS_TEST_TRAY: tray } });
   try {
     await start(root);
