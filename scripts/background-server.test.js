@@ -312,7 +312,7 @@ for (const action of ['stop', 'supervisor-loss']) {
   });
 }
 
-test('tray discovers the owned port and clears its URL after stop', { skip: process.platform !== 'win32', timeout: 15000 }, async () => {
+test('tray discovers the owned port and clears its URL after stop', { skip: process.platform !== 'win32', timeout: 60000 }, async () => {
   const root = fixture();
   fs.mkdirSync(path.join(root, 'scripts'));
   fs.copyFileSync(path.join(__dirname, 'background-server.js'), path.join(root, 'scripts', 'background-server.js'));
@@ -334,7 +334,8 @@ test('tray discovers the owned port and clears its URL after stop', { skip: proc
     $Script:HarnessBase = 'http://127.0.0.1:4300'
     Get-HarnessStatus
     @{ state = $Script:ManagedState; url = $Script:HarnessBase } | ConvertTo-Json -Compress
-  `], { encoding: 'utf8', timeout: 5000, env: { ...process.env, HARNESS_TEST_ROOT: root, HARNESS_TEST_TRAY: tray } });
+  // Windows PowerShell cold starts on hosted runners can exceed 5s.
+  `], { encoding: 'utf8', timeout: 20000, env: { ...process.env, HARNESS_TEST_ROOT: root, HARNESS_TEST_TRAY: tray } });
   try {
     await start(root);
     const running = invoke();
