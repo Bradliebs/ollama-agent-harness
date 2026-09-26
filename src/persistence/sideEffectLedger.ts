@@ -53,6 +53,10 @@ export interface SideEffect {
   reversed: boolean;
   performedAt: string;
   reversedAt?: string;
+  /** Run-log step that produced this effect (e.g. "t3.1"), when known. */
+  stepId?: string;
+  /** Monotonic step number within the run; orders effects for per-step rollback. */
+  stepSeq?: number;
 }
 
 export interface SideEffectInput {
@@ -60,6 +64,8 @@ export interface SideEffectInput {
   kind: SideEffectKind;
   description: string;
   reversal: SideEffectReversal;
+  stepId?: string;
+  stepSeq?: number;
 }
 
 /**
@@ -96,6 +102,8 @@ export async function recordSideEffect(projectDir: string, input: SideEffectInpu
     reversal: input.reversal,
     reversed: false,
     performedAt: new Date().toISOString(),
+    ...(input.stepId !== undefined ? { stepId: input.stepId } : {}),
+    ...(input.stepSeq !== undefined ? { stepSeq: input.stepSeq } : {}),
   };
   const fp = ledgerPath(projectDir);
   await fs.mkdir(path.dirname(fp), { recursive: true });
@@ -149,8 +157,17 @@ export async function markSideEffectReversed(
  * of the filesystem. `effects` is expected in chronological order (as
  * `listSideEffects` returns them).
  */
-export function planRunReversal(runId: string, effects: readonly SideEffect[]): RunReversalPlan {
-  const forRun = effects.filter((e) => e.runId === runId);
+export function planRunReversal(
+  runId: string,
+  effects: readonly SideEffect[],
+  options: { afterStepSeq?: number } = {},
+): RunReversalPlan {
+  // Per-step rollback: keep the world as it was at the END of step
+  // fterStepSeq, so only effects from later steps are undone. Effects
+  // recorded without a step number cannot be placed and are left alone.
+  const afterStepSeq = options.afterStepSeq;
+  const forRun = effects.filter((e) => e.runId === runId
+    && (afterStepSeq === undefined || (typeof e.stepSeq === 'number' && e.stepSeq > afterStepSeq)));
   const alreadyReversed = forRun.filter((e) => e.reversed);
   const pending = forRun.filter((e) => !e.reversed);
   const irreversible = pending.filter((e) => e.reversal.kind === 'irreversible');

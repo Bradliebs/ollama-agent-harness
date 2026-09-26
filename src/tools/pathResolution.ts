@@ -436,6 +436,20 @@ export function resolveProjectPath(value: unknown): string | null {
 }
 
 /**
+ * Absolute path a file-mutating tool will actually touch, mirroring each tool's
+ * own resolution (file_write honours pattern redirects and the bare-filename
+ * agent-outputs redirect). The dispatcher uses this to capture the right
+ * pre-image before the tool runs. Returns null when the tool would refuse.
+ */
+export function resolveToolMutationTarget(toolName: string, rawPath: unknown): string | null {
+  if (typeof rawPath !== 'string' || rawPath.trim() === '') return null;
+  if (toolName === 'file_write') {
+    return applyFileWriteRedirect(rawPath) ?? maybeRedirectAgentOutput(rawPath) ?? resolveProjectPath(rawPath);
+  }
+  return resolveProjectPath(rawPath);
+}
+
+/**
  * Like {@link resolveProjectPath} but, when the caller passes a bare filename
  * that is missing at the cwd-resolved location, falls back to the matching
  * file in the uploads directory if one exists. Lets read tools accept
