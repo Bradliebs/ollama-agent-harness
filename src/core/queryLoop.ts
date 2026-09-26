@@ -20,6 +20,7 @@ import { scanForInjection } from '../safety/injectionDefence';
 import type { LearningRecorder } from '../learning/engine';
 import type { RuntimeTracer } from './tracing';
 import type { SideEffectRecorder } from '../persistence/sideEffectRecording';
+import type { RunLog } from '../persistence/runLog';
 import { validateOutput, withOutputValidationInstructions, detectSelfCertification } from './outputValidation';
 import type { OutputValidationProfile } from './outputValidation';
 import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
@@ -102,6 +103,12 @@ export interface QueryLoopDeps {
    * boundary (e.g. a goal scopes all its iterations under one id). */
   sideEffectRecorder?: SideEffectRecorder;
   /**
+   * Event-sourced record of this run: message deltas, raw model responses,
+   * tool calls/results and compaction snapshots, with step ids that side
+   * effects share for per-step rollback. See persistence/runLog.ts.
+   */
+  runLog?: RunLog;
+  /**
    * Optional LLM-backed judge wired into AdversaryInspector. Constructed by
    * the caller (e.g. `createLlmAdversaryJudge(client)`) so the inspector
    * module stays provider-free. Only consulted when
@@ -126,8 +133,62 @@ export async function* queryLoop(
   deps: QueryLoopDeps,
   initialMessages: Message[] = [],
 ): AsyncGenerator<LoopEvent> {
+  const runLog = deps.runLog;
+  if (!runLog) {
+    yield* queryLoopCore(config, deps, initialMessages);
+    return;
+  }
+  // Wrapper so every exit path (done, exception, consumer abandoning the
+  // stream) closes the run log with a run_end event.
+  let endReason = 'incomplete';
+  let endTurns: number | undefined;
+  let endError: string | undefined;
+  try {
+    for await (const event of queryLoopCore(config, deps, initialMessages)) {
+      if (event.type === 'done') {
+        endReason = event.reason;
+        endTurns = event.turns;
+      }
+      yield event;
+    }
+  } catch (error) {
+    endReason = 'exception';
+    endError = error instanceof Error ? error.message : String(error);
+    throw error;
+  } finally {
+    runLog.append('run_end', { reason: endReason, ...(endTurns !== undefined ? { turns: endTurns } : {}), ...(endError ? { error: endError } : {}) });
+    await runLog.flush();
+  }
+}
+
+type RunStep = { stepId: string; stepSeq: number };
+
+function toolCallKey(name: string, input: Record<string, unknown>): string {
+  return `${name}|${stableArgsKey(input)}`;
+}
+
+async function* queryLoopCore(
+  config: LoopConfig,
+  deps: QueryLoopDeps,
+  initialMessages: Message[] = [],
+): AsyncGenerator<LoopEvent> {
   const { maxTurns, abortSignal } = config;
-  const { client, tools, permissionCheck, hooks, session, summarizerClient, tracer, learningRecorder, sideEffectRecorder, adversaryJudge, onApprovalRequired } = deps;
+  const { client, tools, permissionCheck, hooks, session, summarizerClient, tracer, learningRecorder, adversaryJudge, onApprovalRequired, runLog } = deps;
+  // Step allocation is shared by the run log and the side-effect recorder so a
+  // file change can be rolled back to the end of the step that preceded it.
+  let localStepSeq = 0;
+  const allocateStep = (stepId: string): RunStep => runLog ? runLog.nextStep(stepId) : { stepId, stepSeq: ++localStepSeq };
+  let currentTurnStep: RunStep | undefined;
+  const pendingCallSteps = new Map<string, RunStep>();
+  const sideEffectRecorder: SideEffectRecorder | undefined = deps.sideEffectRecorder
+    ? {
+        ...deps.sideEffectRecorder,
+        stepFor: (toolName, input) => deps.sideEffectRecorder?.stepFor?.(toolName, input)
+          ?? pendingCallSteps.get(toolCallKey(toolName, input))
+          ?? pendingCallSteps.get(toolCallKey('*', input))
+          ?? currentTurnStep,
+      }
+    : undefined;
 
   // Authoritative cost-honesty signal for this run: the serving client knows
   // whether it runs on-box (Ollama → 'local', $0 marginal) or hosted. Fall
@@ -168,6 +229,14 @@ export async function* queryLoop(
     { role: 'system', content: systemPrompt },
     ...initialMessages,
   ];
+  runLog?.startLoop({
+    model: config.model,
+    sessionId: session?.getSessionId?.(),
+    maxTurns,
+    taskType: config.taskType,
+    tools: tools.map((tool) => tool.name),
+    locality: runLocality,
+  });
 
   // The user's active instruction: the last genuine user message present
   // before the loop starts injecting its own continuation/nudge messages.
@@ -288,6 +357,7 @@ export async function* queryLoop(
         });
         messages.length = 0;
         messages.push(...compacted.messages);
+        runLog?.recordCompaction(messages, compacted.strategy, { tokensFreed: compacted.tokensFreed, compactedCount: compacted.compactedCount ?? 0 });
         const hasContinuityBoundary = compacted.summary !== undefined;
         if (session && hasContinuityBoundary) {
           await appendSession(session, 'compact_boundary', {
@@ -349,11 +419,16 @@ export async function* queryLoop(
         ? sanitizeMessages(messages)
         : messages;
       const inactivityMs = resolveInactivityTimeoutMs(config.inactivityTimeoutMs);
+      currentTurnStep = allocateStep(`t${turn}`);
+      runLog?.syncMessages(outboundMessages);
+      runLog?.append('model_request', { turn, model: config.model, messageCount: outboundMessages.length, tools: ollamaTools.map((schema) => schema.function?.name) }, currentTurnStep);
+      const modelCallStarted = Date.now();
       const chatPromise = client.chat(outboundMessages, ollamaTools, abortSignal);
       const result = inactivityMs > 0
         ? await withTimeout(inactivityMs, chatPromise)
         : await chatPromise;
       assistantMessage = result.message;
+      runLog?.append('model_response', { turn, model: config.model, message: assistantMessage, usage: result.usage ?? null, durationMs: Date.now() - modelCallStarted }, currentTurnStep);
       modelSpan?.end('ok', {
         toolCalls: assistantMessage.tool_calls?.length ?? 0,
         // Surface token usage on the span itself so the OpenInference
@@ -383,6 +458,7 @@ export async function* queryLoop(
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       modelSpan?.fail(error);
+      runLog?.append('model_error', { turn, model: config.model, error: msg, inactivity: error instanceof InactivityTimeoutError }, currentTurnStep);
       if (session) {
         await appendStatus(session, 'error', msg, tracer);
       }
@@ -676,6 +752,19 @@ export async function* queryLoop(
     }));
     totalToolCalls += toolCalls.length;
     for (const tc of toolCalls) allToolCallNames.push(tc.name);
+    pendingCallSteps.clear();
+    const callSteps = new Map<ToolCall, RunStep>();
+    toolCalls.forEach((call, index) => {
+      const step = allocateStep(`t${turn}.${index + 1}`);
+      callSteps.set(call, step);
+      pendingCallSteps.set(toolCallKey(call.name, call.input), step);
+      pendingCallSteps.set(toolCallKey('*', call.input), step);
+      runLog?.append('tool_call', { name: call.name, input: call.input, ...(call.id ? { id: call.id } : {}) }, step);
+    });
+    const stepForResult = (call: ToolCall): RunStep | undefined => callSteps.get(call)
+      ?? (call.id ? [...callSteps.entries()].find(([original]) => original.id === call.id)?.[1] : undefined)
+      ?? pendingCallSteps.get(toolCallKey(call.name, call.input))
+      ?? pendingCallSteps.get(toolCallKey('*', call.input));
 
     const dispatchableToolCalls: ToolCall[] = [];
     const skippedToolResults: { call: ToolCall; result: { success: false; output: string; error: string } }[] = [];
@@ -723,6 +812,9 @@ export async function* queryLoop(
       sourceLedger.recordRead(entry.call, entry.result);
       const hint = guessedUrlHint(entry.call, entry.result, sourceLedger);
       if (hint) entry.result = { ...entry.result, output: `${entry.result.output ?? ''}\n${hint}` };
+    }
+    for (const { call, result } of toolResults) {
+      runLog?.recordToolResult(stepForResult(call), { name: call.name, success: result.success, output: result.output, ...(result.error !== undefined ? { error: result.error } : {}) });
     }
     let producedFileChange = false;
     for (const { call, result } of toolResults) {
@@ -967,8 +1059,13 @@ export async function* queryLoop(
     const outboundSynth = resolveLoopHardeningEnabled()
       ? sanitizeMessages(synthMessages)
       : synthMessages;
+    const synthStep = allocateStep('synthesis');
+    runLog?.recordCompaction(outboundSynth, 'synthesis-context');
+    runLog?.append('model_request', { turn, model: config.model, messageCount: outboundSynth.length, tools: [], synthesis: true }, synthStep);
+    const synthStarted = Date.now();
     const synthResult = await client.chat(outboundSynth, [], abortSignal);
     const synthMessage = synthResult.message;
+    runLog?.append('model_response', { turn, model: config.model, message: synthMessage, usage: synthResult.usage ?? null, durationMs: Date.now() - synthStarted, synthesis: true }, synthStep);
     synthSpan?.end('ok', {
       toolCalls: 0,
       ...(synthResult.usage ? {
@@ -1118,6 +1215,7 @@ export async function* queryLoop(
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     synthSpan?.fail(error);
+    runLog?.append('model_error', { turn, model: config.model, error: msg, synthesis: true });
     // Synthesis call itself failed (provider 5xx, network drop, etc.).
     // Without this fallback the user gets only an `error` event and the
     // run "needs review" — no visible answer at all. Emit the recent
