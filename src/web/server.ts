@@ -208,7 +208,7 @@ import type { GovernedAnswer } from '../governed/governedAnswer';
 import { NervousSystemController } from '../nervous';
 import { listShellCommandAllowlistPresets } from '../automation/runner';
 import { appendCapabilityAuditEvent, readCapabilityAuditEvents } from '../permissions/capabilityAudit';
-import { selectModelForChatTurn, type ChatModelCandidatePool, type ChatRoutingMode, type ModelRoutingPolicy } from '../agents/modelRouting';
+import { selectEscalationTarget, selectModelForChatTurn, type ChatModelCandidatePool, type ChatRoutingMode, type ModelRoutingPolicy } from '../agents/modelRouting';
 import type { LoopConfig, LoopEvent, PermissionMode, Tool } from '../types';
 import type { EvidenceCard, EvidenceFileSummary, EvidenceMode, EvidenceToolSummary } from '../types/evidence';
 import type { Message } from 'ollama';
@@ -303,6 +303,22 @@ async function resolveCriticDeps(workerModel: string, workerClient: IChatClient)
   return {
     ...(wantsCritic && selection.candidates.length > 0 ? { critic: { candidates: selection.candidates, createClient } } : {}),
     adversaryJudge,
+  };
+}
+
+/**
+ * In-run escalation, on unless chat routing is off: a stuck run, or an answer
+ * the verifier rejected twice, continues on the strong-tier model. Models are
+ * only listed if escalation actually fires.
+ */
+function inRunEscalationDeps(): Pick<QueryLoopDeps, 'escalate'> {
+  if ((modelRouting.chatRoutingMode ?? 'balanced') === 'off') return {};
+  return {
+    escalate: async ({ fromModel }) => {
+      const available = await webRuntime.listModels(ollamaHost).catch((): string[] => []);
+      const target = selectEscalationTarget(fromModel, buildChatModelCandidatePool(fromModel, available, modelRouting));
+      return target ? { model: target, client: webRuntime.createClient(target, ollamaHost, await resolveContextMaxTokens(target)) } : null;
+    },
   };
 }
 
@@ -3468,6 +3484,7 @@ const runCodexTaskWithConductor: CodexTaskRunner = async ({ task, contract, prom
     tracer: runtimeTracer,
     learningRecorder,
     ...(await resolveCriticDeps(activeModel, client)),
+    ...inRunEscalationDeps(),
     ...startRunRecording('task'),
   };
 
@@ -5602,6 +5619,7 @@ CONTEXT HYGIENE (critical for long tasks):
     // <project>/.harness/adversary.md exists). Both use a different model
     // family from the chat model when one is available.
     ...(await resolveCriticDeps(activeModel, client)),
+    ...inRunEscalationDeps(),
     ...startRunRecording('chat'),
   };
 

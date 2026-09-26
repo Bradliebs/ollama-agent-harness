@@ -151,6 +151,16 @@ No release tag, publication or installer runtime qualification is implied.
   any page read that turn, so annotation stays opt-in.
 - Fix control characters left in comments and this changelog by earlier
   scripted edits (PowerShell backtick escapes read as form feeds and bells).
+- Add in-run escalation. QueryLoopDeps.escalate lets a run switch to a stronger
+  model mid-run, at most once, when the supervisor reaches its escalate stage
+  (a stuck run tries a stronger model before asking the user) or when the
+  research gate rejects an answer a second time. The new model keeps the
+  transcript and gets every tool natively (the weak model's adapter plan is
+  dropped), and the stall count restarts. The switch is emitted as a
+  model_escalated event and recorded as a run-log route event. The web
+  server wires it for chat and task runs unless chat routing is off, and
+  targets the strong-tier candidate only when it differs from the current
+  model.
 - After these changes full Jest passed 329 suites and 3,841 tests with one
   skipped; the build and script tests (`node --test`) also passed.
 

@@ -108,6 +108,12 @@ export class RunSupervisor {
     return { exceeded: false, used: this.tokens, limit: this.config.maxTokens };
   }
 
+  /** Start the stall count over (a stronger model took over); seen results are kept. */
+  resetStall(): void {
+    this.stalled = 0;
+    this.stagesFired = new Set();
+  }
+
   /** Feed one completed tool turn; returns what (if anything) to do about it. */
   endTurn(observation: TurnObservation): SupervisorDecision {
     for (const attempt of observation.attempts) {

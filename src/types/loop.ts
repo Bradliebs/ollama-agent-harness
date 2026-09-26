@@ -225,6 +225,7 @@ export type LoopEvent =
   | InactivityTimeoutEvent
   | GovernedShadowEvent
   | SupervisorEvent
+  | ModelEscalatedEvent
   | BudgetExceededEvent;
 
 export interface TextEvent {
@@ -350,6 +351,17 @@ export interface UsageEvent {
 /** The run supervisor intervened because tool steps stopped producing
  * anything new. `ask_human` means the run is ending with a question for
  * the user instead of more tool calls. */
+export type EscalationReason = 'stuck' | 'verifier_rejected';
+
+/** The run switched to a stronger model mid-run (at most once). */
+export interface ModelEscalatedEvent {
+  type: 'model_escalated';
+  from: string;
+  to: string;
+  reason: EscalationReason;
+  turn: number;
+}
+
 export interface SupervisorEvent {
   type: 'supervisor';
   stage: 'warn' | 'change_strategy' | 'escalate' | 'ask_human';

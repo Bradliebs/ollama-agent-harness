@@ -328,6 +328,14 @@ export function selectModelForChatTurn(
   };
 }
 
+/**
+ * Model a stuck or twice-rejected run continues on: the strong tier, when it
+ * is not the model already doing the work.
+ */
+export function selectEscalationTarget(currentModel: string, candidates: ChatModelCandidatePool): string | undefined {
+  return firstDistinctModel([candidates.strong], currentModel.trim());
+}
+
 export function createModelRoutingPolicyFromRegistry(models: RegistryModelRoutingEntry[]): ModelRoutingPolicy {
   const enabled = models.filter((model) => model.enabled);
   return {

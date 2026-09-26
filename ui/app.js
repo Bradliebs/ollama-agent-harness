@@ -5165,6 +5165,10 @@ async function sendMessage(opts) {
             appendToolItem(toolBox, '🧭', 'progress check (' + ev.stalledTurns + ' steps stalled)', ev.stage === 'ask_human' ? 'no progress — asking you how to proceed' : String(ev.summary || ev.message || ''), ev.stage === 'ask_human');
             if (ev.stage === 'ask_human') supervisorSummary = String(ev.summary || '');
             break;
+          case 'model_escalated':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '⏫', 'switched to a stronger model', ev.from + ' → ' + ev.to + (ev.reason === 'stuck' ? ' (no progress)' : ' (answer failed verification twice)'), false);
+            break;
           case 'budget_exceeded':
             toolBox = ensureToolBox(toolBox);
             appendToolItem(toolBox, '💰', 'run budget reached', (ev.which === 'usd' ? '$' + Number(ev.used).toFixed(2) + ' of $' + Number(ev.limit).toFixed(2) : Number(ev.used).toLocaleString() + ' of ' + Number(ev.limit).toLocaleString() + ' tokens') + ' — summarising what was found', true);

@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import * as path from 'path';
 import { OllamaClient } from './ollamaClient';
 import type { IChatClient } from './chatClient';
-import type { Tool, ToolCall, LoopConfig, LoopEvent } from '../types';
+import type { Tool, ToolCall, LoopConfig, LoopEvent, EscalationReason } from '../types';
 import { toolToSchema } from '../types/tool';
 import { renderTaskContractBlock } from '../types/taskContract';
 import type { HookPipeline } from '../extensibility/hookPipeline';
@@ -129,6 +129,12 @@ export interface QueryLoopDeps {
    */
   critic?: CriticAccess;
   /**
+   * In-run escalation: when the run is stuck or the verifier rejects an
+   * answer twice, the loop asks for a stronger model and continues the same
+   * run with it. Return null when there is nothing stronger. At most once per run.
+   */
+  escalate?: (request: { fromModel: string; reason: EscalationReason; turn: number }) => Promise<{ model: string; client: IChatClient } | null>;
+  /**
    * Called when a safety inspector requires human confirmation before a
    * tool runs. Return `true` to proceed, `false` to abort. Without this,
    * `requireApproval` decisions silently pass through (matches goose CLI).
@@ -199,7 +205,10 @@ async function* queryLoopCore(
   initialMessages: Message[] = [],
 ): AsyncGenerator<LoopEvent> {
   const { maxTurns, abortSignal } = config;
-  const { client, permissionCheck, hooks, session, summarizerClient, tracer, learningRecorder, adversaryJudge, onApprovalRequired, runLog } = deps;
+  const { permissionCheck, hooks, session, summarizerClient, tracer, learningRecorder, adversaryJudge, onApprovalRequired, runLog } = deps;
+  // Both change if the run escalates to a stronger model mid-run.
+  let client = deps.client;
+  let activeModel = config.model;
   // Governed working state: protected paths (task contract + config) are always
   // enforced; with inject on, the state is rendered into every prompt and the
   // model can update it through the state_update tool.
@@ -261,9 +270,9 @@ async function* queryLoopCore(
   const ollamaTools = plannedToolNames ? allToolSchemas.filter((schema) => plannedToolNames.has(schema.function.name)) : allToolSchemas;
   // Models without reliable native tool calling get tools described in the
   // system prompt instead (compiled by models/adapter.ts) and reply with JSON.
-  const promptToolMode = modelPlan && modelPlan.toolMode !== 'native';
-  const chatTools = promptToolMode ? [] : ollamaTools;
-  const chatOptions = promptToolMode && modelPlan?.format ? { format: modelPlan.format } : undefined;
+  let promptToolMode = modelPlan && modelPlan.toolMode !== 'native';
+  let chatTools = promptToolMode ? [] : ollamaTools;
+  let chatOptions = promptToolMode && modelPlan?.format ? { format: modelPlan.format } : undefined;
 
   const validationProfile = config.outputValidation?.profile ?? 'oracle-prime';
   const customValidationProfiles = config.outputValidation?.customProfiles ?? [];
@@ -360,7 +369,8 @@ async function* queryLoopCore(
   const blockedWebUrls = new Map<string, string>();
   const sourceLedger = new SourceLedger();
   // Progress-based stuck detection and per-run budgets (default on).
-  const supervisorConfig = resolveSupervisorConfig(config.supervisor);
+  const resolvedSupervisor = resolveSupervisorConfig(config.supervisor);
+  const supervisorConfig = resolvedSupervisor && deps.escalate ? { ...resolvedSupervisor, canEscalate: true } : resolvedSupervisor;
   const supervisor = supervisorConfig
     ? new RunSupervisor(supervisorConfig, (model) => CostTracker.getAllRates()[model])
     : null;
@@ -394,6 +404,30 @@ async function* queryLoopCore(
       return null;
     }
   };
+  let escalationTried = false;
+  const tryEscalate = async (reason: EscalationReason): Promise<LoopEvent | null> => {
+    if (escalationTried || !deps.escalate) return null;
+    escalationTried = true;
+    let target: { model: string; client: IChatClient } | null = null;
+    try {
+      target = await deps.escalate({ fromModel: activeModel, reason, turn });
+    } catch (error) {
+      tracer?.recordEvent('routing.escalation_error', { error: error instanceof Error ? error.message : String(error) });
+    }
+    if (!target || target.model === activeModel) return null;
+    const from = activeModel;
+    client = target.client;
+    activeModel = target.model;
+    // The per-model plan (tool subset, JSON tool calls) was compiled for the
+    // weaker model; the stronger one gets every tool natively.
+    promptToolMode = false;
+    chatTools = allToolSchemas;
+    chatOptions = undefined;
+    supervisor?.resetStall();
+    runLog?.append('route', { event: 'escalate', from, to: activeModel, reason, turn }, currentTurnStep);
+    tracer?.recordEvent('routing.escalated', { from, to: activeModel, reason, turn });
+    return { type: 'model_escalated', from, to: activeModel, reason, turn };
+  };
   const FILE_CHANGE_TOOLS = new Set(['file_write', 'file_edit', 'file_move', 'file_delete', 'document_export']);
 
   if (session) {
@@ -424,8 +458,8 @@ async function* queryLoopCore(
     // same time window. Skipped on the first turn so the model always gets
     // at least one chance.
     if (timeBudgetMs > 0 && turn > 0 && (Date.now() - loopStarted) >= timeBudgetMs) {
-      yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
-      tracer?.recordEvent('synthesis.time_budget', { model: config.model, elapsedMs: Date.now() - loopStarted, timeBudgetMs, turn });
+      yield { type: 'synthesis_fired', model: activeModel, maxTurns, toolCallsTotal: totalToolCalls };
+      tracer?.recordEvent('synthesis.time_budget', { model: activeModel, elapsedMs: Date.now() - loopStarted, timeBudgetMs, turn });
       break;
     }
 
@@ -511,7 +545,7 @@ async function* queryLoopCore(
     }
 
     let assistantMessage: Message;
-    const modelSpan = tracer?.startSpan('model.chat', { model: config.model, turn });
+    const modelSpan = tracer?.startSpan('model.chat', { model: activeModel, turn });
     try {
       // Surrogate sanitisation: under HARNESS_LOOP_HARDENING strip any lone
       // UTF-16 surrogates from the outgoing message array so JSON.stringify
@@ -539,7 +573,7 @@ async function* queryLoopCore(
       runLog?.syncMessages(outboundMessages);
       const renderedState = injectState ? workingState.render() : '';
       const requestMessages = renderedState ? injectWorkingState(outboundMessages, renderedState) : outboundMessages;
-      runLog?.append('model_request', { turn, model: config.model, messageCount: outboundMessages.length, tools: chatTools.map((schema) => schema.function?.name), ...(modelPlan ? { toolMode: modelPlan.toolMode } : {}), ...(chatOptions ? { format: chatOptions.format } : {}), ...(renderedState ? { workingState: renderedState } : {}) }, currentTurnStep);
+      runLog?.append('model_request', { turn, model: activeModel, messageCount: outboundMessages.length, tools: chatTools.map((schema) => schema.function?.name), ...(modelPlan ? { toolMode: modelPlan.toolMode } : {}), ...(chatOptions ? { format: chatOptions.format } : {}), ...(renderedState ? { workingState: renderedState } : {}) }, currentTurnStep);
       const modelCallStarted = Date.now();
       const chatPromise = chatOptions
         ? client.chat(requestMessages, chatTools, abortSignal, chatOptions)
@@ -552,11 +586,11 @@ async function* queryLoopCore(
         const lifted = parseConstrainedToolCall(assistantMessage.content);
         if (lifted?.length) {
           assistantMessage = { ...assistantMessage, content: '', tool_calls: lifted };
-          tracer?.recordEvent('adapter.tool_call_lifted', { model: config.model, toolMode: modelPlan?.toolMode, calls: lifted.length });
+          tracer?.recordEvent('adapter.tool_call_lifted', { model: activeModel, toolMode: modelPlan?.toolMode, calls: lifted.length });
         }
       }
-      runLog?.append('model_response', { turn, model: config.model, message: assistantMessage, usage: result.usage ?? null, durationMs: Date.now() - modelCallStarted }, currentTurnStep);
-      if (supervisor && result.usage) supervisor.recordUsage(config.model, result.usage.promptTokens ?? 0, result.usage.completionTokens ?? 0);
+      runLog?.append('model_response', { turn, model: activeModel, message: assistantMessage, usage: result.usage ?? null, durationMs: Date.now() - modelCallStarted }, currentTurnStep);
+      if (supervisor && result.usage) supervisor.recordUsage(activeModel, result.usage.promptTokens ?? 0, result.usage.completionTokens ?? 0);
       modelSpan?.end('ok', {
         toolCalls: assistantMessage.tool_calls?.length ?? 0,
         // Surface token usage on the span itself so the OpenInference
@@ -572,7 +606,7 @@ async function* queryLoopCore(
       if (result.usage) {
         yield {
           type: 'usage',
-          model: config.model,
+          model: activeModel,
           turn,
           locality: runLocality,
           promptTokens: result.usage.promptTokens ?? 0,
@@ -586,7 +620,7 @@ async function* queryLoopCore(
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       modelSpan?.fail(error);
-      runLog?.append('model_error', { turn, model: config.model, error: msg, inactivity: error instanceof InactivityTimeoutError }, currentTurnStep);
+      runLog?.append('model_error', { turn, model: activeModel, error: msg, inactivity: error instanceof InactivityTimeoutError }, currentTurnStep);
       if (session) {
         await appendStatus(session, 'error', msg, tracer);
       }
@@ -614,7 +648,7 @@ async function* queryLoopCore(
         yield { type: 'budget_exceeded', which: budget.which, used: budget.used, limit: budget.limit };
         runLog?.append('supervisor', { event: 'budget_exceeded', which: budget.which, used: budget.used, limit: budget.limit }, currentTurnStep);
         tracer?.recordEvent('supervisor.budget_exceeded', { which: budget.which, used: budget.used, limit: budget.limit, turn });
-        yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
+        yield { type: 'synthesis_fired', model: activeModel, maxTurns, toolCallsTotal: totalToolCalls };
         break;
       }
     }
@@ -635,7 +669,7 @@ async function* queryLoopCore(
             recoverable: true,
           };
           tracer?.recordEvent('repetition.detected', { turn, repeats: consecutiveRepeats + 1 });
-          yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
+          yield { type: 'synthesis_fired', model: activeModel, maxTurns, toolCallsTotal: totalToolCalls };
           break;
         }
       } else {
@@ -711,15 +745,16 @@ async function* queryLoopCore(
         || (typeof assistantMessage.content === 'string' && assistantMessage.content.trim() === '');
       if (finalContentIsEmpty && totalToolCalls > 0) {
         emptyFinalAfterTools = true;
-        yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
-        tracer?.recordEvent('synthesis.empty_after_tools', { model: config.model, turn, totalToolCalls });
+        yield { type: 'synthesis_fired', model: activeModel, maxTurns, toolCallsTotal: totalToolCalls };
+        tracer?.recordEvent('synthesis.empty_after_tools', { model: activeModel, turn, totalToolCalls });
         break;
       }
 
       const finalText = typeof assistantMessage.content === 'string' ? assistantMessage.content : '';
       const researchVerdict = await verifyFinalAnswer(finalText);
-      if (researchVerdict && researchVerifyMode === 'gate' && !researchRevised && turn < maxTurns
-        && (researchVerdict.status === 'warn' || researchVerdict.status === 'fail')) {
+      const researchRejected = researchVerdict && researchVerifyMode === 'gate' && turn < maxTurns
+        && (researchVerdict.status === 'warn' || researchVerdict.status === 'fail');
+      if (researchRejected && !researchRevised) {
         // "Done" means the verifier passed: one bounded revision before the
         // answer is accepted with an unverified-claims note.
         researchRevised = true;
@@ -728,6 +763,17 @@ async function* queryLoopCore(
         messages.push({ role: 'user', content: revisionPrompt(researchVerdict) } as Message);
         yield { type: 'auto_continue', turn, continuationCount: 0, reason: 'verifier found unsupported claims; revising once' };
         continue;
+      }
+      if (researchRejected) {
+        // Second rejection: hand the revision to a stronger model if one is available.
+        const escalation = await tryEscalate('verifier_rejected');
+        if (escalation) {
+          yield researchVerificationEvent(researchVerdict);
+          runLog?.append('verdict', { check: 'research_claims', mode: researchVerifyMode, action: 'escalate', ...researchVerdict }, currentTurnStep);
+          yield escalation;
+          messages.push({ role: 'user', content: revisionPrompt(researchVerdict) } as Message);
+          continue;
+        }
       }
       if (researchVerdict) {
         yield researchVerificationEvent(researchVerdict);
@@ -1184,10 +1230,16 @@ async function* queryLoopCore(
         tracer?.recordEvent('supervisor.intervene', { stage: decision.stage, stalledTurns: decision.stalledTurns, turn });
         if (decision.stage === 'ask_human') {
           stuckNeedsHuman = { message: decision.message, summary: decision.summary };
-          yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
+          yield { type: 'synthesis_fired', model: activeModel, maxTurns, toolCallsTotal: totalToolCalls };
           break;
         }
-        if (decision.stage !== 'escalate') {
+        if (decision.stage === 'escalate') {
+          const escalation = await tryEscalate('stuck');
+          if (escalation && escalation.type === 'model_escalated') {
+            yield escalation;
+            messages.push({ role: 'user', content: `The previous attempts stopped making progress, so a stronger model (${escalation.to}) is taking over. ${decision.summary}. Do not repeat those; choose a different approach or answer with what you have.` } as Message);
+          }
+        } else {
           // Use 'user' role: Mistral and Anthropic reject 'system' after 'tool'.
           messages.push({ role: 'user', content: decision.message } as Message);
         }
@@ -1259,8 +1311,8 @@ async function* queryLoopCore(
   if (!timeBudgetExceeded && !repetitionExceeded && !emptyFinalAfterTools && !budgetExceeded && !stuckNeedsHuman) {
     // Only emit synthesis_fired for max-turns (time budget, repetition, and
     // empty-after-tools already emitted it above before breaking).
-    yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
-    tracer?.recordEvent('synthesis.fired', { model: config.model, maxTurns, totalToolCalls });
+    yield { type: 'synthesis_fired', model: activeModel, maxTurns, toolCallsTotal: totalToolCalls };
+    tracer?.recordEvent('synthesis.fired', { model: activeModel, maxTurns, totalToolCalls });
   }
 
   // Build a concrete synthesis prompt with the last few tool results
@@ -1311,18 +1363,18 @@ async function* queryLoopCore(
   synthMessages.push(synthInstructionMsg);
 
   turn++;
-  const synthSpan = tracer?.startSpan('model.chat', { model: config.model, turn, synthesis: true });
+  const synthSpan = tracer?.startSpan('model.chat', { model: activeModel, turn, synthesis: true });
   try {
     const outboundSynth = resolveLoopHardeningEnabled()
       ? sanitizeMessages(synthMessages)
       : synthMessages;
     const synthStep = allocateStep('synthesis');
     runLog?.recordCompaction(outboundSynth, 'synthesis-context');
-    runLog?.append('model_request', { turn, model: config.model, messageCount: outboundSynth.length, tools: [], synthesis: true }, synthStep);
+    runLog?.append('model_request', { turn, model: activeModel, messageCount: outboundSynth.length, tools: [], synthesis: true }, synthStep);
     const synthStarted = Date.now();
     const synthResult = await client.chat(outboundSynth, [], abortSignal);
     const synthMessage = synthResult.message;
-    runLog?.append('model_response', { turn, model: config.model, message: synthMessage, usage: synthResult.usage ?? null, durationMs: Date.now() - synthStarted, synthesis: true }, synthStep);
+    runLog?.append('model_response', { turn, model: activeModel, message: synthMessage, usage: synthResult.usage ?? null, durationMs: Date.now() - synthStarted, synthesis: true }, synthStep);
     synthSpan?.end('ok', {
       toolCalls: 0,
       ...(synthResult.usage ? {
@@ -1334,7 +1386,7 @@ async function* queryLoopCore(
     if (synthResult.usage) {
       yield {
         type: 'usage',
-        model: config.model,
+        model: activeModel,
         turn,
         locality: runLocality,
         promptTokens: synthResult.usage.promptTokens ?? 0,
@@ -1481,7 +1533,7 @@ async function* queryLoopCore(
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     synthSpan?.fail(error);
-    runLog?.append('model_error', { turn, model: config.model, error: msg, synthesis: true });
+    runLog?.append('model_error', { turn, model: activeModel, error: msg, synthesis: true });
     // Synthesis call itself failed (provider 5xx, network drop, etc.).
     // Without this fallback the user gets only an `error` event and the
     // run "needs review" — no visible answer at all. Emit the recent
