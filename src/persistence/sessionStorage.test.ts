@@ -31,6 +31,38 @@ describe('SessionStorage', () => {
     expect(events).toEqual([]);
   });
 
+  test('preserves a valid final event without a newline when appending', async () => {
+    await storage.append('user_message', { kind: 'message', message: { role: 'user', content: 'first' } });
+    const transcriptPath = storage.getTranscriptPath();
+    const prefix = (await fs.readFile(transcriptPath, 'utf8')).trimEnd();
+    await fs.writeFile(transcriptPath, prefix, 'utf8');
+
+    await storage.append('assistant_message', { kind: 'message', message: { role: 'assistant', content: 'second' } });
+
+    const result = await storage.readAllDetailed();
+    expect(result.events.map(event => event.data)).toEqual([
+      { kind: 'message', message: { role: 'user', content: 'first' } },
+      { kind: 'message', message: { role: 'assistant', content: 'second' } },
+    ]);
+    expect(result.diagnostics.corruptLines).toBe(0);
+    expect((await fs.readFile(transcriptPath, 'utf8')).startsWith(prefix + '\n')).toBe(true);
+  });
+
+  test('concurrent appends after a torn tail keep each new event readable', async () => {
+    await fs.writeFile(storage.getTranscriptPath(), '{"id":"interrupted', 'utf8');
+    const messages = Array.from({ length: 8 }, (_, index) => ({ role: 'user' as const, content: `request ${index}` }));
+    await Promise.all(messages.map(message => {
+      const writer = new SessionStorage(TEST_DIR, 'llama3', storage.getSessionId());
+      return writer.append('user_message', { kind: 'message', message });
+    }));
+
+    const result = await storage.readAllDetailed();
+    expect(result.events).toHaveLength(messages.length);
+    expect(result.events.map(event => event.data)).toEqual(expect.arrayContaining(messages.map(message => ({ kind: 'message', message }))));
+    expect(result.diagnostics.corruptLines).toBe(1);
+    expect((await fs.readFile(storage.getTranscriptPath(), 'utf8')).startsWith('{"id":"interrupted\n')).toBe(true);
+  });
+
   test('verify-session-resume-truncated: recovers gracefully from truncated last line', async () => {
     // Write a complete event first
     await storage.append('user_message', { kind: 'message', message: { role: 'user', content: 'first message' } });
@@ -52,9 +84,34 @@ describe('SessionStorage', () => {
     // which is acceptable "clean recovery" behavior
     const events = await resumedStorage.readAll();
 
-    // Should not throw and should return empty array (current behavior)
+    // Should not throw and should return an array (valid prefix is preserved).
     expect(Array.isArray(events)).toBe(true);
     // No error thrown = successful recovery
+  });
+
+  test('readAllDetailed preserves valid prefix and reports corrupt transcript lines', async () => {
+    await storage.append('user_message', { kind: 'message', message: { role: 'user', content: 'first message' } });
+    await fs.appendFile(storage.getTranscriptPath(), '{bad json\n', 'utf-8');
+
+    const result = await storage.readAllDetailed();
+
+    expect(result.events).toHaveLength(1);
+    expect(result.diagnostics.validEvents).toBe(1);
+    expect(result.diagnostics.corruptLines).toBe(1);
+    expect(result.diagnostics.unreadable).toBe(false);
+  });
+
+  test('inspectStorage reports corrupt transcript and meta files', async () => {
+    await storage.append('user_message', { kind: 'message', message: { role: 'user', content: 'first message' } });
+    await fs.appendFile(storage.getTranscriptPath(), '{bad json\n', 'utf-8');
+    await fs.writeFile(path.join(TEST_DIR, '.harness', 'sessions', 'bad.meta.json'), 'not json', 'utf-8');
+
+    const health = await SessionStorage.inspectStorage(TEST_DIR);
+
+    expect(health.status).toBe('warning');
+    expect(health.corruptTranscriptFiles).toBe(1);
+    expect(health.corruptTranscriptLines).toBe(1);
+    expect(health.corruptMetaFiles).toBe(1);
   });
 
   test('marks stale running sessions as aborted after server restart', async () => {

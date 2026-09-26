@@ -2,7 +2,8 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
 import { loadSkillsFromDirs, matchSkillTrigger, parseSkillFile, type SkillDefinition } from '../extensibility/skillLoader';
-import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
+import { getSkillUsage, loadSkillUsage, recordAgentSkillRevision, recordSkillUse, recordSkillView, skillStandingLabel } from '../extensibility/skillUsage';
+import { scanSafetyText } from '../learning/promotionGate';
 import { expandSkillTemplateVars } from '../extensibility/skillTemplate';
 import {
   buildRuntimeSkillFile,
@@ -37,6 +38,15 @@ export function setLowerSkillTiers(dirs: string[]): void {
   lowerTierDirs = [...dirs];
   cachedSkills = null;
   cachedSkillsPromise = null;
+}
+
+/**
+ * Safety scan an agent-written skill with the promotion gate's rules. Returns
+ * a refusal message when a high-severity rule matches.
+ */
+export function agentSkillSafetyRefusal(content: string): string | null {
+  const high = scanSafetyText(content).filter((violation) => violation.severity === 'high');
+  return high.length > 0 ? `Skill not saved: it matches safety rule(s) ${high.map((violation) => `"${violation.ruleLabel}"`).join(', ')}.` : null;
 }
 
 export function invalidateSkillsCache(): void {
@@ -104,10 +114,12 @@ export const SkillTool: Tool = {
       skillDir: path.dirname(skill.filePath),
       projectDir: projectDirForUsage || undefined,
     });
+    const standing = projectDirForUsage ? skillStandingLabel(await getSkillUsage(projectDirForUsage, skill.name).catch(() => undefined)) : '';
+    const standingNote = standing ? `\n(Note: this skill is ${standing}. Check each step against the task rather than following it blindly.)` : '';
 
     return {
       success: true,
-      output: `--- Skill: ${skill.name} ---\n${skill.description}\n\n${renderedContent}${bundledSection}`,
+      output: `--- Skill: ${skill.name} ---\n${skill.description}${standingNote}\n\n${renderedContent}${bundledSection}`,
     };
   },
 };
@@ -199,9 +211,11 @@ export const ListSkillsTool: Tool = {
       }
     }
 
-    const listing = skills.map(s =>
-      `• **${s.name}** — ${s.description}\n  Triggers: ${s.triggers.join(', ') || '(none)'}`
-    ).join('\n');
+    const usage = projectDirForUsage ? await loadSkillUsage(projectDirForUsage).catch(() => null) : null;
+    const listing = skills.map((s) => {
+      const standing = skillStandingLabel(usage?.records[s.name]);
+      return `• **${s.name}** — ${s.description}${standing ? ` (${standing})` : ''}\n  Triggers: ${s.triggers.join(', ') || '(none)'}`;
+    }).join('\n');
 
     return { success: true, output: `Available skills (${skills.length}):\n\n${listing}` };
   },
@@ -254,6 +268,9 @@ export const CreateSkillTool: Tool = {
       body: sanitizeSkillBody(input.instructions),
     });
 
+    const refusal = agentSkillSafetyRefusal(content);
+    if (refusal) return { success: false, output: refusal, error: 'safety rule matched' };
+
     // Write to skills directory
     const dir = skillsDir || path.join(process.cwd(), '.harness', 'skills');
     const skillDir = path.join(dir, name);
@@ -269,10 +286,13 @@ export const CreateSkillTool: Tool = {
 
       // Invalidate cache so the new skill is available immediately
       invalidateSkillsCache();
+      // Agent-written skills start on probation and must earn their place.
+      const usageRoot = projectDirForUsage || path.dirname(path.dirname(dir));
+      await recordAgentSkillRevision(usageRoot, name, { replacedExisting: Boolean(previous) }).catch(() => undefined);
 
       return {
         success: true,
-        output: `✅ Skill '${name}' created at ${skillPath}\n\nIt's now available — invoke it with: skill(name: "${name}")`,
+        output: `✅ Skill '${name}' created at ${skillPath}\n\nIt's now available — invoke it with: skill(name: "${name}"). It starts on probation until 3 runs that use it finish cleanly; skills that keep failing are archived by the curator.`,
       };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);

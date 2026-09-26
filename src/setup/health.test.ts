@@ -23,7 +23,14 @@ describe('setup health', () => {
     await fs.rm(fixtureDir, { recursive: true, force: true });
   });
 
-  it('reports Ollama, vision, and configured audio health', async () => {
+  it.each([
+    ['llava', 'configured'],
+    ['llava:latest', 'configured'],
+    ['llava:missing', 'needs-model'],
+    ['other-model', 'needs-model'],
+    ['', 'needs-model'],
+    ['minimax-m3:cloud', 'configured'],
+  ])('reports local setup for selected model %s as %s', async (model, state) => {
     const server = http.createServer((req, res) => {
       if (req.url === '/api/tags') {
         res.setHeader('Content-Type', 'application/json');
@@ -41,11 +48,13 @@ describe('setup health', () => {
       const result = await checkSetupHealth({
         host: `http://127.0.0.1:${address.port}`,
         visionModel: 'llava',
+        chat: { backend: 'ollama', model },
         audioTranscribeCommand: 'whisper "{input}"',
         projectDir: process.cwd(),
       });
 
       expect(result).toMatchObject({
+        chat: { backend: 'ollama', model, state, verified: false },
         ollama: { ok: true, modelCount: 1 },
         vision: { ok: true },
         audio: { ok: true },
@@ -169,7 +178,7 @@ describe('setup health', () => {
       }
     });
 
-    async function probe(): Promise<Awaited<ReturnType<typeof checkSetupHealth>>> {
+    async function probe(chat?: { backend: string; model: string }): Promise<Awaited<ReturnType<typeof checkSetupHealth>>> {
       // Use an obviously bogus host so Ollama check fails fast; backends
       // are populated regardless of Ollama reachability.
       return checkSetupHealth({
@@ -177,8 +186,36 @@ describe('setup health', () => {
         visionModel: '',
         audioTranscribeCommand: '',
         projectDir: process.cwd(),
+        chat,
       });
     }
+
+    it('reports configured remote chat without requiring Ollama or claiming verification', async () => {
+      process.env.GROQ_API_KEY = 'test-key-not-for-network';
+      const result = await probe({ backend: 'groq', model: 'llama-3.1-8b-instant' });
+      expect(result.ollama.ok).toBe(false);
+      expect(result.chat).toMatchObject({ backend: 'groq', state: 'configured', verified: false });
+      expect(result.chat?.message).not.toContain(process.env.GROQ_API_KEY);
+    });
+
+    it('blocks the selected remote backend when only another backend has credentials', async () => {
+      process.env.CEREBRAS_API_KEY = 'other-provider-key';
+      const result = await probe({ backend: 'groq', model: 'llama-3.1-8b-instant' });
+      expect(result.chat).toMatchObject({ backend: 'groq', state: 'blocked', verified: false });
+      expect(result.chat?.message).toContain('GROQ_API_KEY');
+    });
+
+    it('requires the selected provider account configuration as well as a key', async () => {
+      process.env.CLOUDFLARE_API_TOKEN = 'test-token';
+      const result = await probe({ backend: 'cloudflare', model: '@cf/meta/llama-3.1-8b-instruct' });
+      expect(result.chat).toMatchObject({ state: 'blocked', verified: false });
+      expect(result.chat?.message).toContain('CLOUDFLARE_ACCOUNT_ID');
+    });
+
+    it.each(['llava', 'minimax-m3:cloud'])('requires Ollama for Ollama-routed model %s', async (model) => {
+      const result = await probe({ backend: 'ollama', model });
+      expect(result.chat).toMatchObject({ state: 'blocked', verified: false });
+    });
 
     it('reports a backend entry per known preset', async () => {
       const result = await probe();

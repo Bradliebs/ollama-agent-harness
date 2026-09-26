@@ -150,19 +150,35 @@ export async function upsertEntity(
 ): Promise<GraphEntity> {
   const existing = await findEntityByName(projectDir, name, type);
   if (existing) {
+    const merged = { ...(existing.attributes ?? {}), ...attributes };
+    // A re-observation that changes nothing must not append: the ambient file
+    // watcher re-upserted the same file every few seconds and grew this log
+    // to 870k identical lines (156 MB), which every recall then re-read.
+    if (existing.source === source && stableStringify(merged) === stableStringify(existing.attributes ?? {})) {
+      return existing;
+    }
     // Append a delta record so history is preserved
     await appendRecord(projectDir, {
       kind: 'entity',
       id: existing.id,
       type,
       name,
-      attributes: { ...(existing.attributes ?? {}), ...attributes },
+      attributes: merged,
       source,
     });
-    return { ...existing, attributes: { ...(existing.attributes ?? {}), ...attributes } };
+    return { ...existing, attributes: merged };
   }
   const created = await appendRecord(projectDir, { kind: 'entity', type, name, attributes, source });
   return created as GraphEntity;
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.keys(value as Record<string, unknown>).sort().map((key) => `${JSON.stringify(key)}:${stableStringify((value as Record<string, unknown>)[key])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
 }
 
 function tokenize(text: string): Set<string> {

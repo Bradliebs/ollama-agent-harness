@@ -18,8 +18,8 @@ Add-Type -AssemblyName System.Drawing
 # --- Config -----------------------------------------------------------------
 
 $Script:HarnessRoot   = Split-Path -Parent $PSScriptRoot
-$Script:HarnessPort   = if ($env:HARNESS_PORT) { $env:HARNESS_PORT } else { 4300 }
-$Script:HarnessBase   = "http://127.0.0.1:$($Script:HarnessPort)"
+$Script:HarnessPort   = $null
+$Script:HarnessBase   = $null
 $Script:PollInterval  = 5000   # ms; health poll cadence
 $Script:HttpTimeout   = 3      # seconds; per-request
 
@@ -28,6 +28,7 @@ $Script:HttpTimeout   = 3      # seconds; per-request
 $Script:LastHealth = $null
 $Script:LastReachable = $false
 $Script:LastIconKey = ''
+$Script:ManagedState = 'unmanaged'
 
 # --- HTTP helpers -----------------------------------------------------------
 
@@ -111,14 +112,23 @@ function Get-HealthBadge($health, [bool]$reachable) {
 
 # --- Server process helpers -------------------------------------------------
 
-function Test-ServerProcess() {
-    $pidFile = Join-Path $Script:HarnessRoot '.harness\server.pid'
-    if (-not (Test-Path $pidFile)) { return $null }
+function Get-HarnessStatus() {
+    $helper = Join-Path $Script:HarnessRoot 'scripts\background-server.js'
     try {
-        $serverPid = [int](Get-Content $pidFile -ErrorAction Stop).Trim()
-        $proc = Get-Process -Id $serverPid -ErrorAction SilentlyContinue
-        if ($proc) { return $serverPid } else { return $null }
-    } catch { return $null }
+        $statusJson = & node $helper status
+        if ($LASTEXITCODE -ne 0) { throw 'Supervisor status failed.' }
+        $status = $statusJson | ConvertFrom-Json
+        $Script:ManagedState = $status.state
+        $Script:HarnessBase = $null
+        if ($status.state -eq 'running' -and $status.port -ge 1 -and $status.port -le 65535) {
+            $Script:HarnessPort = [int]$status.port
+            $Script:HarnessBase = "http://127.0.0.1:$($Script:HarnessPort)"
+        }
+    } catch {
+        $Script:ManagedState = 'unknown'
+        $Script:HarnessBase = $null
+        Write-Warning "Cannot discover managed Harness server: $_"
+    }
 }
 
 function Start-HarnessServer() {
@@ -133,7 +143,7 @@ function Start-HarnessServer() {
 function Stop-HarnessServer() {
     $bat = Join-Path $Script:HarnessRoot 'stop-server.bat'
     if (Test-Path $bat) {
-        Start-Process -FilePath $bat -WorkingDirectory $Script:HarnessRoot -WindowStyle Hidden -Wait | Out-Null
+        Start-Process -FilePath $bat -ArgumentList '--no-pause' -WorkingDirectory $Script:HarnessRoot -WindowStyle Hidden -Wait | Out-Null
     }
 }
 
@@ -172,7 +182,7 @@ function Rebuild-Menu() {
 
     Add-MenuItem 'Open Dashboard' {
         Start-Process $Script:HarnessBase | Out-Null
-    } | Out-Null
+    } ($null -ne $Script:HarnessBase) | Out-Null
 
     Add-MenuSeparator
 
@@ -245,10 +255,9 @@ function Rebuild-Menu() {
 
     Add-MenuSeparator
 
-    $serverPid = Test-ServerProcess
-    if ($null -eq $serverPid -and -not $reachable) {
+    if ($Script:ManagedState -eq 'unmanaged') {
         Add-MenuItem 'Start Server' { Start-HarnessServer } | Out-Null
-    } else {
+    } elseif ($Script:ManagedState -in @('starting', 'running', 'stopping')) {
         Add-MenuItem 'Stop Server' {
             $result = [System.Windows.Forms.MessageBox]::Show(
                 'Stop the Harness server?', 'Harness Tray',
@@ -273,7 +282,7 @@ $Script:Tray.ContextMenuStrip = $Script:Menu
 
 # Double-click opens the dashboard (most common action).
 $Script:Tray.Add_MouseDoubleClick({
-    if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+    if ($_.Button -eq [System.Windows.Forms.MouseButtons]::Left -and $Script:HarnessBase) {
         Start-Process $Script:HarnessBase | Out-Null
     }
 })
@@ -283,7 +292,8 @@ $Script:Tray.Add_MouseDoubleClick({
 $Script:Timer = New-Object System.Windows.Forms.Timer
 $Script:Timer.Interval = $Script:PollInterval
 $Script:Timer.Add_Tick({
-    $health = Invoke-HarnessGet '/api/system/health'
+    Get-HarnessStatus
+    $health = if ($Script:HarnessBase) { Invoke-HarnessGet '/api/system/health' } else { $null }
     $Script:LastHealth = $health
     $Script:LastReachable = ($null -ne $health)
 
@@ -308,6 +318,7 @@ $Script:Timer.Add_Tick({
 
 # Kick off an immediate poll so the icon isn't gray for 5s.
 $Script:Timer.Start()
+Get-HarnessStatus
 Rebuild-Menu
 
 # --- Message loop -----------------------------------------------------------

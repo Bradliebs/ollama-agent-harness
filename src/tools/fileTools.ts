@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
-import { applyFileWriteRedirect, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectPath, resolveProjectReadPath, setAllowedExternalPaths } from './pathResolution';
+import { applyFileWriteRedirect, getAllowedExternalPaths, getProjectRoot, getUploadsDir, maybeRedirectAgentOutput, resolveProjectPath, resolveProjectReadPath, setAllowedExternalPaths } from './pathResolution';
 import { loadRepoGraph, analyzeImpact } from '../core/codeIntelligence';
 
 const DEFAULT_MAX_READ_BYTES = 100_000;
@@ -406,7 +406,7 @@ export const ListUploadsTool: Tool = {
         if (!entry.isFile()) continue;
         const full = path.join(uploadsDir, entry.name);
         const stat = await fs.stat(full);
-        const cwdRel = path.relative(process.cwd(), full);
+        const cwdRel = path.relative(getProjectRoot(), full);
         const display = cwdRel.startsWith('..') ? full : cwdRel;
         files.push({
           name: entry.name,

@@ -113,4 +113,16 @@ describe('model routing', () => {
     expect(decision).toMatchObject({ model: 'manual-choice', routed: false });
     expect(decision.reasons).toContain('chat routing disabled');
   });
+
+  it('keeps a capable selected model for current-information turns in balanced mode', () => {
+    const decision = selectModelForChatTurn({
+      requestedModel: 'glm-5.2:cloud',
+      message: 'What is happening in the world today?',
+      candidates: { default: 'openrouter/google/gemini-2.5-flash' },
+      requestedModelWeak: false,
+    }, { chatRoutingMode: 'balanced' });
+
+    expect(decision).toMatchObject({ model: 'glm-5.2:cloud', routed: false, taskType: 'general', risk: 'medium' });
+    expect(decision.reasons).toContain('selected model retained');
+  });
 });

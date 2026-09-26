@@ -10,20 +10,25 @@ import {
   SquadRouteTool,
 } from './agentManagementTools';
 import { writeCustomAgent } from '../agents/agentLoader';
+import { getProjectRoot, setProjectRoot } from './pathResolution';
 
 describe('agentManagementTools', () => {
   let tempDir: string;
   let originalProjectDir: string | undefined;
+  let originalProjectRoot: string;
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-mgmt-'));
     originalProjectDir = process.env.HARNESS_PROJECT_DIR;
+    originalProjectRoot = getProjectRoot();
     process.env.HARNESS_PROJECT_DIR = tempDir;
+    setProjectRoot(tempDir);
   });
 
   afterEach(async () => {
     if (originalProjectDir === undefined) delete process.env.HARNESS_PROJECT_DIR;
     else process.env.HARNESS_PROJECT_DIR = originalProjectDir;
+    setProjectRoot(originalProjectRoot);
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
   });
 
@@ -158,4 +163,3 @@ describe('agentManagementTools', () => {
     });
   });
 });
-

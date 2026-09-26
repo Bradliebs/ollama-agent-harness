@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { SessionEvent, SessionMeta } from '../types';
 import { SessionStorage } from './sessionStorage';
+import { applyMemoryIndexRetention } from './memoryIndexRetention';
 
 export interface SemanticMemoryEntry {
   id: string;
@@ -60,8 +61,9 @@ export async function rebuildSemanticMemory(projectDir: string): Promise<Semanti
     const events = await storage.readAll();
     entries.push(...eventsToEntries(session, events));
   }
-  await writeIndex(projectDir, entries);
-  return entries;
+  const retainedEntries = applyMemoryIndexRetention(entries);
+  await writeIndex(projectDir, retainedEntries);
+  return retainedEntries;
 }
 
 export async function searchSemanticMemory(projectDir: string, query: string, limit = 8): Promise<SemanticSearchResult[]> {

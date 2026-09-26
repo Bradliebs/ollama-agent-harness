@@ -17,7 +17,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "help": "node scripts/help.js",
@@ -94,14 +94,15 @@
     "jszip": "^3.10.1",
     "mammoth": "^1.12.0",
     "marked": "18.0.3",
-    "nodemailer": "^8.0.7",
+    "nodemailer": "^10.0.0",
     "ollama": "^0.5.0",
-    "pdfjs-dist": "^5.7.284",
+    "pdfjs-dist": "^6.3.289",
     "pdfkit": "^0.18.0",
     "ws": "^8.20.0",
     "yahoo-finance2": "^3.14.0"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@types/express": "^5.0.6",
     "@types/jest": "^29.0.0",
     "@types/node": "^20.0.0",
@@ -115,6 +116,11 @@
   },
   "directories": {
     "doc": "docs"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "11.1.1"
+    }
   },
   "repository": {
     "type": "git",

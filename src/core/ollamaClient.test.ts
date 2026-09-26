@@ -38,6 +38,23 @@ describe('OllamaClient context configuration', () => {
     }));
   });
 
+  it('passes response format schema to chat requests', async () => {
+    mockChat.mockResolvedValue({
+      message: { role: 'assistant', content: '{"ok":true}' },
+      prompt_eval_count: 1,
+      eval_count: 1,
+      total_duration: 1,
+    });
+    const client = new OllamaClient({ model: 'test-model' });
+    const schema = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] };
+
+    await client.chat([{ role: 'user', content: 'json' }], undefined, undefined, { format: schema });
+
+    expect(mockChat).toHaveBeenCalledWith(expect.objectContaining({
+      format: schema,
+    }));
+  });
+
   it('aggregates streamed chat chunks into one assistant response', async () => {
     async function* chunks() {
       yield { message: { role: 'assistant', content: 'hel' }, done: false };
@@ -55,6 +72,52 @@ describe('OllamaClient context configuration', () => {
     await expect(client.chat([{ role: 'user', content: 'hello' }])).resolves.toEqual({
       message: { role: 'assistant', content: 'hello' },
       usage: { promptTokens: 12, completionTokens: 3, totalDurationNs: 4_000_000 },
+    });
+  });
+
+  it('reports each retry and keeps absent provider usage distinct from explicit zero', async () => {
+    const previousAttempts = process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS;
+    const previousDelay = process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS;
+    process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS = '2';
+    process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS = '0';
+    const onRequestEvent = jest.fn();
+    const client = new OllamaClient({ model: 'fixture', onRequestEvent });
+    mockChat.mockRejectedValueOnce(Object.assign(new Error('temporarily unavailable'), { status_code: 503 }))
+      .mockResolvedValueOnce({ message: { role: 'assistant', content: 'ok' }, eval_count: 0 });
+    try {
+      await client.chat([{ role: 'user', content: 'hello' }]);
+      expect(onRequestEvent.mock.calls.map(([event]) => event)).toEqual([
+        { phase: 'start', requestId: 1 },
+        { phase: 'error', requestId: 1, durationMs: expect.any(Number), usage: { promptTokens: null, completionTokens: null }, error: 'temporarily unavailable' },
+        { phase: 'start', requestId: 2 },
+        { phase: 'complete', requestId: 2, durationMs: expect.any(Number), usage: { promptTokens: null, completionTokens: 0 } },
+      ]);
+    } finally {
+      if (previousAttempts === undefined) delete process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS;
+      else process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS = previousAttempts;
+      if (previousDelay === undefined) delete process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS;
+      else process.env.HARNESS_OLLAMA_CHAT_RETRY_DELAY_MS = previousDelay;
+    }
+  });
+
+  it('does not retry a permanent HTTP status even when the error text looks transient', async () => {
+    const error = Object.assign(new Error('HTTP 503 Internal Server Error'), { status_code: 400 });
+    mockChat.mockRejectedValue(error);
+    await expect(new OllamaClient({ model: 'fixture' }).chat([{ role: 'user', content: 'hello' }])).rejects.toBe(error);
+    expect(mockChat).toHaveBeenCalledTimes(1);
+    expect(drainOllamaChatRetryEvents()).toEqual([]);
+  });
+
+  it('reports terminal stream counts instead of assuming missing counts are zero', async () => {
+    async function* chunks() {
+      yield { message: { role: 'assistant', content: 'ok' }, done: false };
+      yield { message: { role: 'assistant', content: '' }, done: true, prompt_eval_count: 12, eval_count: 2 };
+    }
+    mockChat.mockResolvedValue(chunks());
+    const onRequestEvent = jest.fn();
+    await new OllamaClient({ model: 'fixture', onRequestEvent }).chat([{ role: 'user', content: 'hello' }]);
+    expect(onRequestEvent).toHaveBeenLastCalledWith({
+      phase: 'complete', requestId: 1, durationMs: expect.any(Number), usage: { promptTokens: 12, completionTokens: 2 },
     });
   });
 
@@ -410,6 +473,21 @@ describe('liftInlineToolCalls fallback parser', () => {
     };
     liftInlineToolCalls(message);
     expect(message.tool_calls).toBeUndefined();
+  });
+
+  it('only lifts calls to tools that were offered, and nothing when none were', () => {
+    const answer: any = { role: 'assistant', content: '{"name": "alpha", "count": 3, "ok": true}' };
+    liftInlineToolCalls(answer, ['web_search', 'file_read']);
+    expect(answer.tool_calls).toBeUndefined();
+    expect(answer.content).toBe('{"name": "alpha", "count": 3, "ok": true}');
+
+    const noTools: any = { role: 'assistant', content: '{"name":"file_read","arguments":{"path":"x"}}' };
+    liftInlineToolCalls(noTools, []);
+    expect(noTools.tool_calls).toBeUndefined();
+
+    const offered: any = { role: 'assistant', content: 'Calling {"name":"file_read","arguments":{"path":"x"}} and {"name":"alpha","arguments":{}}' };
+    liftInlineToolCalls(offered, ['file_read']);
+    expect(offered.tool_calls).toEqual([{ function: { name: 'file_read', arguments: { path: 'x' } } }]);
   });
 
   it('survives malformed JSON without throwing', () => {

@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { ImportSkillTool, setImportSkillsDir } from './skillImportTool';
 import { invalidateSkillsCache, setSkillsDir } from './skillTools';
-import { getAllowedExternalPaths, setAllowedExternalPaths } from './pathResolution';
+import { getAllowedExternalPaths, getProjectRoot, setAllowedExternalPaths, setProjectRoot } from './pathResolution';
 
 describe('import_skill tool', () => {
   let projectDir: string;
@@ -215,6 +215,40 @@ describe('import_skill tool', () => {
     const withOverride = await ImportSkillTool.execute({ source, name: 'renamed-skill' });
     expect(withOverride.success).toBe(true);
     await expect(fs.access(path.join(skillsDir, 'renamed-skill', 'SKILL.md'))).resolves.toBeUndefined();
+  });
+
+  it('resolves relative source and default skills directory from setProjectRoot when cwd differs', async () => {
+    const previousRoot = getProjectRoot();
+    const originalCwd = process.cwd();
+    const workspace = path.join(originalCwd, '.harness', `test-import-root-${Date.now()}`);
+    const installDir = path.join(originalCwd, '.harness', `test-import-cwd-${Date.now()}`);
+    const source = path.join(workspace, 'incoming', 'relative-skill');
+    await writeBundle(source, [
+      '---',
+      'name: relative-skill',
+      'description: Relative source test',
+      '---',
+      '',
+      '# Relative',
+    ].join('\n'));
+    await fs.mkdir(installDir, { recursive: true });
+    setImportSkillsDir('');
+    setSkillsDir('');
+    setProjectRoot(workspace);
+    process.chdir(installDir);
+    try {
+      const result = await ImportSkillTool.execute({ source: path.join('incoming', 'relative-skill') });
+      expect(result.success).toBe(true);
+      await expect(fs.readFile(path.join(workspace, '.harness', 'skills', 'relative-skill', 'SKILL.md'), 'utf-8')).resolves.toContain('Relative source test');
+      await expect(fs.access(path.join(installDir, '.harness', 'skills', 'relative-skill', 'SKILL.md'))).rejects.toThrow();
+    } finally {
+      process.chdir(originalCwd);
+      setProjectRoot(previousRoot);
+      setImportSkillsDir(skillsDir);
+      setSkillsDir(skillsDir);
+      await fs.rm(workspace, { recursive: true, force: true });
+      await fs.rm(installDir, { recursive: true, force: true });
+    }
   });
 
   it('rejects bundles containing symlinks to prevent credential exfiltration', async () => {

@@ -50,7 +50,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -58,6 +58,7 @@ jobs:
 
       - name: Validate
         run: |
+          npm run verify:versions
           npm run typecheck
           npm test -- --runInBand
           npm run build

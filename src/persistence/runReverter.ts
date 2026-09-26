@@ -65,8 +65,20 @@ async function applyReversal(projectDir: string, effect: SideEffect): Promise<vo
  * path unwinds correctly. Continues past individual failures and reports them.
  */
 export async function revertRun(projectDir: string, runId: string): Promise<RunRevertResult> {
+  return revertEffects(projectDir, runId, undefined);
+}
+
+/**
+ * Roll a run back to the end of step stepSeq: every reversible effect from a
+ * later step is undone (most recent first); effects at or before the step stay.
+ */
+export async function revertToStep(projectDir: string, runId: string, stepSeq: number): Promise<RunRevertResult> {
+  return revertEffects(projectDir, runId, stepSeq);
+}
+
+async function revertEffects(projectDir: string, runId: string, afterStepSeq: number | undefined): Promise<RunRevertResult> {
   const effects = await listSideEffects(projectDir);
-  const plan = planRunReversal(runId, effects);
+  const plan = planRunReversal(runId, effects, { afterStepSeq });
 
   const reverted: SideEffect[] = [];
   const failed: { effect: SideEffect; error: string }[] = [];

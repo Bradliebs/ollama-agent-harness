@@ -4,14 +4,10 @@ import type { Tool, ToolResult } from '../types';
 import { scanFileForConflicts, selectBlockingConflicts, DEFAULT_CONFLICT_BLOCK_THRESHOLD } from '../services/memoryConflictDetector';
 import { getCurrentSessionId } from './sessionContext';
 import * as ccmem from '../services/conceptMemoryClient';
+import { getWorkspaceDataRoot } from './pathResolution';
 
-// Match the resolution used by web/server.ts so the model's `remember`
-// writes land in the same .harness/memory/ that assembleSystemContext reads
-// from. Falls back to cwd when the env var is absent.
 function memoryProjectDir(): string {
-  return process.env.HARNESS_PROJECT_DIR && process.env.HARNESS_PROJECT_DIR.trim()
-    ? process.env.HARNESS_PROJECT_DIR
-    : process.cwd();
+  return getWorkspaceDataRoot();
 }
 
 // Active session, when known. Prefers the async-context binding set around
@@ -142,9 +138,10 @@ export const MemoryWriteTool: Tool = {
       const ccmemLabel = sessionId ? `${category}: ${title} (session ${sessionId})` : `${category}: ${title}`;
       void ccmem.store(`${title}\n${content}`, ccmemLabel).catch(() => undefined);
 
+      const projectDir = memoryProjectDir();
       return {
         success: true,
-        output: `📝 Remembered "${title}" in ${category}s. Saved to ${path.relative(process.cwd(), filePath)}${conflictWarning}`,
+        output: `📝 Remembered "${title}" in ${category}s. Saved to ${path.relative(projectDir, filePath)}${conflictWarning}`,
       };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);

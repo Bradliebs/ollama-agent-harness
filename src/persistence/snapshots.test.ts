@@ -37,6 +37,16 @@ describe('snapshots', () => {
     expect(result[1].id).toBe(first.id);
   });
 
+  it('breaks createdAt ties with the id timestamp so the newer snapshot lists first', async () => {
+    const dir = path.join(tmpDir, '.harness', 'snapshots');
+    await fs.mkdir(dir, { recursive: true });
+    const createdAt = '2026-09-26T16:24:45.550Z';
+    for (const id of ['snap-1790439945549-aaaaaa', 'snap-1790439945550-000000']) {
+      await fs.writeFile(path.join(dir, `${id}.meta.json`), JSON.stringify({ id, createdAt, reason: id, fileCount: 1, totalBytes: 1 }), 'utf-8');
+    }
+    expect((await list(tmpDir)).map((meta) => meta.id)).toEqual(['snap-1790439945550-000000', 'snap-1790439945549-aaaaaa']);
+  });
+
   it('lists empty when no snapshots exist', async () => {
     const result = await list(tmpDir);
     expect(result).toEqual([]);

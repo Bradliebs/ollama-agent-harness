@@ -952,6 +952,15 @@
     /* Topbar emergency STOP button — always visible safety net. */
     .stop-btn{color:var(--error)!important;border:1px solid rgba(239,83,80,.35)!important;background:rgba(239,83,80,.08)!important;font-weight:700}
     .stop-btn:hover{background:rgba(239,83,80,.18)!important;border-color:var(--error)!important}
+    /* Topbar persona health badge (ui/identityHealth.js). */
+    .identity-health-badge{border-radius:999px;font-size:11px;padding:2px 9px;margin-left:6px;cursor:pointer;white-space:nowrap;border:1px solid var(--border);background:var(--surface2);color:var(--text)}
+    .identity-health-error{color:var(--error);border-color:rgba(239,83,80,.5);background:rgba(239,83,80,.1);font-weight:600}
+    .identity-health-warning{color:#e0a100;border-color:rgba(224,161,0,.5);background:rgba(224,161,0,.1)}
+    .identity-health-info{color:var(--accent);border-color:var(--accent);background:var(--accent-bg)}
+    /* Turn state strip under replies that did not finish normally (ui/turnStates.js). */
+    .turn-state{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px;padding:6px 10px;border-radius:6px;font-size:12px;border:1px solid var(--border);background:var(--surface2);color:var(--text-dim)}
+    .turn-state-failed{border-color:rgba(239,83,80,.45);color:var(--error)}
+    .turn-state-interrupted,.turn-state-empty,.turn-state-stuck,.turn-state-budget{border-color:rgba(224,161,0,.45);color:#e0a100}
     /* Settings Simple/Advanced toggle. */
     .settings-mode-toggle{display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden}
     .settings-mode-toggle .settings-mode-btn{border:none;border-radius:0;font-size:11px;padding:3px 8px;background:var(--surface2);color:var(--text-dim)}
@@ -968,6 +977,8 @@
     body.simple-mode #dailyBriefPanel{display:none}
     body.simple-mode #jarvisGhostHint{display:none}
     body.simple-mode #jarvisVoiceControls{display:none}
+    /* Simple mode keeps the topbar to name, model, status and actions. */
+    body.simple-mode #sessionHud,body.simple-mode #autonomyHud,body.simple-mode #connectorBadges,body.simple-mode #contextHud,body.simple-mode #compareBtn{display:none!important}
     /* First-visit onboarding modal. */
     .onboard-modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:9999}
     .onboard-modal.hidden-by-default{display:none}
@@ -1141,20 +1152,20 @@
       <div class="more-menu hidden-by-default" id="moreMenu">
         <div class="more-menu-section">Build &amp; use</div>
         <div class="more-menu-item" data-tab="agents" onclick="selectFromMore('agents')" title="Custom AI sub-agents. Create one and invoke it from the Chat tab or click ▶ Run on its card."><span class="more-menu-icon">🤖</span> Agents</div>
-        <div class="more-menu-item" data-tab="squads" onclick="selectFromMore('squads')" title="Group several agents into a roster with routing rules."><span class="more-menu-icon">👥</span> Squads</div>
-        <div class="more-menu-item" data-tab="triggers" onclick="selectFromMore('triggers')" title="Run things automatically on a schedule or event."><span class="more-menu-icon">⚡</span> Triggers</div>
+        <div class="more-menu-item more-advanced" data-tab="squads" onclick="selectFromMore('squads')" title="Group several agents into a roster with routing rules."><span class="more-menu-icon">👥</span> Squads</div>
+        <div class="more-menu-item more-advanced" data-tab="triggers" onclick="selectFromMore('triggers')" title="Run things automatically on a schedule or event."><span class="more-menu-icon">⚡</span> Triggers</div>
         <div class="more-menu-item" data-tab="tasks" onclick="selectFromMore('tasks')" title="To-do list the agent can read and update."><span class="more-menu-icon">✅</span> Tasks</div>
         <div class="more-menu-item" data-tab="identity" onclick="selectFromMore('identity')" title="Agent name, avatar, personality — and saved profiles."><span class="more-menu-icon">🪪</span> Identity</div>
 
         <div class="more-menu-section">Search &amp; knowledge</div>
         <div class="more-menu-item" data-tab="rag" onclick="selectFromMore('rag')" title="Build a searchable index of your project files."><span class="more-menu-icon">🔎</span> Search Files</div>
         <div class="more-menu-item" data-tab="palace" onclick="selectFromMore('palace')" title="The AI's long-term notes about you and your project."><span class="more-menu-icon">🏛</span> Memory Bank</div>
-        <div class="more-menu-item" data-tab="discovery" onclick="selectFromMore('discovery')" title="Patterns the AI has learned from past sessions."><span class="more-menu-icon">🔮</span> Discoveries</div>
+        <div class="more-menu-item more-advanced" data-tab="discovery" onclick="selectFromMore('discovery')" title="Patterns the AI has learned from past sessions."><span class="more-menu-icon">🔮</span> Discoveries</div>
         <div class="more-menu-item more-advanced" data-tab="codeintel" onclick="selectFromMore('codeintel')" title="Code intelligence: symbols, references, and structure."><span class="more-menu-icon">🧬</span> Code Intel</div>
 
         <div class="more-menu-section">History &amp; diagnostics</div>
-        <div class="more-menu-item" data-tab="atlas" onclick="selectFromMore('atlas')" title="Map of your project: which task built each file and when it last changed."><span class="more-menu-icon">🗺</span> Project Atlas</div>
-        <div class="more-menu-item" data-tab="runs" onclick="selectFromMore('runs')" title="Past session and automation runs."><span class="more-menu-icon">📜</span> Runs</div>
+        <div class="more-menu-item more-advanced" data-tab="atlas" onclick="selectFromMore('atlas')" title="Map of your project: which task built each file and when it last changed."><span class="more-menu-icon">🗺</span> Project Atlas</div>
+        <div class="more-menu-item more-advanced" data-tab="runs" onclick="selectFromMore('runs')" title="Past session and automation runs."><span class="more-menu-icon">📜</span> Runs</div>
         <div class="more-menu-item more-advanced" data-tab="events" onclick="selectFromMore('events')" title="Live system event stream — useful for debugging."><span class="more-menu-icon">📋</span> Events</div>
         <div class="more-menu-item" data-tab="audit" onclick="selectFromMore('audit')" title="Every action the AI has taken, with timestamps."><span class="more-menu-icon">🛡</span> Activity Log</div>
         <div class="more-menu-item more-advanced" data-tab="learning" onclick="selectFromMore('learning')" title="Performance trends from validation runs."><span class="more-menu-icon">📈</span> Learning</div>
@@ -1771,6 +1782,15 @@
     </div>
     <div class="settings-section">
       <h4>Helper Routing</h4>
+      <div class="setting-row">
+        <label>Chat model routing</label>
+        <select id="chatRoutingMode" title="Choose whether chat can replace the model selected above" onchange="updateRoutingSetting('chatRoutingMode',this.value)">
+          <option value="off">Keep selected model</option>
+          <option value="costSaver">Cost saver</option>
+          <option value="balanced">Balanced</option>
+          <option value="quality">Quality</option>
+        </select>
+      </div>
       <div class="setting-row">
         <label>Small helper model</label>
         <input type="text" id="smallHelperModel" placeholder="Fast read-only helper" onchange="updateRoutingSetting('smallModel',this.value)" />
@@ -2461,6 +2481,18 @@
 <script src="./execMetrics.js?v=1"></script>
 <script src="./followUps.js?v=1"></script>
 <script src="./personaBundle.js?v=1"></script>
-<script src="./app.js?v=31"></script>
+<script src="./identityHealth.js?v=1"></script>
+<script src="./turnStates.js?v=2"></script>
+<script src="./citations.js?v=1"></script>
+<script src="./identityPanel.js?v=1"></script>
+<script src="./snapshotsPanel.js?v=1"></script>
+<script src="./localRagPanel.js?v=1"></script>
+<script src="./localToolsDashboard.js?v=1"></script>
+<script src="./runsPanel.js?v=1"></script>
+<script src="./workflowsPanel.js?v=1"></script>
+<script src="./healthMyceliumPanel.js?v=1"></script>
+<script src="./promisesEventsPanels.js?v=1"></script>
+<script src="./codeIntelPanel.js?v=1"></script>
+<script src="./app.js?v=39"></script>
 </body>
 </html>

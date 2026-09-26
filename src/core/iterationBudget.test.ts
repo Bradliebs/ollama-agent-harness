@@ -71,17 +71,17 @@ describe('resolveLoopHardeningEnabled', () => {
     else process.env.HARNESS_LOOP_HARDENING = original;
   });
 
-  it('returns false by default (env unset)', () => {
+  it('returns true by default (env unset)', () => {
     delete process.env.HARNESS_LOOP_HARDENING;
-    expect(resolveLoopHardeningEnabled()).toBe(false);
+    expect(resolveLoopHardeningEnabled()).toBe(true);
   });
 
-  it.each(['1', 'on', 'true', 'TRUE', 'On'])('returns true for env=%s', (val) => {
+  it.each(['1', 'on', 'true', 'TRUE', 'On', '', 'no'])('returns true for env=%s', (val) => {
     process.env.HARNESS_LOOP_HARDENING = val;
     expect(resolveLoopHardeningEnabled()).toBe(true);
   });
 
-  it.each(['0', 'off', 'false', '', 'no'])('returns false for env=%s', (val) => {
+  it.each(['0', 'off', 'false', 'OFF', 'False'])('returns false for env=%s', (val) => {
     process.env.HARNESS_LOOP_HARDENING = val;
     expect(resolveLoopHardeningEnabled()).toBe(false);
   });

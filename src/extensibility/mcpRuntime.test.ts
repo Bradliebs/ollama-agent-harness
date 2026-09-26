@@ -103,7 +103,7 @@ function drain() {
 }
 process.stdin.on('data', (chunk) => { buffer += String(chunk); drain(); });
 `, 'utf-8');
-    await upsertMcpServer(projectDir, { id: 'demo', command: process.execPath, args: [serverScript] });
+    await upsertMcpServer(projectDir, { id: 'demo', command: process.execPath, args: [serverScript], framing: 'content-length' });
     await startMcpServer(projectDir, 'demo');
 
     const discovered = await discoverMcpServerTools(projectDir, 'demo');
@@ -172,7 +172,7 @@ function drain() {
 }
 process.stdin.on('data', (chunk) => { buffer += String(chunk); drain(); });
 `, 'utf-8');
-      await upsertMcpServer(projectDir, { id: 'demo', command: process.execPath, args: [serverScript] });
+      await upsertMcpServer(projectDir, { id: 'demo', command: process.execPath, args: [serverScript], framing: 'content-length' });
       await startMcpServer(projectDir, 'demo');
       return serverScript;
     }

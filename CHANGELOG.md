@@ -2,16 +2,193 @@
 title: Ollama Agent Harness Changelog
 description: Release notes generated from local RPI changes logs for Ollama Agent Harness
 author: Bradliebs
-ms.date: 2026-06-22
+ms.date: 2026-09-23
 ms.topic: reference
 keywords:
-	- ollama
-	- release notes
-	- changelog
+  - ollama
+  - release notes
+  - changelog
 estimated_reading_time: 18
 ---
 
+## Unreleased Modernization
+
+Development branch changes; package and installer metadata remain at v0.6.5.
+No release tag, publication or installer runtime qualification is implied.
+
+- Require Node 22.13.0 or newer, recommend Node 24 LTS, and align setup,
+  launcher, installer and CI runtime checks.
+- Require explicit model selection and distinguish configured credentials from
+  verified inference in beginner setup. Confirm partial-session recovery.
+- Use an owning background supervisor for start/stop, preserve occupied ports,
+  and hold a maintenance lease across installer file operations.
+- Preserve tool-call IDs and transcript metadata on resume; separate torn JSONL
+  tails from subsequent appends without rewriting history.
+- Harden Ollama cancellation, structured retry status and benchmark deadlines;
+  record raw request usage, retry linkage and context bytes without inventing
+  missing token counts or costs.
+- Update document dependencies and PDF cleanup; support newline MCP stdio,
+  opt-in legacy Content-Length framing, pagination and cancellation.
+- Add versioned development outcomes, frozen AI-authored holdouts and explicit
+  cloud-only benchmark mode. Development v2 passed 36/36; original holdouts
+  remain 12/24. Prompts changed between development cohorts; no speedup claim.
+- Drain pending webhook and skill-usage writes before test fixture cleanup.
+  Full Jest passed 316 suites and 3,759 tests with one skipped and exit code 0.
+- Refuse, under Jest, any project directory outside the checkout or OS temp
+  directory. Add `scripts/repair-workspace.js` (dry run by default, `--apply`
+  backs up first) to restore a test-clobbered `SOUL.md` and strip test grants,
+  test-model stats and the test debug-log path from a live workspace.
+- Append a numbered **Sources** list to answers built from web reads that carry
+  no links, and flag 404s on URLs that never came from `web_search` as guesses.
+- Send browser-like headers from `web_read` and retry once on 401/403/429.
+- Read browser grants, redaction settings, audit logs and saved sessions from
+  the workspace project root instead of the launch directory, so dontAsk grants
+  actually enable browser tools.
+- Point email, desktop, task, calendar, PDF, skill import, memory, learning,
+  agent and squad tools at the workspace rather than the launch directory.
+- Prune capability grants that ended more than a day ago; dontAsk mode had
+  accumulated dozens of dead grants in `settings.json`.
+- Stop no-op knowledge-graph upserts from appending: the ambient watcher had
+  written the same file entity 870k times (156 MB). The repair script compacts
+  an oversized log after a backup.
+- Cap semantic and session-search index entries and stored text per entry.
+- Show the persona name from `SOUL.md` in the top bar, with a badge when the
+  persona is missing, placeholder text, or has a pending or outdated proposal.
+- Mark failed, stopped, interrupted and empty replies with a Retry strip, and
+  flag reopened chats that ended before a reply was saved. Fix Regenerate
+  removing the wrong messages in longer chats.
+- Hide more diagnostic panels and top-bar gauges in Simple mode.
+- Make `start.bat` the single launcher with `background`, `stop`, `tray` and
+  `watchdog` modes; the watchdog no longer kills whatever holds port 4300.
+- Move the atomic settings writer out of `server.ts` into `settingsFile.ts`.
+- Run UI, Mycelium and release smoke servers in throwaway or pinned workspaces;
+  `smoke:ui` refuses to reuse a running server without `--reuse`. Earlier smoke
+  runs had created daily site-monitor automations for example.com.
+- Extend the repair script to move test and smoke leftovers (plan tasks,
+  documents, skills, uploads, services and their automation jobs) into the backup.
+- Move project-dir resolution into `projectDir.ts`, and citation rendering and
+  the identity panel into `ui/citations.js` and `ui/identityPanel.js`.
+- Move the email, output-validation, capability and Jarvis routes (44) out of
+  `server.ts` into router modules, and eight UI panels (about 3,500 lines) out
+  of `app.js` into their own files. Route and function sets are unchanged.
+- Hide inbox entries for runs of automation jobs that no longer exist.
+- Extend the repair script to clear connector secrets and settings saved by the
+  server tests (a fake Discord token failed to log in on every start).
+- Record every web chat, task-mode and background run as an event-sourced run
+  log (.harness/runs/<runId>.jsonl): message deltas and compaction snapshots
+  (the prompt of any turn can be rebuilt exactly), raw model responses, tool
+  calls with full results, and a run_end on every exit path. File changes are
+  captured at the path each tool really writes (including redirects), now also
+  for file_move, and are tagged with their step so a run can be rolled back
+  to the end of any step via /api/run-logs/<runId>/revert. Optional git
+  checkpoints (HARNESS_RUN_GIT_CHECKPOINT=1) snapshot the whole workspace
+  through a temporary index without touching HEAD or the user's index.
+- Add a run supervisor (default on): tool turns that produce no new sources,
+  file changes, novel results, verifier passes or plan steps count as stalled,
+  and stalls escalate from a progress check to a strategy change to stopping
+  with a question for the user (stuck_needs_human). Per-run token (1.5M
+  default) and USD (priced models, opt-in) budgets end the run in a summary
+  (budget_synthesized). The UI shows both with a Retry strip.
+- Turn loop hardening on by default (loop-guard nudges, tool-result injection
+  tripwire, iteration refunds, surrogate sanitising); HARNESS_LOOP_HARDENING=0
+  restores the old behaviour.
+- Add model capability profiles: a probe suite (tool calling, structured output
+  plain vs schema-constrained, instruction following, usable context, plan
+  coherence, latency) run via harness probe <model> or
+  /api/model-profiles/<model>/probe, saved per model with derived
+  recommendations. Chat clients accept an optional format (Ollama format,
+  OpenAI response_format). A fresh profile caps the context budget at the
+  measured usable window; HARNESS_ADAPTER_MODE=profile also compiles a
+  per-model plan (tool subset, JSON tool calls lifted back into tool calls).
+- Add provenance checks on side effects (default on, including dontAsk):
+  each run indexes URLs, email addresses and commands seen in untrusted tool
+  output (web, browser, inbound email, and <external_content> segments) and
+  in trusted text (user messages, system prompt). A side-effecting call whose
+  recipient, URL or command came only from untrusted content needs approval;
+  without an approval channel it is denied. Enforced in the dispatcher, and
+  recorded as run-log verdicts with the originating source.
+- Add adjustable scaffolding (HARNESS_SCAFFOLD_MODE): light, medium (plan
+  first, relevant tools only, 3 calls per turn) and heavy (plan-only first
+  turn, one tool per step, next-step prompts, older tool results trimmed and
+  logged as a compaction). profile follows the model's probe; measured
+  profiles now override the name-based tool-use heuristics.
+- Add history replay and benchmarking: harness replay <runId|--last N>
+  --model <m>, harness benchmark-history --models a,b, and /api/replays.
+  Deterministic replay rebuilds the original prompt from the run log and
+  serves recorded tool results through stubs that borrow the real tools'
+  schemas, so only the model varies and no side effects run; replays are
+  themselves recorded as replay-* run logs. Reports compare completion,
+  turns, tokens, cost, duration, cited sources and stuck runs.
+- Fix JSON answers being deleted: the inline tool-call fallback treated any
+  JSON object with a "name" key as a tool call, so a reply like
+  {"name":"alpha","count":3} became a call to a nonexistent tool and the
+  text vanished. Calls are now lifted only when they name a tool offered on
+  that request, and never when no tools were offered. Found by the new
+  capability probe (glm-5.3 scored 0% on structured output).
+- Add governed working state: protected paths (task-contract blocked paths
+  and .harness/protected-paths.json) are now enforced before file tools
+  and writing shell commands run, instead of only being mentioned in the
+  prompt. HARNESS_WORKING_STATE=on renders a typed state (plan, facts,
+  decisions, open questions, invariants, sources) into every system prompt,
+  outside the compactable transcript, and offers a state_update tool that
+  can only tighten protections. State changes are run-log state events.
+- Add independent verification of research answers
+  (HARNESS_VERIFY_RESEARCH, default `check`). Figures in the final answer are
+  matched against the text of the pages read in the run. Phone numbers are
+  compared by digits; HTTP status codes are ignored; differences, totals and
+  percentages of sourced figures count as derived. The loop emits a
+  `verification` event with `kind: 'research'` and a run-log verdict.
+  - `check` records the verdict only.
+  - `annotate` appends an unverified-claims note.
+  - `critic` adds a critic model from a different family, auto-picked
+    (cheap cloud first) or set with HARNESS_CRITIC_MODEL; same-family picks
+    are rejected, and failed candidates fall through to the next.
+  - `gate` allows one bounded revision before accepting.
+  The adversary judge uses the critic when HARNESS_INSPECTOR_ADVERSARY=1,
+  falling back to the chat model because that inspector fails open. Replay
+  and benchmark-history reports now include unsupported claims. Measured on
+  77 research answers in the live history: about 20% of figures were not in
+  any page read that turn, so annotation stays opt-in.
+- Fix control characters left in comments and this changelog by earlier
+  scripted edits (PowerShell backtick escapes read as form feeds and bells).
+- Add in-run escalation. QueryLoopDeps.escalate lets a run switch to a stronger
+  model mid-run, at most once, when the supervisor reaches its escalate stage
+  (a stuck run tries a stronger model before asking the user) or when the
+  research gate rejects an answer a second time. The new model keeps the
+  transcript and gets every tool natively (the weak model's adapter plan is
+  dropped), and the stall count restarts. The switch is emitted as a
+  model_escalated event and recorded as a run-log route event. The web
+  server wires it for chat and task runs unless chat routing is off, and
+  targets the strong-tier candidate only when it differs from the current
+  model.
+- Add episodic lessons (learning/lessons.ts), derived from each finished
+  run's log without a model call: blocked sources, stuck requests with what
+  was repeated, unsupported figures, and budget overruns. They are stored
+  in .harness/learning/lessons.json. Recall into the prompt is opt-in
+  (HARNESS_LESSONS=recall) because it changes answers; recalled ids are
+  recorded on run_start. A recalled lesson counts as helping when the next
+  run avoided the same failure, and is retired after repeated failures.
+  Staleness is 30 days for blocked sites and 120 days otherwise.
+  QueryLoopDeps.onRunEnd runs after the run log is flushed.
+- Add a skill lifecycle. Each skill records whether the runs that used it
+  finished cleanly. Agent-written skills (create_skill, promote_pattern,
+  improve_skill) pass the promotion gate's safety scan, keep versions in
+  _history/ (improve_skill no longer leaves .bak.md files that surfaced as
+  bundled resources), and start on probation until three clean runs. The
+  curator archives skills after three consecutive failed runs (two on
+  probation); pinned skills are exempt.
+- Fix lost and torn skill-usage updates: writes are now locked and atomic,
+  because view/use recording is fire-and-forget and could interleave with
+  other writers or be read half-written.
+- After these changes full Jest passed 329 suites and 3,841 tests with one
+  skipped; the build and script tests (`node --test`) also passed.
+
+See [Modernization Status](docs/MODERNIZATION-STATUS.md) for the complete
+validation record and remaining installation, hosted CI and live-workflow gates.
+
 ## Ollama Agent Harness v0.6.6
+
+Planned release notes, not a published version in this checkout.
 
 A governance pass beside the product path, plus operator surfaces for what the
 agent learned while you were away. Shadow-first end-to-end: no default behaviour

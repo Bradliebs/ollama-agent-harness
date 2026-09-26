@@ -62,6 +62,26 @@ describe('OpenAIClient', () => {
     expect(result.usage.completionTokens).toBe(2);
   });
 
+  it('translates response schema to OpenAI response_format', async () => {
+    fetchSpy.mockResolvedValueOnce(makeResponse({
+      choices: [{ message: { role: 'assistant', content: '{"ok":true}' } }],
+    }));
+    const client = new OpenAIClient({
+      baseUrl: 'https://api.openai.test/v1',
+      apiKey: 'test-key',
+      model: 'model',
+    });
+    const schema = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] };
+
+    await client.chat([{ role: 'user', content: 'json' }], undefined, undefined, { format: schema });
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.response_format).toEqual({
+      type: 'json_schema',
+      json_schema: { name: 'harness_response', strict: true, schema },
+    });
+  });
+
   it('translates Ollama tools to OpenAI function-tool format', async () => {
     fetchSpy.mockResolvedValueOnce(makeResponse({
       choices: [{ message: { role: 'assistant', content: 'done' } }],
@@ -132,9 +152,21 @@ describe('OpenAIClient', () => {
       apiKey: 'k',
       model: 'm',
     });
-    const result = await client.chat([{ role: 'user', content: 'hi' }]);
+    const result = await client.chat([{ role: 'user', content: 'hi' }], [
+      { type: 'function', function: { name: 'grep', description: 'search', parameters: { type: 'object', properties: {} } } } as never,
+    ]);
     expect(result.message.tool_calls?.[0].function.name).toBe('grep');
     expect(result.message.tool_calls?.[0].function.arguments).toEqual({ pattern: 'todo' });
+  });
+
+  it('keeps a JSON answer as text when no tools were offered', async () => {
+    fetchSpy.mockResolvedValueOnce(makeResponse({
+      choices: [{ message: { role: 'assistant', content: '{"name": "alpha", "count": 3}' } }],
+    }));
+    const client = new OpenAIClient({ baseUrl: 'https://x', apiKey: 'k', model: 'm' });
+    const result = await client.chat([{ role: 'user', content: 'json please' }]);
+    expect(result.message.tool_calls).toBeUndefined();
+    expect(result.message.content).toBe('{"name": "alpha", "count": 3}');
   });
 
   it('throws a labelled error when the upstream returns non-2xx', async () => {

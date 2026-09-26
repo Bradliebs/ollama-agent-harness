@@ -9,20 +9,36 @@
 // This is record-only (the tool does the write); recordingFileOps is the
 // write+record primitive for internal callers. Both share the reversal builders.
 
+import * as fs from 'fs/promises';
 import * as path from 'path';
-import { recordSideEffect } from './sideEffectLedger';
+import { recordSideEffect, type SideEffectInput } from './sideEffectLedger';
 import { readIfExists, fileWriteEffectInput, fileDeleteEffectInput } from './recordingFileOps';
+
+export interface RecorderStep {
+  stepId: string;
+  stepSeq: number;
+}
 
 export interface SideEffectRecorder {
   projectDir: string;
   /** Groups every effect of this run so the run reverts as a unit. */
   runId: string;
+  /**
+   * Resolves the absolute path a tool will really touch (tools apply their own
+   * redirects). Defaults to joining the raw path onto projectDir.
+   */
+  resolveTarget?: (toolName: string, rawPath: string) => string | null;
+  /** Current run-log step for a call, so effects can be rolled back per step. */
+  stepFor?: (toolName: string, input: Record<string, unknown>) => RecorderStep | undefined;
 }
 
 interface FileMutation {
   kind: 'write' | 'delete';
   path: string;
 }
+
+/** Pre-images above this size are not stored; the effect is recorded as irreversible. */
+export const MAX_PREIMAGE_BYTES = 2 * 1024 * 1024;
 
 interface NotificationSend {
   /** Channel the notification went out on, for the ledger description. */
@@ -78,23 +94,73 @@ export function describeNotification(toolName: string, input: Record<string, unk
  * targets an absent file (nothing happens, nothing to record). Throwing here is
  * the caller's signal to skip recording; it must never block the tool.
  */
+function resolveTargetPath(recorder: SideEffectRecorder, toolName: string, rawPath: string): string | null {
+  if (recorder.resolveTarget) return recorder.resolveTarget(toolName, rawPath);
+  return path.isAbsolute(rawPath) ? rawPath : path.join(recorder.projectDir, rawPath);
+}
+
+/** Pre-image that is too large to keep, as opposed to an absent file (null). */
+const TOO_LARGE = Symbol('too-large');
+
+async function readPreImage(absPath: string): Promise<string | null | typeof TOO_LARGE> {
+  try {
+    const stat = await fs.stat(absPath);
+    if (stat.size > MAX_PREIMAGE_BYTES) return TOO_LARGE;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+  return readIfExists(absPath);
+}
+
+function tooLargeEffect(runId: string, kind: SideEffectInput['kind'], absPath: string): SideEffectInput {
+  return { runId, kind, description: `changed ${absPath} (too large to snapshot)`, reversal: { kind: 'irreversible', reason: `pre-image over ${MAX_PREIMAGE_BYTES} bytes was not stored` } };
+}
+
 export async function prepareSideEffectRecording(
   recorder: SideEffectRecorder,
   toolName: string,
   input: Record<string, unknown>,
 ): Promise<(() => Promise<void>) | null> {
+  const step = recorder.stepFor?.(toolName, input);
+  const withStep = (effect: SideEffectInput): SideEffectInput => (step ? { ...effect, stepId: step.stepId, stepSeq: step.stepSeq } : effect);
+
   const mutation = describeFileMutation(toolName, input);
   if (mutation) {
-    const absPath = path.isAbsolute(mutation.path) ? mutation.path : path.join(recorder.projectDir, mutation.path);
-    const previous = await readIfExists(absPath);
+    const absPath = resolveTargetPath(recorder, toolName, mutation.path);
+    if (!absPath) return null;
+    const previous = await readPreImage(absPath);
     if (mutation.kind === 'delete' && previous === null) return null;
 
     return async () => {
-      const effect =
-        mutation.kind === 'delete'
-          ? fileDeleteEffectInput(recorder.runId, mutation.path, previous as string)
-          : fileWriteEffectInput(recorder.runId, mutation.path, previous);
-      await recordSideEffect(recorder.projectDir, effect);
+      const effect = previous === TOO_LARGE
+        ? tooLargeEffect(recorder.runId, mutation.kind === 'delete' ? 'file_delete' : 'file_modify', absPath)
+        : mutation.kind === 'delete'
+          ? fileDeleteEffectInput(recorder.runId, absPath, previous as string)
+          : fileWriteEffectInput(recorder.runId, absPath, previous);
+      await recordSideEffect(recorder.projectDir, withStep(effect));
+    };
+  }
+
+  // A move is two compensations: the destination is created (or overwritten)
+  // and the source disappears. Recording destination first means the reverse-
+  // order undo restores the source before removing the destination.
+  if (toolName === 'file_move' && typeof input?.from === 'string' && typeof input?.to === 'string') {
+    const fromPath = resolveTargetPath(recorder, toolName, input.from);
+    const toPath = resolveTargetPath(recorder, toolName, input.to);
+    if (!fromPath || !toPath) return null;
+    const fromPrevious = await readPreImage(fromPath);
+    if (fromPrevious === null) return null;
+    const toPrevious = await readPreImage(toPath);
+    return async () => {
+      const destination = toPrevious === TOO_LARGE
+        ? tooLargeEffect(recorder.runId, 'file_modify', toPath)
+        : fileWriteEffectInput(recorder.runId, toPath, toPrevious);
+      const source = fromPrevious === TOO_LARGE
+        ? tooLargeEffect(recorder.runId, 'file_delete', fromPath)
+        : fileDeleteEffectInput(recorder.runId, fromPath, fromPrevious);
+      await recordSideEffect(recorder.projectDir, withStep(destination));
+      await recordSideEffect(recorder.projectDir, withStep(source));
     };
   }
 
@@ -104,12 +170,12 @@ export async function prepareSideEffectRecording(
   const notification = describeNotification(toolName, input);
   if (notification) {
     return async () => {
-      await recordSideEffect(recorder.projectDir, {
+      await recordSideEffect(recorder.projectDir, withStep({
         runId: recorder.runId,
         kind: 'notification',
         description: `sent ${notification.channel} notification: ${notification.headline}`,
         reversal: { kind: 'irreversible', reason: `${notification.channel} notification cannot be unsent` },
-      });
+      }));
     };
   }
 

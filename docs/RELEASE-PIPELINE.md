@@ -1,4 +1,10 @@
-# Release Pipeline Runbook
+---
+title: Release Pipeline Runbook
+description: Branch, archive, installer and publication gates for harness releases
+ms.date: 2026-09-15
+---
+
+## Release Pipeline Runbook
 
 Operational reference for cutting and shipping a release of the Ollama Agent
 Harness. Captures the four classes of failure that have actually bitten this
@@ -20,20 +26,27 @@ npm run verify:changelog
 npm run release:dry-run
 npm run validate:routing
 
-# 4. One-shot pre-flight (working tree clean + upstream sync + changelog +
-#    versions match + typecheck + tag does not exist)
-npm run release:ready
-
-# 5. Commit, push, wait for green CI, then tag
-git add -A
+# 4. Review and explicitly stage the intended release files, then commit.
+#    Publish the chosen release branch only after its normal review process.
 git commit -m "chore(release): bump to v<new-version>"
 git push origin master
+
+# 5. One-shot pre-flight requires a clean tree and synchronized upstream.
+npm run release:ready
+
+# 6. Wait for green CI on this exact commit, then tag only with release approval.
 # wait for CI to go green at https://github.com/Bradliebs/ollama-agent-harness/actions
 git tag -a v<new-version> -m "v<new-version>"
 git push origin v<new-version>
 ```
 
 The Release workflow runs automatically when a `v*.*.*` tag is pushed.
+
+An ordinary `dev` commit/push is not a release: do not bump versions, merge other
+branches or create tags unless requested. The current modernization work retains
+package version 0.6.5. See [Modernization Status](MODERNIZATION-STATUS.md) for
+recorded evidence and outstanding gates. `validate:routing` makes live inference
+requests; run it only with explicit model and account authorization.
 
 ## Pre-flight gates
 
@@ -63,17 +76,22 @@ uploading `Harness-Setup.exe`:
 npm run smoke:installer -- .\Harness-Setup.exe
 ```
 
-The smoke installs into a disposable temp directory, checks the installed CLI,
-registry metadata, shortcuts, and first server startup, then uninstalls and
-waits for cleanup. It refuses to run when an existing Harness install footprint
-is present so it does not overwrite a real local setup.
+The smoke uses a disposable installation directory, checks the installed CLI,
+registry metadata, shortcuts and server startup, exercises active same-version
+reinstallation, then uninstalls and checks preservation of user state. It refuses
+an existing Harness install footprint so it does not overwrite a real setup.
 
-Keep installer smoke manual unless CI has a Windows runner with NSIS available.
-The main CI job runs on Ubuntu, so it cannot execute the NSIS installer. If this
-becomes a CI gate, add a separate Windows job that installs NSIS, builds
-`Harness-Setup.exe`, runs `npm run smoke:installer -- .\Harness-Setup.exe`, and
-uploads logs only after cleanup confirms no registry or shortcut footprint
-remains.
+The `portable-core` Windows CI entry now installs NSIS, compiles the installer
+and runs this smoke. Windows/macOS use Node 24; Ubuntu core uses Node 22.13.0.
+Configuration is not execution evidence: hosted results and actual installer
+execution have not yet been established by the local validation record.
+
+Installation maintenance holds an exclusive lease across file operations and
+stops only the owned background server. Abandoned ownership or maintenance
+markers require reconciliation, not arbitrary PID termination or deletion of
+user state. See [Background Lifecycle](MODERNIZATION-STATUS.md#background-lifecycle).
+Archive dry-run, NSIS compilation, installer execution and release publication
+are separate gates. Never use the real user installation as the smoke target.
 
 ## Failure modes seen in practice
 

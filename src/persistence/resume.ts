@@ -1,11 +1,12 @@
 import type { Message } from 'ollama';
-import { SessionStorage } from './sessionStorage';
+import { SessionStorage, type SessionTranscriptDiagnostics } from './sessionStorage';
 import type { SessionEvent, SessionMeta } from '../types';
 
 export interface ResumeResult {
   messages: Message[];
   meta: SessionMeta;
   eventCount: number;
+  diagnostics: SessionTranscriptDiagnostics;
 }
 
 export async function resumeSession(
@@ -14,7 +15,7 @@ export async function resumeSession(
   model: string,
 ): Promise<ResumeResult> {
   const storage = new SessionStorage(projectDir, model, sessionId);
-  const events = await storage.readAll();
+  const { events, diagnostics } = await storage.readAllDetailed();
   const meta = await storage.getMeta();
 
   // Rebuild messages from transcript events
@@ -25,6 +26,7 @@ export async function resumeSession(
     messages,
     meta,
     eventCount: events.length,
+    diagnostics,
   };
 }
 
@@ -69,6 +71,7 @@ function eventsToMessages(events: SessionEvent[]): Message[] {
         messages.push({
           role: 'tool' as const,
           content: event.data.result.output,
+          ...(event.data.call.id ? { tool_call_id: event.data.call.id } : {}),
         });
         break;
       case 'compact_boundary':

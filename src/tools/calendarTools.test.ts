@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { CalendarReadTool, CalendarWriteTool } from './calendarTools';
+import { getProjectRoot, setProjectRoot } from './pathResolution';
 
 describe('CalendarWriteTool', () => {
   const tmpDir = path.join(process.cwd(), '.harness', 'test-calendar');
@@ -121,6 +122,32 @@ describe('CalendarWriteTool', () => {
     });
     expect(result.success).toBe(false);
     expect(result.output).toContain('.ics');
+  });
+
+  it('resolves relative calendar paths from setProjectRoot when cwd differs', async () => {
+    const previousRoot = getProjectRoot();
+    const originalCwd = process.cwd();
+    const workspace = path.join(originalCwd, '.harness', `test-calendar-root-${Date.now()}`);
+    const installDir = path.join(originalCwd, '.harness', `test-calendar-cwd-${Date.now()}`);
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(installDir, { recursive: true });
+    setProjectRoot(workspace);
+    process.chdir(installDir);
+    try {
+      const result = await CalendarWriteTool.execute({
+        path: path.join('calendars', 'events.ics'),
+        summary: 'Workspace event',
+        start: '2026-05-10T09:00:00',
+      });
+      expect(result.success).toBe(true);
+      await expect(fs.readFile(path.join(workspace, 'calendars', 'events.ics'), 'utf-8')).resolves.toContain('Workspace event');
+      await expect(fs.access(path.join(installDir, 'calendars', 'events.ics'))).rejects.toThrow();
+    } finally {
+      process.chdir(originalCwd);
+      setProjectRoot(previousRoot);
+      await fs.rm(workspace, { recursive: true, force: true });
+      await fs.rm(installDir, { recursive: true, force: true });
+    }
   });
 });
 

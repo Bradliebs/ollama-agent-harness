@@ -4,6 +4,7 @@ import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
 import { evaluateCapabilityGrant, sanitizeCapabilityGrants, type CapabilityGrant } from '../permissions/capabilities';
 import * as desktopCapture from './desktopTools';
+import { getProjectRoot } from './pathResolution';
 
 type MouseButton = 'left' | 'right' | 'middle';
 
@@ -71,7 +72,7 @@ export const DesktopInputReplayTool: Tool = {
   permissionCategory: 'desktop',
   canDryRun: true,
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
-    const projectDir = process.cwd();
+    const projectDir = getProjectRoot();
     const actions = sanitizeDesktopInputActions(input.actions);
     if (actions.length === 0) return { success: false, output: 'No valid desktop input actions were provided.', error: 'no valid actions' };
     const preview = renderDesktopInputPreview(actions);

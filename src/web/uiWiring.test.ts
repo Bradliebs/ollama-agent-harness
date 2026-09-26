@@ -4,6 +4,19 @@ import * as path from 'path';
 const root = process.cwd();
 const indexHtml = fs.readFileSync(path.join(root, 'ui', 'index.html'), 'utf-8');
 const appJs = fs.readFileSync(path.join(root, 'ui', 'app.js'), 'utf-8');
+const movedClassicUiModules = [
+  'snapshotsPanel.js',
+  'localRagPanel.js',
+  'localToolsDashboard.js',
+  'runsPanel.js',
+  'workflowsPanel.js',
+  'healthMyceliumPanel.js',
+  'promisesEventsPanels.js',
+  'codeIntelPanel.js',
+];
+const movedClassicUiJs = movedClassicUiModules
+  .map((file) => fs.readFileSync(path.join(root, 'ui', file), 'utf-8'))
+  .join('\n');
 const serverTs = fs.readFileSync(path.join(root, 'src', 'web', 'server.ts'), 'utf-8');
 const goalRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'goalRoutes.ts'), 'utf-8');
 const identityRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'identityRoutes.ts'), 'utf-8');
@@ -55,6 +68,10 @@ const toolsRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'toolsRoutes
 const curatorRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'curatorRoutes.ts'), 'utf-8');
 const evalsRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'evalsRoutes.ts'), 'utf-8');
 const automationRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'automationRoutes.ts'), 'utf-8');
+const emailRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'emailRoutes.ts'), 'utf-8');
+const outputValidationRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'outputValidationRoutes.ts'), 'utf-8');
+const capabilityRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'capabilityRoutes.ts'), 'utf-8');
+const jarvisRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'jarvisRoutes.ts'), 'utf-8');
 const reviewQueueRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'reviewQueueRoutes.ts'), 'utf-8');
 const browserHardeningRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'browserHardeningRoutes.ts'), 'utf-8');
 const workingMemoryRoutesTs = fs.readFileSync(path.join(root, 'src', 'web', 'workingMemoryRoutes.ts'), 'utf-8');
@@ -188,6 +205,13 @@ describe('web UI wiring', () => {
     expect(indexHtml).toContain('modelDebugLogPath');
   });
 
+  it('lets users preserve their selected chat model', () => {
+    expect(indexHtml).toContain('id="chatRoutingMode"');
+    expect(indexHtml).toContain('<option value="off">Keep selected model</option>');
+    expect(indexHtml).toContain("updateRoutingSetting('chatRoutingMode',this.value)");
+    expect(appJs).toContain("currentModelRouting.chatRoutingMode || 'balanced'");
+  });
+
   it('keeps the beginner first-chat readiness surface wired', () => {
     // The legacy beginner-readiness banner + model-capability-hint were
     // removed in the v0.5.10 welcome trim. The replacement surfaces are
@@ -257,8 +281,9 @@ describe('web UI wiring', () => {
   });
 
   it('keeps inline controls connected to global app functions', () => {
-    const definitions = definedFunctions(appJs);
-    const missing = inlineHandlerBodies(indexHtml + '\n' + appJs)
+    const classicUiJs = appJs + '\n' + movedClassicUiJs;
+    const definitions = definedFunctions(classicUiJs);
+    const missing = inlineHandlerBodies(indexHtml + '\n' + classicUiJs)
       .flatMap(calledInlineFunctions)
       .filter((name) => !definitions.has(name));
 
@@ -356,11 +381,15 @@ describe('web UI wiring', () => {
     const curatorRouterRoutes = [...curatorRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const evalsRouterRoutes = [...evalsRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const automationRouterRoutes = [...automationRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const emailRouterRoutes = [...emailRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const outputValidationRouterRoutes = [...outputValidationRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const capabilityRouterRoutes = [...capabilityRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
+    const jarvisRouterRoutes = [...jarvisRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const reviewQueueRouterRoutes = [...reviewQueueRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const browserHardeningRouterRoutes = [...browserHardeningRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const workingMemoryRouterRoutes = [...workingMemoryRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
     const atlasRouterRoutes = [...atlasRoutesTs.matchAll(/router\.(?:get|post|patch|put|delete)\('([^']+)'/g)].map((match) => normalizeServerRoute(match[1]));
-    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes, ...promptsRouterRoutes, ...eventRouterRoutes, ...doneStateRouterRoutes, ...codeIntelRouterRoutes, ...myceliumRouterRoutes, ...traceRouterRoutes, ...snapshotRouterRoutes, ...historyRouterRoutes, ...fileRedirectRouterRoutes, ...documentRouterRoutes, ...benchmarkRouterRoutes, ...squadRouterRoutes, ...runtimeCostRouterRoutes, ...triggerRouterRoutes, ...artifactRouterRoutes, ...subagentRouterRoutes, ...sessionRouterRoutes, ...memoryRouterRoutes, ...ragRouterRoutes, ...serviceRouterRoutes, ...skillRouterRoutes, ...workflowRouterRoutes, ...webhookRouterRoutes, ...agentRouterRoutes, ...fileBrowseRouterRoutes, ...assetRouterRoutes, ...nervousRouterRoutes, ...synthesisStatsRouterRoutes, ...aboutRouterRoutes, ...budgetRouterRoutes, ...connectorRouterRoutes, ...saveOutputRouterRoutes, ...miscRouterRoutes, ...runsRouterRoutes, ...learningRouterRoutes, ...mcpRouterRoutes, ...uploadsRouterRoutes, ...teammateRouterRoutes, ...toolsRouterRoutes, ...curatorRouterRoutes, ...evalsRouterRoutes, ...automationRouterRoutes, ...reviewQueueRouterRoutes, ...workingMemoryRouterRoutes, ...browserHardeningRouterRoutes, ...atlasRouterRoutes]);
+    const serverRoutes = new Set([...appRoutes, ...goalRouterRoutes, ...identityRouterRoutes, ...taskRouterRoutes, ...promiseRouterRoutes, ...profileRouterRoutes, ...evalRouterRoutes, ...memoryHealthRouterRoutes, ...scanRouterRoutes, ...promptsRouterRoutes, ...eventRouterRoutes, ...doneStateRouterRoutes, ...codeIntelRouterRoutes, ...myceliumRouterRoutes, ...traceRouterRoutes, ...snapshotRouterRoutes, ...historyRouterRoutes, ...fileRedirectRouterRoutes, ...documentRouterRoutes, ...benchmarkRouterRoutes, ...squadRouterRoutes, ...runtimeCostRouterRoutes, ...triggerRouterRoutes, ...artifactRouterRoutes, ...subagentRouterRoutes, ...sessionRouterRoutes, ...memoryRouterRoutes, ...ragRouterRoutes, ...serviceRouterRoutes, ...skillRouterRoutes, ...workflowRouterRoutes, ...webhookRouterRoutes, ...agentRouterRoutes, ...fileBrowseRouterRoutes, ...assetRouterRoutes, ...nervousRouterRoutes, ...synthesisStatsRouterRoutes, ...aboutRouterRoutes, ...budgetRouterRoutes, ...connectorRouterRoutes, ...saveOutputRouterRoutes, ...miscRouterRoutes, ...runsRouterRoutes, ...learningRouterRoutes, ...mcpRouterRoutes, ...uploadsRouterRoutes, ...teammateRouterRoutes, ...toolsRouterRoutes, ...curatorRouterRoutes, ...evalsRouterRoutes, ...automationRouterRoutes, ...emailRouterRoutes, ...outputValidationRouterRoutes, ...capabilityRouterRoutes, ...jarvisRouterRoutes, ...reviewQueueRouterRoutes, ...workingMemoryRouterRoutes, ...browserHardeningRouterRoutes, ...atlasRouterRoutes]);
     const uiRoutes = [...new Set(extractFetchExpressions(appJs).map(normalizeUiFetchPath).filter((route): route is string => Boolean(route)))].sort();
 
     // A UI route like '/api/foo/:param' is satisfied either by an exact match

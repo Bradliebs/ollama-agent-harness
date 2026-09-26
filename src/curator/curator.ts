@@ -1,9 +1,10 @@
 // Skill Curator.
 //
 // Phase 1 (deterministic): identifies skills as "stale" based on usage
-// metadata (last use, view count, age) and archives unpinned ones by moving
-// the skill folder to .harness/skills/_archive/<name>/. Archive is reversible
-// via restoreSkill.
+// metadata (last use, view count, age), or as failing (consecutive runs that
+// used the skill did not finish cleanly; see learning/lessons.ts), and
+// archives unpinned ones by moving the skill folder to
+// .harness/skills/_archive/<name>/. Archive is reversible via restoreSkill.
 //
 // Phase 2 (LLM): asks the configured model to identify clusters of related
 // skills and propose merges into umbrella skills. The first version writes
@@ -35,6 +36,10 @@ export interface CuratorConfig {
   maxArchivePerRun: number;
   /** When false, Phase 2 (LLM merge proposals) is skipped. */
   enableLlmPhase: boolean;
+  /** Archive a skill after this many consecutive runs that used it ended badly (0 disables). Default 3. */
+  demoteAfterFailures?: number;
+  /** The same for agent-written skills still on probation. Default 2. */
+  demoteProbationAfterFailures?: number;
 }
 
 export const DEFAULT_CURATOR_CONFIG: CuratorConfig = {
@@ -42,6 +47,8 @@ export const DEFAULT_CURATOR_CONFIG: CuratorConfig = {
   minViewsBeforeArchive: 1,
   maxArchivePerRun: 5,
   enableLlmPhase: false,
+  demoteAfterFailures: 3,
+  demoteProbationAfterFailures: 2,
 };
 
 export type CuratorActionKind = 'archive' | 'restore' | 'merge-proposed' | 'skip-pinned' | 'skip-active' | 'skip-cap' | 'skip-safety';
@@ -129,6 +136,20 @@ export function findStaleSkills(
     }
     if (record?.archived) {
       // Already archived; skip silently.
+      continue;
+    }
+    const failing = record?.consecutiveFailures ?? 0;
+    const failLimit = record?.status === 'probation'
+      ? config.demoteProbationAfterFailures ?? DEFAULT_CURATOR_CONFIG.demoteProbationAfterFailures ?? 0
+      : config.demoteAfterFailures ?? DEFAULT_CURATOR_CONFIG.demoteAfterFailures ?? 0;
+    if (record && failLimit > 0 && failing >= failLimit) {
+      actions.push({
+        kind: 'archive',
+        skill: skill.name,
+        reason: `Failing: the last ${failing} runs that used it did not finish cleanly${record.status === 'probation' ? ' (it was still on probation)' : ''}.`,
+        viewCount: record.viewCount,
+        useCount: record.useCount,
+      });
       continue;
     }
     const lastTouch = record?.lastUsedAt ?? record?.lastViewedAt ?? record?.firstSeenAt;

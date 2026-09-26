@@ -82,11 +82,13 @@ export class IterationBudget {
 }
 
 /**
- * Resolve whether the loop hardening features (iteration refund,
- * surrogate sanitisation, retry-state recovery branches) are enabled.
- * Single env knob keeps the slice atomic for AutoResearch A/B comparison.
+ * Resolve whether the loop hardening features (loop-guard nudges, tool-result
+ * injection tripwire, iteration refund, surrogate sanitisation, retry-state
+ * recovery hints) are enabled. On by default since they protect the run
+ * without changing what a healthy run answers; HARNESS_LOOP_HARDENING=0
+ * (or off/false) turns them off.
  */
 export function resolveLoopHardeningEnabled(): boolean {
   const env = process.env.HARNESS_LOOP_HARDENING?.toLowerCase();
-  return env === '1' || env === 'on' || env === 'true';
+  return !(env === '0' || env === 'off' || env === 'false');
 }

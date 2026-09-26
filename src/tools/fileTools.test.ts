@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { FileReadTool, FileWriteTool, FileMoveTool, FileDeleteTool, ListUploadsTool, MakeDirectoryTool } from './fileTools';
-import { drainUploadsFallbacks, clearFileWriteRedirectCache, previewFileWriteRedirect } from './pathResolution';
+import { drainUploadsFallbacks, clearFileWriteRedirectCache, previewFileWriteRedirect, getProjectRoot, setProjectRoot } from './pathResolution';
 
 describe('file tools bounds and path safety', () => {
   const fixtureDir = path.join(process.cwd(), '.harness', 'test-fixtures', 'file-tools');
@@ -127,6 +127,29 @@ describe('file tools bounds and path safety', () => {
       expect(result.output).toContain(uploadName);
       expect(result.output).toContain('5 bytes');
       expect(result.output).toContain('.harness/uploads/' + uploadName);
+    });
+
+    it('displays project-relative upload paths from setProjectRoot when cwd differs', async () => {
+      const previousRoot = getProjectRoot();
+      const originalCwd = process.cwd();
+      const workspace = path.join(originalCwd, '.harness', `test-list-uploads-root-${Date.now()}`);
+      const installDir = path.join(originalCwd, '.harness', `test-list-uploads-cwd-${Date.now()}`);
+      await fs.mkdir(path.join(workspace, '.harness', 'uploads'), { recursive: true });
+      await fs.mkdir(installDir, { recursive: true });
+      await fs.writeFile(path.join(workspace, '.harness', 'uploads', 'workspace-upload.txt'), 'workspace', 'utf-8');
+      setProjectRoot(workspace);
+      process.chdir(installDir);
+      try {
+        const result = await ListUploadsTool.execute({});
+        expect(result.success).toBe(true);
+        expect(result.output).toContain('.harness/uploads/workspace-upload.txt');
+        expect(result.output).not.toContain(workspace);
+      } finally {
+        process.chdir(originalCwd);
+        setProjectRoot(previousRoot);
+        await fs.rm(workspace, { recursive: true, force: true });
+        await fs.rm(installDir, { recursive: true, force: true });
+      }
     });
   });
 

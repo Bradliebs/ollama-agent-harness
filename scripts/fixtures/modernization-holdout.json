@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "authorship": "separate-agent-ai-authored",
+  "tasks": [
+    {
+      "id": "holdout-stationery-tax",
+      "prompt": "Prepare the stationery reimbursement from input.json. Available tools: file_read, file_write, document_export. Read only input.json and out/result.json; write only out/result.json. No shell, network, models, or extra files. Keep all fixture bytes unchanged. For each item, multiply quantity by unitPriceCents, then sort items by sku ascending. Sum these integer line totals for subtotalCents. Compute taxCents from the subtotal and taxPercent, rounding to the nearest integer cent with exact halves rounded up; do not round individual taxes. Write exactly the JSON object with keys items (objects with sku and lineTotalCents), subtotalCents, taxCents, and totalCents (subtotal plus tax). Replace the existing result object; do not retain its demo fields. Do not add other keys.",
+      "fixtures": {
+        "input.json": {
+          "taxPercent": 5,
+          "items": [
+            { "sku": "P08", "quantity": 3, "unitPriceCents": 125 },
+            { "sku": "E12", "quantity": 4, "unitPriceCents": 65 },
+            { "sku": "N04", "quantity": 2, "unitPriceCents": 480 }
+          ]
+        }
+      },
+      "format": "json",
+      "expected": {
+        "items": [
+          { "sku": "E12", "lineTotalCents": 260 },
+          { "sku": "N04", "lineTotalCents": 960 },
+          { "sku": "P08", "lineTotalCents": 375 }
+        ],
+        "subtotalCents": 1595,
+        "taxCents": 80,
+        "totalCents": 1675
+      }
+    },
+    {
+      "id": "holdout-pantry-order",
+      "prompt": "Make a small pantry restocking CSV from input.json. Available tools: file_read, file_write, document_export. Read only input.json and out/result.json; write only out/result.csv. No shell, network, models, or extra files. Keep all fixture bytes and the existing out/result.json unchanged. Include only items whose onHand is less than minimum. Set order_qty to minimum minus onHand. Sort by order_qty descending, then item ascending using the exact case-sensitive names. Write columns item,unit,order_qty in that order. Use comma separators, LF line endings, no BOM, and exactly one final LF. Quote a field only if it contains a comma, double quote, CR, or LF; double embedded double quotes. Quantities are unquoted base-10 integers. No formulas or additional rows.",
+      "fixtures": {
+        "input.json": {
+          "items": [
+            { "item": "Chickpeas", "unit": "tin", "onHand": 2, "minimum": 6 },
+            { "item": "Tomatoes \"plum\"", "unit": "tin", "onHand": 7, "minimum": 12 },
+            { "item": "Oats", "unit": "bag", "onHand": 10, "minimum": 10 },
+            { "item": "Rice, brown", "unit": "bag", "onHand": 3, "minimum": 8 },
+            { "item": "Tea", "unit": "box", "onHand": 9, "minimum": 4 }
+          ]
+        }
+      },
+      "format": "csv",
+      "document": true,
+      "expected": "item,unit,order_qty\n\"Rice, brown\",bag,5\n\"Tomatoes \"\"plum\"\"\",tin,5\nChickpeas,tin,4\n"
+    },
+    {
+      "id": "holdout-camera-inventory",
+      "prompt": "Export the active camera-club equipment in input.json to an XLSX workbook using document_export. Available tools: file_read, file_write, document_export. Read only input.json and out/result.json; write only out/result.xlsx. No shell, network, models, or extra files. Keep all fixture bytes and existing out/result.json unchanged. Create exactly one worksheet named Inventory. Its header row is Asset, Quantity, Value. Include only records with active equal to true, sorted by asset ascending. Asset cells are strings; Quantity and Value cells are numbers. Value is quantity times replacementPriceCents divided by 100; all supplied calculations have at most two decimal places and require no rounding. Finish with a TOTAL row: the first cell is TOTAL, the second is the sum of included quantities, and the third is the sum of included values. Write literal values, not formulas. No other rows or sheets.",
+      "fixtures": {
+        "input.json": {
+          "equipment": [
+            { "asset": "L-09", "quantity": 3, "replacementPriceCents": 1999, "active": true },
+            { "asset": "A-17", "quantity": 2, "replacementPriceCents": 1275, "active": true },
+            { "asset": "B-02", "quantity": 1, "replacementPriceCents": 8050, "active": true },
+            { "asset": "D-01", "quantity": 4, "replacementPriceCents": 2500, "active": false }
+          ]
+        }
+      },
+      "format": "xlsx",
+      "document": true,
+      "expected": [
+        ["Asset", "Quantity", "Value"],
+        ["A-17", 2, 25.5],
+        ["B-02", 1, 80.5],
+        ["L-09", 3, 59.97],
+        ["TOTAL", 6, 165.97]
+      ]
+    },
+    {
+      "id": "holdout-library-event-note",
+      "prompt": "Create a DOCX event note from input.json and sources.json using document_export. Available tools: file_read, file_write, document_export. Read only input.json, sources.json, and out/result.json; write only out/result.docx. No shell, network, models, or extra files. Keep all fixture bytes and existing out/result.json unchanged. Use input.json's title as the document title, appearing once. sources.json contains an outdated and a current event record; use only the record whose revision equals input.json's revision. Add exactly three body paragraphs in this order, substituting evidence verbatim: '[event] takes place on [date] at [time] in [room].' then 'Capacity: [capacity]. Booked: [booked]. Places remaining: [capacity minus booked].' then 'Contact: [contact].' Use integer counts, no formulas, no headers, footers, or additional text. The complete whitespace-normalized document text must consist of the title followed by these three paragraphs.",
+      "fixtures": {
+        "input.json": { "title": "Library workshop note", "revision": "current" },
+        "sources.json": {
+          "events": [
+            { "revision": "outdated", "event": "Repair basics", "date": "17 October 2026", "time": "10:00", "room": "Room 2", "capacity": 16, "booked": 12, "contact": "Sam Lee" },
+            { "revision": "current", "event": "Repair basics", "date": "18 October 2026", "time": "14:30", "room": "Room 3", "capacity": 18, "booked": 11, "contact": "Nora Patel" }
+          ]
+        }
+      },
+      "format": "docx",
+      "document": true,
+      "expected": "Library workshop note Repair basics takes place on 18 October 2026 at 14:30 in Room 3. Capacity: 18. Booked: 11. Places remaining: 7. Contact: Nora Patel."
+    },
+    {
+      "id": "holdout-repair-pickup-summary",
+      "prompt": "Create a one-page PDF pickup summary from input.json using document_export. Available tools: file_read, file_write, document_export. Read only input.json and out/result.json; write only out/result.pdf. No shell, network, models, or extra files. Keep all fixture bytes and existing out/result.json unchanged. The title is input.json's title and must appear once. Include only repairs whose approved is true. Sort those repairs by reference ascending. The first body paragraph is 'Approved repairs: [reference] ([item]); [reference] ([item]).', joining the included records with semicolon-space. The second is 'Total due: GBP [sum of included costCents divided by 100, always two decimal places].' The third is 'Pickup: [pickup].' No rounding is needed beyond writing the exact cent total with two decimals. These three paragraphs and title are the entire authored text. No formulas, tables, custom headers, or custom footers. Keep everything on one page. The automatic footer Page 1 of 1 is allowed but excluded from the expected whitespace-normalized title-plus-paragraph text; do not add that footer yourself.",
+      "fixtures": {
+        "input.json": {
+          "title": "Repair pickup summary",
+          "pickup": "Saturday, 24 October 2026, 09:00-12:00",
+          "repairs": [
+            { "reference": "R-28", "item": "desk lamp", "costCents": 975, "approved": true },
+            { "reference": "R-07", "item": "toaster", "costCents": 3200, "approved": false },
+            { "reference": "R-12", "item": "kettle", "costCents": 1850, "approved": true }
+          ]
+        }
+      },
+      "format": "pdf",
+      "document": true,
+      "expected": "Repair pickup summary Approved repairs: R-12 (kettle); R-28 (desk lamp). Total due: GBP 28.25. Pickup: Saturday, 24 October 2026, 09:00-12:00."
+    },
+    {
+      "id": "holdout-venue-missing-evidence",
+      "prompt": "Answer an accessibility evidence check without changing any files. Available tools: file_read, file_write, document_export, but this task is read-only: do not call file_write or document_export. Read only input.json, sources.json, and out/result.json. No shell, network, models, or extra files. Keep every fixture byte and existing out/result.json unchanged. input.json names a venue and required evidence fields. A field is supported only when the matching venue record in sources.json has that exact key with a non-null value. Do not infer step-free access from parking, opening hours, or silence. Return exactly a JSON response with keys status, venue, and missing. status is insufficient_evidence when any required field is unsupported, otherwise sufficient_evidence. missing is the unsupported field names in input order. Do not create a result file or add commentary.",
+      "fixtures": {
+        "input.json": { "venue": "Willow Hall", "requiredFields": ["opening_hours", "step_free_access"] },
+        "sources.json": {
+          "venues": [
+            { "venue": "Willow Hall", "opening_hours": "09:00-17:00", "parking": "Two marked accessible bays" },
+            { "venue": "Cedar Hall", "opening_hours": "10:00-16:00", "step_free_access": true }
+          ]
+        }
+      },
+      "response": {
+        "status": "insufficient_evidence",
+        "venue": "Willow Hall",
+        "missing": ["step_free_access"]
+      }
+    },
+    {
+      "id": "holdout-verify-garden-settings",
+      "prompt": "Verify the existing out/result.json against input.json's desired settings. This is verify-only, not a request to repair differences. Available tools: file_read, file_write, document_export, but do not call either writing tool. Read only input.json and out/result.json. No shell, network, models, or extra files. Keep every fixture byte and the complete existing result file unchanged. Compare each key of desired using exact JSON value equality; compare no other keys. Return exactly a JSON response with keys matches and differences. matches is true only if all desired fields agree. differences contains one object per mismatch with keys field, expected, actual, sorted by field ascending. Both objects contain all compared keys. Do not include matching fields, create files, change the configuration, or add commentary.",
+      "fixtures": {
+        "input.json": { "desired": { "enabled": true, "label": "garden", "limit": 8 } }
+      },
+      "initial": { "enabled": true, "label": "garden", "limit": 6 },
+      "response": {
+        "matches": false,
+        "differences": [
+          { "field": "limit", "expected": 8, "actual": 6 }
+        ]
+      }
+    },
+    {
+      "id": "holdout-continue-community-credit",
+      "prompt": "Continue the community credit ledger in existing out/result.json using input.json and checkpoint.json. Available tools: file_read, file_write, document_export. Read only input.json, checkpoint.json, and out/result.json; write only out/result.json. No shell, network, models, or extra files. Keep all fixture bytes unchanged, including checkpoint.json. The checkpoint completedIds and initial result processedIds identify the same previously applied entries. Skip those entries entirely: their deltas are already included in the starting balanceCents. Process each remaining input entry once in input order, adding its signed integer deltaCents to balanceCents and appending its id to processedIds. Preserve every other existing result key and value exactly, including nested settings and notes. Write the complete updated JSON object with no new keys. Do not reset the balance, duplicate completed IDs, update the checkpoint, or create any other output.",
+      "fixtures": {
+        "input.json": {
+          "entries": [
+            { "id": "R101", "deltaCents": 1250 },
+            { "id": "R102", "deltaCents": 425 },
+            { "id": "R103", "deltaCents": -175 }
+          ]
+        },
+        "checkpoint.json": { "completedIds": ["R101"] }
+      },
+      "initial": {
+        "enabled": false,
+        "label": "demo",
+        "balanceCents": 1250,
+        "processedIds": ["R101"],
+        "settings": { "currency": "GBP", "notify": false },
+        "notes": ["Keep the opening credit."]
+      },
+      "format": "json",
+      "expected": {
+        "enabled": false,
+        "label": "demo",
+        "balanceCents": 1500,
+        "processedIds": ["R101", "R102", "R103"],
+        "settings": { "currency": "GBP", "notify": false },
+        "notes": ["Keep the opening credit."]
+      }
+    }
+  ]
+}

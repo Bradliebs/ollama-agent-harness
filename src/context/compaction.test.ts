@@ -142,7 +142,7 @@ describe('Context Compaction', () => {
       });
 
       it('with flag OFF, summary content has NO historical-context markers (legacy shape)', async () => {
-        delete process.env.HARNESS_LOOP_HARDENING;
+        process.env.HARNESS_LOOP_HARDENING = '0';
         const result = await applyAutoCompact(buildMessages(), buildClient() as never);
         const summaryMsg = result.messages.find((m) =>
           typeof m.content === 'string' && m.content.startsWith(AUTO_COMPACT_BOUNDARY_PREFIX),

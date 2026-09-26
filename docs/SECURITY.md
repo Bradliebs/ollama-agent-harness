@@ -1,13 +1,33 @@
+---
+title: Security Model
+description: Local service access controls, cloud data boundaries and ownership safeguards
+ms.date: 2026-09-15
+---
 <!-- markdownlint-disable MD013 -->
-# Security Model
+
+## Security Model
 
 The harness is local-first. By default every process binds to loopback, so nothing is reachable from other machines on the network. This document describes the controls that keep it that way and the few places where you opt out of them.
+
+Loopback binding does not mean offline execution. Selected cloud models, remote
+Ollama endpoints and network tools send data externally. Ollama can retain cloud
+authentication independently of shell API keys; clearing those variables is not
+a local-only safeguard. The bounded benchmark checks remote route metadata in
+cloud mode, but still trusts the daemon to honor it. See
+[Workflow Outcome Benchmarks](VALIDATION-PROFILES.md#workflow-outcome-benchmarks).
+
+Use the harness as an ordinary user: tools inherit that user's filesystem and
+process rights. The background supervisor stops only its owned child; installer
+maintenance requires an exclusive lease. Do not kill a PID copied from an old
+marker or remove unresolved ownership files without investigating them. These
+are lifecycle safeguards, not a sandbox against other code running as that user.
+See [Background Lifecycle](MODERNIZATION-STATUS.md#background-lifecycle).
 
 ## Bind hosts
 
 | Process | Default bind | Override |
 |---------|--------------|----------|
-| Web server / dashboard | `127.0.0.1:4300` | `HOST` env var |
+| Web server / dashboard | Loopback; launchers normally use port 4300, terminal UI normally 3000; use printed URL | `HOST` and `PORT` env vars |
 | ccmem memory sidecar | `127.0.0.1:8765` | `--host` flag |
 
 The dashboard is unauthenticated by default because loopback already limits access to this machine. If you change `HOST` to a non-loopback address (for example `0.0.0.0`) to share the UI on your network, you **must** also set `HARNESS_API_AUTH_TOKEN` — API auth turns on automatically in that case and requests without the token are rejected. The UI can drive shell and file tools, so never expose it without the token.

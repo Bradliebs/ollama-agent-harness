@@ -1,5 +1,5 @@
 import type { Message, Tool } from 'ollama';
-import type { ChatResult, IChatClient, ModelLocality, StreamChunk } from './chatClient';
+import type { ChatOptions, ChatResult, IChatClient, ModelLocality, StreamChunk } from './chatClient';
 
 export interface FallbackChatClientEntry {
   backend: string;
@@ -48,15 +48,15 @@ export class FallbackChatClient implements IChatClient {
     if (entries.length === 0) throw new Error('FallbackChatClient requires at least one entry.');
   }
 
-  async chat(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): Promise<ChatResult> {
-    return this.tryClients((entry) => entry.client.chat(messages, tools, abortSignal), tools);
+  async chat(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal, options?: ChatOptions): Promise<ChatResult> {
+    return this.tryClients((entry) => entry.client.chat(messages, tools, abortSignal, options), tools);
   }
 
-  async chatOnce(messages: Message[], tools?: Tool[]): Promise<ChatResult> {
-    return this.tryClients((entry) => entry.client.chatOnce(messages, tools), tools);
+  async chatOnce(messages: Message[], tools?: Tool[], options?: ChatOptions): Promise<ChatResult> {
+    return this.tryClients((entry) => entry.client.chatOnce(messages, tools, options), tools);
   }
 
-  async *chatStream(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): AsyncGenerator<StreamChunk> {
+  async *chatStream(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal, options?: ChatOptions): AsyncGenerator<StreamChunk> {
     const entries = this.availableEntries(tools);
     let lastError: unknown;
     for (let i = 0; i < entries.length; i += 1) {
@@ -64,7 +64,7 @@ export class FallbackChatClient implements IChatClient {
       let yielded = false;
       try {
         this.recordRequest(entry.backend);
-        for await (const chunk of entry.client.chatStream(messages, tools, abortSignal)) {
+        for await (const chunk of entry.client.chatStream(messages, tools, abortSignal, options)) {
           yielded = true;
           yield chunk;
         }

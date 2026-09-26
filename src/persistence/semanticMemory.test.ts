@@ -1,12 +1,23 @@
 import * as fs from 'fs/promises';
-import * as os from 'os';
 import * as path from 'path';
+import { MEMORY_INDEX_RETENTION_LIMITS } from './memoryIndexRetention';
 import { SessionStorage } from './sessionStorage';
 import { buildMemoryPalace, getSemanticMemoryContext, getSemanticMemoryEntry, rebuildSemanticMemory, searchSemanticMemory } from './semanticMemory';
 
 describe('semanticMemory', () => {
+  const testRoot = path.join(process.cwd(), '.harness', 'test-workspaces', 'semantic-memory');
+
+  afterEach(async () => {
+    await fs.rm(testRoot, { recursive: true, force: true });
+  });
+
+  async function makeProjectDir(prefix: string): Promise<string> {
+    await fs.mkdir(testRoot, { recursive: true });
+    return fs.mkdtemp(path.join(testRoot, `${prefix}-`));
+  }
+
   it('indexes session transcripts and ranks relevant matches', async () => {
-    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-memory-'));
+    const projectDir = await makeProjectDir('harness-memory');
     const storage = new SessionStorage(projectDir, 'test-model', 'memory-session');
     await storage.initialize();
     await storage.append('user_message', {
@@ -26,7 +37,7 @@ describe('semanticMemory', () => {
   });
 
   it('builds memory palace rooms from semantic entries', async () => {
-    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-palace-'));
+    const projectDir = await makeProjectDir('harness-palace');
     const storage = new SessionStorage(projectDir, 'test-model', 'palace-session');
     await storage.initialize();
     await storage.append('user_message', {
@@ -50,7 +61,7 @@ describe('semanticMemory', () => {
   });
 
   it('loads a semantic memory entry by id', async () => {
-    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-entry-'));
+    const projectDir = await makeProjectDir('harness-entry');
     const storage = new SessionStorage(projectDir, 'test-model', 'entry-session');
     await storage.initialize();
     await storage.append('user_message', {
@@ -65,7 +76,7 @@ describe('semanticMemory', () => {
   });
 
   it('returns bounded transcript context around a memory entry', async () => {
-    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-context-'));
+    const projectDir = await makeProjectDir('harness-context');
     const storage = new SessionStorage(projectDir, 'test-model', 'context-session');
     await storage.initialize();
     await storage.append('user_message', {
@@ -91,5 +102,29 @@ describe('semanticMemory', () => {
       'After the anchor',
     ]);
     expect(context?.events[1]).toMatchObject({ isAnchor: true, sessionId: 'context-session' });
+  });
+
+  it('writes a retained index with bounded entry text and tokens', async () => {
+    const projectDir = await makeProjectDir('harness-retention');
+    const storage = new SessionStorage(projectDir, 'test-model', 'retention-session');
+    const longText = [
+      'needle-at-start',
+      'x'.repeat(MEMORY_INDEX_RETENTION_LIMITS.maxTextChars + 100),
+    ].join(' ');
+    await storage.initialize();
+    await storage.append('tool_result', {
+      kind: 'tool_result',
+      call: { name: 'read', input: {} },
+      result: { success: true, output: longText },
+    });
+
+    const entries = await rebuildSemanticMemory(projectDir);
+    const index = JSON.parse(await fs.readFile(path.join(projectDir, '.harness', 'memory', 'semantic-index.json'), 'utf-8'));
+    const results = await searchSemanticMemory(projectDir, 'needle-at-start');
+
+    expect(entries[0].text).toHaveLength(MEMORY_INDEX_RETENTION_LIMITS.maxTextChars);
+    expect(index[0].text).toHaveLength(MEMORY_INDEX_RETENTION_LIMITS.maxTextChars);
+    expect(index[0].tokens.length).toBeLessThanOrEqual(MEMORY_INDEX_RETENTION_LIMITS.maxTokens);
+    expect(results[0].entry.text).toContain('needle-at-start');
   });
 });

@@ -120,6 +120,44 @@ export interface LoopConfig {
    */
   unproductiveTurnLimit?: number;
   /**
+   * Run supervisor (progress-based stuck detection + per-run token/USD
+   * budgets). On by default; pass `false` to disable, or partial overrides.
+   * HARNESS_SUPERVISOR=0 disables it globally. See core/supervisor.ts.
+   */
+  supervisor?: Partial<import('../core/supervisor').SupervisorConfig> | false;
+  /**
+   * Per-model request plan compiled from the model's capability profile
+   * (models/adapter.ts). Limits the tools offered per step and, for models
+   * without reliable native tool calling, switches to JSON tool calls in text
+   * (optionally schema-constrained) that the loop lifts back into tool calls.
+   */
+  /** Provenance checks on side effects (default on; false disables for this run). */
+  provenance?: boolean;
+  /**
+   * Adjustable scaffolding (core/scaffolding.ts): plan-first, capped tool
+   * calls per turn, step prompts and narrow context for weaker models.
+   * Unset = no scaffolding changes.
+   */
+  scaffold?: import('../core/scaffolding').ScaffoldConfig;
+  /**
+   * Governed working state (context/workingState.ts). Protected paths from
+   * protectedPaths and the task contract are always enforced. With
+   * inject: true the state is rendered into every system prompt (never
+   * compacted) and the model gets a state_update tool.
+   */
+  workingState?: { inject?: boolean };
+  /** Extra paths/patterns that tools must never modify (dir/, dir/**, file). */
+  protectedPaths?: string[];
+  /** Ids of lessons from earlier runs recalled into this run's prompt, recorded so their effect can be scored. */
+  recalledLessons?: string[];
+  /** Research-answer verification mode; defaults to HARNESS_VERIFY_RESEARCH (check = record only). */
+  verifyResearch?: 'off' | 'check' | 'annotate' | 'critic' | 'gate';
+  modelPlan?: {
+    toolMode: 'native' | 'json-in-text' | 'constrained-json';
+    toolNames?: string[];
+    format?: 'json' | Record<string, unknown>;
+  };
+  /**
    * Terminate the loop early when one tool fails repeatedly in the same run.
    * This prevents slow, opaque retries where the model keeps calling a broken
    * tool instead of telling the user what went wrong. Set to 0 to disable.
@@ -187,7 +225,10 @@ export type LoopEvent =
   | TurnCompleteEvent
   | VerificationEvent
   | InactivityTimeoutEvent
-  | GovernedShadowEvent;
+  | GovernedShadowEvent
+  | SupervisorEvent
+  | ModelEscalatedEvent
+  | BudgetExceededEvent;
 
 export interface TextEvent {
   type: 'text';
@@ -270,7 +311,7 @@ export interface ErrorEvent {
 
 export interface DoneEvent {
   type: 'done';
-  reason: 'completed' | 'completed_without_required_changes' | 'completed_with_validation_failures' | 'completed_with_test_failures' | 'max_turns' | 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' | 'empty_after_tools_synthesized' | 'aborted' | 'error' | 'unproductive' | 'repeated_tool_failure' | 'inactivity_timeout';
+  reason: 'completed' | 'completed_without_required_changes' | 'completed_with_validation_failures' | 'completed_with_test_failures' | 'max_turns' | 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' | 'empty_after_tools_synthesized' | 'budget_synthesized' | 'stuck_needs_human' | 'aborted' | 'error' | 'unproductive' | 'repeated_tool_failure' | 'inactivity_timeout';
   turns: number;
   /** Extra metadata when the done event follows a synthesis turn (timeout/max-turns). */
   synthesisMetadata?: {
@@ -307,6 +348,37 @@ export interface UsageEvent {
   promptEvalDurationMs?: number;
   /** Milliseconds spent generating tokens. */
   evalDurationMs?: number;
+}
+
+/** The run supervisor intervened because tool steps stopped producing
+ * anything new. `ask_human` means the run is ending with a question for
+ * the user instead of more tool calls. */
+export type EscalationReason = 'stuck' | 'verifier_rejected';
+
+/** The run switched to a stronger model mid-run (at most once). */
+export interface ModelEscalatedEvent {
+  type: 'model_escalated';
+  from: string;
+  to: string;
+  reason: EscalationReason;
+  turn: number;
+}
+
+export interface SupervisorEvent {
+  type: 'supervisor';
+  stage: 'warn' | 'change_strategy' | 'escalate' | 'ask_human';
+  stalledTurns: number;
+  message: string;
+  summary: string;
+}
+
+/** A per-run budget (tokens, or USD for priced models) was exceeded; the
+ * loop stops into a synthesis turn. */
+export interface BudgetExceededEvent {
+  type: 'budget_exceeded';
+  which: 'tokens' | 'usd';
+  used: number;
+  limit: number;
 }
 
 /** Emitted when the bonus synthesis turn fires because the model exhausted
@@ -358,6 +430,8 @@ export interface TurnCompleteEvent {
  */
 export interface VerificationEvent {
   type: 'verification';
+  /** 'research' = claims in the answer checked against pages read. Absent = code checks. */
+  kind?: 'code' | 'research';
   overall: 'pass' | 'fail' | 'warn' | 'skip';
   checks: Array<{
     name: string;

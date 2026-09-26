@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
+import { getProjectRoot } from './pathResolution';
 
 // ─── Calendar read tool ─────────────────────────────────────────────
 //
@@ -37,7 +38,7 @@ export const CalendarReadTool: Tool = {
     const rawPath = String(input.path ?? '').trim();
     if (!rawPath) return { success: false, output: 'Path to .ics file is required.', error: 'missing path' };
 
-    const filePath = path.isAbsolute(rawPath) ? rawPath : path.resolve(process.cwd(), rawPath);
+    const filePath = path.isAbsolute(rawPath) ? rawPath : path.resolve(getProjectRoot(), rawPath);
     if (!filePath.toLowerCase().endsWith('.ics')) {
       return { success: false, output: 'File must have a .ics extension.', error: 'not ics' };
     }
@@ -200,7 +201,7 @@ export const CalendarWriteTool: Tool = {
     if (!summary) return { success: false, output: 'Event summary is required.', error: 'missing summary' };
     if (!startStr) return { success: false, output: 'Start date/time is required.', error: 'missing start' };
 
-    const filePath = path.isAbsolute(rawPath) ? rawPath : path.resolve(process.cwd(), rawPath);
+    const filePath = path.isAbsolute(rawPath) ? rawPath : path.resolve(getProjectRoot(), rawPath);
     if (!filePath.toLowerCase().endsWith('.ics')) {
       return { success: false, output: 'File must have a .ics extension.', error: 'not ics' };
     }

@@ -75,6 +75,29 @@ describe('cli setup doctor', () => {
     });
   });
 
+  it('parses replay command options with repeatable models', () => {
+    const options = parseArgs(['replay', 'chat-123', '--model', 'm1', '--model', 'm2', '--live', '--json']);
+
+    expect(options).toMatchObject({
+      command: 'replay',
+      replayRunId: 'chat-123',
+      replayModels: ['m1', 'm2'],
+      replayLive: true,
+      json: true,
+    });
+  });
+
+  it('parses history benchmark command options', () => {
+    const options = parseArgs(['benchmark-history', '--models', 'm1,m2', '--last', '7', '--json']);
+
+    expect(options).toMatchObject({
+      command: 'benchmark-history',
+      benchmarkModels: ['m1', 'm2'],
+      benchmarkLastN: 7,
+      json: true,
+    });
+  });
+
   it('parses --watch with default 5s interval', () => {
     const options = parseArgs(['doctor', '--watch']);
     expect(options.command).toBe('doctor');

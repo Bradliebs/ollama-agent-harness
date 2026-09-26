@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { getProjectRoot } from './pathResolution';
 
 // ─── Browser cookie/session vault ──────────────────────────────────
 //
@@ -18,7 +19,7 @@ import * as path from 'path';
 const SESSIONS_RELDIR = path.join('.harness', 'browser-sessions');
 
 function sessionsDir(): string {
-  return path.join(process.cwd(), SESSIONS_RELDIR);
+  return path.join(getProjectRoot(), SESSIONS_RELDIR);
 }
 
 /** Restrict names to a safe filename charset so a name can never escape the vault dir. */

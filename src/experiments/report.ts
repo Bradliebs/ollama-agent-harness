@@ -1,4 +1,5 @@
 import type { HarnessEvent } from '../persistence/eventStore';
+import type { BenchmarkTaskResult } from '../eval/benchmark';
 import type {
   ConfidenceInterval,
   ExperimentExecutionRecord,
@@ -34,6 +35,35 @@ export interface ExperimentHistorySummary {
 }
 
 type ExperimentEventData = Partial<ExperimentExecutionRecord & ResolvedExperimentPlan>;
+
+export function summarizeTaskEfficiency(results: BenchmarkTaskResult[]): {
+  attempts: number;
+  passedAttempts: number | null;
+  totalDurationMs: number | null;
+  durationMsPerPassedAttempt: number | null;
+  totalTokens: null;
+  costUsd: null;
+} {
+  const attempts = results.reduce((sum, result) => sum + (result.replicateCount ?? 1), 0);
+  const passCountsKnown = results.every((result) => result.replicateCount === undefined || (
+    Number.isInteger(result.passReplicates) && result.passReplicates !== undefined
+    && result.passReplicates >= 0 && result.passReplicates <= result.replicateCount
+  ));
+  const passedAttempts = passCountsKnown ? results.reduce((sum, result) => sum + (result.replicateCount !== undefined
+    ? result.passReplicates ?? 0
+    : result.status === 'pass' ? 1 : 0), 0) : null;
+  const totalDurationMs = results.length > 0 && results.every((result) => Number.isFinite(result.durationMs) && result.durationMs >= 0)
+    ? results.reduce((sum, result) => sum + result.durationMs, 0)
+    : null;
+  return {
+    attempts,
+    passedAttempts,
+    totalDurationMs,
+    durationMsPerPassedAttempt: totalDurationMs !== null && passedAttempts !== null && passedAttempts > 0 ? totalDurationMs / passedAttempts : null,
+    totalTokens: null,
+    costUsd: null,
+  };
+}
 
 export function summarizeExperimentEvent(event: HarnessEvent): ExperimentEventSummary {
   const data = event.data as ExperimentEventData;
@@ -89,6 +119,10 @@ export interface ExperimentTaskDetail {
  * tasks actually moved without re-querying the wrong record.
  */
 export interface ExperimentEventDetail {
+  efficiency?: {
+    baseline?: ReturnType<typeof summarizeTaskEfficiency>;
+    candidate?: ReturnType<typeof summarizeTaskEfficiency>;
+  };
   eventId: string;
   timestamp: string;
   experimentId?: string;
@@ -150,6 +184,10 @@ export function detailExperimentEvent(event: HarnessEvent): ExperimentEventDetai
       : undefined,
     changedTaskCount: taskDiffs.filter((diff) => diff.changed).length,
     taskDiffs,
+    efficiency: {
+      baseline: data.baselineRun ? summarizeTaskEfficiency(data.baselineRun.results) : undefined,
+      candidate: data.candidateRun ? summarizeTaskEfficiency(data.candidateRun.results) : undefined,
+    },
   };
 }
 

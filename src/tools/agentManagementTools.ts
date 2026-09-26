@@ -26,11 +26,10 @@ import {
   routeMessage,
   updateSquad,
 } from '../services/squad';
+import { getWorkspaceDataRoot } from './pathResolution';
 
 function agentsProjectDir(): string {
-  return process.env.HARNESS_PROJECT_DIR && process.env.HARNESS_PROJECT_DIR.trim()
-    ? process.env.HARNESS_PROJECT_DIR
-    : process.cwd();
+  return getWorkspaceDataRoot();
 }
 
 function ok(output: string): ToolResult { return { success: true, output }; }

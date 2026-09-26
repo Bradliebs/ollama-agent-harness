@@ -20,6 +20,7 @@ export interface McpConfiguredTool {
 
 export interface McpServerDefinition {
   id: string;
+  framing?: 'newline' | 'content-length';
   catalogName?: string;
   command: string;
   args: string[];
@@ -105,7 +106,7 @@ export async function startMcpServer(projectDir: string, id: string): Promise<Mc
     windowsHide: true,
   });
 
-  const record: RunningMcpServer = { process: child, client: new McpStdioClient(child), startedAt: new Date().toISOString() };
+  const record: RunningMcpServer = { process: child, client: new McpStdioClient(child, undefined, definition.framing), startedAt: new Date().toISOString() };
   runningServers.set(definition.id, record);
   lastExitCodes.delete(definition.id);
 
@@ -279,6 +280,7 @@ function sanitizeMcpServerDefinition(input: Record<string, unknown>): McpServerD
   const env = sanitizeStringRecord(input.env);
   return {
     id,
+    framing: input.framing === 'content-length' ? 'content-length' : undefined,
     catalogName: typeof input.catalogName === 'string' ? input.catalogName.trim().slice(0, 80) || undefined : undefined,
     command: command.slice(0, 260),
     args,

@@ -2,7 +2,7 @@
 title: Quick Reference
 description: Subsystem-to-code-path index and numbered load-bearing rules for the Ollama Agent Harness
 author: Bradliebs
-ms.date: 2026-06-01
+ms.date: 2026-09-15
 ms.topic: reference
 keywords:
   - quick-reference
@@ -12,11 +12,13 @@ keywords:
 estimated_reading_time: 6
 ---
 
-# Quick reference
-
 A fast map from subsystem to code path, plus the load-bearing rules that must
 not be broken when changing the harness. This is the navigation companion to the
 deeper [System breakdown](SYSTEM-BREAKDOWN.md) and [System overview](SYSTEM-OVERVIEW.md).
+
+Current setup, lifecycle, benchmark evidence and release gaps are tracked in
+[Modernization Status](MODERNIZATION-STATUS.md). Runtime minimum: Node 22.13.0;
+Node 24 LTS recommended. Cloud inference is explicit and can incur charges.
 
 ## Subsystem index
 
@@ -46,6 +48,8 @@ in depth (where one exists).
 | Jarvis layer | [src/jarvis](../src/jarvis) | Voice and knowledge-graph recall | [Apex features](APEX-FEATURES.md) |
 | Persistence | [src/persistence](../src/persistence) | Chat history and append-only state | [System overview](SYSTEM-OVERVIEW.md) |
 | CLI | [src/cli](../src/cli) | Command-line entry and system-prompt build | [Getting started](GETTING-STARTED.md) |
+| Background ownership | [scripts/background-server.js](../scripts/background-server.js) | Owned child lifecycle and installation maintenance lease | [Modernization Status](MODERNIZATION-STATUS.md#background-lifecycle) |
+| Workflow outcomes | [scripts/local-core-baseline.js](../scripts/local-core-baseline.js) | Bounded local/cloud execution, artifact grading and raw request evidence | [Validation profiles](VALIDATION-PROFILES.md#workflow-outcome-benchmarks) |
 
 ## Load-bearing rules
 
@@ -72,10 +76,12 @@ portability guarantee elsewhere, so confirm each still holds after a change.
    backends must satisfy `runChatClientConformance` from
    [src/core/chatClientConformance.ts](../src/core/chatClientConformance.ts). No
    core path may assume a specific vendor.
-6. **Local-first storage.** Every persisted path lives under `.harness/` in the
-   working directory. No server-side cloud database.
-7. **Env-gated additions.** New behaviour defaults off behind `HARNESS_*_ENABLED`
-   flags so existing installs keep working.
+6. **Local-first storage.** Resolve the project directory before locating workspace
+   state; `HARNESS_PROJECT_DIR` can separate it from the installation. Background
+   ownership and maintenance markers are installation-local.
+7. **Explicit opt-ins.** Experimental autonomy features retain their documented
+   default-off gates. Runtime fixes and minimum-version requirements are not
+   all feature-flagged; consult the changelog before upgrading.
 8. **Deny-first safety, append-only state.** Deny rules override allow rules, and
    transcripts compact by appending rather than deleting.
 9. **Test-as-spec.** When docs and tests disagree, the test wins. Add or update a
