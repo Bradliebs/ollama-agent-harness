@@ -119,6 +119,12 @@ No release tag, publication or installer runtime qualification is implied.
   schemas, so only the model varies and no side effects run; replays are
   themselves recorded as eplay-* run logs. Reports compare completion,
   turns, tokens, cost, duration, cited sources and stuck runs.
+- Fix JSON answers being deleted: the inline tool-call fallback treated any
+  JSON object with a "name" key as a tool call, so a reply like
+  {"name":"alpha","count":3} became a call to a nonexistent tool and the
+  text vanished. Calls are now lifted only when they name a tool offered on
+  that request, and never when no tools were offered. Found by the new
+  capability probe (glm-5.3 scored 0% on structured output).
 - After these changes full Jest passed 329 suites and 3,841 tests with one
   skipped; the build and script tests (`node --test`) also passed.
 

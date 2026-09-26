@@ -368,7 +368,7 @@ export class OpenAIClient implements IChatClient {
         // Some smaller models on these gateways still emit JSON tool-call
         // shapes inside content. Reuse the existing fallback parser so the
         // OpenAI backend benefits from the same robustness as Ollama.
-        liftInlineToolCalls(message);
+        liftInlineToolCalls(message, (tools ?? []).map((tool) => tool.function?.name).filter((name): name is string => Boolean(name)));
       }
 
       const usage: TokenUsage = {

@@ -152,9 +152,21 @@ describe('OpenAIClient', () => {
       apiKey: 'k',
       model: 'm',
     });
-    const result = await client.chat([{ role: 'user', content: 'hi' }]);
+    const result = await client.chat([{ role: 'user', content: 'hi' }], [
+      { type: 'function', function: { name: 'grep', description: 'search', parameters: { type: 'object', properties: {} } } } as never,
+    ]);
     expect(result.message.tool_calls?.[0].function.name).toBe('grep');
     expect(result.message.tool_calls?.[0].function.arguments).toEqual({ pattern: 'todo' });
+  });
+
+  it('keeps a JSON answer as text when no tools were offered', async () => {
+    fetchSpy.mockResolvedValueOnce(makeResponse({
+      choices: [{ message: { role: 'assistant', content: '{"name": "alpha", "count": 3}' } }],
+    }));
+    const client = new OpenAIClient({ baseUrl: 'https://x', apiKey: 'k', model: 'm' });
+    const result = await client.chat([{ role: 'user', content: 'json please' }]);
+    expect(result.message.tool_calls).toBeUndefined();
+    expect(result.message.content).toBe('{"name": "alpha", "count": 3}');
   });
 
   it('throws a labelled error when the upstream returns non-2xx', async () => {

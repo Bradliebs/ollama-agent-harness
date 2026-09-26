@@ -475,6 +475,21 @@ describe('liftInlineToolCalls fallback parser', () => {
     expect(message.tool_calls).toBeUndefined();
   });
 
+  it('only lifts calls to tools that were offered, and nothing when none were', () => {
+    const answer: any = { role: 'assistant', content: '{"name": "alpha", "count": 3, "ok": true}' };
+    liftInlineToolCalls(answer, ['web_search', 'file_read']);
+    expect(answer.tool_calls).toBeUndefined();
+    expect(answer.content).toBe('{"name": "alpha", "count": 3, "ok": true}');
+
+    const noTools: any = { role: 'assistant', content: '{"name":"file_read","arguments":{"path":"x"}}' };
+    liftInlineToolCalls(noTools, []);
+    expect(noTools.tool_calls).toBeUndefined();
+
+    const offered: any = { role: 'assistant', content: 'Calling {"name":"file_read","arguments":{"path":"x"}} and {"name":"alpha","arguments":{}}' };
+    liftInlineToolCalls(offered, ['file_read']);
+    expect(offered.tool_calls).toEqual([{ function: { name: 'file_read', arguments: { path: 'x' } } }]);
+  });
+
   it('survives malformed JSON without throwing', () => {
     const message: any = {
       role: 'assistant',

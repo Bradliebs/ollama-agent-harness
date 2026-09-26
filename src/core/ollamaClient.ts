@@ -100,10 +100,10 @@ export class OllamaClient implements IChatClient {
 
         let result: ChatResult;
         if (isAsyncIterable<ChatResponse>(response)) {
-          result = await collectStreamingChatResponse(response, abortSignal, recordUsage);
+          result = await collectStreamingChatResponse(response, abortSignal, recordUsage, offeredToolNames(tools));
         } else {
           recordUsage(response);
-          result = chatResponseToResult(response);
+          result = chatResponseToResult(response, offeredToolNames(tools));
         }
         writeDebugLogResponse(this.model, messages, tools, result);
         this.onRequestEvent?.({ phase: 'complete', requestId, durationMs: performance.now() - started, usage: reportedUsage });
@@ -164,7 +164,7 @@ export class OllamaClient implements IChatClient {
       options: this.numCtx ? { num_ctx: this.numCtx } : undefined,
     });
 
-    return chatResponseToResult(response);
+    return chatResponseToResult(response, offeredToolNames(tools));
   }
 
   async *chatStream(
@@ -318,10 +318,15 @@ function isAsyncIterable<T>(value: unknown): value is AbortableAsyncIterable<T> 
   return typeof value === 'object' && value !== null && Symbol.asyncIterator in value;
 }
 
+function offeredToolNames(tools: Tool[] | undefined): string[] {
+  return (tools ?? []).map((tool) => tool.function?.name).filter((name): name is string => typeof name === 'string' && name.length > 0);
+}
+
 async function collectStreamingChatResponse(
   stream: AbortableAsyncIterable<ChatResponse>,
   abortSignal?: AbortSignal,
   onUsage?: (response: ChatResponse) => void,
+  toolNames: string[] = [],
 ): Promise<ChatResult> {
   let content = '';
   let thinking = '';
@@ -375,11 +380,11 @@ async function collectStreamingChatResponse(
 
   const message: Message = { role, content };
   if (toolCalls.length > 0) message.tool_calls = toolCalls;
-  liftInlineToolCalls(message);
+  liftInlineToolCalls(message, toolNames);
   return { message, usage };
 }
 
-function chatResponseToResult(response: ChatResponse): ChatResult {
+function chatResponseToResult(response: ChatResponse, toolNames: string[] = []): ChatResult {
   const message: Message = response.message;
   // Mirror the streaming fallback: if a thinking model returned no answer
   // text and made no tool call, surface its reasoning instead of a blank.
@@ -388,7 +393,7 @@ function chatResponseToResult(response: ChatResponse): ChatResult {
     && !(message.tool_calls && message.tool_calls.length) && thinking && thinking.trim()) {
     message.content = thinking;
   }
-  liftInlineToolCalls(message);
+  liftInlineToolCalls(message, toolNames);
   return {
     message,
     usage: {
@@ -493,8 +498,18 @@ function estimateTokensFromChars(chars: number): number {
  * malformed JSON, and removes only the matched JSON spans from the
  * surfaced text content so the UI does not double-render the call.
  */
-export function liftInlineToolCalls(message: Message | undefined): void {
+/**
+ * Lift JSON tool calls written into message content. `allowedToolNames` is
+ * the set of tools actually offered on this request: only calls naming one of
+ * them are lifted, and an empty set lifts nothing. Without it, any JSON object
+ * with a "name" key (a JSON answer about a product, say) would be taken for a
+ * tool call and deleted from the answer. Omitting the argument keeps the old
+ * permissive behaviour for callers that have no tool list.
+ */
+export function liftInlineToolCalls(message: Message | undefined, allowedToolNames?: Iterable<string>): void {
   if (!message || message.tool_calls?.length) return;
+  const allowed = allowedToolNames ? new Set(allowedToolNames) : null;
+  if (allowed && allowed.size === 0) return;
   const text = typeof message.content === 'string' ? message.content : '';
   if (!text || (text.indexOf('"name"') === -1 && text.indexOf('"function"') === -1 && text.indexOf('"tool') === -1)) return;
 
@@ -509,7 +524,7 @@ export function liftInlineToolCalls(message: Message | undefined): void {
     } catch {
       continue;
     }
-    const calls = coerceToolCalls(parsed);
+    const calls = coerceToolCalls(parsed).filter((call) => !allowed || allowed.has(call.function.name));
     if (calls.length > 0) {
       lifted.push(...calls);
       removalSpans.push(span);

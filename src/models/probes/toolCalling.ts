@@ -74,12 +74,12 @@ function isCorrectToolCall(message: Message, name: string, expectedArgs: Record<
   return Object.entries(expectedArgs).every(([key, value]) => args[key] === value);
 }
 
-function wasJsonInText(message: Message): boolean {
+function wasJsonInText(message: Message, toolNames: string[] = ['get_weather', 'add']): boolean {
   const lifted = (message as { __harnessParserLiftedToolCalls?: number }).__harnessParserLiftedToolCalls;
   if (lifted && lifted > 0) return true;
   const content = typeof message.content === 'string' ? message.content : '';
   if (!content.trim()) return false;
   const probe: Message = { role: 'assistant', content };
-  liftInlineToolCalls(probe);
+  liftInlineToolCalls(probe, toolNames);
   return Boolean(probe.tool_calls?.length);
 }
