@@ -4,6 +4,7 @@ import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
 import { evaluateCapabilityGrant, sanitizeCapabilityGrants } from '../permissions/capabilities';
 import { recordBrowserAudit, type BrowserAuditInput } from './browserAudit';
+import { getProjectRoot } from './pathResolution';
 import { getActiveSessionName, loadBrowserSessionState } from './browserSessions';
 
 // ─── Browser page tools (Playwright-based) ─────────────────────────
@@ -146,7 +147,7 @@ async function audit(input: Omit<BrowserAuditInput, 'mode'>): Promise<void> {
 async function requireBrowserPageGrant(): Promise<{ allowed: boolean; reason: string }> {
   const denyPrefix = 'Browser page tools require an active browser-page-access grant.';
   try {
-    const raw = await fs.readFile(path.join(process.cwd(), BROWSER_SETTINGS_PATH), 'utf-8');
+    const raw = await fs.readFile(path.join(getProjectRoot(), BROWSER_SETTINGS_PATH), 'utf-8');
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const killSwitch = parsed.killSwitch && typeof parsed.killSwitch === 'object' ? parsed.killSwitch as Record<string, unknown> : {};
     const grants = sanitizeCapabilityGrants(parsed.capabilityGrants);
@@ -373,7 +374,7 @@ export const BrowserScreenshotTool: Tool = {
     const filename = typeof input.filename === 'string' ? input.filename.trim() : 'page-screenshot.png';
     const fullPage = input.full_page === true;
     const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100);
-    const outDir = path.join(process.cwd(), '.harness', 'browser');
+    const outDir = path.join(getProjectRoot(), '.harness', 'browser');
     const outPath = path.join(outDir, safeFilename);
     try {
       const grant = await requireBrowserPageGrant();

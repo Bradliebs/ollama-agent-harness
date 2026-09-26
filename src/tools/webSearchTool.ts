@@ -7,6 +7,20 @@ export const DEFAULT_WEB_READ_MAX_CHARS = 12_000;
 let webReadMaxChars = DEFAULT_WEB_READ_MAX_CHARS;
 const SPARSE_TEXT_MIN_CHARS = 600;
 
+// web_read used to announce itself as "OllamaHarness/1.0", which many news and
+// retail sites answer with 403. Present as a mainstream browser instead.
+const WEB_READ_PRIMARY_HEADERS: Record<string, string> = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7',
+  'Accept-Language': 'en-GB,en;q=0.9',
+};
+const WEB_READ_RETRY_HEADERS: Record<string, string> = {
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+};
+const WEB_READ_RETRY_STATUSES = new Set([401, 403, 429]);
+
 export function configureWebReadTool(options: { maxChars?: number }): void {
   webReadMaxChars = sanitizeWebReadMaxChars(options.maxChars, webReadMaxChars);
 }
@@ -133,16 +147,25 @@ export const WebReadTool: Tool = {
     const url = input.url as string;
 
     try {
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; OllamaHarness/1.0)',
-          'Accept': 'text/html,application/xhtml+xml,text/plain',
-        },
+      let response = await fetch(url, {
+        headers: WEB_READ_PRIMARY_HEADERS,
         signal: AbortSignal.timeout(30_000),
       });
 
+      // Many sites reject non-browser clients outright; retry once with a
+      // different browser profile before giving up.
+      if (WEB_READ_RETRY_STATUSES.has(response.status)) {
+        response = await fetch(url, {
+          headers: WEB_READ_RETRY_HEADERS,
+          signal: AbortSignal.timeout(30_000),
+        });
+      }
+
       if (!response.ok) {
-        return { success: false, output: `HTTP ${response.status} ${response.statusText}`, error: `HTTP ${response.status}` };
+        const blocked = WEB_READ_RETRY_STATUSES.has(response.status)
+          ? ' — this site blocks automated reads; use a different search result or source instead of retrying it.'
+          : '';
+        return { success: false, output: `HTTP ${response.status} ${response.statusText}${blocked}`, error: `HTTP ${response.status}` };
       }
 
       const contentType = response.headers.get('content-type') ?? '';

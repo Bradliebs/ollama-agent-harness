@@ -4,6 +4,7 @@ import * as fs from 'fs/promises';
 import { MemoryWriteTool } from './memoryTools';
 import { runWithSessionId } from './sessionContext';
 import { parseMemoryFile } from '../services/memoryIntelligence';
+import { getProjectRoot, setProjectRoot } from './pathResolution';
 
 // Exercises the provenance stamping and opt-in conflict enforce gate added to
 // the `remember` tool. ccmem dual-write is best-effort and offline here, so it
@@ -11,15 +12,17 @@ import { parseMemoryFile } from '../services/memoryIntelligence';
 
 describe('MemoryWriteTool provenance + enforce', () => {
   let projectDir: string;
+  let originalProjectRoot: string;
   const saved: Record<string, string | undefined> = {};
 
   beforeEach(async () => {
     projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-remember-'));
+    originalProjectRoot = getProjectRoot();
     for (const key of ['HARNESS_PROJECT_DIR', 'HARNESS_SESSION_ID', 'HARNESS_MEMORY_CONFLICT_ENFORCE', 'HARNESS_MEMORY_CONFLICT_THRESHOLD']) {
       saved[key] = process.env[key];
       delete process.env[key];
     }
-    process.env.HARNESS_PROJECT_DIR = projectDir;
+    setProjectRoot(projectDir);
   });
 
   afterEach(async () => {
@@ -27,6 +30,7 @@ describe('MemoryWriteTool provenance + enforce', () => {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    setProjectRoot(originalProjectRoot);
     await fs.rm(projectDir, { recursive: true, force: true });
   });
 

@@ -9,19 +9,24 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { ReflectTool } from './learningTools';
+import { ImproveSkillTool, ReflectTool } from './learningTools';
+import { getSkillUsage } from '../extensibility/skillUsage';
+import { getProjectRoot, setProjectRoot } from './pathResolution';
 
 describe('ReflectTool defensive input handling', () => {
   const originalCwd = process.cwd();
   let workDir: string;
+  let originalProjectRoot: string;
 
   beforeEach(async () => {
     workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'reflect-tool-'));
-    process.chdir(workDir);
+    originalProjectRoot = getProjectRoot();
+    setProjectRoot(workDir);
   });
 
   afterEach(async () => {
     process.chdir(originalCwd);
+    setProjectRoot(originalProjectRoot);
     await fs.rm(workDir, { recursive: true, force: true });
   });
 
@@ -65,5 +70,35 @@ describe('ReflectTool defensive input handling', () => {
     expect(result.success).toBe(true);
     const patterns = await fs.readFile(path.join(workDir, '.harness', 'memory', 'patterns.md'), 'utf-8');
     expect(patterns).toContain('reusable approach');
+  });
+});
+
+describe('ImproveSkillTool versions', () => {
+  let workDir: string;
+  let originalProjectRoot: string;
+
+  beforeEach(async () => {
+    workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'improve-skill-'));
+    originalProjectRoot = getProjectRoot();
+    setProjectRoot(workDir);
+    await fs.mkdir(path.join(workDir, '.harness', 'skills', 'price-check'), { recursive: true });
+    await fs.writeFile(path.join(workDir, '.harness', 'skills', 'price-check', 'SKILL.md'), 'version one', 'utf-8');
+  });
+
+  afterEach(async () => {
+    setProjectRoot(originalProjectRoot);
+    await fs.rm(workDir, { recursive: true, force: true });
+  });
+
+  it('keeps the old version in the skill history, not the skill folder, and restarts probation', async () => {
+    const result = await ImproveSkillTool.execute({ name: 'price-check', new_content: 'version two', reason: 'clearer steps' });
+    expect(result.success).toBe(true);
+    expect(await fs.readdir(path.join(workDir, '.harness', 'skills', 'price-check'))).toEqual(['SKILL.md']);
+    const history = await fs.readdir(path.join(workDir, '.harness', 'skills', '_history', 'price-check'));
+    expect(history).toHaveLength(1);
+    await expect(fs.readFile(path.join(workDir, '.harness', 'skills', '_history', 'price-check', history[0]), 'utf-8')).resolves.toBe('version one');
+    expect(await getSkillUsage(workDir, 'price-check')).toMatchObject({ status: 'probation', version: 2 });
+    expect(result.output).toContain('(version 2)');
+    expect(result.output).toContain('on probation');
   });
 });

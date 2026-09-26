@@ -1,6 +1,18 @@
-# Ollama Agent Harness — System Breakdown
+---
+title: System Breakdown
+description: Subsystem reference with dated inventory and current modernization pointers
+ms.date: 2026-09-15
+---
 
-**Version**: v0.6.4 (2026-06-02)
+## Current Status and Historical Inventory
+
+Package metadata remains v0.6.5, with unreleased modernization work on `dev`.
+The latest full Jest result is 316 suites, 3,759 passed tests and one skipped,
+exit 0. See [Modernization Status](MODERNIZATION-STATUS.md) for current runtime,
+MCP, cloud, lifecycle and recovery contracts and their remaining qualification gaps.
+The inventory and counts below are a June snapshot, not a fresh exhaustive audit.
+
+**Version**: v0.6.5 (2026-06-23)
 **Tests**: 2392 / 2393 across 206 suites (1 known flake) · **Modules**: 234 source · 206 test files
 **License**: see repo root · **Audience**: operators, contributors, future-you
 
@@ -18,17 +30,17 @@ permissions, persistence, and self-improvement infrastructure.
 
 Design constraints that show up everywhere in the codebase:
 
-- **Local-first.** Every storage path is under `.harness/` in the
-  current working directory. No daemon-side cloud database.
+- **Local-first.** Workspace state lives under the resolved project directory;
+  installation ownership markers are separate. Explicit cloud inference and
+  network tools send data outside the machine.
 - **Model-agnostic.** Ollama is the default backend, but the chat
   client factory abstracts Cerebras, Groq, GitHub Models, OpenAI,
   Mistral, OpenRouter, Replicate, and Cloudflare. No code path
   assumes Claude- or GPT-specific behaviour.
-- **Env-gated additions.** Every new behaviour added since v0.4.0
-  defaults OFF via a `HARNESS_*_ENABLED` env flag. Existing installs
-  keep working without reading release notes.
-- **Test-as-spec.** 2392 passing tests are the ground truth for
-  behaviour. When this document and a test disagree, the test wins.
+- **Explicit opt-ins.** Experimental features retain their documented gates;
+  runtime fixes and minimum Node requirements are not all feature-flagged.
+- **Test-as-spec.** Tests document expected behavior; independent artifact
+  checks and live qualification remain necessary to establish task success.
 
 ## 2. Top-level layout
 
@@ -180,7 +192,7 @@ on-demand capability.
 | `squad.ts` + `squadSessions.ts` | Multi-agent channels with regex routing | `.harness/squads/*.json` |
 | `identity.ts` | SOUL / USER / structured identity rendered into chat prompt | `.harness/identity/*` |
 | `memoryIntelligence.ts` | Semantic memory lookup over session history | derived |
-| `conceptMemoryClient.ts` | Best-effort TS client for the ccmem sidecar (v0.6.4) | `.harness/ccmem/bank.db` (via sidecar) |
+| `conceptMemoryClient.ts` | Best-effort TS client for the ccmem sidecar (v0.6.5) | `.harness/ccmem/bank.db` (via sidecar) |
 | `modelProfiles.ts` | Per-model `contextMaxTokens` / `validationProfile` / `pairedVisionModel` | `.harness/model-profiles.json` |
 | `capabilityRegistry.ts` | Opt-in grants with controls | `.harness/capabilities/*.json` |
 | `capabilityTemplates.ts` + starters | Templated capability bootstrap | derived |
@@ -376,7 +388,7 @@ from legacy plain-text settings on first read).
   concierge/log.jsonl             ← JSONL, auto-pruned at 5000
   mycelium/graph.json
   evals/trace-runs.jsonl
-  ccmem/bank.db                   ← concept-cell semantic memory (v0.6.4, SQLite)
+  ccmem/bank.db                   ← concept-cell semantic memory (v0.6.5, SQLite)
   model-profiles.json             ← per-model overrides (v0.4.2)
   file-write-redirects.json       ← optional path-pattern redirects
   curator/state.json
@@ -553,7 +565,7 @@ For release artifacts (zip + installer) see [docs/RELEASE-PIPELINE.md](RELEASE-P
   are separate concerns. Per user preference, HybridTurtle gets verify
   / harden, not new features.
 
-## 12. Status snapshot at v0.6.4
+## 12. Status snapshot at v0.6.5
 
 | Surface | State |
 |---|---|

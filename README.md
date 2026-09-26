@@ -2,7 +2,7 @@
 title: Ollama Agent Harness
 description: Local-first Ollama agent harness with tools, documents, Telegram, email, tracing, learning, and a browser UI
 author: Bradliebs
-ms.date: 2026-06-05
+ms.date: 2026-09-23
 ms.topic: overview
 keywords:
   - ollama
@@ -18,7 +18,7 @@ estimated_reading_time: 7
 
 ## What is this?
 
-Ollama Agent Harness is a local-first agent runtime that wraps Ollama models with a browser UI, tool dispatch, permissions, session management, and learning infrastructure. Everything runs on your machine. No cloud accounts, no API keys beyond Ollama itself.
+Ollama Agent Harness is a local-first agent runtime with a browser UI, tool dispatch, permissions, session management, and learning infrastructure. Local Ollama inference needs no cloud account. Configured cloud models, remote Ollama hosts, and network tools transmit data outside your machine; cloud execution may incur charges.
 
 You chat with a model, it can call tools (read/write files, run bash, search the web, analyze images, transcribe audio, generate documents, send emails), and the harness manages permissions, context, and history.
 
@@ -26,12 +26,32 @@ You chat with a model, it can call tools (read/write files, run bash, search the
 
 ### What's new since v0.6.5 (in development)
 
-Landed on `main` but not yet cut into a numbered release:
+Development work on `dev`; package metadata remains `0.6.5`. These changes are
+not yet a new numbered release.
+
+* Windows-first setup requires Node 22.13.0 or newer (24 LTS recommended), explicit model selection, and a confirmed Quick Test. Background launch preserves occupied ports; Stop targets only the owned server.
+* Interrupted-session recovery reports partial transcripts and preserves append-only history. Ollama cancellation and retries, MCP stdio interoperability, and document dependencies have additional regression coverage.
+* Cloud-only workflow testing can leave local GPUs available. The revised development cohort passed 36/36; the original frozen holdouts passed 12/24. These are different datasets, not a reliability guarantee or a like-for-like improvement.
+* Full Jest verification passed 329 suites and 3,841 tests, with one skipped and exit code 0. Installer execution and hosted cross-platform CI remain separate gates. See [Modernization Status](docs/MODERNIZATION-STATUS.md) for evidence and limitations.
 
 * **Autonomous Lead Agent** — hand the harness one task and the lead agent plans it into a graph of sub-agent workstreams, dispatches them in parallel via the orchestrator, verifies the merged result against the toolchain, and re-plans until it passes or a budget is exhausted — no human interaction. Use `HARNESS_LEAD=1` headless in the CLI, the `/auto <task>` chat command, or `POST /api/lead/run` (streaming). See [`docs/LEAD-AGENT.md`](docs/LEAD-AGENT.md).
 * **Governed Agent Loop v1** — a shadow-first governance pass beside the product path: confidence-mode labels, per-answer self-critique, a working-memory snapshot, and a human-gated review queue that writes to durable memory only on explicit approval. Idle replays re-ask drained answers and re-enter the same review queue. See [`docs/GOVERNED-LOOP.md`](docs/GOVERNED-LOOP.md).
 * **New HTTP surface** for the loop and supporting subsystems: `/api/working-memory`, `/api/review-queue/*`, `/api/replay-*`, `/api/governed-metrics`, plus `/api/webhooks/*` (including dead-letter redelivery) and `/api/mycelium/*` (router inspection, learning curve, feedback).
 * **Workspace vs install** clarification — set `HARNESS_PROJECT_DIR` to keep user data out of the install dir, and promote user-wide credentials (e.g. SMTP) to OS env vars so they stop going stale per workspace. See [Workspace vs install](#workspace-vs-install).
+* **Research answers cite sources** — answers built from web pages end with a numbered **Sources** list when the model included no links. `web_read` retries sites that block automated readers, and a 404 on a URL that never came from `web_search` is flagged as a guess.
+* **Persona and turn status in the UI** — the top bar shows the assistant's name from `SOUL.md`, with a badge when the persona is missing or a proposal needs review. Failed, stopped, interrupted and empty replies get a **Retry** strip.
+* **Workspace safety** — tests and smoke scripts no longer write into a real workspace, and [`scripts/repair-workspace.js`](scripts/repair-workspace.js) cleans up one that earlier runs polluted. See [Repairing a workspace](#repairing-a-workspace).
+* **One launcher** — `start.bat` with `background`, `stop`, `tray` or `watchdog`.
+* **Run logs and per-step undo** — every chat run is recorded in `.harness/runs/<runId>.jsonl`: message deltas, raw model responses, tool calls and full results, and compaction snapshots, so the exact prompt of any turn can be rebuilt. File changes made through the file tools are tagged with their step and can be rolled back to the end of any step (`GET /api/run-logs`, `POST /api/run-logs/<runId>/revert` with `toStepSeq`). Set `HARNESS_RUN_GIT_CHECKPOINT=1` to also snapshot the whole workspace per run (covers changes made via `bash`); `HARNESS_RUN_LOG=0` turns recording off.
+* **Run supervisor** — on by default. Tool steps that stop producing anything new (no new sources, files, results, verifier passes or plan steps) trigger a progress check, then a strategy change, and finally Moss stops and asks you what is blocking instead of looping. Per-run budgets stop a run into a summary: 1.5M tokens by default (`HARNESS_RUN_MAX_TOKENS`), plus an optional USD cap for priced models (`HARNESS_RUN_MAX_USD`). Loop-guard nudges and the tool-result injection tripwire are now on by default too. `HARNESS_SUPERVISOR=0` and `HARNESS_LOOP_HARDENING=0` turn them off.
+* **Provenance checks on side effects** — on by default, including in `dontAsk` mode. Web, browser and inbound-email tool output is untrusted: it can inform Moss's decisions but cannot authorise an action by itself. If an email recipient, a URL, or a shell command in a side-effecting call (`email_send`, `email_draft`, `bash`, `docker_exec`, `browser_fill`, non-GET `web_fetch`) appears only in untrusted content and not in your messages or profile, Moss asks for your approval and shows where the value came from. Unattended runs deny such calls. `HARNESS_PROVENANCE=0` turns this off.
+* **Model capability profiles** — `harness probe <model>` (or `POST /api/model-profiles/<model>/probe`) measures a model's native tool-calling reliability, JSON validity with and without schema-constrained output, instruction following, usable context (needle retrieval) and multi-step plan coherence, then saves `.harness/model-profiles/<model>.json` with recommendations. A fresh profile caps the context budget at the measured usable window. `HARNESS_ADAPTER_MODE=profile` additionally limits tools per step and switches weak tool-callers to JSON tool calls (schema-constrained where supported); it stays opt-in until replay evaluation shows it helps. Probes only run when asked, because they spend tokens.
+* **Adjustable scaffolding** — `HARNESS_SCAFFOLD_MODE=profile` (or `light`/`medium`/`heavy`) fits the structure to the model. **Medium:** plan first, the 10 most relevant tools, at most 3 calls per turn. **Heavy:** a plan-only first reply, one tool per step, a next-step prompt, and older tool results trimmed. `profile` uses the level recommended by the model's probe; measured profiles also replace the name-based "weak/strong tool use" guesses in the model picker. Opt-in until replay evaluation shows it helps.
+* **Governed working state** — protected paths are enforced before tools run: the task contract's blocked paths (`.env`, `.git/`, `secrets/`, …) plus anything in `.harness/protected-paths.json`. Shell commands that write to them are caught too. `HARNESS_WORKING_STATE=on` adds a typed working state (plan, facts with sources, decisions with reasons, open questions, invariants, sources read). It is rendered into every system prompt, so compaction can never drop it, and the model gets a `state_update` tool that can add protections but never remove them. The run log records the rendered state, so prompts still rebuild exactly.
+* **Independent checks on research answers** — when an answer was built from pages Moss read, every figure in it (prices, counts, percentages, dates, phone numbers) is checked against the text of those pages. Differences, totals and percentages computed from sourced figures count as supported; your own question counts too. By default this only records a verdict (a "claims verified / unverified" line under the reply and a run-log entry) and leaves the answer unchanged. `HARNESS_VERIFY_RESEARCH=annotate` appends a short "could not be confirmed" note. `critic` also asks a critic model from a different family (for example, not GLM when GLM wrote the answer) to judge the flagged claims against the best-matching excerpts, trying the next candidate if one fails. `gate` does that and asks the worker for one revision before accepting an answer with unsupported claims. `HARNESS_CRITIC_MODEL` picks the critic; a same-family choice is ignored. With `HARNESS_INSPECTOR_ADVERSARY=1`, the adversary judge uses the critic too, falling back to the chat model if the critic call fails. On Moss's history, about one figure in five in research answers was not in any page read that turn, which is why annotation stays opt-in.
+* **In-run escalation** — when chat routing is on (any mode except `off`), a run can switch to the strong-tier model partway through instead of failing. That happens when the supervisor finds it stuck (it tries a stronger model before asking you), or when the research gate rejects an answer a second time. The stronger model continues the same run with the full transcript and every tool offered natively. It happens at most once per run, is shown as "switched to a stronger model" under the reply, and is recorded as a run-log `route` event. If the strong tier is already the model doing the work, nothing changes. Per-turn routing (task type, risk and prompt size decide the tier) now uses measured capability profiles to spot weak tool callers.
+* **Memory that has to earn its place** — after every chat, task and background run, Moss derives lessons from the run log without a model call. It notes sites that refused automated reading (for example a 403), requests that got stuck and what was repeated, answers whose figures no page supported, and runs that hit the budget. They are kept in `.harness/learning/lessons.json`. With `HARNESS_LESSONS=recall`, up to four relevant ones (recent blocked sites for research requests, plus lessons from similar requests) are added to the prompt and labelled as run history. Each recalled lesson is scored by whether the next run avoided the same failure, and one that keeps failing is retired. Blocked-site lessons go stale after 30 days, others after 120. `HARNESS_LESSONS=off` stops recording. Skills now record whether the runs that used them finished cleanly. Skills the agent writes (`create_skill`, `promote_pattern`, `improve_skill`) are safety-scanned with the promotion gate's rules, versioned in `_history/`, and start on probation until three runs that use them finish cleanly; the skill list and the skill itself show that standing. When the curator is enabled, it archives skills whose last three runs (two while on probation) failed; archived skills can be restored.
+* **Replay your own history against other models** — `harness replay <runId> --model <m> [--model <m2>]` re-runs a recorded chat with the same prompt against other models. Tool calls get the originally recorded results (exact match, else the next result for that tool, else "no recorded result"), so nothing real runs and only the model varies. The report compares completion, turns, tokens, cost, duration, cited sources, unsupported claims and stuck runs. `harness benchmark-history --models a,b --last 10` does this over your last N tool-using chats; `POST /api/replays` runs it from the UI server. Add `--live` to run read-only tools for real. This is how the opt-in layers (adapter, scaffolding, routing) get switched on: only when your own history shows they help.
 
 ### What's new in v0.6.5
 
@@ -53,7 +73,7 @@ A small family of end-to-end experiences composed from existing harness primitiv
 flowchart LR
     A["🖥️ Install\nNode.js + Ollama"] -->|pull a model| B["🤖 Start Harness\nstart.bat / ./start.sh"]
     B -->|opens browser| C["🌐 Chat UI\nhttp://127.0.0.1:4300"]
-    C -->|type a message| D["💬 AI Responds\nusing local model"]
+    C -->|type a message| D["💬 AI Responds\nusing selected local or cloud model"]
     D -->|needs a file?| E["🔧 Tools\nread, write, search, run"]
     E -->|result| D
     D -->|learns| F["🧠 Memory\nskills, patterns, history"]
@@ -93,8 +113,8 @@ graph TD
 
 ### Prerequisites
 
-* [Node.js](https://nodejs.org/) 18+
-* [Ollama](https://ollama.com/) running locally with at least one model pulled (e.g. `ollama pull llama3.2`)
+* [Node.js](https://nodejs.org/) 24 LTS recommended, minimum 22.13.0
+* For local inference: [Ollama](https://ollama.com/) with a model you choose (e.g. `ollama pull llama3.2`). Alternatively, explicitly configure a supported cloud provider.
 
 ### Option A — Windows installer (easiest)
 
@@ -104,7 +124,7 @@ Download **Harness-Setup.exe** from the [latest release](https://github.com/Brad
 
 1. Clone this repo
 2. Double-click `start.bat` (Windows) or run `./start.sh` (Mac/Linux)
-3. Open **http://127.0.0.1:4300** in your browser
+3. Open the URL printed by the server, normally **http://127.0.0.1:4300**. An occupied port causes selection of another port, not termination of its owner.
 
 These launchers run the **assistant profile** (`HARNESS_PROFILE=assistant`) — the
 same harness with its proactive "Jarvis" features (ambient daily brief, voice,
@@ -117,7 +137,9 @@ npm install
 npm run ui
 ```
 
-Open **http://127.0.0.1:4300** in your browser. That is the full UI — start chatting in the main panel. This dev path runs a plain harness; set `HARNESS_PROFILE=assistant` first to turn the proactive assistant features on.
+Open the URL printed by the server. The terminal development path can use a
+different default port from the launchers. This dev path runs a plain harness;
+set `HARNESS_PROFILE=assistant` first to turn the proactive assistant features on.
 
 ### CLI mode
 
@@ -134,7 +156,10 @@ npm run typecheck
 npm test -- --runInBand
 ```
 
-With the UI server running, smoke-test the browser:
+With the UI server running, smoke-test the browser. The smoke creates chats,
+services and uploads through the API, so it refuses to reuse a running server
+unless you name it explicitly or pass `--reuse`; never point it at the server
+holding your real workspace:
 
 ```powershell
 npm run smoke:ui -- http://127.0.0.1:4300/
@@ -142,7 +167,7 @@ npm run smoke:ui -- http://127.0.0.1:4300/
 
 To validate the current checkout without accidentally reusing a stale local UI
 server, run the fresh smoke. It starts its own server on the default smoke port
-and fails if that port is already occupied:
+in a throwaway workspace, and fails if that port is already occupied:
 
 ```powershell
 npm run smoke:ui:fresh
@@ -453,6 +478,8 @@ Skills are structured prompts that teach the model domain-specific tasks. They l
 
 The Tools dashboard includes a curated MCP catalog and a local MCP runtime panel. Runtime server definitions are persisted under `.harness/mcp/servers.json`; starting a server launches an external process and therefore requires an active `arbitrary-shell` capability grant. The first runtime layer supports configure, list, start, stop, status, and visible configured-tool metadata. Protocol-level tool invocation can build on this process manager without bypassing grants or audit logs.
 
+Stdio uses newline-delimited UTF-8 JSON by default and negotiates protocol version `2024-11-05`. Tool discovery follows pagination. Existing custom servers that require Content-Length framing must set `"framing": "content-length"` in their server definition. Unsupported negotiated versions fail explicitly. Compatibility tests include the official TypeScript SDK server; this does not claim support for newer optional MCP capabilities.
+
 ### Sessions and context
 
 Chat sessions persist under `.harness/sessions/`. Context continuity detects model context length and manages conversation history. Sessions can be forked and resumed.
@@ -501,6 +528,20 @@ The harness separates the **install directory** (where the code lives, e.g. `H:\
 
 One consequence: `.harness/api-keys.json` is **per workspace**. Credentials you want to share across every workspace (SMTP, third-party API keys) should be set as OS environment variables instead — the harness reads env vars whenever a key is absent from `api-keys.json`, so promoting a credential to an env var and removing it from per-workspace files prevents drift.
 
+Tests never use `HARNESS_PROJECT_DIR`: under Jest the server refuses any project directory outside the checkout or the OS temp directory, so a user-wide setting cannot send test fixtures into your real workspace.
+
+### Repairing a workspace
+
+Before these guards existed, test and smoke runs wrote fixtures into real workspaces: a placeholder `SOUL.md`, test capability grants and connector secrets, `test-model` stats, plan tasks, documents, uploads and daily example.com automations. The repair script finds and reverses that:
+
+```powershell
+node scripts/repair-workspace.js                 # dry run: lists every change
+node scripts/repair-workspace.js --apply         # back up, then apply
+node scripts/repair-workspace.js --dir D:\path --apply
+```
+
+It targets `HARNESS_PROJECT_DIR` by default and refuses to apply while something listens on port 4300 or 3000 (a running server would overwrite `settings.json`); pass `--force` when that listener is not the harness. Originals are copied or moved to `.harness/snapshots/repair-<timestamp>/`. It also compacts `.harness/jarvis/knowledge.jsonl` when it has grown past 20 MB (this needs `npm run build`).
+
 ### Runtime state
 
 All runtime state goes under `.harness/` in your project directory:
@@ -522,6 +563,13 @@ All runtime state goes under `.harness/` in your project directory:
 | `.harness/email/sent/` | Sent email archive |
 | `.harness/documents/` | Generated documents (Markdown, HTML, PDF, DOCX) |
 | `.harness/evidence/` | Run evidence cards (automation, autonomy) |
+| `.harness/identity/` | `SOUL.md` persona, `USER.md` notes, proposals and history snapshots |
+| `.harness/jarvis/knowledge.jsonl` | Personal knowledge graph |
+| `.harness/snapshots/` | Backups, including `repair-<timestamp>/` from the repair script |
+| `.harness/runs/` | Per-run event logs (newest 500 runs, 300 MB cap) |
+| `.harness/model-profiles/` | Capability profiles from `harness probe` |
+| `.harness/protected-paths.json` | Optional list of paths/patterns tools must never modify |
+| `.harness/side-effects.jsonl` | File changes and notifications per run and step, with how to undo them |
 | `.harness/telegram-chat-ids.json` | Telegram notification recipients |
 
 ## Releasing

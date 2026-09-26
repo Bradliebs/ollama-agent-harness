@@ -2,6 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { SessionStorage } from './sessionStorage';
 import type { SessionEvent, SessionMeta } from '../types';
+import { applyMemoryIndexRetention } from './memoryIndexRetention';
 
 export interface SessionSearchEntry {
   id: string;
@@ -48,13 +49,14 @@ export async function rebuildSessionSearchIndexWithMetadata(projectDir: string, 
     const events = await storage.readAll();
     entries.push(...eventsToSearchEntries(session, events));
   }
+  const retainedEntries = applyMemoryIndexRetention(entries);
   const metadata: SessionSearchIndexMetadata = {
     rebuiltAt: now.toISOString(),
     sessionCount: sessions.length,
-    entryCount: entries.length,
+    entryCount: retainedEntries.length,
     sourceUpdatedAt: sourceUpdatedAt(sessions),
   };
-  const index = { metadata, entries };
+  const index = { metadata, entries: retainedEntries };
   await writeIndex(projectDir, index);
   return index;
 }

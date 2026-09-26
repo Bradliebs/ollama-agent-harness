@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
+import { getProjectRoot } from './pathResolution';
 
 // ─── Desktop screenshot tool ────────────────────────────────────────
 //
@@ -28,7 +29,7 @@ export const DesktopScreenshotTool: Tool = {
   isReadOnly: true,
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
     const region = String(input.region ?? 'full').trim().toLowerCase();
-    const projectDir = process.cwd();
+    const projectDir = getProjectRoot();
     const screenshotDir = path.join(projectDir, SCREENSHOT_DIR);
     await fs.mkdir(screenshotDir, { recursive: true });
 

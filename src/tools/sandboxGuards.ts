@@ -121,7 +121,7 @@ export function isShellBinaryAllowed(rawExecutable: string): boolean {
   if (!rawExecutable) return false;
   // Strip path so '/usr/bin/git' and 'C:\\Program Files\\Git\\bin\\git.exe'
   // both normalize to 'git'.
-  const base = path.basename(rawExecutable).toLowerCase();
+  const base = path.win32.basename(rawExecutable).toLowerCase();
   // Strip Windows extension.
   const stripped = base.replace(/\.(exe|cmd|bat|ps1)$/i, '');
   return SANDBOX_SHELL_ALLOWLIST.has(stripped);

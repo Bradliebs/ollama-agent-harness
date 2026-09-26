@@ -6,7 +6,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const root = path.resolve(__dirname, '..');
-const RELEASE_ONLY_ENTRIES = ['scripts', 'package.json', 'package-lock.json', 'release-provenance.json'];
+const RELEASE_ONLY_ENTRIES = ['scripts', 'package.json', 'package-lock.json', 'release-provenance.json', 'start-background.bat', 'stop-server.bat'];
 
 function main() {
   const args = parseArgs(process.argv.slice(2));

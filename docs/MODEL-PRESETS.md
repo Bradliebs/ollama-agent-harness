@@ -2,7 +2,7 @@
 title: Model Presets
 description: Beginner-friendly Ollama model choices for coding, vision, helper routing, and summarization in Harness
 author: Bradliebs
-ms.date: 2026-05-06
+ms.date: 2026-09-15
 ms.topic: guide
 keywords:
   - ollama
@@ -113,11 +113,21 @@ Run `harness doctor` after changing model or media settings to confirm that Olla
 
 ## Adding An Ollama Cloud Model
 
-Harness discovers Ollama Cloud models through your local Ollama runtime. Pull
-the model first, then confirm that Ollama lists it:
+Harness discovers Ollama Cloud models through the configured Ollama runtime.
+Sign in on that installation and check its model list. Cloud access requires an
+account; credentials retained by the daemon are separate from shell API keys.
 
 ```powershell
-ollama pull <model>:cloud
+ollama signin
+ollama list
+```
+
+If the selected cloud model is not listed, register its exact advertised model
+name, then check the list again. Cloud names can use `:cloud` or `-cloud`; do not
+append a suffix to an arbitrary local model name:
+
+```powershell
+ollama pull <exact-cloud-model-name>
 ollama list
 ```
 
@@ -125,10 +135,27 @@ After the model appears in `ollama list`, select it in the Harness model picker
 or pass it to the CLI:
 
 ```powershell
-harness --model <model>:cloud
+harness --model <exact-cloud-model-name>
 ```
 
+Cloud model inference runs remotely and leaves that model off the local GPU.
+Conversation data and permitted tool results go to the provider; account limits
+or charges may apply. Other optional local helpers and tools are separate.
+On hosts with both native and WSL Ollama, verify the endpoint and model catalog:
+IPv4 and IPv6 loopback can reach different services. Do not restart either service
+to switch models when another workload is using it.
+
+For reproducible cloud-only workflow tests, the
+[bounded benchmark](VALIDATION-PROFILES.md#workflow-outcome-benchmarks) verifies
+remote model metadata and forbids local fallback. Ordinary model selection does
+not provide that benchmark's isolation contract. See
+[Modernization Status](MODERNIZATION-STATUS.md#cloud-workflow-qualification-2026-09-14)
+for measured results; none of these presets is a universal qualification.
+
 For tool-routing confidence, run the routing validator after building:
+
+This sends live model requests and can consume cloud allowance. It is not an
+offline installation check.
 
 ```powershell
 npm run build

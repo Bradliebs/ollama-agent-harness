@@ -28,6 +28,7 @@ import {
   discardSoulProposal,
   readSoulProposal,
 } from '../services/identityProposals';
+import { assessIdentityHealth } from '../services/identityHealth';
 import {
   captureIdentitySnapshot,
   listIdentityHistory,
@@ -230,6 +231,14 @@ export function createIdentityRouter(deps: IdentityRoutesDeps): express.Router {
   });
 
   // ─── Adaptive identity — SOUL proposal review ────────────────────────
+  router.get('/api/identity/health', async (_req, res) => {
+    try {
+      res.json(await assessIdentityHealth(projectDir));
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   router.get('/api/identity/soul-proposal', async (_req, res) => {
     try {
       const proposal = await readSoulProposal(projectDir);

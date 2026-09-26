@@ -19,6 +19,8 @@ import { checkObligations } from '../services/promiseLedger';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
 import { OUTPUT_VALIDATION_PROFILES, parseOutputValidationProfile, type OutputValidationProfile, type OutputValidationResult } from '../core/outputValidation';
 import { formatCliHelp, resolveCliCommand } from './commands';
+import { runProbeSuite } from '../models/probeRunner';
+import { safeModelProfileName, type CapabilityProfile } from '../models/capabilityProfile';
 import { runMyceliumCli } from '../mycelium/cli';
 import { createMycelialRouter, deriveToolShortlist, toolNamesFromRoute, type MycelialContextRouter } from '../mycelium/router';
 import { heuristicVerifier } from '../mycelium/verifier';
@@ -42,7 +44,8 @@ import {
   createLeadPersist,
 } from '../core/leadAgentFactories';
 import { configureWebReadTool, DEFAULT_WEB_READ_MAX_CHARS, sanitizeWebReadMaxChars } from '../tools/webSearchTool';
-import { getAgentOutputDir, getAllowedExternalPaths, setAllowedExternalPaths } from '../tools/pathResolution';
+import { getAgentOutputDir, getAllowedExternalPaths, getWorkspaceDataRoot, setAllowedExternalPaths } from '../tools/pathResolution';
+import { benchmarkHistory, compareRuns, formatReportTable, loadReplayCase, replayRun } from '../eval/replay';
 
 const CLI_STORED_ENV_KEYS = new Set([
   'OPENAI_API_KEY',
@@ -77,7 +80,7 @@ const CLI_STORED_ENV_KEYS = new Set([
 ]);
 
 interface CliOptions {
-  command?: 'doctor' | 'mycelium' | 'tui' | 'simulate';
+  command?: 'doctor' | 'mycelium' | 'tui' | 'simulate' | 'probe' | 'replay' | 'benchmark-history';
   myceliumArgs?: string[];
   /** Daemon base URL for the `tui` command. */
   tuiBaseUrl?: string;
@@ -91,6 +94,15 @@ interface CliOptions {
   simulateProbeTimeoutMs?: number;
   /** Persist the simulator run as an EvalTraceRun. */
   simulatePersist?: boolean;
+  probeMaxContextTokens?: number;
+  probeSamples?: number;
+  replayRunId?: string;
+  replayLastN?: number;
+  replayModels?: string[];
+  replayLive?: boolean;
+  json?: boolean;
+  benchmarkModels?: string[];
+  benchmarkLastN?: number;
   model: string;
   host: string;
   permissionMode: PermissionMode;
@@ -143,6 +155,17 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
   } else if (command?.name === 'simulate') {
     options.command = 'simulate';
     args = args.slice(1);
+  } else if (command?.name === 'replay') {
+    options.command = 'replay';
+    if (args[1] && !args[1].startsWith('-')) options.replayRunId = args[1];
+    args = args.slice(args[1] && !args[1].startsWith('-') ? 2 : 1);
+  } else if (command?.name === 'benchmark-history') {
+    options.command = 'benchmark-history';
+    args = args.slice(1);
+  } else if (command?.name === 'probe') {
+    options.command = 'probe';
+    if (args[1] && !args[1].startsWith('-')) options.model = args[1];
+    args = args.slice(args[1] && !args[1].startsWith('-') ? 2 : 1);
   }
 
   for (let i = 0; i < args.length; i++) {
@@ -150,6 +173,10 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
       case '--model':
       case '-m':
         options.model = args[++i];
+        if (options.command === 'replay') {
+          options.replayModels = options.replayModels ?? [];
+          options.replayModels.push(options.model);
+        }
         break;
       case '--host':
         options.host = args[++i];
@@ -242,6 +269,33 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
       case '--persist':
         options.simulatePersist = true;
         break;
+      case '--last': {
+        const n = parseInt(args[++i], 10);
+        if (Number.isFinite(n) && n > 0) {
+          if (options.command === 'replay') options.replayLastN = n;
+          if (options.command === 'benchmark-history') options.benchmarkLastN = n;
+        }
+        break;
+      }
+      case '--models':
+        options.benchmarkModels = args[++i].split(',').map((model) => model.trim()).filter(Boolean);
+        break;
+      case '--live':
+        options.replayLive = true;
+        break;
+      case '--json':
+        options.json = true;
+        break;
+      case '--max-context': {
+        const tokens = parseInt(args[++i], 10);
+        if (Number.isFinite(tokens) && tokens > 0) options.probeMaxContextTokens = tokens;
+        break;
+      }
+      case '--samples': {
+        const samples = parseInt(args[++i], 10);
+        if (Number.isFinite(samples) && samples > 0) options.probeSamples = samples;
+        break;
+      }
       case '--help':
       case '-h':
         printHelp();
@@ -254,6 +308,27 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
 
 function printHelp(): void {
   console.log(formatCliHelp(OUTPUT_VALIDATION_PROFILES.map((profile) => profile.profile)));
+}
+
+function formatBenchmarkHistoryTable(report: Awaited<ReturnType<typeof benchmarkHistory>>): string {
+  const rows = report.aggregates.map((row) => [
+    row.model,
+    String(row.runs),
+    `${Math.round(row.completionRate * 100)}%`,
+    row.avgTurns.toFixed(1),
+    row.avgTokens.toFixed(0),
+    `$${row.avgCost.toFixed(6)}`,
+    `${Math.round(row.avgDurationMs)}ms`,
+    `${Math.round(row.stuckRate * 100)}%`,
+    row.avgCitedSources.toFixed(1),
+    `${Math.round(row.unsupportedClaimRate * 100)}%`,
+  ]);
+  const headers = ['model', 'runs', 'complete', 'turns', 'tokens', 'cost', 'duration', 'stuck', 'urls', 'unsupported'];
+  const widths = headers.map((header, index) => Math.max(header.length, ...rows.map((row) => row[index]?.length ?? 0)));
+  const render = (row: string[]): string => row.map((cell, index) => cell.padEnd(widths[index])).join('  ');
+  const lines = [render(headers), render(widths.map((width) => '-'.repeat(width))), ...rows.map(render)];
+  if (report.skippedRunIds.length > 0) lines.push(`Skipped incomplete runs: ${report.skippedRunIds.join(', ')}`);
+  return lines.join('\n');
 }
 
 /**
@@ -438,8 +513,100 @@ export async function main(): Promise<void> {
     return;
   }
 
-  const projectDir = process.cwd();
+  const projectDir = getWorkspaceDataRoot();
   await loadHeadlessRuntimeSettings(projectDir);
+
+  if (options.command === 'replay') {
+    const models = options.replayModels ?? [];
+    if (models.length === 0) {
+      console.error('replay requires at least one --model.');
+      process.exitCode = 1;
+      return;
+    }
+    if (!options.replayRunId && options.replayLastN) {
+      const report = await benchmarkHistory(projectDir, {
+        models,
+        lastN: options.replayLastN,
+        createClient: (model) => createChatClient({ backend: options.backend, model, host: options.host, autoFallback: true, projectDir }),
+        schemaTools: getBuiltinTools(),
+      });
+      if (options.json) console.log(JSON.stringify(report, null, 2));
+      else console.log(formatBenchmarkHistoryTable(report));
+      return;
+    }
+    if (!options.replayRunId) {
+      console.error('replay requires a run id or --last N.');
+      process.exitCode = 1;
+      return;
+    }
+    const replayCase = await loadReplayCase(projectDir, options.replayRunId);
+    const replays = [];
+    for (const model of models) {
+      const client = createChatClient({ backend: options.backend, model, host: options.host, autoFallback: true, projectDir });
+      const tools = options.replayLive ? getBuiltinTools().filter((tool) => tool.isReadOnly === true) : undefined;
+      replays.push((await replayRun(replayCase, {
+        client,
+        model,
+        mode: options.replayLive ? 'live' : 'deterministic',
+        tools,
+        schemaTools: getBuiltinTools(),
+      })).metrics);
+    }
+    const report = compareRuns(replayCase.originalMetrics, replays);
+    if (options.json) console.log(JSON.stringify(report, null, 2));
+    else console.log(formatReportTable(report));
+    return;
+  }
+
+  if (options.command === 'benchmark-history') {
+    const models = options.benchmarkModels ?? [];
+    if (models.length === 0) {
+      console.error('benchmark-history requires --models a,b.');
+      process.exitCode = 1;
+      return;
+    }
+    const report = await benchmarkHistory(projectDir, {
+      models,
+      lastN: options.benchmarkLastN ?? 10,
+      createClient: (model) => createChatClient({ backend: options.backend, model, host: options.host, autoFallback: true, projectDir }),
+      schemaTools: getBuiltinTools(),
+    });
+    if (options.json) console.log(JSON.stringify(report, null, 2));
+    else console.log(formatBenchmarkHistoryTable(report));
+    return;
+  }
+
+  if (options.command === 'probe') {
+    const client = createChatClient({
+      backend: options.backend,
+      model: options.model,
+      host: options.host,
+      autoFallback: true,
+      projectDir,
+    });
+    const health = await client.healthCheck();
+    if (!health.ok) {
+      console.error(`❌ ${health.error}`);
+      process.exitCode = 1;
+      return;
+    }
+    const profile = await runProbeSuite(client, {
+      model: options.model,
+      projectDir,
+      budget: {
+        samples: options.probeSamples,
+        maxContextTokens: options.probeMaxContextTokens,
+      },
+      onProgress: (event) => {
+        if (event.status === 'start') console.log(`Running ${event.probeId}...`);
+        else if (event.result?.details.timedOut) console.log(`  ${event.probeId}: timed out after ${Math.round(Number(event.result.details.timeoutMs) / 1000)}s (scored 0)`);
+        else if (event.result) console.log(`  ${event.probeId}: ${Math.round(event.result.score * 100)}% in ${Math.round(event.result.durationMs / 1000)}s`);
+      },
+    });
+    console.log(formatCapabilityProfileTable(profile));
+    console.log(`Saved profile to .harness/model-profiles/${safeModelProfileName(profile.model)}.json`);
+    return;
+  }
 
   // Initialize client (Ollama by default; OpenAI-compatible providers via
   // --backend or HARNESS_BACKEND env var).
@@ -455,6 +622,25 @@ export async function main(): Promise<void> {
   if (!health.ok) {
     console.error(`❌ ${health.error}`);
     process.exit(1);
+  }
+
+  function formatCapabilityProfileTable(profile: CapabilityProfile): string {
+    const rows = [
+      ['toolCalling', profile.scores.toolCalling],
+      ['jsonInTextRate', profile.scores.jsonInTextRate],
+      ['structuredPlain', profile.scores.structuredPlain],
+      ['structuredConstrained', profile.scores.structuredConstrained],
+      ['instructionFollowing', profile.scores.instructionFollowing],
+      ['planCoherence', profile.scores.planCoherence],
+    ];
+    const lines = [
+      `Capability profile: ${profile.model}`,
+      'Score'.padEnd(24) + 'Value',
+      ...rows.map(([name, value]) => String(name).padEnd(24) + Number(value).toFixed(2)),
+      `Usable context: ${profile.usableContextTokens} tokens (detected ${profile.detectedContextTokens ?? 'unknown'})`,
+      `Recommendation: toolMode=${profile.recommended.toolMode}, maxTools=${profile.recommended.maxToolsPerStep}, promptTier=${profile.recommended.promptTier}, scaffold=${profile.recommended.scaffoldLevel}, contextBudget=${profile.recommended.contextBudgetTokens}`,
+    ];
+    return lines.join('\n');
   }
 
   let headlessPrompt: string | undefined = options.prompt;

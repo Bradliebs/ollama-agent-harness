@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { getProjectRoot } from './pathResolution';
 
 // ─── Browser audit log ─────────────────────────────────────────────
 //
@@ -54,7 +55,7 @@ interface RedactionConfig {
 
 async function readRedactionConfig(): Promise<RedactionConfig> {
   try {
-    const raw = await fs.readFile(path.join(process.cwd(), SETTINGS_RELPATH), 'utf-8');
+    const raw = await fs.readFile(path.join(getProjectRoot(), SETTINGS_RELPATH), 'utf-8');
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const r = parsed.browserRedaction;
     if (r && typeof r === 'object') {
@@ -107,9 +108,9 @@ export async function recordBrowserAudit(input: BrowserAuditInput): Promise<void
       outcome: input.outcome,
       detail,
     };
-    const dir = path.join(process.cwd(), '.harness');
+    const dir = path.join(getProjectRoot(), '.harness');
     await fs.mkdir(dir, { recursive: true });
-    await fs.appendFile(path.join(process.cwd(), AUDIT_RELPATH), JSON.stringify(entry) + '\n', 'utf-8');
+    await fs.appendFile(path.join(getProjectRoot(), AUDIT_RELPATH), JSON.stringify(entry) + '\n', 'utf-8');
   } catch {
     // Never let audit logging surface as a tool failure.
   }
@@ -121,7 +122,7 @@ export async function recordBrowserAudit(input: BrowserAuditInput): Promise<void
  */
 export async function readBrowserAudit(limit = 200): Promise<BrowserAuditEntry[]> {
   try {
-    const raw = await fs.readFile(path.join(process.cwd(), AUDIT_RELPATH), 'utf-8');
+    const raw = await fs.readFile(path.join(getProjectRoot(), AUDIT_RELPATH), 'utf-8');
     const entries: BrowserAuditEntry[] = [];
     for (const line of raw.split('\n')) {
       const trimmed = line.trim();

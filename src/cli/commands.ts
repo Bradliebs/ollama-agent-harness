@@ -97,6 +97,41 @@ export const CLI_COMMAND_REGISTRY: CliCommandDef[] = [
       { flags: ['--persist'], description: 'Persist the run as an EvalTraceRun under .harness/evals/ so the promotion gate counts it' },
     ],
   },
+  {
+    name: 'replay',
+    description: 'Replay a recorded chat run deterministically against one or more models',
+    aliases: [],
+    usage: 'harness replay <runId|--last N> --model <name> [--model <name>] [--live] [--json]',
+    options: [
+      { flags: ['--last'], valueName: '<n>', description: 'Replay/benchmark the last N eligible chat runs' },
+      { flags: ['--model'], valueName: '<name>', description: 'Model to replay with (repeatable)' },
+      { flags: ['--live'], description: 'Use live read-only tools instead of recorded deterministic tool results' },
+      { flags: ['--json'], description: 'Print JSON instead of a text table' },
+    ],
+  },
+  {
+    name: 'benchmark-history',
+    description: 'Replay recent completed tool-using chat history across model candidates',
+    aliases: [],
+    usage: 'harness benchmark-history --models a,b [--last 10] [--json]',
+    options: [
+      { flags: ['--models'], valueName: '<a,b>', description: 'Comma-separated model list' },
+      { flags: ['--last'], valueName: '<n>', description: 'Number of eligible chat runs to replay (default: 10)' },
+      { flags: ['--json'], description: 'Print JSON instead of an aggregate table' },
+    ],
+  },
+  {
+    name: 'probe',
+    description: 'Probe a model and save a capability profile',
+    aliases: [],
+    usage: 'harness probe <model> [--backend <name>] [--host <url>]',
+    options: [
+      { flags: ['--backend'], valueName: '<name>', description: 'Chat backend: ollama (default), openai, groq, github, etc.' },
+      { flags: ['--host'], valueName: '<url>', description: 'Ollama host (default: http://localhost:11434)' },
+      { flags: ['--max-context'], valueName: '<tokens>', description: 'Cap usable-context probe (default: 32000)' },
+      { flags: ['--samples'], valueName: '<n>', description: 'Override per-probe sample count' },
+    ],
+  },
 ];
 
 export function resolveCliCommand(name: string | undefined): CliCommandDef | undefined {

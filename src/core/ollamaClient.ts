@@ -3,7 +3,8 @@ import type { ChatRequest, ChatResponse, Message, Tool, ToolCall } from 'ollama'
 import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import { appendFileSync } from 'fs';
-import type { ChatResult, IChatClient, ModelLocality, StreamChunk, TokenUsage } from './chatClient';
+import { AsyncLocalStorage } from 'async_hooks';
+import type { ChatOptions, ChatResult, IChatClient, ModelLocality, StreamChunk, TokenUsage } from './chatClient';
 
 export type { ChatResult, StreamChunk, TokenUsage } from './chatClient';
 
@@ -27,6 +28,15 @@ export interface OllamaClientConfig {
   model: string;
   keepAlive?: string;
   numCtx?: number;
+  onRequestEvent?: (event: OllamaRequestEvent) => void;
+}
+
+export interface OllamaRequestEvent {
+  phase: 'start' | 'complete' | 'error';
+  requestId: number;
+  durationMs?: number;
+  usage?: { promptTokens: number | null; completionTokens: number | null };
+  error?: string;
 }
 
 export class OllamaClient implements IChatClient {
@@ -34,44 +44,72 @@ export class OllamaClient implements IChatClient {
   private model: string;
   private keepAlive: string;
   private numCtx?: number;
+  private requestSignal = new AsyncLocalStorage<AbortSignal | undefined>();
+  private onRequestEvent?: OllamaClientConfig['onRequestEvent'];
+  private nextRequestId = 0;
 
   constructor(config: OllamaClientConfig) {
-    this.client = new Ollama({ host: config.host ?? 'http://localhost:11434', fetch: longLivedFetch });
+    this.client = new Ollama({
+      host: config.host ?? 'http://localhost:11434',
+      fetch: (input, init) => {
+        const callerSignal = this.requestSignal.getStore();
+        const signal = callerSignal && init?.signal
+          ? AbortSignal.any([callerSignal, init.signal]) : callerSignal ?? init?.signal;
+        return longLivedFetch(input, { ...init, signal });
+      },
+    });
     this.model = config.model;
     this.keepAlive = config.keepAlive ?? '5m';
     this.numCtx = config.numCtx;
+    this.onRequestEvent = config.onRequestEvent;
   }
 
   async chat(
     messages: Message[],
     tools?: Tool[],
     abortSignal?: AbortSignal,
+    options?: ChatOptions,
   ): Promise<ChatResult> {
     const maxAttempts = getOllamaChatMaxAttempts();
     const maxEmptyAttempts = getOllamaEmptyResponseMaxAttempts();
     let transientAttempts = 0;
     let emptyAttempts = 0;
     for (;;) {
+      abortSignal?.throwIfAborted();
+      const requestId = ++this.nextRequestId;
+      const started = performance.now();
+      let reportedUsage: OllamaRequestEvent['usage'] = { promptTokens: null, completionTokens: null };
+      const recordUsage = (response: ChatResponse): void => {
+        reportedUsage = {
+          promptTokens: validTokenCount(response.prompt_eval_count),
+          completionTokens: validTokenCount(response.eval_count),
+        };
+      };
+      this.onRequestEvent?.({ phase: 'start', requestId });
       try {
         writeDebugLogRequest(this.model, messages, tools);
-        const response = await this.client.chat({
+        const response = await this.requestSignal.run(abortSignal, () => this.client.chat({
           model: this.model,
           messages,
           tools,
+          format: resolveOllamaFormat(options),
           stream: true as const,
           keep_alive: this.keepAlive,
           options: this.numCtx ? { num_ctx: this.numCtx } : undefined,
-        });
+        }));
 
         let result: ChatResult;
         if (isAsyncIterable<ChatResponse>(response)) {
-          result = await collectStreamingChatResponse(response, abortSignal);
+          result = await collectStreamingChatResponse(response, abortSignal, recordUsage, offeredToolNames(tools));
         } else {
-          result = chatResponseToResult(response);
+          recordUsage(response);
+          result = chatResponseToResult(response, offeredToolNames(tools));
         }
         writeDebugLogResponse(this.model, messages, tools, result);
+        this.onRequestEvent?.({ phase: 'complete', requestId, durationMs: performance.now() - started, usage: reportedUsage });
         return result;
       } catch (error) {
+        this.onRequestEvent?.({ phase: 'error', requestId, durationMs: performance.now() - started, usage: reportedUsage, error: error instanceof Error ? error.message : String(error) });
         if (abortSignal?.aborted) throw error;
 
         // Empty-response flake (Ollama Cloud sometimes closes the stream with
@@ -114,32 +152,37 @@ export class OllamaClient implements IChatClient {
   async chatOnce(
     messages: Message[],
     tools?: Tool[],
+    options?: ChatOptions,
   ): Promise<ChatResult> {
     const response = await this.client.chat({
       model: this.model,
       messages,
       tools,
+      format: resolveOllamaFormat(options),
       stream: false as const,
       keep_alive: this.keepAlive,
       options: this.numCtx ? { num_ctx: this.numCtx } : undefined,
     });
 
-    return chatResponseToResult(response);
+    return chatResponseToResult(response, offeredToolNames(tools));
   }
 
   async *chatStream(
     messages: Message[],
     tools?: Tool[],
     abortSignal?: AbortSignal,
+    options?: ChatOptions,
   ): AsyncGenerator<StreamChunk> {
-    const stream = await this.client.chat({
+    abortSignal?.throwIfAborted();
+    const stream = await this.requestSignal.run(abortSignal, () => this.client.chat({
       model: this.model,
       messages,
       tools,
+      format: resolveOllamaFormat(options),
       stream: true as const,
       keep_alive: this.keepAlive,
       options: this.numCtx ? { num_ctx: this.numCtx } : undefined,
-    });
+    }));
 
     for await (const chunk of stream) {
       if (abortSignal?.aborted) return;
@@ -193,6 +236,10 @@ export class OllamaClient implements IChatClient {
   }
 }
 
+function resolveOllamaFormat(options?: ChatOptions): ChatRequest['format'] | undefined {
+  return (options?.format ?? options?.responseSchema) as ChatRequest['format'] | undefined;
+}
+
 function getOllamaChatMaxAttempts(): number {
   const parsed = Number.parseInt(process.env.HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS || '2', 10);
   if (!Number.isFinite(parsed)) return 2;
@@ -227,6 +274,10 @@ function getOllamaChatRetryDelayMs(attempt: number): number {
 }
 
 function isTransientOllamaChatError(error: unknown): boolean {
+  if (typeof error === 'object' && error !== null && 'status_code' in error) {
+    const status = error.status_code;
+    if (typeof status === 'number' && Number.isInteger(status)) return status >= 500 && status <= 504;
+  }
   const message = error instanceof Error ? error.message : String(error);
   // Ollama Cloud occasionally closes the SSE stream without the terminal
   // {done:true} chunk after a long tool result is appended to history. The
@@ -252,7 +303,6 @@ async function sleep(ms: number, abortSignal?: AbortSignal): Promise<void> {
       resolve();
     }, ms);
     abortSignal?.addEventListener('abort', abort, { once: true });
-    timeout.unref?.();
   });
 }
 
@@ -260,13 +310,23 @@ interface AbortableAsyncIterable<T> extends AsyncIterable<T> {
   abort?: () => void;
 }
 
+function validTokenCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
 function isAsyncIterable<T>(value: unknown): value is AbortableAsyncIterable<T> {
   return typeof value === 'object' && value !== null && Symbol.asyncIterator in value;
+}
+
+function offeredToolNames(tools: Tool[] | undefined): string[] {
+  return (tools ?? []).map((tool) => tool.function?.name).filter((name): name is string => typeof name === 'string' && name.length > 0);
 }
 
 async function collectStreamingChatResponse(
   stream: AbortableAsyncIterable<ChatResponse>,
   abortSignal?: AbortSignal,
+  onUsage?: (response: ChatResponse) => void,
+  toolNames: string[] = [],
 ): Promise<ChatResult> {
   let content = '';
   let thinking = '';
@@ -281,6 +341,7 @@ async function collectStreamingChatResponse(
   try {
     for await (const chunk of stream) {
       if (abortSignal?.aborted) throw new Error('aborted');
+      if (chunk.done) onUsage?.(chunk);
       if (chunk.message?.role) role = chunk.message.role;
       content += chunk.message?.content ?? '';
       // Thinking models (e.g. glm-5.2:cloud) stream their reasoning in a
@@ -319,11 +380,11 @@ async function collectStreamingChatResponse(
 
   const message: Message = { role, content };
   if (toolCalls.length > 0) message.tool_calls = toolCalls;
-  liftInlineToolCalls(message);
+  liftInlineToolCalls(message, toolNames);
   return { message, usage };
 }
 
-function chatResponseToResult(response: ChatResponse): ChatResult {
+function chatResponseToResult(response: ChatResponse, toolNames: string[] = []): ChatResult {
   const message: Message = response.message;
   // Mirror the streaming fallback: if a thinking model returned no answer
   // text and made no tool call, surface its reasoning instead of a blank.
@@ -332,7 +393,7 @@ function chatResponseToResult(response: ChatResponse): ChatResult {
     && !(message.tool_calls && message.tool_calls.length) && thinking && thinking.trim()) {
     message.content = thinking;
   }
-  liftInlineToolCalls(message);
+  liftInlineToolCalls(message, toolNames);
   return {
     message,
     usage: {
@@ -437,8 +498,18 @@ function estimateTokensFromChars(chars: number): number {
  * malformed JSON, and removes only the matched JSON spans from the
  * surfaced text content so the UI does not double-render the call.
  */
-export function liftInlineToolCalls(message: Message | undefined): void {
+/**
+ * Lift JSON tool calls written into message content. `allowedToolNames` is
+ * the set of tools actually offered on this request: only calls naming one of
+ * them are lifted, and an empty set lifts nothing. Without it, any JSON object
+ * with a "name" key (a JSON answer about a product, say) would be taken for a
+ * tool call and deleted from the answer. Omitting the argument keeps the old
+ * permissive behaviour for callers that have no tool list.
+ */
+export function liftInlineToolCalls(message: Message | undefined, allowedToolNames?: Iterable<string>): void {
   if (!message || message.tool_calls?.length) return;
+  const allowed = allowedToolNames ? new Set(allowedToolNames) : null;
+  if (allowed && allowed.size === 0) return;
   const text = typeof message.content === 'string' ? message.content : '';
   if (!text || (text.indexOf('"name"') === -1 && text.indexOf('"function"') === -1 && text.indexOf('"tool') === -1)) return;
 
@@ -453,7 +524,7 @@ export function liftInlineToolCalls(message: Message | undefined): void {
     } catch {
       continue;
     }
-    const calls = coerceToolCalls(parsed);
+    const calls = coerceToolCalls(parsed).filter((call) => !allowed || allowed.has(call.function.name));
     if (calls.length > 0) {
       lifted.push(...calls);
       removalSpans.push(span);
@@ -462,6 +533,11 @@ export function liftInlineToolCalls(message: Message | undefined): void {
 
   if (lifted.length === 0) return;
   message.tool_calls = lifted;
+  Object.defineProperty(message, '__harnessParserLiftedToolCalls', {
+    value: lifted.length,
+    enumerable: false,
+    configurable: true,
+  });
 
   // Strip lifted JSON (and surrounding ```json fences) from the visible content.
   let cleaned = text;

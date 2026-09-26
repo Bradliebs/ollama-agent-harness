@@ -2,7 +2,7 @@
 import { loadExperimentManifest } from './resolver';
 import { runExperiment } from './runner';
 import { listExperimentEvents } from './persistence';
-import { detailExperimentEvents, summarizeExperimentEvents, summarizeExperimentHistory } from './report';
+import { detailExperimentEvents, summarizeExperimentEvents, summarizeExperimentHistory, summarizeTaskEfficiency } from './report';
 
 interface CliArgs {
   manifestPath?: string;
@@ -68,6 +68,10 @@ async function main(argv: string[]): Promise<number> {
     } : undefined,
     passRateDelta: result.record.scorecard?.passRateDelta,
     paired: result.record.scorecard?.paired,
+    efficiency: {
+      baseline: result.record.baselineRun ? summarizeTaskEfficiency(result.record.baselineRun.results) : undefined,
+      candidate: result.record.candidateRun ? summarizeTaskEfficiency(result.record.candidateRun.results) : undefined,
+    },
   }, null, 2));
   return 0;
 }

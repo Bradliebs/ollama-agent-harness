@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import * as path from 'path';
 import { OllamaClient } from './ollamaClient';
 import type { IChatClient } from './chatClient';
-import type { Tool, ToolCall, LoopConfig, LoopEvent } from '../types';
+import type { Tool, ToolCall, LoopConfig, LoopEvent, EscalationReason } from '../types';
 import { toolToSchema } from '../types/tool';
 import { renderTaskContractBlock } from '../types/taskContract';
 import type { HookPipeline } from '../extensibility/hookPipeline';
@@ -20,9 +20,19 @@ import { scanForInjection } from '../safety/injectionDefence';
 import type { LearningRecorder } from '../learning/engine';
 import type { RuntimeTracer } from './tracing';
 import type { SideEffectRecorder } from '../persistence/sideEffectRecording';
+import type { RunLog } from '../persistence/runLog';
+import { RunSupervisor, describeAttempt, resolveSupervisorConfig, type BudgetStatus } from './supervisor';
+import { CostTracker } from '../eval/costTracker';
+import { parseConstrainedToolCall } from '../models/adapter';
+import { ProvenanceLedger, resolveProvenanceEnabled } from '../safety/provenance';
+import { NEXT_STEP_PROMPT, PLAN_ACCEPTED_PROMPT, SKIPPED_EXTRA_CALL, trimToolResult } from './scaffolding';
+import { WorkingStateStore, createStateUpdateTool, injectWorkingState, parsePlanText, shellTouchesProtected } from '../context/workingState';
+import { getProjectRoot, resolveToolMutationTarget } from '../tools/pathResolution';
 import { validateOutput, withOutputValidationInstructions, detectSelfCertification } from './outputValidation';
 import type { OutputValidationProfile } from './outputValidation';
 import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
+import { SourceLedger, appendSourcesFooter, guessedUrlHint } from './sourceLedger';
+import { annotateAnswer, resolveResearchVerifyMode, revisionPrompt, verifyResearchAnswer, type CriticAccess, type ResearchVerdict } from '../verification/researchVerifier';
 import { verifyCode } from './doneStateVerifier';
 import { classifyModelLocality } from '../observability/costProvenance';
 import { governAnswer } from '../governed/governedAnswer';
@@ -101,12 +111,31 @@ export interface QueryLoopDeps {
    * boundary (e.g. a goal scopes all its iterations under one id). */
   sideEffectRecorder?: SideEffectRecorder;
   /**
+   * Event-sourced record of this run: message deltas, raw model responses,
+   * tool calls/results and compaction snapshots, with step ids that side
+   * effects share for per-step rollback. See persistence/runLog.ts.
+   */
+  runLog?: RunLog;
+  /** Called with the run id after the run log is closed and flushed (e.g. to learn lessons from it). */
+  onRunEnd?: (runId: string) => void;
+  /**
    * Optional LLM-backed judge wired into AdversaryInspector. Constructed by
    * the caller (e.g. `createLlmAdversaryJudge(client)`) so the inspector
    * module stays provider-free. Only consulted when
    * `HARNESS_INSPECTOR_ADVERSARY=1` AND `.harness/adversary.md` exists.
    */
   adversaryJudge?: AdversaryJudge;
+  /**
+   * Critic models (a different family from the worker) used to check
+   * research answers when HARNESS_VERIFY_RESEARCH is critic or gate.
+   */
+  critic?: CriticAccess;
+  /**
+   * In-run escalation: when the run is stuck or the verifier rejects an
+   * answer twice, the loop asks for a stronger model and continues the same
+   * run with it. Return null when there is nothing stronger. At most once per run.
+   */
+  escalate?: (request: { fromModel: string; reason: EscalationReason; turn: number }) => Promise<{ model: string; client: IChatClient } | null>;
   /**
    * Called when a safety inspector requires human confirmation before a
    * tool runs. Return `true` to proceed, `false` to abort. Without this,
@@ -125,8 +154,107 @@ export async function* queryLoop(
   deps: QueryLoopDeps,
   initialMessages: Message[] = [],
 ): AsyncGenerator<LoopEvent> {
+  const runLog = deps.runLog;
+  if (!runLog) {
+    yield* queryLoopCore(config, deps, initialMessages);
+    return;
+  }
+  // Wrapper so every exit path (done, exception, consumer abandoning the
+  // stream) closes the run log with a run_end event.
+  let endReason = 'incomplete';
+  let endTurns: number | undefined;
+  let endError: string | undefined;
+  try {
+    for await (const event of queryLoopCore(config, deps, initialMessages)) {
+      if (event.type === 'done') {
+        endReason = event.reason;
+        endTurns = event.turns;
+      }
+      yield event;
+    }
+  } catch (error) {
+    endReason = 'exception';
+    endError = error instanceof Error ? error.message : String(error);
+    throw error;
+  } finally {
+    runLog.append('run_end', { reason: endReason, ...(endTurns !== undefined ? { turns: endTurns } : {}), ...(endError ? { error: endError } : {}) });
+    await runLog.flush();
+    try {
+      deps.onRunEnd?.(runLog.runId);
+    } catch {
+      // Post-run learning must never affect the run itself.
+    }
+  }
+}
+
+type RunStep = { stepId: string; stepSeq: number };
+
+const RESEARCH_SOURCE_TOOLS = new Set(['web_read', 'web_fetch', 'web_search', 'browser_read']);
+const MAX_RESEARCH_SOURCE_CHARS = 60_000;
+const MAX_RESEARCH_CORPUS_CHARS = 400_000;
+
+function researchVerificationEvent(verdict: ResearchVerdict): LoopEvent {
+  return {
+    type: 'verification',
+    kind: 'research',
+    overall: verdict.status,
+    checks: [{ name: verdict.critic ? `claims vs sources (critic ${verdict.critic})` : 'claims vs sources', status: verdict.status, detail: verdict.summary }],
+  };
+}
+
+function toolCallKey(name: string, input: Record<string, unknown>): string {
+  return `${name}|${stableArgsKey(input)}`;
+}
+
+async function* queryLoopCore(
+  config: LoopConfig,
+  deps: QueryLoopDeps,
+  initialMessages: Message[] = [],
+): AsyncGenerator<LoopEvent> {
   const { maxTurns, abortSignal } = config;
-  const { client, tools, permissionCheck, hooks, session, summarizerClient, tracer, learningRecorder, sideEffectRecorder, adversaryJudge, onApprovalRequired } = deps;
+  const { permissionCheck, hooks, session, summarizerClient, tracer, learningRecorder, adversaryJudge, onApprovalRequired, runLog } = deps;
+  // Both change if the run escalates to a stronger model mid-run.
+  let client = deps.client;
+  let activeModel = config.model;
+  // Governed working state: protected paths (task contract + config) are always
+  // enforced; with inject on, the state is rendered into every prompt and the
+  // model can update it through the state_update tool.
+  const workingState = new WorkingStateStore({ protectedPaths: [...(config.taskContract?.blocked_paths ?? []), ...(config.protectedPaths ?? [])] });
+  const injectState = config.workingState?.inject === true;
+  const tools = injectState ? [...deps.tools, createStateUpdateTool(workingState)] : deps.tools;
+  let loggedStateRevision = workingState.revision;
+  const logStateIfChanged = (step?: RunStep): void => {
+    if (workingState.revision === loggedStateRevision) return;
+    loggedStateRevision = workingState.revision;
+    runLog?.append('state', { state: workingState.state }, step);
+  };
+  const FILE_PATH_ARGS: Record<string, string[]> = { file_write: ['path'], file_edit: ['path'], file_delete: ['path'], file_move: ['from', 'to'], document_export: ['path'] };
+  const protectedHit = (call: ToolCall): string | null => {
+    for (const arg of FILE_PATH_ARGS[call.name] ?? []) {
+      const target = resolveToolMutationTarget(call.name, call.input?.[arg]);
+      const match = target ? workingState.protectedMatch(target, getProjectRoot()) : null;
+      if (match) return match;
+    }
+    if ((call.name === 'bash' || call.name === 'docker_exec') && typeof call.input?.command === 'string') {
+      return shellTouchesProtected(call.input.command, workingState);
+    }
+    return null;
+  };
+  // Step allocation is shared by the run log and the side-effect recorder so a
+  // file change can be rolled back to the end of the step that preceded it.
+  let localStepSeq = 0;
+  const allocateStep = (stepId: string): RunStep => runLog ? runLog.nextStep(stepId) : { stepId, stepSeq: ++localStepSeq };
+  let currentTurnStep: RunStep | undefined;
+  const pendingCallSteps = new Map<string, RunStep>();
+  const sideEffectRecorder: SideEffectRecorder | undefined = deps.sideEffectRecorder
+    ? {
+        ...deps.sideEffectRecorder,
+        stepFor: (toolName, input) => deps.sideEffectRecorder?.stepFor?.(toolName, input)
+          ?? pendingCallSteps.get(toolCallKey(toolName, input))
+          ?? pendingCallSteps.get(toolCallKey('*', input))
+          ?? currentTurnStep,
+      }
+    : undefined;
 
   // Authoritative cost-honesty signal for this run: the serving client knows
   // whether it runs on-box (Ollama → 'local', $0 marginal) or hosted. Fall
@@ -143,7 +271,15 @@ export async function* queryLoop(
         allowNewFiles: config.readBeforeWrite.allowNewFiles,
       })
     : undefined;
-  const ollamaTools = tools.map(toolToSchema);
+  const allToolSchemas = tools.map(toolToSchema);
+  const modelPlan = config.modelPlan;
+  const plannedToolNames = modelPlan?.toolNames ? new Set([...modelPlan.toolNames, ...(injectState ? ['state_update'] : [])]) : null;
+  const ollamaTools = plannedToolNames ? allToolSchemas.filter((schema) => plannedToolNames.has(schema.function.name)) : allToolSchemas;
+  // Models without reliable native tool calling get tools described in the
+  // system prompt instead (compiled by models/adapter.ts) and reply with JSON.
+  let promptToolMode = modelPlan && modelPlan.toolMode !== 'native';
+  let chatTools = promptToolMode ? [] : ollamaTools;
+  let chatOptions = promptToolMode && modelPlan?.format ? { format: modelPlan.format } : undefined;
 
   const validationProfile = config.outputValidation?.profile ?? 'oracle-prime';
   const customValidationProfiles = config.outputValidation?.customProfiles ?? [];
@@ -163,10 +299,21 @@ export async function* queryLoop(
     ? withOutputValidationInstructions(baseSystemPrompt, validationProfile, customValidationProfiles)
     : baseSystemPrompt;
 
+  const scaffold = config.scaffold;
+  let scaffoldPlanAccepted = false;
   const messages: Message[] = [
-    { role: 'system', content: systemPrompt },
+    { role: 'system', content: scaffold?.systemAddendum ? `${systemPrompt}\n\n${scaffold.systemAddendum}` : systemPrompt },
     ...initialMessages,
   ];
+  runLog?.startLoop({
+    model: config.model,
+    sessionId: session?.getSessionId?.(),
+    maxTurns,
+    taskType: config.taskType,
+    tools: tools.map((tool) => tool.name),
+    locality: runLocality,
+    ...(config.recalledLessons?.length ? { lessons: config.recalledLessons } : {}),
+  });
 
   // The user's active instruction: the last genuine user message present
   // before the loop starts injecting its own continuation/nudge messages.
@@ -228,6 +375,68 @@ export async function* queryLoop(
   // Routes into the synthesis path instead of accepting an empty `completed`.
   let emptyFinalAfterTools = false;
   const blockedWebUrls = new Map<string, string>();
+  const sourceLedger = new SourceLedger();
+  // Progress-based stuck detection and per-run budgets (default on).
+  const resolvedSupervisor = resolveSupervisorConfig(config.supervisor);
+  const supervisorConfig = resolvedSupervisor && deps.escalate ? { ...resolvedSupervisor, canEscalate: true } : resolvedSupervisor;
+  const supervisor = supervisorConfig
+    ? new RunSupervisor(supervisorConfig, (model) => CostTracker.getAllRates()[model])
+    : null;
+  let budgetExceeded: BudgetStatus | null = null;
+  // Provenance: the user's messages and the system prompt are trusted; web,
+  // browser and email tool output is not (see safety/provenance.ts).
+  const provenance = config.provenance !== false && resolveProvenanceEnabled() ? new ProvenanceLedger() : null;
+  if (provenance) {
+    provenance.recordTrusted(systemPrompt);
+    for (const message of initialMessages) {
+      if (message.role === 'user' && typeof message.content === 'string') provenance.recordTrusted(message.content);
+    }
+  }
+  let stuckNeedsHuman: { message: string; summary: string } | null = null;
+  // Research verification: text of pages read this run, checked against the
+  // final answer by a verifier the worker model doesn't control.
+  const researchVerifyMode = config.verifyResearch ?? resolveResearchVerifyMode();
+  const annotateResearch = researchVerifyMode !== 'off' && researchVerifyMode !== 'check';
+  const researchCorpus: string[] = [];
+  let researchCorpusChars = 0;
+  let researchRevised = false;
+  const trustedUserText = initialMessages
+    .filter((message) => message.role === 'user' && typeof message.content === 'string')
+    .map((message) => String(message.content));
+  const verifyFinalAnswer = async (answer: string): Promise<ResearchVerdict | null> => {
+    if (researchVerifyMode === 'off' || researchCorpus.length === 0 || !answer.trim()) return null;
+    try {
+      return await verifyResearchAnswer({ answer, sources: researchCorpus, trusted: trustedUserText, mode: researchVerifyMode, critic: deps.critic, signal: abortSignal });
+    } catch (error) {
+      tracer?.recordEvent('verification.research_error', { error: error instanceof Error ? error.message : String(error) });
+      return null;
+    }
+  };
+  let escalationTried = false;
+  const tryEscalate = async (reason: EscalationReason): Promise<LoopEvent | null> => {
+    if (escalationTried || !deps.escalate) return null;
+    escalationTried = true;
+    let target: { model: string; client: IChatClient } | null = null;
+    try {
+      target = await deps.escalate({ fromModel: activeModel, reason, turn });
+    } catch (error) {
+      tracer?.recordEvent('routing.escalation_error', { error: error instanceof Error ? error.message : String(error) });
+    }
+    if (!target || target.model === activeModel) return null;
+    const from = activeModel;
+    client = target.client;
+    activeModel = target.model;
+    // The per-model plan (tool subset, JSON tool calls) was compiled for the
+    // weaker model; the stronger one gets every tool natively.
+    promptToolMode = false;
+    chatTools = allToolSchemas;
+    chatOptions = undefined;
+    supervisor?.resetStall();
+    runLog?.append('route', { event: 'escalate', from, to: activeModel, reason, turn }, currentTurnStep);
+    tracer?.recordEvent('routing.escalated', { from, to: activeModel, reason, turn });
+    return { type: 'model_escalated', from, to: activeModel, reason, turn };
+  };
+  const FILE_CHANGE_TOOLS = new Set(['file_write', 'file_edit', 'file_move', 'file_delete', 'document_export']);
 
   if (session) {
     await appendStatus(session, 'running', undefined, tracer);
@@ -257,8 +466,8 @@ export async function* queryLoop(
     // same time window. Skipped on the first turn so the model always gets
     // at least one chance.
     if (timeBudgetMs > 0 && turn > 0 && (Date.now() - loopStarted) >= timeBudgetMs) {
-      yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
-      tracer?.recordEvent('synthesis.time_budget', { model: config.model, elapsedMs: Date.now() - loopStarted, timeBudgetMs, turn });
+      yield { type: 'synthesis_fired', model: activeModel, maxTurns, toolCallsTotal: totalToolCalls };
+      tracer?.recordEvent('synthesis.time_budget', { model: activeModel, elapsedMs: Date.now() - loopStarted, timeBudgetMs, turn });
       break;
     }
 
@@ -273,6 +482,12 @@ export async function* queryLoop(
 
     if (config.context?.enabled !== false) {
       const compactionConfig = { ...DEFAULT_COMPACTION_CONFIG, ...config.context };
+      // Budget allocator: the injected working state is never compacted, so the
+      // transcript gets what is left after it.
+      if (injectState && !workingState.isEmpty) {
+        const stateTokens = estimateTokenCount([{ role: 'system', content: workingState.render() } as Message]);
+        compactionConfig.maxTokens = Math.max(1024, compactionConfig.maxTokens - stateTokens);
+      }
       const before = estimateTokenCount(messages);
       const compactionSpan = tracer?.startSpan('context.compaction', { beforeTokens: before, maxTokens: compactionConfig.maxTokens });
       const compacted = await compactIfNeeded(messages, compactionConfig, summarizerClient ?? client);
@@ -286,6 +501,7 @@ export async function* queryLoop(
         });
         messages.length = 0;
         messages.push(...compacted.messages);
+        runLog?.recordCompaction(messages, compacted.strategy, { tokensFreed: compacted.tokensFreed, compactedCount: compacted.compactedCount ?? 0 });
         const hasContinuityBoundary = compacted.summary !== undefined;
         if (session && hasContinuityBoundary) {
           await appendSession(session, 'compact_boundary', {
@@ -337,7 +553,7 @@ export async function* queryLoop(
     }
 
     let assistantMessage: Message;
-    const modelSpan = tracer?.startSpan('model.chat', { model: config.model, turn });
+    const modelSpan = tracer?.startSpan('model.chat', { model: activeModel, turn });
     try {
       // Surrogate sanitisation: under HARNESS_LOOP_HARDENING strip any lone
       // UTF-16 surrogates from the outgoing message array so JSON.stringify
@@ -347,11 +563,42 @@ export async function* queryLoop(
         ? sanitizeMessages(messages)
         : messages;
       const inactivityMs = resolveInactivityTimeoutMs(config.inactivityTimeoutMs);
-      const chatPromise = client.chat(outboundMessages, ollamaTools, abortSignal);
+      currentTurnStep = allocateStep(`t${turn}`);
+      // Narrow context for heavy scaffolding: keep only the most recent tool
+      // results in full. Recorded as a compaction so the run log stays exact.
+      if (scaffold && scaffold.keepRecentToolResults > 0) {
+        const toolIndexes = messages.map((m, i) => (m.role === 'tool' ? i : -1)).filter((i) => i >= 0);
+        let trimmed = 0;
+        for (const index of toolIndexes.slice(0, Math.max(0, toolIndexes.length - scaffold.keepRecentToolResults))) {
+          const content = messages[index].content;
+          if (typeof content === 'string' && !content.startsWith('[older tool result trimmed')) {
+            messages[index] = { ...messages[index], content: trimToolResult(content) };
+            trimmed += 1;
+          }
+        }
+        if (trimmed > 0) runLog?.recordCompaction(resolveLoopHardeningEnabled() ? sanitizeMessages(messages) : messages, 'scaffold-narrow', { trimmed });
+      }
+      runLog?.syncMessages(outboundMessages);
+      const renderedState = injectState ? workingState.render() : '';
+      const requestMessages = renderedState ? injectWorkingState(outboundMessages, renderedState) : outboundMessages;
+      runLog?.append('model_request', { turn, model: activeModel, messageCount: outboundMessages.length, tools: chatTools.map((schema) => schema.function?.name), ...(modelPlan ? { toolMode: modelPlan.toolMode } : {}), ...(chatOptions ? { format: chatOptions.format } : {}), ...(renderedState ? { workingState: renderedState } : {}) }, currentTurnStep);
+      const modelCallStarted = Date.now();
+      const chatPromise = chatOptions
+        ? client.chat(requestMessages, chatTools, abortSignal, chatOptions)
+        : client.chat(requestMessages, chatTools, abortSignal);
       const result = inactivityMs > 0
         ? await withTimeout(inactivityMs, chatPromise)
         : await chatPromise;
       assistantMessage = result.message;
+      if (promptToolMode && !assistantMessage.tool_calls?.length && typeof assistantMessage.content === 'string') {
+        const lifted = parseConstrainedToolCall(assistantMessage.content);
+        if (lifted?.length) {
+          assistantMessage = { ...assistantMessage, content: '', tool_calls: lifted };
+          tracer?.recordEvent('adapter.tool_call_lifted', { model: activeModel, toolMode: modelPlan?.toolMode, calls: lifted.length });
+        }
+      }
+      runLog?.append('model_response', { turn, model: activeModel, message: assistantMessage, usage: result.usage ?? null, durationMs: Date.now() - modelCallStarted }, currentTurnStep);
+      if (supervisor && result.usage) supervisor.recordUsage(activeModel, result.usage.promptTokens ?? 0, result.usage.completionTokens ?? 0);
       modelSpan?.end('ok', {
         toolCalls: assistantMessage.tool_calls?.length ?? 0,
         // Surface token usage on the span itself so the OpenInference
@@ -367,7 +614,7 @@ export async function* queryLoop(
       if (result.usage) {
         yield {
           type: 'usage',
-          model: config.model,
+          model: activeModel,
           turn,
           locality: runLocality,
           promptTokens: result.usage.promptTokens ?? 0,
@@ -381,6 +628,7 @@ export async function* queryLoop(
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       modelSpan?.fail(error);
+      runLog?.append('model_error', { turn, model: activeModel, error: msg, inactivity: error instanceof InactivityTimeoutError }, currentTurnStep);
       if (session) {
         await appendStatus(session, 'error', msg, tracer);
       }
@@ -399,6 +647,20 @@ export async function* queryLoop(
       await appendSession(session, 'assistant_message', { kind: 'message', message: assistantMessage }, tracer);
     }
 
+    // Per-run budget: stop into synthesis once the run has spent its tokens
+    // (or USD, for models with a known price).
+    if (supervisor) {
+      const budget = supervisor.checkBudget();
+      if (budget.exceeded && budget.which) {
+        budgetExceeded = budget;
+        yield { type: 'budget_exceeded', which: budget.which, used: budget.used, limit: budget.limit };
+        runLog?.append('supervisor', { event: 'budget_exceeded', which: budget.which, used: budget.used, limit: budget.limit }, currentTurnStep);
+        tracer?.recordEvent('supervisor.budget_exceeded', { which: budget.which, used: budget.used, limit: budget.limit, turn });
+        yield { type: 'synthesis_fired', model: activeModel, maxTurns, toolCallsTotal: totalToolCalls };
+        break;
+      }
+    }
+
     // Repetition detection: if the model produces the same text-only
     // output twice in a row, it is stuck. Tool-call turns are excluded
     // because the model may be retrying with different results — the
@@ -415,7 +677,7 @@ export async function* queryLoop(
             recoverable: true,
           };
           tracer?.recordEvent('repetition.detected', { turn, repeats: consecutiveRepeats + 1 });
-          yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
+          yield { type: 'synthesis_fired', model: activeModel, maxTurns, toolCallsTotal: totalToolCalls };
           break;
         }
       } else {
@@ -431,6 +693,19 @@ export async function* queryLoop(
 
     // Stop condition: text-only response (no tool calls)
     if (!assistantMessage.tool_calls?.length) {
+      // Heavy scaffolding: the first text-only reply before any tool ran is
+      // the plan, not the answer. Accept it once and ask for step 1.
+      if (scaffold?.planTurnFirst && !scaffoldPlanAccepted && totalToolCalls === 0 && turn < maxTurns) {
+        scaffoldPlanAccepted = true;
+        const planSteps = typeof assistantMessage.content === 'string' ? parsePlanText(assistantMessage.content) : [];
+        if (planSteps.length > 0) {
+          workingState.apply({ plan: planSteps });
+          logStateIfChanged(currentTurnStep);
+        }
+        messages.push({ role: 'user', content: PLAN_ACCEPTED_PROMPT } as Message);
+        yield { type: 'auto_continue', turn, continuationCount: 0, reason: 'plan recorded; working through it one step at a time' };
+        continue;
+      }
       // Auto-continue: if enabled, the text looks like a partial result,
       // AND the task type is not high-risk (where human confirmation is required).
       const HIGH_RISK_TASKS = new Set(['safety_critical', 'financial_execution', 'medical', 'legal']);
@@ -478,9 +753,39 @@ export async function* queryLoop(
         || (typeof assistantMessage.content === 'string' && assistantMessage.content.trim() === '');
       if (finalContentIsEmpty && totalToolCalls > 0) {
         emptyFinalAfterTools = true;
-        yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
-        tracer?.recordEvent('synthesis.empty_after_tools', { model: config.model, turn, totalToolCalls });
+        yield { type: 'synthesis_fired', model: activeModel, maxTurns, toolCallsTotal: totalToolCalls };
+        tracer?.recordEvent('synthesis.empty_after_tools', { model: activeModel, turn, totalToolCalls });
         break;
+      }
+
+      const finalText = typeof assistantMessage.content === 'string' ? assistantMessage.content : '';
+      const researchVerdict = await verifyFinalAnswer(finalText);
+      const researchRejected = researchVerdict && researchVerifyMode === 'gate' && turn < maxTurns
+        && (researchVerdict.status === 'warn' || researchVerdict.status === 'fail');
+      if (researchRejected && !researchRevised) {
+        // "Done" means the verifier passed: one bounded revision before the
+        // answer is accepted with an unverified-claims note.
+        researchRevised = true;
+        yield researchVerificationEvent(researchVerdict);
+        runLog?.append('verdict', { check: 'research_claims', mode: researchVerifyMode, action: 'revise', ...researchVerdict }, currentTurnStep);
+        messages.push({ role: 'user', content: revisionPrompt(researchVerdict) } as Message);
+        yield { type: 'auto_continue', turn, continuationCount: 0, reason: 'verifier found unsupported claims; revising once' };
+        continue;
+      }
+      if (researchRejected) {
+        // Second rejection: hand the revision to a stronger model if one is available.
+        const escalation = await tryEscalate('verifier_rejected');
+        if (escalation) {
+          yield researchVerificationEvent(researchVerdict);
+          runLog?.append('verdict', { check: 'research_claims', mode: researchVerifyMode, action: 'escalate', ...researchVerdict }, currentTurnStep);
+          yield escalation;
+          messages.push({ role: 'user', content: revisionPrompt(researchVerdict) } as Message);
+          continue;
+        }
+      }
+      if (researchVerdict) {
+        yield researchVerificationEvent(researchVerdict);
+        runLog?.append('verdict', { check: 'research_claims', mode: researchVerifyMode, action: annotateResearch ? 'annotate' : 'record', ...researchVerdict }, currentTurnStep);
       }
 
       let validationFailed = false;
@@ -519,7 +824,12 @@ export async function* queryLoop(
         validationScore = validation.score;
       }
       yield { type: 'turn_complete', turn, durationMs: Date.now() - turnStarted, toolCalls: 0 };
-      yield { type: 'text', content: assistantMessage.content };
+      yield {
+        type: 'text',
+        content: typeof assistantMessage.content === 'string'
+          ? appendSourcesFooter(researchVerdict && annotateResearch ? annotateAnswer(assistantMessage.content, researchVerdict) : assistantMessage.content, sourceLedger.list())
+          : assistantMessage.content,
+      };
 
       // Opt-in governance shadow pass. Runs BESIDE the answer above (which is
       // already emitted unchanged) and only when HARNESS_GOVERNED_SHADOW is on,
@@ -661,6 +971,7 @@ export async function* queryLoop(
       return;
     }
 
+    const sourcesAtTurnStart = sourceLedger.list().length;
     // Parse tool calls from the assistant message
     const toolCalls: ToolCall[] = assistantMessage.tool_calls.map((tc) => ({
       id: (tc as { id?: string }).id,
@@ -669,10 +980,44 @@ export async function* queryLoop(
     }));
     totalToolCalls += toolCalls.length;
     for (const tc of toolCalls) allToolCallNames.push(tc.name);
+    pendingCallSteps.clear();
+    const callSteps = new Map<ToolCall, RunStep>();
+    toolCalls.forEach((call, index) => {
+      const step = allocateStep(`t${turn}.${index + 1}`);
+      callSteps.set(call, step);
+      pendingCallSteps.set(toolCallKey(call.name, call.input), step);
+      pendingCallSteps.set(toolCallKey('*', call.input), step);
+      runLog?.append('tool_call', { name: call.name, input: call.input, ...(call.id ? { id: call.id } : {}) }, step);
+    });
+    const stepForResult = (call: ToolCall): RunStep | undefined => callSteps.get(call)
+      ?? (call.id ? [...callSteps.entries()].find(([original]) => original.id === call.id)?.[1] : undefined)
+      ?? pendingCallSteps.get(toolCallKey(call.name, call.input))
+      ?? pendingCallSteps.get(toolCallKey('*', call.input));
 
     const dispatchableToolCalls: ToolCall[] = [];
     const skippedToolResults: { call: ToolCall; result: { success: false; output: string; error: string } }[] = [];
+    toolCalls.forEach((call, index) => {
+      if (scaffold && scaffold.maxToolCallsPerTurn > 0 && index >= scaffold.maxToolCallsPerTurn) {
+        skippedToolResults.push({ call, result: { success: false, output: SKIPPED_EXTRA_CALL, error: 'scaffold: extra tool call skipped' } });
+      }
+    });
+    const skippedByScaffold = new Set(skippedToolResults.map((entry) => entry.call));
     for (const call of toolCalls) {
+      if (skippedByScaffold.has(call)) continue;
+      const protectedPattern = protectedHit(call);
+      if (protectedPattern) {
+        runLog?.append('verdict', { check: 'protected_path', tool: call.name, pattern: protectedPattern }, stepForResult(call));
+        tracer?.recordEvent('working_state.protected_path_blocked', { tool: call.name, pattern: protectedPattern });
+        skippedToolResults.push({
+          call,
+          result: {
+            success: false,
+            output: `Blocked: this would modify a protected path (${protectedPattern}). Protected paths must never be changed in this task. Leave it as it is and continue another way, or ask the user.`,
+            error: 'protected path',
+          },
+        });
+        continue;
+      }
       const url = normalizeWebToolUrl(call);
       const blockedReason = url ? blockedWebUrls.get(url) : undefined;
       if (blockedReason) {
@@ -695,8 +1040,51 @@ export async function* queryLoop(
       : undefined;
     const { manager: inspectors, largeResponseConfig } = buildInspectorsFromEnv({ adversaryJudge });
     const dispatchedToolResults = await runWithSessionId(session?.getSessionId(), () =>
-      dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, { hooks, trackUsage: true, tracer, learningRecorder, readBeforeWriteGate, compressOutput, compressionConfig, sideEffectRecorder, inspectors, largeResponseConfig, onApprovalRequired, validateInput: config.validateToolInput === true }));
+      dispatcher.dispatch(dispatchableToolCalls, permissionCheck, undefined, {
+        hooks,
+        trackUsage: true,
+        tracer,
+        learningRecorder,
+        readBeforeWriteGate,
+        compressOutput,
+        compressionConfig,
+        sideEffectRecorder,
+        inspectors,
+        largeResponseConfig,
+        onApprovalRequired,
+        approvalPolicy: inspectors && !onApprovalRequired ? 'deny' : 'soft-pass',
+        validateInput: config.validateToolInput === true,
+        ...(provenance ? {
+          provenanceGuard: (call: ToolCall) => {
+            const verdict = provenance.checkCall(call.name, call.input);
+            if (verdict) {
+              runLog?.append('verdict', { check: 'provenance', tool: call.name, findings: verdict.findings }, stepForResult(call));
+              tracer?.recordEvent('provenance.flagged', { tool: call.name, findings: verdict.findings.length });
+            }
+            return verdict;
+          },
+        } : {}),
+      }));
     const toolResults = [...skippedToolResults, ...dispatchedToolResults];
+    for (const { call, result } of toolResults) sourceLedger.recordSearchResults(call, result);
+    for (const entry of toolResults) {
+      sourceLedger.recordRead(entry.call, entry.result);
+      if (researchVerifyMode !== 'off' && entry.result.success && RESEARCH_SOURCE_TOOLS.has(entry.call.name) && typeof entry.result.output === 'string' && researchCorpusChars < MAX_RESEARCH_CORPUS_CHARS) {
+        const text = entry.result.output.slice(0, MAX_RESEARCH_SOURCE_CHARS);
+        researchCorpus.push(text);
+        researchCorpusChars += text.length;
+      }
+      if (entry.result.success && (entry.call.name === 'web_read' || entry.call.name === 'web_fetch') && typeof entry.call.input?.url === 'string') {
+        const source = sourceLedger.list().find((item) => entry.call.input.url === item.url || String(entry.call.input.url).startsWith(item.url));
+        workingState.addSource(String(entry.call.input.url), source?.title);
+      }
+      const hint = guessedUrlHint(entry.call, entry.result, sourceLedger);
+      if (hint) entry.result = { ...entry.result, output: `${entry.result.output ?? ''}\n${hint}` };
+    }
+    for (const { call, result } of toolResults) {
+      const label = provenance?.recordToolResult(call.name, call.input, result.success ? result.output : '');
+      runLog?.recordToolResult(stepForResult(call), { name: call.name, success: result.success, output: result.output, ...(result.error !== undefined ? { error: result.error } : {}), ...(label ? { provenance: label } : {}) });
+    }
     let producedFileChange = false;
     for (const { call, result } of toolResults) {
       yield { type: 'tool_call', call };
@@ -831,6 +1219,48 @@ export async function* queryLoop(
       }
     }
 
+    // Supervisor: did this turn move the task forward? Stalled turns escalate
+    // warn -> change strategy -> (escalate) -> stop and ask the human.
+    if (supervisor) {
+      const sourcesNow = sourceLedger.list().length;
+      const decision = supervisor.endTurn({
+        toolCalls: toolResults.length,
+        newSources: sourcesNow - sourcesAtTurnStart,
+        filesChanged: toolResults.filter(({ call, result }) => result.success && FILE_CHANGE_TOOLS.has(call.name)).length,
+        successfulResults: toolResults
+          .filter(({ result }) => result.success)
+          .map(({ call, result }) => ({ name: call.name, output: typeof result.output === 'string' ? result.output : JSON.stringify(result.output ?? '') })),
+        attempts: toolResults.map(({ call }) => describeAttempt(call.name, call.input)),
+      });
+      if (decision.kind === 'intervene') {
+        yield { type: 'supervisor', stage: decision.stage, stalledTurns: decision.stalledTurns, message: decision.message, summary: decision.summary };
+        runLog?.append('supervisor', { event: 'intervene', stage: decision.stage, stalledTurns: decision.stalledTurns, summary: decision.summary }, currentTurnStep);
+        tracer?.recordEvent('supervisor.intervene', { stage: decision.stage, stalledTurns: decision.stalledTurns, turn });
+        if (decision.stage === 'ask_human') {
+          stuckNeedsHuman = { message: decision.message, summary: decision.summary };
+          yield { type: 'synthesis_fired', model: activeModel, maxTurns, toolCallsTotal: totalToolCalls };
+          break;
+        }
+        if (decision.stage === 'escalate') {
+          const escalation = await tryEscalate('stuck');
+          if (escalation && escalation.type === 'model_escalated') {
+            yield escalation;
+            messages.push({ role: 'user', content: `The previous attempts stopped making progress, so a stronger model (${escalation.to}) is taking over. ${decision.summary}. Do not repeat those; choose a different approach or answer with what you have.` } as Message);
+          }
+        } else {
+          // Use 'user' role: Mistral and Anthropic reject 'system' after 'tool'.
+          messages.push({ role: 'user', content: decision.message } as Message);
+        }
+      }
+    }
+
+    logStateIfChanged(currentTurnStep);
+
+    // Heavy scaffolding: name the next step so the model keeps to its plan.
+    if (scaffold?.stepPrompt && turn < maxTurns) {
+      messages.push({ role: 'user', content: NEXT_STEP_PROMPT } as Message);
+    }
+
     // Tool-quality kill: terminate when the agent loops on non-productive
     // tools (reflect/consolidate/grep/list_files) without ever editing a
     // file. Bounded by `unproductiveTurnLimit` from LoopConfig.
@@ -877,18 +1307,20 @@ export async function* queryLoop(
   // summarising its work.
   const timeBudgetExceeded = timeBudgetMs > 0 && (Date.now() - loopStarted) >= timeBudgetMs;
   const repetitionExceeded = consecutiveRepeats >= REPETITION_LIMIT;
-  const synthesisReason: 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' | 'empty_after_tools_synthesized' =
-    emptyFinalAfterTools ? 'empty_after_tools_synthesized'
-      : repetitionExceeded ? 'repetition_synthesized'
-        : timeBudgetExceeded ? 'time_budget_synthesized'
-          : 'max_turns_synthesized';
-  const sessionStatus = emptyFinalAfterTools ? 'completed' : repetitionExceeded ? 'error' : timeBudgetExceeded ? 'time_budget' : 'max_turns';
+  const synthesisReason: 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' | 'empty_after_tools_synthesized' | 'budget_synthesized' | 'stuck_needs_human' =
+    stuckNeedsHuman ? 'stuck_needs_human'
+      : budgetExceeded ? 'budget_synthesized'
+        : emptyFinalAfterTools ? 'empty_after_tools_synthesized'
+          : repetitionExceeded ? 'repetition_synthesized'
+            : timeBudgetExceeded ? 'time_budget_synthesized'
+              : 'max_turns_synthesized';
+  const sessionStatus = stuckNeedsHuman ? 'completed' : budgetExceeded ? 'time_budget' : emptyFinalAfterTools ? 'completed' : repetitionExceeded ? 'error' : timeBudgetExceeded ? 'time_budget' : 'max_turns';
 
-  if (!timeBudgetExceeded && !repetitionExceeded && !emptyFinalAfterTools) {
+  if (!timeBudgetExceeded && !repetitionExceeded && !emptyFinalAfterTools && !budgetExceeded && !stuckNeedsHuman) {
     // Only emit synthesis_fired for max-turns (time budget, repetition, and
     // empty-after-tools already emitted it above before breaking).
-    yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
-    tracer?.recordEvent('synthesis.fired', { model: config.model, maxTurns, totalToolCalls });
+    yield { type: 'synthesis_fired', model: activeModel, maxTurns, toolCallsTotal: totalToolCalls };
+    tracer?.recordEvent('synthesis.fired', { model: activeModel, maxTurns, totalToolCalls });
   }
 
   // Build a concrete synthesis prompt with the last few tool results
@@ -904,9 +1336,13 @@ export async function* queryLoop(
     .map((m) => (m.content as string).slice(0, 2500))
     .join('\n---\n');
 
-  const synthesisPreamble = emptyFinalAfterTools
-    ? 'You ran tools but ended your last turn without writing an answer.'
-    : 'You have used all available tool turns.';
+  const synthesisPreamble = stuckNeedsHuman
+    ? stuckNeedsHuman.message
+    : budgetExceeded
+      ? `This run has reached its ${budgetExceeded.which === 'usd' ? 'spending' : 'token'} budget.`
+      : emptyFinalAfterTools
+        ? 'You ran tools but ended your last turn without writing an answer.'
+        : 'You have used all available tool turns.';
   const synthesisInstruction = recentToolResults
     ? `${synthesisPreamble} Here is a summary of recent tool results:\n\n${recentToolResults}\n\nUsing the information above, write a helpful answer to the user's question. Do NOT call any tools. Just write your answer as plain text.`
     : `${synthesisPreamble} Provide a complete, useful text response now. Summarise everything you found. Do NOT call any tools.`;
@@ -935,13 +1371,18 @@ export async function* queryLoop(
   synthMessages.push(synthInstructionMsg);
 
   turn++;
-  const synthSpan = tracer?.startSpan('model.chat', { model: config.model, turn, synthesis: true });
+  const synthSpan = tracer?.startSpan('model.chat', { model: activeModel, turn, synthesis: true });
   try {
     const outboundSynth = resolveLoopHardeningEnabled()
       ? sanitizeMessages(synthMessages)
       : synthMessages;
+    const synthStep = allocateStep('synthesis');
+    runLog?.recordCompaction(outboundSynth, 'synthesis-context');
+    runLog?.append('model_request', { turn, model: activeModel, messageCount: outboundSynth.length, tools: [], synthesis: true }, synthStep);
+    const synthStarted = Date.now();
     const synthResult = await client.chat(outboundSynth, [], abortSignal);
     const synthMessage = synthResult.message;
+    runLog?.append('model_response', { turn, model: activeModel, message: synthMessage, usage: synthResult.usage ?? null, durationMs: Date.now() - synthStarted, synthesis: true }, synthStep);
     synthSpan?.end('ok', {
       toolCalls: 0,
       ...(synthResult.usage ? {
@@ -953,7 +1394,7 @@ export async function* queryLoop(
     if (synthResult.usage) {
       yield {
         type: 'usage',
-        model: config.model,
+        model: activeModel,
         turn,
         locality: runLocality,
         promptTokens: synthResult.usage.promptTokens ?? 0,
@@ -1046,7 +1487,16 @@ export async function* queryLoop(
       }
     }
 
-    yield { type: 'text', content: synthesisText || synthMessage.content };
+    if (synthesisText && typeof synthesisText === 'string') {
+      const synthVerdict = await verifyFinalAnswer(synthesisText);
+      if (synthVerdict) {
+        yield researchVerificationEvent(synthVerdict);
+        runLog?.append('verdict', { check: 'research_claims', mode: researchVerifyMode, action: annotateResearch ? 'annotate' : 'record', ...synthVerdict });
+        if (annotateResearch) synthesisText = annotateAnswer(synthesisText, synthVerdict);
+      }
+    }
+
+    yield { type: 'text', content: synthesisText ? appendSourcesFooter(synthesisText, sourceLedger.list()) : synthMessage.content };
 
     // Self-certification check on synthesis output too
     const synthSelfCert = detectSelfCertification(synthesisText, allToolCallNames);
@@ -1091,6 +1541,7 @@ export async function* queryLoop(
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     synthSpan?.fail(error);
+    runLog?.append('model_error', { turn, model: activeModel, error: msg, synthesis: true });
     // Synthesis call itself failed (provider 5xx, network drop, etc.).
     // Without this fallback the user gets only an `error` event and the
     // run "needs review" — no visible answer at all. Emit the recent
@@ -1109,7 +1560,7 @@ export async function* queryLoop(
   if (session) {
     await appendStatus(session, sessionStatus, undefined, tracer);
   }
-  yield { type: 'done', reason: emptyFinalAfterTools ? 'empty_after_tools_synthesized' : repetitionExceeded ? 'repetition_synthesized' : timeBudgetExceeded ? 'time_budget_synthesized' : 'max_turns', turns: turn };
+  yield { type: 'done', reason: synthesisReason === 'max_turns_synthesized' ? 'max_turns' : synthesisReason, turns: turn };
 }
 
 type SynthesisCallPair = { name: string; input: Record<string, unknown>; result: string; success: boolean };

@@ -8,6 +8,7 @@ jest.mock('child_process', () => ({
 }));
 
 import { PdfRenderPageTool } from './pdfTool';
+import { getProjectRoot, setProjectRoot } from './pathResolution';
 
 describe('PdfRenderPageTool', () => {
   const originalCommand = process.env.HARNESS_PDF_RENDER_COMMAND;
@@ -84,5 +85,33 @@ describe('PdfRenderPageTool', () => {
     expect(call[1][0]).not.toContain('"');
     expect(call[1][2]).toContain('fixture-p4.png');
     expect(call[1][2]).not.toContain('"');
+  });
+
+  it('writes the default render output under setProjectRoot when cwd differs', async () => {
+    const previousRoot = getProjectRoot();
+    const originalCwd = process.cwd();
+    const workspace = path.join(originalCwd, '.harness', `test-pdf-root-${Date.now()}`);
+    const installDir = path.join(originalCwd, '.harness', `test-pdf-cwd-${Date.now()}`);
+    await fs.mkdir(path.join(workspace, 'docs'), { recursive: true });
+    await fs.mkdir(installDir, { recursive: true });
+    await fs.writeFile(path.join(workspace, 'docs', 'fixture.pdf'), Buffer.from('%PDF-1.4\n%workspace\n'));
+    setProjectRoot(workspace);
+    process.chdir(installDir);
+    process.env.HARNESS_PDF_RENDER_COMMAND = 'mockrender {input} {page} {output}';
+    (childProcess.execFile as unknown as jest.Mock).mockImplementation((_cmd, args, _opts, cb) => {
+      fs.writeFile(args[2], Buffer.from([0x89, 0x50, 0x4e, 0x47])).then(() => cb(null, { stdout: '', stderr: '' }));
+    });
+    try {
+      const result = await PdfRenderPageTool.execute({ path: path.join('docs', 'fixture.pdf'), page: 5 });
+      expect(result.success).toBe(true);
+      expect(result.output).toContain(path.join('.harness', 'pdf-renders', 'fixture-p5.png'));
+      await expect(fs.access(path.join(workspace, '.harness', 'pdf-renders', 'fixture-p5.png'))).resolves.toBeUndefined();
+      await expect(fs.access(path.join(installDir, '.harness', 'pdf-renders', 'fixture-p5.png'))).rejects.toThrow();
+    } finally {
+      process.chdir(originalCwd);
+      setProjectRoot(previousRoot);
+      await fs.rm(workspace, { recursive: true, force: true });
+      await fs.rm(installDir, { recursive: true, force: true });
+    }
   });
 });

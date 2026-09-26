@@ -232,6 +232,26 @@ describe('BashTool bare-script auto-resolve against agent-outputs', () => {
     }
   });
 
+  it('checks bare script existence against setProjectRoot when cwd differs', async () => {
+    const previousRoot = getProjectRoot();
+    const workspace = path.join(process.cwd(), '.harness', `test-bash-root-${Date.now()}`);
+    const scriptName = `_bash-project-root-wins-${Date.now()}.js`;
+    await fsp.mkdir(workspace, { recursive: true });
+    await fsp.writeFile(path.join(workspace, scriptName), 'console.log("from-project-root");\n', 'utf-8');
+    await fsp.writeFile(path.join(overrideDir, scriptName), 'console.log("from-output-dir");\n', 'utf-8');
+    try {
+      setProjectRoot(workspace);
+      const result = await BashTool.execute({ command: `node ${scriptName}` });
+      expect(result.success).toBe(true);
+      expect(result.output).toContain('from-project-root');
+      expect(result.output).not.toContain('Bash auto-resolved');
+      expect(result.output).not.toContain('from-output-dir');
+    } finally {
+      setProjectRoot(previousRoot);
+      await fsp.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('does NOT rewrite args that already contain a path separator', async () => {
     // If the model passes an explicit relative path like `./foo.py` or
     // `subdir/foo.py`, treat it as deliberate and do not silently retarget.

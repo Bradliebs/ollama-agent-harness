@@ -39,6 +39,20 @@ describe('SquadInspectTool', () => {
     expect(result.output).toMatch(/beta: Beta/);
   });
 
+  it('lists squads from setProjectRoot when cwd differs', async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-squadtool-root-'));
+    setProjectRoot(workspace);
+    process.chdir(originalCwd);
+    try {
+      await createSquad(workspace, { id: 'rooted', name: 'Rooted', leadAgentId: 'researcher' });
+      const result = await SquadInspectTool.execute({ action: 'list' });
+      expect(result.success).toBe(true);
+      expect(result.output).toContain('rooted: Rooted');
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('get returns the full squad definition', async () => {
     await createSquad(projectDir, { id: 'alpha', name: 'Alpha', leadAgentId: 'researcher' });
     const result = await SquadInspectTool.execute({ action: 'get', squad_id: 'alpha' });

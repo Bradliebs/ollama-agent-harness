@@ -4,17 +4,21 @@ import * as path from 'path';
 import { createCapabilityGrant, type CapabilityGrant } from '../permissions/capabilities';
 import * as desktopCapture from './desktopTools';
 import { DesktopInputReplayTool, sanitizeDesktopInputActions, buildLinuxMouseCommand, buildMacMouseCommand, buildWindowsMouseScript } from './desktopInputTools';
+import { getProjectRoot, setProjectRoot } from './pathResolution';
 
 describe('DesktopInputReplayTool', () => {
   let projectDir: string;
   let originalCwd: string;
+  let originalProjectRoot: string;
   let screenshotSpy: jest.SpiedFunction<typeof desktopCapture.captureDesktopScreenshot>;
   let execSpy: jest.SpiedFunction<typeof desktopCapture.execPromise>;
 
   beforeEach(async () => {
     originalCwd = process.cwd();
+    originalProjectRoot = getProjectRoot();
     projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-desktop-input-'));
     process.chdir(projectDir);
+    setProjectRoot(projectDir);
     screenshotSpy = jest.spyOn(desktopCapture, 'captureDesktopScreenshot').mockImplementation(async (outputPath) => {
       await fs.mkdir(path.dirname(outputPath), { recursive: true });
       await fs.writeFile(outputPath, 'fake screenshot', 'utf-8');
@@ -26,6 +30,7 @@ describe('DesktopInputReplayTool', () => {
     execSpy.mockRestore();
     screenshotSpy.mockRestore();
     process.chdir(originalCwd);
+    setProjectRoot(originalProjectRoot);
     await fs.rm(projectDir, { recursive: true, force: true });
   });
 
@@ -58,6 +63,19 @@ describe('DesktopInputReplayTool', () => {
     expect(result.output).toContain('Evidence before:');
     expect(result.output).toContain('Evidence after:');
     expect(screenshotSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads grants and writes evidence from setProjectRoot when cwd differs', async () => {
+    process.chdir(originalCwd);
+    await writeSettings({
+      capabilityGrants: [makeDesktopGrant()],
+      killSwitch: { active: false, reason: '' },
+    });
+
+    const result = await DesktopInputReplayTool.execute({ confirm: true, actions: [{ type: 'wait', ms: 0 }] });
+
+    expect(result.success).toBe(true);
+    await expect(fs.readFile(path.join(projectDir, '.harness', 'desktop', 'desktop-input-audit.jsonl'), 'utf-8')).resolves.toContain('"outcome":"executed"');
   });
 
   it('blocks execution when the kill switch is active', async () => {

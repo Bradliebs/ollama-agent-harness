@@ -195,7 +195,7 @@ describe('queryLoop runtime behavior', () => {
     }
 
     it('does not scan tool results and emits no injection warning when off', async () => {
-      delete process.env.HARNESS_LOOP_HARDENING;
+      process.env.HARNESS_LOOP_HARDENING = '0';
       const { client, tools } = makePoisonedRun();
 
       const events = await collectEvents(client, tools);
@@ -454,6 +454,37 @@ describe('queryLoop runtime behavior', () => {
     expect(events.find((event) => event.type === 'text')).toMatchObject({ content: 'Used another source instead.' });
   });
 
+  it('appends a Sources list when web pages were read and the answer has no links', async () => {
+    const webRead = makeTool('web_read', true, async (input) => ({ success: true, output: `Content from ${input.url}:\n\n<external_content source="web">\nHeadline about the topic\nbody\n</external_content>` }));
+    const client = makeClient([
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'web_read', arguments: { url: 'https://news.example.test/story' } } }] } as Message,
+      { role: 'assistant', content: 'Here is the summary.' },
+    ]);
+
+    const events = await collectEvents(client, [webRead]);
+
+    expect(events.find((event) => event.type === 'text')).toMatchObject({
+      content: 'Here is the summary.\n\n**Sources**\n1. [Headline about the topic](https://news.example.test/story)',
+    });
+  });
+
+  it('tells the model when a 404 URL was guessed rather than taken from search results', async () => {
+    const webSearch = makeTool('web_search', true, async () => ({ success: true, output: 'Search results:\n1. Real story\n   https://news.example.test/real-story' }));
+    const webRead = makeTool('web_read', true, async () => ({ success: false, output: 'HTTP 404 Not Found', error: 'HTTP 404' }));
+    const client = makeClient([
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'web_search', arguments: { query: 'story' } } }] } as Message,
+      { role: 'assistant', content: '', tool_calls: [{ function: { name: 'web_read', arguments: { url: 'https://news.example.test/invented-slug' } } }] } as Message,
+      { role: 'assistant', content: 'Done.' },
+    ]);
+
+    const events = await collectEvents(client, [webSearch, webRead], { config: { maxTurns: 5 } });
+
+    const readResult = events.find((event) => event.type === 'tool_result' && 'call' in event && event.call.name === 'web_read') as { result: ToolResult };
+    expect(readResult.result.output).toContain('HTTP 404 Not Found');
+    expect(readResult.result.output).toContain('probably guessed');
+    expect(client.chat.mock.calls[2][0].some((m: Message) => m.role === 'tool' && String(m.content).includes('probably guessed'))).toBe(true);
+  });
+
   it('returns permission denial as a tool result', async () => {
     const tool = makeTool('write', false, async () => ({ success: true, output: 'should not run' }));
     const client = makeClient([
@@ -640,7 +671,7 @@ describe('queryLoop runtime behavior', () => {
 
       const done = events.find((e) => e.type === 'done');
       expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'unproductive' }));
-      const error = events.find((e) => e.type === 'error');
+      const error = events.find((e) => e.type === 'error' && e.recoverable === false);
       expect(error).toEqual(expect.objectContaining({ recoverable: false, message: expect.stringContaining('without file edits') }));
     });
 

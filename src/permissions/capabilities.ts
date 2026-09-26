@@ -312,6 +312,22 @@ export function revokeCapabilityGrant(grants: CapabilityGrant[], grantId: string
   return grants.map((grant) => grant.id === grantId && !grant.revokedAt ? { ...grant, revokedAt: now.toISOString() } : grant);
 }
 
+/** How long an expired or revoked grant stays in settings before pruning. The capability audit log keeps the full history. */
+export const STALE_GRANT_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Drop grants that ended (expired or revoked) more than `retentionMs` ago.
+ * dontAsk mode mints a fresh 8-hour grant set whenever the previous one
+ * lapses, so without pruning settings.json accumulates dead grants forever.
+ */
+export function pruneStaleCapabilityGrants(grants: CapabilityGrant[], now = new Date(), retentionMs = STALE_GRANT_RETENTION_MS): CapabilityGrant[] {
+  const cutoff = now.getTime() - retentionMs;
+  return grants.filter((grant) => {
+    const endedAt = grant.revokedAt ? Date.parse(grant.revokedAt) : Date.parse(grant.expiresAt);
+    return !Number.isFinite(endedAt) || endedAt > cutoff;
+  });
+}
+
 export function findExpiredGrants(grants: CapabilityGrant[], now = new Date()): CapabilityGrant[] {
   return grants.filter((grant) => {
     if (grant.revokedAt) return false;

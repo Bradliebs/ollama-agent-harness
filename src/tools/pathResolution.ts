@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { logger } from '../core/logger';
 import { isSandboxActive } from './sandboxGuards';
+import { assertTestSafeProjectDir } from '../persistence/testWorkspaceGuard';
 
 // ─── Project root override ──────────────────────────────────────────
 // When the server detects workspace isolation (HARNESS_PROJECT_DIR or
@@ -12,12 +13,24 @@ let _projectRoot: string | null = null;
 
 /** Override the project root used by all path resolution functions. */
 export function setProjectRoot(dir: string): void {
-  _projectRoot = path.resolve(dir);
+  _projectRoot = path.resolve(assertTestSafeProjectDir(dir));
 }
 
 /** Return the effective project root (explicit override or process.cwd()). */
 export function getProjectRoot(): string {
   return _projectRoot ?? process.cwd();
+}
+
+/**
+ * Root for workspace data (.harness/memory, agents, squads, learning). Same as
+ * getProjectRoot() when the server has set an override; otherwise honours
+ * HARNESS_PROJECT_DIR before process.cwd() so CLI runs keep writing where the
+ * web server reads.
+ */
+export function getWorkspaceDataRoot(): string {
+  if (_projectRoot) return _projectRoot;
+  const envDir = process.env.HARNESS_PROJECT_DIR?.trim();
+  return envDir ? envDir : process.cwd();
 }
 
 const DEFAULT_UPLOADS_DIRNAME = path.join('.harness', 'uploads');
@@ -420,6 +433,20 @@ export function resolveProjectPath(value: unknown): string | null {
     if (isInside(resolved, allowed) || resolved === allowed) return resolved;
   }
   return null;
+}
+
+/**
+ * Absolute path a file-mutating tool will actually touch, mirroring each tool's
+ * own resolution (file_write honours pattern redirects and the bare-filename
+ * agent-outputs redirect). The dispatcher uses this to capture the right
+ * pre-image before the tool runs. Returns null when the tool would refuse.
+ */
+export function resolveToolMutationTarget(toolName: string, rawPath: unknown): string | null {
+  if (typeof rawPath !== 'string' || rawPath.trim() === '') return null;
+  if (toolName === 'file_write') {
+    return applyFileWriteRedirect(rawPath) ?? maybeRedirectAgentOutput(rawPath) ?? resolveProjectPath(rawPath);
+  }
+  return resolveProjectPath(rawPath);
 }
 
 /**

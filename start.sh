@@ -27,6 +27,7 @@ if ! command -v node &>/dev/null; then
   exit 1
 fi
 echo "  ✅ Node.js $(node --version) found"
+node scripts/check-runtime.js
 
 # Step 2: Check npm
 if ! command -v npm &>/dev/null; then
@@ -59,9 +60,10 @@ if [ ! -d "node_modules" ]; then
 fi
 
 # Step 5: Build
-if [ ! -f "dist/web/server.js" ]; then
+LAUNCH_MODE="$(node scripts/check-runtime.js --launch-mode)"
+if [[ "$LAUNCH_MODE" == "source" ]]; then
   echo ""
-  echo "  🔨 Building from source (first time only)..."
+  echo "  Building current source..."
   npm run build
   echo "  ✅ Build complete"
 fi
@@ -103,20 +105,13 @@ if [ -s "$CCMEM_TOKEN_FILE" ]; then
 fi
 
 # Step 7: Launch
-PORT="${PORT:-4300}"
+export PORT="${PORT:-4300}"
 echo ""
 echo "  🚀 Starting Ollama Agent Harness..."
-echo "  Open in your browser: http://127.0.0.1:${PORT}"
+echo "  The server will print its URL and choose a free port."
 echo ""
 echo "  Press Ctrl+C to stop the server."
 echo "  ============================================"
 echo ""
-
-# Auto-open browser (best effort)
-if command -v open &>/dev/null; then
-  (sleep 2 && open "http://127.0.0.1:${PORT}") &
-elif command -v xdg-open &>/dev/null; then
-  (sleep 2 && xdg-open "http://127.0.0.1:${PORT}") &
-fi
 
 npm run serve

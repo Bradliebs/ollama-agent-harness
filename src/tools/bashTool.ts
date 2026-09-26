@@ -344,7 +344,7 @@ const BARE_SCRIPT_EXTENSIONS = new Set([
  * Motivation: `file_write` redirects bare filenames (e.g.
  * `check_yfinance.py`) into the agent-outputs directory. When the model
  * immediately tries to execute it with `python check_yfinance.py`, the
- * arg resolves against process.cwd() (the project root) and fails with
+ * arg resolves against the project root and fails with
  * "No such file or directory". The improved file_write message now tells
  * the model to use the full path, but auto-resolving here closes the loop
  * for the case where the model forgets — without changing semantics for
@@ -379,7 +379,7 @@ function rewriteBareScriptArgs(args: string[]): {
     // If the bare name resolves against cwd, the agent's invocation is
     // already correct — leave it alone.
     try {
-      const cwdCandidate = path.resolve(process.cwd(), arg);
+      const cwdCandidate = path.resolve(getProjectRoot(), arg);
       if (fs.existsSync(cwdCandidate)) return arg;
     } catch { /* fall through */ }
 

@@ -1,5 +1,6 @@
 import type { HarnessEvent } from '../persistence/eventStore';
-import { detailExperimentEvents, renderScorecardReport, summarizeExperimentEvent, summarizeExperimentHistory } from './report';
+import { detailExperimentEvents, renderScorecardReport, summarizeExperimentEvent, summarizeExperimentHistory, summarizeTaskEfficiency } from './report';
+import type { BenchmarkTaskResult } from '../eval/benchmark';
 import type { ExperimentScorecard } from './types';
 
 function event(overrides: Partial<HarnessEvent> = {}): HarnessEvent {
@@ -21,6 +22,41 @@ function event(overrides: Partial<HarnessEvent> = {}): HarnessEvent {
     ...overrides,
   };
 }
+
+describe('task efficiency accounting', () => {
+  function result(overrides: Partial<BenchmarkTaskResult>): BenchmarkTaskResult {
+    return { taskId: 'task', tier: 'regression', description: 'test', status: 'pass', reason: '', responsePreview: '', toolCalls: [], durationMs: 100, tags: [], ...overrides };
+  }
+
+  it('includes failed attempt time in cost per passing attempt', () => {
+    expect(summarizeTaskEfficiency([result({}), result({ status: 'fail', durationMs: 900 })])).toEqual({
+      attempts: 2, passedAttempts: 1, totalDurationMs: 1000, durationMsPerPassedAttempt: 1000, totalTokens: null, costUsd: null,
+    });
+  });
+
+  it('uses actual replicate pass counts rather than the majority verdict', () => {
+    expect(summarizeTaskEfficiency([result({ replicateCount: 3, passReplicates: 2, durationMs: 600 })])).toMatchObject({
+      attempts: 3, passedAttempts: 2, totalDurationMs: 600, durationMsPerPassedAttempt: 300,
+    });
+  });
+
+  it('does not present missing measurements or zero passes as free success', () => {
+    expect(summarizeTaskEfficiency([])).toMatchObject({ totalDurationMs: null, durationMsPerPassedAttempt: null });
+    expect(summarizeTaskEfficiency([result({ status: 'error' })])).toMatchObject({ durationMsPerPassedAttempt: null });
+    expect(summarizeTaskEfficiency([result({ durationMs: NaN })])).toMatchObject({ totalDurationMs: null, durationMsPerPassedAttempt: null });
+    expect(summarizeTaskEfficiency([result({ replicateCount: 3 })])).toMatchObject({ passedAttempts: null, durationMsPerPassedAttempt: null });
+  });
+
+  it('exposes independent baseline and candidate totals from stored run evidence', () => {
+    const [detail] = detailExperimentEvents([event({ data: {
+      scorecard: { decision: { status: 'inconclusive' } },
+      baselineRun: { results: [result({})] },
+      candidateRun: { results: [result({}), result({ status: 'fail' })] },
+    } })]);
+    expect(detail.efficiency?.baseline?.durationMsPerPassedAttempt).toBe(100);
+    expect(detail.efficiency?.candidate?.durationMsPerPassedAttempt).toBe(200);
+  });
+});
 
 describe('experiment report summaries', () => {
   it('summarizes completed experiment evidence for history output', () => {

@@ -18,7 +18,10 @@ import { createCodeVerifier, createLlmPlanner, createQueryLoopExecutor, runCondu
 import { runLeadAgent, type LeadAgentEvent } from '../core/leadAgent';
 import { createLlmDecomposer, createOrchestrateFn, createToolchainVerifier, createLeadPersist } from '../core/leadAgentFactories';
 import { verifyService } from '../core/doneStateVerifier';
-import { createLlmAdversaryJudge } from '../safety/toolInspectors';
+import { createLlmAdversaryJudge, type AdversaryJudge } from '../safety/toolInspectors';
+import { selectCriticCandidates } from '../verification/criticModel';
+import { learnFromRun, loadLessons, recallLessons, renderLessons, resolveLessonsMode } from '../learning/lessons';
+import { resolveResearchVerifyMode, type CriticAccess } from '../verification/researchVerifier';
 import { buildMorningBriefing, type BriefingCalendarEvent } from '../jarvis/morningBriefing';
 import { parseIcsEvents } from '../tools/calendarTools';
 import { getRuntimeTools } from '../tools';
@@ -33,8 +36,20 @@ import { TeammateScheduler, sanitizeTeammateSettings, defaultTeammateSettings, t
 import { listActiveSubagents, subscribeSubagentRegistry } from '../services/subagentRegistry';
 import { createToolFailureAlerts, type ToolFailureAlertTracker } from '../services/toolFailureAlerts';
 import { formatPrometheusMetrics, type PrometheusMetric } from '../observability/prometheus';
-import { recordSwallowed } from '../observability/silentFailureSink';
+import { getSwallowedFailureDroppedCount, getSwallowedFailureTotalCount, recordSwallowed } from '../observability/silentFailureSink';
 import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
+import { assertTestSafeProjectDir } from '../persistence/testWorkspaceGuard';
+import { writeSettingsFile } from './settingsFile';
+import { resolveProjectDir } from './projectDir';
+import { RunLog, newRunId, pruneRuns } from '../persistence/runLog';
+import { createRunRouter } from './runRoutes';
+import { createGitCheckpoint } from '../persistence/gitCheckpoint';
+import { isCapabilityProfileFresh, listCapabilityProfiles, loadCapabilityProfile, type CapabilityProfile } from '../models/capabilityProfile';
+import { rankToolsByRelevance, resolveScaffoldLevel, scaffoldFor, selectRelevantTools } from '../core/scaffolding';
+import { compileModelRequestPlan } from '../models/adapter';
+import { createModelProfileRouter } from './modelProfileRoutes';
+import { createReplayRouter } from './replayRoutes';
+import type { SideEffectRecorder } from '../persistence/sideEffectRecording';
 import { summarizeTasks } from '../services/taskStore';
 import { createTaskRoutesRouter, type CodexTaskRunner, type CodexTaskRunnerEvent } from './taskRoutes';
 import { createPromiseRouter } from './promiseRoutes';
@@ -88,8 +103,12 @@ import { createToolsRouter } from './toolsRoutes';
 import { createCuratorRouter } from './curatorRoutes';
 import { createEvalsRouter } from './evalsRoutes';
 import { createAutomationRouter } from './automationRoutes';
+import { createEmailRouter } from './emailRoutes';
+import { createOutputValidationRouter } from './outputValidationRoutes';
+import { createCapabilityRouter } from './capabilityRoutes';
+import { createJarvisRouter } from './jarvisRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
-import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
+import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, resolveToolMutationTarget, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { setSkillsDir, setLowerSkillTiers } from '../tools/skillTools';
 import { setImportSkillsDir } from '../tools/skillImportTool';
@@ -101,7 +120,7 @@ import { PermissionPromptBroker } from '../permissions/promptBroker';
 import { KillSwitch } from '../permissions/killSwitch';
 import { SandboxSwitch } from '../permissions/sandboxSwitch';
 import { setSandboxStateProvider } from '../tools/sandboxGuards';
-import { createCapabilityGrant, evaluateCapabilityGrant, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, summarizeCapabilityAlignment, autoGrantGatedCapabilities, type CapabilityGrant } from '../permissions/capabilities';
+import { createCapabilityGrant, evaluateCapabilityGrant, findExpiredGrants, listActiveCapabilityGrants, listCapabilityPolicies, mapToolsToCapabilityCoverage, revokeCapabilityGrant, sanitizeCapabilityGrants, pruneStaleCapabilityGrants, summarizeCapabilityAlignment, autoGrantGatedCapabilities, type CapabilityGrant } from '../permissions/capabilities';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { rebuildSemanticMemory, searchSemanticMemory } from '../persistence/semanticMemory';
 import * as snapshots from '../persistence/snapshots';
@@ -144,7 +163,7 @@ import { checkSetupHealth } from '../setup/health';
 import { probeToolCalling, type ToolCallProbeResult } from '../setup/toolCallProbe';
 import { getModelCatalog, getModelCatalogCacheStatus } from '../models/modelCatalog';
 import { isVisionCapableModelName, isVisionModelUsable } from '../models/visionModels';
-import { createAutomationJob, listAutomationJobs, listDueAutomationJobs, readAutomationRunLog } from '../automation/jobs';
+import { createAutomationJob, listAutomationJobs, listDueAutomationJobs, readRecentRunsForActiveJobs } from '../automation/jobs';
 import { AutomationScheduler } from '../automation/scheduler';
 import { handleOperateModeRequest, listAgenticServices } from '../services/agenticServiceMode';
 import { classifyMode, type HarnessMode } from '../services/modeClassifier';
@@ -175,7 +194,7 @@ import { createMycelialRouter, deriveToolShortlist, toolNamesFromRoute, type Myc
 import { heuristicVerifier } from '../mycelium/verifier';
 import { seedCodeIntelligence } from '../mycelium/seeds';
 import { getSessionSearchIndexStatus, rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSearchIndex';
-import { appendRunEvidence, readRunEvidence, setEvidenceAppendHook, type StoredRunEvidence } from '../persistence/evidenceStore';
+import { appendRunEvidence, inspectRunEvidence, readRunEvidence, setEvidenceAppendHook, type StoredRunEvidence } from '../persistence/evidenceStore';
 import { startTelegramBot, stopTelegramBot, isTelegramBotRunning, sendTelegramNotification, loadPersistedChatIds, getTelegramPollingLockInfo } from '../integrations/telegram';
 import { startDiscordBot, stopDiscordBot, isDiscordBotRunning } from '../integrations/discord';
 import { getSlackConnectorStatus, sanitizeSlackWebhookUrl } from '../integrations/slack';
@@ -187,11 +206,10 @@ import { initReplayConsumer, type ReplayCandidate } from '../governed/replayCons
 import { runReplayCandidates } from '../governed/replayRunner';
 import { initReplayLedger, appendReplayLedgerEntry } from '../governed/replayLedger';
 import type { GovernedAnswer } from '../governed/governedAnswer';
-import * as nodemailer from 'nodemailer';
 import { NervousSystemController } from '../nervous';
 import { listShellCommandAllowlistPresets } from '../automation/runner';
 import { appendCapabilityAuditEvent, readCapabilityAuditEvents } from '../permissions/capabilityAudit';
-import { selectModelForChatTurn, type ChatModelCandidatePool, type ChatRoutingMode, type ModelRoutingPolicy } from '../agents/modelRouting';
+import { selectEscalationTarget, selectModelForChatTurn, type ChatModelCandidatePool, type ChatRoutingMode, type ModelRoutingPolicy } from '../agents/modelRouting';
 import type { LoopConfig, LoopEvent, PermissionMode, Tool } from '../types';
 import type { EvidenceCard, EvidenceFileSummary, EvidenceMode, EvidenceToolSummary } from '../types/evidence';
 import type { Message } from 'ollama';
@@ -219,42 +237,96 @@ app.use(express.static(path.join(__dirname, '..', '..', 'ui'), {
   },
 }));
 
-/**
- * Workspace isolation: the agent must NEVER write into the harness source tree.
- * If no HARNESS_PROJECT_DIR is set and the harness is launched from its own
- * source repo, we redirect to ~/apex-workspace (created on first run). We detect
- * the repo by the presence of src/web/server.ts and src/tools/dispatcher.ts.
- * Set HARNESS_PROJECT_DIR to pin a stable home (recommended) so the data dir
- * never drifts between launches.
- */
-function resolveProjectDir(): string {
-  if (process.env.HARNESS_PROJECT_DIR) {
-    return path.resolve(process.env.HARNESS_PROJECT_DIR);
+// Workspace resolution lives in ./projectDir (HARNESS_PROJECT_DIR, else never the harness checkout).
+const PROJECT_DIR = assertTestSafeProjectDir(resolveProjectDir());
+setProjectRoot(PROJECT_DIR);
+
+/** User-declared paths tools must never modify: .harness/protected-paths.json (array of strings). */
+async function loadProtectedPaths(): Promise<string[]> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(path.join(PROJECT_DIR, '.harness', 'protected-paths.json'), 'utf-8')) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0).slice(0, 50) : [];
+  } catch {
+    return [];
   }
-  // Detect if cwd is the harness source repo
-  const cwd = process.cwd();
-  const isHarnessRepo =
-    existsSync(path.join(cwd, 'src', 'web', 'server.ts')) &&
-    existsSync(path.join(cwd, 'src', 'tools', 'dispatcher.ts'));
-  // Tests write fixtures into cwd/.harness; don't redirect under jest.
-  // (jest sets NODE_ENV='test' automatically; --runInBand does not set JEST_WORKER_ID.)
-  if (isHarnessRepo && (process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID)) {
-    return cwd;
-  }
-  if (isHarnessRepo) {
-    const safeDefault = path.join(os.homedir(), 'apex-workspace');
-    if (!existsSync(safeDefault)) {
-      mkdirSync(safeDefault, { recursive: true });
-    }
-    console.log(`⚠️  Workspace isolation: cwd is the harness repo — redirecting to ${safeDefault}`);
-    console.log(`   Set HARNESS_PROJECT_DIR to override (e.g. your app folder).`);
-    return safeDefault;
-  }
-  return cwd;
 }
 
-const PROJECT_DIR = resolveProjectDir();
-setProjectRoot(PROJECT_DIR);
+/**
+ * Event-sourced run recording (on by default; HARNESS_RUN_LOG=0 disables).
+ * Returns the QueryLoopDeps fields that make a run reconstructable and its
+ * file changes reversible per step. Old runs are pruned every 25 runs.
+ */
+let runsSincePrune = 0;
+function startRunRecording(kind: string): { runLog?: RunLog; sideEffectRecorder?: SideEffectRecorder; onRunEnd?: (runId: string) => void } {
+  if (process.env.HARNESS_RUN_LOG === '0') return {};
+  const runLog = new RunLog(PROJECT_DIR, newRunId(kind));
+  runsSincePrune += 1;
+  if (runsSincePrune >= 25) {
+    runsSincePrune = 0;
+    void pruneRuns(PROJECT_DIR).catch((err) => recordSwallowed('runLog.prune', err));
+  }
+  return {
+    runLog,
+    sideEffectRecorder: { projectDir: PROJECT_DIR, runId: runLog.runId, resolveTarget: resolveToolMutationTarget },
+    // Lessons and skill outcomes are learned from every finished run unless HARNESS_LESSONS=off.
+    ...(resolveLessonsMode() !== 'off'
+      ? { onRunEnd: (runId: string) => { void learnFromRun(PROJECT_DIR, runId).catch((err) => recordSwallowed('lessons.learnFromRun', err)); } }
+      : {}),
+  };
+}
+/**
+ * The critic (a different model family from the worker; see
+ * verification/criticModel.ts) for research verification in critic/gate mode
+ * and for the adversary judge. The judge falls back to the worker client if
+ * the critic call fails, because the adversary inspector fails open.
+ */
+async function resolveCriticDeps(workerModel: string, workerClient: IChatClient): Promise<{ critic?: CriticAccess; adversaryJudge: AdversaryJudge }> {
+  const workerJudge = createLlmAdversaryJudge(workerClient);
+  const verifyMode = resolveResearchVerifyMode();
+  const wantsCritic = verifyMode === 'critic' || verifyMode === 'gate';
+  const wantsAdversary = process.env.HARNESS_INSPECTOR_ADVERSARY === '1';
+  if (!wantsCritic && !wantsAdversary) return { adversaryJudge: workerJudge };
+  const installed = await webRuntime.listModels(ollamaHost).catch((): string[] => []);
+  const selection = selectCriticCandidates(workerModel, {
+    override: process.env.HARNESS_CRITIC_MODEL,
+    ...(installed.length > 0 ? { available: installed } : {}),
+  });
+  if (selection.rejected) console.warn(`⚠️  ${selection.rejected}`);
+  const createClient = async (model: string) => webRuntime.createClient(model, ollamaHost, await resolveContextMaxTokens(model));
+  let adversaryJudge = workerJudge;
+  const firstCritic = selection.candidates[0];
+  if (wantsAdversary && firstCritic) {
+    const criticJudge = createLlmAdversaryJudge(await createClient(firstCritic));
+    adversaryJudge = async (input) => {
+      try {
+        return await criticJudge(input);
+      } catch {
+        return workerJudge(input);
+      }
+    };
+  }
+  return {
+    ...(wantsCritic && selection.candidates.length > 0 ? { critic: { candidates: selection.candidates, createClient } } : {}),
+    adversaryJudge,
+  };
+}
+
+/**
+ * In-run escalation, on unless chat routing is off: a stuck run, or an answer
+ * the verifier rejected twice, continues on the strong-tier model. Models are
+ * only listed if escalation actually fires.
+ */
+function inRunEscalationDeps(): Pick<QueryLoopDeps, 'escalate'> {
+  if ((modelRouting.chatRoutingMode ?? 'balanced') === 'off') return {};
+  return {
+    escalate: async ({ fromModel }) => {
+      const available = await webRuntime.listModels(ollamaHost).catch((): string[] => []);
+      const target = selectEscalationTarget(fromModel, buildChatModelCandidatePool(fromModel, available, modelRouting));
+      return target ? { model: target, client: webRuntime.createClient(target, ollamaHost, await resolveContextMaxTokens(target)) } : null;
+    },
+  };
+}
+
 // Surface the resolved project dir at startup. A silently-moved home is what
 // makes the harness appear to "lose" its memory/identity, so make it visible.
 if (process.env.NODE_ENV !== 'test' && !process.env.JEST_WORKER_ID) {
@@ -280,7 +352,6 @@ const GLOBAL_SKILLS_DIR = (process.env.HARNESS_GLOBAL_SKILLS_DIR ?? '').trim()
 const TRACES_DIR = path.join(PROJECT_DIR, '.harness', 'traces');
 const DOCUMENTS_DIR = path.join(PROJECT_DIR, '.harness', 'documents');
 const SETTINGS_PATH = path.join(PROJECT_DIR, '.harness', 'settings.json');
-const SETTINGS_SAVE_RETRY_DELAYS_MS = [25, 75, 150, 300, 600];
 const API_KEYS_PATH = path.join(PROJECT_DIR, '.harness', 'api-keys.json');
 const OUTPUT_VALIDATION_PROFILES_PATH = path.join(PROJECT_DIR, '.harness', 'output-validation-profiles.json');
 // Harness install root — the directory containing the harness's own
@@ -1239,17 +1310,21 @@ if ((process.env.HARNESS_AUDIT_LOG ?? '').trim().toLowerCase() !== 'off') {
 }
 const permissionPrompts = new PermissionPromptBroker();
 const capabilityRegistry: CapabilityRegistry = createDefaultCapabilityRegistry();
+function resolveWebChatSelection(model: string): { backend: string; model: string } {
+  const slash = model.indexOf('/');
+  const backend = slash > 0 ? model.slice(0, slash).toLowerCase() : '';
+  return backend && OPENAI_COMPATIBLE_PRESETS[backend]
+    ? { backend, model: model.slice(slash + 1) }
+    : { backend: 'ollama', model };
+}
+
 const defaultWebRuntime: WebRuntimeDeps = {
   createClient: (model, host, numCtx) => {
     // Model id may be backend-prefixed: "mistral/mistral-medium-latest"
     // dispatches to the Mistral preset; bare names route to Ollama.
-    const slash = model.indexOf('/');
-    if (slash > 0) {
-      const backend = model.slice(0, slash).toLowerCase();
-      const realModel = model.slice(slash + 1);
-      if (OPENAI_COMPATIBLE_PRESETS[backend]) {
-        return createChatClient({ backend, model: realModel, host, numCtx });
-      }
+    const selection = resolveWebChatSelection(model);
+    if (selection.backend !== 'ollama') {
+      return createChatClient({ ...selection, host, numCtx });
     }
     return new OllamaClient({ model, host, numCtx });
   },
@@ -1287,6 +1362,8 @@ const defaultWebRuntime: WebRuntimeDeps = {
   rebuildSemanticMemory,
 };
 let webRuntime: WebRuntimeDeps = defaultWebRuntime;
+const activeChatControllers = new Set<AbortController>();
+let shutdownRequested = false;
 const pendingChatBackgroundTasks = new Set<Promise<unknown>>();
 
 function queueChatBackgroundTask(label: string, task: Promise<unknown>): void {
@@ -1799,7 +1876,7 @@ app.get('/api/inbox', async (_req, res) => {
     //    recent 5 so overnight work shows up the next time the user opens
     //    the chat. Failure runs sort above successes within this category.
     try {
-      const runs = (await readAutomationRunLog(PROJECT_DIR, 50)).slice(0, 5);
+      const runs = await readRecentRunsForActiveJobs(PROJECT_DIR, 5);
       for (const run of runs) {
         const success = run.success !== false;
         items.push({
@@ -2257,6 +2334,7 @@ app.post('/api/model/probe-tools', async (_req, res) => {
 app.get('/api/models', async (_req, res) => {
   try {
     await ensureSettingsLoaded();
+    await refreshCapabilityProfileCache();
     const ollama = new Ollama({ host: ollamaHost });
     let models: Array<{
       name: string;
@@ -2480,222 +2558,11 @@ app.post('/api/api-keys', async (req, res) => {
   }
 });
 
-// Test SMTP connectivity without sending an email. Uses nodemailer's
-// verify() which authenticates against the server and checks readiness.
-app.post('/api/smtp-test', async (_req, res) => {
-  const host = process.env.HARNESS_SMTP_HOST?.trim();
-  const port = parseInt(process.env.HARNESS_SMTP_PORT ?? '587', 10);
-  const user = process.env.HARNESS_SMTP_USER?.trim();
-  // Strip internal spaces from the password — Google App Passwords are
-  // displayed as "xxxx xxxx xxxx xxxx" but SMTP auth needs them joined.
-  const pass = process.env.HARNESS_SMTP_PASS?.trim().replace(/\s+/g, '');
-
-  if (!host || !user || !pass) {
-    res.json({ ok: false, error: 'SMTP not configured. Save HARNESS_SMTP_HOST, HARNESS_SMTP_USER, and HARNESS_SMTP_PASS first.' });
-    return;
-  }
-  try {
-    const transporter = nodemailer.createTransport({
-      host,
-      port,
-      secure: port === 465,
-      auth: { user, pass },
-      connectionTimeout: 10_000,
-      greetingTimeout: 10_000,
-    });
-    await transporter.verify();
-    transporter.close();
-    res.json({ ok: true });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.json({ ok: false, error: `${msg} (host: ${host}, port: ${port}, user: ${user})` });
-  }
-});
-
-// Send an email directly from the settings compose form.
-app.post('/api/email/send', express.json({ limit: '25mb' }), async (req, res) => {
-  try {
-    if (!requireEscalationAuth(req, res, 'email send')) return;
-    const to = String(req.body?.to ?? '').trim();
-    const subject = String(req.body?.subject ?? '').trim();
-    const body = String(req.body?.body ?? '').trim();
-    if (!to || !subject || !body) {
-      res.status(400).json({ error: 'To, subject, and body are required.' });
-      return;
-    }
-    const toAddresses = to.split(',').map((a: string) => a.trim()).filter(Boolean);
-    for (const addr of toAddresses) {
-      if (!addr.includes('@') || !addr.includes('.')) {
-        res.status(400).json({ error: `Invalid email address: ${addr}` });
-        return;
-      }
-    }
-    const host = process.env.HARNESS_SMTP_HOST?.trim();
-    const port = parseInt(process.env.HARNESS_SMTP_PORT ?? '587', 10);
-    const user = process.env.HARNESS_SMTP_USER?.trim();
-    const pass = process.env.HARNESS_SMTP_PASS?.trim().replace(/\s+/g, '');
-    const from = process.env.HARNESS_SMTP_FROM?.trim() || user;
-    if (!host || !user || !pass) {
-      res.status(400).json({ error: 'SMTP not configured. Save SMTP credentials first.' });
-      return;
-    }
-    const transporter = nodemailer.createTransport({
-      host,
-      port,
-      secure: port === 465,
-      auth: { user, pass },
-    });
-    // Build attachment list from optional base64-encoded files.
-    const rawAttachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
-    const mailAttachments: Array<{ filename: string; content: Buffer }> = [];
-    for (const att of rawAttachments.slice(0, 10)) {
-      const name = String(att?.filename ?? 'attachment').replace(/[/\\]/g, '_');
-      const b64 = String(att?.content ?? '');
-      if (!b64) continue;
-      const buf = Buffer.from(b64, 'base64');
-      if (buf.length > 10 * 1024 * 1024) {
-        res.status(400).json({ error: `Attachment "${name}" exceeds 10 MB limit.` });
-        return;
-      }
-      mailAttachments.push({ filename: name, content: buf });
-    }
-    const info = await transporter.sendMail({
-      from: from ? `Harness <${from}>` : undefined,
-      to: toAddresses.join(', '),
-      subject,
-      ...(req.body?.html ? { html: body } : { text: body }),
-      attachments: mailAttachments.length > 0 ? mailAttachments : undefined,
-    });
-    // Archive sent copy.
-    const sentDir = path.join(PROJECT_DIR, '.harness', 'email', 'sent');
-    await fs.mkdir(sentDir, { recursive: true });
-    const safeSubject = subject.replace(/[^a-zA-Z0-9 -]/g, '').slice(0, 50).trim().replace(/\s+/g, '-') || 'sent';
-    const filename = `${safeSubject}-${Date.now()}.eml`;
-    const emlContent = `From: ${from}\r\nTo: ${toAddresses.join(', ')}\r\nSubject: ${subject}\r\nDate: ${new Date().toUTCString()}\r\nMessage-ID: ${info.messageId}\r\n\r\n${body}\r\n`;
-    await fs.writeFile(path.join(sentDir, filename), emlContent, 'utf-8');
-    res.json({ ok: true, messageId: info.messageId });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// List email drafts and sent emails for the preview panel.
-app.get('/api/email/list', async (_req, res) => {
-  const draftsDir = path.join(PROJECT_DIR, '.harness', 'email', 'drafts');
-  const sentDir = path.join(PROJECT_DIR, '.harness', 'email', 'sent');
-  const results: Array<{ name: string; folder: 'drafts' | 'sent'; modified: string }> = [];
-  for (const [dir, folder] of [[draftsDir, 'drafts'], [sentDir, 'sent']] as const) {
-    try {
-      const files = await fs.readdir(dir);
-      for (const file of files) {
-        if (!file.endsWith('.eml')) continue;
-        try {
-          const stat = await fs.stat(path.join(dir, file));
-          results.push({ name: file, folder, modified: stat.mtime.toISOString() });
-        } catch { /* skip unreadable */ }
-      }
-    } catch { /* directory doesn't exist yet */ }
-  }
-  results.sort((a, b) => b.modified.localeCompare(a.modified));
-  res.json({ emails: results.slice(0, 50) });
-});
-
-// Read the content of a single draft/sent .eml file.
-app.get('/api/email/read', async (req, res) => {
-  const folder = req.query.folder === 'sent' ? 'sent' : 'drafts';
-  const name = String(req.query.name ?? '');
-  if (!name || name.includes('..') || name.includes('/') || name.includes('\\')) {
-    res.status(400).json({ error: 'Invalid filename.' });
-    return;
-  }
-  const filePath = path.join(PROJECT_DIR, '.harness', 'email', folder, name);
-  try {
-    const content = await fs.readFile(filePath, 'utf-8');
-    res.json({ name, folder, content });
-  } catch {
-    res.status(404).json({ error: 'File not found.' });
-  }
-});
-
-// Save a compose-in-progress draft.
-app.put('/api/email/draft', async (req, res) => {
-  const to = String(req.body?.to ?? '').trim();
-  const subject = String(req.body?.subject ?? '').trim();
-  const body = String(req.body?.body ?? '').trim();
-  if (!to && !subject && !body) { res.json({ ok: false, reason: 'empty' }); return; }
-  const draftsDir = path.join(PROJECT_DIR, '.harness', 'email', 'drafts');
-  await fs.mkdir(draftsDir, { recursive: true });
-  const filename = 'compose-autosave.eml';
-  const emlContent = `To: ${to}\r\nSubject: ${subject}\r\nDate: ${new Date().toUTCString()}\r\n\r\n${body}\r\n`;
-  await fs.writeFile(path.join(draftsDir, filename), emlContent, 'utf-8');
-  res.json({ ok: true, filename });
-});
-
-app.delete('/api/email/delete', async (req, res) => {
-  const folder = req.query.folder === 'sent' ? 'sent' : 'drafts';
-  const name = String(req.query.name ?? '');
-  if (!name || name.includes('..') || name.includes('/') || name.includes('\\') || !name.endsWith('.eml')) {
-    res.status(400).json({ error: 'Invalid filename.' });
-    return;
-  }
-  const filePath = path.join(PROJECT_DIR, '.harness', 'email', folder, name);
-  try {
-    await fs.unlink(filePath);
-    res.json({ ok: true });
-  } catch {
-    res.status(404).json({ error: 'File not found.' });
-  }
-});
-
-// ─── Email templates ──────────────────────────────────────────────────
-
-const EMAIL_TEMPLATES_PATH = path.join(PROJECT_DIR, '.harness', 'email', 'templates.json');
-
-async function readEmailTemplates(): Promise<Array<{ name: string; to: string; subject: string; body: string; html?: boolean; category?: string }>> {
-  try {
-    const raw = await fs.readFile(EMAIL_TEMPLATES_PATH, 'utf-8');
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch { return []; }
-}
-
-app.get('/api/email/templates', async (_req, res) => {
-  res.json({ templates: await readEmailTemplates() });
-});
-
-app.post('/api/email/templates', async (req, res) => {
-  const name = String(req.body?.name ?? '').trim();
-  if (!name) { res.status(400).json({ error: 'Template name is required.' }); return; }
-  const template = {
-    name,
-    to: String(req.body?.to ?? '').trim(),
-    subject: String(req.body?.subject ?? '').trim(),
-    body: String(req.body?.body ?? '').trim(),
-    ...(req.body?.html ? { html: true } : {}),
-    ...(typeof req.body?.category === 'string' && req.body.category.trim() ? { category: String(req.body.category).trim().slice(0, 60) } : {}),
-  };
-  const count = await withFileLock(EMAIL_TEMPLATES_PATH, async () => {
-    const templates = await readEmailTemplates();
-    const idx = templates.findIndex((t) => t.name === name);
-    if (idx >= 0) templates[idx] = template; else templates.push(template);
-    await atomicWriteFile(EMAIL_TEMPLATES_PATH, JSON.stringify(templates, null, 2));
-    return templates.length;
-  });
-  res.json({ ok: true, count });
-});
-
-app.delete('/api/email/templates', async (req, res) => {
-  const name = String(req.query.name ?? '').trim();
-  if (!name) { res.status(400).json({ error: 'Template name is required.' }); return; }
-  const count = await withFileLock(EMAIL_TEMPLATES_PATH, async () => {
-    const templates = await readEmailTemplates();
-    const filtered = templates.filter((t) => t.name !== name);
-    await atomicWriteFile(EMAIL_TEMPLATES_PATH, JSON.stringify(filtered, null, 2));
-    return filtered.length;
-  });
-  res.json({ ok: true, count });
-});
+// SMTP + email compose/draft/template routes extracted to ./emailRoutes.ts.
+app.use(createEmailRouter({
+  projectDir: PROJECT_DIR,
+  requireAuth: requireEscalationAuth,
+}));
 
 async function readStoredApiKeysFile(): Promise<Record<string, string>> {
   try {
@@ -2874,137 +2741,19 @@ app.post('/api/settings', async (req, res) => {
   res.json(await getPublicSettings());
 });
 
-app.get('/api/output-validation/profiles', async (_req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    res.json({ profiles: getOutputValidationProfiles(), customProfiles: customOutputValidationProfiles, path: '.harness/output-validation-profiles.json' });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/output-validation/templates', async (_req, res) => {
-  res.json({ templates: OUTPUT_VALIDATION_PROFILE_TEMPLATES });
-});
-
-app.post('/api/output-validation/suggest-profile', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const input = String(req.body?.input ?? req.body?.message ?? '').slice(0, 20_000);
-    // Anchor the profile suggestion to the mode classifier so research/maintain
-    // prompts cannot get graded against the coding-answer rubric just because
-    // they mention a file path or language name.
-    const modeHint = input ? classifyMode(input).mode : undefined;
-    const suggestion = describeOutputValidationProfileSuggestion(input, 'oracle-prime', { modeHint });
-    const metadata = OUTPUT_VALIDATION_PROFILES.find((candidate) => candidate.profile === suggestion.profile);
-    res.json({ profile: suggestion.profile, label: metadata?.label ?? suggestion.profile, reason: suggestionReason(suggestion.profile, suggestion.matched, modeHint), matched: suggestion.matched });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/output-validation/feedback', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const profile = String(req.body?.profile ?? '').trim();
-    const voteRaw = String(req.body?.vote ?? '').trim().toLowerCase();
-    if (!profile) { res.status(400).json({ error: 'profile is required' }); return; }
-    if (voteRaw !== 'up' && voteRaw !== 'down') { res.status(400).json({ error: 'vote must be "up" or "down"' }); return; }
-    const selectionSourceRaw = String(req.body?.selectionSource ?? 'auto-selected');
-    const selectionSource = selectionSourceRaw === 'manual-selected' ? 'manual-selected' : 'auto-selected';
-    const run = await recordProfileFeedbackEvalRun(PROJECT_DIR, {
-      profile,
-      vote: voteRaw,
-      selectionSource,
-      selectionReason: req.body?.selectionReason ? String(req.body.selectionReason).slice(0, 500) : undefined,
-      prompt: req.body?.prompt ? String(req.body.prompt).slice(0, 500) : undefined,
-    });
-    res.json({ ok: true, runId: run.id });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/output-validation/feedback-replay', async (_req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const runs = await listEvalTraceRuns(PROJECT_DIR);
-  const PLACEHOLDER_TASK = 'validation profile feedback';
-  const replays: Array<{ originalProfile: string; suggestedProfile: string; matched: boolean; prompt: string; createdAt: string; status: 'fixed' | 'still-misclassified' | 'no-prompt' }> = [];
-  let fixed = 0;
-  let stillMisclassified = 0;
-  let noPrompt = 0;
-  for (const run of runs) {
-    for (const result of run.results) {
-      if (!result.tags.includes('profile-feedback:down')) continue;
-      const originalProfile = result.tags.find((tag) => tag !== 'profile-feedback'
-        && tag !== 'profile-feedback:down'
-        && tag !== 'auto-selected'
-        && tag !== 'manual-selected') ?? 'unknown';
-      const prompt = result.task && result.task !== PLACEHOLDER_TASK ? result.task : '';
-      if (!prompt) {
-        noPrompt++;
-        replays.push({ originalProfile, suggestedProfile: originalProfile, matched: false, prompt: '', createdAt: run.createdAt, status: 'no-prompt' });
-        continue;
-      }
-      const suggestion = describeOutputValidationProfileSuggestion(prompt, 'oracle-prime');
-      const status: 'fixed' | 'still-misclassified' = suggestion.profile !== originalProfile ? 'fixed' : 'still-misclassified';
-      if (status === 'fixed') fixed++; else stillMisclassified++;
-      replays.push({ originalProfile, suggestedProfile: suggestion.profile, matched: suggestion.matched, prompt, createdAt: run.createdAt, status });
-    }
-  }
-  res.json({
-    generatedAt: new Date().toISOString(),
-    totalDownVotes: replays.length,
-    fixed,
-    stillMisclassified,
-    noPrompt,
-    replays: replays.slice(-50).reverse(),
-  });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/output-validation/templates/install', async (req, res) => {
-  await ensureSettingsLoaded();
-  const requestedProfile = String(req.body?.profile ?? '').trim();
-  const template = OUTPUT_VALIDATION_PROFILE_TEMPLATES.find((candidate) => candidate.profile === requestedProfile);
-  if (!template) {
-    res.status(404).json({ error: 'Unknown output validation template.' });
-    return;
-  }
-  customOutputValidationProfiles = customOutputValidationProfiles.filter((profile) => profile.profile !== template.profile).concat(cloneTemplate(template));
-  outputValidation = sanitizeOutputValidationSettings({ ...outputValidation, profile: template.profile });
-  await saveCustomOutputValidationProfiles();
-  await saveSettingsToDisk();
-  res.json({ installed: template.profile, profiles: getOutputValidationProfiles(), customProfiles: customOutputValidationProfiles, path: '.harness/output-validation-profiles.json' });
-});
-
-app.post('/api/output-validation/preview', async (req, res) => {
-  await ensureSettingsLoaded();
-  const content = String(req.body?.content ?? '').slice(0, 200_000);
-  const profile = parseOutputValidationProfile(req.body?.profile, customOutputValidationProfiles) ?? outputValidation.profile;
-  res.json({ validation: validateOutput(content, profile, customOutputValidationProfiles) });
-});
-
-app.post('/api/output-validation/profiles', async (req, res) => {
-  await ensureSettingsLoaded();
-  const validation = validateCustomOutputValidationProfiles(req.body.profiles ?? req.body);
-  if (validation.errors.length > 0) {
-    res.status(400).json({ error: 'Custom profile schema validation failed.', errors: validation.errors });
-    return;
-  }
-  const profiles = validation.profiles;
-  customOutputValidationProfiles = profiles;
-  outputValidation = sanitizeOutputValidationSettings(outputValidation);
-  await saveCustomOutputValidationProfiles();
-  res.json({ profiles: getOutputValidationProfiles(), customProfiles: customOutputValidationProfiles, path: '.harness/output-validation-profiles.json' });
-});
+// Output-validation profile routes extracted to ./outputValidationRoutes.ts.
+app.use(createOutputValidationRouter({
+  projectDir: PROJECT_DIR,
+  ensureSettingsLoaded,
+  getOutputValidationProfiles,
+  getCustomOutputValidationProfiles: () => customOutputValidationProfiles,
+  setCustomOutputValidationProfiles: (profiles) => { customOutputValidationProfiles = profiles; },
+  getOutputValidationSettings: () => outputValidation,
+  setOutputValidationSettings: (settings) => { outputValidation = settings; },
+  sanitizeOutputValidationSettings,
+  saveCustomOutputValidationProfiles,
+  saveSettingsToDisk,
+}));
 
 app.get('/api/setup/health', async (req, res) => {
   await ensureSettingsLoaded();
@@ -3030,6 +2779,8 @@ app.get('/api/setup/health', async (req, res) => {
     : mediaTools.pdfOcrCommand;
   res.json(await checkSetupHealth({
     host: parsedHost,
+    chat: resolveWebChatSelection(currentModel),
+    projectDir: PROJECT_DIR,
     visionModel: requestedVisionModel,
     audioTranscribeCommand: requestedAudioCommand,
     audioSamplePath: requestedAudioSamplePath || undefined,
@@ -3308,306 +3059,19 @@ app.get('/api/readiness', async (_req, res) => {
 const jarvisAmbientBus = new SignalBus(500);
 let jarvisAmbientHandle: AmbientDaemonHandle | null = null;
 
-app.get('/api/jarvis/status', async (_req, res) => {
-  try {
-    const [trust, knowledge] = await Promise.all([
-      loadTrustLadder(PROJECT_DIR),
-      getKnowledgeGraphStatus(PROJECT_DIR),
-    ]);
-    const voice = getVoiceStatus();
-    const inbound = getInboundTriageStatus();
-    const toolList = getRuntimeTools(PROJECT_DIR);
-    const mcp = getMcpServerStatus(toolList.length);
-    res.json({
-      generatedAt: new Date().toISOString(),
-      workspace: PROJECT_DIR,
-      trustLadder: {
-        capabilities: Object.values(trust.capabilities).map((c) => ({
-          capability: c.capability,
-          rung: c.rung,
-          acceptedStreak: c.acceptedStreak,
-          rejectedStreak: c.rejectedStreak,
-          lastUsedAt: c.lastUsedAt,
-        })),
-        updatedAt: trust.updatedAt,
-      },
-      knowledgeGraph: knowledge,
-      voice: { ...getVoiceStatus(), whisper: getWhisperHealthSnapshot() },
-      inbound: getInboundTriageStatus(),
-      runtime: getRuntimeRegistryStatus(),
-      mcpServer: mcp,
-      assistantProfile: { enabled: assistantProfileEnabled(), ambient: ambientEnabled(), proactive: proactiveProfileEnabled() },
-      schedulers: schedulerRegistry.list(),
-      ambient: { ready: true, running: jarvisAmbientHandle?.isRunning() ?? false, watchers: jarvisAmbientHandle?.watchersActive() ?? [], note: 'Runs by default under HARNESS_PROFILE=assistant; set HARNESS_AMBIENT_ENABLED=1/0 to force.' },
-      predictive: { ready: true, note: 'Predictive engine is pure; feed it ActionEvent[] from sessions.' },
-      modelCouncil: { ready: true, note: 'Council is transport-agnostic; wire to OllamaClient or OpenAIClient at the call site.' },
-    });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/jarvis/brief', async (_req, res) => {
-  try {
-    const [trust, knowledge, candidates, runs] = await Promise.all([
-      loadTrustLadder(PROJECT_DIR),
-      getKnowledgeGraphStatus(PROJECT_DIR),
-      listLearningCandidates(PROJECT_DIR, 20).catch((err) => { recordSwallowed('jarvis.brief.listLearningCandidates', err); return []; }),
-      readRunEvidence(PROJECT_DIR, 50).catch((err) => { recordSwallowed('jarvis.brief.readRunEvidence', err); return []; }),
-    ]);
-    const ambientSignals = jarvisAmbientBus.recent();
-    const pendingLearningCandidates = candidates.map((c) => ({ id: c.id, prompt: c.prompt, outcome: c.outcome, createdAt: c.createdAt }));
-    const events = mergeAndSort(eventsFromAmbientSignals(ambientSignals), eventsFromEvidenceCards(runs));
-    const predictiveSuggestions = mineNextActions(events, { limit: 8 });
-    const evidenceSummaries = runs.slice(0, 10).map((r) => ({ title: oneLineForBrief(r.request), status: r.kind, at: r.createdAt }));
-    const markdown = composeDailyBrief({
-      asOf: new Date().toISOString(),
-      windowDescription: 'since server start',
-      ambientSignals,
-      pendingLearningCandidates,
-      predictiveSuggestions,
-      knowledgeGraph: knowledge,
-      trustLadder: trust,
-      evidenceSummaries,
-    });
-    res.json({ generatedAt: new Date().toISOString(), markdown, predictiveSuggestions });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-function oneLineForBrief(text: string, max = 80): string {
-  const cleaned = (text || '').replace(/\s+/g, ' ').trim();
-  return cleaned.length <= max ? cleaned : cleaned.slice(0, max - 1) + '…';
-}
-
-app.post('/api/jarvis/trust-ladder/promote', async (req, res) => {
-  try {
-    const capability = String((req.body && (req.body as Record<string, unknown>).capability) ?? '').trim();
-    if (!capability) { res.status(400).json({ error: 'capability is required' }); return; }
-    const snap = await loadTrustLadder(PROJECT_DIR);
-    ensureCapability(snap, capability);
-    const result = recordOutcome(snap, capability, 'accepted');
-    await saveTrustLadder(PROJECT_DIR, snap);
-    res.json({ capability, rung: snap.capabilities[capability].rung, promoted: result.promoted });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/jarvis/trust-ladder/demote', async (req, res) => {
-  try {
-    const capability = String((req.body && (req.body as Record<string, unknown>).capability) ?? '').trim();
-    if (!capability) { res.status(400).json({ error: 'capability is required' }); return; }
-    const snap = await loadTrustLadder(PROJECT_DIR);
-    ensureCapability(snap, capability);
-    const result = recordOutcome(snap, capability, 'rejected');
-    await saveTrustLadder(PROJECT_DIR, snap);
-    res.json({ capability, rung: snap.capabilities[capability].rung, demoted: result.demoted });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Jarvis: top single predictive suggestion for ghost-text rendering in chat composer.
-app.get('/api/jarvis/next-suggestion', async (_req, res) => {
-  try {
-    const runs = await readRunEvidence(PROJECT_DIR, 50).catch(() => []);
-    const events = mergeAndSort(eventsFromAmbientSignals(jarvisAmbientBus.recent()), eventsFromEvidenceCards(runs));
-    const suggestions = mineNextActions(events, { limit: 1 });
-    res.json({ suggestion: suggestions[0] ?? null });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Jarvis: persist the daily brief into .harness/documents/.
-app.post('/api/jarvis/brief/save', async (_req, res) => {
-  try {
-    const snap = await snapshotDailyBrief({ projectDir: PROJECT_DIR, ambientSignals: jarvisAmbientBus.recent(), windowDescription: 'snapshot' });
-    const dir = path.join(PROJECT_DIR, '.harness', 'documents');
-    await fs.mkdir(dir, { recursive: true });
-    const filename = `jarvis-brief-${new Date().toISOString().replace(/[:.]/g, '-')}.md`;
-    const filePath = path.join(dir, filename);
-    await fs.writeFile(filePath, snap.markdown, 'utf-8');
-    res.json({ savedTo: path.relative(PROJECT_DIR, filePath), generatedAt: snap.generatedAt });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Jarvis: send the daily brief to Telegram chats already known to the bot.
-// Closes the loop so a user with the Telegram bot configured gets a proactive
-// summary they can read on their phone without opening the harness.
-app.post('/api/jarvis/brief/telegram', async (_req, res) => {
-  try {
-    const snap = await snapshotDailyBrief({ projectDir: PROJECT_DIR, ambientSignals: jarvisAmbientBus.recent(), windowDescription: 'snapshot' });
-    // Telegram caps text length around 4096 chars per message; trim the body
-    // and append a marker so the recipient knows there's more in the UI.
-    const TELEGRAM_BODY_CAP = 3800;
-    const body = snap.markdown.length <= TELEGRAM_BODY_CAP
-      ? snap.markdown
-      : snap.markdown.slice(0, TELEGRAM_BODY_CAP) + '\n\n…(truncated — open Mission Control for the full brief)';
-    const sent = await sendTelegramNotification('Daily Brief', body);
-    if (sent === 0) {
-      res.status(409).json({ error: 'No Telegram recipients available. Configure HARNESS_TELEGRAM_BOT_TOKEN and have someone send /start to the bot first.' });
-      return;
-    }
-    res.json({ delivered: sent, generatedAt: snap.generatedAt });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Jarvis: ambient daemon control (start/stop without server restart).
-app.get('/api/jarvis/ambient', (_req, res) => {
-  res.json({
-    running: jarvisAmbientHandle?.isRunning() ?? false,
-    watchers: jarvisAmbientHandle?.watchersActive() ?? [],
-    recentSignalCount: jarvisAmbientBus.recent().length,
-  });
-});
-
-app.post('/api/jarvis/ambient/start', (_req, res) => {
-  try {
-    if (jarvisAmbientHandle?.isRunning()) {
-      res.json({ running: true, watchers: jarvisAmbientHandle.watchersActive(), note: 'already running' });
-      return;
-    }
-    jarvisAmbientHandle = startAmbientDaemon(jarvisAmbientBus, {
-      watchDir: PROJECT_DIR,
-      fileFilters: ['IMPLEMENTATION_PLAN.md', 'src/', 'cookbook/', '.harness/'],
-      gitPollMs: Number(process.env.HARNESS_AMBIENT_GIT_POLL_MS ?? '15000') || 15000,
-      schedulerMs: Number(process.env.HARNESS_AMBIENT_SCHEDULER_MS ?? '0') || 0,
-      projectDir: PROJECT_DIR,
-    });
-    schedulerRegistry.register({
-      name: 'jarvis-ambient',
-      stop: () => { jarvisAmbientHandle?.stop(); },
-      isRunning: () => jarvisAmbientHandle?.isRunning() ?? false,
-    });
-    res.json({ running: true, watchers: jarvisAmbientHandle.watchersActive() });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/jarvis/ambient/stop', (_req, res) => {
-  try {
-    if (jarvisAmbientHandle?.isRunning()) jarvisAmbientHandle.stop();
-    jarvisAmbientHandle = null;
-    schedulerRegistry.unregister('jarvis-ambient');
-    res.json({ running: false });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Stop a single registered scheduler by name. Surfaces the SchedulerRegistry's
-// per-entry stop control in the Jarvis Live panel so an operator can halt one
-// noisy subsystem without the global kill switch (which only no-ops ticks) or a
-// full server restart. Stopping is reversible by restarting the server or, for
-// schedulers with their own toggle (ambient, curator), re-enabling them there.
-app.post('/api/jarvis/schedulers/:name/stop', async (req, res) => {
-  try {
-    const name = String(req.params.name ?? '');
-    if (!schedulerRegistry.list().some((entry) => entry.name === name)) {
-      res.status(404).json({ error: `Unknown scheduler: ${name}` });
-      return;
-    }
-    const result = await schedulerRegistry.stop(name);
-    res.json({ ok: result?.ok !== false, result, schedulers: schedulerRegistry.list() });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-// Restart a single registered scheduler by name. Complements the stop control
-// so an operator can bring a scheduler back without a full server restart.
-// Only schedulers that expose a restart() hook (the ones backed by an
-// idempotent configureX()) are restartable; the rest return 409.
-app.post('/api/jarvis/schedulers/:name/restart', async (req, res) => {
-  try {
-    const name = String(req.params.name ?? '');
-    if (!schedulerRegistry.list().some((entry) => entry.name === name)) {
-      res.status(404).json({ error: `Unknown scheduler: ${name}` });
-      return;
-    }
-    const result = await schedulerRegistry.restart(name);
-    if (result && result.ok === false) {
-      res.status(409).json({ error: result.error ?? `Scheduler ${name} is not restartable`, schedulers: schedulerRegistry.list() });
-      return;
-    }
-    res.json({ ok: true, result, schedulers: schedulerRegistry.list() });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-const VALID_RUNTIME_FEATURES = new Set<RuntimeFeature>(['voice_stt', 'voice_tts', 'voice_wake', 'inbound_slack', 'inbound_telegram', 'inbound_email']);
-
-app.post('/api/jarvis/runtime/register', (req, res) => {
-  try {
-    const feature = String((req.body as Record<string, unknown>)?.feature ?? '') as RuntimeFeature;
-    const adapterName = String((req.body as Record<string, unknown>)?.adapterName ?? '').trim();
-    if (!VALID_RUNTIME_FEATURES.has(feature)) { res.status(400).json({ error: `feature must be one of ${[...VALID_RUNTIME_FEATURES].join(', ')}` }); return; }
-    if (!adapterName) { res.status(400).json({ error: 'adapterName is required' }); return; }
-    markRuntimeInstalled(feature, adapterName);
-    void saveRuntimeRegistry(PROJECT_DIR).catch((err) => recordSwallowed('saveRuntimeRegistry', err));
-    res.json({ feature, adapterName, status: getRuntimeRegistryStatus() });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.post('/api/jarvis/runtime/clear', (_req, res) => {
-  clearRuntimeRegistry();
-  void saveRuntimeRegistry(PROJECT_DIR).catch((err) => recordSwallowed('saveRuntimeRegistry', err));
-  res.json({ status: getRuntimeRegistryStatus() });
-});
-
-// Jarvis: offline speech-to-text via whisper.cpp.
-// Accepts a raw 16kHz mono WAV body and returns the transcribed text.
-// Two configuration paths:
-//   1. Native whisper.cpp:  HARNESS_WHISPER_BINARY + HARNESS_WHISPER_MODEL
-//   2. Python pywhispercpp: HARNESS_WHISPER_PYTHON (e.g. "python") +
-//      optional HARNESS_WHISPER_MODEL_NAME (default base.en)
-// Returns 503 when neither is configured so the UI can fall back gracefully.
-
-// Probe whisper config without touching the request/response cycle. Used
-// both by GET /api/jarvis/voice/health and by /api/jarvis/status so the
-// runtime panel can surface mode + hint without a second round-trip.
-//
-// Falls back to autoDetectedWhisper (populated at startup by
-// detectWhisperFallback) when no env vars are set, so out-of-the-box
-// installs work without manual configuration.
-function getWhisperHealthSnapshot(): { ok: boolean; mode: 'binary' | 'python' | 'none'; hint: string; source?: 'env' | 'auto-detect' } {
-  const binary = process.env.HARNESS_WHISPER_BINARY;
-  const model = process.env.HARNESS_WHISPER_MODEL;
-  const pythonExe = process.env.HARNESS_WHISPER_PYTHON;
-  if (binary && model) {
-    return { ok: true, mode: 'binary', hint: `whisper.cpp binary at ${binary}`, source: 'env' };
-  }
-  if (pythonExe) {
-    const modelName = process.env.HARNESS_WHISPER_MODEL_NAME || 'base.en (default)';
-    return { ok: true, mode: 'python', hint: `pywhispercpp via ${pythonExe} · model ${modelName}`, source: 'env' };
-  }
-  if (autoDetectedWhisper) {
-    return {
-      ok: true,
-      mode: 'python',
-      hint: `auto-detected: pywhispercpp via ${autoDetectedWhisper.python} · model ${autoDetectedWhisper.modelName}`,
-      source: 'auto-detect',
-    };
-  }
-  return {
-    ok: false,
-    mode: 'none',
-    hint: 'Set HARNESS_WHISPER_BINARY+HARNESS_WHISPER_MODEL or HARNESS_WHISPER_PYTHON (+ optional HARNESS_WHISPER_MODEL_NAME). Auto-detect found nothing in well-known locations.',
-  };
-}
+app.use(createJarvisRouter({
+  projectDir: PROJECT_DIR,
+  getOllamaHost: () => ollamaHost,
+  getAmbientBus: () => jarvisAmbientBus,
+  getAmbientHandle: () => jarvisAmbientHandle,
+  setAmbientHandle: (handle) => { jarvisAmbientHandle = handle; },
+  schedulerRegistry,
+  recordSwallowed,
+  sendTelegramNotification,
+  getAutoDetectedWhisper: () => autoDetectedWhisper,
+  resolveWhisperBridgePath: resolveJarvisWhisperBridgePath,
+  getAssistantProfile: () => ({ enabled: assistantProfileEnabled(), ambient: ambientEnabled(), proactive: proactiveProfileEnabled() }),
+}));
 
 // Auto-detect populated at startup. Holds the first viable
 // python+model combo found in well-known locations so users get
@@ -3652,117 +3116,6 @@ async function detectWhisperFallback(): Promise<void> {
   autoDetectedWhisper = { python: pythonExe, modelName };
   logger.info('Startup', `Whisper auto-detect: ${pythonExe} + ${modelName}`);
 }
-
-// Per-IP token bucket on the transcribe route. The route spawns a python
-// subprocess and reads up to 50MB of audio per call — a stuck hands-free
-// tab could fork-bomb whisper without this. 6 calls/min sustained, with
-// burst of 6.
-const whisperRateLimiter = new RateLimiter(6, 0.1);
-
-app.get('/api/jarvis/voice/health', (_req, res) => {
-  res.json(getWhisperHealthSnapshot());
-});
-
-app.post('/api/jarvis/voice/transcribe', express.raw({ type: '*/*', limit: '50mb' }), async (req, res) => {
-  if (!whisperRateLimiter.tryConsume()) {
-    res.status(429).json({
-      error: 'Too many transcribe requests — 6/min sustained limit hit.',
-      hint: 'A stuck hands-free tab can flood this endpoint. Stop hands-free mode and retry in a minute.',
-    });
-    return;
-  }
-  const binary = process.env.HARNESS_WHISPER_BINARY;
-  const model = process.env.HARNESS_WHISPER_MODEL;
-  const pythonExe = process.env.HARNESS_WHISPER_PYTHON || (autoDetectedWhisper ? autoDetectedWhisper.python : undefined);
-  const usePython = !binary && !!pythonExe;
-  if (!usePython && (!binary || !model)) {
-    res.status(503).json({
-      error: 'Whisper not configured.',
-      hint: 'Either set HARNESS_WHISPER_BINARY + HARNESS_WHISPER_MODEL (native whisper.cpp), or set HARNESS_WHISPER_PYTHON=python (after pip install pywhispercpp). Auto-detect found nothing.',
-    });
-    return;
-  }
-  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-    res.status(400).json({ error: 'Empty audio body. POST a 16kHz mono WAV.' });
-    return;
-  }
-  const tmpDir = path.join(PROJECT_DIR, '.harness', 'jarvis', 'whisper-tmp');
-  await fs.mkdir(tmpDir, { recursive: true });
-  const id = crypto.randomBytes(8).toString('hex');
-  const wavPath = path.join(tmpDir, `stt-${id}.wav`);
-  try {
-    await fs.writeFile(wavPath, req.body);
-    let cmd: string;
-    let args: string[];
-    if (usePython) {
-      cmd = pythonExe!;
-      args = [resolveJarvisWhisperBridgePath(), wavPath];
-    } else {
-      cmd = binary!;
-      args = ['-m', model!, '-f', wavPath, '--no-timestamps', '--no-prints'];
-    }
-    const text = await new Promise<string>((resolve, reject) => {
-      // When auto-detect supplied the python path, also inject the model
-      // name into the spawned process env so jarvis_whisper.py picks it up
-      // without the user setting HARNESS_WHISPER_MODEL_NAME explicitly.
-      const childEnv = { ...process.env };
-      if (usePython && !process.env.HARNESS_WHISPER_MODEL_NAME && autoDetectedWhisper) {
-        childEnv.HARNESS_WHISPER_MODEL_NAME = autoDetectedWhisper.modelName;
-      }
-      const proc = spawn(cmd, args, { windowsHide: true, env: childEnv });
-      let stdout = '';
-      let stderr = '';
-      proc.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-      proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-      proc.on('error', (err) => reject(new Error(`Whisper spawn failed: ${err.message}`)));
-      proc.on('close', (code: number | null) => {
-        if (code !== 0) reject(new Error(`Whisper exited ${code}: ${stderr.trim().slice(0, 240)}`));
-        else resolve(stdout.trim());
-      });
-    });
-    res.json({ text, durationMs: 0 });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  } finally {
-    fs.unlink(wavPath).catch(() => undefined);
-  }
-});
-
-// Jarvis: ad-hoc council dispatch — vote / debate / arbiter modes against
-// any list of installed Ollama models. The arbiter must be supplied for
-// non-vote modes. Returns the chosen answer plus the per-member responses.
-app.post('/api/jarvis/council/run', async (req, res) => {
-  try {
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const prompt = String(body.prompt ?? '').trim();
-    const mode = String(body.mode ?? 'vote') as 'vote' | 'debate' | 'arbiter';
-    const arbiter = typeof body.arbiter === 'string' ? body.arbiter : undefined;
-    const memberInput = Array.isArray(body.members) ? (body.members as Array<{ model: string; weight?: number }>) : [];
-    if (!prompt) { res.status(400).json({ error: 'prompt is required' }); return; }
-    if (memberInput.length === 0) { res.status(400).json({ error: 'members array is required' }); return; }
-    if (mode !== 'vote' && !arbiter) { res.status(400).json({ error: `mode "${mode}" requires an arbiter model` }); return; }
-    const result = await runCouncilForChat(prompt, {
-      mode,
-      members: memberInput,
-      arbiter,
-      perMemberTimeoutMs: 60_000,
-    }, (model: string) => new OllamaClient({ model, host: ollamaHost }));
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-app.get('/api/jarvis/graph/mermaid', async (req, res) => {
-  try {
-    const records = await readKnowledgeGraph(PROJECT_DIR);
-    const focus = typeof req.query.focus === 'string' ? req.query.focus : undefined;
-    const mermaid = composeMermaidGraph(records, focus ? { focus } : {});
-    res.json({ mermaid });
-  } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-  }
-});
 
 app.get('/api/telegram/status', (_req, res) => {
   res.json({
@@ -3876,110 +3229,51 @@ app.use(createConnectorRouter({
     };
   },
 }));
-app.get('/api/capability-templates', async (_req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const registry = createDefaultCapabilityRegistry();
+app.use(createCapabilityRouter({
+  projectDir: PROJECT_DIR,
+  ensureSettingsLoaded,
+  requireAuth: requireEscalationAuth,
+  requireAuditReason,
+  saveSettingsToDisk,
+  getCapabilityGrants: () => capabilityGrants,
+  setCapabilityGrants: (grants) => { capabilityGrants = grants; },
+  getTemplateReadiness: () => {
     const telegramReady = Boolean(telegramBotToken && isTelegramBotRunning() && telegramAllowedChatIds);
     const discordReady = Boolean(connectorSecretValue('HARNESS_DISCORD_BOT_TOKEN') && isDiscordBotRunning() && discordAllowedChannelIds);
     const slackStatus = getSlackConnectorStatus(connectorSecretValue('HARNESS_SLACK_WEBHOOK_URL'));
     const whatsAppStatus = getWhatsAppConnectorStatus({ accessToken: connectorSecretValue('HARNESS_WHATSAPP_ACCESS_TOKEN'), phoneNumberId: whatsappPhoneNumberId || process.env.HARNESS_WHATSAPP_PHONE_NUMBER_ID, allowedRecipients: whatsappAllowedRecipients || process.env.HARNESS_WHATSAPP_ALLOWED_RECIPIENTS });
-    const ragIndexes = await ragIndex.listIndexes(PROJECT_DIR).catch(() => []);
-    const anyNotificationReady = telegramReady || discordReady || Boolean(slackStatus.configured) || Boolean(whatsAppStatus.configured && whatsAppStatus.hasAllowedRecipients);
-    const cloudConfigured = Object.values(OPENAI_COMPATIBLE_PRESETS).some((preset) => Boolean(readApiKey(preset)));
-    if (anyNotificationReady) registry.register('notifications', 'Push notifications', 'available');
-    if (telegramReady) registry.register('telegram', 'Telegram messaging', 'available');
-    if (ragIndexes.length > 0) registry.register('vector_memory', 'Vector/semantic memory', 'available');
-    if (cloudConfigured) registry.register('cloud_models', 'Cloud LLM backends', 'available');
-    if (process.env.HARNESS_SMTP_HOST && process.env.HARNESS_SMTP_USER && process.env.HARNESS_SMTP_PASS) registry.register('email', 'Email sending', 'available');
-
-    const connectors: Record<string, ConnectorReadinessInput> = {
-      telegram: { connector: 'telegram', configured: Boolean(telegramBotToken), running: isTelegramBotRunning(), hasAllowedChatIds: Boolean(telegramAllowedChatIds), mode: 'chat-bridge' },
-      discord: { connector: 'discord', configured: Boolean(connectorSecretValue('HARNESS_DISCORD_BOT_TOKEN')), running: isDiscordBotRunning(), hasAllowedChannelIds: Boolean(discordAllowedChannelIds), mode: 'chat-bridge' },
-      slack: { connector: 'slack', configured: Boolean(slackStatus.configured), mode: slackStatus.mode },
-      whatsapp: { connector: 'whatsapp', configured: Boolean(whatsAppStatus.configured), hasAllowedRecipients: Boolean(whatsAppStatus.hasAllowedRecipients), mode: whatsAppStatus.mode },
+    return {
+      telegramReady,
+      discordReady,
+      slackStatus,
+      whatsAppStatus,
+      connectors: {
+        telegram: { connector: 'telegram', configured: Boolean(telegramBotToken), running: isTelegramBotRunning(), hasAllowedChatIds: Boolean(telegramAllowedChatIds), mode: 'chat-bridge' },
+        discord: { connector: 'discord', configured: Boolean(connectorSecretValue('HARNESS_DISCORD_BOT_TOKEN')), running: isDiscordBotRunning(), hasAllowedChannelIds: Boolean(discordAllowedChannelIds), mode: 'chat-bridge' },
+        slack: { connector: 'slack', configured: Boolean(slackStatus.configured), mode: slackStatus.mode },
+        whatsapp: { connector: 'whatsapp', configured: Boolean(whatsAppStatus.configured), hasAllowedRecipients: Boolean(whatsAppStatus.hasAllowedRecipients), mode: whatsAppStatus.mode },
+      },
     };
-    const starters = listCapabilityTemplateStarters();
-    const templates = evaluateCapabilityTemplates(registry, connectors).map((template) => ({
-      ...template,
-      starterKinds: starters.filter((starter) => starter.templateId === template.id).map((starter) => starter.kind),
-      hasStarter: starters.some((starter) => starter.templateId === template.id),
-    }));
-    res.json({ generatedAt: new Date().toISOString(), templates });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/capability-templates/starters', (_req, res) => {
-  try {
-    res.json({ starters: listCapabilityTemplateStarters() });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/capability-templates/:id/starter', (req, res) => {
-  try {
-    const templateId = String(req.params.id ?? '').trim();
-    const starter = getCapabilityTemplateStarter(templateId);
-    if (!starter) {
-      res.status(404).json({ error: 'Capability template starter not found.' });
-      return;
-    }
-    res.json({ starter });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.post('/api/capability-templates/:id/actions', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const templateId = String(req.params.id ?? '').trim();
-    const starter = getCapabilityTemplateStarter(templateId);
-    if (!starter) {
-      res.status(404).json({ error: 'Capability template starter not found.' });
-      return;
-    }
-    const action = req.body?.action === 'create' ? 'create' : 'preview';
-    if (action === 'preview') {
-      res.json({ ok: true, action, starter, preview: starterActionPreview(starter) });
-      return;
-    }
-    if (starter.kind === 'document') {
-      if (!starter.document) { res.status(400).json({ error: 'Starter has no document payload.' }); return; }
-      const document = await createGeneratedDocument({
-        title: starter.title,
-        template: normalizeDocumentTemplate(starter.document.template),
-        format: normalizeDocumentFormat(starter.document.format),
-        sourceLabel: starter.document.sourceLabel,
-        content: starter.document.content,
-      });
-      res.json({ ok: true, action, kind: starter.kind, starter, document: document.metadata, content: document.content });
-      return;
-    }
-    if (starter.kind === 'automation') {
-      if (!starter.automationJob) { res.status(400).json({ error: 'Starter has no automation payload.' }); return; }
-      const job = await createAutomationJob(PROJECT_DIR, {
-        name: starter.automationJob.name,
-        prompt: starter.automationJob.prompt,
-        schedule: starter.automationJob.schedule,
-        scriptCommand: starter.automationJob.scriptCommand,
-      });
-      logger.info('CapabilityTemplates', 'Starter automation job created', { templateId, jobId: job.id, name: job.name });
-      res.json({ ok: true, action, kind: starter.kind, starter, job });
-      return;
-    }
-    res.status(400).json({ error: `Unsupported starter kind: ${starter.kind}` });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+  },
+  getCapabilityRegistrySnapshot: () => {
+    refreshCapabilityRegistry();
+    return {
+      capabilities: capabilityRegistry.list(),
+      available: capabilityRegistry.available().map((c) => c.id),
+      missing: capabilityRegistry.missing().map((c) => ({ id: c.id, reason: c.reason })),
+    };
+  },
+  createGeneratedDocument: (input) => createGeneratedDocument({
+    title: input.title,
+    template: input.template as DocumentTemplate,
+    format: input.format as DocumentFormat,
+    sourceLabel: input.sourceLabel,
+    content: input.content,
+  }),
+  normalizeDocumentTemplate,
+  normalizeDocumentFormat,
+  logger,
+}));
 
 // ─── Static asset serving (desktop input evidence, research reports) ─
 // 3 file-serving routes (GET /api/desktop-input/evidence + /file/:name,
@@ -4107,17 +3401,9 @@ function refreshCapabilityRegistry(): void {
     process.env.HARNESS_SMTP_HOST ? 'SMTP configured.' : 'No SMTP configured.');
 }
 
-app.get('/api/capabilities/registry', async (_req, res) => {
-  await ensureSettingsLoaded();
-  refreshCapabilityRegistry();
-  res.json({
-    capabilities: capabilityRegistry.list(),
-    available: capabilityRegistry.available().map((c) => c.id),
-    missing: capabilityRegistry.missing().map((c) => ({ id: c.id, reason: c.reason })),
-  });
-});
+// Capability registry route extracted to ./capabilityRoutes.ts.
 
-// ─── Worker Queue status ────────────────────────────────────────────
+// ─── Worker Queue status ────────────────────────────────────────────// ─── Worker Queue status ────────────────────────────────────────────
 // Misc small routes (worker queue, mode classifier, swallowed-failure
 // diagnostics) extracted to ./miscRoutes.ts. classifyMode is still
 // imported by server.ts (chat handler ~5417 + agent routes ~2493).
@@ -4202,7 +3488,9 @@ const runCodexTaskWithConductor: CodexTaskRunner = async ({ task, contract, prom
     summarizerClient: summarizerModel ? webRuntime.createClient(summarizerModel, ollamaHost, activeContextMaxTokens) : undefined,
     tracer: runtimeTracer,
     learningRecorder,
-    adversaryJudge: createLlmAdversaryJudge(client),
+    ...(await resolveCriticDeps(activeModel, client)),
+    ...inRunEscalationDeps(),
+    ...startRunRecording('task'),
   };
 
   const outcome = await runConductor({
@@ -4485,6 +3773,23 @@ app.use(createSquadRouter({ projectDir: PROJECT_DIR }));
 // ─── Identity ───────────────────────────────────────────────────────
 // SOUL.md / USER.md / structured.json under .harness/identity/. Routes
 // extracted to ./identityRoutes.ts so server.ts holds wiring, not handlers.
+app.use(createRunRouter({ projectDir: PROJECT_DIR, requireAuth: requireEscalationAuth, logger }));
+// Capability probes cost tokens on cloud models, so they only run on request.
+app.use(createModelProfileRouter({
+  projectDir: PROJECT_DIR,
+  createClient: async (model) => webRuntime.createClient(model, ollamaHost, await resolveContextMaxTokens(model)),
+  requireAuth: requireEscalationAuth,
+  logger,
+}));
+// Replay recorded runs against other models (deterministic: recorded tool
+// results only, no side effects). The gate for enabling answer-changing layers.
+app.use(createReplayRouter({
+  projectDir: PROJECT_DIR,
+  requireAuth: requireEscalationAuth,
+  createClient: async (model) => webRuntime.createClient(model, ollamaHost, await resolveContextMaxTokens(model)),
+  getSchemaTools: () => webRuntime.getTools(),
+  logger,
+}));
 app.use(createIdentityRouter({
   projectDir: PROJECT_DIR,
   requireAuth: requireEscalationAuth,
@@ -4513,6 +3818,28 @@ app.get('/api/system/health', async (_req, res) => {
       readConciergeLog(PROJECT_DIR, 20).catch(() => []),
       summarizeTasks(PROJECT_DIR).catch(() => null),
       listSquads(PROJECT_DIR).then((squads) => squads.length).catch(() => 0),
+    ]);
+    const [sessionHealth, evidenceHealth] = await Promise.all([
+      SessionStorage.inspectStorage(PROJECT_DIR).catch((error) => ({
+        status: 'error' as const,
+        sessionDir: path.join(PROJECT_DIR, '.harness', 'sessions'),
+        transcripts: 0,
+        metaFiles: 0,
+        corruptTranscriptFiles: 0,
+        corruptTranscriptLines: 0,
+        corruptMetaFiles: 0,
+        unreadableFiles: 1,
+        error: error instanceof Error ? error.message : String(error),
+      })),
+      inspectRunEvidence(PROJECT_DIR).catch((error) => ({
+        status: 'error' as const,
+        path: path.join(PROJECT_DIR, '.harness', 'evidence', 'runs.jsonl'),
+        totalLines: 0,
+        validEntries: 0,
+        corruptLines: 0,
+        unreadable: true,
+        error: error instanceof Error ? error.message : String(error),
+      })),
     ]);
     const lastHeartbeat = heartbeatHistory[heartbeatHistory.length - 1] ?? null;
     // Read kill-switch and scheduler status from their canonical sources
@@ -4560,6 +3887,15 @@ app.get('/api/system/health', async (_req, res) => {
       },
       tasks: taskSummary,
       events: { recent_count: recentEvents.length },
+      persistence: {
+        sessions: sessionHealth,
+        evidence: evidenceHealth,
+        settings: { ...settingsPersistenceStatus },
+        swallowed_failures: {
+          total_recorded: getSwallowedFailureTotalCount(),
+          dropped: getSwallowedFailureDroppedCount(),
+        },
+      },
       context: await buildContextHealth(),
       vision: await buildVisionHealth(),
       observability: {
@@ -5066,12 +4402,6 @@ async function convertMarkdownDocument(markdown: string, outputPath: string, for
   if (code !== 0) throw new Error(`pandoc failed to generate ${format.toUpperCase()} output.`);
 }
 
-function starterActionPreview(starter: CapabilityTemplateStarter): Record<string, unknown> {
-  if (starter.kind === 'document') return { kind: starter.kind, document: starter.document, writes: ['.harness/documents'] };
-  if (starter.kind === 'automation') return { kind: starter.kind, automationJob: starter.automationJob, writes: ['.harness/automations/jobs.json'] };
-  return { kind: starter.kind };
-}
-
 async function createGeneratedDocument(input: { title: string; template: DocumentTemplate; format: DocumentFormat; sourceLabel: string; content: string; evidence?: EvidenceCard }): Promise<{ metadata: GeneratedDocumentMetadata; content: string }> {
   const markdown = buildGeneratedDocumentMarkdown(input);
   const body = input.format === 'html' ? markdownToDocumentHtml(markdown, input.title) : markdown;
@@ -5421,106 +4751,9 @@ app.use(createToolsRouter({
   },
 }));
 
-app.get('/api/capabilities', async (_req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const capabilities = listCapabilityPolicies();
-    const activeGrants = listActiveCapabilityGrants(capabilityGrants);
-    const expired = findExpiredGrants(capabilityGrants);
-    if (expired.length > 0) {
-      for (const grant of expired) {
-        await appendCapabilityAuditEvent(PROJECT_DIR, { type: 'grant.expired', capabilityId: grant.capabilityId, grantId: grant.id });
-        capabilityGrants = revokeCapabilityGrant(capabilityGrants, grant.id);
-      }
-      await saveSettingsToDisk();
-    }
-    res.json({
-      capabilities,
-      summary: summarizeCapabilityAlignment(capabilities),
-      coverage: mapToolsToCapabilityCoverage(),
-      grants: activeGrants,
-      grantCount: activeGrants.length,
-      shellCommandPresets: listShellCommandAllowlistPresets(),
-    });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
+// Capability grant/audit routes extracted to ./capabilityRoutes.ts.
 
-app.post('/api/capabilities/grants', async (req, res) => {
-  try {
-    if (!requireEscalationAuth(req, res, 'capability grant creation')) return;
-    await ensureSettingsLoaded();
-    const capabilityId = String(req.body?.capabilityId ?? '').trim();
-    const reason = requireAuditReason(req.body?.reason, res, 'Capability grant creation');
-    if (!reason) return;
-    const controls = Array.isArray(req.body?.controls) ? req.body.controls : [];
-    const result = createCapabilityGrant({
-      id: crypto.randomUUID(),
-      capabilityId,
-      controls,
-      reason,
-      expiresInMinutes: req.body?.expiresInMinutes,
-      commandAllowlist: Array.isArray(req.body?.commandAllowlist) ? req.body.commandAllowlist : undefined,
-    });
-    if (!result.grant) {
-      const status = result.evaluation.decision === 'deny' ? 403 : 400;
-      res.status(status).json({ error: result.evaluation.reason, evaluation: result.evaluation });
-      return;
-    }
-    capabilityGrants = sanitizeCapabilityGrants([...capabilityGrants, result.grant]);
-    await saveSettingsToDisk();
-    await appendCapabilityAuditEvent(PROJECT_DIR, { type: 'grant.created', capabilityId, grantId: result.grant.id, reason: result.grant.reason });
-    logger.info('Capabilities', 'Capability grant created', { capabilityId, grantId: result.grant.id, expiresAt: result.grant.expiresAt });
-    // Jarvis: bridge grant create → trust ladder acceptance.
-    try {
-      const snap = await loadTrustLadder(PROJECT_DIR);
-      applyGrantToLadder(snap, capabilityId, 'create');
-      await saveTrustLadder(PROJECT_DIR, snap);
-    } catch { /* best-effort */ }
-    res.json({ grant: result.grant, evaluation: result.evaluation, grants: listActiveCapabilityGrants(capabilityGrants) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.delete('/api/capabilities/grants/:id', async (req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const grantId = String(req.params.id ?? '').trim();
-    const before = capabilityGrants.find((grant) => grant.id === grantId);
-    if (!before) { res.status(404).json({ error: 'Capability grant not found.' }); return; }
-    capabilityGrants = revokeCapabilityGrant(capabilityGrants, grantId);
-    await saveSettingsToDisk();
-    await appendCapabilityAuditEvent(PROJECT_DIR, { type: 'grant.revoked', capabilityId: before.capabilityId, grantId });
-    logger.info('Capabilities', 'Capability grant revoked', { capabilityId: before.capabilityId, grantId });
-    // Jarvis: bridge grant revoke → trust ladder rejection.
-    try {
-      const snap = await loadTrustLadder(PROJECT_DIR);
-      applyGrantToLadder(snap, before.capabilityId, 'revoke');
-      await saveTrustLadder(PROJECT_DIR, snap);
-    } catch { /* best-effort */ }
-    res.json({ revoked: grantId, grants: listActiveCapabilityGrants(capabilityGrants) });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-app.get('/api/capabilities/audit', async (_req, res) => {
-  try {
-    await ensureSettingsLoaded();
-    const events = await readCapabilityAuditEvents(PROJECT_DIR);
-    res.json({ events: events.slice(-200).reverse() });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    res.status(500).json({ error: msg });
-  }
-});
-
-// 9 /api/automations* routes moved to ./automationRoutes.ts. server.ts
+// 9 /api/automations* routes moved to ./automationRoutes.ts. server.ts// 9 /api/automations* routes moved to ./automationRoutes.ts. server.ts
 // retains getAutomationPolicyContext + createRunEvidence locally because
 // both close over module-level state (killSwitchActive, capabilityGrants,
 // currentModel, permissionMode). The router gets buildEvidenceCard +
@@ -5635,6 +4868,7 @@ async function loadExplicitSkillContext(messageText: string): Promise<{ skill?: 
 
 // Chat endpoint — runs the agent loop and streams events as SSE
 app.post('/api/chat', async (req, res) => {
+  if (shutdownRequested) { res.status(503).json({ error: 'Server is shutting down.' }); return; }
   await ensureSettingsLoaded();
   checkAutonomyExpiry();
   lastUserActivityMs = Date.now();
@@ -5940,11 +5174,15 @@ app.post('/api/chat', async (req, res) => {
   }
 
   const abortController = new AbortController();
+  activeChatControllers.add(abortController);
+  if (shutdownRequested) abortController.abort();
+  res.once('finish', () => activeChatControllers.delete(abortController));
   // Use res.on('close') instead of req.on('close') on POST SSE routes:
   // req 'close' can fire as soon as the request body is fully consumed,
   // before any SSE event is written, which would abort the stream
   // immediately and surface as `TypeError: terminated` on the client.
   res.on('close', () => {
+    activeChatControllers.delete(abortController);
     if (!res.writableEnded) abortController.abort();
   });
 
@@ -5962,7 +5200,7 @@ app.post('/api/chat', async (req, res) => {
   if (permissionMode === 'dontAsk') {
     const newGrants = autoGrantGatedCapabilities(capabilityGrants);
     if (newGrants.length > 0) {
-      capabilityGrants = sanitizeCapabilityGrants([...capabilityGrants, ...newGrants]);
+      capabilityGrants = pruneStaleCapabilityGrants(sanitizeCapabilityGrants([...capabilityGrants, ...newGrants]));
       for (const grant of newGrants) {
         await appendCapabilityAuditEvent(PROJECT_DIR, { type: 'grant.created', capabilityId: grant.capabilityId, grantId: grant.id, reason: 'Auto-granted in dontAsk mode.' });
       }
@@ -6252,6 +5490,48 @@ CONTEXT HYGIENE (critical for long tasks):
     taskType: requiresExecutionProof ? chatTaskContract.intent_type : myceliumClassification?.type,
   };
 
+  // Governed working state: protected paths from .harness/protected-paths.json
+  // are always enforced; HARNESS_WORKING_STATE=on also injects the state into
+  // every prompt and offers the state_update tool (answer-changing, opt-in).
+  const protectedPaths = await loadProtectedPaths();
+  if (protectedPaths.length > 0) config.protectedPaths = protectedPaths;
+  if (process.env.HARNESS_WORKING_STATE === 'on') config.workingState = { inject: true };
+
+  // Lessons from earlier runs are always recorded; recalling them into the
+  // prompt changes answers, so it is opt-in (HARNESS_LESSONS=recall).
+  if (resolveLessonsMode() === 'recall') {
+    const recalled = recallLessons(await loadLessons(PROJECT_DIR), message);
+    if (recalled.length > 0) {
+      config.systemPrompt = `${config.systemPrompt}\n\n${renderLessons(recalled)}`;
+      config.recalledLessons = recalled.map((lesson) => lesson.id);
+    }
+  }
+
+  // Capability-profile adapter and adjustable scaffolding. Both change
+  // answers, so both are opt-in (HARNESS_ADAPTER_MODE=profile,
+  // HARNESS_SCAFFOLD_MODE=profile|light|medium|heavy) until replay evals
+  // approve them. Tools are ranked by relevance to the user's message.
+  const adapterMode = process.env.HARNESS_ADAPTER_MODE;
+  const scaffoldMode = process.env.HARNESS_SCAFFOLD_MODE;
+  if (adapterMode === 'profile' || scaffoldMode) {
+    const loaded = await loadCapabilityProfile(activeModel, PROJECT_DIR).catch(() => null);
+    const capability = loaded && isCapabilityProfileFresh(loaded) ? loaded : null;
+    if (adapterMode === 'profile' && capability) {
+      const plan = compileModelRequestPlan({ tools, systemPrompt: config.systemPrompt, profile: capability, relevanceScores: rankToolsByRelevance(tools, message) });
+      config.systemPrompt = plan.systemPrompt;
+      config.modelPlan = { toolMode: plan.toolMode, toolNames: plan.tools.map((tool) => tool.name), ...(plan.format ? { format: plan.format } : {}) };
+      logger.info('Adapter', 'Compiled model request plan', { model: activeModel, toolMode: plan.toolMode, tools: plan.tools.length });
+    }
+    const scaffoldLevel = resolveScaffoldLevel(scaffoldMode, capability?.recommended.scaffoldLevel);
+    if (scaffoldLevel && scaffoldLevel !== 'light') {
+      config.scaffold = scaffoldFor(scaffoldLevel);
+      if (!config.modelPlan && config.scaffold.maxToolsOffered > 0) {
+        config.modelPlan = { toolMode: 'native', toolNames: selectRelevantTools(tools, message, config.scaffold.maxToolsOffered).map((tool) => tool.name) };
+      }
+      logger.info('Scaffold', 'Applied scaffolding level', { model: activeModel, level: scaffoldLevel, source: scaffoldMode });
+    }
+  }
+
   const keepAlive = setInterval(() => {
     if (!res.writableEnded) res.write(': keepalive\n\n');
   }, 15_000);
@@ -6349,10 +5629,13 @@ CONTEXT HYGIENE (critical for long tasks):
       );
       return result.allowed;
     },
-    // LLM-graded safety judge for AdversaryInspector. Reuses the chat
-    // client; only invoked when HARNESS_INSPECTOR_ADVERSARY=1 and
-    // <project>/.harness/adversary.md exists.
-    adversaryJudge: createLlmAdversaryJudge(client),
+    // Critic for research verification, and the LLM-graded judge for
+    // AdversaryInspector (only invoked when HARNESS_INSPECTOR_ADVERSARY=1 and
+    // <project>/.harness/adversary.md exists). Both use a different model
+    // family from the chat model when one is available.
+    ...(await resolveCriticDeps(activeModel, client)),
+    ...inRunEscalationDeps(),
+    ...startRunRecording('chat'),
   };
 
   const messages: Message[] = [];
@@ -6421,6 +5704,13 @@ CONTEXT HYGIENE (critical for long tasks):
         source: activeOutputValidation.selectionSource,
         reason: activeOutputValidation.selectionReason,
       })}\n\n`);
+    }
+    if (deps.runLog) {
+      // Opt-in whole-workspace snapshot so changes made via bash can be undone too.
+      if (process.env.HARNESS_RUN_GIT_CHECKPOINT === '1') {
+        await createGitCheckpoint(PROJECT_DIR, deps.runLog.runId).catch((err) => recordSwallowed('runLog.gitCheckpoint', err));
+      }
+      res.write(`data: ${JSON.stringify({ type: 'run', runId: deps.runLog.runId })}\n\n`);
     }
     const seenFallbackKeys = new Set<string>();
     let suppressedFallbacks = 0;
@@ -7578,6 +6868,7 @@ async function runBriefingChat(prompt: string): Promise<string> {
     client,
     tools: webTools,
     permissionCheck: async () => ({ allowed: true }),
+    ...startRunRecording('background'),
   };
   let text = '';
   for await (const event of webRuntime.runQueryLoop(config, deps, [{ role: 'user', content: prompt }])) {
@@ -7604,6 +6895,7 @@ async function runReplayQuery(candidate: ReplayCandidate): Promise<GovernedAnswe
     client,
     tools: webTools,
     permissionCheck: async () => ({ allowed: true }),
+    ...startRunRecording('background'),
   };
   const prompt = `Re-investigate and verify this claim, correcting it if it is wrong:\n\n${candidate.content}`;
   let governed: GovernedAnswer | null = null;
@@ -7797,12 +7089,8 @@ export async function resolveChatModelForRequest(requestedModel: string, message
     requestedModel,
     message: messageText,
     candidates,
-    requestedModelWeak: isKnownWeakAgenticModel(requestedModel),
+    requestedModelWeak: inferModelCapabilities(requestedModel).toolUse === 'weak',
   }, modelRouting);
-}
-
-function isKnownWeakAgenticModel(modelName: string): boolean {
-  return /^gemma4:(e4b|26b)$/i.test(modelName.trim());
 }
 
 function buildChatModelCandidatePool(requestedModel: string, availableModels: string[], policy: ModelRoutingPolicy = {}): ChatModelCandidatePool {
@@ -7897,8 +7185,42 @@ function preferredLocalAgenticModels(requestedModel: string, availableModels: st
  * then add a test in src/web/server.test.ts under "classifies known :cloud
  * Ollama models" or its sibling tests.
  */
+/**
+ * Probed capability profiles by model name, refreshed at startup and whenever
+ * the model list is requested. A measured profile beats the name heuristics
+ * in inferModelCapabilities.
+ */
+const capabilityProfileCache = new Map<string, CapabilityProfile>();
+async function refreshCapabilityProfileCache(): Promise<void> {
+  try {
+    const profiles = await listCapabilityProfiles(PROJECT_DIR);
+    capabilityProfileCache.clear();
+    for (const profile of profiles) capabilityProfileCache.set(profile.model, profile);
+  } catch (err) {
+    recordSwallowed('capabilityProfileCache.refresh', err);
+  }
+}
+void refreshCapabilityProfileCache();
+
 export function inferModelCapabilities(name: string, details: Record<string, unknown> = {}): { text: boolean; image: boolean; audio: boolean; toolUse: 'strong' | 'weak' | 'unknown'; notes: string[] } {
   const haystack = `${name} ${Object.values(details).join(' ')}`.toLowerCase();
+  const measured = capabilityProfileCache.get(name.trim());
+  if (measured && isCapabilityProfileFresh(measured)) {
+    const score = measured.scores.toolCalling;
+    const toolUse: 'strong' | 'weak' | 'unknown' = score >= 0.9 ? 'strong' : score < 0.6 ? 'weak' : 'unknown';
+    const image = isVisionCapableModelName(name, details);
+    const audio = /whisper|audio|speech|wav2vec|parakeet|sensevoice/.test(haystack);
+    return {
+      text: true,
+      image,
+      audio,
+      toolUse,
+      notes: [
+        `Measured by capability probe on ${measured.probedAt.slice(0, 10)}: tool calling ${Math.round(score * 100)}%, instruction following ${Math.round(measured.scores.instructionFollowing * 100)}%, usable context ~${measured.usableContextTokens.toLocaleString()} tokens.`,
+        toolUse === 'weak' ? 'This model may not reliably call tools (web_search, file_read, etc.). For research or file tasks, consider a larger model.' : '',
+      ].filter(Boolean),
+    };
+  }
   const image = isVisionCapableModelName(name, details);
   const audio = /whisper|audio|speech|wav2vec|parakeet|sensevoice/.test(haystack);
 
@@ -8073,7 +7395,14 @@ async function resolveContextMaxTokens(model: string): Promise<number> {
   // Net effect: users on a cloud model with a 128k window get 128k
   // automatically without having to touch settings, while explicit
   // throttles ("never exceed 1024 tokens for cost reasons") are honoured.
-  return resolveEffectiveContextMaxTokensFromKnown(configured, detected);
+  const effective = resolveEffectiveContextMaxTokensFromKnown(configured, detected);
+  // A probed capability profile knows how much of the window the model can
+  // actually use; never budget beyond that.
+  const capability = await loadCapabilityProfile(model, PROJECT_DIR).catch(() => null);
+  if (capability && isCapabilityProfileFresh(capability) && capability.recommended.contextBudgetTokens > 0) {
+    return Math.min(effective, capability.recommended.contextBudgetTokens);
+  }
+  return effective;
 }
 
 async function ensureSettingsLoaded(): Promise<void> {
@@ -8282,7 +7611,7 @@ function applyStoredSettings(settings: Partial<WebSettings>): void {
       reason: typeof sb?.reason === 'string' ? sb.reason : '',
     });
   }
-  if (settings.capabilityGrants !== undefined) capabilityGrants = sanitizeCapabilityGrants(settings.capabilityGrants);
+  if (settings.capabilityGrants !== undefined) capabilityGrants = pruneStaleCapabilityGrants(sanitizeCapabilityGrants(settings.capabilityGrants));
   if (settings.browserRedaction !== undefined) browserRedaction = sanitizeBrowserRedaction(settings.browserRedaction);
   if (settings.contextMaxTokens !== undefined) contextMaxTokens = clampNumber(settings.contextMaxTokens, 0, 200_000, DEFAULT_CONTEXT_MAX_TOKENS);
   if (settings.webReadMaxChars !== undefined) {
@@ -8725,57 +8054,38 @@ async function persistSessionLearning(session: SessionStorage, projectDir: strin
 }
 
 let _saveSettingsLock: Promise<void> = Promise.resolve();
+let settingsPersistenceStatus: {
+  status: 'never_saved' | 'ok' | 'error';
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastErrorAt: string | null;
+  lastError: string | null;
+} = { status: 'never_saved', lastAttemptAt: null, lastSuccessAt: null, lastErrorAt: null, lastError: null };
 async function saveSettingsToDisk(): Promise<void> {
   // Serialize saves to prevent concurrent write races
   _saveSettingsLock = _saveSettingsLock.then(_doSaveSettings, _doSaveSettings);
   return _saveSettingsLock;
 }
 async function _doSaveSettings(): Promise<void> {
-  await fs.mkdir(path.dirname(SETTINGS_PATH), { recursive: true });
-  const { outputValidationProfiles, customOutputValidationProfiles: profiles, ...settings } = getCurrentSettings();
-  void outputValidationProfiles;
-  void profiles;
-  // Merge with any fields that exist in the file but are not tracked in-memory
-  // (e.g. fields added by newer code not yet loaded). This prevents a running
-  // server from clobbering file edits made to fields it does not manage.
-  let merged: Record<string, unknown> = settings;
+  const attemptAt = new Date().toISOString();
+  settingsPersistenceStatus = { ...settingsPersistenceStatus, lastAttemptAt: attemptAt };
   try {
-    const raw = await fs.readFile(SETTINGS_PATH, 'utf-8');
-    const existing = JSON.parse(raw) as Record<string, unknown>;
-    merged = { ...existing, ...settings };
-  } catch { /* file missing or invalid — use settings as-is */ }
-  const json = JSON.stringify(merged, null, 2);
-  // Validate before writing — never write invalid JSON
-  try { JSON.parse(json); } catch { logger.warn('Settings', 'Skipped save: serialized JSON is invalid'); return; }
-  // Atomic write: write to temp file then rename
-  const tmpPath = SETTINGS_PATH + '.tmp';
-  await fs.writeFile(tmpPath, json, 'utf-8');
-  await renameSettingsFileWithRetry(tmpPath, SETTINGS_PATH);
-}
-
-async function renameSettingsFileWithRetry(tmpPath: string, targetPath: string): Promise<void> {
-  for (let attempt = 0; attempt <= SETTINGS_SAVE_RETRY_DELAYS_MS.length; attempt += 1) {
-    try {
-      await fs.rename(tmpPath, targetPath);
-      return;
-    } catch (error) {
-      if (!isTransientSettingsRenameError(error) || attempt === SETTINGS_SAVE_RETRY_DELAYS_MS.length) throw error;
-      const code = (error as NodeJS.ErrnoException).code || 'unknown';
-      logger.warn('Settings', 'Retrying settings save after transient rename failure', { code, attempt: attempt + 1 });
-      await delay(SETTINGS_SAVE_RETRY_DELAYS_MS[attempt]);
-    }
+    const { outputValidationProfiles, customOutputValidationProfiles: profiles, ...settings } = getCurrentSettings();
+    void outputValidationProfiles;
+    void profiles;
+    if (!await writeSettingsFile(SETTINGS_PATH, settings)) return;
+    settingsPersistenceStatus = { status: 'ok', lastAttemptAt: attemptAt, lastSuccessAt: new Date().toISOString(), lastErrorAt: null, lastError: null };
+  } catch (error) {
+    settingsPersistenceStatus = {
+      ...settingsPersistenceStatus,
+      status: 'error',
+      lastErrorAt: new Date().toISOString(),
+      lastError: error instanceof Error ? error.message : String(error),
+    };
+    throw error;
   }
 }
 
-function isTransientSettingsRenameError(error: unknown): boolean {
-  if (process.platform !== 'win32') return false;
-  const code = (error as NodeJS.ErrnoException).code;
-  return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 async function checkSourceDistFreshness(): Promise<void> {
   const { sourceKey, distKey } = resolveHarnessSourceDistFreshnessPaths();
@@ -8788,7 +8098,7 @@ async function checkSourceDistFreshness(): Promise<void> {
   } catch { /* dist or source missing — skip check */ }
 }
 
-export async function startServer(): Promise<void> {
+export async function startServer(): Promise<ReturnType<typeof app.listen>> {
   const startupProfile = createStartupProfile();
   startupProfile.record('module-route-init', MODULE_LOAD_STARTED_AT);
   // Project-dir self-check. The v0.4.10 install_skill bug was one instance
@@ -9062,7 +8372,7 @@ export async function startServer(): Promise<void> {
             try {
               if (action.kind === 'kg_ingest_file') {
                 const files = (action.payload?.files as string[] | undefined) ?? [];
-                for (const file of files) {
+                for (const file of new Set(files)) {
                   await upsertEntity(PROJECT_DIR, 'file', file, { source: 'ambient' }, 'ambient');
                 }
               } else if (action.kind === 'save_brief') {
@@ -9143,6 +8453,7 @@ export async function startServer(): Promise<void> {
       openBrowser(url);
     }
   });
+  return httpServer;
 }
 
 function createStartupProfile(): { record: (phase: string, since?: number) => void; summary: () => Record<string, number> } {
@@ -9171,6 +8482,53 @@ export function setWebRuntimeOverrides(overrides: Partial<WebRuntimeDeps>): () =
   return () => { webRuntime = defaultWebRuntime; };
 }
 
+async function shutdownServer(server: ReturnType<typeof app.listen>, signal: NodeJS.Signals | 'supervisor'): Promise<void> {
+  logger.info('Process', 'Graceful shutdown requested', { signal });
+  shutdownRequested = true;
+  for (const controller of activeChatControllers) controller.abort();
+  const closeHttp = new Promise<void>((resolve) => {
+    server.close((error?: Error) => {
+      if (error) recordSwallowed('server.shutdown.http.close', error);
+      resolve();
+    });
+  });
+  const stopSubsystems = (async () => {
+    try { await stopAllSchedulers(); } catch (error) { recordSwallowed('server.shutdown.schedulers', error); }
+    try { stopTelegramBot(); } catch (error) { recordSwallowed('server.shutdown.telegram', error); }
+    try { stopDiscordBot(); } catch (error) { recordSwallowed('server.shutdown.discord', error); }
+    try { jarvisAmbientHandle?.stop(); jarvisAmbientHandle = null; } catch (error) { recordSwallowed('server.shutdown.ambient', error); }
+  })();
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, 5_000));
+  await Promise.race([Promise.allSettled([closeHttp, stopSubsystems]).then(() => undefined), timeout]);
+}
+
+export function registerShutdownHandlers(server: ReturnType<typeof app.listen>): void {
+  let shuttingDown = false;
+  const handleShutdown = (signal: NodeJS.Signals | 'supervisor'): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    shutdownServer(server, signal).finally(() => process.exit(0));
+  };
+  process.once('SIGINT', handleShutdown);
+  process.once('SIGTERM', handleShutdown);
+  if (process.send) {
+    const reportReady = (): void => {
+      const address = server.address();
+      if (process.connected && address && typeof address === 'object') {
+        process.send?.({ type: 'harness:ready', port: address.port });
+      }
+    };
+    if (server.listening) reportReady();
+    else server.once('listening', reportReady);
+    process.on('message', message => {
+      if (typeof message === 'object' && message !== null && 'type' in message && message.type === 'harness:shutdown') {
+        handleShutdown('supervisor');
+      }
+    });
+    process.once('disconnect', () => handleShutdown('supervisor'));
+  }
+}
+
 if (require.main === module) {
   // Process-level safety net. Installed only when this file is the entry
   // point so importing server.ts from tests does not register handlers
@@ -9195,7 +8553,7 @@ if (require.main === module) {
     // Give the logger a tick to flush stderr before we go.
     setTimeout(() => process.exit(1), 50);
   });
-  startServer().catch((error) => {
+  startServer().then(registerShutdownHandlers).catch((error) => {
     console.error(error);
     process.exit(1);
   });

@@ -17,6 +17,7 @@ import { rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSea
 import { writeModelCatalogCache } from '../models/modelCatalog';
 import { OllamaClient, drainOllamaChatRetryEvents } from '../core/ollamaClient';
 import type { LoopConfig, LoopEvent, SessionEvent } from '../types';
+import type { QueryLoopDeps } from '../core/queryLoop';
 import { cleanupHarnessArtifacts, diffHarnessRuntimeState, restoreHarnessRuntimeState, seedHarnessAutomationJobsForTest, snapshotHarnessRuntimeState, type HarnessDocumentArtifact, type HarnessRuntimeStateSnapshot } from '../testSupport/harnessCleanup.test-support';
 
 jest.setTimeout(30_000);
@@ -1133,7 +1134,7 @@ describe('web server API validation', () => {
     }
   });
 
-  it('uses OpenRouter Gemini Flash for current-information research turns', async () => {
+  it('keeps a capable selected model for current-information research turns', async () => {
     const previous = process.env.OPENROUTER_API_KEY;
     process.env.OPENROUTER_API_KEY = 'test-key';
     const restore = setWebRuntimeOverrides({
@@ -1143,8 +1144,8 @@ describe('web server API validation', () => {
       const decision = await resolveChatModelForRequest('llama3.1:8b', 'Research the latest Azure AI Search updates today.');
 
       expect(decision).toMatchObject({
-        routed: true,
-        model: 'openrouter/google/gemini-2.5-flash',
+        routed: false,
+        model: 'llama3.1:8b',
         tier: 'default',
         taskType: 'research',
       });
@@ -2656,6 +2657,30 @@ describe('web server API validation', () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
+  it('GET /api/system/health exposes persistence diagnostics', async () => {
+    const response = await request('/api/system/health');
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      persistence: {
+        sessions: { status: string; corruptTranscriptLines: number; corruptMetaFiles: number };
+        evidence: { status: string; corruptLines: number; unreadable: boolean };
+        settings: { status: string; lastAttemptAt: string | null; lastError: string | null };
+        swallowed_failures: { total_recorded: number; dropped: number };
+      };
+    };
+
+    expect(body.persistence).toBeDefined();
+    expect(typeof body.persistence.sessions.status).toBe('string');
+    expect(typeof body.persistence.sessions.corruptTranscriptLines).toBe('number');
+    expect(typeof body.persistence.sessions.corruptMetaFiles).toBe('number');
+    expect(typeof body.persistence.evidence.status).toBe('string');
+    expect(typeof body.persistence.evidence.corruptLines).toBe('number');
+    expect(typeof body.persistence.evidence.unreadable).toBe('boolean');
+    expect(typeof body.persistence.settings.status).toBe('string');
+    expect(typeof body.persistence.swallowed_failures.total_recorded).toBe('number');
+    expect(typeof body.persistence.swallowed_failures.dropped).toBe('number');
+  });
+
   // Pin the Phase 2/3 additions to /api/jarvis/status: the assistant-profile
   // resolution and the unified scheduler registry are surfaced here so the UI
   // (refreshJarvisLive) can render one identity. A regression that dropped
@@ -3235,6 +3260,37 @@ describe('web server API validation', () => {
     } finally {
       await new Promise<void>((resolve, reject) => ollamaServer.close((error) => error ? reject(error) : resolve()));
       await fs.rm(audioDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['groq/llama-3.1-8b-instant', 'groq', 'llama-3.1-8b-instant', 'configured'],
+    ['my-namespace/local-model', 'ollama', 'my-namespace/local-model', 'blocked'],
+  ])('reports setup health using the chat route for %s', async (model, backend, resolvedModel, state) => {
+    const originalKey = process.env.GROQ_API_KEY;
+    const settings = await (await request('/api/settings')).json() as { model: string };
+    try {
+      process.env.GROQ_API_KEY = 'setup-test-key';
+      const saved = await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      });
+      expect(saved.status).toBe(200);
+      const response = await request('/api/setup/health?ollamaHost=http%3A%2F%2F127.0.0.1%3A1');
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        chat: { backend, model: resolvedModel, state, verified: false },
+        ollama: { ok: false },
+      });
+    } finally {
+      if (originalKey === undefined) delete process.env.GROQ_API_KEY;
+      else process.env.GROQ_API_KEY = originalKey;
+      await request('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: settings.model }),
+      });
     }
   });
 
@@ -3843,6 +3899,196 @@ describe('web server API validation', () => {
       const settings = await request('/api/settings');
       await expect(settings.json()).resolves.toMatchObject({ context: { configuredMaxTokens: 1024, detectedMaxTokens: 32768, effectiveMaxTokens: 1024 } });
     } finally {
+      restore();
+    }
+  });
+
+  it('caps the chat context budget at a fresh capability profile and serves model profiles', async () => {
+    const createClient = jest.fn(() => ({}) as never);
+    const profileDir = path.join(process.cwd(), '.harness', 'model-profiles');
+    await fs.mkdir(profileDir, { recursive: true });
+    await fs.writeFile(path.join(profileDir, 'profiled-model.json'), JSON.stringify({
+      model: 'profiled-model',
+      profileVersion: 1,
+      probedAt: new Date().toISOString(),
+      scores: { toolCalling: 1, jsonInTextRate: 0, structuredPlain: 1, structuredConstrained: 1, instructionFollowing: 1, planCoherence: 1 },
+      usableContextTokens: 6000,
+      detectedContextTokens: 32768,
+      avgLatencyMs: 100,
+      tokensSpent: 1000,
+      recommended: { toolMode: 'native', maxToolsPerStep: 8, promptTier: 'minimal', scaffoldLevel: 'light', contextBudgetTokens: 5100 },
+    }));
+    const restore = setWebRuntimeOverrides({
+      createClient,
+      getModelContextWindow: jest.fn().mockResolvedValue(32768),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('profile-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (): AsyncGenerator<LoopEvent> {
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+    try {
+      await request('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contextMaxTokens: 0 }) });
+      await (await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'hello', model: 'profiled-model' }),
+      })).text();
+      expect(createClient).toHaveBeenCalledWith('profiled-model', expect.any(String), 5100);
+
+      const list = await (await request('/api/model-profiles')).json() as { profiles: Array<{ model: string }> };
+      expect(list.profiles.map((profile) => profile.model)).toContain('profiled-model');
+    } finally {
+      restore();
+      await fs.rm(path.join(profileDir, 'profiled-model.json'), { force: true });
+    }
+  });
+
+  it('prefers a measured capability profile over name heuristics', async () => {
+    const profileDir = path.join(process.cwd(), '.harness', 'model-profiles');
+    const profileFile = path.join(profileDir, 'gemma4_e4b.json');
+    await fs.mkdir(profileDir, { recursive: true });
+    await fs.writeFile(profileFile, JSON.stringify({
+      model: 'gemma4:e4b',
+      profileVersion: 1,
+      probedAt: new Date().toISOString(),
+      scores: { toolCalling: 0.95, jsonInTextRate: 0, structuredPlain: 0.9, structuredConstrained: 1, instructionFollowing: 0.8, planCoherence: 0.8 },
+      usableContextTokens: 16000,
+      detectedContextTokens: 32768,
+      avgLatencyMs: 900,
+      tokensSpent: 5000,
+      recommended: { toolMode: 'native', maxToolsPerStep: 5, promptTier: 'compact', scaffoldLevel: 'medium', contextBudgetTokens: 13600 },
+    }));
+    try {
+      expect(inferModelCapabilities('gemma4:e4b').toolUse).toBe('weak');
+      await request('/api/models');
+      const measured = inferModelCapabilities('gemma4:e4b');
+      expect(measured.toolUse).toBe('strong');
+      expect(measured.notes[0]).toMatch(/^Measured by capability probe on \d{4}-\d{2}-\d{2}: tool calling 95%/);
+    } finally {
+      await fs.rm(profileFile, { force: true });
+      await request('/api/models');
+    }
+    expect(inferModelCapabilities('gemma4:e4b').toolUse).toBe('weak');
+  });
+
+  it('applies forced scaffolding with a relevance-ranked tool subset', async () => {
+    let captured: LoopConfig | undefined;
+    const tools = ['web_search', 'web_read', 'file_write', 'file_read', 'bash', 'email_send', 'calendar_read', 'pdf_read', 'grep']
+      .map((name) => ({ name, description: name.replace('_', ' '), parameters: { type: 'object', properties: {} }, isReadOnly: true, execute: jest.fn() }));
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => tools as never,
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('scaffold-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
+        captured = config;
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+    const previous = process.env.HARNESS_SCAFFOLD_MODE;
+    const previousState = process.env.HARNESS_WORKING_STATE;
+    process.env.HARNESS_SCAFFOLD_MODE = 'heavy';
+    process.env.HARNESS_WORKING_STATE = 'on';
+    const protectedFile = path.join(process.cwd(), '.harness', 'protected-paths.json');
+    await fs.mkdir(path.dirname(protectedFile), { recursive: true });
+    await fs.writeFile(protectedFile, JSON.stringify(['secrets/', '', 42, 'config/prod.json']));
+    try {
+      await (await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'search the web and read the page about travel cameras', model: 'test-model' }),
+      })).text();
+      expect(captured?.scaffold).toMatchObject({ level: 'heavy', maxToolCallsPerTurn: 1 });
+      expect(captured?.modelPlan?.toolNames).toHaveLength(6);
+      expect(captured?.modelPlan?.toolNames).toEqual(expect.arrayContaining(['web_search', 'web_read']));
+      expect(captured?.protectedPaths).toEqual(['secrets/', 'config/prod.json']);
+      expect(captured?.workingState).toEqual({ inject: true });
+    } finally {
+      if (previous === undefined) delete process.env.HARNESS_SCAFFOLD_MODE;
+      else process.env.HARNESS_SCAFFOLD_MODE = previous;
+      if (previousState === undefined) delete process.env.HARNESS_WORKING_STATE;
+      else process.env.HARNESS_WORKING_STATE = previousState;
+      await fs.rm(protectedFile, { force: true });
+      restore();
+    }
+  });
+
+  it('records each web chat run in a run log that shares its id with the side-effect recorder', async () => {
+    const seen: QueryLoopDeps[] = [];
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('run-log-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (_config, deps): AsyncGenerator<LoopEvent> {
+        seen.push(deps);
+        yield { type: 'text', content: 'recorded' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+    const previous = process.env.HARNESS_RUN_LOG;
+    try {
+      const body = await (await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'hello', model: 'test-model' }),
+      })).text();
+      const runId = seen[0].runLog?.runId;
+      expect(runId).toMatch(/^chat-\d{17}-[a-z0-9]+$/);
+      expect(seen[0].sideEffectRecorder).toMatchObject({ runId, projectDir: process.cwd() });
+      expect(typeof seen[0].sideEffectRecorder?.resolveTarget).toBe('function');
+      expect(body).toContain(`data: {"type":"run","runId":"${runId}"}`);
+
+      process.env.HARNESS_RUN_LOG = '0';
+      await (await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'hello again', model: 'test-model' }),
+      })).text();
+      expect(seen[1].runLog).toBeUndefined();
+      expect(seen[1].sideEffectRecorder).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.HARNESS_RUN_LOG;
+      else process.env.HARNESS_RUN_LOG = previous;
       restore();
     }
   });

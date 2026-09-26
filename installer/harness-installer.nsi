@@ -7,7 +7,7 @@
 ;
 ; The installer bundles dist/, ui/, start.bat, package.json,
 ; and node_modules/ (production only). The user must have
-; Node.js >= 18 and Ollama installed separately.
+; Node.js >= 22.13 and Ollama installed separately for local inference.
 
 !include "MUI2.nsh"
 !include "FileFunc.nsh"
@@ -44,13 +44,12 @@ VIAddVersionKey "LegalCopyright" "MIT License"
 ; --- Pre-install checks ---
 Function .onInit
   ; Check for Node.js
-  nsExec::ExecToStack 'cmd /c node --version'
+  nsExec::ExecToStack 'node -e "const [major,minor]=process.versions.node.split(String.fromCharCode(46)).map(Number);process.exit(major>22||(major===22&&minor>=13)?0:1)"'
   Pop $0
   Pop $1
   StrCmp $0 "0" NodeOK
-    MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION \
-      "Node.js was not found.$\n$\nYou need Node.js 18+ to run the Harness.$\nDownload it from https://nodejs.org/$\n$\nClick OK to continue anyway, or Cancel to abort." \
-      IDOK NodeOK
+    MessageBox MB_OK|MB_ICONEXCLAMATION \
+      "Node.js 22.13 or newer is required.$\n$\nInstall Node.js 24 LTS from https://nodejs.org/ and run setup again." /SD IDOK
     Abort
   NodeOK:
 
@@ -60,12 +59,37 @@ Function .onInit
   Pop $1
   StrCmp $0 "0" OllamaOK
     MessageBox MB_OK|MB_ICONINFORMATION \
-      "Ollama was not found.$\n$\nYou need Ollama to run AI models locally.$\nDownload it from https://ollama.com/$\n$\nYou can install it after setup completes."
+      "Ollama was not found.$\n$\nYou need Ollama to run AI models locally.$\nDownload it from https://ollama.com/$\n$\nYou can install it after setup completes." /SD IDOK
   OllamaOK:
 FunctionEnd
 
+!macro PrepareMaintenance prefix
+  InitPluginsDir
+  File /oname=$PLUGINSDIR\harness-maintenance.js "..\scripts\background-server.js"
+  nsExec::ExecToStack 'node "$PLUGINSDIR\harness-maintenance.js" begin-maintenance "$INSTDIR" "$PLUGINSDIR"'
+  Pop $0
+  Pop $1
+  StrCmp $0 "0" ${prefix}MaintenanceOK
+    MessageBox MB_OK|MB_ICONSTOP "Cannot safely change this installation.$\n$1$\nStop foreground servers manually before retrying." /SD IDOK
+    SetErrorLevel 2
+    Abort
+  ${prefix}MaintenanceOK:
+!macroend
+
+!macro CompleteMaintenance prefix
+  nsExec::ExecToStack 'node "$PLUGINSDIR\harness-maintenance.js" end-maintenance "$INSTDIR" "$PLUGINSDIR"'
+  Pop $0
+  Pop $1
+  StrCmp $0 "0" ${prefix}MaintenanceComplete
+    MessageBox MB_OK|MB_ICONSTOP "Maintenance ownership could not be released.$\n$1" /SD IDOK
+    SetErrorLevel 2
+    Abort
+  ${prefix}MaintenanceComplete:
+!macroend
+
 ; --- Install section ---
 Section "Install"
+  !insertmacro PrepareMaintenance Install
   SetOutPath "$INSTDIR\dist"
 
   ; Core application files
@@ -75,6 +99,7 @@ Section "Install"
   SetOutPath "$INSTDIR"
   File "..\package.json"
   File "..\package-lock.json"
+  File "..\release-provenance.json"
   File "..\start.bat"
   File "..\start-background.bat"
   File "..\stop-server.bat"
@@ -85,18 +110,27 @@ Section "Install"
   ; System tray client (PowerShell)
   SetOutPath "$INSTDIR\scripts"
   File "..\scripts\tray.ps1"
+  File "..\scripts\check-runtime.js"
+  File "..\scripts\background-server.js"
   SetOutPath "$INSTDIR"
 
   ; Install production dependencies
   SetOutPath "$INSTDIR"
   nsExec::ExecToLog 'cmd /c cd /d "$INSTDIR" && npm ci --omit=dev'
+  Pop $0
+  StrCmp $0 "0" DependenciesOK
+    MessageBox MB_OK|MB_ICONSTOP "Dependency installation failed. Check your network connection and rerun setup." /SD IDOK
+    Abort
+  DependenciesOK:
 
   ; Create launcher script
   FileOpen $0 "$INSTDIR\launch.bat" w
   FileWrite $0 '@echo off$\r$\n'
   FileWrite $0 'cd /d "$INSTDIR"$\r$\n'
-  FileWrite $0 'set PORT=4000$\r$\n'
-  FileWrite $0 'start "" http://127.0.0.1:4000$\r$\n'
+  FileWrite $0 'node scripts\check-runtime.js$\r$\n'
+  FileWrite $0 'if errorlevel 1 exit /b 1$\r$\n'
+  FileWrite $0 'if not defined PORT set PORT=4300$\r$\n'
+  FileWrite $0 'if not defined HARNESS_PROJECT_DIR set "HARNESS_PROJECT_DIR=%USERPROFILE%\apex-workspace"$\r$\n'
   FileWrite $0 'node dist/web/server.js$\r$\n'
   FileClose $0
 
@@ -109,13 +143,13 @@ Section "Install"
   CreateShortcut "$SMPROGRAMS\Ollama Agent Harness\Ollama Agent Harness.lnk" \
     "$INSTDIR\launch.bat"
   CreateShortcut "$SMPROGRAMS\Ollama Agent Harness\Harness Tray.lnk" \
-    "$INSTDIR\start-tray.bat" "" "$INSTDIR\start-tray.bat" 0 SW_SHOWMINNOACTIVE
+    "$INSTDIR\start-tray.bat" "" "$INSTDIR\start-tray.bat" 0 SW_SHOWMINIMIZED
   CreateShortcut "$SMPROGRAMS\Ollama Agent Harness\Uninstall.lnk" \
     "$INSTDIR\uninstall.exe"
 
   ; Auto-launch tray on login (places shortcut in user's Startup folder)
   CreateShortcut "$SMSTARTUP\Ollama Agent Harness Tray.lnk" \
-    "$INSTDIR\start-tray.bat" "" "$INSTDIR\start-tray.bat" 0 SW_SHOWMINNOACTIVE
+    "$INSTDIR\start-tray.bat" "" "$INSTDIR\start-tray.bat" 0 SW_SHOWMINIMIZED
 
   ; Registry and uninstaller
   WriteRegStr HKCU "Software\OllamaAgentHarness" "InstallDir" "$INSTDIR"
@@ -142,16 +176,19 @@ Section "Install"
   IntFmt $0 "0x%08X" $0
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OllamaAgentHarness" \
     "EstimatedSize" $0
+  !insertmacro CompleteMaintenance Install
 SectionEnd
 
 ; --- Uninstall section ---
 Section "Uninstall"
+  !insertmacro PrepareMaintenance Uninstall
   ; Remove files
   RMDir /r "$INSTDIR\dist"
   RMDir /r "$INSTDIR\ui"
   RMDir /r "$INSTDIR\node_modules"
   Delete "$INSTDIR\package.json"
   Delete "$INSTDIR\package-lock.json"
+  Delete "$INSTDIR\release-provenance.json"
   Delete "$INSTDIR\start.bat"
   Delete "$INSTDIR\start-background.bat"
   Delete "$INSTDIR\stop-server.bat"
@@ -161,6 +198,8 @@ Section "Uninstall"
   Delete "$INSTDIR\launch.bat"
   Delete "$INSTDIR\uninstall.exe"
   Delete "$INSTDIR\scripts\tray.ps1"
+  Delete "$INSTDIR\scripts\check-runtime.js"
+  Delete "$INSTDIR\scripts\background-server.js"
   RMDir "$INSTDIR\scripts"
   RMDir "$INSTDIR"
 
@@ -175,4 +214,5 @@ Section "Uninstall"
   ; Remove registry
   DeleteRegKey HKCU "Software\OllamaAgentHarness"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OllamaAgentHarness"
+  !insertmacro CompleteMaintenance Uninstall
 SectionEnd

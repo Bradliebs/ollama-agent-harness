@@ -118,6 +118,8 @@ interface StreamObservation {
   responseText: string;
   toolCalls: string[];
   turnCount: number;
+  completed: boolean;
+  error?: string;
 }
 
 async function consumeChatStream(response: Response, timeoutMs: number): Promise<StreamObservation> {
@@ -130,6 +132,7 @@ async function consumeChatStream(response: Response, timeoutMs: number): Promise
   let responseText = '';
   const toolCalls: string[] = [];
   let turnCount = 0;
+  let streamError: string | undefined;
   const startedAt = Date.now();
 
   while (true) {
@@ -143,22 +146,28 @@ async function consumeChatStream(response: Response, timeoutMs: number): Promise
       const line = rawLine.replace(/\r$/, '');
       if (!line.startsWith('data: ')) continue;
       const payloadText = line.slice(6);
-      if (payloadText === '[DONE]') return { responseText, toolCalls, turnCount };
+      if (payloadText === '[DONE]') return { responseText, toolCalls, turnCount, completed: true, error: streamError };
       try {
-        const event = JSON.parse(payloadText) as { type?: string; content?: string; call?: { name?: string }; turn?: number };
+        const event = JSON.parse(payloadText) as { type?: string; content?: string; call?: { name?: string }; turn?: number; reason?: string; message?: string };
         if (event.type === 'text' && typeof event.content === 'string') responseText += event.content;
         else if (event.type === 'tool_call' && event.call?.name) toolCalls.push(event.call.name);
         else if (event.type === 'turn_complete') turnCount = (event.turn ?? 0) + 1;
-        else if (event.type === 'done') return { responseText, toolCalls, turnCount };
+        else if (event.type === 'error') streamError = event.message || 'Chat stream reported an error';
+        else if (event.type === 'done') return {
+          responseText, toolCalls, turnCount, completed: true,
+          error: streamError || (event.reason && event.reason !== 'completed' ? `Chat ended: ${event.reason}` : undefined),
+        };
       } catch { /* skip malformed lines */ }
     }
   }
-  return { responseText, toolCalls, turnCount };
+  return { responseText, toolCalls, turnCount, completed: false, error: streamError };
 }
 
 // ─── Scorer ──────────────────────────────────────────────────────────
 
 function scoreTask(task: BenchmarkTask, obs: StreamObservation): { pass: boolean; reason: string; failureCategory?: FailureCategory } {
+  if (obs.error) return { pass: false, reason: obs.error, failureCategory: 'ERROR' };
+  if (!obs.completed) return { pass: false, reason: 'Chat stream ended without completion evidence', failureCategory: 'PARTIAL_COMPLETION' };
   const lower = obs.responseText.toLowerCase();
 
   for (const banned of (task.expectMissing ?? [])) {
@@ -284,9 +293,12 @@ export async function runBenchmarkTask(task: BenchmarkTask, options: BenchmarkRu
   }
 
   let obs: StreamObservation;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetchImpl(`${baseUrl}/api/chat`, {
       method: 'POST',
+      signal: controller.signal,
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
       body: JSON.stringify({
         message: task.input,
@@ -300,29 +312,30 @@ export async function runBenchmarkTask(task: BenchmarkTask, options: BenchmarkRu
       taskId: task.id,
       tier: task.tier,
       description: task.description,
-      status: 'error',
-      failureCategory: 'ERROR',
-      reason: error instanceof Error ? error.message : String(error),
+      status: controller.signal.aborted ? 'fail' : 'error',
+      failureCategory: controller.signal.aborted ? 'TIMEOUT' : 'ERROR',
+      reason: controller.signal.aborted ? `Task exceeded ${timeoutMs}ms timeout` : error instanceof Error ? error.message : String(error),
       responsePreview: '',
       toolCalls: [],
       durationMs: Date.now() - startedAt,
       tags: task.tags ?? [],
     };
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
   }
 
   const durationMs = Date.now() - startedAt;
 
-  // Timeout heuristic: if the task hit the wall clock limit but we
-  // got something back, still score it — the response may be correct.
-  if (durationMs >= timeoutMs && !obs.responseText) {
+  if (durationMs >= timeoutMs) {
     return {
       taskId: task.id,
       tier: task.tier,
       description: task.description,
       status: 'fail',
       failureCategory: 'TIMEOUT',
-      reason: `Task exceeded ${timeoutMs}ms timeout with no response`,
-      responsePreview: '',
+      reason: `Task exceeded ${timeoutMs}ms timeout`,
+      responsePreview: obs.responseText.slice(0, 300),
       toolCalls: obs.toolCalls,
       durationMs,
       tags: task.tags ?? [],

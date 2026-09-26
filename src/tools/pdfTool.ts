@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { promisify } from 'util';
 import type { Tool, ToolResult } from '../types';
-import { resolveProjectPath, resolveProjectReadPath } from './pathResolution';
+import { getProjectRoot, resolveProjectPath, resolveProjectReadPath } from './pathResolution';
 
 const DEFAULT_MAX_CHARS = 100_000;
 const MAX_ALLOWED_CHARS = 1_000_000;
@@ -45,14 +45,13 @@ export interface PdfDocumentMetadata {
 }
 
 interface PdfjsModule {
-  getDocument(options: Record<string, unknown>): { promise: Promise<PdfDocumentProxy> };
+  getDocument(options: Record<string, unknown>): { promise: Promise<PdfDocumentProxy>; destroy(): Promise<void> };
 }
 
 interface PdfDocumentProxy {
   numPages: number;
   getPage(pageNum: number): Promise<PdfPageProxy>;
   getMetadata(): Promise<{ info?: unknown; metadata?: unknown }>;
-  destroy(): Promise<void> | void;
 }
 
 interface PdfPageProxy {
@@ -217,7 +216,10 @@ export async function extractPdfText(
     verbosity: 0,
   });
   const doc = await loadingTask.promise.catch(async () => null);
-  if (!doc) return extractPdfTextFallback(data, options, sourcePath, maxChars);
+  if (!doc) {
+    await loadingTask.destroy();
+    return extractPdfTextFallback(data, options, sourcePath, maxChars);
+  }
   try {
     const totalPages = doc.numPages;
     const start = clampPage(options.startPage, 1, totalPages, 1);
@@ -279,7 +281,7 @@ export async function extractPdfText(
 
     return { text, pageCount: totalPages, startPage: start, endPage: end, truncated, ocrUsed, ocrError };
   } finally {
-    await doc.destroy();
+    await loadingTask.destroy();
   }
 }
 
@@ -298,7 +300,10 @@ export async function readPdfMetadata(data: Buffer): Promise<PdfDocumentMetadata
     verbosity: 0,
   });
   const doc = await loadingTask.promise.catch(async () => null);
-  if (!doc) return readPdfMetadataFallback(data);
+  if (!doc) {
+    await loadingTask.destroy();
+    return readPdfMetadataFallback(data);
+  }
   try {
     const meta = await doc.getMetadata().catch(() => ({ info: {}, metadata: null }));
     const info = (meta?.info ?? {}) as Record<string, unknown>;
@@ -316,7 +321,7 @@ export async function readPdfMetadata(data: Buffer): Promise<PdfDocumentMetadata
       encrypted: Boolean((info as { IsEncrypted?: unknown }).IsEncrypted),
     };
   } finally {
-    await doc.destroy();
+    await loadingTask.destroy();
   }
 }
 
@@ -460,7 +465,7 @@ async function importPdfjsModule(): Promise<PdfjsModule> {
     originalWarn(...args);
   };
   try {
-    // Version 5 publishes ESM only, so use native dynamic import even though
+    // PDF.js publishes ESM only, so use native dynamic import even though
     // this project compiles to CommonJS.
     return await importPdfjs('pdfjs-dist/legacy/build/pdf.mjs');
   } finally {
@@ -538,8 +543,8 @@ export async function* iteratePdfPages(
     isEvalSupported: false,
     verbosity: 0,
   });
-  const doc = await loadingTask.promise;
   try {
+    const doc = await loadingTask.promise;
     const totalPages = doc.numPages;
     const start = clampPage(options.startPage, 1, totalPages, 1);
     const end = clampPage(options.endPage, start, totalPages, totalPages);
@@ -558,7 +563,7 @@ export async function* iteratePdfPages(
       }
     }
   } finally {
-    await doc.destroy();
+    await loadingTask.destroy();
   }
 }
 
@@ -598,7 +603,7 @@ export const PdfRenderPageTool: Tool = {
       outputPath = resolved;
     } else {
       const baseName = path.basename(filePath, path.extname(filePath));
-      outputPath = path.resolve(process.cwd(), '.harness', 'pdf-renders', `${baseName}-p${pageNum}.png`);
+      outputPath = path.resolve(getProjectRoot(), '.harness', 'pdf-renders', `${baseName}-p${pageNum}.png`);
     }
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
     try {
@@ -618,7 +623,7 @@ export const PdfRenderPageTool: Tool = {
         const match = candidates.find((f) => f.startsWith(base) && /\.(png|jpg|jpeg)$/i.test(f));
         if (match) finalPath = path.join(dir, match);
       }
-      const rel = path.relative(process.cwd(), finalPath);
+      const rel = path.relative(getProjectRoot(), finalPath);
       return { success: true, output: `Rendered page ${pageNum} to ${rel}` };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -678,8 +683,8 @@ export async function extractPdfPageTableCsv(
     isEvalSupported: false,
     verbosity: 0,
   });
-  const doc = await loadingTask.promise;
   try {
+    const doc = await loadingTask.promise;
     if (pageNum < 1 || pageNum > doc.numPages) throw new Error(`page ${pageNum} out of range (1-${doc.numPages})`);
     const page = await doc.getPage(pageNum);
     try {
@@ -730,7 +735,7 @@ export async function extractPdfPageTableCsv(
       page.cleanup();
     }
   } finally {
-    await doc.destroy();
+    await loadingTask.destroy();
   }
 }
 

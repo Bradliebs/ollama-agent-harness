@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
 import { parseSkillFile } from '../extensibility/skillLoader';
-import { getAllowedExternalPaths } from './pathResolution';
+import { getAllowedExternalPaths, getProjectRoot } from './pathResolution';
 import { invalidateSkillsCache } from './skillTools';
 
 // ─── Import skill from a local folder ───────────────────────────────────────
@@ -54,10 +54,9 @@ export const ImportSkillTool: Tool = {
     const overwrite = input.overwrite === true;
     const nameOverride = typeof input.name === 'string' ? input.name.trim() : '';
 
-    const sourceAbs = path.resolve(sourceRaw);
-
     // Source must live inside the project root or an Allowed External Path.
-    const projectRoot = projectRootOverride || process.cwd();
+    const projectRoot = projectRootOverride || getProjectRoot();
+    const sourceAbs = path.isAbsolute(sourceRaw) ? path.resolve(sourceRaw) : path.resolve(projectRoot, sourceRaw);
     const allowed = getAllowedExternalPaths();
     if (!isInsideAny(sourceAbs, [projectRoot, ...allowed])) {
       return {
@@ -113,7 +112,7 @@ export const ImportSkillTool: Tool = {
       };
     }
 
-    const skillsDir = skillsDirOverride || path.join(projectRootOverride || process.cwd(), '.harness', 'skills');
+    const skillsDir = skillsDirOverride || path.join(projectRoot, '.harness', 'skills');
     const destDir = path.join(skillsDir, skillName);
 
     // Reject if destination exists unless overwrite is explicit.
