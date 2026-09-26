@@ -100,6 +100,13 @@ No release tag, publication or installer runtime qualification is implied.
   OpenAI esponse_format). A fresh profile caps the context budget at the
   measured usable window; HARNESS_ADAPTER_MODE=profile also compiles a
   per-model plan (tool subset, JSON tool calls lifted back into tool calls).
+- Add provenance checks on side effects (default on, including dontAsk):
+  each run indexes URLs, email addresses and commands seen in untrusted tool
+  output (web, browser, inbound email, and <external_content> segments) and
+  in trusted text (user messages, system prompt). A side-effecting call whose
+  recipient, URL or command came only from untrusted content needs approval;
+  without an approval channel it is denied. Enforced in the dispatcher, and
+  recorded as run-log verdicts with the originating source.
 - After these changes full Jest passed 329 suites and 3,841 tests with one
   skipped; the build and script tests (`node --test`) also passed.
 

@@ -131,6 +131,8 @@ export interface LoopConfig {
    * without reliable native tool calling, switches to JSON tool calls in text
    * (optionally schema-constrained) that the loop lifts back into tool calls.
    */
+  /** Provenance checks on side effects (default on; false disables for this run). */
+  provenance?: boolean;
   modelPlan?: {
     toolMode: 'native' | 'json-in-text' | 'constrained-json';
     toolNames?: string[];

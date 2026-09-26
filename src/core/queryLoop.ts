@@ -24,6 +24,7 @@ import type { RunLog } from '../persistence/runLog';
 import { RunSupervisor, describeAttempt, resolveSupervisorConfig, type BudgetStatus } from './supervisor';
 import { CostTracker } from '../eval/costTracker';
 import { parseConstrainedToolCall } from '../models/adapter';
+import { ProvenanceLedger, resolveProvenanceEnabled } from '../safety/provenance';
 import { validateOutput, withOutputValidationInstructions, detectSelfCertification } from './outputValidation';
 import type { OutputValidationProfile } from './outputValidation';
 import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
@@ -316,6 +317,15 @@ async function* queryLoopCore(
     ? new RunSupervisor(supervisorConfig, (model) => CostTracker.getAllRates()[model])
     : null;
   let budgetExceeded: BudgetStatus | null = null;
+  // Provenance: the user's messages and the system prompt are trusted; web,
+  // browser and email tool output is not (see safety/provenance.ts).
+  const provenance = config.provenance !== false && resolveProvenanceEnabled() ? new ProvenanceLedger() : null;
+  if (provenance) {
+    provenance.recordTrusted(systemPrompt);
+    for (const message of initialMessages) {
+      if (message.role === 'user' && typeof message.content === 'string') provenance.recordTrusted(message.content);
+    }
+  }
   let stuckNeedsHuman: { message: string; summary: string } | null = null;
   const FILE_CHANGE_TOOLS = new Set(['file_write', 'file_edit', 'file_move', 'file_delete', 'document_export']);
 
@@ -849,6 +859,16 @@ async function* queryLoopCore(
         onApprovalRequired,
         approvalPolicy: inspectors && !onApprovalRequired ? 'deny' : 'soft-pass',
         validateInput: config.validateToolInput === true,
+        ...(provenance ? {
+          provenanceGuard: (call: ToolCall) => {
+            const verdict = provenance.checkCall(call.name, call.input);
+            if (verdict) {
+              runLog?.append('verdict', { check: 'provenance', tool: call.name, findings: verdict.findings }, stepForResult(call));
+              tracer?.recordEvent('provenance.flagged', { tool: call.name, findings: verdict.findings.length });
+            }
+            return verdict;
+          },
+        } : {}),
       }));
     const toolResults = [...skippedToolResults, ...dispatchedToolResults];
     for (const { call, result } of toolResults) sourceLedger.recordSearchResults(call, result);
@@ -858,7 +878,8 @@ async function* queryLoopCore(
       if (hint) entry.result = { ...entry.result, output: `${entry.result.output ?? ''}\n${hint}` };
     }
     for (const { call, result } of toolResults) {
-      runLog?.recordToolResult(stepForResult(call), { name: call.name, success: result.success, output: result.output, ...(result.error !== undefined ? { error: result.error } : {}) });
+      const label = provenance?.recordToolResult(call.name, call.input, result.success ? result.output : '');
+      runLog?.recordToolResult(stepForResult(call), { name: call.name, success: result.success, output: result.output, ...(result.error !== undefined ? { error: result.error } : {}), ...(label ? { provenance: label } : {}) });
     }
     let producedFileChange = false;
     for (const { call, result } of toolResults) {
