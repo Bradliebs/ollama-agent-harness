@@ -10,6 +10,8 @@
     cancelled: { icon: '⏹', label: 'Stopped' },
     interrupted: { icon: '⏸', label: 'Reply interrupted' },
     empty: { icon: '∅', label: 'No reply' },
+    stuck: { icon: '🧭', label: 'Moss got stuck' },
+    budget: { icon: '💰', label: 'Run budget reached' },
   };
 
   /** Map how a turn ended to a state name, or null when it ended normally. */
@@ -17,6 +19,8 @@
     if (outcome.stopped) return 'cancelled';
     if (outcome.failed) return 'failed';
     if (outcome.doneReason === 'inactivity_timeout' || outcome.doneReason === 'aborted') return 'interrupted';
+    if (outcome.doneReason === 'stuck_needs_human') return 'stuck';
+    if (outcome.doneReason === 'budget_synthesized') return 'budget';
     if (!outcome.hasText) return 'empty';
     return null;
   }
@@ -26,6 +30,8 @@
     if (state === 'interrupted') return 'The run ended before a final answer was written.';
     if (state === 'empty') return 'The model returned no text.';
     if (state === 'cancelled') return 'You stopped this reply.';
+    if (state === 'stuck') return 'The last steps made no progress, so Moss stopped to ask you. Answer the question above, or pick a stronger model and retry.';
+    if (state === 'budget') return 'This run used its token or spending budget; the answer summarises what was found so far.';
     return 'Something went wrong while generating this reply.';
   }
 

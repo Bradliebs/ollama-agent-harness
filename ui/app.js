@@ -4862,6 +4862,7 @@ async function sendMessage(opts) {
   // errors are loop warnings addressed to the model, e.g. repeated tool failures.
   let turnFatalError = '';
   let lastErrorMessage = '';
+  let supervisorSummary = '';
   let responseStopped = false;
   const clientEvidenceTools = [];
   const clientEvidenceCommands = [];
@@ -5159,6 +5160,15 @@ async function sendMessage(opts) {
             toolBox = ensureToolBox(toolBox);
             appendToolItem(toolBox, '🔁', 'auto-continue #' + ev.continuationCount, ev.reason + ' — continuing autonomously', false);
             break;
+          case 'supervisor':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '🧭', 'progress check (' + ev.stalledTurns + ' steps stalled)', ev.stage === 'ask_human' ? 'no progress — asking you how to proceed' : String(ev.summary || ev.message || ''), ev.stage === 'ask_human');
+            if (ev.stage === 'ask_human') supervisorSummary = String(ev.summary || '');
+            break;
+          case 'budget_exceeded':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '💰', 'run budget reached', (ev.which === 'usd' ? '$' + Number(ev.used).toFixed(2) + ' of $' + Number(ev.limit).toFixed(2) : Number(ev.used).toLocaleString() + ' of ' + Number(ev.limit).toLocaleString() + ' tokens') + ' — summarising what was found', true);
+            break;
           case 'error':
             responseFailed = true;
             lastErrorMessage = ev.message || '';
@@ -5277,7 +5287,7 @@ async function sendMessage(opts) {
     const turnState = classifyTurn({ stopped: responseStopped, failed: turnFailed, doneReason, hasText: Boolean(assistantText) });
     if (turnState) {
       if (!msgEl) msgEl = addMsg('assistant', lastErrorMessage ? '⚠️ ' + lastErrorMessage : 'No reply came back from the model.');
-      appendTurnState(msgEl, turnState, { doneReason, onRetry: retryLastPrompt, detail: turnState === 'failed' && lastErrorMessage ? lastErrorMessage : undefined });
+      appendTurnState(msgEl, turnState, { doneReason, onRetry: retryLastPrompt, detail: turnState === 'failed' && lastErrorMessage ? lastErrorMessage : turnState === 'stuck' && supervisorSummary ? supervisorSummary + '. Answer the question above, or pick a stronger model in the top bar and retry.' : undefined });
     }
   }
   if (tokRateTimer) clearInterval(tokRateTimer);

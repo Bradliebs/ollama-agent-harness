@@ -195,7 +195,7 @@ describe('queryLoop runtime behavior', () => {
     }
 
     it('does not scan tool results and emits no injection warning when off', async () => {
-      delete process.env.HARNESS_LOOP_HARDENING;
+      process.env.HARNESS_LOOP_HARDENING = '0';
       const { client, tools } = makePoisonedRun();
 
       const events = await collectEvents(client, tools);
@@ -671,7 +671,7 @@ describe('queryLoop runtime behavior', () => {
 
       const done = events.find((e) => e.type === 'done');
       expect(done).toEqual(expect.objectContaining({ type: 'done', reason: 'unproductive' }));
-      const error = events.find((e) => e.type === 'error');
+      const error = events.find((e) => e.type === 'error' && e.recoverable === false);
       expect(error).toEqual(expect.objectContaining({ recoverable: false, message: expect.stringContaining('without file edits') }));
     });
 

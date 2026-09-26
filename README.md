@@ -43,6 +43,7 @@ not yet a new numbered release.
 * **Workspace safety** — tests and smoke scripts no longer write into a real workspace, and [`scripts/repair-workspace.js`](scripts/repair-workspace.js) cleans up one that earlier runs polluted. See [Repairing a workspace](#repairing-a-workspace).
 * **One launcher** — `start.bat` with `background`, `stop`, `tray` or `watchdog`.
 * **Run logs and per-step undo** — every chat run is recorded in `.harness/runs/<runId>.jsonl`: message deltas, raw model responses, tool calls and full results, and compaction snapshots, so the exact prompt of any turn can be rebuilt. File changes made through the file tools are tagged with their step and can be rolled back to the end of any step (`GET /api/run-logs`, `POST /api/run-logs/<runId>/revert` with `toStepSeq`). Set `HARNESS_RUN_GIT_CHECKPOINT=1` to also snapshot the whole workspace per run (covers changes made via `bash`); `HARNESS_RUN_LOG=0` turns recording off.
+* **Run supervisor** — on by default. Tool steps that stop producing anything new (no new sources, files, results, verifier passes or plan steps) trigger a progress check, then a strategy change, and finally Moss stops and asks you what is blocking instead of looping. Per-run budgets stop a run into a summary: 1.5M tokens by default (`HARNESS_RUN_MAX_TOKENS`), plus an optional USD cap for priced models (`HARNESS_RUN_MAX_USD`). Loop-guard nudges and the tool-result injection tripwire are now on by default too. `HARNESS_SUPERVISOR=0` and `HARNESS_LOOP_HARDENING=0` turn them off.
 
 ### What's new in v0.6.5
 

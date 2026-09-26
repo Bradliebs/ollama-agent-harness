@@ -21,6 +21,8 @@ import type { LearningRecorder } from '../learning/engine';
 import type { RuntimeTracer } from './tracing';
 import type { SideEffectRecorder } from '../persistence/sideEffectRecording';
 import type { RunLog } from '../persistence/runLog';
+import { RunSupervisor, describeAttempt, resolveSupervisorConfig, type BudgetStatus } from './supervisor';
+import { CostTracker } from '../eval/costTracker';
 import { validateOutput, withOutputValidationInstructions, detectSelfCertification } from './outputValidation';
 import type { OutputValidationProfile } from './outputValidation';
 import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
@@ -299,6 +301,14 @@ async function* queryLoopCore(
   let emptyFinalAfterTools = false;
   const blockedWebUrls = new Map<string, string>();
   const sourceLedger = new SourceLedger();
+  // Progress-based stuck detection and per-run budgets (default on).
+  const supervisorConfig = resolveSupervisorConfig(config.supervisor);
+  const supervisor = supervisorConfig
+    ? new RunSupervisor(supervisorConfig, (model) => CostTracker.getAllRates()[model])
+    : null;
+  let budgetExceeded: BudgetStatus | null = null;
+  let stuckNeedsHuman: { message: string; summary: string } | null = null;
+  const FILE_CHANGE_TOOLS = new Set(['file_write', 'file_edit', 'file_move', 'file_delete', 'document_export']);
 
   if (session) {
     await appendStatus(session, 'running', undefined, tracer);
@@ -429,6 +439,7 @@ async function* queryLoopCore(
         : await chatPromise;
       assistantMessage = result.message;
       runLog?.append('model_response', { turn, model: config.model, message: assistantMessage, usage: result.usage ?? null, durationMs: Date.now() - modelCallStarted }, currentTurnStep);
+      if (supervisor && result.usage) supervisor.recordUsage(config.model, result.usage.promptTokens ?? 0, result.usage.completionTokens ?? 0);
       modelSpan?.end('ok', {
         toolCalls: assistantMessage.tool_calls?.length ?? 0,
         // Surface token usage on the span itself so the OpenInference
@@ -475,6 +486,20 @@ async function* queryLoopCore(
     messages.push(assistantMessage);
     if (session) {
       await appendSession(session, 'assistant_message', { kind: 'message', message: assistantMessage }, tracer);
+    }
+
+    // Per-run budget: stop into synthesis once the run has spent its tokens
+    // (or USD, for models with a known price).
+    if (supervisor) {
+      const budget = supervisor.checkBudget();
+      if (budget.exceeded && budget.which) {
+        budgetExceeded = budget;
+        yield { type: 'budget_exceeded', which: budget.which, used: budget.used, limit: budget.limit };
+        runLog?.append('supervisor', { event: 'budget_exceeded', which: budget.which, used: budget.used, limit: budget.limit }, currentTurnStep);
+        tracer?.recordEvent('supervisor.budget_exceeded', { which: budget.which, used: budget.used, limit: budget.limit, turn });
+        yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
+        break;
+      }
     }
 
     // Repetition detection: if the model produces the same text-only
@@ -744,6 +769,7 @@ async function* queryLoopCore(
       return;
     }
 
+    const sourcesAtTurnStart = sourceLedger.list().length;
     // Parse tool calls from the assistant message
     const toolCalls: ToolCall[] = assistantMessage.tool_calls.map((tc) => ({
       id: (tc as { id?: string }).id,
@@ -950,6 +976,35 @@ async function* queryLoopCore(
       }
     }
 
+    // Supervisor: did this turn move the task forward? Stalled turns escalate
+    // warn -> change strategy -> (escalate) -> stop and ask the human.
+    if (supervisor) {
+      const sourcesNow = sourceLedger.list().length;
+      const decision = supervisor.endTurn({
+        toolCalls: toolResults.length,
+        newSources: sourcesNow - sourcesAtTurnStart,
+        filesChanged: toolResults.filter(({ call, result }) => result.success && FILE_CHANGE_TOOLS.has(call.name)).length,
+        successfulResults: toolResults
+          .filter(({ result }) => result.success)
+          .map(({ call, result }) => ({ name: call.name, output: typeof result.output === 'string' ? result.output : JSON.stringify(result.output ?? '') })),
+        attempts: toolResults.map(({ call }) => describeAttempt(call.name, call.input)),
+      });
+      if (decision.kind === 'intervene') {
+        yield { type: 'supervisor', stage: decision.stage, stalledTurns: decision.stalledTurns, message: decision.message, summary: decision.summary };
+        runLog?.append('supervisor', { event: 'intervene', stage: decision.stage, stalledTurns: decision.stalledTurns, summary: decision.summary }, currentTurnStep);
+        tracer?.recordEvent('supervisor.intervene', { stage: decision.stage, stalledTurns: decision.stalledTurns, turn });
+        if (decision.stage === 'ask_human') {
+          stuckNeedsHuman = { message: decision.message, summary: decision.summary };
+          yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
+          break;
+        }
+        if (decision.stage !== 'escalate') {
+          // Use 'user' role: Mistral and Anthropic reject 'system' after 'tool'.
+          messages.push({ role: 'user', content: decision.message } as Message);
+        }
+      }
+    }
+
     // Tool-quality kill: terminate when the agent loops on non-productive
     // tools (reflect/consolidate/grep/list_files) without ever editing a
     // file. Bounded by `unproductiveTurnLimit` from LoopConfig.
@@ -996,14 +1051,16 @@ async function* queryLoopCore(
   // summarising its work.
   const timeBudgetExceeded = timeBudgetMs > 0 && (Date.now() - loopStarted) >= timeBudgetMs;
   const repetitionExceeded = consecutiveRepeats >= REPETITION_LIMIT;
-  const synthesisReason: 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' | 'empty_after_tools_synthesized' =
-    emptyFinalAfterTools ? 'empty_after_tools_synthesized'
-      : repetitionExceeded ? 'repetition_synthesized'
-        : timeBudgetExceeded ? 'time_budget_synthesized'
-          : 'max_turns_synthesized';
-  const sessionStatus = emptyFinalAfterTools ? 'completed' : repetitionExceeded ? 'error' : timeBudgetExceeded ? 'time_budget' : 'max_turns';
+  const synthesisReason: 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' | 'empty_after_tools_synthesized' | 'budget_synthesized' | 'stuck_needs_human' =
+    stuckNeedsHuman ? 'stuck_needs_human'
+      : budgetExceeded ? 'budget_synthesized'
+        : emptyFinalAfterTools ? 'empty_after_tools_synthesized'
+          : repetitionExceeded ? 'repetition_synthesized'
+            : timeBudgetExceeded ? 'time_budget_synthesized'
+              : 'max_turns_synthesized';
+  const sessionStatus = stuckNeedsHuman ? 'completed' : budgetExceeded ? 'time_budget' : emptyFinalAfterTools ? 'completed' : repetitionExceeded ? 'error' : timeBudgetExceeded ? 'time_budget' : 'max_turns';
 
-  if (!timeBudgetExceeded && !repetitionExceeded && !emptyFinalAfterTools) {
+  if (!timeBudgetExceeded && !repetitionExceeded && !emptyFinalAfterTools && !budgetExceeded && !stuckNeedsHuman) {
     // Only emit synthesis_fired for max-turns (time budget, repetition, and
     // empty-after-tools already emitted it above before breaking).
     yield { type: 'synthesis_fired', model: config.model, maxTurns, toolCallsTotal: totalToolCalls };
@@ -1023,9 +1080,13 @@ async function* queryLoopCore(
     .map((m) => (m.content as string).slice(0, 2500))
     .join('\n---\n');
 
-  const synthesisPreamble = emptyFinalAfterTools
-    ? 'You ran tools but ended your last turn without writing an answer.'
-    : 'You have used all available tool turns.';
+  const synthesisPreamble = stuckNeedsHuman
+    ? stuckNeedsHuman.message
+    : budgetExceeded
+      ? `This run has reached its ${budgetExceeded.which === 'usd' ? 'spending' : 'token'} budget.`
+      : emptyFinalAfterTools
+        ? 'You ran tools but ended your last turn without writing an answer.'
+        : 'You have used all available tool turns.';
   const synthesisInstruction = recentToolResults
     ? `${synthesisPreamble} Here is a summary of recent tool results:\n\n${recentToolResults}\n\nUsing the information above, write a helpful answer to the user's question. Do NOT call any tools. Just write your answer as plain text.`
     : `${synthesisPreamble} Provide a complete, useful text response now. Summarise everything you found. Do NOT call any tools.`;
@@ -1234,7 +1295,7 @@ async function* queryLoopCore(
   if (session) {
     await appendStatus(session, sessionStatus, undefined, tracer);
   }
-  yield { type: 'done', reason: emptyFinalAfterTools ? 'empty_after_tools_synthesized' : repetitionExceeded ? 'repetition_synthesized' : timeBudgetExceeded ? 'time_budget_synthesized' : 'max_turns', turns: turn };
+  yield { type: 'done', reason: synthesisReason === 'max_turns_synthesized' ? 'max_turns' : synthesisReason, turns: turn };
 }
 
 type SynthesisCallPair = { name: string; input: Record<string, unknown>; result: string; success: boolean };

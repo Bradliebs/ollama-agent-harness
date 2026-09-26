@@ -83,6 +83,15 @@ No release tag, publication or installer runtime qualification is implied.
   to the end of any step via /api/run-logs/<runId>/revert. Optional git
   checkpoints (HARNESS_RUN_GIT_CHECKPOINT=1) snapshot the whole workspace
   through a temporary index without touching HEAD or the user's index.
+- Add a run supervisor (default on): tool turns that produce no new sources,
+  file changes, novel results, verifier passes or plan steps count as stalled,
+  and stalls escalate from a progress check to a strategy change to stopping
+  with a question for the user (stuck_needs_human). Per-run token (1.5M
+  default) and USD (priced models, opt-in) budgets end the run in a summary
+  (udget_synthesized). The UI shows both with a Retry strip.
+- Turn loop hardening on by default (loop-guard nudges, tool-result injection
+  tripwire, iteration refunds, surrogate sanitising); HARNESS_LOOP_HARDENING=0
+  restores the old behaviour.
 - After these changes full Jest passed 329 suites and 3,841 tests with one
   skipped; the build and script tests (`node --test`) also passed.
 

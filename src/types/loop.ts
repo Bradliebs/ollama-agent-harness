@@ -120,6 +120,12 @@ export interface LoopConfig {
    */
   unproductiveTurnLimit?: number;
   /**
+   * Run supervisor (progress-based stuck detection + per-run token/USD
+   * budgets). On by default; pass alse to disable, or partial overrides.
+   * HARNESS_SUPERVISOR=0 disables it globally. See core/supervisor.ts.
+   */
+  supervisor?: Partial<import('../core/supervisor').SupervisorConfig> | false;
+  /**
    * Terminate the loop early when one tool fails repeatedly in the same run.
    * This prevents slow, opaque retries where the model keeps calling a broken
    * tool instead of telling the user what went wrong. Set to 0 to disable.
@@ -187,7 +193,9 @@ export type LoopEvent =
   | TurnCompleteEvent
   | VerificationEvent
   | InactivityTimeoutEvent
-  | GovernedShadowEvent;
+  | GovernedShadowEvent
+  | SupervisorEvent
+  | BudgetExceededEvent;
 
 export interface TextEvent {
   type: 'text';
@@ -270,7 +278,7 @@ export interface ErrorEvent {
 
 export interface DoneEvent {
   type: 'done';
-  reason: 'completed' | 'completed_without_required_changes' | 'completed_with_validation_failures' | 'completed_with_test_failures' | 'max_turns' | 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' | 'empty_after_tools_synthesized' | 'aborted' | 'error' | 'unproductive' | 'repeated_tool_failure' | 'inactivity_timeout';
+  reason: 'completed' | 'completed_without_required_changes' | 'completed_with_validation_failures' | 'completed_with_test_failures' | 'max_turns' | 'max_turns_synthesized' | 'time_budget_synthesized' | 'repetition_synthesized' | 'empty_after_tools_synthesized' | 'budget_synthesized' | 'stuck_needs_human' | 'aborted' | 'error' | 'unproductive' | 'repeated_tool_failure' | 'inactivity_timeout';
   turns: number;
   /** Extra metadata when the done event follows a synthesis turn (timeout/max-turns). */
   synthesisMetadata?: {
@@ -307,6 +315,26 @@ export interface UsageEvent {
   promptEvalDurationMs?: number;
   /** Milliseconds spent generating tokens. */
   evalDurationMs?: number;
+}
+
+/** The run supervisor intervened because tool steps stopped producing
+ * anything new. sk_human means the run is ending with a question for
+ * the user instead of more tool calls. */
+export interface SupervisorEvent {
+  type: 'supervisor';
+  stage: 'warn' | 'change_strategy' | 'escalate' | 'ask_human';
+  stalledTurns: number;
+  message: string;
+  summary: string;
+}
+
+/** A per-run budget (tokens, or USD for priced models) was exceeded; the
+ * loop stops into a synthesis turn. */
+export interface BudgetExceededEvent {
+  type: 'budget_exceeded';
+  which: 'tokens' | 'usd';
+  used: number;
+  limit: number;
 }
 
 /** Emitted when the bonus synthesis turn fires because the model exhausted

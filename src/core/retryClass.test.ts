@@ -201,9 +201,9 @@ describe('classifyError — HARNESS_LOOP_HARDENING extensions', () => {
     else process.env.HARNESS_LOOP_HARDENING = original;
   });
 
-  describe('with HARNESS_LOOP_HARDENING=0 (default)', () => {
+  describe('with HARNESS_LOOP_HARDENING=0', () => {
     beforeEach(() => {
-      delete process.env.HARNESS_LOOP_HARDENING;
+      process.env.HARNESS_LOOP_HARDENING = '0';
     });
 
     it('413 still classifies as permanent (legacy behaviour preserved)', () => {

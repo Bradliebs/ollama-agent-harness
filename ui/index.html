@@ -960,7 +960,7 @@
     /* Turn state strip under replies that did not finish normally (ui/turnStates.js). */
     .turn-state{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px;padding:6px 10px;border-radius:6px;font-size:12px;border:1px solid var(--border);background:var(--surface2);color:var(--text-dim)}
     .turn-state-failed{border-color:rgba(239,83,80,.45);color:var(--error)}
-    .turn-state-interrupted,.turn-state-empty{border-color:rgba(224,161,0,.45);color:#e0a100}
+    .turn-state-interrupted,.turn-state-empty,.turn-state-stuck,.turn-state-budget{border-color:rgba(224,161,0,.45);color:#e0a100}
     /* Settings Simple/Advanced toggle. */
     .settings-mode-toggle{display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden}
     .settings-mode-toggle .settings-mode-btn{border:none;border-radius:0;font-size:11px;padding:3px 8px;background:var(--surface2);color:var(--text-dim)}
@@ -2482,7 +2482,7 @@
 <script src="./followUps.js?v=1"></script>
 <script src="./personaBundle.js?v=1"></script>
 <script src="./identityHealth.js?v=1"></script>
-<script src="./turnStates.js?v=1"></script>
+<script src="./turnStates.js?v=2"></script>
 <script src="./citations.js?v=1"></script>
 <script src="./identityPanel.js?v=1"></script>
 <script src="./snapshotsPanel.js?v=1"></script>
@@ -2493,6 +2493,6 @@
 <script src="./healthMyceliumPanel.js?v=1"></script>
 <script src="./promisesEventsPanels.js?v=1"></script>
 <script src="./codeIntelPanel.js?v=1"></script>
-<script src="./app.js?v=36"></script>
+<script src="./app.js?v=37"></script>
 </body>
 </html>

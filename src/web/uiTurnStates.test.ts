@@ -18,6 +18,8 @@ describe('ui turn states', () => {
     expect(turnStates.classifyTurn({ doneReason: 'inactivity_timeout', hasText: true })).toBe('interrupted');
     expect(turnStates.classifyTurn({ doneReason: 'aborted', hasText: false })).toBe('interrupted');
     expect(turnStates.classifyTurn({ doneReason: 'completed', hasText: false })).toBe('empty');
+    expect(turnStates.classifyTurn({ doneReason: 'stuck_needs_human', hasText: true })).toBe('stuck');
+    expect(turnStates.classifyTurn({ doneReason: 'budget_synthesized', hasText: true })).toBe('budget');
   });
 
   it('explains an inactivity timeout specifically', () => {
