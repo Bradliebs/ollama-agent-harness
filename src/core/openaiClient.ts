@@ -1,6 +1,6 @@
 import type { Message, Tool, ToolCall } from 'ollama';
 import { appendFileSync } from 'fs';
-import type { ChatResult, IChatClient, ModelLocality, StreamChunk, TokenUsage } from './chatClient';
+import type { ChatOptions, ChatResult, IChatClient, ModelLocality, StreamChunk, TokenUsage } from './chatClient';
 import { liftInlineToolCalls } from './ollamaClient';
 import { recordSwallowed } from '../observability/silentFailureSink';
 
@@ -113,14 +113,14 @@ export class OpenAIClient implements IChatClient {
     if (this.apiKeys.length > 1) this.keyIndex++;
   }
 
-  async chat(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): Promise<ChatResult> {
-    const result = await this.invoke(messages, tools, abortSignal);
+  async chat(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal, options?: ChatOptions): Promise<ChatResult> {
+    const result = await this.invoke(messages, tools, abortSignal, {}, options);
     writeDebugLog(this.providerLabel, this.model, messages, tools, result);
     return result;
   }
 
-  async chatOnce(messages: Message[], tools?: Tool[]): Promise<ChatResult> {
-    return this.chat(messages, tools);
+  async chatOnce(messages: Message[], tools?: Tool[], options?: ChatOptions): Promise<ChatResult> {
+    return this.chat(messages, tools, undefined, options);
   }
 
   /**
@@ -129,13 +129,15 @@ export class OpenAIClient implements IChatClient {
    * accumulated by index because OpenAI streams them as fragmented JSON
    * over multiple chunks (`name` arrives once, `arguments` builds up).
    */
-  async *chatStream(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): AsyncGenerator<StreamChunk> {
+  async *chatStream(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal, options?: ChatOptions): AsyncGenerator<StreamChunk> {
     const body: Record<string, unknown> = {
       model: this.model,
       messages: toOpenAIMessages(messages),
       stream: true,
     };
     if (tools && tools.length > 0) body.tools = tools.map(toOpenAITool);
+    const responseFormat = toOpenAIResponseFormat(options);
+    if (responseFormat) body.response_format = responseFormat;
 
     const controller = new AbortController();
     const timeoutHandle = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -285,6 +287,7 @@ export class OpenAIClient implements IChatClient {
     tools?: Tool[],
     abortSignal?: AbortSignal,
     extras: { maxTokens?: number } = {},
+    options?: ChatOptions,
   ): Promise<ChatResult> {
     const body: Record<string, unknown> = {
       model: this.model,
@@ -293,6 +296,8 @@ export class OpenAIClient implements IChatClient {
     };
     if (extras.maxTokens) body.max_tokens = extras.maxTokens;
     if (tools && tools.length > 0) body.tools = tools.map(toOpenAITool);
+    const responseFormat = toOpenAIResponseFormat(options);
+    if (responseFormat) body.response_format = responseFormat;
     const bodyString = JSON.stringify(body);
 
     let lastError: Error | null = null;
@@ -474,6 +479,22 @@ function toOpenAITool(tool: Tool): Record<string, unknown> {
       parameters: tool.function?.parameters,
     },
   };
+}
+
+function toOpenAIResponseFormat(options?: ChatOptions): Record<string, unknown> | undefined {
+  const schema = options?.responseSchema ?? (options?.format && options.format !== 'json' ? options.format : undefined);
+  if (schema && typeof schema === 'object') {
+    return {
+      type: 'json_schema',
+      json_schema: {
+        name: 'harness_response',
+        strict: true,
+        schema,
+      },
+    };
+  }
+  if (options?.format === 'json') return { type: 'json_object' };
+  return undefined;
 }
 
 function fromOpenAIToolCall(tc: { id?: string; function: { name: string; arguments: string } }): ToolCall {

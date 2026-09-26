@@ -4,7 +4,7 @@ import { request as httpRequest } from 'http';
 import { request as httpsRequest } from 'https';
 import { appendFileSync } from 'fs';
 import { AsyncLocalStorage } from 'async_hooks';
-import type { ChatResult, IChatClient, ModelLocality, StreamChunk, TokenUsage } from './chatClient';
+import type { ChatOptions, ChatResult, IChatClient, ModelLocality, StreamChunk, TokenUsage } from './chatClient';
 
 export type { ChatResult, StreamChunk, TokenUsage } from './chatClient';
 
@@ -68,6 +68,7 @@ export class OllamaClient implements IChatClient {
     messages: Message[],
     tools?: Tool[],
     abortSignal?: AbortSignal,
+    options?: ChatOptions,
   ): Promise<ChatResult> {
     const maxAttempts = getOllamaChatMaxAttempts();
     const maxEmptyAttempts = getOllamaEmptyResponseMaxAttempts();
@@ -91,6 +92,7 @@ export class OllamaClient implements IChatClient {
           model: this.model,
           messages,
           tools,
+          format: resolveOllamaFormat(options),
           stream: true as const,
           keep_alive: this.keepAlive,
           options: this.numCtx ? { num_ctx: this.numCtx } : undefined,
@@ -150,11 +152,13 @@ export class OllamaClient implements IChatClient {
   async chatOnce(
     messages: Message[],
     tools?: Tool[],
+    options?: ChatOptions,
   ): Promise<ChatResult> {
     const response = await this.client.chat({
       model: this.model,
       messages,
       tools,
+      format: resolveOllamaFormat(options),
       stream: false as const,
       keep_alive: this.keepAlive,
       options: this.numCtx ? { num_ctx: this.numCtx } : undefined,
@@ -167,12 +171,14 @@ export class OllamaClient implements IChatClient {
     messages: Message[],
     tools?: Tool[],
     abortSignal?: AbortSignal,
+    options?: ChatOptions,
   ): AsyncGenerator<StreamChunk> {
     abortSignal?.throwIfAborted();
     const stream = await this.requestSignal.run(abortSignal, () => this.client.chat({
       model: this.model,
       messages,
       tools,
+      format: resolveOllamaFormat(options),
       stream: true as const,
       keep_alive: this.keepAlive,
       options: this.numCtx ? { num_ctx: this.numCtx } : undefined,
@@ -228,6 +234,10 @@ export class OllamaClient implements IChatClient {
   getLocality(): ModelLocality {
     return 'local';
   }
+}
+
+function resolveOllamaFormat(options?: ChatOptions): ChatRequest['format'] | undefined {
+  return (options?.format ?? options?.responseSchema) as ChatRequest['format'] | undefined;
 }
 
 function getOllamaChatMaxAttempts(): number {
@@ -508,6 +518,11 @@ export function liftInlineToolCalls(message: Message | undefined): void {
 
   if (lifted.length === 0) return;
   message.tool_calls = lifted;
+  Object.defineProperty(message, '__harnessParserLiftedToolCalls', {
+    value: lifted.length,
+    enumerable: false,
+    configurable: true,
+  });
 
   // Strip lifted JSON (and surrounding ```json fences) from the visible content.
   let cleaned = text;

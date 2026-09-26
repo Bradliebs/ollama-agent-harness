@@ -13,7 +13,7 @@
 // at the factory level, so this decorator only sees cloud calls.
 
 import type { Message, Tool } from 'ollama';
-import type { ChatResult, IChatClient, ModelLocality, StreamChunk, TokenUsage } from '../core/chatClient';
+import type { ChatOptions, ChatResult, IChatClient, ModelLocality, StreamChunk, TokenUsage } from '../core/chatClient';
 import { CostTracker } from '../eval/costTracker';
 import { logger } from '../core/logger';
 import { recordSwallowed } from '../observability/silentFailureSink';
@@ -132,12 +132,12 @@ export class BudgetEnforcingChatClient implements IChatClient {
     }
   }
 
-  async chat(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): Promise<ChatResult> {
+  async chat(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal, options?: ChatOptions): Promise<ChatResult> {
     await this.assertAllowed();
     const model = this.opts.inner.getModel();
     const reservedCostUsd = await this.reserveForCost(model, estimatedCost(model, estimateInputTokensFromMessages(messages), CHAT_COMPLETION_RESERVE_TOKENS, this.opts.rateLookup));
     try {
-      const result = await this.opts.inner.chat(messages, tools, abortSignal);
+      const result = await this.opts.inner.chat(messages, tools, abortSignal, options);
       const cost = costFromUsage(model, result.usage, this.opts.rateLookup);
       await this.accountForCost(model, cost, reservedCostUsd);
       return result;
@@ -147,12 +147,12 @@ export class BudgetEnforcingChatClient implements IChatClient {
     }
   }
 
-  async chatOnce(messages: Message[], tools?: Tool[]): Promise<ChatResult> {
+  async chatOnce(messages: Message[], tools?: Tool[], options?: ChatOptions): Promise<ChatResult> {
     await this.assertAllowed();
     const model = this.opts.inner.getModel();
     const reservedCostUsd = await this.reserveForCost(model, estimatedCost(model, estimateInputTokensFromMessages(messages), CHAT_COMPLETION_RESERVE_TOKENS, this.opts.rateLookup));
     try {
-      const result = await this.opts.inner.chatOnce(messages, tools);
+      const result = await this.opts.inner.chatOnce(messages, tools, options);
       const cost = costFromUsage(model, result.usage, this.opts.rateLookup);
       await this.accountForCost(model, cost, reservedCostUsd);
       return result;
@@ -162,7 +162,7 @@ export class BudgetEnforcingChatClient implements IChatClient {
     }
   }
 
-  async *chatStream(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): AsyncGenerator<StreamChunk> {
+  async *chatStream(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal, options?: ChatOptions): AsyncGenerator<StreamChunk> {
     await this.assertAllowed();
     const model = this.opts.inner.getModel();
     const rate = rateFor(model, this.opts.rateLookup);
@@ -170,7 +170,7 @@ export class BudgetEnforcingChatClient implements IChatClient {
     const reservedCostUsd = await this.reserveForCost(model, estimatedCost(model, inputTokensEstimate, STREAM_COMPLETION_RESERVE_TOKENS, this.opts.rateLookup));
     let outputBuffer = '';
     try {
-      for await (const chunk of this.opts.inner.chatStream(messages, tools, abortSignal)) {
+      for await (const chunk of this.opts.inner.chatStream(messages, tools, abortSignal, options)) {
         if (chunk.content) outputBuffer += chunk.content;
         yield chunk;
       }

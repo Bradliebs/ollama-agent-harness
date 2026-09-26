@@ -15,6 +15,8 @@ export interface Tool {
   riskLevel?: ToolRiskLevel;
   /** Optional permission category. */
   permissionCategory?: ToolPermissionCategory;
+  /** Adapter hint: keep this tool even when capability profiles limit tool count. */
+  required?: boolean;
   /** When true, the tool implements a meaningful dry-run mode via `dryRun: true` in input. */
   canDryRun?: boolean;
   /**

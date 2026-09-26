@@ -38,6 +38,23 @@ describe('OllamaClient context configuration', () => {
     }));
   });
 
+  it('passes response format schema to chat requests', async () => {
+    mockChat.mockResolvedValue({
+      message: { role: 'assistant', content: '{"ok":true}' },
+      prompt_eval_count: 1,
+      eval_count: 1,
+      total_duration: 1,
+    });
+    const client = new OllamaClient({ model: 'test-model' });
+    const schema = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] };
+
+    await client.chat([{ role: 'user', content: 'json' }], undefined, undefined, { format: schema });
+
+    expect(mockChat).toHaveBeenCalledWith(expect.objectContaining({
+      format: schema,
+    }));
+  });
+
   it('aggregates streamed chat chunks into one assistant response', async () => {
     async function* chunks() {
       yield { message: { role: 'assistant', content: 'hel' }, done: false };

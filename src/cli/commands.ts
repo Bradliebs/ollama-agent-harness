@@ -97,6 +97,18 @@ export const CLI_COMMAND_REGISTRY: CliCommandDef[] = [
       { flags: ['--persist'], description: 'Persist the run as an EvalTraceRun under .harness/evals/ so the promotion gate counts it' },
     ],
   },
+  {
+    name: 'probe',
+    description: 'Probe a model and save a capability profile',
+    aliases: [],
+    usage: 'harness probe <model> [--backend <name>] [--host <url>]',
+    options: [
+      { flags: ['--backend'], valueName: '<name>', description: 'Chat backend: ollama (default), openai, groq, github, etc.' },
+      { flags: ['--host'], valueName: '<url>', description: 'Ollama host (default: http://localhost:11434)' },
+      { flags: ['--max-context'], valueName: '<tokens>', description: 'Cap usable-context probe (default: 32000)' },
+      { flags: ['--samples'], valueName: '<n>', description: 'Override per-probe sample count' },
+    ],
+  },
 ];
 
 export function resolveCliCommand(name: string | undefined): CliCommandDef | undefined {

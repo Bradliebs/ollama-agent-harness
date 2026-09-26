@@ -24,6 +24,17 @@ export interface ChatResult {
   usage: TokenUsage;
 }
 
+export interface ChatOptions {
+  /**
+   * Optional provider-native response format. Ollama accepts either "json" or
+   * a JSON schema object; OpenAI-compatible clients translate schema objects to
+   * response_format=json_schema where supported by the provider.
+   */
+  format?: 'json' | Record<string, unknown>;
+  /** Alias for callers that want to name the intent rather than the wire key. */
+  responseSchema?: Record<string, unknown>;
+}
+
 export interface StreamChunk {
   content: string;
   done: boolean;
@@ -38,9 +49,9 @@ export interface StreamChunk {
  * is currently used somewhere in the codebase.
  */
 export interface IChatClient {
-  chat(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): Promise<ChatResult>;
-  chatOnce(messages: Message[], tools?: Tool[]): Promise<ChatResult>;
-  chatStream(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal): AsyncGenerator<StreamChunk>;
+  chat(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal, options?: ChatOptions): Promise<ChatResult>;
+  chatOnce(messages: Message[], tools?: Tool[], options?: ChatOptions): Promise<ChatResult>;
+  chatStream(messages: Message[], tools?: Tool[], abortSignal?: AbortSignal, options?: ChatOptions): AsyncGenerator<StreamChunk>;
   listModels(): Promise<string[]>;
   getContextWindow(): Promise<number | null>;
   healthCheck(): Promise<{ ok: boolean; error?: string }>;

@@ -19,6 +19,8 @@ import { checkObligations } from '../services/promiseLedger';
 import type { ModelRoutingPolicy } from '../agents/modelRouting';
 import { OUTPUT_VALIDATION_PROFILES, parseOutputValidationProfile, type OutputValidationProfile, type OutputValidationResult } from '../core/outputValidation';
 import { formatCliHelp, resolveCliCommand } from './commands';
+import { runProbeSuite } from '../models/probeRunner';
+import { safeModelProfileName, type CapabilityProfile } from '../models/capabilityProfile';
 import { runMyceliumCli } from '../mycelium/cli';
 import { createMycelialRouter, deriveToolShortlist, toolNamesFromRoute, type MycelialContextRouter } from '../mycelium/router';
 import { heuristicVerifier } from '../mycelium/verifier';
@@ -77,7 +79,7 @@ const CLI_STORED_ENV_KEYS = new Set([
 ]);
 
 interface CliOptions {
-  command?: 'doctor' | 'mycelium' | 'tui' | 'simulate';
+  command?: 'doctor' | 'mycelium' | 'tui' | 'simulate' | 'probe';
   myceliumArgs?: string[];
   /** Daemon base URL for the `tui` command. */
   tuiBaseUrl?: string;
@@ -91,6 +93,8 @@ interface CliOptions {
   simulateProbeTimeoutMs?: number;
   /** Persist the simulator run as an EvalTraceRun. */
   simulatePersist?: boolean;
+  probeMaxContextTokens?: number;
+  probeSamples?: number;
   model: string;
   host: string;
   permissionMode: PermissionMode;
@@ -143,6 +147,10 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
   } else if (command?.name === 'simulate') {
     options.command = 'simulate';
     args = args.slice(1);
+  } else if (command?.name === 'probe') {
+    options.command = 'probe';
+    if (args[1] && !args[1].startsWith('-')) options.model = args[1];
+    args = args.slice(args[1] && !args[1].startsWith('-') ? 2 : 1);
   }
 
   for (let i = 0; i < args.length; i++) {
@@ -242,6 +250,16 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
       case '--persist':
         options.simulatePersist = true;
         break;
+      case '--max-context': {
+        const tokens = parseInt(args[++i], 10);
+        if (Number.isFinite(tokens) && tokens > 0) options.probeMaxContextTokens = tokens;
+        break;
+      }
+      case '--samples': {
+        const samples = parseInt(args[++i], 10);
+        if (Number.isFinite(samples) && samples > 0) options.probeSamples = samples;
+        break;
+      }
       case '--help':
       case '-h':
         printHelp();
@@ -441,6 +459,36 @@ export async function main(): Promise<void> {
   const projectDir = process.cwd();
   await loadHeadlessRuntimeSettings(projectDir);
 
+  if (options.command === 'probe') {
+    const client = createChatClient({
+      backend: options.backend,
+      model: options.model,
+      host: options.host,
+      autoFallback: true,
+      projectDir,
+    });
+    const health = await client.healthCheck();
+    if (!health.ok) {
+      console.error(`❌ ${health.error}`);
+      process.exitCode = 1;
+      return;
+    }
+    const profile = await runProbeSuite(client, {
+      model: options.model,
+      projectDir,
+      budget: {
+        samples: options.probeSamples,
+        maxContextTokens: options.probeMaxContextTokens,
+      },
+      onProgress: (event) => {
+        if (event.status === 'start') console.log(`Running ${event.probeId}...`);
+      },
+    });
+    console.log(formatCapabilityProfileTable(profile));
+    console.log(`Saved profile to .harness/model-profiles/${safeModelProfileName(profile.model)}.json`);
+    return;
+  }
+
   // Initialize client (Ollama by default; OpenAI-compatible providers via
   // --backend or HARNESS_BACKEND env var).
   const client = createChatClient({
@@ -455,6 +503,25 @@ export async function main(): Promise<void> {
   if (!health.ok) {
     console.error(`❌ ${health.error}`);
     process.exit(1);
+  }
+
+  function formatCapabilityProfileTable(profile: CapabilityProfile): string {
+    const rows = [
+      ['toolCalling', profile.scores.toolCalling],
+      ['jsonInTextRate', profile.scores.jsonInTextRate],
+      ['structuredPlain', profile.scores.structuredPlain],
+      ['structuredConstrained', profile.scores.structuredConstrained],
+      ['instructionFollowing', profile.scores.instructionFollowing],
+      ['planCoherence', profile.scores.planCoherence],
+    ];
+    const lines = [
+      `Capability profile: ${profile.model}`,
+      'Score'.padEnd(24) + 'Value',
+      ...rows.map(([name, value]) => String(name).padEnd(24) + Number(value).toFixed(2)),
+      `Usable context: ${profile.usableContextTokens} tokens (detected ${profile.detectedContextTokens ?? 'unknown'})`,
+      `Recommendation: toolMode=${profile.recommended.toolMode}, maxTools=${profile.recommended.maxToolsPerStep}, promptTier=${profile.recommended.promptTier}, scaffold=${profile.recommended.scaffoldLevel}, contextBudget=${profile.recommended.contextBudgetTokens}`,
+    ];
+    return lines.join('\n');
   }
 
   let headlessPrompt: string | undefined = options.prompt;

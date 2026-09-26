@@ -62,6 +62,26 @@ describe('OpenAIClient', () => {
     expect(result.usage.completionTokens).toBe(2);
   });
 
+  it('translates response schema to OpenAI response_format', async () => {
+    fetchSpy.mockResolvedValueOnce(makeResponse({
+      choices: [{ message: { role: 'assistant', content: '{"ok":true}' } }],
+    }));
+    const client = new OpenAIClient({
+      baseUrl: 'https://api.openai.test/v1',
+      apiKey: 'test-key',
+      model: 'model',
+    });
+    const schema = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] };
+
+    await client.chat([{ role: 'user', content: 'json' }], undefined, undefined, { format: schema });
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+    expect(body.response_format).toEqual({
+      type: 'json_schema',
+      json_schema: { name: 'harness_response', strict: true, schema },
+    });
+  });
+
   it('translates Ollama tools to OpenAI function-tool format', async () => {
     fetchSpy.mockResolvedValueOnce(makeResponse({
       choices: [{ message: { role: 'assistant', content: 'done' } }],
