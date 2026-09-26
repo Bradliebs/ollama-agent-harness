@@ -88,4 +88,41 @@ describe('runProbeSuite', () => {
       await fs.rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('fails only the probe that exceeds its time limit and keeps going', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-probes-timeout-'));
+    const client = new FakeProbeClient();
+    const baseChat = client.chat.bind(client);
+    // A model that never answers the instruction-following prompts.
+    client.chat = async (messages, tools, signal, options) => {
+      const prompt = String(messages[messages.length - 1]?.content ?? '');
+      if (/exactly three words/i.test(prompt)) {
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason ?? new Error('aborted')), { once: true });
+        });
+      }
+      return baseChat(messages, tools, signal, options);
+    };
+    const progress: string[] = [];
+    try {
+      const profile = await runProbeSuite(client, {
+        model: 'slow:model',
+        projectDir: dir,
+        budget: { maxContextTokens: 1024, timeoutMsPerProbe: 200 },
+        onProgress: (event) => { if (event.status === 'complete') progress.push(`${event.probeId}:${event.result?.details.timedOut ? 'timeout' : 'ok'}`); },
+      });
+      expect(profile.scores.instructionFollowing).toBe(0);
+      expect(profile.scores.toolCalling).toBe(1);
+      expect(progress).toContain('instructionFollowing:timeout');
+      expect(progress.filter((entry) => entry.endsWith(':ok')).length).toBeGreaterThanOrEqual(3);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stops the whole suite on a user abort', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(runProbeSuite(new FakeProbeClient(), { model: 'm', projectDir: os.tmpdir(), signal: controller.signal })).rejects.toThrow();
+  });
 });

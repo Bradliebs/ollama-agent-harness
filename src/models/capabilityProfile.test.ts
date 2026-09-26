@@ -42,6 +42,15 @@ describe('capability profiles', () => {
     }));
   });
 
+  it('only caps the context budget when the usable context is a measured limit', () => {
+    const scores = { toolCalling: 1, jsonInTextRate: 0, structuredPlain: 1, structuredConstrained: 1, instructionFollowing: 1, planCoherence: 1 };
+    // Retrieval failed beyond 16k: a real limit.
+    expect(deriveRecommendations(scores, 200_000, 16_000, true).contextBudgetTokens).toBe(13_600);
+    // Passed everything up to the probe's 16k cap: a lower bound, so the detected window stands.
+    expect(deriveRecommendations(scores, 200_000, 16_000, false).contextBudgetTokens).toBe(170_000);
+    expect(deriveRecommendations(scores, null, 16_000, false).contextBudgetTokens).toBe(13_600);
+  });
+
   it('stores, loads, lists, and checks freshness', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-profile-'));
     try {

@@ -32,6 +32,13 @@ export interface CapabilityProfile {
   harnessVersion?: string;
   scores: CapabilityScores;
   usableContextTokens: number;
+  /**
+   * True when the context probe saw retrieval fail at a longer length, so
+   * usableContextTokens is a real limit. False/absent means it is only a lower
+   * bound (the probe hit its length or token cap first) and must not cap the
+   * context budget.
+   */
+  usableContextMeasuredLimit?: boolean;
   detectedContextTokens: number | null;
   avgLatencyMs: number;
   tokensSpent: number;
@@ -56,6 +63,7 @@ export function deriveRecommendations(
   scores: CapabilityScores,
   detectedContextTokens: number | null | undefined,
   usableContextTokens = 0,
+  usableContextMeasuredLimit = true,
 ): CapabilityRecommendations {
   const toolMode: ToolModeRecommendation = scores.toolCalling >= 0.9
     ? 'native'
@@ -79,9 +87,12 @@ export function deriveRecommendations(
       ? 'medium'
       : 'heavy';
 
-  const usable = usableContextTokens > 0
+  // A lower-bound measurement never shrinks the budget below the detected window.
+  const usable = usableContextTokens > 0 && usableContextMeasuredLimit
     ? usableContextTokens
-    : Math.max(1024, Math.floor((detectedContextTokens ?? 8192) * 0.5));
+    : usableContextTokens > 0
+      ? Math.max(usableContextTokens, detectedContextTokens ?? usableContextTokens)
+      : Math.max(1024, Math.floor((detectedContextTokens ?? 8192) * 0.5));
 
   return {
     toolMode,

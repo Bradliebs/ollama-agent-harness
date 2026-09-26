@@ -24,13 +24,18 @@ export const usableContextProbe: Probe = {
     const lengths = contextLengths(cap);
     let largest = 0;
     let attempted = 0;
+    // Only a length where retrieval actually failed is a measured limit. If the
+    // probe ran out of lengths or token budget first, `largest` is a lower bound.
+    let failedAt: number | null = null;
     const perLength: Array<{ length: number; successes: number }> = [];
 
     for (const length of lengths) {
       let successes = 0;
+      let attemptsAtLength = 0;
       for (const position of POSITIONS) {
         assertNotAborted(opts?.signal);
         if (tokenBudgetExceeded(tokens, opts)) break;
+        attemptsAtLength++;
         const needle = `NEEDLE_${length}_${Math.round(position * 100)}_VALUE`;
         const haystack = makeHaystack(length, needle, position);
         const result = await client.chat([
@@ -42,8 +47,14 @@ export const usableContextProbe: Probe = {
         if (String(result.message.content ?? '').includes(needle)) successes++;
       }
       perLength.push({ length, successes });
-      if (successes >= 2) largest = length;
-      else if (length > 1024) break;
+      if (successes >= 2) {
+        largest = length;
+        continue;
+      }
+      // Fewer than 2 of 3 positions retrieved is a failure only when all three
+      // were attempted; a budget stop mid-length says nothing about the model.
+      if (attemptsAtLength === POSITIONS.length) failedAt = length;
+      break;
     }
 
     return makeResult(this.id, cap > 0 ? largest / cap : 0, attempted, {
@@ -51,6 +62,8 @@ export const usableContextProbe: Probe = {
       detectedContextTokens: detected,
       cap,
       perLength,
+      measuredLimit: failedAt !== null,
+      failedAtTokens: failedAt,
     }, tokens, started);
   },
 };

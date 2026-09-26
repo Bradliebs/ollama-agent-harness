@@ -598,6 +598,8 @@ export async function main(): Promise<void> {
       },
       onProgress: (event) => {
         if (event.status === 'start') console.log(`Running ${event.probeId}...`);
+        else if (event.result?.details.timedOut) console.log(`  ${event.probeId}: timed out after ${Math.round(Number(event.result.details.timeoutMs) / 1000)}s (scored 0)`);
+        else if (event.result) console.log(`  ${event.probeId}: ${Math.round(event.result.score * 100)}% in ${Math.round(event.result.durationMs / 1000)}s`);
       },
     });
     console.log(formatCapabilityProfileTable(profile));
