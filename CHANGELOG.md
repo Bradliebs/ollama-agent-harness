@@ -161,6 +161,25 @@ No release tag, publication or installer runtime qualification is implied.
   server wires it for chat and task runs unless chat routing is off, and
   targets the strong-tier candidate only when it differs from the current
   model.
+- Add episodic lessons (learning/lessons.ts), derived from each finished
+  run's log without a model call: blocked sources, stuck requests with what
+  was repeated, unsupported figures, and budget overruns. They are stored
+  in .harness/learning/lessons.json. Recall into the prompt is opt-in
+  (HARNESS_LESSONS=recall) because it changes answers; recalled ids are
+  recorded on run_start. A recalled lesson counts as helping when the next
+  run avoided the same failure, and is retired after repeated failures.
+  Staleness is 30 days for blocked sites and 120 days otherwise.
+  QueryLoopDeps.onRunEnd runs after the run log is flushed.
+- Add a skill lifecycle. Each skill records whether the runs that used it
+  finished cleanly. Agent-written skills (create_skill, promote_pattern,
+  improve_skill) pass the promotion gate's safety scan, keep versions in
+  _history/ (improve_skill no longer leaves .bak.md files that surfaced as
+  bundled resources), and start on probation until three clean runs. The
+  curator archives skills after three consecutive failed runs (two on
+  probation); pinned skills are exempt.
+- Fix lost and torn skill-usage updates: writes are now locked and atomic,
+  because view/use recording is fire-and-forget and could interleave with
+  other writers or be read half-written.
 - After these changes full Jest passed 329 suites and 3,841 tests with one
   skipped; the build and script tests (`node --test`) also passed.
 

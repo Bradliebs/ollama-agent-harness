@@ -20,6 +20,7 @@ import { createLlmDecomposer, createOrchestrateFn, createToolchainVerifier, crea
 import { verifyService } from '../core/doneStateVerifier';
 import { createLlmAdversaryJudge, type AdversaryJudge } from '../safety/toolInspectors';
 import { selectCriticCandidates } from '../verification/criticModel';
+import { learnFromRun, loadLessons, recallLessons, renderLessons, resolveLessonsMode } from '../learning/lessons';
 import { resolveResearchVerifyMode, type CriticAccess } from '../verification/researchVerifier';
 import { buildMorningBriefing, type BriefingCalendarEvent } from '../jarvis/morningBriefing';
 import { parseIcsEvents } from '../tools/calendarTools';
@@ -256,7 +257,7 @@ async function loadProtectedPaths(): Promise<string[]> {
  * file changes reversible per step. Old runs are pruned every 25 runs.
  */
 let runsSincePrune = 0;
-function startRunRecording(kind: string): { runLog?: RunLog; sideEffectRecorder?: SideEffectRecorder } {
+function startRunRecording(kind: string): { runLog?: RunLog; sideEffectRecorder?: SideEffectRecorder; onRunEnd?: (runId: string) => void } {
   if (process.env.HARNESS_RUN_LOG === '0') return {};
   const runLog = new RunLog(PROJECT_DIR, newRunId(kind));
   runsSincePrune += 1;
@@ -267,6 +268,10 @@ function startRunRecording(kind: string): { runLog?: RunLog; sideEffectRecorder?
   return {
     runLog,
     sideEffectRecorder: { projectDir: PROJECT_DIR, runId: runLog.runId, resolveTarget: resolveToolMutationTarget },
+    // Lessons and skill outcomes are learned from every finished run unless HARNESS_LESSONS=off.
+    ...(resolveLessonsMode() !== 'off'
+      ? { onRunEnd: (runId: string) => { void learnFromRun(PROJECT_DIR, runId).catch((err) => recordSwallowed('lessons.learnFromRun', err)); } }
+      : {}),
   };
 }
 /**
@@ -5491,6 +5496,16 @@ CONTEXT HYGIENE (critical for long tasks):
   const protectedPaths = await loadProtectedPaths();
   if (protectedPaths.length > 0) config.protectedPaths = protectedPaths;
   if (process.env.HARNESS_WORKING_STATE === 'on') config.workingState = { inject: true };
+
+  // Lessons from earlier runs are always recorded; recalling them into the
+  // prompt changes answers, so it is opt-in (HARNESS_LESSONS=recall).
+  if (resolveLessonsMode() === 'recall') {
+    const recalled = recallLessons(await loadLessons(PROJECT_DIR), message);
+    if (recalled.length > 0) {
+      config.systemPrompt = `${config.systemPrompt}\n\n${renderLessons(recalled)}`;
+      config.recalledLessons = recalled.map((lesson) => lesson.id);
+    }
+  }
 
   // Capability-profile adapter and adjustable scaffolding. Both change
   // answers, so both are opt-in (HARNESS_ADAPTER_MODE=profile,

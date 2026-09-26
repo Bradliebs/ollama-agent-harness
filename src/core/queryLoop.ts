@@ -116,6 +116,8 @@ export interface QueryLoopDeps {
    * effects share for per-step rollback. See persistence/runLog.ts.
    */
   runLog?: RunLog;
+  /** Called with the run id after the run log is closed and flushed (e.g. to learn lessons from it). */
+  onRunEnd?: (runId: string) => void;
   /**
    * Optional LLM-backed judge wired into AdversaryInspector. Constructed by
    * the caller (e.g. `createLlmAdversaryJudge(client)`) so the inspector
@@ -177,6 +179,11 @@ export async function* queryLoop(
   } finally {
     runLog.append('run_end', { reason: endReason, ...(endTurns !== undefined ? { turns: endTurns } : {}), ...(endError ? { error: endError } : {}) });
     await runLog.flush();
+    try {
+      deps.onRunEnd?.(runLog.runId);
+    } catch {
+      // Post-run learning must never affect the run itself.
+    }
   }
 }
 
@@ -305,6 +312,7 @@ async function* queryLoopCore(
     taskType: config.taskType,
     tools: tools.map((tool) => tool.name),
     locality: runLocality,
+    ...(config.recalledLessons?.length ? { lessons: config.recalledLessons } : {}),
   });
 
   // The user's active instruction: the last genuine user message present

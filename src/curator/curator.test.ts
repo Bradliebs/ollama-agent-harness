@@ -258,3 +258,26 @@ describe('Skill usage store', () => {
     await fs.rm(projectDir, { recursive: true, force: true });
   });
 });
+
+describe('Curator failure demotion', () => {
+  const record = (name: string, extra: Partial<SkillUsageStore['records'][string]>) => ({ name, useCount: 4, viewCount: 4, lastUsedAt: nowMinusDays(1), pinned: false, archived: false, firstSeenAt: nowMinusDays(30), updatedAt: nowMinusDays(1), ...extra });
+
+  it('archives recently used skills whose runs keep failing, sooner while on probation', () => {
+    const skills = ['steady', 'failing', 'probation-failing', 'pinned-failing'].map(makeSkill);
+    const store: SkillUsageStore = {
+      version: 1,
+      records: {
+        steady: record('steady', { consecutiveFailures: 1 }),
+        failing: record('failing', { consecutiveFailures: 3 }),
+        'probation-failing': record('probation-failing', { status: 'probation', consecutiveFailures: 2 }),
+        'pinned-failing': record('pinned-failing', { consecutiveFailures: 5, pinned: true }),
+      },
+    };
+    const actions = findStaleSkills(skills, store, DEFAULT_CURATOR_CONFIG);
+    expect(actions.find((a) => a.skill === 'steady')?.kind).toBe('skip-active');
+    expect(actions.find((a) => a.skill === 'failing')).toMatchObject({ kind: 'archive', reason: expect.stringContaining('Failing: the last 3 runs') });
+    expect(actions.find((a) => a.skill === 'probation-failing')).toMatchObject({ kind: 'archive', reason: expect.stringContaining('still on probation') });
+    expect(actions.find((a) => a.skill === 'pinned-failing')?.kind).toBe('skip-pinned');
+    expect(findStaleSkills(skills, store, { ...DEFAULT_CURATOR_CONFIG, demoteAfterFailures: 0, demoteProbationAfterFailures: 0 }).filter((a) => a.kind === 'archive')).toEqual([]);
+  });
+});

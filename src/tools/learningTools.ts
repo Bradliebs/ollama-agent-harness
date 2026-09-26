@@ -1,7 +1,9 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
-import { invalidateSkillsCache } from './skillTools';
+import { agentSkillSafetyRefusal, invalidateSkillsCache } from './skillTools';
+import { snapshotSkillHistory } from '../extensibility/skillAuthoring';
+import { recordAgentSkillRevision } from '../extensibility/skillUsage';
 import {
   detectPatterns,
   consolidateMemory,
@@ -180,17 +182,23 @@ ${instructions}
 Tool sequence: ${pattern.toolSequence.join(' → ')}
 `;
 
+    const refusal = agentSkillSafetyRefusal(content);
+    if (refusal) return { success: false, output: refusal, error: 'safety rule matched' };
+
     try {
       await fs.mkdir(skillDir, { recursive: true });
+      const previous = await fs.readFile(skillPath, 'utf-8').catch(() => '');
+      if (previous && previous !== content) await snapshotSkillHistory(path.dirname(skillDir), skillName, previous);
       await fs.writeFile(skillPath, content);
       await markPatternPromoted(patternId);
       invalidateSkillsCache();
+      await recordAgentSkillRevision(learningProjectDir(), skillName, { replacedExisting: Boolean(previous) }).catch(() => undefined);
 
       return {
         success: true,
         output: `🎓 Skill "${skillName}" created from pattern!\n` +
           `Pattern: ${pattern.toolSequence.join(' → ')} (${pattern.occurrences} occurrences)\n` +
-          `Saved to: ${skillPath}\n\nThis skill will be available in all future sessions.`,
+          `Saved to: ${skillPath}\n\nThis skill will be available in all future sessions, on probation until 3 runs that use it finish cleanly.`,
       };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -295,18 +303,21 @@ export const ImproveSkillTool: Tool = {
       // Verify skill exists
       await fs.access(skillPath);
 
-      // Back up the old version
-      const old = await fs.readFile(skillPath, 'utf-8');
-      const backupPath = path.join(learningProjectDir(), '.harness', 'skills', name, `SKILL.${Date.now()}.bak.md`);
-      await fs.writeFile(backupPath, old);
+      const refusal = agentSkillSafetyRefusal(newContent);
+      if (refusal) return { success: false, output: refusal, error: 'safety rule matched' };
 
-      // Write improved version
+      // Keep the old version in the shared skill history (_history/<name>/).
+      const old = await fs.readFile(skillPath, 'utf-8');
+      await snapshotSkillHistory(path.join(learningProjectDir(), '.harness', 'skills'), name, old);
+
+      // Write improved version; it goes back on probation until it proves itself.
       await fs.writeFile(skillPath, newContent);
       invalidateSkillsCache();
+      const record = await recordAgentSkillRevision(learningProjectDir(), name, { replacedExisting: true }).catch(() => undefined);
 
       return {
         success: true,
-        output: `📈 Skill "${name}" improved!\nReason: ${reason}\nOld version backed up to ${path.basename(backupPath)}`,
+        output: `📈 Skill "${name}" improved${record?.version ? ` (version ${record.version})` : ''}!\nReason: ${reason}\nThe previous version is kept in the skill history. The new version is on probation until 3 runs that use it finish cleanly.`,
       };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);

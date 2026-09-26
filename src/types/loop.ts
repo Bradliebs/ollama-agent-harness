@@ -148,6 +148,8 @@ export interface LoopConfig {
   workingState?: { inject?: boolean };
   /** Extra paths/patterns that tools must never modify (dir/, dir/**, file). */
   protectedPaths?: string[];
+  /** Ids of lessons from earlier runs recalled into this run's prompt, recorded so their effect can be scored. */
+  recalledLessons?: string[];
   /** Research-answer verification mode; defaults to HARNESS_VERIFY_RESEARCH (check = record only). */
   verifyResearch?: 'off' | 'check' | 'annotate' | 'critic' | 'gate';
   modelPlan?: {
