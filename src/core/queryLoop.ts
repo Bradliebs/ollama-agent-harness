@@ -32,6 +32,7 @@ import { validateOutput, withOutputValidationInstructions, detectSelfCertificati
 import type { OutputValidationProfile } from './outputValidation';
 import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
 import { SourceLedger, appendSourcesFooter, guessedUrlHint } from './sourceLedger';
+import { annotateAnswer, resolveResearchVerifyMode, revisionPrompt, verifyResearchAnswer, type CriticAccess, type ResearchVerdict } from '../verification/researchVerifier';
 import { verifyCode } from './doneStateVerifier';
 import { classifyModelLocality } from '../observability/costProvenance';
 import { governAnswer } from '../governed/governedAnswer';
@@ -123,6 +124,11 @@ export interface QueryLoopDeps {
    */
   adversaryJudge?: AdversaryJudge;
   /**
+   * Critic models (a different family from the worker) used to check
+   * research answers when HARNESS_VERIFY_RESEARCH is critic or gate.
+   */
+  critic?: CriticAccess;
+  /**
    * Called when a safety inspector requires human confirmation before a
    * tool runs. Return `true` to proceed, `false` to abort. Without this,
    * `requireApproval` decisions silently pass through (matches goose CLI).
@@ -169,6 +175,19 @@ export async function* queryLoop(
 }
 
 type RunStep = { stepId: string; stepSeq: number };
+
+const RESEARCH_SOURCE_TOOLS = new Set(['web_read', 'web_fetch', 'web_search', 'browser_read']);
+const MAX_RESEARCH_SOURCE_CHARS = 60_000;
+const MAX_RESEARCH_CORPUS_CHARS = 400_000;
+
+function researchVerificationEvent(verdict: ResearchVerdict): LoopEvent {
+  return {
+    type: 'verification',
+    kind: 'research',
+    overall: verdict.status,
+    checks: [{ name: verdict.critic ? `claims vs sources (critic ${verdict.critic})` : 'claims vs sources', status: verdict.status, detail: verdict.summary }],
+  };
+}
 
 function toolCallKey(name: string, input: Record<string, unknown>): string {
   return `${name}|${stableArgsKey(input)}`;
@@ -356,6 +375,25 @@ async function* queryLoopCore(
     }
   }
   let stuckNeedsHuman: { message: string; summary: string } | null = null;
+  // Research verification: text of pages read this run, checked against the
+  // final answer by a verifier the worker model doesn't control.
+  const researchVerifyMode = config.verifyResearch ?? resolveResearchVerifyMode();
+  const annotateResearch = researchVerifyMode !== 'off' && researchVerifyMode !== 'check';
+  const researchCorpus: string[] = [];
+  let researchCorpusChars = 0;
+  let researchRevised = false;
+  const trustedUserText = initialMessages
+    .filter((message) => message.role === 'user' && typeof message.content === 'string')
+    .map((message) => String(message.content));
+  const verifyFinalAnswer = async (answer: string): Promise<ResearchVerdict | null> => {
+    if (researchVerifyMode === 'off' || researchCorpus.length === 0 || !answer.trim()) return null;
+    try {
+      return await verifyResearchAnswer({ answer, sources: researchCorpus, trusted: trustedUserText, mode: researchVerifyMode, critic: deps.critic, signal: abortSignal });
+    } catch (error) {
+      tracer?.recordEvent('verification.research_error', { error: error instanceof Error ? error.message : String(error) });
+      return null;
+    }
+  };
   const FILE_CHANGE_TOOLS = new Set(['file_write', 'file_edit', 'file_move', 'file_delete', 'document_export']);
 
   if (session) {
@@ -678,6 +716,24 @@ async function* queryLoopCore(
         break;
       }
 
+      const finalText = typeof assistantMessage.content === 'string' ? assistantMessage.content : '';
+      const researchVerdict = await verifyFinalAnswer(finalText);
+      if (researchVerdict && researchVerifyMode === 'gate' && !researchRevised && turn < maxTurns
+        && (researchVerdict.status === 'warn' || researchVerdict.status === 'fail')) {
+        // "Done" means the verifier passed: one bounded revision before the
+        // answer is accepted with an unverified-claims note.
+        researchRevised = true;
+        yield researchVerificationEvent(researchVerdict);
+        runLog?.append('verdict', { check: 'research_claims', mode: researchVerifyMode, action: 'revise', ...researchVerdict }, currentTurnStep);
+        messages.push({ role: 'user', content: revisionPrompt(researchVerdict) } as Message);
+        yield { type: 'auto_continue', turn, continuationCount: 0, reason: 'verifier found unsupported claims; revising once' };
+        continue;
+      }
+      if (researchVerdict) {
+        yield researchVerificationEvent(researchVerdict);
+        runLog?.append('verdict', { check: 'research_claims', mode: researchVerifyMode, action: annotateResearch ? 'annotate' : 'record', ...researchVerdict }, currentTurnStep);
+      }
+
       let validationFailed = false;
       let validationScore: number | undefined;
       if (config.outputValidation?.enabled) {
@@ -717,7 +773,7 @@ async function* queryLoopCore(
       yield {
         type: 'text',
         content: typeof assistantMessage.content === 'string'
-          ? appendSourcesFooter(assistantMessage.content, sourceLedger.list())
+          ? appendSourcesFooter(researchVerdict && annotateResearch ? annotateAnswer(assistantMessage.content, researchVerdict) : assistantMessage.content, sourceLedger.list())
           : assistantMessage.content,
       };
 
@@ -959,6 +1015,11 @@ async function* queryLoopCore(
     for (const { call, result } of toolResults) sourceLedger.recordSearchResults(call, result);
     for (const entry of toolResults) {
       sourceLedger.recordRead(entry.call, entry.result);
+      if (researchVerifyMode !== 'off' && entry.result.success && RESEARCH_SOURCE_TOOLS.has(entry.call.name) && typeof entry.result.output === 'string' && researchCorpusChars < MAX_RESEARCH_CORPUS_CHARS) {
+        const text = entry.result.output.slice(0, MAX_RESEARCH_SOURCE_CHARS);
+        researchCorpus.push(text);
+        researchCorpusChars += text.length;
+      }
       if (entry.result.success && (entry.call.name === 'web_read' || entry.call.name === 'web_fetch') && typeof entry.call.input?.url === 'string') {
         const source = sourceLedger.list().find((item) => entry.call.input.url === item.url || String(entry.call.input.url).startsWith(item.url));
         workingState.addSource(String(entry.call.input.url), source?.title);
@@ -1363,6 +1424,15 @@ async function* queryLoopCore(
       if (footer) {
         synthesisText = `${synthesisText}${footer}`;
         tracer?.recordEvent('synthesis.unverified_paths', { count: report.unverified.length, paths: report.unverified.slice(0, 10) });
+      }
+    }
+
+    if (synthesisText && typeof synthesisText === 'string') {
+      const synthVerdict = await verifyFinalAnswer(synthesisText);
+      if (synthVerdict) {
+        yield researchVerificationEvent(synthVerdict);
+        runLog?.append('verdict', { check: 'research_claims', mode: researchVerifyMode, action: annotateResearch ? 'annotate' : 'record', ...synthVerdict });
+        if (annotateResearch) synthesisText = annotateAnswer(synthesisText, synthVerdict);
       }
     }
 

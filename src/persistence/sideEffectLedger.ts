@@ -163,7 +163,7 @@ export function planRunReversal(
   options: { afterStepSeq?: number } = {},
 ): RunReversalPlan {
   // Per-step rollback: keep the world as it was at the END of step
-  // fterStepSeq, so only effects from later steps are undone. Effects
+  // `afterStepSeq`, so only effects from later steps are undone. Effects
   // recorded without a step number cannot be placed and are left alone.
   const afterStepSeq = options.afterStepSeq;
   const forRun = effects.filter((e) => e.runId === runId

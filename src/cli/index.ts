@@ -321,8 +321,9 @@ function formatBenchmarkHistoryTable(report: Awaited<ReturnType<typeof benchmark
     `${Math.round(row.avgDurationMs)}ms`,
     `${Math.round(row.stuckRate * 100)}%`,
     row.avgCitedSources.toFixed(1),
+    `${Math.round(row.unsupportedClaimRate * 100)}%`,
   ]);
-  const headers = ['model', 'runs', 'complete', 'turns', 'tokens', 'cost', 'duration', 'stuck', 'urls'];
+  const headers = ['model', 'runs', 'complete', 'turns', 'tokens', 'cost', 'duration', 'stuck', 'urls', 'unsupported'];
   const widths = headers.map((header, index) => Math.max(header.length, ...rows.map((row) => row[index]?.length ?? 0)));
   const render = (row: string[]): string => row.map((cell, index) => cell.padEnd(widths[index])).join('  ');
   const lines = [render(headers), render(widths.map((width) => '-'.repeat(width))), ...rows.map(render)];

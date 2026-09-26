@@ -79,7 +79,7 @@ No release tag, publication or installer runtime qualification is implied.
   (the prompt of any turn can be rebuilt exactly), raw model responses, tool
   calls with full results, and a run_end on every exit path. File changes are
   captured at the path each tool really writes (including redirects), now also
-  for ile_move, and are tagged with their step so a run can be rolled back
+  for file_move, and are tagged with their step so a run can be rolled back
   to the end of any step via /api/run-logs/<runId>/revert. Optional git
   checkpoints (HARNESS_RUN_GIT_CHECKPOINT=1) snapshot the whole workspace
   through a temporary index without touching HEAD or the user's index.
@@ -88,7 +88,7 @@ No release tag, publication or installer runtime qualification is implied.
   and stalls escalate from a progress check to a strategy change to stopping
   with a question for the user (stuck_needs_human). Per-run token (1.5M
   default) and USD (priced models, opt-in) budgets end the run in a summary
-  (udget_synthesized). The UI shows both with a Retry strip.
+  (budget_synthesized). The UI shows both with a Retry strip.
 - Turn loop hardening on by default (loop-guard nudges, tool-result injection
   tripwire, iteration refunds, surrogate sanitising); HARNESS_LOOP_HARDENING=0
   restores the old behaviour.
@@ -96,8 +96,8 @@ No release tag, publication or installer runtime qualification is implied.
   plain vs schema-constrained, instruction following, usable context, plan
   coherence, latency) run via harness probe <model> or
   /api/model-profiles/<model>/probe, saved per model with derived
-  recommendations. Chat clients accept an optional ormat (Ollama ormat,
-  OpenAI esponse_format). A fresh profile caps the context budget at the
+  recommendations. Chat clients accept an optional format (Ollama format,
+  OpenAI response_format). A fresh profile caps the context budget at the
   measured usable window; HARNESS_ADAPTER_MODE=profile also compiles a
   per-model plan (tool subset, JSON tool calls lifted back into tool calls).
 - Add provenance checks on side effects (default on, including dontAsk):
@@ -117,7 +117,7 @@ No release tag, publication or installer runtime qualification is implied.
   Deterministic replay rebuilds the original prompt from the run log and
   serves recorded tool results through stubs that borrow the real tools'
   schemas, so only the model varies and no side effects run; replays are
-  themselves recorded as eplay-* run logs. Reports compare completion,
+  themselves recorded as replay-* run logs. Reports compare completion,
   turns, tokens, cost, duration, cited sources and stuck runs.
 - Fix JSON answers being deleted: the inline tool-call fallback treated any
   JSON object with a "name" key as a tool call, so a reply like
@@ -132,6 +132,25 @@ No release tag, publication or installer runtime qualification is implied.
   decisions, open questions, invariants, sources) into every system prompt,
   outside the compactable transcript, and offers a state_update tool that
   can only tighten protections. State changes are run-log state events.
+- Add independent verification of research answers
+  (HARNESS_VERIFY_RESEARCH, default `check`). Figures in the final answer are
+  matched against the text of the pages read in the run. Phone numbers are
+  compared by digits; HTTP status codes are ignored; differences, totals and
+  percentages of sourced figures count as derived. The loop emits a
+  `verification` event with `kind: 'research'` and a run-log verdict.
+  - `check` records the verdict only.
+  - `annotate` appends an unverified-claims note.
+  - `critic` adds a critic model from a different family, auto-picked
+    (cheap cloud first) or set with HARNESS_CRITIC_MODEL; same-family picks
+    are rejected, and failed candidates fall through to the next.
+  - `gate` allows one bounded revision before accepting.
+  The adversary judge uses the critic when HARNESS_INSPECTOR_ADVERSARY=1,
+  falling back to the chat model because that inspector fails open. Replay
+  and benchmark-history reports now include unsupported claims. Measured on
+  77 research answers in the live history: about 20% of figures were not in
+  any page read that turn, so annotation stays opt-in.
+- Fix control characters left in comments and this changelog by earlier
+  scripted edits (PowerShell backtick escapes read as form feeds and bells).
 - After these changes full Jest passed 329 suites and 3,841 tests with one
   skipped; the build and script tests (`node --test`) also passed.
 

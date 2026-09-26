@@ -18,7 +18,9 @@ import { createCodeVerifier, createLlmPlanner, createQueryLoopExecutor, runCondu
 import { runLeadAgent, type LeadAgentEvent } from '../core/leadAgent';
 import { createLlmDecomposer, createOrchestrateFn, createToolchainVerifier, createLeadPersist } from '../core/leadAgentFactories';
 import { verifyService } from '../core/doneStateVerifier';
-import { createLlmAdversaryJudge } from '../safety/toolInspectors';
+import { createLlmAdversaryJudge, type AdversaryJudge } from '../safety/toolInspectors';
+import { selectCriticCandidates } from '../verification/criticModel';
+import { resolveResearchVerifyMode, type CriticAccess } from '../verification/researchVerifier';
 import { buildMorningBriefing, type BriefingCalendarEvent } from '../jarvis/morningBriefing';
 import { parseIcsEvents } from '../tools/calendarTools';
 import { getRuntimeTools } from '../tools';
@@ -267,6 +269,43 @@ function startRunRecording(kind: string): { runLog?: RunLog; sideEffectRecorder?
     sideEffectRecorder: { projectDir: PROJECT_DIR, runId: runLog.runId, resolveTarget: resolveToolMutationTarget },
   };
 }
+/**
+ * The critic (a different model family from the worker; see
+ * verification/criticModel.ts) for research verification in critic/gate mode
+ * and for the adversary judge. The judge falls back to the worker client if
+ * the critic call fails, because the adversary inspector fails open.
+ */
+async function resolveCriticDeps(workerModel: string, workerClient: IChatClient): Promise<{ critic?: CriticAccess; adversaryJudge: AdversaryJudge }> {
+  const workerJudge = createLlmAdversaryJudge(workerClient);
+  const verifyMode = resolveResearchVerifyMode();
+  const wantsCritic = verifyMode === 'critic' || verifyMode === 'gate';
+  const wantsAdversary = process.env.HARNESS_INSPECTOR_ADVERSARY === '1';
+  if (!wantsCritic && !wantsAdversary) return { adversaryJudge: workerJudge };
+  const installed = await webRuntime.listModels(ollamaHost).catch((): string[] => []);
+  const selection = selectCriticCandidates(workerModel, {
+    override: process.env.HARNESS_CRITIC_MODEL,
+    ...(installed.length > 0 ? { available: installed } : {}),
+  });
+  if (selection.rejected) console.warn(`⚠️  ${selection.rejected}`);
+  const createClient = async (model: string) => webRuntime.createClient(model, ollamaHost, await resolveContextMaxTokens(model));
+  let adversaryJudge = workerJudge;
+  const firstCritic = selection.candidates[0];
+  if (wantsAdversary && firstCritic) {
+    const criticJudge = createLlmAdversaryJudge(await createClient(firstCritic));
+    adversaryJudge = async (input) => {
+      try {
+        return await criticJudge(input);
+      } catch {
+        return workerJudge(input);
+      }
+    };
+  }
+  return {
+    ...(wantsCritic && selection.candidates.length > 0 ? { critic: { candidates: selection.candidates, createClient } } : {}),
+    adversaryJudge,
+  };
+}
+
 // Surface the resolved project dir at startup. A silently-moved home is what
 // makes the harness appear to "lose" its memory/identity, so make it visible.
 if (process.env.NODE_ENV !== 'test' && !process.env.JEST_WORKER_ID) {
@@ -3428,7 +3467,7 @@ const runCodexTaskWithConductor: CodexTaskRunner = async ({ task, contract, prom
     summarizerClient: summarizerModel ? webRuntime.createClient(summarizerModel, ollamaHost, activeContextMaxTokens) : undefined,
     tracer: runtimeTracer,
     learningRecorder,
-    adversaryJudge: createLlmAdversaryJudge(client),
+    ...(await resolveCriticDeps(activeModel, client)),
     ...startRunRecording('task'),
   };
 
@@ -5558,10 +5597,11 @@ CONTEXT HYGIENE (critical for long tasks):
       );
       return result.allowed;
     },
-    // LLM-graded safety judge for AdversaryInspector. Reuses the chat
-    // client; only invoked when HARNESS_INSPECTOR_ADVERSARY=1 and
-    // <project>/.harness/adversary.md exists.
-    adversaryJudge: createLlmAdversaryJudge(client),
+    // Critic for research verification, and the LLM-graded judge for
+    // AdversaryInspector (only invoked when HARNESS_INSPECTOR_ADVERSARY=1 and
+    // <project>/.harness/adversary.md exists). Both use a different model
+    // family from the chat model when one is available.
+    ...(await resolveCriticDeps(activeModel, client)),
     ...startRunRecording('chat'),
   };
 

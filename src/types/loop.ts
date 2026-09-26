@@ -121,7 +121,7 @@ export interface LoopConfig {
   unproductiveTurnLimit?: number;
   /**
    * Run supervisor (progress-based stuck detection + per-run token/USD
-   * budgets). On by default; pass alse to disable, or partial overrides.
+   * budgets). On by default; pass `false` to disable, or partial overrides.
    * HARNESS_SUPERVISOR=0 disables it globally. See core/supervisor.ts.
    */
   supervisor?: Partial<import('../core/supervisor').SupervisorConfig> | false;
@@ -148,6 +148,8 @@ export interface LoopConfig {
   workingState?: { inject?: boolean };
   /** Extra paths/patterns that tools must never modify (dir/, dir/**, file). */
   protectedPaths?: string[];
+  /** Research-answer verification mode; defaults to HARNESS_VERIFY_RESEARCH (check = record only). */
+  verifyResearch?: 'off' | 'check' | 'annotate' | 'critic' | 'gate';
   modelPlan?: {
     toolMode: 'native' | 'json-in-text' | 'constrained-json';
     toolNames?: string[];
@@ -346,7 +348,7 @@ export interface UsageEvent {
 }
 
 /** The run supervisor intervened because tool steps stopped producing
- * anything new. sk_human means the run is ending with a question for
+ * anything new. `ask_human` means the run is ending with a question for
  * the user instead of more tool calls. */
 export interface SupervisorEvent {
   type: 'supervisor';
@@ -414,6 +416,8 @@ export interface TurnCompleteEvent {
  */
 export interface VerificationEvent {
   type: 'verification';
+  /** 'research' = claims in the answer checked against pages read. Absent = code checks. */
+  kind?: 'code' | 'research';
   overall: 'pass' | 'fail' | 'warn' | 'skip';
   checks: Array<{
     name: string;

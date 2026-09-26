@@ -5,6 +5,7 @@ import { CostTracker } from './costTracker';
 import { RunLog, listRuns, readRunEvents, reconstructModelRequests, type RunEvent, type RunSummary } from '../persistence/runLog';
 import type { Tool, ToolResult } from '../types';
 import { stableArgsKey } from '../core/toolLoopGuards';
+import { checkClaims } from '../verification/claimCheck';
 
 export type ReplayMode = 'deterministic' | 'live';
 
@@ -39,6 +40,9 @@ export interface ReplayMetrics {
   durationMs: number;
   finalText: string;
   citedSources: number;
+  /** Figure-bearing claims in the final answer, and how many appear in no page read (verification/claimCheck.ts). */
+  checkedClaims: number;
+  unsupportedClaims: number;
   supervisorInterventions: number;
   budgetExceeded: boolean;
   stuck: boolean;
@@ -115,6 +119,8 @@ export interface BenchmarkHistoryRow {
   estimatedUsd: number;
   durationMs: number;
   citedSources: number;
+  checkedClaims: number;
+  unsupportedClaims: number;
   stuck: boolean;
 }
 
@@ -128,6 +134,8 @@ export interface BenchmarkHistoryAggregate {
   avgDurationMs: number;
   stuckRate: number;
   avgCitedSources: number;
+  /** Share of checked claims not supported by any page read, across the model's runs. */
+  unsupportedClaimRate: number;
 }
 
 export interface BenchmarkHistoryReport {
@@ -138,6 +146,7 @@ export interface BenchmarkHistoryReport {
 }
 
 const URL_PATTERN = /https?:\/\/[^\s"'<>)\]]+/g;
+const RESEARCH_TOOL_NAMES = new Set(['web_read', 'web_fetch', 'web_search', 'browser_read']);
 
 export async function loadReplayCase(projectDir: string, runId: string): Promise<ReplayCase> {
   const events = await readRunEvents(projectDir, runId);
@@ -239,19 +248,20 @@ export function formatReportTable(report: ReplayComparisonReport): string {
     `$${row.estimatedUsd.toFixed(6)}`,
     `${row.durationMs}ms`,
     String(row.citedSources),
+    row.checkedClaims ? `${row.unsupportedClaims}/${row.checkedClaims}` : '-',
     row.completed ? 'yes' : 'no',
     row.approximateToolMatches ? String(row.approximateToolMatches) : '-',
     row.missingToolResults ? String(row.missingToolResults) : '-',
   ]));
-  return renderTable(['run', 'done', 'turns', 'tools', 'tokens', 'cost', 'duration', 'urls', 'completed', 'approx', 'missing'], data);
+  return renderTable(['run', 'done', 'turns', 'tools', 'tokens', 'cost', 'duration', 'urls', 'unsupported', 'completed', 'approx', 'missing'], data);
 }
 
 export function formatReportMarkdown(report: ReplayComparisonReport): string {
-  const header = '| Run | Done | Turns | Tool calls | Tokens | Cost USD | Duration ms | URLs | Completed | Approx | Missing |';
-  const sep = '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |';
+  const header = '| Run | Done | Turns | Tool calls | Tokens | Cost USD | Duration ms | URLs | Unsupported claims | Completed | Approx | Missing |';
+  const sep = '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |';
   const rows = [report.original, ...report.replays].map((row, index) => {
     const label = index === 0 ? 'original' : row.model;
-    return `| ${escapeMd(label)} | ${escapeMd(row.doneReason)} | ${row.turns} | ${row.toolCalls} | ${row.promptTokens + row.completionTokens} | ${row.estimatedUsd.toFixed(6)} | ${row.durationMs} | ${row.citedSources} | ${row.completed ? 'yes' : 'no'} | ${row.approximateToolMatches} | ${row.missingToolResults} |`;
+    return `| ${escapeMd(label)} | ${escapeMd(row.doneReason)} | ${row.turns} | ${row.toolCalls} | ${row.promptTokens + row.completionTokens} | ${row.estimatedUsd.toFixed(6)} | ${row.durationMs} | ${row.citedSources} | ${row.checkedClaims ? `${row.unsupportedClaims}/${row.checkedClaims}` : '-'} | ${row.completed ? 'yes' : 'no'} | ${row.approximateToolMatches} | ${row.missingToolResults} |`;
   });
   return [header, sep, ...rows].join('\n');
 }
@@ -299,6 +309,8 @@ export async function benchmarkHistory(projectDir: string, options: BenchmarkHis
         estimatedUsd: replay.metrics.estimatedUsd,
         durationMs: replay.metrics.durationMs,
         citedSources: replay.metrics.citedSources,
+        checkedClaims: replay.metrics.checkedClaims,
+        unsupportedClaims: replay.metrics.unsupportedClaims,
         stuck: replay.metrics.stuck,
       });
     }
@@ -429,6 +441,15 @@ function metricsFromEvents(runId: string, events: readonly RunEvent[], replayCou
   }
   const durationMs = start && end ? Math.max(0, Date.parse(end.ts) - Date.parse(start.ts)) : 0;
   const supervisorEvents = events.filter((event) => event.kind === 'supervisor');
+  const pagesRead = events
+    .filter((event) => event.kind === 'tool_result' && event.data.success === true && RESEARCH_TOOL_NAMES.has(String(event.data.name)) && typeof event.data.output === 'string')
+    .map((event) => String(event.data.output));
+  const userText = events
+    .filter((event) => event.kind === 'messages')
+    .flatMap((event) => (Array.isArray(event.data.messages) ? event.data.messages : []))
+    .filter((message): message is Message => isRecord(message) && message.role === 'user' && typeof message.content === 'string')
+    .map((message) => String(message.content));
+  const claims = pagesRead.length > 0 && finalText ? checkClaims(finalText, pagesRead, userText) : null;
   return {
     runId,
     model,
@@ -444,6 +465,8 @@ function metricsFromEvents(runId: string, events: readonly RunEvent[], replayCou
     durationMs,
     finalText,
     citedSources: (finalText.match(URL_PATTERN) ?? []).length,
+    checkedClaims: claims?.checked.length ?? 0,
+    unsupportedClaims: claims?.unsupported.length ?? 0,
     supervisorInterventions: supervisorEvents.filter((event) => event.data.event === 'intervene' || event.data.stage).length,
     budgetExceeded: supervisorEvents.some((event) => event.data.event === 'budget_exceeded') || doneReason === 'budget_synthesized',
     stuck: doneReason === 'stuck_needs_human',
@@ -464,6 +487,10 @@ function aggregateRows(model: string, rows: BenchmarkHistoryRow[]): BenchmarkHis
     avgDurationMs: avg((row) => row.durationMs),
     stuckRate: count === 0 ? 0 : round6(rows.filter((row) => row.stuck).length / count),
     avgCitedSources: avg((row) => row.citedSources),
+    unsupportedClaimRate: (() => {
+      const checked = rows.reduce((sum, row) => sum + row.checkedClaims, 0);
+      return checked === 0 ? 0 : round6(rows.reduce((sum, row) => sum + row.unsupportedClaims, 0) / checked);
+    })(),
   };
 }
 

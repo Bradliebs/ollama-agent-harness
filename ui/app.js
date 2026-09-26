@@ -5408,7 +5408,9 @@ function appendOutputValidationItem(toolBox, validation) {
 function appendVerificationItem(toolBox, ev) {
   const checks = ev.checks || [];
   const icon = ev.overall === 'pass' ? '✅' : ev.overall === 'fail' ? '❌' : ev.overall === 'warn' ? '⚠️' : '⏭️';
-  const label = ev.overall === 'pass' ? 'tests passed' : ev.overall === 'fail' ? 'tests failed' : ev.overall === 'warn' ? 'tests warned' : 'tests skipped';
+  const label = ev.kind === 'research'
+    ? (ev.overall === 'pass' ? 'claims verified' : ev.overall === 'fail' ? 'claims contradicted' : ev.overall === 'warn' ? 'claims unverified' : 'claims not checked')
+    : (ev.overall === 'pass' ? 'tests passed' : ev.overall === 'fail' ? 'tests failed' : ev.overall === 'warn' ? 'tests warned' : 'tests skipped');
   const detail = checks.map((c) => {
     const s = c.status === 'pass' ? '✓' : c.status === 'fail' ? '✗' : c.status === 'warn' ? '⚠' : '–';
     return s + ' ' + c.name + (c.duration_ms != null ? ' (' + c.duration_ms + 'ms)' : '') + (c.detail ? ': ' + c.detail : '');

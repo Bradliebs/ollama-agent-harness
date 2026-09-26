@@ -65,6 +65,16 @@ async function recordRun(dir: string, runId: string, user = 'research alpha'): P
   return { toolCounter };
 }
 
+function webReadTool(): Tool {
+  return {
+    name: 'web_read',
+    description: 'read',
+    parameters: { type: 'object', properties: { url: { type: 'string' } } },
+    isReadOnly: true,
+    execute: async () => ({ success: true, output: 'Fujifilm X100VI: best price £1,669.28, used from £1,636.' }),
+  };
+}
+
 describe('history replay', () => {
   let dir: string;
 
@@ -99,6 +109,32 @@ describe('history replay', () => {
       citedSources: 1,
       completed: true,
     });
+  });
+
+  it('scores figure claims in the final answer against the pages read, for the original and each replay', async () => {
+    const runLog = new RunLog(dir, 'chat-claims-1');
+    const original = scriptedClient('original-model', [
+      { role: 'assistant', content: '', tool_calls: [call('web_read', { url: 'https://prices.example/x100vi' })] } as Message,
+      { role: 'assistant', content: 'It is £1,669.28 new and £1,636 used; the black one is £1,799.' } as Message,
+    ]);
+    for await (const _event of queryLoop(
+      { model: 'original-model', systemPrompt: 'system prompt', maxTurns: 4, context: { enabled: false }, supervisor: false },
+      { client: original, tools: [webReadTool()], runLog },
+      [{ role: 'user', content: 'What does the X100VI cost?' }],
+    )) { /* consume */ }
+    await runLog.flush();
+    const replayCase = await loadReplayCase(dir, 'chat-claims-1');
+    expect(replayCase.originalMetrics).toMatchObject({ checkedClaims: 1, unsupportedClaims: 1 });
+
+    const replay = await replayRun(replayCase, {
+      model: 'careful-model',
+      client: scriptedClient('careful-model', [
+        { role: 'assistant', content: '', tool_calls: [call('web_read', { url: 'https://prices.example/x100vi' })] } as Message,
+        { role: 'assistant', content: 'It is £1,669.28 new and £1,636 used.' } as Message,
+      ]),
+    });
+    expect(replay.metrics).toMatchObject({ checkedClaims: 1, unsupportedClaims: 0 });
+    expect(formatReportTable(compareRuns(replayCase.originalMetrics, [replay.metrics]))).toMatch(/unsupported[\s\S]*1\/1[\s\S]*0\/1/);
   });
 
   it('deterministically replays exact, approximate and missing tool results without executing original tools', async () => {
