@@ -238,6 +238,16 @@ app.use(express.static(path.join(__dirname, '..', '..', 'ui'), {
 const PROJECT_DIR = assertTestSafeProjectDir(resolveProjectDir());
 setProjectRoot(PROJECT_DIR);
 
+/** User-declared paths tools must never modify: .harness/protected-paths.json (array of strings). */
+async function loadProtectedPaths(): Promise<string[]> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(path.join(PROJECT_DIR, '.harness', 'protected-paths.json'), 'utf-8')) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0).slice(0, 50) : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Event-sourced run recording (on by default; HARNESS_RUN_LOG=0 disables).
  * Returns the QueryLoopDeps fields that make a run reconstructable and its
@@ -5418,6 +5428,13 @@ CONTEXT HYGIENE (critical for long tasks):
     autoContinue: true,
     taskType: requiresExecutionProof ? chatTaskContract.intent_type : myceliumClassification?.type,
   };
+
+  // Governed working state: protected paths from .harness/protected-paths.json
+  // are always enforced; HARNESS_WORKING_STATE=on also injects the state into
+  // every prompt and offers the state_update tool (answer-changing, opt-in).
+  const protectedPaths = await loadProtectedPaths();
+  if (protectedPaths.length > 0) config.protectedPaths = protectedPaths;
+  if (process.env.HARNESS_WORKING_STATE === 'on') config.workingState = { inject: true };
 
   // Capability-profile adapter and adjustable scaffolding. Both change
   // answers, so both are opt-in (HARNESS_ADAPTER_MODE=profile,

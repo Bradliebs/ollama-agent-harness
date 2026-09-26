@@ -26,6 +26,8 @@ import { CostTracker } from '../eval/costTracker';
 import { parseConstrainedToolCall } from '../models/adapter';
 import { ProvenanceLedger, resolveProvenanceEnabled } from '../safety/provenance';
 import { NEXT_STEP_PROMPT, PLAN_ACCEPTED_PROMPT, SKIPPED_EXTRA_CALL, trimToolResult } from './scaffolding';
+import { WorkingStateStore, createStateUpdateTool, injectWorkingState, parsePlanText, shellTouchesProtected } from '../context/workingState';
+import { getProjectRoot, resolveToolMutationTarget } from '../tools/pathResolution';
 import { validateOutput, withOutputValidationInstructions, detectSelfCertification } from './outputValidation';
 import type { OutputValidationProfile } from './outputValidation';
 import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
@@ -178,7 +180,31 @@ async function* queryLoopCore(
   initialMessages: Message[] = [],
 ): AsyncGenerator<LoopEvent> {
   const { maxTurns, abortSignal } = config;
-  const { client, tools, permissionCheck, hooks, session, summarizerClient, tracer, learningRecorder, adversaryJudge, onApprovalRequired, runLog } = deps;
+  const { client, permissionCheck, hooks, session, summarizerClient, tracer, learningRecorder, adversaryJudge, onApprovalRequired, runLog } = deps;
+  // Governed working state: protected paths (task contract + config) are always
+  // enforced; with inject on, the state is rendered into every prompt and the
+  // model can update it through the state_update tool.
+  const workingState = new WorkingStateStore({ protectedPaths: [...(config.taskContract?.blocked_paths ?? []), ...(config.protectedPaths ?? [])] });
+  const injectState = config.workingState?.inject === true;
+  const tools = injectState ? [...deps.tools, createStateUpdateTool(workingState)] : deps.tools;
+  let loggedStateRevision = workingState.revision;
+  const logStateIfChanged = (step?: RunStep): void => {
+    if (workingState.revision === loggedStateRevision) return;
+    loggedStateRevision = workingState.revision;
+    runLog?.append('state', { state: workingState.state }, step);
+  };
+  const FILE_PATH_ARGS: Record<string, string[]> = { file_write: ['path'], file_edit: ['path'], file_delete: ['path'], file_move: ['from', 'to'], document_export: ['path'] };
+  const protectedHit = (call: ToolCall): string | null => {
+    for (const arg of FILE_PATH_ARGS[call.name] ?? []) {
+      const target = resolveToolMutationTarget(call.name, call.input?.[arg]);
+      const match = target ? workingState.protectedMatch(target, getProjectRoot()) : null;
+      if (match) return match;
+    }
+    if ((call.name === 'bash' || call.name === 'docker_exec') && typeof call.input?.command === 'string') {
+      return shellTouchesProtected(call.input.command, workingState);
+    }
+    return null;
+  };
   // Step allocation is shared by the run log and the side-effect recorder so a
   // file change can be rolled back to the end of the step that preceded it.
   let localStepSeq = 0;
@@ -212,7 +238,7 @@ async function* queryLoopCore(
     : undefined;
   const allToolSchemas = tools.map(toolToSchema);
   const modelPlan = config.modelPlan;
-  const plannedToolNames = modelPlan?.toolNames ? new Set(modelPlan.toolNames) : null;
+  const plannedToolNames = modelPlan?.toolNames ? new Set([...modelPlan.toolNames, ...(injectState ? ['state_update'] : [])]) : null;
   const ollamaTools = plannedToolNames ? allToolSchemas.filter((schema) => plannedToolNames.has(schema.function.name)) : allToolSchemas;
   // Models without reliable native tool calling get tools described in the
   // system prompt instead (compiled by models/adapter.ts) and reply with JSON.
@@ -376,6 +402,12 @@ async function* queryLoopCore(
 
     if (config.context?.enabled !== false) {
       const compactionConfig = { ...DEFAULT_COMPACTION_CONFIG, ...config.context };
+      // Budget allocator: the injected working state is never compacted, so the
+      // transcript gets what is left after it.
+      if (injectState && !workingState.isEmpty) {
+        const stateTokens = estimateTokenCount([{ role: 'system', content: workingState.render() } as Message]);
+        compactionConfig.maxTokens = Math.max(1024, compactionConfig.maxTokens - stateTokens);
+      }
       const before = estimateTokenCount(messages);
       const compactionSpan = tracer?.startSpan('context.compaction', { beforeTokens: before, maxTokens: compactionConfig.maxTokens });
       const compacted = await compactIfNeeded(messages, compactionConfig, summarizerClient ?? client);
@@ -467,11 +499,13 @@ async function* queryLoopCore(
         if (trimmed > 0) runLog?.recordCompaction(resolveLoopHardeningEnabled() ? sanitizeMessages(messages) : messages, 'scaffold-narrow', { trimmed });
       }
       runLog?.syncMessages(outboundMessages);
-      runLog?.append('model_request', { turn, model: config.model, messageCount: outboundMessages.length, tools: chatTools.map((schema) => schema.function?.name), ...(modelPlan ? { toolMode: modelPlan.toolMode } : {}), ...(chatOptions ? { format: chatOptions.format } : {}) }, currentTurnStep);
+      const renderedState = injectState ? workingState.render() : '';
+      const requestMessages = renderedState ? injectWorkingState(outboundMessages, renderedState) : outboundMessages;
+      runLog?.append('model_request', { turn, model: config.model, messageCount: outboundMessages.length, tools: chatTools.map((schema) => schema.function?.name), ...(modelPlan ? { toolMode: modelPlan.toolMode } : {}), ...(chatOptions ? { format: chatOptions.format } : {}), ...(renderedState ? { workingState: renderedState } : {}) }, currentTurnStep);
       const modelCallStarted = Date.now();
       const chatPromise = chatOptions
-        ? client.chat(outboundMessages, chatTools, abortSignal, chatOptions)
-        : client.chat(outboundMessages, chatTools, abortSignal);
+        ? client.chat(requestMessages, chatTools, abortSignal, chatOptions)
+        : client.chat(requestMessages, chatTools, abortSignal);
       const result = inactivityMs > 0
         ? await withTimeout(inactivityMs, chatPromise)
         : await chatPromise;
@@ -583,6 +617,11 @@ async function* queryLoopCore(
       // the plan, not the answer. Accept it once and ask for step 1.
       if (scaffold?.planTurnFirst && !scaffoldPlanAccepted && totalToolCalls === 0 && turn < maxTurns) {
         scaffoldPlanAccepted = true;
+        const planSteps = typeof assistantMessage.content === 'string' ? parsePlanText(assistantMessage.content) : [];
+        if (planSteps.length > 0) {
+          workingState.apply({ plan: planSteps });
+          logStateIfChanged(currentTurnStep);
+        }
         messages.push({ role: 'user', content: PLAN_ACCEPTED_PROMPT } as Message);
         yield { type: 'auto_continue', turn, continuationCount: 0, reason: 'plan recorded; working through it one step at a time' };
         continue;
@@ -855,6 +894,20 @@ async function* queryLoopCore(
     const skippedByScaffold = new Set(skippedToolResults.map((entry) => entry.call));
     for (const call of toolCalls) {
       if (skippedByScaffold.has(call)) continue;
+      const protectedPattern = protectedHit(call);
+      if (protectedPattern) {
+        runLog?.append('verdict', { check: 'protected_path', tool: call.name, pattern: protectedPattern }, stepForResult(call));
+        tracer?.recordEvent('working_state.protected_path_blocked', { tool: call.name, pattern: protectedPattern });
+        skippedToolResults.push({
+          call,
+          result: {
+            success: false,
+            output: `Blocked: this would modify a protected path (${protectedPattern}). Protected paths must never be changed in this task. Leave it as it is and continue another way, or ask the user.`,
+            error: 'protected path',
+          },
+        });
+        continue;
+      }
       const url = normalizeWebToolUrl(call);
       const blockedReason = url ? blockedWebUrls.get(url) : undefined;
       if (blockedReason) {
@@ -906,6 +959,10 @@ async function* queryLoopCore(
     for (const { call, result } of toolResults) sourceLedger.recordSearchResults(call, result);
     for (const entry of toolResults) {
       sourceLedger.recordRead(entry.call, entry.result);
+      if (entry.result.success && (entry.call.name === 'web_read' || entry.call.name === 'web_fetch') && typeof entry.call.input?.url === 'string') {
+        const source = sourceLedger.list().find((item) => entry.call.input.url === item.url || String(entry.call.input.url).startsWith(item.url));
+        workingState.addSource(String(entry.call.input.url), source?.title);
+      }
       const hint = guessedUrlHint(entry.call, entry.result, sourceLedger);
       if (hint) entry.result = { ...entry.result, output: `${entry.result.output ?? ''}\n${hint}` };
     }
@@ -1075,6 +1132,8 @@ async function* queryLoopCore(
         }
       }
     }
+
+    logStateIfChanged(currentTurnStep);
 
     // Heavy scaffolding: name the next step so the model keeps to its plan.
     if (scaffold?.stepPrompt && turn < maxTurns) {

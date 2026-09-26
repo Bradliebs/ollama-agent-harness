@@ -139,6 +139,15 @@ export interface LoopConfig {
    * Unset = no scaffolding changes.
    */
   scaffold?: import('../core/scaffolding').ScaffoldConfig;
+  /**
+   * Governed working state (context/workingState.ts). Protected paths from
+   * protectedPaths and the task contract are always enforced. With
+   * inject: true the state is rendered into every system prompt (never
+   * compacted) and the model gets a state_update tool.
+   */
+  workingState?: { inject?: boolean };
+  /** Extra paths/patterns that tools must never modify (dir/, dir/**, file). */
+  protectedPaths?: string[];
   modelPlan?: {
     toolMode: 'native' | 'json-in-text' | 'constrained-json';
     toolNames?: string[];

@@ -4013,7 +4013,12 @@ describe('web server API validation', () => {
       rebuildSemanticMemory: async () => [],
     });
     const previous = process.env.HARNESS_SCAFFOLD_MODE;
+    const previousState = process.env.HARNESS_WORKING_STATE;
     process.env.HARNESS_SCAFFOLD_MODE = 'heavy';
+    process.env.HARNESS_WORKING_STATE = 'on';
+    const protectedFile = path.join(process.cwd(), '.harness', 'protected-paths.json');
+    await fs.mkdir(path.dirname(protectedFile), { recursive: true });
+    await fs.writeFile(protectedFile, JSON.stringify(['secrets/', '', 42, 'config/prod.json']));
     try {
       await (await request('/api/chat', {
         method: 'POST',
@@ -4023,9 +4028,14 @@ describe('web server API validation', () => {
       expect(captured?.scaffold).toMatchObject({ level: 'heavy', maxToolCallsPerTurn: 1 });
       expect(captured?.modelPlan?.toolNames).toHaveLength(6);
       expect(captured?.modelPlan?.toolNames).toEqual(expect.arrayContaining(['web_search', 'web_read']));
+      expect(captured?.protectedPaths).toEqual(['secrets/', 'config/prod.json']);
+      expect(captured?.workingState).toEqual({ inject: true });
     } finally {
       if (previous === undefined) delete process.env.HARNESS_SCAFFOLD_MODE;
       else process.env.HARNESS_SCAFFOLD_MODE = previous;
+      if (previousState === undefined) delete process.env.HARNESS_WORKING_STATE;
+      else process.env.HARNESS_WORKING_STATE = previousState;
+      await fs.rm(protectedFile, { force: true });
       restore();
     }
   });

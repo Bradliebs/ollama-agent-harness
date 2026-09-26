@@ -125,6 +125,13 @@ No release tag, publication or installer runtime qualification is implied.
   text vanished. Calls are now lifted only when they name a tool offered on
   that request, and never when no tools were offered. Found by the new
   capability probe (glm-5.3 scored 0% on structured output).
+- Add governed working state: protected paths (task-contract blocked paths
+  and .harness/protected-paths.json) are now enforced before file tools
+  and writing shell commands run, instead of only being mentioned in the
+  prompt. HARNESS_WORKING_STATE=on renders a typed state (plan, facts,
+  decisions, open questions, invariants, sources) into every system prompt,
+  outside the compactable transcript, and offers a state_update tool that
+  can only tighten protections. State changes are run-log state events.
 - After these changes full Jest passed 329 suites and 3,841 tests with one
   skipped; the build and script tests (`node --test`) also passed.
 

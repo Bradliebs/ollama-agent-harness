@@ -15,6 +15,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Message } from 'ollama';
 import { recordSwallowed } from '../observability/silentFailureSink';
+import { injectWorkingState } from '../context/workingState';
 
 export type RunEventKind =
   | 'run_start'
@@ -28,6 +29,7 @@ export type RunEventKind =
   | 'route'
   | 'verdict'
   | 'supervisor'
+  | 'state'
   | 'run_end';
 
 export interface RunEvent {
@@ -228,8 +230,14 @@ export function reconstructModelRequests(events: readonly RunEvent[]): Array<{ s
     .filter((event) => event.kind === 'model_request')
     .map((event) => {
       const count = Number(event.data.messageCount);
-      const messages = reconstructMessages(events, event.seq);
-      return { seq: event.seq, stepId: event.stepId, messages: Number.isFinite(count) ? messages.slice(0, count) : messages };
+      const base = reconstructMessages(events, event.seq);
+      const sliced = Number.isFinite(count) ? base.slice(0, count) : base;
+      // Working state is injected into the system prompt at call time, not
+      // stored in the transcript; the request event carries the rendered text.
+      const messages = typeof event.data.workingState === 'string' && event.data.workingState
+        ? injectWorkingState(sliced, event.data.workingState)
+        : sliced;
+      return { seq: event.seq, stepId: event.stepId, messages };
     });
 }
 
