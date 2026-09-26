@@ -45,6 +45,7 @@ import { isCapabilityProfileFresh, listCapabilityProfiles, loadCapabilityProfile
 import { rankToolsByRelevance, resolveScaffoldLevel, scaffoldFor, selectRelevantTools } from '../core/scaffolding';
 import { compileModelRequestPlan } from '../models/adapter';
 import { createModelProfileRouter } from './modelProfileRoutes';
+import { createReplayRouter } from './replayRoutes';
 import type { SideEffectRecorder } from '../persistence/sideEffectRecording';
 import { summarizeTasks } from '../services/taskStore';
 import { createTaskRoutesRouter, type CodexTaskRunner, type CodexTaskRunnerEvent } from './taskRoutes';
@@ -3707,6 +3708,15 @@ app.use(createModelProfileRouter({
   projectDir: PROJECT_DIR,
   createClient: async (model) => webRuntime.createClient(model, ollamaHost, await resolveContextMaxTokens(model)),
   requireAuth: requireEscalationAuth,
+  logger,
+}));
+// Replay recorded runs against other models (deterministic: recorded tool
+// results only, no side effects). The gate for enabling answer-changing layers.
+app.use(createReplayRouter({
+  projectDir: PROJECT_DIR,
+  requireAuth: requireEscalationAuth,
+  createClient: async (model) => webRuntime.createClient(model, ollamaHost, await resolveContextMaxTokens(model)),
+  getSchemaTools: () => webRuntime.getTools(),
   logger,
 }));
 app.use(createIdentityRouter({

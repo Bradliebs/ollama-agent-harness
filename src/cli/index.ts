@@ -44,7 +44,8 @@ import {
   createLeadPersist,
 } from '../core/leadAgentFactories';
 import { configureWebReadTool, DEFAULT_WEB_READ_MAX_CHARS, sanitizeWebReadMaxChars } from '../tools/webSearchTool';
-import { getAgentOutputDir, getAllowedExternalPaths, setAllowedExternalPaths } from '../tools/pathResolution';
+import { getAgentOutputDir, getAllowedExternalPaths, getWorkspaceDataRoot, setAllowedExternalPaths } from '../tools/pathResolution';
+import { benchmarkHistory, compareRuns, formatReportTable, loadReplayCase, replayRun } from '../eval/replay';
 
 const CLI_STORED_ENV_KEYS = new Set([
   'OPENAI_API_KEY',
@@ -79,7 +80,7 @@ const CLI_STORED_ENV_KEYS = new Set([
 ]);
 
 interface CliOptions {
-  command?: 'doctor' | 'mycelium' | 'tui' | 'simulate' | 'probe';
+  command?: 'doctor' | 'mycelium' | 'tui' | 'simulate' | 'probe' | 'replay' | 'benchmark-history';
   myceliumArgs?: string[];
   /** Daemon base URL for the `tui` command. */
   tuiBaseUrl?: string;
@@ -95,6 +96,13 @@ interface CliOptions {
   simulatePersist?: boolean;
   probeMaxContextTokens?: number;
   probeSamples?: number;
+  replayRunId?: string;
+  replayLastN?: number;
+  replayModels?: string[];
+  replayLive?: boolean;
+  json?: boolean;
+  benchmarkModels?: string[];
+  benchmarkLastN?: number;
   model: string;
   host: string;
   permissionMode: PermissionMode;
@@ -147,6 +155,13 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
   } else if (command?.name === 'simulate') {
     options.command = 'simulate';
     args = args.slice(1);
+  } else if (command?.name === 'replay') {
+    options.command = 'replay';
+    if (args[1] && !args[1].startsWith('-')) options.replayRunId = args[1];
+    args = args.slice(args[1] && !args[1].startsWith('-') ? 2 : 1);
+  } else if (command?.name === 'benchmark-history') {
+    options.command = 'benchmark-history';
+    args = args.slice(1);
   } else if (command?.name === 'probe') {
     options.command = 'probe';
     if (args[1] && !args[1].startsWith('-')) options.model = args[1];
@@ -158,6 +173,10 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
       case '--model':
       case '-m':
         options.model = args[++i];
+        if (options.command === 'replay') {
+          options.replayModels = options.replayModels ?? [];
+          options.replayModels.push(options.model);
+        }
         break;
       case '--host':
         options.host = args[++i];
@@ -250,6 +269,23 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
       case '--persist':
         options.simulatePersist = true;
         break;
+      case '--last': {
+        const n = parseInt(args[++i], 10);
+        if (Number.isFinite(n) && n > 0) {
+          if (options.command === 'replay') options.replayLastN = n;
+          if (options.command === 'benchmark-history') options.benchmarkLastN = n;
+        }
+        break;
+      }
+      case '--models':
+        options.benchmarkModels = args[++i].split(',').map((model) => model.trim()).filter(Boolean);
+        break;
+      case '--live':
+        options.replayLive = true;
+        break;
+      case '--json':
+        options.json = true;
+        break;
       case '--max-context': {
         const tokens = parseInt(args[++i], 10);
         if (Number.isFinite(tokens) && tokens > 0) options.probeMaxContextTokens = tokens;
@@ -272,6 +308,26 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
 
 function printHelp(): void {
   console.log(formatCliHelp(OUTPUT_VALIDATION_PROFILES.map((profile) => profile.profile)));
+}
+
+function formatBenchmarkHistoryTable(report: Awaited<ReturnType<typeof benchmarkHistory>>): string {
+  const rows = report.aggregates.map((row) => [
+    row.model,
+    String(row.runs),
+    `${Math.round(row.completionRate * 100)}%`,
+    row.avgTurns.toFixed(1),
+    row.avgTokens.toFixed(0),
+    `$${row.avgCost.toFixed(6)}`,
+    `${Math.round(row.avgDurationMs)}ms`,
+    `${Math.round(row.stuckRate * 100)}%`,
+    row.avgCitedSources.toFixed(1),
+  ]);
+  const headers = ['model', 'runs', 'complete', 'turns', 'tokens', 'cost', 'duration', 'stuck', 'urls'];
+  const widths = headers.map((header, index) => Math.max(header.length, ...rows.map((row) => row[index]?.length ?? 0)));
+  const render = (row: string[]): string => row.map((cell, index) => cell.padEnd(widths[index])).join('  ');
+  const lines = [render(headers), render(widths.map((width) => '-'.repeat(width))), ...rows.map(render)];
+  if (report.skippedRunIds.length > 0) lines.push(`Skipped incomplete runs: ${report.skippedRunIds.join(', ')}`);
+  return lines.join('\n');
 }
 
 /**
@@ -456,8 +512,68 @@ export async function main(): Promise<void> {
     return;
   }
 
-  const projectDir = process.cwd();
+  const projectDir = getWorkspaceDataRoot();
   await loadHeadlessRuntimeSettings(projectDir);
+
+  if (options.command === 'replay') {
+    const models = options.replayModels ?? [];
+    if (models.length === 0) {
+      console.error('replay requires at least one --model.');
+      process.exitCode = 1;
+      return;
+    }
+    if (!options.replayRunId && options.replayLastN) {
+      const report = await benchmarkHistory(projectDir, {
+        models,
+        lastN: options.replayLastN,
+        createClient: (model) => createChatClient({ backend: options.backend, model, host: options.host, autoFallback: true, projectDir }),
+        schemaTools: getBuiltinTools(),
+      });
+      if (options.json) console.log(JSON.stringify(report, null, 2));
+      else console.log(formatBenchmarkHistoryTable(report));
+      return;
+    }
+    if (!options.replayRunId) {
+      console.error('replay requires a run id or --last N.');
+      process.exitCode = 1;
+      return;
+    }
+    const replayCase = await loadReplayCase(projectDir, options.replayRunId);
+    const replays = [];
+    for (const model of models) {
+      const client = createChatClient({ backend: options.backend, model, host: options.host, autoFallback: true, projectDir });
+      const tools = options.replayLive ? getBuiltinTools().filter((tool) => tool.isReadOnly === true) : undefined;
+      replays.push((await replayRun(replayCase, {
+        client,
+        model,
+        mode: options.replayLive ? 'live' : 'deterministic',
+        tools,
+        schemaTools: getBuiltinTools(),
+      })).metrics);
+    }
+    const report = compareRuns(replayCase.originalMetrics, replays);
+    if (options.json) console.log(JSON.stringify(report, null, 2));
+    else console.log(formatReportTable(report));
+    return;
+  }
+
+  if (options.command === 'benchmark-history') {
+    const models = options.benchmarkModels ?? [];
+    if (models.length === 0) {
+      console.error('benchmark-history requires --models a,b.');
+      process.exitCode = 1;
+      return;
+    }
+    const report = await benchmarkHistory(projectDir, {
+      models,
+      lastN: options.benchmarkLastN ?? 10,
+      createClient: (model) => createChatClient({ backend: options.backend, model, host: options.host, autoFallback: true, projectDir }),
+      schemaTools: getBuiltinTools(),
+    });
+    if (options.json) console.log(JSON.stringify(report, null, 2));
+    else console.log(formatBenchmarkHistoryTable(report));
+    return;
+  }
 
   if (options.command === 'probe') {
     const client = createChatClient({

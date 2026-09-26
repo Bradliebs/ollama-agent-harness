@@ -112,6 +112,13 @@ No release tag, publication or installer runtime qualification is implied.
   turn, one tool per step, next-step prompts, older tool results trimmed and
   logged as a compaction). profile follows the model's probe; measured
   profiles now override the name-based tool-use heuristics.
+- Add history replay and benchmarking: harness replay <runId|--last N>
+  --model <m>, harness benchmark-history --models a,b, and /api/replays.
+  Deterministic replay rebuilds the original prompt from the run log and
+  serves recorded tool results through stubs that borrow the real tools'
+  schemas, so only the model varies and no side effects run; replays are
+  themselves recorded as eplay-* run logs. Reports compare completion,
+  turns, tokens, cost, duration, cited sources and stuck runs.
 - After these changes full Jest passed 329 suites and 3,841 tests with one
   skipped; the build and script tests (`node --test`) also passed.
 

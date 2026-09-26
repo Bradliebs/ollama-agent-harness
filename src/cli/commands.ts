@@ -98,6 +98,29 @@ export const CLI_COMMAND_REGISTRY: CliCommandDef[] = [
     ],
   },
   {
+    name: 'replay',
+    description: 'Replay a recorded chat run deterministically against one or more models',
+    aliases: [],
+    usage: 'harness replay <runId|--last N> --model <name> [--model <name>] [--live] [--json]',
+    options: [
+      { flags: ['--last'], valueName: '<n>', description: 'Replay/benchmark the last N eligible chat runs' },
+      { flags: ['--model'], valueName: '<name>', description: 'Model to replay with (repeatable)' },
+      { flags: ['--live'], description: 'Use live read-only tools instead of recorded deterministic tool results' },
+      { flags: ['--json'], description: 'Print JSON instead of a text table' },
+    ],
+  },
+  {
+    name: 'benchmark-history',
+    description: 'Replay recent completed tool-using chat history across model candidates',
+    aliases: [],
+    usage: 'harness benchmark-history --models a,b [--last 10] [--json]',
+    options: [
+      { flags: ['--models'], valueName: '<a,b>', description: 'Comma-separated model list' },
+      { flags: ['--last'], valueName: '<n>', description: 'Number of eligible chat runs to replay (default: 10)' },
+      { flags: ['--json'], description: 'Print JSON instead of an aggregate table' },
+    ],
+  },
+  {
     name: 'probe',
     description: 'Probe a model and save a capability profile',
     aliases: [],
