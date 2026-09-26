@@ -42,6 +42,7 @@ not yet a new numbered release.
 * **Persona and turn status in the UI** — the top bar shows the assistant's name from `SOUL.md`, with a badge when the persona is missing or a proposal needs review. Failed, stopped, interrupted and empty replies get a **Retry** strip.
 * **Workspace safety** — tests and smoke scripts no longer write into a real workspace, and [`scripts/repair-workspace.js`](scripts/repair-workspace.js) cleans up one that earlier runs polluted. See [Repairing a workspace](#repairing-a-workspace).
 * **One launcher** — `start.bat` with `background`, `stop`, `tray` or `watchdog`.
+* **Run logs and per-step undo** — every chat run is recorded in `.harness/runs/<runId>.jsonl`: message deltas, raw model responses, tool calls and full results, and compaction snapshots, so the exact prompt of any turn can be rebuilt. File changes made through the file tools are tagged with their step and can be rolled back to the end of any step (`GET /api/run-logs`, `POST /api/run-logs/<runId>/revert` with `toStepSeq`). Set `HARNESS_RUN_GIT_CHECKPOINT=1` to also snapshot the whole workspace per run (covers changes made via `bash`); `HARNESS_RUN_LOG=0` turns recording off.
 
 ### What's new in v0.6.5
 
@@ -556,6 +557,8 @@ All runtime state goes under `.harness/` in your project directory:
 | `.harness/identity/` | `SOUL.md` persona, `USER.md` notes, proposals and history snapshots |
 | `.harness/jarvis/knowledge.jsonl` | Personal knowledge graph |
 | `.harness/snapshots/` | Backups, including `repair-<timestamp>/` from the repair script |
+| `.harness/runs/` | Per-run event logs (newest 500 runs, 300 MB cap) |
+| `.harness/side-effects.jsonl` | File changes and notifications per run and step, with how to undo them |
 | `.harness/telegram-chat-ids.json` | Telegram notification recipients |
 
 ## Releasing

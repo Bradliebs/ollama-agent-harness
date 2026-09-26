@@ -38,6 +38,10 @@ import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { assertTestSafeProjectDir } from '../persistence/testWorkspaceGuard';
 import { writeSettingsFile } from './settingsFile';
 import { resolveProjectDir } from './projectDir';
+import { RunLog, newRunId, pruneRuns } from '../persistence/runLog';
+import { createRunRouter } from './runRoutes';
+import { createGitCheckpoint } from '../persistence/gitCheckpoint';
+import type { SideEffectRecorder } from '../persistence/sideEffectRecording';
 import { summarizeTasks } from '../services/taskStore';
 import { createTaskRoutesRouter, type CodexTaskRunner, type CodexTaskRunnerEvent } from './taskRoutes';
 import { createPromiseRouter } from './promiseRoutes';
@@ -96,7 +100,7 @@ import { createOutputValidationRouter } from './outputValidationRoutes';
 import { createCapabilityRouter } from './capabilityRoutes';
 import { createJarvisRouter } from './jarvisRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
-import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
+import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, resolveToolMutationTarget, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { setSkillsDir, setLowerSkillTiers } from '../tools/skillTools';
 import { setImportSkillsDir } from '../tools/skillImportTool';
@@ -228,6 +232,26 @@ app.use(express.static(path.join(__dirname, '..', '..', 'ui'), {
 // Workspace resolution lives in ./projectDir (HARNESS_PROJECT_DIR, else never the harness checkout).
 const PROJECT_DIR = assertTestSafeProjectDir(resolveProjectDir());
 setProjectRoot(PROJECT_DIR);
+
+/**
+ * Event-sourced run recording (on by default; HARNESS_RUN_LOG=0 disables).
+ * Returns the QueryLoopDeps fields that make a run reconstructable and its
+ * file changes reversible per step. Old runs are pruned every 25 runs.
+ */
+let runsSincePrune = 0;
+function startRunRecording(kind: string): { runLog?: RunLog; sideEffectRecorder?: SideEffectRecorder } {
+  if (process.env.HARNESS_RUN_LOG === '0') return {};
+  const runLog = new RunLog(PROJECT_DIR, newRunId(kind));
+  runsSincePrune += 1;
+  if (runsSincePrune >= 25) {
+    runsSincePrune = 0;
+    void pruneRuns(PROJECT_DIR).catch((err) => recordSwallowed('runLog.prune', err));
+  }
+  return {
+    runLog,
+    sideEffectRecorder: { projectDir: PROJECT_DIR, runId: runLog.runId, resolveTarget: resolveToolMutationTarget },
+  };
+}
 // Surface the resolved project dir at startup. A silently-moved home is what
 // makes the harness appear to "lose" its memory/identity, so make it visible.
 if (process.env.NODE_ENV !== 'test' && !process.env.JEST_WORKER_ID) {
@@ -3389,6 +3413,7 @@ const runCodexTaskWithConductor: CodexTaskRunner = async ({ task, contract, prom
     tracer: runtimeTracer,
     learningRecorder,
     adversaryJudge: createLlmAdversaryJudge(client),
+    ...startRunRecording('task'),
   };
 
   const outcome = await runConductor({
@@ -3671,6 +3696,7 @@ app.use(createSquadRouter({ projectDir: PROJECT_DIR }));
 // ─── Identity ───────────────────────────────────────────────────────
 // SOUL.md / USER.md / structured.json under .harness/identity/. Routes
 // extracted to ./identityRoutes.ts so server.ts holds wiring, not handlers.
+app.use(createRunRouter({ projectDir: PROJECT_DIR, requireAuth: requireEscalationAuth, logger }));
 app.use(createIdentityRouter({
   projectDir: PROJECT_DIR,
   requireAuth: requireEscalationAuth,
@@ -5472,6 +5498,7 @@ CONTEXT HYGIENE (critical for long tasks):
     // client; only invoked when HARNESS_INSPECTOR_ADVERSARY=1 and
     // <project>/.harness/adversary.md exists.
     adversaryJudge: createLlmAdversaryJudge(client),
+    ...startRunRecording('chat'),
   };
 
   const messages: Message[] = [];
@@ -5540,6 +5567,13 @@ CONTEXT HYGIENE (critical for long tasks):
         source: activeOutputValidation.selectionSource,
         reason: activeOutputValidation.selectionReason,
       })}\n\n`);
+    }
+    if (deps.runLog) {
+      // Opt-in whole-workspace snapshot so changes made via bash can be undone too.
+      if (process.env.HARNESS_RUN_GIT_CHECKPOINT === '1') {
+        await createGitCheckpoint(PROJECT_DIR, deps.runLog.runId).catch((err) => recordSwallowed('runLog.gitCheckpoint', err));
+      }
+      res.write(`data: ${JSON.stringify({ type: 'run', runId: deps.runLog.runId })}\n\n`);
     }
     const seenFallbackKeys = new Set<string>();
     let suppressedFallbacks = 0;
@@ -6697,6 +6731,7 @@ async function runBriefingChat(prompt: string): Promise<string> {
     client,
     tools: webTools,
     permissionCheck: async () => ({ allowed: true }),
+    ...startRunRecording('background'),
   };
   let text = '';
   for await (const event of webRuntime.runQueryLoop(config, deps, [{ role: 'user', content: prompt }])) {
@@ -6723,6 +6758,7 @@ async function runReplayQuery(candidate: ReplayCandidate): Promise<GovernedAnswe
     client,
     tools: webTools,
     permissionCheck: async () => ({ allowed: true }),
+    ...startRunRecording('background'),
   };
   const prompt = `Re-investigate and verify this claim, correcting it if it is wrong:\n\n${candidate.content}`;
   let governed: GovernedAnswer | null = null;

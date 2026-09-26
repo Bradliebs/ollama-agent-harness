@@ -74,6 +74,15 @@ No release tag, publication or installer runtime qualification is implied.
 - Hide inbox entries for runs of automation jobs that no longer exist.
 - Extend the repair script to clear connector secrets and settings saved by the
   server tests (a fake Discord token failed to log in on every start).
+- Record every web chat, task-mode and background run as an event-sourced run
+  log (.harness/runs/<runId>.jsonl): message deltas and compaction snapshots
+  (the prompt of any turn can be rebuilt exactly), raw model responses, tool
+  calls with full results, and a run_end on every exit path. File changes are
+  captured at the path each tool really writes (including redirects), now also
+  for ile_move, and are tagged with their step so a run can be rolled back
+  to the end of any step via /api/run-logs/<runId>/revert. Optional git
+  checkpoints (HARNESS_RUN_GIT_CHECKPOINT=1) snapshot the whole workspace
+  through a temporary index without touching HEAD or the user's index.
 - After these changes full Jest passed 329 suites and 3,841 tests with one
   skipped; the build and script tests (`node --test`) also passed.
 

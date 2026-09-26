@@ -17,6 +17,7 @@ import { rebuildSessionSearchIndexWithMetadata } from '../persistence/sessionSea
 import { writeModelCatalogCache } from '../models/modelCatalog';
 import { OllamaClient, drainOllamaChatRetryEvents } from '../core/ollamaClient';
 import type { LoopConfig, LoopEvent, SessionEvent } from '../types';
+import type { QueryLoopDeps } from '../core/queryLoop';
 import { cleanupHarnessArtifacts, diffHarnessRuntimeState, restoreHarnessRuntimeState, seedHarnessAutomationJobsForTest, snapshotHarnessRuntimeState, type HarnessDocumentArtifact, type HarnessRuntimeStateSnapshot } from '../testSupport/harnessCleanup.test-support';
 
 jest.setTimeout(30_000);
@@ -3898,6 +3899,59 @@ describe('web server API validation', () => {
       const settings = await request('/api/settings');
       await expect(settings.json()).resolves.toMatchObject({ context: { configuredMaxTokens: 1024, detectedMaxTokens: 32768, effectiveMaxTokens: 1024 } });
     } finally {
+      restore();
+    }
+  });
+
+  it('records each web chat run in a run log that shares its id with the side-effect recorder', async () => {
+    const seen: QueryLoopDeps[] = [];
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('run-log-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (_config, deps): AsyncGenerator<LoopEvent> {
+        seen.push(deps);
+        yield { type: 'text', content: 'recorded' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+    const previous = process.env.HARNESS_RUN_LOG;
+    try {
+      const body = await (await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'hello', model: 'test-model' }),
+      })).text();
+      const runId = seen[0].runLog?.runId;
+      expect(runId).toMatch(/^chat-\d{17}-[a-z0-9]+$/);
+      expect(seen[0].sideEffectRecorder).toMatchObject({ runId, projectDir: process.cwd() });
+      expect(typeof seen[0].sideEffectRecorder?.resolveTarget).toBe('function');
+      expect(body).toContain(`data: {"type":"run","runId":"${runId}"}`);
+
+      process.env.HARNESS_RUN_LOG = '0';
+      await (await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'hello again', model: 'test-model' }),
+      })).text();
+      expect(seen[1].runLog).toBeUndefined();
+      expect(seen[1].sideEffectRecorder).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.HARNESS_RUN_LOG;
+      else process.env.HARNESS_RUN_LOG = previous;
       restore();
     }
   });
