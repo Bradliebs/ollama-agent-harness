@@ -3903,6 +3903,60 @@ describe('web server API validation', () => {
     }
   });
 
+  it('caps the chat context budget at a fresh capability profile and serves model profiles', async () => {
+    const createClient = jest.fn(() => ({}) as never);
+    const profileDir = path.join(process.cwd(), '.harness', 'model-profiles');
+    await fs.mkdir(profileDir, { recursive: true });
+    await fs.writeFile(path.join(profileDir, 'profiled-model.json'), JSON.stringify({
+      model: 'profiled-model',
+      profileVersion: 1,
+      probedAt: new Date().toISOString(),
+      scores: { toolCalling: 1, jsonInTextRate: 0, structuredPlain: 1, structuredConstrained: 1, instructionFollowing: 1, planCoherence: 1 },
+      usableContextTokens: 6000,
+      detectedContextTokens: 32768,
+      avgLatencyMs: 100,
+      tokensSpent: 1000,
+      recommended: { toolMode: 'native', maxToolsPerStep: 8, promptTier: 'minimal', scaffoldLevel: 'light', contextBudgetTokens: 5100 },
+    }));
+    const restore = setWebRuntimeOverrides({
+      createClient,
+      getModelContextWindow: jest.fn().mockResolvedValue(32768),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('profile-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (): AsyncGenerator<LoopEvent> {
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+    try {
+      await request('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contextMaxTokens: 0 }) });
+      await (await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'hello', model: 'profiled-model' }),
+      })).text();
+      expect(createClient).toHaveBeenCalledWith('profiled-model', expect.any(String), 5100);
+
+      const list = await (await request('/api/model-profiles')).json() as { profiles: Array<{ model: string }> };
+      expect(list.profiles.map((profile) => profile.model)).toContain('profiled-model');
+    } finally {
+      restore();
+      await fs.rm(path.join(profileDir, 'profiled-model.json'), { force: true });
+    }
+  });
+
   it('records each web chat run in a run log that shares its id with the side-effect recorder', async () => {
     const seen: QueryLoopDeps[] = [];
     const restore = setWebRuntimeOverrides({

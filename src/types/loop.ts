@@ -126,6 +126,17 @@ export interface LoopConfig {
    */
   supervisor?: Partial<import('../core/supervisor').SupervisorConfig> | false;
   /**
+   * Per-model request plan compiled from the model's capability profile
+   * (models/adapter.ts). Limits the tools offered per step and, for models
+   * without reliable native tool calling, switches to JSON tool calls in text
+   * (optionally schema-constrained) that the loop lifts back into tool calls.
+   */
+  modelPlan?: {
+    toolMode: 'native' | 'json-in-text' | 'constrained-json';
+    toolNames?: string[];
+    format?: 'json' | Record<string, unknown>;
+  };
+  /**
    * Terminate the loop early when one tool fails repeatedly in the same run.
    * This prevents slow, opaque retries where the model keeps calling a broken
    * tool instead of telling the user what went wrong. Set to 0 to disable.

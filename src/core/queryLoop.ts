@@ -23,6 +23,7 @@ import type { SideEffectRecorder } from '../persistence/sideEffectRecording';
 import type { RunLog } from '../persistence/runLog';
 import { RunSupervisor, describeAttempt, resolveSupervisorConfig, type BudgetStatus } from './supervisor';
 import { CostTracker } from '../eval/costTracker';
+import { parseConstrainedToolCall } from '../models/adapter';
 import { validateOutput, withOutputValidationInstructions, detectSelfCertification } from './outputValidation';
 import type { OutputValidationProfile } from './outputValidation';
 import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
@@ -207,7 +208,15 @@ async function* queryLoopCore(
         allowNewFiles: config.readBeforeWrite.allowNewFiles,
       })
     : undefined;
-  const ollamaTools = tools.map(toolToSchema);
+  const allToolSchemas = tools.map(toolToSchema);
+  const modelPlan = config.modelPlan;
+  const plannedToolNames = modelPlan?.toolNames ? new Set(modelPlan.toolNames) : null;
+  const ollamaTools = plannedToolNames ? allToolSchemas.filter((schema) => plannedToolNames.has(schema.function.name)) : allToolSchemas;
+  // Models without reliable native tool calling get tools described in the
+  // system prompt instead (compiled by models/adapter.ts) and reply with JSON.
+  const promptToolMode = modelPlan && modelPlan.toolMode !== 'native';
+  const chatTools = promptToolMode ? [] : ollamaTools;
+  const chatOptions = promptToolMode && modelPlan?.format ? { format: modelPlan.format } : undefined;
 
   const validationProfile = config.outputValidation?.profile ?? 'oracle-prime';
   const customValidationProfiles = config.outputValidation?.customProfiles ?? [];
@@ -431,13 +440,22 @@ async function* queryLoopCore(
       const inactivityMs = resolveInactivityTimeoutMs(config.inactivityTimeoutMs);
       currentTurnStep = allocateStep(`t${turn}`);
       runLog?.syncMessages(outboundMessages);
-      runLog?.append('model_request', { turn, model: config.model, messageCount: outboundMessages.length, tools: ollamaTools.map((schema) => schema.function?.name) }, currentTurnStep);
+      runLog?.append('model_request', { turn, model: config.model, messageCount: outboundMessages.length, tools: chatTools.map((schema) => schema.function?.name), ...(modelPlan ? { toolMode: modelPlan.toolMode } : {}), ...(chatOptions ? { format: chatOptions.format } : {}) }, currentTurnStep);
       const modelCallStarted = Date.now();
-      const chatPromise = client.chat(outboundMessages, ollamaTools, abortSignal);
+      const chatPromise = chatOptions
+        ? client.chat(outboundMessages, chatTools, abortSignal, chatOptions)
+        : client.chat(outboundMessages, chatTools, abortSignal);
       const result = inactivityMs > 0
         ? await withTimeout(inactivityMs, chatPromise)
         : await chatPromise;
       assistantMessage = result.message;
+      if (promptToolMode && !assistantMessage.tool_calls?.length && typeof assistantMessage.content === 'string') {
+        const lifted = parseConstrainedToolCall(assistantMessage.content);
+        if (lifted?.length) {
+          assistantMessage = { ...assistantMessage, content: '', tool_calls: lifted };
+          tracer?.recordEvent('adapter.tool_call_lifted', { model: config.model, toolMode: modelPlan?.toolMode, calls: lifted.length });
+        }
+      }
       runLog?.append('model_response', { turn, model: config.model, message: assistantMessage, usage: result.usage ?? null, durationMs: Date.now() - modelCallStarted }, currentTurnStep);
       if (supervisor && result.usage) supervisor.recordUsage(config.model, result.usage.promptTokens ?? 0, result.usage.completionTokens ?? 0);
       modelSpan?.end('ok', {

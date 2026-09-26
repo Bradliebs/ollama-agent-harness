@@ -92,6 +92,14 @@ No release tag, publication or installer runtime qualification is implied.
 - Turn loop hardening on by default (loop-guard nudges, tool-result injection
   tripwire, iteration refunds, surrogate sanitising); HARNESS_LOOP_HARDENING=0
   restores the old behaviour.
+- Add model capability profiles: a probe suite (tool calling, structured output
+  plain vs schema-constrained, instruction following, usable context, plan
+  coherence, latency) run via harness probe <model> or
+  /api/model-profiles/<model>/probe, saved per model with derived
+  recommendations. Chat clients accept an optional ormat (Ollama ormat,
+  OpenAI esponse_format). A fresh profile caps the context budget at the
+  measured usable window; HARNESS_ADAPTER_MODE=profile also compiles a
+  per-model plan (tool subset, JSON tool calls lifted back into tool calls).
 - After these changes full Jest passed 329 suites and 3,841 tests with one
   skipped; the build and script tests (`node --test`) also passed.
 

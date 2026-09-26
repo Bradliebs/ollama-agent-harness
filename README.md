@@ -44,6 +44,7 @@ not yet a new numbered release.
 * **One launcher** — `start.bat` with `background`, `stop`, `tray` or `watchdog`.
 * **Run logs and per-step undo** — every chat run is recorded in `.harness/runs/<runId>.jsonl`: message deltas, raw model responses, tool calls and full results, and compaction snapshots, so the exact prompt of any turn can be rebuilt. File changes made through the file tools are tagged with their step and can be rolled back to the end of any step (`GET /api/run-logs`, `POST /api/run-logs/<runId>/revert` with `toStepSeq`). Set `HARNESS_RUN_GIT_CHECKPOINT=1` to also snapshot the whole workspace per run (covers changes made via `bash`); `HARNESS_RUN_LOG=0` turns recording off.
 * **Run supervisor** — on by default. Tool steps that stop producing anything new (no new sources, files, results, verifier passes or plan steps) trigger a progress check, then a strategy change, and finally Moss stops and asks you what is blocking instead of looping. Per-run budgets stop a run into a summary: 1.5M tokens by default (`HARNESS_RUN_MAX_TOKENS`), plus an optional USD cap for priced models (`HARNESS_RUN_MAX_USD`). Loop-guard nudges and the tool-result injection tripwire are now on by default too. `HARNESS_SUPERVISOR=0` and `HARNESS_LOOP_HARDENING=0` turn them off.
+* **Model capability profiles** — `harness probe <model>` (or `POST /api/model-profiles/<model>/probe`) measures a model's native tool-calling reliability, JSON validity with and without schema-constrained output, instruction following, usable context (needle retrieval) and multi-step plan coherence, then saves `.harness/model-profiles/<model>.json` with recommendations. A fresh profile caps the context budget at the measured usable window. `HARNESS_ADAPTER_MODE=profile` additionally limits tools per step and switches weak tool-callers to JSON tool calls (schema-constrained where supported); it stays opt-in until replay evaluation shows it helps. Probes only run when asked, because they spend tokens.
 
 ### What's new in v0.6.5
 
@@ -559,6 +560,7 @@ All runtime state goes under `.harness/` in your project directory:
 | `.harness/jarvis/knowledge.jsonl` | Personal knowledge graph |
 | `.harness/snapshots/` | Backups, including `repair-<timestamp>/` from the repair script |
 | `.harness/runs/` | Per-run event logs (newest 500 runs, 300 MB cap) |
+| `.harness/model-profiles/` | Capability profiles from `harness probe` |
 | `.harness/side-effects.jsonl` | File changes and notifications per run and step, with how to undo them |
 | `.harness/telegram-chat-ids.json` | Telegram notification recipients |
 

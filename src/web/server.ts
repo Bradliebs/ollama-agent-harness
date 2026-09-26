@@ -41,6 +41,9 @@ import { resolveProjectDir } from './projectDir';
 import { RunLog, newRunId, pruneRuns } from '../persistence/runLog';
 import { createRunRouter } from './runRoutes';
 import { createGitCheckpoint } from '../persistence/gitCheckpoint';
+import { isCapabilityProfileFresh, loadCapabilityProfile } from '../models/capabilityProfile';
+import { compileModelRequestPlan } from '../models/adapter';
+import { createModelProfileRouter } from './modelProfileRoutes';
 import type { SideEffectRecorder } from '../persistence/sideEffectRecording';
 import { summarizeTasks } from '../services/taskStore';
 import { createTaskRoutesRouter, type CodexTaskRunner, type CodexTaskRunnerEvent } from './taskRoutes';
@@ -3697,6 +3700,13 @@ app.use(createSquadRouter({ projectDir: PROJECT_DIR }));
 // SOUL.md / USER.md / structured.json under .harness/identity/. Routes
 // extracted to ./identityRoutes.ts so server.ts holds wiring, not handlers.
 app.use(createRunRouter({ projectDir: PROJECT_DIR, requireAuth: requireEscalationAuth, logger }));
+// Capability probes cost tokens on cloud models, so they only run on request.
+app.use(createModelProfileRouter({
+  projectDir: PROJECT_DIR,
+  createClient: async (model) => webRuntime.createClient(model, ollamaHost, await resolveContextMaxTokens(model)),
+  requireAuth: requireEscalationAuth,
+  logger,
+}));
 app.use(createIdentityRouter({
   projectDir: PROJECT_DIR,
   requireAuth: requireEscalationAuth,
@@ -5396,6 +5406,19 @@ CONTEXT HYGIENE (critical for long tasks):
     autoContinue: true,
     taskType: requiresExecutionProof ? chatTaskContract.intent_type : myceliumClassification?.type,
   };
+
+  // Capability-profile adapter (answer-changing, so opt-in until replay evals
+  // approve it): fewer tools per step and JSON tool calls for models whose
+  // probes show unreliable native tool calling.
+  if (process.env.HARNESS_ADAPTER_MODE === 'profile') {
+    const capability = await loadCapabilityProfile(activeModel, PROJECT_DIR).catch(() => null);
+    if (capability && isCapabilityProfileFresh(capability)) {
+      const plan = compileModelRequestPlan({ tools, systemPrompt: config.systemPrompt, profile: capability });
+      config.systemPrompt = plan.systemPrompt;
+      config.modelPlan = { toolMode: plan.toolMode, toolNames: plan.tools.map((tool) => tool.name), ...(plan.format ? { format: plan.format } : {}) };
+      logger.info('Adapter', 'Compiled model request plan', { model: activeModel, toolMode: plan.toolMode, tools: plan.tools.length });
+    }
+  }
 
   const keepAlive = setInterval(() => {
     if (!res.writableEnded) res.write(': keepalive\n\n');
@@ -7224,7 +7247,14 @@ async function resolveContextMaxTokens(model: string): Promise<number> {
   // Net effect: users on a cloud model with a 128k window get 128k
   // automatically without having to touch settings, while explicit
   // throttles ("never exceed 1024 tokens for cost reasons") are honoured.
-  return resolveEffectiveContextMaxTokensFromKnown(configured, detected);
+  const effective = resolveEffectiveContextMaxTokensFromKnown(configured, detected);
+  // A probed capability profile knows how much of the window the model can
+  // actually use; never budget beyond that.
+  const capability = await loadCapabilityProfile(model, PROJECT_DIR).catch(() => null);
+  if (capability && isCapabilityProfileFresh(capability) && capability.recommended.contextBudgetTokens > 0) {
+    return Math.min(effective, capability.recommended.contextBudgetTokens);
+  }
+  return effective;
 }
 
 async function ensureSettingsLoaded(): Promise<void> {
