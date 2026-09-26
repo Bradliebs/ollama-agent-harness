@@ -148,8 +148,14 @@ export async function list(projectDir: string): Promise<SnapshotMeta[]> {
       // Skip corrupt metas rather than failing the whole list.
     }
   }
-  metas.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  // Snapshots taken within the same millisecond tie on createdAt; the id's
+  // timestamp (taken first) breaks the tie so the newest still lists first.
+  metas.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || snapshotIdTime(b.id) - snapshotIdTime(a.id));
   return metas;
+}
+
+function snapshotIdTime(id: string): number {
+  return Number(id.split('-')[1]) || 0;
 }
 
 export async function get(projectDir: string, id: string): Promise<SnapshotPayload | null> {
