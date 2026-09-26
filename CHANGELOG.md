@@ -107,6 +107,11 @@ No release tag, publication or installer runtime qualification is implied.
   recipient, URL or command came only from untrusted content needs approval;
   without an approval channel it is denied. Enforced in the dispatcher, and
   recorded as run-log verdicts with the originating source.
+- Add adjustable scaffolding (HARNESS_SCAFFOLD_MODE): light, medium (plan
+  first, relevant tools only, 3 calls per turn) and heavy (plan-only first
+  turn, one tool per step, next-step prompts, older tool results trimmed and
+  logged as a compaction). profile follows the model's probe; measured
+  profiles now override the name-based tool-use heuristics.
 - After these changes full Jest passed 329 suites and 3,841 tests with one
   skipped; the build and script tests (`node --test`) also passed.
 

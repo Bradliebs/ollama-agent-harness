@@ -25,6 +25,7 @@ import { RunSupervisor, describeAttempt, resolveSupervisorConfig, type BudgetSta
 import { CostTracker } from '../eval/costTracker';
 import { parseConstrainedToolCall } from '../models/adapter';
 import { ProvenanceLedger, resolveProvenanceEnabled } from '../safety/provenance';
+import { NEXT_STEP_PROMPT, PLAN_ACCEPTED_PROMPT, SKIPPED_EXTRA_CALL, trimToolResult } from './scaffolding';
 import { validateOutput, withOutputValidationInstructions, detectSelfCertification } from './outputValidation';
 import type { OutputValidationProfile } from './outputValidation';
 import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
@@ -237,8 +238,10 @@ async function* queryLoopCore(
     ? withOutputValidationInstructions(baseSystemPrompt, validationProfile, customValidationProfiles)
     : baseSystemPrompt;
 
+  const scaffold = config.scaffold;
+  let scaffoldPlanAccepted = false;
   const messages: Message[] = [
-    { role: 'system', content: systemPrompt },
+    { role: 'system', content: scaffold?.systemAddendum ? `${systemPrompt}\n\n${scaffold.systemAddendum}` : systemPrompt },
     ...initialMessages,
   ];
   runLog?.startLoop({
@@ -449,6 +452,20 @@ async function* queryLoopCore(
         : messages;
       const inactivityMs = resolveInactivityTimeoutMs(config.inactivityTimeoutMs);
       currentTurnStep = allocateStep(`t${turn}`);
+      // Narrow context for heavy scaffolding: keep only the most recent tool
+      // results in full. Recorded as a compaction so the run log stays exact.
+      if (scaffold && scaffold.keepRecentToolResults > 0) {
+        const toolIndexes = messages.map((m, i) => (m.role === 'tool' ? i : -1)).filter((i) => i >= 0);
+        let trimmed = 0;
+        for (const index of toolIndexes.slice(0, Math.max(0, toolIndexes.length - scaffold.keepRecentToolResults))) {
+          const content = messages[index].content;
+          if (typeof content === 'string' && !content.startsWith('[older tool result trimmed')) {
+            messages[index] = { ...messages[index], content: trimToolResult(content) };
+            trimmed += 1;
+          }
+        }
+        if (trimmed > 0) runLog?.recordCompaction(resolveLoopHardeningEnabled() ? sanitizeMessages(messages) : messages, 'scaffold-narrow', { trimmed });
+      }
       runLog?.syncMessages(outboundMessages);
       runLog?.append('model_request', { turn, model: config.model, messageCount: outboundMessages.length, tools: chatTools.map((schema) => schema.function?.name), ...(modelPlan ? { toolMode: modelPlan.toolMode } : {}), ...(chatOptions ? { format: chatOptions.format } : {}) }, currentTurnStep);
       const modelCallStarted = Date.now();
@@ -562,6 +579,14 @@ async function* queryLoopCore(
 
     // Stop condition: text-only response (no tool calls)
     if (!assistantMessage.tool_calls?.length) {
+      // Heavy scaffolding: the first text-only reply before any tool ran is
+      // the plan, not the answer. Accept it once and ask for step 1.
+      if (scaffold?.planTurnFirst && !scaffoldPlanAccepted && totalToolCalls === 0 && turn < maxTurns) {
+        scaffoldPlanAccepted = true;
+        messages.push({ role: 'user', content: PLAN_ACCEPTED_PROMPT } as Message);
+        yield { type: 'auto_continue', turn, continuationCount: 0, reason: 'plan recorded; working through it one step at a time' };
+        continue;
+      }
       // Auto-continue: if enabled, the text looks like a partial result,
       // AND the task type is not high-risk (where human confirmation is required).
       const HIGH_RISK_TASKS = new Set(['safety_critical', 'financial_execution', 'medical', 'legal']);
@@ -822,7 +847,14 @@ async function* queryLoopCore(
 
     const dispatchableToolCalls: ToolCall[] = [];
     const skippedToolResults: { call: ToolCall; result: { success: false; output: string; error: string } }[] = [];
+    toolCalls.forEach((call, index) => {
+      if (scaffold && scaffold.maxToolCallsPerTurn > 0 && index >= scaffold.maxToolCallsPerTurn) {
+        skippedToolResults.push({ call, result: { success: false, output: SKIPPED_EXTRA_CALL, error: 'scaffold: extra tool call skipped' } });
+      }
+    });
+    const skippedByScaffold = new Set(skippedToolResults.map((entry) => entry.call));
     for (const call of toolCalls) {
+      if (skippedByScaffold.has(call)) continue;
       const url = normalizeWebToolUrl(call);
       const blockedReason = url ? blockedWebUrls.get(url) : undefined;
       if (blockedReason) {
@@ -1042,6 +1074,11 @@ async function* queryLoopCore(
           messages.push({ role: 'user', content: decision.message } as Message);
         }
       }
+    }
+
+    // Heavy scaffolding: name the next step so the model keeps to its plan.
+    if (scaffold?.stepPrompt && turn < maxTurns) {
+      messages.push({ role: 'user', content: NEXT_STEP_PROMPT } as Message);
     }
 
     // Tool-quality kill: terminate when the agent loops on non-productive

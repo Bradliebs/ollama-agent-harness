@@ -3957,6 +3957,79 @@ describe('web server API validation', () => {
     }
   });
 
+  it('prefers a measured capability profile over name heuristics', async () => {
+    const profileDir = path.join(process.cwd(), '.harness', 'model-profiles');
+    const profileFile = path.join(profileDir, 'gemma4_e4b.json');
+    await fs.mkdir(profileDir, { recursive: true });
+    await fs.writeFile(profileFile, JSON.stringify({
+      model: 'gemma4:e4b',
+      profileVersion: 1,
+      probedAt: new Date().toISOString(),
+      scores: { toolCalling: 0.95, jsonInTextRate: 0, structuredPlain: 0.9, structuredConstrained: 1, instructionFollowing: 0.8, planCoherence: 0.8 },
+      usableContextTokens: 16000,
+      detectedContextTokens: 32768,
+      avgLatencyMs: 900,
+      tokensSpent: 5000,
+      recommended: { toolMode: 'native', maxToolsPerStep: 5, promptTier: 'compact', scaffoldLevel: 'medium', contextBudgetTokens: 13600 },
+    }));
+    try {
+      expect(inferModelCapabilities('gemma4:e4b').toolUse).toBe('weak');
+      await request('/api/models');
+      const measured = inferModelCapabilities('gemma4:e4b');
+      expect(measured.toolUse).toBe('strong');
+      expect(measured.notes[0]).toMatch(/^Measured by capability probe on \d{4}-\d{2}-\d{2}: tool calling 95%/);
+    } finally {
+      await fs.rm(profileFile, { force: true });
+      await request('/api/models');
+    }
+    expect(inferModelCapabilities('gemma4:e4b').toolUse).toBe('weak');
+  });
+
+  it('applies forced scaffolding with a relevance-ranked tool subset', async () => {
+    let captured: LoopConfig | undefined;
+    const tools = ['web_search', 'web_read', 'file_write', 'file_read', 'bash', 'email_send', 'calendar_read', 'pdf_read', 'grep']
+      .map((name) => ({ name, description: name.replace('_', ' '), parameters: { type: 'object', properties: {} }, isReadOnly: true, execute: jest.fn() }));
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => tools as never,
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('scaffold-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
+        captured = config;
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+    const previous = process.env.HARNESS_SCAFFOLD_MODE;
+    process.env.HARNESS_SCAFFOLD_MODE = 'heavy';
+    try {
+      await (await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'search the web and read the page about travel cameras', model: 'test-model' }),
+      })).text();
+      expect(captured?.scaffold).toMatchObject({ level: 'heavy', maxToolCallsPerTurn: 1 });
+      expect(captured?.modelPlan?.toolNames).toHaveLength(6);
+      expect(captured?.modelPlan?.toolNames).toEqual(expect.arrayContaining(['web_search', 'web_read']));
+    } finally {
+      if (previous === undefined) delete process.env.HARNESS_SCAFFOLD_MODE;
+      else process.env.HARNESS_SCAFFOLD_MODE = previous;
+      restore();
+    }
+  });
+
   it('records each web chat run in a run log that shares its id with the side-effect recorder', async () => {
     const seen: QueryLoopDeps[] = [];
     const restore = setWebRuntimeOverrides({

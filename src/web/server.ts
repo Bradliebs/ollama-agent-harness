@@ -41,7 +41,8 @@ import { resolveProjectDir } from './projectDir';
 import { RunLog, newRunId, pruneRuns } from '../persistence/runLog';
 import { createRunRouter } from './runRoutes';
 import { createGitCheckpoint } from '../persistence/gitCheckpoint';
-import { isCapabilityProfileFresh, loadCapabilityProfile } from '../models/capabilityProfile';
+import { isCapabilityProfileFresh, listCapabilityProfiles, loadCapabilityProfile, type CapabilityProfile } from '../models/capabilityProfile';
+import { rankToolsByRelevance, resolveScaffoldLevel, scaffoldFor, selectRelevantTools } from '../core/scaffolding';
 import { compileModelRequestPlan } from '../models/adapter';
 import { createModelProfileRouter } from './modelProfileRoutes';
 import type { SideEffectRecorder } from '../persistence/sideEffectRecording';
@@ -2262,6 +2263,7 @@ app.post('/api/model/probe-tools', async (_req, res) => {
 app.get('/api/models', async (_req, res) => {
   try {
     await ensureSettingsLoaded();
+    await refreshCapabilityProfileCache();
     const ollama = new Ollama({ host: ollamaHost });
     let models: Array<{
       name: string;
@@ -5407,16 +5409,28 @@ CONTEXT HYGIENE (critical for long tasks):
     taskType: requiresExecutionProof ? chatTaskContract.intent_type : myceliumClassification?.type,
   };
 
-  // Capability-profile adapter (answer-changing, so opt-in until replay evals
-  // approve it): fewer tools per step and JSON tool calls for models whose
-  // probes show unreliable native tool calling.
-  if (process.env.HARNESS_ADAPTER_MODE === 'profile') {
-    const capability = await loadCapabilityProfile(activeModel, PROJECT_DIR).catch(() => null);
-    if (capability && isCapabilityProfileFresh(capability)) {
-      const plan = compileModelRequestPlan({ tools, systemPrompt: config.systemPrompt, profile: capability });
+  // Capability-profile adapter and adjustable scaffolding. Both change
+  // answers, so both are opt-in (HARNESS_ADAPTER_MODE=profile,
+  // HARNESS_SCAFFOLD_MODE=profile|light|medium|heavy) until replay evals
+  // approve them. Tools are ranked by relevance to the user's message.
+  const adapterMode = process.env.HARNESS_ADAPTER_MODE;
+  const scaffoldMode = process.env.HARNESS_SCAFFOLD_MODE;
+  if (adapterMode === 'profile' || scaffoldMode) {
+    const loaded = await loadCapabilityProfile(activeModel, PROJECT_DIR).catch(() => null);
+    const capability = loaded && isCapabilityProfileFresh(loaded) ? loaded : null;
+    if (adapterMode === 'profile' && capability) {
+      const plan = compileModelRequestPlan({ tools, systemPrompt: config.systemPrompt, profile: capability, relevanceScores: rankToolsByRelevance(tools, message) });
       config.systemPrompt = plan.systemPrompt;
       config.modelPlan = { toolMode: plan.toolMode, toolNames: plan.tools.map((tool) => tool.name), ...(plan.format ? { format: plan.format } : {}) };
       logger.info('Adapter', 'Compiled model request plan', { model: activeModel, toolMode: plan.toolMode, tools: plan.tools.length });
+    }
+    const scaffoldLevel = resolveScaffoldLevel(scaffoldMode, capability?.recommended.scaffoldLevel);
+    if (scaffoldLevel && scaffoldLevel !== 'light') {
+      config.scaffold = scaffoldFor(scaffoldLevel);
+      if (!config.modelPlan && config.scaffold.maxToolsOffered > 0) {
+        config.modelPlan = { toolMode: 'native', toolNames: selectRelevantTools(tools, message, config.scaffold.maxToolsOffered).map((tool) => tool.name) };
+      }
+      logger.info('Scaffold', 'Applied scaffolding level', { model: activeModel, level: scaffoldLevel, source: scaffoldMode });
     }
   }
 
@@ -7071,8 +7085,42 @@ function preferredLocalAgenticModels(requestedModel: string, availableModels: st
  * then add a test in src/web/server.test.ts under "classifies known :cloud
  * Ollama models" or its sibling tests.
  */
+/**
+ * Probed capability profiles by model name, refreshed at startup and whenever
+ * the model list is requested. A measured profile beats the name heuristics
+ * in inferModelCapabilities.
+ */
+const capabilityProfileCache = new Map<string, CapabilityProfile>();
+async function refreshCapabilityProfileCache(): Promise<void> {
+  try {
+    const profiles = await listCapabilityProfiles(PROJECT_DIR);
+    capabilityProfileCache.clear();
+    for (const profile of profiles) capabilityProfileCache.set(profile.model, profile);
+  } catch (err) {
+    recordSwallowed('capabilityProfileCache.refresh', err);
+  }
+}
+void refreshCapabilityProfileCache();
+
 export function inferModelCapabilities(name: string, details: Record<string, unknown> = {}): { text: boolean; image: boolean; audio: boolean; toolUse: 'strong' | 'weak' | 'unknown'; notes: string[] } {
   const haystack = `${name} ${Object.values(details).join(' ')}`.toLowerCase();
+  const measured = capabilityProfileCache.get(name.trim());
+  if (measured && isCapabilityProfileFresh(measured)) {
+    const score = measured.scores.toolCalling;
+    const toolUse: 'strong' | 'weak' | 'unknown' = score >= 0.9 ? 'strong' : score < 0.6 ? 'weak' : 'unknown';
+    const image = isVisionCapableModelName(name, details);
+    const audio = /whisper|audio|speech|wav2vec|parakeet|sensevoice/.test(haystack);
+    return {
+      text: true,
+      image,
+      audio,
+      toolUse,
+      notes: [
+        `Measured by capability probe on ${measured.probedAt.slice(0, 10)}: tool calling ${Math.round(score * 100)}%, instruction following ${Math.round(measured.scores.instructionFollowing * 100)}%, usable context ~${measured.usableContextTokens.toLocaleString()} tokens.`,
+        toolUse === 'weak' ? 'This model may not reliably call tools (web_search, file_read, etc.). For research or file tasks, consider a larger model.' : '',
+      ].filter(Boolean),
+    };
+  }
   const image = isVisionCapableModelName(name, details);
   const audio = /whisper|audio|speech|wav2vec|parakeet|sensevoice/.test(haystack);
 

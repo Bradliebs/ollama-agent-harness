@@ -133,6 +133,12 @@ export interface LoopConfig {
    */
   /** Provenance checks on side effects (default on; false disables for this run). */
   provenance?: boolean;
+  /**
+   * Adjustable scaffolding (core/scaffolding.ts): plan-first, capped tool
+   * calls per turn, step prompts and narrow context for weaker models.
+   * Unset = no scaffolding changes.
+   */
+  scaffold?: import('../core/scaffolding').ScaffoldConfig;
   modelPlan?: {
     toolMode: 'native' | 'json-in-text' | 'constrained-json';
     toolNames?: string[];
