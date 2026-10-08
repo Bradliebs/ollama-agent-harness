@@ -22,7 +22,7 @@ Unrecognized tool actions default to deny or ask. Deny rules override allow rule
 
 ### Context as Scarce Resource
 
-Ollama models have bounded context windows. Apply progressive context management: budget reduction first, then snip, then summarization. Cheaper strategies run before costlier ones.
+Ollama models have bounded context windows. Apply progressive context management: cap tool results first, then shorten the arguments of older tool calls when the window is under pressure, then snip old turns (70% of the window), then summarize (85%), folding the previous summary into the new one. Cheaper strategies run before costlier ones. Tool schemas count against the budget when the context window is known.
 
 ### Append-Only Session State
 

@@ -1,7 +1,7 @@
 ---
 title: Modernization Status
 description: Implemented Windows-first changes, validation evidence, and remaining release gates
-ms.date: 2026-09-15
+ms.date: 2026-10-08
 ---
 
 ## Scope
@@ -12,6 +12,19 @@ existing query loop, permission dispatcher, routing, and persistence contracts.
 The six-phase roadmap is not complete, and these changes are not a release approval.
 
 ## Latest Checkpoint
+
+On 2026-10-08, after the token-efficiency work (tool schemas counted against
+the context budget when the window is known, snip-aware history windows,
+compaction that keeps the previous summary, opt-in deferred tool loading and
+cache-friendly prompt layout; see the CHANGELOG) and a documentation refresh
+against the code, full Jest passed 358 suites and 4,050 tests with one skipped,
+and typecheck passed. No live-model, installer or GPU qualification was run for
+this checkpoint; the gates below are unchanged.
+
+On 2026-09-29, after the run-log, supervisor, provenance, capability-profile,
+replay, working-state, verification, escalation and lessons work and its review
+fixes, full Jest passed 354 suites and 4,018 tests with one skipped, and
+typecheck passed.
 
 As of 2026-09-15, package metadata remains 0.6.5 and this work targets `dev`,
 not a new release. The September 14 cloud and final local gates below supersede

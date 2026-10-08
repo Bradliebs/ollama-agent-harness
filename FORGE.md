@@ -17,7 +17,7 @@
 |---|---|
 | Minimal scaffolding | Simple while-loop agent core; complexity in surrounding harness |
 | Deny-first safety | Deny rules override allow rules; unrecognized actions denied |
-| Context as scarce resource | Progressive compaction: budget → snip → summarize |
+| Context as scarce resource | Progressive compaction: cap tool results → shorten old tool-call arguments (under pressure) → snip at 70% → summarize at 85%, keeping the previous summary |
 | Append-only state | JSONL transcripts; compaction appends, never deletes |
 | Tool classification | Read-only tools parallel; state-modifying tools serial |
 | Subagent isolation | Isolated context windows; summary-only returns |
@@ -31,7 +31,15 @@
 | code-review | `.github/skills/code-review/SKILL.md` | Code review checklist enforcing harness conventions |
 | testing | `.github/skills/testing/SKILL.md` | Jest testing conventions and patterns |
 | planner | `.github/skills/planner/SKILL.md` | CopilotForge wizard and scaffolding |
+| plan-executor | `.github/skills/plan-executor/SKILL.md` | Autonomous plan execution from IMPLEMENTATION_PLAN.md |
 | research | `.github/skills/research/SKILL.md` | Evidence-first research that cites every claim and marks the unverifiable |
+| debugging | `.github/skills/debugging/SKILL.md` | Systematic debugging: reproduce, localize, reduce, fix, guard |
+| git-workflow | `.github/skills/git-workflow/SKILL.md` | Atomic commits, small changes, safe history |
+| security-hardening | `.github/skills/security-hardening/SKILL.md` | Input validation, command injection, secrets, deny-first review |
+| mcp-builder | `.github/skills/mcp-builder/SKILL.md` | Build a stdio MCP server that exposes tools to agents |
+| home-iq | `.github/skills/home-iq/SKILL.md` | Learn durable facts about the user into USER.md and memory |
+| second-brain | `.github/skills/second-brain/SKILL.md` | Maintain an LLM-curated personal markdown wiki |
+| shopping-assistant | `.github/skills/shopping-assistant/SKILL.md` | Supervised shopping; human approval before checkout |
 
 ## Agents
 
@@ -62,6 +70,9 @@
 | `probe/orchestration` | Quarantined | Paperclip-style orchestration layer (companies, goals, org charts, adapters, engine). 11 files, ~2.7k lines, 21 passing tests. Built by the harness as a feasibility probe — not merged to master. Check out with `git checkout probe/orchestration`. |
 
 ## Memory
+
+Local working memory, gitignored and created on first use (it is not part of
+the repository):
 
 | File | Purpose |
 |---|---|

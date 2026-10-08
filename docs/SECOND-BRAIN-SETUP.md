@@ -75,9 +75,10 @@ This guide leans on capabilities the harness already has:
   `.harness/identity/USER.md` (long-term notes about you).
 
 > **Honest scope.** This harness is local-first. Unlike some hosted assistants,
-> it has no built-in Microsoft 365, Teams, or email integration out of the box.
-> The Second Brain here works entirely on your local files. If you later add
-> connectors, the same vault and the same operations still apply.
+> it has no built-in Microsoft 365 or Teams integration. Its email tools work
+> only once you configure your own SMTP/IMAP account, and they don't feed the
+> vault automatically. The Second Brain here works entirely on your local files.
+> If you later add connectors, the same vault and the same operations still apply.
 
 ## 3. The setup — hand it to the agent
 

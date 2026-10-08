@@ -2,7 +2,7 @@
 title: Model Presets
 description: Beginner-friendly Ollama model choices for coding, vision, helper routing, and summarization in Harness
 author: Bradliebs
-ms.date: 2026-09-15
+ms.date: 2026-10-08
 ms.topic: guide
 keywords:
   - ollama
@@ -166,24 +166,52 @@ The validator treats first-turn native tool calls as the pass condition. Some
 cloud models rephrase the final tool result, so exact final text matching is
 reported separately from routing success.
 
-## Auto-Routing Targets For Weak Local Models
+## Chat Model Routing
 
-When `gemma4:e4b` or `gemma4:26b` is the active model and a turn needs tools or
-current information, Harness auto-routes to the first available stronger model
-from this list. Pull any of them locally with `ollama pull <model>` to make
-them eligible:
+**Settings → Chat model routing** decides whether a chat turn may run on a
+different model from the one you selected:
 
-| Cloud model | Notes |
-|-------------|-------|
-| `gpt-oss:20b-cloud` | Default routing target; reliable tool calls |
+| Mode | Behaviour |
+|------|-----------|
+| Keep selected model (`off`) | Never switches. Also turns off in-run escalation. |
+| Cost saver (`costSaver`) | Small tier for plain chat, default tier for tool or task turns, strong tier for high-risk turns, prompts over 6,000 characters, or a weak model that needs tools. |
+| Balanced (`balanced`, default) | Keeps the selected model unless it is weak, the prompt is over 6,000 characters, the turn is high-risk (asks to write, fix, run, install, deploy and so on) or a review, or earlier turns failed. Then it picks a tier as above. |
+| Quality (`quality`) | Strong tier for anything beyond plain chat. |
+
+Each tier's candidates come, in order, from the routing policy's small /
+default / strong / fallback models (when installed or keyed), then hosted
+providers whose API keys are configured (OpenRouter, Gemini, OpenAI,
+Anthropic), then installed local agentic models. Routed turns can therefore
+leave the machine; see [Security Model](SECURITY.md#what-can-leave-the-machine).
+
+### Weak Models
+
+A model counts as weak at tool calling when a fresh capability profile from
+`harness probe <model>` measured it below 60% (90% or more counts as strong).
+Without a profile, the name decides: `gemma4:e4b`, `gemma4:26b` and small base
+models named like `phi-3-mini`, `tinyllama`, `smollm` or `qwen2.5-3b` are weak.
+Colon-tagged Ollama names such as `qwen2.5:3b` don't match that pattern, so
+probe small models to have them classified.
+
+### Agentic Fallback Models
+
+After the policy models, these are tried in order when installed. Pull any of
+them with `ollama pull <model>` to make them eligible. `:cloud` models run on
+Ollama's cloud.
+
+| Model | Notes |
+|-------|-------|
+| `gpt-oss:20b-cloud` | First choice; reliable tool calls |
 | `gpt-oss:120b-cloud` | Stronger fallback when 20B is unavailable |
-| `qwen3-coder:480b-cloud` | Code-heavy tasks |
+| `qwen2.5-coder:14b` | Local; no cloud account needed |
 | `deepseek-v3.1:671b-cloud` | Long-context reasoning |
+| `qwen3-coder:480b-cloud` | Code-heavy tasks |
 | `glm-5.1:cloud` | GLM 4/5 family; strong tool-calling, lighter footprint |
-| `kimi-k2.5:cloud` | Subscription gated; same lineage available free on Groq as `kimi-k2-instruct` |
 
-Local strong-tool alternatives (no `:cloud` suffix) such as `qwen2.5-coder:14b`
-also qualify and are preferred when present.
+### In-Run Escalation
+
+Unless routing is set to **Keep selected model**, a run that gets stuck, or
+whose answer the verifier rejected twice, continues on the strong-tier model.
 
 ## Remote Provider Fallback
 

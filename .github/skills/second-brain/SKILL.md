@@ -171,8 +171,10 @@ enabling it.
 
 ## Honesty notes
 
-- This harness is local-first. There is no built-in Microsoft 365, Teams, or
-  email connector — the Second Brain works on local files only. Don't claim
+- This harness is local-first. There is no built-in Microsoft 365 or Teams
+  connector, and the Second Brain works on local files only. The separate
+  email tools (`email_inbox`, `email_draft`, `email_send`) need your own
+  SMTP/IMAP settings and don't feed the vault automatically. Don't claim
   integrations that don't exist.
 - The separate "personal wiki" blueprint (`buildPersonalWiki`) is a read-only
   HTML *renderer* of semantic-memory entries — a viewer, not this maintained

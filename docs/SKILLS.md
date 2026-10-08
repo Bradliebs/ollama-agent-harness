@@ -2,7 +2,7 @@
 title: Skills (model-agnostic)
 description: How the harness uses the same Skill protocol as Anthropic's Agent Skills, without coupling to Claude or any vendor API
 author: Bradliebs
-ms.date: 2026-05-16
+ms.date: 2026-10-08
 ---
 
 # Skills
@@ -28,12 +28,31 @@ depend on which model you run.
 │   ├── REFERENCE.md
 │   └── scripts/
 │       └── fill_form.py
-└── _archive/        # curator-managed; not user-facing
+├── _archive/        # curator-managed; not user-facing
+└── _history/        # earlier versions of agent-edited skills
 ```
 
-Each skill lives in its own folder under `.harness/skills/`. The folder must
-contain a `SKILL.md` file with YAML frontmatter. Any other files in the folder
-are **bundled resources** the agent can read or execute on demand.
+Each skill lives in its own folder. The folder must contain a `SKILL.md` file
+with YAML frontmatter. Any other files in the folder are **bundled resources**
+the agent can read or execute on demand. `SKILL.md` files with Windows line
+endings or a byte-order mark load the same as plain ones.
+
+### Skill tiers
+
+Skills load from three directories, lowest to highest precedence:
+
+| Tier | Directory |
+| --- | --- |
+| Global | `~/.harness/skills` (override with `HARNESS_GLOBAL_SKILLS_DIR`) |
+| Repo | `.github/skills` in the project |
+| Workspace | `.harness/skills` in the project |
+
+A skill with the same name in a higher tier shadows the lower one. The `skill`
+and `list_skills` tools, explicit `Use the skill: <name>` messages and trigger
+matching see all three tiers. The **Available Skills** list in the system prompt is built from
+the workspace tier only, so global and repo skills are found through
+`list_skills` or by name. Agent-written skills, the curator and the history
+all work in the workspace tier.
 
 ## SKILL.md format
 
@@ -75,17 +94,18 @@ spec):
 
 The harness implements all three levels Anthropic describes:
 
-- **Level 1 — Metadata always loaded.** `assembleSystemContext` injects every
-  skill's `name`, `description`, and (when present) `triggers` into the system
-  prompt under `--- Available Skills ---`. Capped at 40 entries; the rest are
-  reachable via `list_skills`. Cost: ~100 tokens per skill.
+- **Level 1 — Metadata always loaded.** `assembleSystemContext` injects each
+  workspace skill's `name`, `description`, and (when present) `triggers` into
+  the system prompt under `--- Available Skills ---`. Capped at 40 entries
+  (scaled down for context windows under 32k tokens, never below 5); the rest
+  are reachable via `list_skills`. Cost: ~100 tokens per skill.
 - **Level 2 — SKILL.md body loaded on trigger.** When the model calls
   `skill(name: "...")`, the tool returns the full body. Cost: under 5k tokens
   per invocation.
 - **Level 3 — Bundled resources loaded as needed.** The `skill` tool also lists
-  sibling files (up to 20, recursing one level) so the model knows what to read
-  with `file_read` or run with `bash`. Bundled file contents only enter the
-  context window when the model explicitly reads them.
+  sibling files (up to 20, up to two subfolder levels deep) so the model knows
+  what to read with `file_read` or run with `bash`. Bundled file contents only
+  enter the context window when the model explicitly reads them.
 
 ## Tools the agent uses
 
@@ -94,6 +114,8 @@ The harness implements all three levels Anthropic describes:
 | `list_skills` | Enumerates installed skills (Level 1 metadata). Read-only. |
 | `skill` | Loads SKILL.md body for a given skill name and lists bundled resources. Read-only. |
 | `create_skill` | Writes a new `SKILL.md` from agent-supplied frontmatter and instructions. |
+| `promote_pattern` | Creates a skill from a detected tool-usage pattern. |
+| `improve_skill` | Rewrites an existing skill; the previous version goes to `_history/`. |
 | `import_skill` | Bulk-imports an entire skill folder (SKILL.md + bundled files) from a local path. Source must live inside the project or under an Allowed External Path. |
 | `install_skill` | Downloads a single SKILL.md from an allowlisted URL (GitHub raw / Gist / GitLab). |
 | `file_read`, `bash` | Read Level-3 bundled resources or execute bundled scripts. |
@@ -147,6 +169,29 @@ install_skill(url: "https://raw.githubusercontent.com/.../SKILL.md")
 authoring, drop a folder under `.harness/skills/` and write the file by hand —
 the loader picks it up on the next system-prompt assembly.
 
+## Skill lifecycle
+
+Skills written by the agent have to earn their place:
+
+1. **Safety scan.** `create_skill`, `promote_pattern` and `improve_skill`
+   refuse content that fails the agent-skill safety check.
+2. **Probation.** A new or rewritten agent skill starts on probation. It
+   becomes proven after 3 runs that used it finish cleanly; the `skill` tool
+   shows the count (for example `new, unproven: 1/3 clean runs`). Skills you
+   write or install by hand don't go on probation.
+3. **History.** Before `improve_skill` overwrites a skill, the previous
+   version is saved to `.harness/skills/_history/<name>/<timestamp>.md`
+   (newest 20 kept).
+4. **Usage tracking.** Views, uses, clean runs, consecutive failures, pins and
+   probation status are kept in `.harness/skill-usage.json`.
+5. **Curation.** The curator (scheduled, or `POST /api/curator/run`) moves
+   workspace skills to `_archive/` when the last 3 runs that used them failed
+   (2 while on probation) or when they haven't been touched for 60 days, at most
+   5 per run. Pinned skills (`POST /api/skills/<name>/pin`) are never archived,
+   and `POST /api/curator/restore/<name>` brings one back. It also writes merge
+   proposals to `.harness/curator/proposals.md` and logs every action to
+   `.harness/curator/log.jsonl`.
+
 Minimum viable skill:
 
 ```markdown
@@ -178,8 +223,8 @@ The user mentions: convergence, MA crossover setups, pre-breakout scans.
 
 Skills are not an Anthropic API feature. They are a directory layout and a
 markdown convention. The harness loader reads SKILL.md files from disk and
-inlines their metadata into whatever model you have configured in
-`OLLAMA_MODEL`. Once a skill is triggered, the `skill` tool returns the body
+inlines their metadata into whatever model you have selected. Once a skill
+is triggered, the `skill` tool returns the body
 as plain text — the model uses it the same way it would use any other tool
 output. No beta headers, no `container` parameter, no `code_execution_20250825`
 tool required.

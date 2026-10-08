@@ -182,6 +182,101 @@ No release tag, publication or installer runtime qualification is implied.
   other writers or be read half-written.
 - After these changes full Jest passed 329 suites and 3,841 tests with one
   skipped; the build and script tests (`node --test`) also passed.
+- Review fixes for this wave:
+  - Provenance approvals are no longer auto-granted in dontAsk, as documented.
+  - Git checkpoints exclude `.harness/`, so a git-mode revert no longer rolls
+    back or deletes the harness's own state (including the run log being
+    reverted). Checkpoint refs are deleted when their runs are pruned. A
+    missing checkpoint returns 404; other restore failures return 500.
+  - Run logs redact recognised secrets before writing. Listing runs reads only
+    the first and last event of each log and skips stray file names.
+  - `state_update` can no longer evict seeded or earlier protected paths or
+    invariants by flooding the list. Protected patterns are real globs:
+    `**/x` no longer matches every path, `*.pem` works, a bare name covers
+    a folder of that name, and a leading `/` anchors at the project root.
+  - Critic replies of "UNSUPPORTED" or "NOT SUPPORTED" are no longer read as
+    SUPPORTED. Page excerpts reach the critic wrapped as untrusted content.
+  - Heavy-scaffolding context narrowing now applies before surrogate
+    sanitisation, so the model receives what the run log records.
+  - A final answer that crosses the token budget is kept instead of being
+    replaced by a synthesis call.
+  - constrained-json models can finish: the schema allows
+    `{"final_answer": ...}` as well as a tool call.
+  - USD budgets resolve prices for backend-prefixed models
+    (`openai/gpt-4o`), and usage after an escalation carries the new model's
+    locality.
+  - Task runs learn lessons once per run, not once per conductor step.
+    Aborted runs no longer count against skills or recalled lessons. Lessons
+    whose text reads like an injected instruction are never recalled.
+  - Capability probes run with a window sized to the probe (never capped by
+    settings or the previous profile, never the model's full native window),
+    so re-probing can no longer only shrink the budget. The context haystack
+    uses one-token words, and usable context records the real prompt tokens
+    handled. Malformed profiles on disk are skipped, and profiles are written
+    atomically.
+  - OpenAI-compatible backends get `strict` structured output only for
+    schemas strict mode accepts; others (such as the constrained-json tool
+    call schema) are sent best-effort instead of being rejected. Replay cost
+    reports price backend-prefixed models.
+  - Protected-path matching is linear-time, so a pathological pattern from
+    `state_update` cannot hang the server.
+  - Replays run under the default supervisor, so stuck and budget outcomes
+    compare with the original run. The unused benchmark `concurrency`
+    option is removed.
+  - `improve_skill` refuses skill names that are paths.
+  - SKILL.md and agent files with CRLF line endings or a BOM (Windows
+    checkouts) load instead of being reported as missing frontmatter.
+  - `harness benchmark-history --models` with no value no longer throws.
+    Probe jobs are capped at 50, and the turn-state strip no longer
+    hard-codes a persona name.
+  - The trigger scheduler writes `triggers.json` atomically, and ticks wait
+    for default-trigger seeding, so a tick can no longer read a half-written
+    file as an empty trigger list (this also made a scheduler test flaky).
+  - After the review fixes full Jest passed 354 suites and 4,018 tests with
+    one skipped (2026-09-29), and typecheck passed.
+- Token efficiency:
+  - Count the tool definitions sent with every request (~10k tokens for the
+    ~70 runtime tools) against a caller-supplied context window, and count
+    tool-call arguments in token estimates. Callers that leave the window
+    unset keep the old behaviour.
+  - Fit web-chat history beside the system prompt and tool definitions and
+    under the snip threshold. Previously a full history (75% of the window)
+    was compacted again on the first turn of every message, sometimes with a
+    summarizer call. Cuts fall on fixed blocks of the conversation, so the
+    resent prefix stays the same for several messages.
+  - Under pressure, shorten long string arguments of older tool calls before
+    snipping or summarising. Auto-compaction folds the previous summary into
+    the new one, and snipping keeps it, instead of losing it.
+  - Trim memory files, the skill list, recall and identity in proportion for
+    context windows under 32k tokens. This is on by default and changes the
+    prompt for those models. The old limits could overflow an 8k window, and
+    windows of 32k or more are unchanged.
+  - Report the compaction summarizer's usage as a `usage` event
+    (`purpose: compaction`) and in run budgets. Record provider-reported
+    cached prompt tokens, and add a `prefixHash` to each recorded request.
+  - Add opt-in deferred tool loading (`HARNESS_TOOL_LOADING=deferred|auto`):
+    core tools plus relevant ones, and a `tool_search` tool that loads the
+    rest. This cut tool-definition tokens by 74–84% on sample messages. In
+    chat, the offered set is the union of every user message's picks, so it
+    only grows within a conversation.
+  - Add an opt-in cache-friendly prompt layout (`HARNESS_PROMPT_LAYOUT=cache`)
+    that keeps the system prompt identical between messages, and an opt-in
+    tail position for the working state (`HARNESS_WORKING_STATE_POSITION=tail`).
+    The turn-context message survives compaction and is included in the
+    synthesis call.
+  - `harness replay` and `benchmark-history` accept `--defer-tools`, and their
+    reports show cached prompt tokens and the number of distinct cacheable
+    prefixes per run (`ReplayRunOptions.loopConfig` for other loop settings).
+- Documentation refreshed against the code: System breakdown §5 now lists
+  every `HARNESS_*` variable the runtime reads, with defaults, and the CLI,
+  storage layout, routes, runbook and subsystem maps were corrected (tool
+  names, file paths, integrations, `HARNESS_TOOL_ALERT_*`). Security covers
+  `HARNESS_API_AUTH_REQUIRED`, the agent-side safeguards and what can leave
+  the machine; Skills covers tiers and the lifecycle; Model presets describes
+  chat model routing as implemented.
+- After the token-efficiency changes and the documentation refresh full Jest
+  passed 358 suites and 4,050 tests with one skipped (2026-10-08), and
+  typecheck passed.
 
 See [Modernization Status](docs/MODERNIZATION-STATUS.md) for the complete
 validation record and remaining installation, hosted CI and live-workflow gates.
