@@ -78,6 +78,20 @@ describe('RunLog', () => {
     expect(String(event.data.output)).toContain('[run log truncated 10 chars]');
   });
 
+  it('redacts secrets from tool calls, tool output and messages before writing', async () => {
+    const key = `sk-${'a'.repeat(48)}`;
+    const log = new RunLog(dir, 'run-secret');
+    log.syncMessages([{ role: 'user', content: `use ${key}` }]);
+    log.append('tool_call', { name: 'bash', input: { command: `curl -H "Authorization: Bearer ${key}"` } });
+    log.recordToolResult(undefined, { name: 'bash', success: true, output: `OPENAI_API_KEY=${key}` });
+    await log.flush();
+    const raw = await fs.readFile(path.join(runsDir(dir), 'run-secret.jsonl'), 'utf-8');
+    expect(raw).not.toContain(key);
+    const events = await readRunEvents(dir, 'run-secret');
+    expect(events).toHaveLength(3);
+    expect(String(events[2].data.output)).toBe('OPENAI_API_KEY=[REDACTED:openai-key]');
+  });
+
   it('ignores a torn trailing line and rejects unsafe run ids', async () => {
     const log = new RunLog(dir, 'run-e');
     log.append('run_start', {});
@@ -98,6 +112,10 @@ describe('RunLog', () => {
     }
     const runs = await listRuns(dir);
     expect(runs.map((run) => run.runId)).toEqual(['run-3', 'run-2', 'run-1']);
+    // A stray file whose name is not a valid run id is ignored, not fatal.
+    await fs.writeFile(path.join(runsDir(dir), 'copy of run 1.jsonl'), '');
+    expect((await listRuns(dir)).map((run) => run.runId)).toEqual(['run-3', 'run-2', 'run-1']);
+    await fs.rm(path.join(runsDir(dir), 'copy of run 1.jsonl'));
     expect(runs[0]).toMatchObject({ model: 'model-run-3', reason: 'completed', turns: 2, events: 2 });
     expect(await pruneRuns(dir, { maxRuns: 2 })).toEqual(['run-1']);
     expect((await listRuns(dir)).map((run) => run.runId)).toEqual(['run-3', 'run-2']);

@@ -64,12 +64,13 @@ describe('triggerScheduler', () => {
       startupCooldownMs: 0,
       isEnabled: () => true,
       isKillSwitchActive: () => false,
-      spawn: async () => ({ exitCode: 0, stdout: 'mailbox has 2 items', stderr: '' }),
+      spawn: async (def) => ({ exitCode: 0, stdout: def.id === 't1' ? 'mailbox has 2 items' : '', stderr: '' }),
     });
     scheduler.start();
     const results = await scheduler.tick();
     scheduler.stop();
-    expect(results).toHaveLength(1);
+    // The seeded default trigger (morning-priority) also runs; it prints nothing here.
+    expect(results.filter((result) => result.triggerId === 't1')).toHaveLength(1);
     const events = await queryEvents(projectDir, { category: 'notification', type: 'trigger.message' });
     expect(events).toHaveLength(1);
     expect(events[0].data.message).toContain('mailbox has 2 items');
@@ -130,7 +131,7 @@ describe('triggerScheduler', () => {
       startupCooldownMs: 0,
       isEnabled: () => true,
       isKillSwitchActive: () => false,
-      spawn: async () => { calls += 1; return { exitCode: 0, stdout: 'x', stderr: '' }; },
+      spawn: async (def) => { if (def.id === 't1') calls += 1; return { exitCode: 0, stdout: 'x', stderr: '' }; },
     });
     scheduler.start();
     await scheduler.tick();
@@ -167,7 +168,7 @@ describe('triggerScheduler', () => {
       startupCooldownMs: 0,
       isEnabled: () => true,
       isKillSwitchActive: () => false,
-      spawn: async () => { calls += 1; return { exitCode: 0, stdout: 'x', stderr: '' }; },
+      spawn: async (def) => { if (def.id !== 'morning-priority') calls += 1; return { exitCode: 0, stdout: 'x', stderr: '' }; },
     });
     scheduler.start();
     // First tick fires both.

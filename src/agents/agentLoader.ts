@@ -223,7 +223,7 @@ export async function scanAgentDefinitions(projectDir: string): Promise<AgentDir
 }
 
 export function parseAgentFile(content: string, filePath: string, fallbackId?: string): AgentDefinition | null {
-  const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  const match = content.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!match) return null;
   const frontmatter = parseSimpleYaml(match[1]);
   const body = match[2].trim();

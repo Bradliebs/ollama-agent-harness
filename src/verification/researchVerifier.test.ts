@@ -112,6 +112,19 @@ describe('verifyResearchAnswer', () => {
     expect(revisionPrompt(verdict)).toMatch(/is contradicted/);
   });
 
+  it('does not read a negated verdict ("UNSUPPORTED", "Not supported") as supported', async () => {
+    for (const reply of ['UNSUPPORTED: no such price in the excerpts', '**Not supported** - the excerpts say nothing about it']) {
+      const chat = jest.fn(async (_messages: Message[]) => ({ message: { role: 'assistant', content: reply } as Message }));
+      const createClient = () => ({ chat } as unknown as IChatClient);
+      const verdict = await verifyResearchAnswer({ answer: 'The Nikon ZR best price is £1,999 from UK retailers.', sources: [source], mode: 'critic', critic: { candidates: ['kimi-k3:cloud'], createClient } });
+      // Page excerpts reach the critic as untrusted content, not instructions.
+      expect(String(chat.mock.calls[0][0][1].content)).toContain('<external_content source="web"');
+      expect(verdict.judgements[0]).toMatchObject({ verdict: 'not_found' });
+      expect(verdict.status).toBe('warn');
+      expect(verdict.unsupported.map((entry) => entry.missing)).toEqual([['1999']]);
+    }
+  });
+
   it('passes a fully supported answer and skips when there are no sources or it is off', async () => {
     const supported = await verifyResearchAnswer({ answer: 'The X100VI is £1,669.28 new and £1,636 used.', sources: [source], mode: 'annotate' });
     expect(supported.status).toBe('pass');

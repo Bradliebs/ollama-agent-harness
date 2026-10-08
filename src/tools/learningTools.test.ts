@@ -101,4 +101,12 @@ describe('ImproveSkillTool versions', () => {
     expect(result.output).toContain('(version 2)');
     expect(result.output).toContain('on probation');
   });
+
+  it('refuses a skill name that is a path, so it cannot overwrite files outside the skills folder', async () => {
+    await fs.mkdir(path.join(workDir, '.github', 'skills', 'planner'), { recursive: true });
+    await fs.writeFile(path.join(workDir, '.github', 'skills', 'planner', 'SKILL.md'), 'repo skill', 'utf-8');
+    const result = await ImproveSkillTool.execute({ name: '../../.github/skills/planner', new_content: 'hijacked', reason: 'x' });
+    expect(result).toMatchObject({ success: false, error: 'invalid skill name' });
+    await expect(fs.readFile(path.join(workDir, '.github', 'skills', 'planner', 'SKILL.md'), 'utf-8')).resolves.toBe('repo skill');
+  });
 });

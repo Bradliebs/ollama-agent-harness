@@ -75,6 +75,20 @@ describe('queryLoop model plan (capability adapter)', () => {
     expect(weather.execute).toHaveBeenCalledTimes(1);
   });
 
+  it('unwraps a constrained-json final answer and completes the run', async () => {
+    const weather = makeTool('get_weather', 'rain');
+    const { events } = await run(
+      { modelPlan: { toolMode: 'constrained-json', toolNames: ['get_weather'], format: { type: 'object' } } },
+      [
+        { role: 'assistant', content: '{"tool_call":{"name":"get_weather","arguments":{"city":"Faro"}}}' },
+        { role: 'assistant', content: '{"final_answer":"Rain in Faro."}' },
+      ],
+      [weather],
+    );
+    expect(events.find((event) => event.type === 'text')).toMatchObject({ content: 'Rain in Faro.' });
+    expect(events.find((event) => event.type === 'done')).toMatchObject({ reason: 'completed' });
+  });
+
   it('leaves plain text answers alone in prompt tool modes', async () => {
     const weather = makeTool('get_weather', 'rain');
     const { events } = await run(

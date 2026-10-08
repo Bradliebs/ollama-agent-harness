@@ -16,15 +16,19 @@ import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 const SAFE_RUN_ID = /^[A-Za-z0-9._-]{1,160}$/;
+// The harness's own state (run logs, sessions, the side-effect ledger) lives
+// in .harness/ and must never be snapshotted or rolled back with the work.
+const HARNESS_STATE_DIR = '.harness';
 
-async function git(projectDir: string, args: string[], indexFile?: string): Promise<string> {
+async function git(projectDir: string, args: string[], indexFile?: string, raw = false): Promise<string> {
   const { stdout } = await execFileAsync('git', args, {
     cwd: projectDir,
     env: { ...process.env, ...(indexFile ? { GIT_INDEX_FILE: indexFile } : {}) },
     maxBuffer: 64 * 1024 * 1024,
     windowsHide: true,
   });
-  return stdout.trim();
+  // -z output is NUL-separated; trimming could strip spaces from file names.
+  return raw ? stdout : stdout.trim();
 }
 
 export function checkpointRef(runId: string): string {
@@ -54,7 +58,7 @@ export async function createGitCheckpoint(projectDir: string, runId: string): Pr
   const ref = checkpointRef(runId);
   if (!(await isGitWorkTree(projectDir))) return null;
   return withTempIndex(async (indexFile) => {
-    await git(projectDir, ['add', '-A', '--', '.'], indexFile);
+    await git(projectDir, ['add', '-A', '--', '.', `:(exclude)${HARNESS_STATE_DIR}`], indexFile);
     const tree = await git(projectDir, ['write-tree'], indexFile);
     let parent: string | null = null;
     try {
@@ -74,15 +78,25 @@ export interface GitRestoreResult {
   removed: string[];
 }
 
-/** Return the working tree to a run's checkpoint. Throws when no checkpoint exists. */
+/** Thrown when a run has no git checkpoint to restore. */
+export class NoGitCheckpointError extends Error {}
+
+/** Return the working tree to a run's checkpoint. Throws NoGitCheckpointError when none exists. */
 export async function restoreGitCheckpoint(projectDir: string, runId: string): Promise<GitRestoreResult> {
   const ref = checkpointRef(runId);
-  const commit = await git(projectDir, ['rev-parse', '--verify', ref]);
+  let commit: string;
+  try {
+    commit = await git(projectDir, ['rev-parse', '--verify', '-q', ref]);
+  } catch {
+    throw new NoGitCheckpointError(`No git checkpoint for run ${runId}.`);
+  }
   return withTempIndex(async (indexFile) => {
     await git(projectDir, ['read-tree', commit], indexFile);
+    // Checkpoints made before .harness/ was excluded may still contain it.
+    await git(projectDir, ['rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', HARNESS_STATE_DIR], indexFile);
     // Anything the checkpoint does not know about (and .gitignore does not
     // exclude) was created after it.
-    const untracked = await git(projectDir, ['ls-files', '--others', '--exclude-standard', '-z'], indexFile);
+    const untracked = await git(projectDir, ['ls-files', '--others', '--exclude-standard', '-z', '--', '.', `:(exclude)${HARNESS_STATE_DIR}`], indexFile, true);
     const removed = untracked.split('\0').filter(Boolean);
     for (const relative of removed) {
       await fs.rm(path.join(projectDir, relative), { force: true });

@@ -43,10 +43,12 @@ import { writeSettingsFile } from './settingsFile';
 import { resolveProjectDir } from './projectDir';
 import { RunLog, newRunId, pruneRuns } from '../persistence/runLog';
 import { createRunRouter } from './runRoutes';
-import { createGitCheckpoint } from '../persistence/gitCheckpoint';
+import { createGitCheckpoint, deleteGitCheckpoint } from '../persistence/gitCheckpoint';
 import { isCapabilityProfileFresh, listCapabilityProfiles, loadCapabilityProfile, type CapabilityProfile } from '../models/capabilityProfile';
 import { rankToolsByRelevance, resolveScaffoldLevel, scaffoldFor, selectRelevantTools } from '../core/scaffolding';
+import { planInitialToolsForConversation, resolveToolLoadingMode, shouldDeferTools } from '../core/toolLoading';
 import { compileModelRequestPlan } from '../models/adapter';
+import { probeContextWindow } from '../models/probes/usableContext';
 import { createModelProfileRouter } from './modelProfileRoutes';
 import { createReplayRouter } from './replayRoutes';
 import type { SideEffectRecorder } from '../persistence/sideEffectRecording';
@@ -126,7 +128,8 @@ import { rebuildSemanticMemory, searchSemanticMemory } from '../persistence/sema
 import * as snapshots from '../persistence/snapshots';
 import * as ragIndex from '../persistence/ragIndex';
 
-import { assembleSystemContext, estimateTokenCount } from '../context/assembly';
+import { assembleSystemContext, assembleSystemContextSections, contextScale, estimateTokenCount, estimateToolSchemaTokens, type SystemContextSections } from '../context/assembly';
+import { selectHistoryWindow } from '../context/historyWindow';
 import { HookPipeline } from '../extensibility/hookPipeline';
 import { createAuditHooks, readAuditLog, renderRecentAuditForPrompt } from '../permissions/audit';
 import { loadSkillsDir, loadSkillsFromDirs, matchSkillTrigger, scanSkillsDir, type SkillDefinition, type SkillDirectoryScan } from '../extensibility/skillLoader';
@@ -211,6 +214,7 @@ import { listShellCommandAllowlistPresets } from '../automation/runner';
 import { appendCapabilityAuditEvent, readCapabilityAuditEvents } from '../permissions/capabilityAudit';
 import { selectEscalationTarget, selectModelForChatTurn, type ChatModelCandidatePool, type ChatRoutingMode, type ModelRoutingPolicy } from '../agents/modelRouting';
 import type { LoopConfig, LoopEvent, PermissionMode, Tool } from '../types';
+import { toolToSchema } from '../types/tool';
 import type { EvidenceCard, EvidenceFileSummary, EvidenceMode, EvidenceToolSummary } from '../types/evidence';
 import type { Message } from 'ollama';
 
@@ -263,7 +267,12 @@ function startRunRecording(kind: string): { runLog?: RunLog; sideEffectRecorder?
   runsSincePrune += 1;
   if (runsSincePrune >= 25) {
     runsSincePrune = 0;
-    void pruneRuns(PROJECT_DIR).catch((err) => recordSwallowed('runLog.prune', err));
+    void pruneRuns(PROJECT_DIR)
+      .then(async (removed) => {
+        // A pruned run's git checkpoint (if any) goes too, so its objects can be collected.
+        for (const runId of removed) await deleteGitCheckpoint(PROJECT_DIR, runId).catch(() => undefined);
+      })
+      .catch((err) => recordSwallowed('runLog.prune', err));
   }
   return {
     runLog,
@@ -530,6 +539,15 @@ function hasValidApiAuth(request: express.Request): boolean {
   return bearerToken === API_AUTH_TOKEN || altHeader === API_AUTH_TOKEN;
 }
 
+/**
+ * Whether an inspector's approval request is granted without asking. dontAsk
+ * auto-approves inspector prompts, except provenance: an action whose target
+ * came only from a web page or email always needs the user.
+ */
+export function inspectorAutoApproved(mode: string, inspectorName: string): boolean {
+  return mode === 'dontAsk' && inspectorName !== 'provenance';
+}
+
 function requireEscalationAuth(req: express.Request, res: express.Response, actionLabel: string): boolean {
   if (!API_AUTH_TOKEN) return true;
   if (hasValidApiAuth(req)) return true;
@@ -758,7 +776,9 @@ interface WebRuntimeDeps {
   createSession(projectDir: string, model: string): SessionStorage;
   startNewSession(): void;
   getEvolvedPrompt(basePrompt: string): Promise<string>;
-  assembleSystemContext(input: { systemPrompt: string; projectDir: string; skillsDir: string; recallProjectDir?: string; recallQuery?: string; ragProjectDir?: string; ragQuery?: string; ragOllamaHost?: string; palaceProjectDir?: string; sessionSearchProjectDir?: string; sessionSearchQuery?: string; ccmemUrl?: string; ccmemQuery?: string; ccmemTopK?: number }): Promise<string>;
+  assembleSystemContext(input: { systemPrompt: string; projectDir: string; skillsDir: string; recallProjectDir?: string; recallQuery?: string; ragProjectDir?: string; ragQuery?: string; ragOllamaHost?: string; palaceProjectDir?: string; sessionSearchProjectDir?: string; sessionSearchQuery?: string; ccmemUrl?: string; ccmemQuery?: string; ccmemTopK?: number; contextWindowTokens?: number }): Promise<string>;
+  /** Same context split into stable and per-message parts (HARNESS_PROMPT_LAYOUT=cache). */
+  assembleSystemContextSections?(input: Parameters<WebRuntimeDeps['assembleSystemContext']>[0]): Promise<SystemContextSections>;
   runQueryLoop: QueryLoopRunner;
   onSessionEnd(): Promise<{ reflection: { insights: string[] }; newPatterns: unknown[] }>;
   rebuildSemanticMemory(projectDir: string): Promise<unknown[]>;
@@ -1357,6 +1377,7 @@ const defaultWebRuntime: WebRuntimeDeps = {
   startNewSession,
   getEvolvedPrompt,
   assembleSystemContext,
+  assembleSystemContextSections,
   runQueryLoop: queryLoop,
   onSessionEnd,
   rebuildSemanticMemory,
@@ -3474,6 +3495,7 @@ const runCodexTaskWithConductor: CodexTaskRunner = async ({ task, contract, prom
     taskType: contract.intent_type,
     abortSignal,
   };
+  const { onRunEnd: onTaskRunEnd, ...taskRecordingDeps } = startRunRecording('task');
   const deps: QueryLoopDeps = {
     client,
     tools,
@@ -3490,21 +3512,28 @@ const runCodexTaskWithConductor: CodexTaskRunner = async ({ task, contract, prom
     learningRecorder,
     ...(await resolveCriticDeps(activeModel, client)),
     ...inRunEscalationDeps(),
-    ...startRunRecording('task'),
+    ...taskRecordingDeps,
   };
 
-  const outcome = await runConductor({
-    task: prompt,
-    planner: createLlmPlanner(client),
-    executor: createQueryLoopExecutor(config, deps, {
-      onLoopEvent: (event) => onEvent({ type: 'loop_event', event }),
-    }),
-    verifier: createCodeVerifier(PROJECT_DIR, { quick: true, timeout: 60_000 }),
-    persistDir: path.join(PROJECT_DIR, '.harness', 'conductor'),
-    runId: task.id,
-    abortSignal,
-    onEvent: (event) => onEvent(toCodexRunnerEvent(event)),
-  });
+  let outcome: Awaited<ReturnType<typeof runConductor>>;
+  try {
+    outcome = await runConductor({
+      task: prompt,
+      planner: createLlmPlanner(client),
+      executor: createQueryLoopExecutor(config, deps, {
+        onLoopEvent: (event) => onEvent({ type: 'loop_event', event }),
+      }),
+      verifier: createCodeVerifier(PROJECT_DIR, { quick: true, timeout: 60_000 }),
+      persistDir: path.join(PROJECT_DIR, '.harness', 'conductor'),
+      runId: task.id,
+      abortSignal,
+      onEvent: (event) => onEvent(toCodexRunnerEvent(event)),
+    });
+  } finally {
+    // The conductor runs one query loop per step on the same run log; learn
+    // from the run once, after the last step, not once per loop.
+    if (taskRecordingDeps.runLog) onTaskRunEnd?.(taskRecordingDeps.runLog.runId);
+  }
 
   return {
     status: outcome.status,
@@ -3770,14 +3799,14 @@ app.use(createAgentRouter({
 // routeMessage in the chat handler and listSquads in system health.
 app.use(createSquadRouter({ projectDir: PROJECT_DIR }));
 
-// ─── Identity ───────────────────────────────────────────────────────
-// SOUL.md / USER.md / structured.json under .harness/identity/. Routes
-// extracted to ./identityRoutes.ts so server.ts holds wiring, not handlers.
+// ─── Run logs, model profiles, replays ──────────────────────────────
 app.use(createRunRouter({ projectDir: PROJECT_DIR, requireAuth: requireEscalationAuth, logger }));
 // Capability probes cost tokens on cloud models, so they only run on request.
 app.use(createModelProfileRouter({
   projectDir: PROJECT_DIR,
-  createClient: async (model) => webRuntime.createClient(model, ollamaHost, await resolveContextMaxTokens(model)),
+  // Sized to the probe, not capped by settings or an earlier profile: a
+  // window smaller than the probe's prompts would be measured as a limit.
+  createClient: async (model, options) => webRuntime.createClient(model, ollamaHost, probeContextWindow(await webRuntime.getModelContextWindow(model, ollamaHost), options?.maxContextTokens)),
   requireAuth: requireEscalationAuth,
   logger,
 }));
@@ -3790,6 +3819,10 @@ app.use(createReplayRouter({
   getSchemaTools: () => webRuntime.getTools(),
   logger,
 }));
+
+// ─── Identity ───────────────────────────────────────────────────────
+// SOUL.md / USER.md / structured.json under .harness/identity/. Routes
+// extracted to ./identityRoutes.ts so server.ts holds wiring, not handlers.
 app.use(createIdentityRouter({
   projectDir: PROJECT_DIR,
   requireAuth: requireEscalationAuth,
@@ -5256,7 +5289,16 @@ app.post('/api/chat', async (req, res) => {
   // Jarvis: pass the latest user message as the recall query so the
   // knowledge graph can inject relevant entity/fact hits automatically.
   const recallQuery = typeof messageText === 'string' ? messageText.slice(0, 240) : undefined;
-  const baseSystemPrompt = await webRuntime.assembleSystemContext({ systemPrompt: withRoutingPolicy(evolvedPrompt), projectDir, skillsDir: SKILLS_DIR, recallProjectDir: PROJECT_DIR, recallQuery, ragProjectDir: PROJECT_DIR, ragQuery: recallQuery, ragOllamaHost: ollamaHost, palaceProjectDir: PROJECT_DIR, sessionSearchProjectDir: PROJECT_DIR, sessionSearchQuery: recallQuery, ccmemUrl: ccmemUrl || undefined, ccmemQuery: recallQuery });
+  // HARNESS_PROMPT_LAYOUT=cache (opt-in): the system prompt holds only what
+  // stays the same between messages, so providers can reuse its cached prefix
+  // and the history after it; per-message context goes into a turn-context
+  // message before the user's message instead (see LoopConfig.promptLayout).
+  const cacheLayout = process.env.HARNESS_PROMPT_LAYOUT?.trim().toLowerCase() === 'cache';
+  const systemContextInput = { systemPrompt: withRoutingPolicy(evolvedPrompt), projectDir, skillsDir: SKILLS_DIR, recallProjectDir: PROJECT_DIR, recallQuery, ragProjectDir: PROJECT_DIR, ragQuery: recallQuery, ragOllamaHost: ollamaHost, palaceProjectDir: PROJECT_DIR, sessionSearchProjectDir: PROJECT_DIR, sessionSearchQuery: recallQuery, ccmemUrl: ccmemUrl || undefined, ccmemQuery: recallQuery, contextWindowTokens: activeContextMaxTokens };
+  const systemContextSections: SystemContextSections = cacheLayout
+    ? await (webRuntime.assembleSystemContextSections?.(systemContextInput) ?? webRuntime.assembleSystemContext(systemContextInput).then((text) => ({ static: text, perMessage: '' })))
+    : { static: await webRuntime.assembleSystemContext(systemContextInput), perMessage: '' };
+  const baseSystemPrompt = systemContextSections.static;
   const attachmentsBlock = await buildAttachmentsContextBlock(req.body?.attachments);
   const explicitSkill = messageText ? await loadExplicitSkillContext(messageText) : { context: '' };
 
@@ -5426,7 +5468,7 @@ CONTEXT HYGIENE (critical for long tasks):
 
   const conciergeNote = buildConciergeNote(typeof message === 'string' ? message : '');
   const squadNote = await buildSquadRoutingNote(squadId, typeof message === 'string' ? message : '').catch(() => null);
-  const identityBlock = await renderIdentityForPrompt(PROJECT_DIR, { maxChars: 4000 }).catch(() => '');
+  const identityBlock = await renderIdentityForPrompt(PROJECT_DIR, { maxChars: Math.floor(4000 * contextScale(activeContextMaxTokens)) }).catch(() => '');
   const recentAuditBlock = await renderRecentAuditForPrompt(PROJECT_DIR).catch(() => '');
 
   // Skill-gap hint ("if nothing exists, create it"): when the message looks
@@ -5447,7 +5489,11 @@ CONTEXT HYGIENE (critical for long tasks):
     }
   } catch (err) { recordSwallowed('skillGapNote', err); }
 
-  const systemPrompt = [baseSystemPrompt, identityBlock, attachmentsBlock, explicitSkill.context, myceliumContext, codeIntelContext, nervousContext, recentAuditBlock, squadNote, conciergeNote, skillGapNote, toolSynthesisNudge].filter(Boolean).join('\n\n');
+  const perMessageBlocks = [attachmentsBlock, explicitSkill.context, myceliumContext, nervousContext, recentAuditBlock, squadNote, conciergeNote, skillGapNote];
+  const systemPrompt = cacheLayout
+    ? [baseSystemPrompt, identityBlock, codeIntelContext, toolSynthesisNudge].filter(Boolean).join('\n\n')
+    : [baseSystemPrompt, identityBlock, attachmentsBlock, explicitSkill.context, myceliumContext, codeIntelContext, nervousContext, recentAuditBlock, squadNote, conciergeNote, skillGapNote, toolSynthesisNudge].filter(Boolean).join('\n\n');
+  const turnContextBlocks = cacheLayout ? [systemContextSections.perMessage.trim(), ...perMessageBlocks].filter(Boolean) : [];
 
   const synthesisStats = await loadSynthesisStats(PROJECT_DIR);
   const effectiveMaxTurns = adaptiveMaxTurns(synthesisStats, activeModel, 25);
@@ -5488,6 +5534,7 @@ CONTEXT HYGIENE (critical for long tasks):
     },
     autoContinue: true,
     taskType: requiresExecutionProof ? chatTaskContract.intent_type : myceliumClassification?.type,
+    ...(cacheLayout ? { promptLayout: 'cache' as const, ...(turnContextBlocks.length > 0 ? { turnContext: turnContextBlocks.join('\n\n') } : {}) } : {}),
   };
 
   // Governed working state: protected paths from .harness/protected-paths.json
@@ -5495,14 +5542,20 @@ CONTEXT HYGIENE (critical for long tasks):
   // every prompt and offers the state_update tool (answer-changing, opt-in).
   const protectedPaths = await loadProtectedPaths();
   if (protectedPaths.length > 0) config.protectedPaths = protectedPaths;
-  if (process.env.HARNESS_WORKING_STATE === 'on') config.workingState = { inject: true };
+  if (process.env.HARNESS_WORKING_STATE === 'on') {
+    // HARNESS_WORKING_STATE_POSITION=tail keeps the cached prefix stable when the state changes.
+    config.workingState = { inject: true, ...(process.env.HARNESS_WORKING_STATE_POSITION?.trim().toLowerCase() === 'tail' ? { position: 'tail' as const } : {}) };
+  }
 
   // Lessons from earlier runs are always recorded; recalling them into the
   // prompt changes answers, so it is opt-in (HARNESS_LESSONS=recall).
   if (resolveLessonsMode() === 'recall') {
     const recalled = recallLessons(await loadLessons(PROJECT_DIR), message);
     if (recalled.length > 0) {
-      config.systemPrompt = `${config.systemPrompt}\n\n${renderLessons(recalled)}`;
+      // Recalled lessons depend on the message, so the cache layout keeps
+      // them out of the system prompt.
+      if (cacheLayout) config.turnContext = [config.turnContext, renderLessons(recalled)].filter(Boolean).join('\n\n');
+      else config.systemPrompt = `${config.systemPrompt}\n\n${renderLessons(recalled)}`;
       config.recalledLessons = recalled.map((lesson) => lesson.id);
     }
   }
@@ -5529,6 +5582,24 @@ CONTEXT HYGIENE (critical for long tasks):
         config.modelPlan = { toolMode: 'native', toolNames: selectRelevantTools(tools, message, config.scaffold.maxToolsOffered).map((tool) => tool.name) };
       }
       logger.info('Scaffold', 'Applied scaffolding level', { model: activeModel, level: scaffoldLevel, source: scaffoldMode });
+    }
+  }
+
+  // Deferred tool loading (opt-in, HARNESS_TOOL_LOADING=deferred|auto): offer
+  // core tools plus the ones most relevant to this message, and a tool_search
+  // tool for the rest, instead of every definition on every request.
+  const toolLoadingMode = resolveToolLoadingMode();
+  if (toolLoadingMode !== 'off' && !config.modelPlan) {
+    const allSchemaTokens = estimateToolSchemaTokens(tools.map(toolToSchema));
+    if (shouldDeferTools(toolLoadingMode, allSchemaTokens, activeContextMaxTokens)) {
+      // Picks from every user message so far, not just this one, so the
+      // offered set (sent first in every request) only grows within a chat
+      // instead of changing from message to message and breaking the cached prefix.
+      const priorUserMessages = (Array.isArray(req.body?.history) ? req.body.history : [])
+        .filter((item: { role?: unknown; content?: unknown }) => item?.role === 'user' && typeof item.content === 'string')
+        .map((item: { content: string }) => item.content.slice(0, 2_000));
+      config.toolLoading = { initial: planInitialToolsForConversation(tools, [...priorUserMessages, message]) };
+      logger.info('ToolLoading', 'Deferred tool loading', { model: activeModel, mode: toolLoadingMode, offered: config.toolLoading.initial.length, total: tools.length, allSchemaTokens });
     }
   }
 
@@ -5607,10 +5678,11 @@ CONTEXT HYGIENE (critical for long tasks):
     learningRecorder: chatLearningRecorder,
     // Bridge inspector requireApproval into the same prompt broker the
     // permission engine uses, so users see one queue. Routed through the
-    // current `permissionMode`: dontAsk auto-allows (matches existing
-    // permission behaviour); ask/acceptEdits surface the prompt.
+    // current `permissionMode`: dontAsk auto-allows inspector prompts (matches
+    // existing permission behaviour) except provenance; ask/acceptEdits
+    // surface the prompt.
     onApprovalRequired: async (info) => {
-      if (permissionMode === 'dontAsk') {
+      if (inspectorAutoApproved(permissionMode, info.inspectorName)) {
         runtimeTracer.recordEvent('inspector.auto_approved', {
           tool: info.call.name,
           inspector: info.inspectorName,
@@ -5641,26 +5713,35 @@ CONTEXT HYGIENE (critical for long tasks):
   const messages: Message[] = [];
   const rawHistory = Array.isArray(req.body?.history) ? req.body.history : [];
   const sanitizedHistory: Message[] = [];
-  // Cap to the last 50 turns; cap each message to 200KB to bound payload size and let
-  // the existing context compaction (activeContextMaxTokens, summarizerModel) trim further.
-  for (const item of rawHistory.slice(-50)) {
+  // Cap each message to 200KB to bound payload size; selectHistoryWindow caps
+  // the count and fits the rest to the token budget.
+  for (const item of rawHistory) {
     const role = item && (item.role === 'assistant' || item.role === 'user') ? item.role : null;
     if (!role) continue;
     const content = typeof item.content === 'string' ? item.content.slice(0, 200_000) : '';
     if (!content) continue;
     sanitizedHistory.push({ role, content });
   }
-  // Reserve ~25% of the model context window for the new user message, system prompt,
-  // tool schemas, and assistant reply; spend the rest on prior history. Drop oldest turns
-  // first until the remaining history fits the budget.
+  // History gets what is left of the window after the system prompt, the tool
+  // definitions and the new message, kept under the loop's snip threshold so
+  // the first turn does not compact it again. Cuts are block-aligned so the
+  // resent prefix stays the same (and cacheable) across several messages.
   const newUserMessage: Message = { role: 'user', content: message };
-  const historyTokenBudget = Math.max(512, Math.floor(activeContextMaxTokens * 0.75) - estimateTokenCount([newUserMessage]));
-  let trimmedHistory = sanitizedHistory;
-  let droppedForTokens = 0;
-  while (trimmedHistory.length > 0 && estimateTokenCount(trimmedHistory) > historyTokenBudget) {
-    trimmedHistory = trimmedHistory.slice(1);
-    droppedForTokens++;
-  }
+  const offeredToolNames = config.modelPlan?.toolNames
+    ? new Set(config.modelPlan.toolNames)
+    : config.toolLoading ? new Set(config.toolLoading.initial) : null;
+  const offeredTools = config.modelPlan && config.modelPlan.toolMode !== 'native'
+    ? []
+    : offeredToolNames ? tools.filter((tool) => offeredToolNames.has(tool.name)) : tools;
+  const historyWindow = selectHistoryWindow(sanitizedHistory, {
+    contextMaxTokens: activeContextMaxTokens,
+    systemPromptTokens: estimateTokenCount([{ role: 'system', content: config.systemPrompt }]),
+    toolSchemaTokens: estimateToolSchemaTokens(offeredTools.map(toolToSchema)),
+    newMessageTokens: estimateTokenCount([newUserMessage]) + (config.turnContext ? estimateTokenCount([{ role: 'user', content: config.turnContext }]) : 0),
+  });
+  const trimmedHistory = historyWindow.messages;
+  const droppedForTokens = historyWindow.dropped;
+  const historyTokenBudget = historyWindow.budget;
   messages.push(...trimmedHistory, newUserMessage);
   logger.info('Chat', `User: ${message.slice(0, 80)}`, { model: activeModel, historyTurns: trimmedHistory.length, droppedForTokens, historyTokenBudget });
   let assistantTextBuffer = '';

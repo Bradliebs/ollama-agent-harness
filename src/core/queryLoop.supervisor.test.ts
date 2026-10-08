@@ -67,6 +67,23 @@ describe('queryLoop supervisor', () => {
     expect(client.chat).toHaveBeenCalledTimes(3);
   });
 
+  it('keeps a final answer that crosses the budget instead of synthesising a new one', async () => {
+    const usage = { promptTokens: 30_000, completionTokens: 1_000 };
+    const chat = jest.fn()
+      .mockResolvedValueOnce({ message: { role: 'assistant', content: '', tool_calls: [{ function: { name: 'probe', arguments: { q: 'x' } } }] } as Message, usage })
+      .mockResolvedValueOnce({ message: { role: 'assistant', content: 'The real answer.' } as Message, usage });
+    const events: LoopEvent[] = [];
+    for await (const event of queryLoop(
+      { model: 'fixture-model', systemPrompt: 'system', maxTurns: 12, context: { enabled: false }, supervisor: { maxTokens: 50_000 } },
+      { client: { chat } as never, tools: [probeTool] },
+      [{ role: 'user', content: 'find it' }],
+    )) events.push(event);
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(events.some((event) => event.type === 'budget_exceeded')).toBe(false);
+    expect(events.find((event) => event.type === 'done')).toMatchObject({ reason: 'completed' });
+    expect(events.filter((event) => event.type === 'text').map((event) => (event.type === 'text' ? event.content : '')).join('')).toContain('The real answer.');
+  });
+
   it('can be disabled per run', async () => {
     const client = loopingClient('done');
     const events = await collect(client, { supervisor: false, maxTurns: 8 });

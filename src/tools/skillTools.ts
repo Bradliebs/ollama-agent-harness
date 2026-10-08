@@ -136,8 +136,9 @@ interface BundledResource {
 
 /**
  * Lists files in the skill directory other than SKILL.md so the model knows
- * what Level-3 (Anthropic spec) bundled resources exist. Recurses one level
- * deep to keep output tight; agents can always `bash ls` for deeper trees.
+ * what Level-3 (Anthropic spec) bundled resources exist. Recurses up to
+ * MAX_BUNDLED_DEPTH subfolder levels to keep output tight; agents can always
+ * `bash ls` for deeper trees.
  */
 async function listBundledResources(skillFilePath: string): Promise<BundledResource[]> {
   const skillDir = path.dirname(skillFilePath);

@@ -9,7 +9,8 @@ import { runProbeSuite } from '../models/probeRunner';
 
 export interface ModelProfileRoutesDeps {
   projectDir: string;
-  createClient: (model: string) => IChatClient | Promise<IChatClient>;
+  /** Client for probing; `maxContextTokens` is the probe's context cap, for sizing the window. */
+  createClient: (model: string, options?: { maxContextTokens?: number }) => IChatClient | Promise<IChatClient>;
   requireAuth: (req: express.Request, res: express.Response, actionLabel: string) => boolean;
   logger: {
     info?: (component: string, message: string, meta?: Record<string, unknown>) => void;
@@ -18,6 +19,8 @@ export interface ModelProfileRoutesDeps {
 }
 
 type JobStatus = 'running' | 'completed' | 'failed';
+
+const MAX_PROBE_JOBS = 50;
 
 interface ProbeJob {
   id: string;
@@ -73,16 +76,22 @@ export function createModelProfileRouter(deps: ModelProfileRoutesDeps): express.
       startedAt: new Date().toISOString(),
     };
     jobs.set(job.id, job);
+    // Keep the newest MAX_PROBE_JOBS (Map iterates in insertion order).
+    for (const id of jobs.keys()) {
+      if (jobs.size <= MAX_PROBE_JOBS) break;
+      jobs.delete(id);
+    }
     res.status(202).json({ jobId: job.id, statusUrl: `/api/model-profiles/probe-jobs/${job.id}` });
 
     void (async () => {
       try {
         deps.logger.info?.('ModelProfile', 'Probe job started', { model, jobId: job.id });
-        const client = await deps.createClient(model);
+        const budget = parseBudget(req.body?.budget);
+        const client = await deps.createClient(model, { maxContextTokens: budget?.maxContextTokens });
         job.profile = await runProbeSuite(client, {
           model,
           projectDir: deps.projectDir,
-          budget: parseBudget(req.body?.budget),
+          budget,
         });
         job.status = 'completed';
         job.completedAt = new Date().toISOString();

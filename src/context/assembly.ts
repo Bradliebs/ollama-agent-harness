@@ -30,6 +30,14 @@ const SESSION_SEARCH_SNIPPET_CHARS = 240;
  * combined block from the tail once all three are built, so any one
  * section can use the full budget when the others are empty. */
 const RECALL_SECTIONS_COMBINED_MAX_CHARS = 4_000;
+/** The section caps above are sized for a 32k-token window; smaller windows get proportionally less. */
+export const CONTEXT_CAPS_REFERENCE_TOKENS = 32_768;
+
+/** Factor applied to the section caps for a model's context window (1 when unknown or at least 32k; never below 0.25). */
+export function contextScale(windowTokens: number | undefined): number {
+  if (!windowTokens || !Number.isFinite(windowTokens) || windowTokens <= 0) return 1;
+  return Math.min(1, Math.max(0.25, windowTokens / CONTEXT_CAPS_REFERENCE_TOKENS));
+}
 
 export interface ContextConfig {
   systemPrompt: string;
@@ -59,10 +67,35 @@ export interface ContextConfig {
   ccmemQuery?: string;
   /** Max concept memory hits to inject (default 5). */
   ccmemTopK?: number;
+  /** The model's context window in tokens. Below 32k the section caps shrink proportionally. */
+  contextWindowTokens?: number;
+}
+
+export interface SystemContextSections {
+  /** Instructions, memory files and the skills list: the same from message to message. */
+  static: string;
+  /** Recall for the current message (knowledge graph, RAG, memory palace, prior sessions, concept memory). */
+  perMessage: string;
 }
 
 export async function assembleSystemContext(config: ContextConfig): Promise<string> {
+  const sections = await assembleSystemContextSections(config);
+  return sections.perMessage ? `${sections.static}\n${sections.perMessage}` : sections.static;
+}
+
+/**
+ * The system context split into what stays the same across messages and what
+ * is recalled for this message, so a caller can keep the stable part as a
+ * cacheable prefix (see HARNESS_PROMPT_LAYOUT=cache).
+ */
+export async function assembleSystemContextSections(config: ContextConfig): Promise<SystemContextSections> {
   const parts: string[] = [config.systemPrompt];
+  const turnParts: string[] = [];
+  const scale = contextScale(config.contextWindowTokens);
+  const projectMemoryMaxChars = Math.floor(PROJECT_MEMORY_MAX_CHARS * scale);
+  const agentMemoryMaxChars = Math.floor(AGENT_MEMORY_MAX_CHARS * scale);
+  const skillListMaxItems = Math.max(5, Math.floor(SKILL_LIST_MAX_ITEMS * scale));
+  const recallMaxChars = Math.floor(RECALL_SECTIONS_COMBINED_MAX_CHARS * scale);
 
   // Append project memory files (CLAUDE.md equivalent)
   const memoryPaths = config.memoryFiles ?? [
@@ -73,7 +106,7 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
   for (const filePath of memoryPaths) {
     try {
       const content = await fs.readFile(filePath, 'utf-8');
-      parts.push(`\n--- ${path.basename(filePath)} ---\n${trimContextText(content, PROJECT_MEMORY_MAX_CHARS, 'middle')}`);
+      parts.push(`\n--- ${path.basename(filePath)} ---\n${trimContextText(content, projectMemoryMaxChars, 'middle')}`);
     } catch (err) { recordSwallowed('assembly.readMemoryFile', err); }
   }
 
@@ -82,7 +115,7 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
   for (const file of ['decisions.md', 'patterns.md', 'notes.md']) {
     try {
       const content = await fs.readFile(path.join(autoMemoryDir, file), 'utf-8');
-      parts.push(`\n--- Agent Memory: ${file} ---\n${trimContextText(content, AGENT_MEMORY_MAX_CHARS, 'tail')}`);
+      parts.push(`\n--- Agent Memory: ${file} ---\n${trimContextText(content, agentMemoryMaxChars, 'tail')}`);
     } catch (err) { recordSwallowed('assembly.readAgentMemory', err); }
   }
 
@@ -94,7 +127,7 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
   try {
     const skills = await loadSkillsDir(sDir);
     if (skills.length > 0) {
-      const listedSkills = skills.slice(0, SKILL_LIST_MAX_ITEMS);
+      const listedSkills = skills.slice(0, skillListMaxItems);
       const skillList = listedSkills.map(s => {
         const triggerSuffix = s.triggers.length > 0 ? ` (triggers: ${s.triggers.join(', ')})` : '';
         return `• ${s.name} — ${s.description}${triggerSuffix}`;
@@ -122,7 +155,7 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
       for (const f of result.facts) lines.push(`- fact: ${f.subject} ${f.predicate} ${f.object} _(source: ${f.id})_`);
       for (const ed of result.edges) lines.push(`- edge: ${ed.from} ${ed.relation} ${ed.to} _(source: ${ed.id})_`);
       if (lines.length > 0) {
-        parts.push(`\n--- Knowledge graph recall: ${config.recallQuery} ---\n${lines.join('\n')}\n_When citing these facts in your answer, reference the source id in parentheses._`);
+        turnParts.push(`\n--- Knowledge graph recall: ${config.recallQuery} ---\n${lines.join('\n')}\n_When citing these facts in your answer, reference the source id in parentheses._`);
       }
     } catch (err) { recordSwallowed('assembly.kgRecall', err); degraded.push('knowledge-graph'); }
   }
@@ -232,17 +265,17 @@ export async function assembleSystemContext(config: ContextConfig): Promise<stri
 
   if (recallParts.length > 0) {
     const combined = recallParts.join('\n');
-    parts.push(trimContextText(combined, RECALL_SECTIONS_COMBINED_MAX_CHARS, 'tail'));
+    turnParts.push(trimContextText(combined, recallMaxChars, 'tail'));
   }
 
   // Point-of-use degraded-memory signal. Only appears when a recall source
   // actually threw, so the default (all sources healthy) prompt is unchanged.
   if (degraded.length > 0) {
     const unique = [...new Set(degraded)];
-    parts.push(`\n--- \u26a0\ufe0f Memory degraded ---\n${unique.length} memory source(s) failed this turn (${unique.join(', ')}); recalled context above may be incomplete. Do not treat the absence of a fact here as proof it is not in memory.`);
+    turnParts.push(`\n--- \u26a0\ufe0f Memory degraded ---\n${unique.length} memory source(s) failed this turn (${unique.join(', ')}); recalled context above may be incomplete. Do not treat the absence of a fact here as proof it is not in memory.`);
   }
 
-  return parts.join('\n');
+  return { static: parts.join('\n'), perMessage: turnParts.join('\n') };
 }
 
 function trimContextText(content: string, maxChars: number, mode: 'middle' | 'tail'): string {
@@ -278,7 +311,23 @@ export function buildInitialMessages(
 }
 
 export function estimateTokenCount(messages: Message[]): number {
-  // Rough estimate: ~4 chars per token
-  const totalChars = messages.reduce((sum, m) => sum + (m.content?.length ?? 0), 0);
+  // Rough estimate: ~4 chars per token. Tool-call arguments count too: a
+  // file_write call carries the whole file and is re-sent on every later turn.
+  const totalChars = messages.reduce((sum, m) => sum + (m.content?.length ?? 0) + toolCallChars(m), 0);
   return Math.ceil(totalChars / 4);
+}
+
+function toolCallChars(message: Message): number {
+  if (!message.tool_calls?.length) return 0;
+  try {
+    return JSON.stringify(message.tool_calls).length;
+  } catch {
+    return 0;
+  }
+}
+
+/** Tokens the tool definitions add to every request (they are sent alongside the messages). */
+export function estimateToolSchemaTokens(tools: readonly unknown[]): number {
+  if (tools.length === 0) return 0;
+  return Math.ceil(JSON.stringify(tools).length / 4);
 }

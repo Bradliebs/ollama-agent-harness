@@ -10,7 +10,7 @@
     cancelled: { icon: '⏹', label: 'Stopped' },
     interrupted: { icon: '⏸', label: 'Reply interrupted' },
     empty: { icon: '∅', label: 'No reply' },
-    stuck: { icon: '🧭', label: 'Moss got stuck' },
+    stuck: { icon: '🧭', label: 'Got stuck' },
     budget: { icon: '💰', label: 'Run budget reached' },
   };
 
@@ -30,7 +30,7 @@
     if (state === 'interrupted') return 'The run ended before a final answer was written.';
     if (state === 'empty') return 'The model returned no text.';
     if (state === 'cancelled') return 'You stopped this reply.';
-    if (state === 'stuck') return 'The last steps made no progress, so Moss stopped to ask you. Answer the question above, or pick a stronger model and retry.';
+    if (state === 'stuck') return 'The last steps made no progress, so the assistant stopped to ask you. Answer the question above, or pick a stronger model and retry.';
     if (state === 'budget') return 'This run used its token or spending budget; the answer summarises what was found so far.';
     return 'Something went wrong while generating this reply.';
   }

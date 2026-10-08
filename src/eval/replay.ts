@@ -3,9 +3,10 @@ import { queryLoop } from '../core/queryLoop';
 import type { IChatClient } from '../core/chatClient';
 import { CostTracker } from './costTracker';
 import { RunLog, listRuns, readRunEvents, reconstructModelRequests, type RunEvent, type RunSummary } from '../persistence/runLog';
-import type { Tool, ToolResult } from '../types';
+import type { LoopConfig, Tool, ToolResult } from '../types';
 import { stableArgsKey } from '../core/toolLoopGuards';
 import { checkClaims } from '../verification/claimCheck';
+import { planInitialToolsForConversation } from '../core/toolLoading';
 
 export type ReplayMode = 'deterministic' | 'live';
 
@@ -36,6 +37,10 @@ export interface ReplayMetrics {
   missingToolResults: number;
   promptTokens: number;
   completionTokens: number;
+  /** Prompt tokens the provider served from its cache (where it reports them). */
+  cachedPromptTokens: number;
+  /** Distinct cacheable prefixes (system message + tool definitions) across the run's requests; 1 means fully stable. */
+  distinctPrefixes: number;
   estimatedUsd: number;
   durationMs: number;
   finalText: string;
@@ -75,6 +80,14 @@ export interface ReplayRunOptions {
    */
   schemaTools?: Tool[];
   now?: Date;
+  /**
+   * Loop settings to evaluate in the replay, e.g. { toolLoading } or
+   * { promptLayout: 'cache' }, so opt-in layers can be compared against the
+   * recorded run before they become defaults.
+   */
+  loopConfig?: Partial<LoopConfig>;
+  /** Evaluate deferred tool loading: offer the core and relevant tools plus tool_search (HARNESS_TOOL_LOADING=deferred). */
+  deferTools?: boolean;
 }
 
 export interface ReplayRunResult {
@@ -102,9 +115,12 @@ export interface BenchmarkHistoryOptions {
   createClient: (model: string, replayCase: ReplayCase) => IChatClient | Promise<IChatClient>;
   maxTurns?: number;
   signal?: AbortSignal;
-  concurrency?: number;
   /** Real tool definitions lending schemas to the deterministic stubs. */
   schemaTools?: Tool[];
+  /** Loop settings to evaluate in every replay (see ReplayRunOptions.loopConfig). */
+  loopConfig?: Partial<LoopConfig>;
+  /** Evaluate deferred tool loading in every replay. */
+  deferTools?: boolean;
 }
 
 export interface BenchmarkHistoryRow {
@@ -197,6 +213,10 @@ export async function replayRun(replayCase: ReplayCase, options: ReplayRunOption
     : createReplayStubTools(replayCase, counters, options.schemaTools);
   const runId = makeReplayRunId(replayCase.originalRunId, options.model, options.now ?? new Date());
   const runLog = new RunLog(replayCase.projectDir, runId);
+  const userMessages = replayCase.initialMessages
+    .filter((message) => message.role === 'user' && typeof message.content === 'string')
+    .map((message) => String(message.content));
+  const toolLoading = options.deferTools ? { toolLoading: { initial: planInitialToolsForConversation(tools, userMessages) } } : {};
   for await (const _event of queryLoop(
     {
       model: options.model,
@@ -205,7 +225,10 @@ export async function replayRun(replayCase: ReplayCase, options: ReplayRunOption
       abortSignal: options.signal,
       context: { enabled: false },
       verify: { enabled: false },
-      supervisor: false,
+      ...toolLoading,
+      // Default supervisor, as in the recorded run, so stuck and budget
+      // outcomes are comparable between the original and the replays.
+      ...(options.loopConfig ?? {}),
     },
     { client: options.client, tools, runLog },
     replayCase.initialMessages,
@@ -245,6 +268,8 @@ export function formatReportTable(report: ReplayComparisonReport): string {
     String(row.turns),
     String(row.toolCalls),
     `${row.promptTokens + row.completionTokens}`,
+    row.cachedPromptTokens ? String(row.cachedPromptTokens) : '-',
+    row.distinctPrefixes ? String(row.distinctPrefixes) : '-',
     `$${row.estimatedUsd.toFixed(6)}`,
     `${row.durationMs}ms`,
     String(row.citedSources),
@@ -253,7 +278,7 @@ export function formatReportTable(report: ReplayComparisonReport): string {
     row.approximateToolMatches ? String(row.approximateToolMatches) : '-',
     row.missingToolResults ? String(row.missingToolResults) : '-',
   ]));
-  return renderTable(['run', 'done', 'turns', 'tools', 'tokens', 'cost', 'duration', 'urls', 'unsupported', 'completed', 'approx', 'missing'], data);
+  return renderTable(['run', 'done', 'turns', 'tools', 'tokens', 'cached', 'prefixes', 'cost', 'duration', 'urls', 'unsupported', 'completed', 'approx', 'missing'], data);
 }
 
 export function formatReportMarkdown(report: ReplayComparisonReport): string {
@@ -287,16 +312,11 @@ export async function benchmarkHistory(projectDir: string, options: BenchmarkHis
   }
 
   const rows: BenchmarkHistoryRow[] = [];
-  const concurrency = Math.max(1, Math.floor(options.concurrency ?? 1));
-  if (concurrency !== 1) {
-    // Keep the current implementation deterministic and side-effect-free; callers can
-    // request >1 later without changing the public shape, but Phase 10 defaults to 1.
-  }
   for (const replayCase of selected) {
     for (const model of options.models) {
       if (options.signal?.aborted) throw new Error('Benchmark aborted');
       const client = await options.createClient(model, replayCase);
-      const replay = await replayRun(replayCase, { client, model, maxTurns: options.maxTurns, signal: options.signal, schemaTools: options.schemaTools });
+      const replay = await replayRun(replayCase, { client, model, maxTurns: options.maxTurns, signal: options.signal, schemaTools: options.schemaTools, loopConfig: options.loopConfig, deferTools: options.deferTools });
       rows.push({
         originalRunId: replayCase.originalRunId,
         replayRunId: replay.runId,
@@ -423,6 +443,7 @@ function metricsFromEvents(runId: string, events: readonly RunEvent[], replayCou
   const turns = typeof end?.data.turns === 'number' ? end.data.turns : events.filter((event) => event.kind === 'model_request').length;
   let promptTokens = 0;
   let completionTokens = 0;
+  let cachedPromptTokens = 0;
   const tracker = new CostTracker(model);
   let costTurn = 0;
   let finalText = '';
@@ -433,6 +454,7 @@ function metricsFromEvents(runId: string, events: readonly RunEvent[], replayCou
     const outTokens = numberValue(usage?.completionTokens);
     promptTokens += inTokens;
     completionTokens += outTokens;
+    cachedPromptTokens += numberValue(usage?.cachedPromptTokens);
     costTurn += 1;
     tracker.recordTurn(costTurn, inTokens, outTokens);
     const message = isRecord(event.data.message) ? event.data.message : undefined;
@@ -461,6 +483,8 @@ function metricsFromEvents(runId: string, events: readonly RunEvent[], replayCou
     missingToolResults: replayCounters.missingToolResults,
     promptTokens,
     completionTokens,
+    cachedPromptTokens,
+    distinctPrefixes: new Set(events.filter((event) => event.kind === 'model_request' && typeof event.data.prefixHash === 'string').map((event) => event.data.prefixHash)).size,
     estimatedUsd: tracker.summarize().totalEstimatedCostUsd,
     durationMs,
     finalText,

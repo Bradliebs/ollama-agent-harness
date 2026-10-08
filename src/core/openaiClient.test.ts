@@ -1,6 +1,8 @@
-import { OpenAIClient } from './openaiClient';
+import { OpenAIClient, isStrictCompatibleSchema } from './openaiClient';
 import { FallbackChatClient } from './fallbackChatClient';
 import { drainRemoteProviderFallbackEvents, FALLBACK_COOLDOWN_MS } from './fallbackChatClient';
+import { compileModelRequestPlan } from '../models/adapter';
+import type { CapabilityProfile } from '../models/capabilityProfile';
 import type { Message, Tool } from 'ollama';
 
 const fetchSpy = jest.fn();
@@ -60,6 +62,17 @@ describe('OpenAIClient', () => {
     expect(result.message.content).toBe('hello');
     expect(result.usage.promptTokens).toBe(3);
     expect(result.usage.completionTokens).toBe(2);
+    expect(result.usage.cachedPromptTokens).toBeUndefined();
+  });
+
+  it('reports prompt tokens served from the provider cache', async () => {
+    fetchSpy.mockResolvedValueOnce(makeResponse({
+      choices: [{ message: { role: 'assistant', content: 'hello' } }],
+      usage: { prompt_tokens: 12_000, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 10_240 } },
+    }));
+    const client = new OpenAIClient({ baseUrl: 'https://api.openai.test/v1', apiKey: 'k', model: 'm' });
+    const result = await client.chat([{ role: 'user', content: 'hi' }]);
+    expect(result.usage).toMatchObject({ promptTokens: 12_000, cachedPromptTokens: 10_240 });
   });
 
   it('translates response schema to OpenAI response_format', async () => {
@@ -71,7 +84,7 @@ describe('OpenAIClient', () => {
       apiKey: 'test-key',
       model: 'model',
     });
-    const schema = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] };
+    const schema = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: false };
 
     await client.chat([{ role: 'user', content: 'json' }], undefined, undefined, { format: schema });
 
@@ -80,6 +93,18 @@ describe('OpenAIClient', () => {
       type: 'json_schema',
       json_schema: { name: 'harness_response', strict: true, schema },
     });
+  });
+
+  it('only asks for strict mode when the schema is strict-compatible', () => {
+    expect(isStrictCompatibleSchema({ type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: false }, true)).toBe(true);
+    expect(isStrictCompatibleSchema({ type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] }, true)).toBe(false);
+    // The constrained-json tool-call schema: root anyOf and open "arguments" objects.
+    const toolCallSchema = compileModelRequestPlan({
+      tools: [{ name: 'add', description: 'add', parameters: {}, isReadOnly: true, execute: async () => ({ success: true, output: '' }) }],
+      systemPrompt: '',
+      profile: { recommended: { toolMode: 'constrained-json', maxToolsPerStep: 2, promptTier: 'full', scaffoldLevel: 'light', contextBudgetTokens: 1024 } } as CapabilityProfile,
+    }).format as Record<string, unknown>;
+    expect(isStrictCompatibleSchema(toolCallSchema, true)).toBe(false);
   });
 
   it('translates Ollama tools to OpenAI function-tool format', async () => {

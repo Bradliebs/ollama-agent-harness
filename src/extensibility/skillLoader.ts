@@ -138,7 +138,9 @@ async function skillFileExists(filePath: string): Promise<boolean> {
   }
 }
 
-export function parseSkillFile(content: string, filePath: string): SkillDefinition | null {
+export function parseSkillFile(rawContent: string, filePath: string): SkillDefinition | null {
+  // Windows checkouts (core.autocrlf) and some editors write CRLF and a BOM.
+  const content = rawContent.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
   const frontmatter = extractFrontmatter(content);
   if (!frontmatter) return null;
 

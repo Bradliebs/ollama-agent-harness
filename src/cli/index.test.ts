@@ -96,6 +96,9 @@ describe('cli setup doctor', () => {
       benchmarkLastN: 7,
       json: true,
     });
+    expect(parseArgs(['benchmark-history', '--models', 'm1', '--defer-tools']).deferTools).toBe(true);
+    // A trailing --models with no value leaves the list empty instead of throwing.
+    expect(parseArgs(['benchmark-history', '--models']).benchmarkModels).toEqual([]);
   });
 
   it('parses --watch with default 5s interval', () => {

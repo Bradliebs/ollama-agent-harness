@@ -6,7 +6,6 @@
 // retired on 2026-09-25) is skipped instead of breaking verification.
 
 export const DEFAULT_CRITIC_PREFERENCE = [
-  'deepseek-v4-flash:cloud',
   'minimax-m2.7:cloud',
   'glm-5.3-flash:cloud',
   'kimi-k3:cloud',

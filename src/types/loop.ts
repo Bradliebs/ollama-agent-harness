@@ -125,12 +125,6 @@ export interface LoopConfig {
    * HARNESS_SUPERVISOR=0 disables it globally. See core/supervisor.ts.
    */
   supervisor?: Partial<import('../core/supervisor').SupervisorConfig> | false;
-  /**
-   * Per-model request plan compiled from the model's capability profile
-   * (models/adapter.ts). Limits the tools offered per step and, for models
-   * without reliable native tool calling, switches to JSON tool calls in text
-   * (optionally schema-constrained) that the loop lifts back into tool calls.
-   */
   /** Provenance checks on side effects (default on; false disables for this run). */
   provenance?: boolean;
   /**
@@ -145,13 +139,43 @@ export interface LoopConfig {
    * inject: true the state is rendered into every system prompt (never
    * compacted) and the model gets a state_update tool.
    */
-  workingState?: { inject?: boolean };
+  workingState?: {
+    inject?: boolean;
+    /**
+     * Where the injected state goes: 'system' (default) appends it to the
+     * system prompt; 'tail' sends it as a last message so the prefix stays
+     * cacheable when the state changes.
+     */
+    position?: 'system' | 'tail';
+  };
   /** Extra paths/patterns that tools must never modify (dir/, dir/**, file). */
   protectedPaths?: string[];
   /** Ids of lessons from earlier runs recalled into this run's prompt, recorded so their effect can be scored. */
   recalledLessons?: string[];
   /** Research-answer verification mode; defaults to HARNESS_VERIFY_RESEARCH (check = record only). */
   verifyResearch?: 'off' | 'check' | 'annotate' | 'critic' | 'gate';
+  /**
+   * Deferred tool loading (core/toolLoading.ts): offer only these tools at
+   * first, plus a tool_search tool that loads the others on demand. The
+   * loaded set only grows. Ignored when modelPlan restricts the tools.
+   */
+  toolLoading?: { initial: string[] };
+  /**
+   * 'cache' keeps the system prompt identical from message to message so
+   * providers can reuse its cached prefix (and the history after it): the
+   * task contract, output-validation instructions and `turnContext` go into
+   * one delimited message placed just before the user's latest message
+   * instead. Default: everything in the system prompt.
+   */
+  promptLayout?: 'default' | 'cache';
+  /** Context for the current message only (recall, attachments, routing notes). See promptLayout. */
+  turnContext?: string;
+  /**
+   * Per-model request plan compiled from the model's capability profile
+   * (models/adapter.ts). Limits the tools offered per step and, for models
+   * without reliable native tool calling, switches to JSON tool calls in text
+   * (optionally schema-constrained) that the loop lifts back into tool calls.
+   */
   modelPlan?: {
     toolMode: 'native' | 'json-in-text' | 'constrained-json';
     toolNames?: string[];
@@ -292,6 +316,8 @@ export interface ContextBreakdownEvent {
   systemTokens: number;
   historyTokens: number;
   toolResultTokens: number;
+  /** Tool definitions sent with the request (not part of the transcript, never compacted). */
+  toolSchemaTokens?: number;
   currentUserTokens: number;
   messageCount: number;
 }
@@ -348,6 +374,10 @@ export interface UsageEvent {
   promptEvalDurationMs?: number;
   /** Milliseconds spent generating tokens. */
   evalDurationMs?: number;
+  /** Prompt tokens served from the provider's prompt cache, when it reports them. */
+  cachedPromptTokens?: number;
+  /** What the call was for, when it was not a turn of the agent itself. */
+  purpose?: 'compaction';
 }
 
 /** The run supervisor intervened because tool steps stopped producing

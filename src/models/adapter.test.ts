@@ -1,4 +1,4 @@
-import { compileModelRequestPlan, parseConstrainedToolCall } from './adapter';
+import { compileModelRequestPlan, parseConstrainedFinalAnswer, parseConstrainedToolCall } from './adapter';
 import type { CapabilityProfile } from './capabilityProfile';
 import type { Tool } from '../types/tool';
 
@@ -64,5 +64,15 @@ describe('model adapter', () => {
     expect(parseConstrainedToolCall('{"tool_call":{"name":"add","arguments":{"a":1}}}')).toEqual([
       { function: { name: 'add', arguments: { a: 1 } } },
     ]);
+  });
+
+  it('lets a constrained-json model finish with a final answer', () => {
+    const plan = compileModelRequestPlan({ tools, systemPrompt: 'base', profile: profile('constrained-json') });
+    const variants = (plan.format as { anyOf: Array<{ required: string[] }> }).anyOf.map((variant) => variant.required);
+    expect(variants).toEqual([['tool_call'], ['final_answer']]);
+    expect(plan.systemPrompt).toContain('"final_answer"');
+    expect(parseConstrainedFinalAnswer('{"final_answer":"It is 4."}')).toBe('It is 4.');
+    expect(parseConstrainedFinalAnswer('{"tool_call":{"name":"add","arguments":{}}}')).toBeNull();
+    expect(parseConstrainedFinalAnswer('plain text')).toBeNull();
   });
 });

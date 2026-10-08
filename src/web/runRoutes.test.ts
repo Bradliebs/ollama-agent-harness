@@ -42,6 +42,7 @@ describe('run routes', () => {
     const step2 = log.nextStep('t2.1');
     log.append('tool_call', { name: 'file_write', input: { path: 'a.txt' } }, step1);
     log.append('tool_call', { name: 'file_write', input: { path: 'b.txt' } }, step2);
+    log.append('state', { state: { plan: [] } }, step2);
     log.append('run_end', { reason: 'completed', turns: 2 });
     await log.flush();
     await fs.writeFile(path.join(dir, 'a.txt'), 'a');
@@ -59,6 +60,8 @@ describe('run routes', () => {
     expect(detail.summary.reason).toBe('completed');
     expect(detail.events.map((event) => event.kind)).toEqual(['tool_call', 'tool_call']);
     expect(detail.sideEffects).toHaveLength(2);
+    const stateOnly = await (await fetch(`${base}/api/run-logs/run-routes-1?kinds=state`)).json() as { events: Array<{ kind: string }> };
+    expect(stateOnly.events.map((event) => event.kind)).toEqual(['state']);
   });
 
   it('rejects bad ids, unknown runs, bad steps and unauthorised reverts', async () => {

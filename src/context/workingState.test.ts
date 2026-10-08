@@ -54,6 +54,56 @@ describe('WorkingStateStore', () => {
     expect(at('.env.example')).toBeNull();
   });
 
+  it('treats leading ** and single * globs as globs, not as match-everything', () => {
+    const root = path.resolve('/work/app');
+    const store = new WorkingStateStore({ protectedPaths: ['**/secret.txt', '*.pem', 'src/**/keys', 'docs'] });
+    const at = (rel: string) => store.protectedMatch(path.join(root, rel), root);
+    expect(at('docs/guide/a.md')).toBe('docs');
+    expect(at('docs.md')).toBeNull();
+    expect(at('a/b/secret.txt')).toBe('**/secret.txt');
+    expect(at('secret.txt')).toBe('**/secret.txt');
+    expect(at('certs/server.pem')).toBe('*.pem');
+    expect(at('src/deep/keys')).toBe('src/**/keys');
+    expect(at('src/app.ts')).toBeNull();
+    expect(at('notsecret.txt')).toBeNull();
+    expect(shellTouchesProtected('rm build/secret.txt', store)).toBe('**/secret.txt');
+  });
+
+  it('anchors a leading "/" at the project root, gitignore style', () => {
+    const root = path.resolve('/work/app');
+    const store = new WorkingStateStore({ protectedPaths: ['/secrets', '/config/prod.json'] });
+    const at = (rel: string) => store.protectedMatch(path.join(root, rel), root);
+    expect(at('secrets/key.pem')).toBe('/secrets');
+    expect(at('config/prod.json')).toBe('/config/prod.json');
+    expect(at('lib/secrets/key.pem')).toBeNull();
+    expect(at('config/dev.json')).toBeNull();
+  });
+
+  it('matches pathological wildcard patterns in linear time (no catastrophic backtracking)', () => {
+    const root = path.resolve('/work/app');
+    const hostile = ['*'.repeat(40) + 'x', 'a*'.repeat(60) + 'z', '**/'.repeat(40) + 'q'];
+    const store = new WorkingStateStore({ protectedPaths: hostile });
+    const target = path.join(root, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(60) + '.txt');
+    const started = Date.now();
+    expect(store.protectedMatch(target, root)).toBeNull();
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(store.protectedMatch(path.join(root, 'deep', 'x'), root)).toBe(hostile[0]);
+  });
+
+  it('never lets model updates evict seeded or earlier protections and invariants', async () => {
+    const store = new WorkingStateStore({ protectedPaths: ['.env'], invariants: ['keep the public API stable'] });
+    const tool = createStateUpdateTool(store);
+    await tool.execute({
+      protectPaths: Array.from({ length: 80 }, (_, i) => `junk-${i}/`),
+      addInvariants: Array.from({ length: 40 }, (_, i) => `junk invariant ${i}`),
+    });
+    expect(store.state.protectedPaths[0]).toBe('.env');
+    expect(store.state.protectedPaths).toHaveLength(50);
+    expect(store.state.invariants[0]).toBe('keep the public API stable');
+    expect(store.state.invariants).toHaveLength(20);
+    expect(store.protectedMatch(path.resolve('/work/app/.env'), path.resolve('/work/app'))).toBe('.env');
+  });
+
   it('flags only writing shell commands that name a protected path', () => {
     const store = new WorkingStateStore({ protectedPaths: ['.env', 'secrets/'] });
     expect(shellTouchesProtected('echo KEY=1 >> .env', store)).toBe('.env');
@@ -144,6 +194,28 @@ describe('queryLoop working state', () => {
     const events = await readRunEvents(dir, 'state-run');
     expect(reconstructModelRequests(events).map((request) => request.messages)).toEqual(sent);
     expect(events.filter((event) => event.kind === 'state').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('tail position: keeps the system prompt and history stable and still rebuilds the prompts exactly', async () => {
+    const runLog = new RunLog(dir, 'state-tail-run');
+    const { sent } = await run(
+      { workingState: { inject: true, position: 'tail' }, protectedPaths: ['secrets/'] },
+      [
+        { role: 'assistant', content: '', tool_calls: [call('state_update', { plan: ['look up price', 'answer'] })] } as Message,
+        { role: 'assistant', content: '', tool_calls: [call('state_update', { completeSteps: [1] })] } as Message,
+        { role: 'assistant', content: 'The price is £1,669.' },
+      ],
+      [],
+      runLog,
+    );
+    // The system prompt never changes; the state rides in the last message.
+    expect(sent.map((request) => request[0].content)).toEqual(['system', 'system', 'system']);
+    expect(String(sent[1][sent[1].length - 1].content)).toContain('1. [ ] look up price');
+    expect(String(sent[2][sent[2].length - 1].content)).toContain('1. [x] look up price');
+    // Each request extends the previous one's prefix (minus the old state message).
+    expect(sent[2].slice(0, sent[1].length - 1)).toEqual(sent[1].slice(0, -1));
+    const events = await readRunEvents(dir, 'state-tail-run');
+    expect(reconstructModelRequests(events).map((request) => request.messages)).toEqual(sent);
   });
 
   it('does not offer state_update or change prompts when injection is off', async () => {

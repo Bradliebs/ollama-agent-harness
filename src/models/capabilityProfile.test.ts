@@ -85,6 +85,12 @@ describe('capability profiles', () => {
       await expect(listCapabilityProfiles(dir)).resolves.toEqual([profile]);
       expect(isCapabilityProfileFresh(profile, { maxAgeDays: 1 })).toBe(true);
       expect(isCapabilityProfileFresh({ ...profile, profileVersion: -1 }, { maxAgeDays: 1 })).toBe(false);
+
+      // A malformed profile on disk is skipped rather than trusted.
+      const broken = { ...profile, model: 'broken-model', scores: undefined };
+      await fs.writeFile(path.join(dir, '.harness', 'model-profiles', 'broken-model.json'), JSON.stringify(broken), 'utf-8');
+      await expect(loadCapabilityProfile('broken-model', dir)).resolves.toBeNull();
+      await expect(listCapabilityProfiles(dir)).resolves.toEqual([profile]);
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }

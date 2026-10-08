@@ -5573,7 +5573,7 @@ function updateContextHud(pressure, strategy, qualityScore, autosaved) {
 }
 
 function formatContextBreakdown(ev) {
-  return '~' + ev.totalTokens + '/' + ev.maxTokens + ' tokens · system ' + ev.systemTokens + ' · history ' + ev.historyTokens + ' · tools ' + ev.toolResultTokens + ' · current ' + ev.currentUserTokens;
+  return '~' + ev.totalTokens + '/' + ev.maxTokens + ' tokens · system ' + ev.systemTokens + ' · history ' + ev.historyTokens + ' · tools ' + ev.toolResultTokens + (ev.toolSchemaTokens ? ' · tool defs ' + ev.toolSchemaTokens : '') + ' · current ' + ev.currentUserTokens;
 }
 
 function ensurePermissionPanel() {

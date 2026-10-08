@@ -166,6 +166,44 @@ describe('history replay', () => {
     expect(sentToolOutputs).toEqual(expect.arrayContaining(['recorded:alpha', 'recorded:beta', 'No recorded result for this call in the original run (replay mode)']));
     const replayEvents = await readRunEvents(dir, replay.runId);
     expect(replayEvents[0]).toMatchObject({ kind: 'run_start', data: { model: 'new-model' } });
+    // The cacheable prefix stayed the same on every request.
+    expect(replay.metrics.distinctPrefixes).toBe(1);
+    expect(replay.metrics.cachedPromptTokens).toBe(0);
+  });
+
+  it('evaluates deferred tool loading: unrelated recorded tools start unloaded behind tool_search', async () => {
+    await recordRun(dir, 'chat-defer-1');
+    const replayCase = await loadReplayCase(dir, 'chat-defer-1');
+    const offered: string[][] = [];
+    const client = scriptedClient('new-model', [{ role: 'assistant', content: 'Replay final' } as Message]);
+    const chat = client.chat as jest.Mock;
+    const original = chat.getMockImplementation() as (messages: Message[], tools?: Array<{ function: { name: string } }>) => unknown;
+    chat.mockImplementation((messages: Message[], tools: Array<{ function: { name: string } }> = []) => {
+      offered.push(tools.map((schema) => schema.function.name));
+      return original(messages, tools);
+    });
+    await replayRun(replayCase, { client, model: 'new-model', deferTools: true });
+    // 'lookup' is neither a core tool nor named by the task ("research alpha"), so only tool_search is offered.
+    expect(offered[0]).toEqual(['tool_search']);
+  });
+
+  it('replays under the default supervisor, so budget and stuck outcomes are comparable', async () => {
+    await recordRun(dir, 'chat-budget-1');
+    const replayCase = await loadReplayCase(dir, 'chat-budget-1');
+    const client = scriptedClient('new-model', [
+      { role: 'assistant', content: '', tool_calls: [call('lookup', { q: 'alpha' })] } as Message,
+      { role: 'assistant', content: '', tool_calls: [call('lookup', { q: 'beta' })] } as Message,
+      { role: 'assistant', content: 'Replay final' } as Message,
+    ]);
+    const previous = process.env.HARNESS_RUN_MAX_TOKENS;
+    process.env.HARNESS_RUN_MAX_TOKENS = '20';
+    try {
+      const replay = await replayRun(replayCase, { client, model: 'new-model', maxTurns: 6 });
+      expect(replay.metrics).toMatchObject({ budgetExceeded: true, doneReason: 'budget_synthesized' });
+    } finally {
+      if (previous === undefined) delete process.env.HARNESS_RUN_MAX_TOKENS;
+      else process.env.HARNESS_RUN_MAX_TOKENS = previous;
+    }
   });
 
   it('lends real tool schemas to replay stubs without ever executing the real tool', async () => {

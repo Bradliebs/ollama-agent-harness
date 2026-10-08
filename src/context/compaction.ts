@@ -1,6 +1,6 @@
 import type { Message } from 'ollama';
 import { OllamaClient } from '../core/ollamaClient';
-import type { IChatClient } from '../core/chatClient';
+import type { IChatClient, TokenUsage } from '../core/chatClient';
 import { estimateTokenCount } from './assembly';
 import { compactToolOutput } from './toolOutputCompaction';
 import { resolveLoopHardeningEnabled } from '../core/iterationBudget';
@@ -65,6 +65,21 @@ function stripCompactionBoundaries(messages: Message[]): Message[] {
   return messages.filter((msg) => !isCompactionBoundary(msg));
 }
 
+function isAutoCompactSummary(msg: Message): boolean {
+  return isCompactionBoundary(msg) && String(msg.content).startsWith(AUTO_COMPACT_BOUNDARY_PREFIX);
+}
+
+/** The text of the most recent auto-compact summary in `messages`, without its header or markers. */
+function previousSummaryText(messages: Message[]): string | null {
+  const last = [...messages].reverse().find(isAutoCompactSummary);
+  if (!last) return null;
+  const body = String(last.content).split('\n').slice(1).join('\n')
+    .replace(HISTORICAL_CONTEXT_BEGIN_MARKER, '')
+    .replace(HISTORICAL_CONTEXT_END_MARKER, '')
+    .trim();
+  return body || null;
+}
+
 export interface CompactionConfig {
   maxTokens: number;
   budgetPerToolResult: number;
@@ -94,6 +109,8 @@ export interface CompactionResult {
   summary?: string;
   compactedCount?: number;
   validation?: CompactionValidation;
+  /** Tokens the summarizer call itself used (auto-compaction only). */
+  usage?: TokenUsage;
 }
 
 export function applyBudgetReduction(
@@ -113,6 +130,51 @@ export function applyBudgetReduction(
   return { messages: updated, strategy: 'budget_reduction', tokensFreed: freed };
 }
 
+/** Tool-call string arguments longer than this are shortened once the call is old. */
+export const MAX_OLD_TOOL_ARG_CHARS = 1500;
+const ELIDED_ARG_PREFIX = '[';
+const ELIDED_ARG_SUFFIX = ' chars omitted to save context; this call already ran]';
+
+/**
+ * Shorten long string arguments in tool calls older than the last
+ * `keepRecentCalls` assistant tool-call messages. Recent calls stay intact
+ * so the model can still refer to what it just wrote.
+ */
+export function elideOldToolCallArguments(
+  messages: Message[],
+  keepRecentCalls = 2,
+  maxArgChars = MAX_OLD_TOOL_ARG_CHARS,
+): CompactionResult {
+  const callIndexes = messages.map((m, i) => (m.role === 'assistant' && m.tool_calls?.length ? i : -1)).filter((i) => i >= 0);
+  const old = new Set(callIndexes.slice(0, Math.max(0, callIndexes.length - keepRecentCalls)));
+  let freedChars = 0;
+  const updated = messages.map((msg, index) => {
+    if (!old.has(index) || !msg.tool_calls) return msg;
+    let changed = false;
+    const toolCalls = msg.tool_calls.map((call) => {
+      const args = call.function?.arguments;
+      if (!args || typeof args !== 'object') return call;
+      let callChanged = false;
+      const nextArgs: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
+        if (typeof value === 'string' && value.length > maxArgChars && !value.startsWith(ELIDED_ARG_PREFIX)) {
+          const marker = `${ELIDED_ARG_PREFIX}${value.length}${ELIDED_ARG_SUFFIX}`;
+          freedChars += value.length - marker.length;
+          nextArgs[key] = marker;
+          callChanged = true;
+        } else {
+          nextArgs[key] = value;
+        }
+      }
+      if (!callChanged) return call;
+      changed = true;
+      return { ...call, function: { ...call.function, arguments: nextArgs } };
+    });
+    return changed ? { ...msg, tool_calls: toolCalls } : msg;
+  });
+  return { messages: freedChars > 0 ? updated : messages, strategy: 'budget_reduction', tokensFreed: Math.max(0, Math.ceil(freedChars / 4)) };
+}
+
 export function applySnip(
   messages: Message[],
   keepCount: number,
@@ -122,7 +184,9 @@ export function applySnip(
   }
 
   // Keep system message + the last N messages. Strip any prior boundary
-  // markers so repeated compaction doesn't stack them up.
+  // markers so repeated compaction doesn't stack them up, but keep the latest
+  // auto-compact summary: it is the only record of what came before it.
+  const priorSummary = [...messages].reverse().find(isAutoCompactSummary);
   const cleaned = stripCompactionBoundaries(messages);
   const systemMessages = cleaned.filter((m) => m.role === 'system');
   const nonSystem = cleaned.filter((m) => m.role !== 'system');
@@ -142,7 +206,7 @@ export function applySnip(
   };
 
   return {
-    messages: [...systemMessages, boundary, ...snipped],
+    messages: [...systemMessages, ...(priorSummary ? [priorSummary] : []), boundary, ...snipped],
     strategy: 'snip',
     tokensFreed: freed,
     summary: boundary.content,
@@ -156,7 +220,9 @@ export async function applyAutoCompact(
   minSummaryQuality = DEFAULT_COMPACTION_CONFIG.minSummaryQuality ?? 0,
 ): Promise<CompactionResult> {
   // Strip any prior compaction-boundary system messages first so the LLM
-  // summarises the real conversation and we don't stack boundaries.
+  // summarises the real conversation and we don't stack boundaries. The
+  // previous summary is folded into the new one instead of being dropped.
+  const priorSummary = previousSummaryText(messages);
   const cleaned = stripCompactionBoundaries(messages);
   const systemMessages = cleaned.filter((m) => m.role === 'system');
   const conversation = cleaned.filter((m) => m.role !== 'system');
@@ -169,7 +235,9 @@ export async function applyAutoCompact(
   const toSummarize = conversation.slice(0, -2);
   const toKeep = conversation.slice(-2);
 
-  const summaryPrompt = buildCompactPrompt(toSummarize);
+  const summaryPrompt = priorSummary
+    ? `[PREVIOUS SUMMARY]: ${priorSummary}\n\n${buildCompactPrompt(toSummarize)}`
+    : buildCompactPrompt(toSummarize);
 
   try {
     const result = await client.chat([
@@ -178,10 +246,11 @@ export async function applyAutoCompact(
     ]);
 
     const freed = estimateTokenCount(toSummarize);
+    const usage = result.usage ? { usage: result.usage } : {};
     const validation = validateCompactionSummary(toSummarize, result.message.content, minSummaryQuality);
     if (!validation.passed) {
       const fallback = applySnip(messages, Math.ceil(messages.length * 0.5));
-      return { ...fallback, strategy: 'snip_quality_fallback', validation };
+      return { ...fallback, strategy: 'snip_quality_fallback', validation, ...usage };
     }
     const summary: Message = {
       role: 'system' as const,
@@ -197,6 +266,7 @@ export async function applyAutoCompact(
       summary: result.message.content,
       compactedCount: toSummarize.length,
       validation,
+      ...usage,
     };
   } catch {
     // If summarization fails, fall back to snip
@@ -213,6 +283,17 @@ export async function compactIfNeeded(
   let result = applyBudgetReduction(messages, config.budgetPerToolResult);
   let current = result.messages;
 
+  // Layer 1b: under pressure, shorten large arguments of older tool calls
+  // (e.g. a whole file passed to file_write) before dropping or summarising
+  // whole messages: those calls already ran, and their effect is on disk.
+  if (estimateTokenCount(current) / config.maxTokens > config.snipThreshold) {
+    const elided = elideOldToolCallArguments(current);
+    if (elided.tokensFreed > 0) {
+      current = elided.messages;
+      result = { messages: current, strategy: 'budget_reduction', tokensFreed: result.tokensFreed + elided.tokensFreed };
+    }
+  }
+
   // Layer 2: Auto-compact when close to the limit so continuity is preserved.
   if (estimateTokenCount(current) / config.maxTokens > config.autoCompactThreshold) {
     const compactResult = await applyAutoCompact(current, client, config.minSummaryQuality);
@@ -224,6 +305,7 @@ export async function compactIfNeeded(
       summary: compactResult.summary,
       compactedCount: compactResult.compactedCount,
       validation: compactResult.validation,
+      ...(compactResult.usage ? { usage: compactResult.usage } : {}),
     };
   } else if (estimateTokenCount(current) / config.maxTokens > config.snipThreshold) {
     // Layer 3: Snip as a cheaper pressure release before the hard limit.

@@ -84,6 +84,19 @@ describe('queryLoop with scaffolding', () => {
     expect(events.find((event) => event.type === 'done')).toMatchObject({ reason: 'completed' });
   });
 
+  it('heavy: narrowing reaches the model even when surrogate sanitisation copies the message array', async () => {
+    const search = tool('web_search', 'search', 'results for');
+    const { sent } = await run({ scaffold: { ...scaffoldFor('heavy'), keepRecentToolResults: 1 } }, [
+      { role: 'assistant', content: '1. search 2. search again 3. answer' },
+      { role: 'assistant', content: '', tool_calls: [call('web_search', 'first')] } as Message,
+      { role: 'assistant', content: '', tool_calls: [call('web_search', 'lone \uD800 surrogate')] } as Message,
+      { role: 'assistant', content: 'Done.' },
+    ], [search]);
+    const toolMessages = sent[3].filter((m) => m.role === 'tool').map((m) => String(m.content));
+    expect(toolMessages[0]).toMatch(/^\[older tool result trimmed/);
+    expect(toolMessages[1]).not.toContain('\uD800');
+  });
+
   it('medium: caps tool calls per turn at three and does not treat the first answer as a plan', async () => {
     const search = tool('web_search', 'search');
     const { events } = await run({ scaffold: scaffoldFor('medium') }, [

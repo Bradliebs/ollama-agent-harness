@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { loadSkillsDir, loadSkillsFromDirs, matchSkillTrigger, scanSkillsDir, scanSkillsDirs } from './skillLoader';
+import { loadSkillsDir, loadSkillsFromDirs, matchSkillTrigger, parseSkillFile, scanSkillsDir, scanSkillsDirs } from './skillLoader';
 
 describe('skillLoader', () => {
   it('loads valid skills and reports skipped skill folders', async () => {
@@ -24,6 +24,12 @@ describe('skillLoader', () => {
     } finally {
       await fs.rm(projectDir, { recursive: true, force: true });
     }
+  });
+
+  it('parses CRLF and BOM-prefixed SKILL.md files (Windows checkouts)', () => {
+    const content = '\uFEFF' + ['---', 'name: crlf-skill', 'description: Written on Windows', 'triggers:', '  - crlf', '---', '', 'Body text.'].join('\r\n');
+    const skill = parseSkillFile(content, '/tmp/crlf-skill/SKILL.md');
+    expect(skill).toEqual(expect.objectContaining({ name: 'crlf-skill', description: 'Written on Windows', triggers: ['crlf'], content: 'Body text.' }));
   });
 
   it('parses extended skill schema fields when present', async () => {

@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { atomicWriteFile } from '../persistence/atomicFile';
 import { getWorkspaceDataRoot } from '../tools/pathResolution';
 
 export const CAPABILITY_PROFILE_VERSION = 1;
@@ -119,13 +120,34 @@ export function modelProfilePath(model: string, projectDir = getWorkspaceDataRoo
 export async function saveCapabilityProfile(profile: CapabilityProfile, projectDir = getWorkspaceDataRoot()): Promise<void> {
   const filePath = modelProfilePath(profile.model, projectDir);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify(profile, null, 2), 'utf-8');
+  await atomicWriteFile(filePath, JSON.stringify(profile, null, 2), { encoding: 'utf-8' });
+}
+
+const SCORE_KEYS: Array<keyof CapabilityScores> = ['toolCalling', 'jsonInTextRate', 'structuredPlain', 'structuredConstrained', 'instructionFollowing', 'planCoherence'];
+
+/** Shape check for a profile read from disk (hand-edited or older files are skipped, not trusted). */
+export function isCapabilityProfile(value: unknown): value is CapabilityProfile {
+  if (!value || typeof value !== 'object') return false;
+  const profile = value as Partial<CapabilityProfile>;
+  const scores = profile.scores as Partial<CapabilityScores> | undefined;
+  const recommended = profile.recommended as Partial<CapabilityRecommendations> | undefined;
+  return typeof profile.model === 'string'
+    && typeof profile.profileVersion === 'number'
+    && typeof profile.probedAt === 'string'
+    && typeof profile.usableContextTokens === 'number'
+    && !!scores && SCORE_KEYS.every((key) => typeof scores[key] === 'number')
+    && !!recommended
+    && typeof recommended.toolMode === 'string'
+    && typeof recommended.maxToolsPerStep === 'number'
+    && typeof recommended.promptTier === 'string'
+    && typeof recommended.scaffoldLevel === 'string'
+    && typeof recommended.contextBudgetTokens === 'number';
 }
 
 export async function loadCapabilityProfile(model: string, projectDir = getWorkspaceDataRoot()): Promise<CapabilityProfile | null> {
   try {
-    const raw = await fs.readFile(modelProfilePath(model, projectDir), 'utf-8');
-    return JSON.parse(raw) as CapabilityProfile;
+    const parsed = JSON.parse(await fs.readFile(modelProfilePath(model, projectDir), 'utf-8')) as unknown;
+    return isCapabilityProfile(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -139,7 +161,8 @@ export async function listCapabilityProfiles(projectDir = getWorkspaceDataRoot()
       .filter((entry) => entry.endsWith('.json'))
       .map(async (entry) => {
         try {
-          return JSON.parse(await fs.readFile(path.join(dir, entry), 'utf-8')) as CapabilityProfile;
+          const parsed = JSON.parse(await fs.readFile(path.join(dir, entry), 'utf-8')) as unknown;
+          return isCapabilityProfile(parsed) ? parsed : null;
         } catch {
           return null;
         }

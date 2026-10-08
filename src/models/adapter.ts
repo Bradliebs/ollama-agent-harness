@@ -90,30 +90,49 @@ function appendToolInstructionBlock(systemPrompt: string, tools: Tool[], toolMod
     'Use exactly this shape:',
     '{"tool_call":{"name":"tool_name","arguments":{}}}',
     toolMode === 'constrained-json'
-      ? 'Your reply is constrained by a JSON schema; still choose exactly one listed tool.'
+      ? 'Your reply is constrained by a JSON schema; still choose exactly one listed tool. When you have the answer and need no more tools, reply {"final_answer":"<your answer for the user>"} instead.'
       : 'Do not wrap the JSON in Markdown fences.',
     `Available tools: ${JSON.stringify(schemas)}`,
   ].join('\n');
   return `${systemPrompt}${block}`;
 }
 
+// Either one tool call or the final answer: a schema that only allowed tool
+// calls would force a tool call every turn, so the run could never finish.
 function constrainedToolCallSchema(tools: Tool[]): Record<string, unknown> {
   return {
     type: 'object',
-    properties: {
-      tool_call: {
+    anyOf: [
+      {
         type: 'object',
         properties: {
-          name: { type: 'string', enum: tools.map((tool) => tool.name) },
-          arguments: { type: 'object' },
+          tool_call: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', enum: tools.map((tool) => tool.name) },
+              arguments: { type: 'object' },
+            },
+            required: ['name', 'arguments'],
+            additionalProperties: false,
+          },
         },
-        required: ['name', 'arguments'],
+        required: ['tool_call'],
         additionalProperties: false,
       },
-    },
-    required: ['tool_call'],
-    additionalProperties: false,
+      {
+        type: 'object',
+        properties: { final_answer: { type: 'string' } },
+        required: ['final_answer'],
+        additionalProperties: false,
+      },
+    ],
   };
+}
+
+/** The answer text when a constrained-json reply is {"final_answer": "..."}; otherwise null. */
+export function parseConstrainedFinalAnswer(text: string): string | null {
+  const parsed = parseJsonObject(text);
+  return parsed && typeof parsed.final_answer === 'string' && !('tool_call' in parsed) ? parsed.final_answer : null;
 }
 
 function parseJsonObject(text: string): Record<string, unknown> | null {

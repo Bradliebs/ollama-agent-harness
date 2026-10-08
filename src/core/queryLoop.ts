@@ -1,4 +1,5 @@
 import type { Message } from 'ollama';
+import { createHash } from 'crypto';
 import { existsSync } from 'fs';
 import * as path from 'path';
 import { OllamaClient } from './ollamaClient';
@@ -8,10 +9,12 @@ import { toolToSchema } from '../types/tool';
 import { renderTaskContractBlock } from '../types/taskContract';
 import type { HookPipeline } from '../extensibility/hookPipeline';
 import { compactIfNeeded, DEFAULT_COMPACTION_CONFIG } from '../context/compaction';
-import { estimateTokenCount } from '../context/assembly';
+import { estimateTokenCount, estimateToolSchemaTokens } from '../context/assembly';
 import type { SessionStorage } from '../persistence/sessionStorage';
 import { createContinuityCheckpoint } from '../persistence/continuity';
 import { ToolDispatcher } from '../tools/dispatcher';
+import { validateToolInput } from '../tools/validateToolInput';
+import { DeferredToolSet, createToolSearchTool, deferredToolCallResult } from './toolLoading';
 import { runWithSessionId } from '../tools/sessionContext';
 import { ReadBeforeWriteGate } from '../tools/readBeforeWriteGate';
 import { buildInspectorsFromEnv, type AdversaryJudge } from '../safety/toolInspectors';
@@ -23,10 +26,10 @@ import type { SideEffectRecorder } from '../persistence/sideEffectRecording';
 import type { RunLog } from '../persistence/runLog';
 import { RunSupervisor, describeAttempt, resolveSupervisorConfig, type BudgetStatus } from './supervisor';
 import { CostTracker } from '../eval/costTracker';
-import { parseConstrainedToolCall } from '../models/adapter';
+import { parseConstrainedFinalAnswer, parseConstrainedToolCall } from '../models/adapter';
 import { ProvenanceLedger, resolveProvenanceEnabled } from '../safety/provenance';
 import { NEXT_STEP_PROMPT, PLAN_ACCEPTED_PROMPT, SKIPPED_EXTRA_CALL, trimToolResult } from './scaffolding';
-import { WorkingStateStore, createStateUpdateTool, injectWorkingState, parsePlanText, shellTouchesProtected } from '../context/workingState';
+import { WorkingStateStore, createStateUpdateTool, parsePlanText, placeWorkingState, shellTouchesProtected } from '../context/workingState';
 import { getProjectRoot, resolveToolMutationTarget } from '../tools/pathResolution';
 import { validateOutput, withOutputValidationInstructions, detectSelfCertification } from './outputValidation';
 import type { OutputValidationProfile } from './outputValidation';
@@ -116,7 +119,11 @@ export interface QueryLoopDeps {
    * effects share for per-step rollback. See persistence/runLog.ts.
    */
   runLog?: RunLog;
-  /** Called with the run id after the run log is closed and flushed (e.g. to learn lessons from it). */
+  /**
+   * Called with the run id once this loop's run_end is flushed (e.g. to learn
+   * lessons from it). Fires per loop: callers that run several loops on one
+   * run log should call their hook once at the end instead.
+   */
   onRunEnd?: (runId: string) => void;
   /**
    * Optional LLM-backed judge wired into AdversaryInspector. Constructed by
@@ -260,10 +267,25 @@ async function* queryLoopCore(
   // whether it runs on-box (Ollama → 'local', $0 marginal) or hosted. Fall
   // back to registry classification when the client predates getLocality;
   // the model name alone can't tell apart off-registry local pulls, so the
-  // client signal is preferred.
-  const runLocality = client.getLocality?.() ?? classifyModelLocality(config.model);
+  // client signal is preferred. Recomputed if the run escalates.
+  let runLocality = client.getLocality?.() ?? classifyModelLocality(config.model);
 
-  const dispatcher = new ToolDispatcher(tools);
+  const allToolSchemas = tools.map(toolToSchema);
+  const modelPlan = config.modelPlan;
+  const plannedToolNames = modelPlan?.toolNames ? new Set([...modelPlan.toolNames, ...(injectState ? ['state_update'] : [])]) : null;
+  // Deferred tool loading: a grow-only set of offered tools plus tool_search.
+  const deferredTools = config.toolLoading && !plannedToolNames && !(modelPlan && modelPlan.toolMode !== 'native')
+    ? new DeferredToolSet(tools, [...config.toolLoading.initial, ...(injectState ? ['state_update'] : [])])
+    : null;
+  let toolsLoadedThisTurn = false;
+  let allToolsOffered = false;
+  const toolSearch = deferredTools ? createToolSearchTool(deferredTools, () => { toolsLoadedThisTurn = true; }) : null;
+  const loadedToolSchemas = (): typeof allToolSchemas => {
+    if (!deferredTools || !toolSearch) return allToolSchemas;
+    const loaded = new Set(deferredTools.loadedNames);
+    return [...allToolSchemas.filter((schema) => loaded.has(schema.function.name)), toolToSchema(toolSearch)];
+  };
+  const dispatcher = new ToolDispatcher(toolSearch ? [...tools, toolSearch] : tools);
   const readBeforeWriteGate = config.readBeforeWrite?.mode && config.readBeforeWrite.mode !== 'off'
     ? new ReadBeforeWriteGate({
         mode: config.readBeforeWrite.mode,
@@ -271,10 +293,7 @@ async function* queryLoopCore(
         allowNewFiles: config.readBeforeWrite.allowNewFiles,
       })
     : undefined;
-  const allToolSchemas = tools.map(toolToSchema);
-  const modelPlan = config.modelPlan;
-  const plannedToolNames = modelPlan?.toolNames ? new Set([...modelPlan.toolNames, ...(injectState ? ['state_update'] : [])]) : null;
-  const ollamaTools = plannedToolNames ? allToolSchemas.filter((schema) => plannedToolNames.has(schema.function.name)) : allToolSchemas;
+  const ollamaTools = plannedToolNames ? allToolSchemas.filter((schema) => plannedToolNames.has(schema.function.name)) : loadedToolSchemas();
   // Models without reliable native tool calling get tools described in the
   // system prompt instead (compiled by models/adapter.ts) and reply with JSON.
   let promptToolMode = modelPlan && modelPlan.toolMode !== 'native';
@@ -291,19 +310,30 @@ async function* queryLoopCore(
 
   // Prepend task contract block when provided so the model always sees
   // the goal, constraints, and blocked paths at the top of the system prompt.
-  const baseSystemPrompt = config.taskContract
-    ? `${renderTaskContractBlock(config.taskContract)}\n\n---\n\n${withRepoMap}`
+  // The cache layout moves it, and anything else that changes per message,
+  // into the turn-context message so the system prompt stays cacheable.
+  const cacheLayout = config.promptLayout === 'cache';
+  const contractBlock = config.taskContract ? renderTaskContractBlock(config.taskContract) : '';
+  const baseSystemPrompt = contractBlock && !cacheLayout
+    ? `${contractBlock}\n\n---\n\n${withRepoMap}`
     : withRepoMap;
 
-  const systemPrompt = config.outputValidation?.enabled
-    ? withOutputValidationInstructions(baseSystemPrompt, validationProfile, customValidationProfiles)
+  const validationInstructions = config.outputValidation?.enabled
+    ? withOutputValidationInstructions('', validationProfile, customValidationProfiles).trim()
+    : '';
+  const systemPrompt = !cacheLayout
+    ? [config.outputValidation?.enabled ? withOutputValidationInstructions(baseSystemPrompt, validationProfile, customValidationProfiles) : baseSystemPrompt, config.turnContext].filter(Boolean).join('\n\n')
     : baseSystemPrompt;
+  const turnContext = cacheLayout ? [contractBlock, validationInstructions, config.turnContext].filter(Boolean).join('\n\n') : '';
 
   const scaffold = config.scaffold;
+  // Callers that know the model's window pass it as context.maxTokens.
+  const contextWindowKnown = typeof config.context?.maxTokens === 'number' && config.context.maxTokens > 0;
   let scaffoldPlanAccepted = false;
+  const turnContextMessage = turnContextMessageFor(turnContext);
   const messages: Message[] = [
     { role: 'system', content: scaffold?.systemAddendum ? `${systemPrompt}\n\n${scaffold.systemAddendum}` : systemPrompt },
-    ...initialMessages,
+    ...withTurnContext(initialMessages, turnContextMessage),
   ];
   runLog?.startLoop({
     model: config.model,
@@ -380,7 +410,7 @@ async function* queryLoopCore(
   const resolvedSupervisor = resolveSupervisorConfig(config.supervisor);
   const supervisorConfig = resolvedSupervisor && deps.escalate ? { ...resolvedSupervisor, canEscalate: true } : resolvedSupervisor;
   const supervisor = supervisorConfig
-    ? new RunSupervisor(supervisorConfig, (model) => CostTracker.getAllRates()[model])
+    ? new RunSupervisor(supervisorConfig, (model) => CostTracker.rateFor(model))
     : null;
   let budgetExceeded: BudgetStatus | null = null;
   // Provenance: the user's messages and the system prompt are trusted; web,
@@ -388,6 +418,8 @@ async function* queryLoopCore(
   const provenance = config.provenance !== false && resolveProvenanceEnabled() ? new ProvenanceLedger() : null;
   if (provenance) {
     provenance.recordTrusted(systemPrompt);
+    // Same trust as when this content sat in the system prompt.
+    if (turnContext) provenance.recordTrusted(turnContext);
     for (const message of initialMessages) {
       if (message.role === 'user' && typeof message.content === 'string') provenance.recordTrusted(message.content);
     }
@@ -426,10 +458,12 @@ async function* queryLoopCore(
     const from = activeModel;
     client = target.client;
     activeModel = target.model;
+    runLocality = client.getLocality?.() ?? classifyModelLocality(activeModel);
     // The per-model plan (tool subset, JSON tool calls) was compiled for the
     // weaker model; the stronger one gets every tool natively.
     promptToolMode = false;
     chatTools = allToolSchemas;
+    allToolsOffered = true;
     chatOptions = undefined;
     supervisor?.resetStall();
     runLog?.append('route', { event: 'escalate', from, to: activeModel, reason, turn }, currentTurnStep);
@@ -482,15 +516,41 @@ async function* queryLoopCore(
 
     if (config.context?.enabled !== false) {
       const compactionConfig = { ...DEFAULT_COMPACTION_CONFIG, ...config.context };
-      // Budget allocator: the injected working state is never compacted, so the
-      // transcript gets what is left after it.
-      if (injectState && !workingState.isEmpty) {
-        const stateTokens = estimateTokenCount([{ role: 'system', content: workingState.render() } as Message]);
-        compactionConfig.maxTokens = Math.max(1024, compactionConfig.maxTokens - stateTokens);
+      // Budget allocator: the tool definitions and the injected working state
+      // are sent with every request but never compacted, so the transcript
+      // gets what is left after them. Tool definitions only count against a
+      // real window (context.maxTokens set by the caller); callers that leave
+      // it unset compact against the 8192 default, which is a heuristic, not
+      // the model's window.
+      const fixedOverheadTokens = (contextWindowKnown ? estimateToolSchemaTokens(chatTools) : 0)
+        + (injectState && !workingState.isEmpty ? estimateTokenCount([{ role: 'system', content: workingState.render() } as Message]) : 0);
+      if (fixedOverheadTokens > 0) {
+        // Never below half the limit: when the definitions alone approach the
+        // window (an undetected window defaults to 8192), compacting the
+        // transcript to nothing would only add a summarizer call every turn.
+        // The pre-call context warning reports that case instead.
+        compactionConfig.maxTokens = Math.max(1024, Math.floor(compactionConfig.maxTokens / 2), compactionConfig.maxTokens - fixedOverheadTokens);
       }
       const before = estimateTokenCount(messages);
       const compactionSpan = tracer?.startSpan('context.compaction', { beforeTokens: before, maxTokens: compactionConfig.maxTokens });
-      const compacted = await compactIfNeeded(messages, compactionConfig, summarizerClient ?? client);
+      const compactionClient = summarizerClient ?? client;
+      const compacted = await compactIfNeeded(messages, compactionConfig, compactionClient);
+      if (compacted.usage) {
+        // The summarizer call is part of what the run spends.
+        const summarizerModel = typeof compactionClient.getModel === 'function' ? compactionClient.getModel() : activeModel;
+        supervisor?.recordUsage(summarizerModel, compacted.usage.promptTokens ?? 0, compacted.usage.completionTokens ?? 0);
+        yield {
+          type: 'usage',
+          model: summarizerModel,
+          turn,
+          locality: compactionClient.getLocality?.() ?? classifyModelLocality(summarizerModel),
+          promptTokens: compacted.usage.promptTokens ?? 0,
+          completionTokens: compacted.usage.completionTokens ?? 0,
+          totalDurationMs: Math.round((compacted.usage.totalDurationNs ?? 0) / 1_000_000),
+          ...(compacted.usage.cachedPromptTokens !== undefined ? { cachedPromptTokens: compacted.usage.cachedPromptTokens } : {}),
+          purpose: 'compaction',
+        };
+      }
       if (compacted.messages !== messages && compacted.tokensFreed > 0) {
         const checkpoint = createContinuityCheckpoint({
           sessionId: session?.getSessionId() ?? 'ephemeral',
@@ -501,6 +561,7 @@ async function* queryLoopCore(
         });
         messages.length = 0;
         messages.push(...compacted.messages);
+        keepTurnContext(messages, turnContextMessage);
         runLog?.recordCompaction(messages, compacted.strategy, { tokensFreed: compacted.tokensFreed, compactedCount: compacted.compactedCount ?? 0 });
         const hasContinuityBoundary = compacted.summary !== undefined;
         if (session && hasContinuityBoundary) {
@@ -532,9 +593,12 @@ async function* queryLoopCore(
 
     // Pre-check: warn if estimated context exceeds the configured limit.
     // This catches oversized payloads before they hit a 413 from the provider.
-    const preCallTokenEstimate = estimateTokenCount(messages);
+    // Tool definitions travel with every request, so they count too (against
+    // a real window only; see the compaction budget above).
+    const toolSchemaTokens = contextWindowKnown ? estimateToolSchemaTokens(chatTools) : 0;
+    const preCallTokenEstimate = estimateTokenCount(messages) + toolSchemaTokens;
     const contextLimit = config.context?.maxTokens ?? DEFAULT_COMPACTION_CONFIG.maxTokens;
-    const contextBreakdown = buildContextBreakdown(messages);
+    const contextBreakdown = buildContextBreakdown(messages, toolSchemaTokens);
     if (preCallTokenEstimate > Math.floor(contextLimit * 0.75)) {
       yield {
         type: 'context_breakdown',
@@ -548,40 +612,42 @@ async function* queryLoopCore(
         type: 'context_warning',
         estimatedTokens: preCallTokenEstimate,
         maxTokens: contextLimit,
-        message: `Context size (~${preCallTokenEstimate} tokens) exceeds the configured Harness limit (${contextLimit}). This usually comes from accumulated system context, history, and web_read results; the provider may reject the request.`,
+        message: `Context size (~${preCallTokenEstimate} tokens) exceeds the configured Harness limit (${contextLimit}). This usually comes from accumulated system context, history, tool definitions (~${toolSchemaTokens} tokens) and web_read results; the provider may reject the request.`,
       };
     }
 
     let assistantMessage: Message;
     const modelSpan = tracer?.startSpan('model.chat', { model: activeModel, turn });
     try {
-      // Surrogate sanitisation: under HARNESS_LOOP_HARDENING strip any lone
-      // UTF-16 surrogates from the outgoing message array so JSON.stringify
-      // on the wire cannot blow up the entire turn over one corrupt
-      // reasoning byte. No-op when the flag is off.
-      const outboundMessages = resolveLoopHardeningEnabled()
-        ? sanitizeMessages(messages)
-        : messages;
       const inactivityMs = resolveInactivityTimeoutMs(config.inactivityTimeoutMs);
       currentTurnStep = allocateStep(`t${turn}`);
       // Narrow context for heavy scaffolding: keep only the most recent tool
       // results in full. Recorded as a compaction so the run log stays exact.
+      let narrowedToolResults = 0;
       if (scaffold && scaffold.keepRecentToolResults > 0) {
         const toolIndexes = messages.map((m, i) => (m.role === 'tool' ? i : -1)).filter((i) => i >= 0);
-        let trimmed = 0;
         for (const index of toolIndexes.slice(0, Math.max(0, toolIndexes.length - scaffold.keepRecentToolResults))) {
           const content = messages[index].content;
           if (typeof content === 'string' && !content.startsWith('[older tool result trimmed')) {
             messages[index] = { ...messages[index], content: trimToolResult(content) };
-            trimmed += 1;
+            narrowedToolResults += 1;
           }
         }
-        if (trimmed > 0) runLog?.recordCompaction(resolveLoopHardeningEnabled() ? sanitizeMessages(messages) : messages, 'scaffold-narrow', { trimmed });
       }
+      // Surrogate sanitisation: under HARNESS_LOOP_HARDENING strip any lone
+      // UTF-16 surrogates from the outgoing message array so JSON.stringify
+      // on the wire cannot blow up the entire turn over one corrupt
+      // reasoning byte. No-op when the flag is off. Built after narrowing so
+      // the model receives exactly what the run log records.
+      const outboundMessages = resolveLoopHardeningEnabled()
+        ? sanitizeMessages(messages)
+        : messages;
+      if (narrowedToolResults > 0) runLog?.recordCompaction(outboundMessages, 'scaffold-narrow', { trimmed: narrowedToolResults });
       runLog?.syncMessages(outboundMessages);
       const renderedState = injectState ? workingState.render() : '';
-      const requestMessages = renderedState ? injectWorkingState(outboundMessages, renderedState) : outboundMessages;
-      runLog?.append('model_request', { turn, model: activeModel, messageCount: outboundMessages.length, tools: chatTools.map((schema) => schema.function?.name), ...(modelPlan ? { toolMode: modelPlan.toolMode } : {}), ...(chatOptions ? { format: chatOptions.format } : {}), ...(renderedState ? { workingState: renderedState } : {}) }, currentTurnStep);
+      const statePosition = config.workingState?.position === 'tail' ? 'tail' : 'system';
+      const requestMessages = renderedState ? placeWorkingState(outboundMessages, renderedState, statePosition) : outboundMessages;
+      runLog?.append('model_request', { turn, model: activeModel, messageCount: outboundMessages.length, tools: chatTools.map((schema) => schema.function?.name), prefixHash: requestPrefixHash(requestMessages, chatTools), ...(modelPlan ? { toolMode: modelPlan.toolMode } : {}), ...(chatOptions ? { format: chatOptions.format } : {}), ...(renderedState ? { workingState: renderedState, ...(statePosition === 'tail' ? { workingStatePosition: 'tail' } : {}) } : {}) }, currentTurnStep);
       const modelCallStarted = Date.now();
       const chatPromise = chatOptions
         ? client.chat(requestMessages, chatTools, abortSignal, chatOptions)
@@ -592,9 +658,12 @@ async function* queryLoopCore(
       assistantMessage = result.message;
       if (promptToolMode && !assistantMessage.tool_calls?.length && typeof assistantMessage.content === 'string') {
         const lifted = parseConstrainedToolCall(assistantMessage.content);
+        const finalAnswer = lifted?.length ? null : parseConstrainedFinalAnswer(assistantMessage.content);
         if (lifted?.length) {
           assistantMessage = { ...assistantMessage, content: '', tool_calls: lifted };
           tracer?.recordEvent('adapter.tool_call_lifted', { model: activeModel, toolMode: modelPlan?.toolMode, calls: lifted.length });
+        } else if (finalAnswer !== null) {
+          assistantMessage = { ...assistantMessage, content: finalAnswer };
         }
       }
       runLog?.append('model_response', { turn, model: activeModel, message: assistantMessage, usage: result.usage ?? null, durationMs: Date.now() - modelCallStarted }, currentTurnStep);
@@ -623,6 +692,7 @@ async function* queryLoopCore(
           loadDurationMs: Math.round((result.usage.loadDurationNs ?? 0) / 1_000_000),
           promptEvalDurationMs: Math.round((result.usage.promptEvalDurationNs ?? 0) / 1_000_000),
           evalDurationMs: Math.round((result.usage.evalDurationNs ?? 0) / 1_000_000),
+          ...(result.usage.cachedPromptTokens !== undefined ? { cachedPromptTokens: result.usage.cachedPromptTokens } : {}),
         };
       }
     } catch (error) {
@@ -648,8 +718,10 @@ async function* queryLoopCore(
     }
 
     // Per-run budget: stop into synthesis once the run has spent its tokens
-    // (or USD, for models with a known price).
-    if (supervisor) {
+    // (or USD, for models with a known price). Only on tool-call turns: a
+    // text-only reply is already the answer, and synthesising would discard
+    // it and spend another call.
+    if (supervisor && assistantMessage.tool_calls?.length) {
       const budget = supervisor.checkBudget();
       if (budget.exceeded && budget.which) {
         budgetExceeded = budget;
@@ -1004,6 +1076,20 @@ async function* queryLoopCore(
     const skippedByScaffold = new Set(skippedToolResults.map((entry) => entry.call));
     for (const call of toolCalls) {
       if (skippedByScaffold.has(call)) continue;
+      // A tool that was never loaded: run it if the call carries the
+      // required arguments, otherwise hand back its parameters. Either way
+      // it is loaded from the next step.
+      if (deferredTools?.isDeferred(call.name)) {
+        deferredTools.load([call.name]);
+        toolsLoadedThisTurn = true;
+        const tool = tools.find((candidate) => candidate.name === call.name);
+        const validation = tool ? validateToolInput(tool, call.input ?? {}) : { valid: true, errors: [] };
+        if (tool && !validation.valid) {
+          const result = deferredToolCallResult(tool, validation.errors);
+          skippedToolResults.push({ call, result: { success: false, output: result.output, error: result.error ?? 'deferred tool' } });
+          continue;
+        }
+      }
       const protectedPattern = protectedHit(call);
       if (protectedPattern) {
         runLog?.append('verdict', { check: 'protected_path', tool: call.name, pattern: protectedPattern }, stepForResult(call));
@@ -1256,6 +1342,14 @@ async function* queryLoopCore(
 
     logStateIfChanged(currentTurnStep);
 
+    // Deferred tool loading: tools loaded this turn are offered from the next
+    // one (unless an escalation already offers every tool).
+    if (toolsLoadedThisTurn && !allToolsOffered) {
+      chatTools = loadedToolSchemas();
+      tracer?.recordEvent('tool_loading.loaded', { loaded: deferredTools?.loadedNames.length ?? 0, turn });
+    }
+    toolsLoadedThisTurn = false;
+
     // Heavy scaffolding: name the next step so the model keeps to its plan.
     if (scaffold?.stepPrompt && turn < maxTurns) {
       messages.push({ role: 'user', content: NEXT_STEP_PROMPT } as Message);
@@ -1367,6 +1461,8 @@ async function* queryLoopCore(
   const synthInstructionMsg = messages[messages.length - 1];
   const synthMessages: Message[] = [];
   if (systemMsg) synthMessages.push(systemMsg);
+  // Cache layout: the contract, validation contract and recall live in the turn context.
+  if (turnContextMessage) synthMessages.push(turnContextMessage);
   if (lastUserMsg) synthMessages.push(lastUserMsg);
   synthMessages.push(synthInstructionMsg);
 
@@ -1403,6 +1499,7 @@ async function* queryLoopCore(
         loadDurationMs: Math.round((synthResult.usage.loadDurationNs ?? 0) / 1_000_000),
         promptEvalDurationMs: Math.round((synthResult.usage.promptEvalDurationNs ?? 0) / 1_000_000),
         evalDurationMs: Math.round((synthResult.usage.evalDurationNs ?? 0) / 1_000_000),
+        ...(synthResult.usage.cachedPromptTokens !== undefined ? { cachedPromptTokens: synthResult.usage.cachedPromptTokens } : {}),
       };
     }
 
@@ -1629,7 +1726,51 @@ function isBlockedWebFailure(output: unknown): boolean {
   return /HTTP\s+(401|403|407|408|409|423|429|451|500|502|503|504)\b|rate.?limit|forbidden|unauthori[sz]ed|access denied/i.test(String(output ?? ''));
 }
 
-function buildContextBreakdown(messages: Message[]): { totalTokens: number; systemTokens: number; historyTokens: number; toolResultTokens: number; currentUserTokens: number; messageCount: number } {
+export const TURN_CONTEXT_TAG = 'harness_context';
+
+/**
+ * Insert the turn-context message just before the latest user message. It is
+ * not part of the caller's messages, so the user-message checks (injection
+ * scan, research-claim trust, the pinned goal) still see only what the user
+ * wrote.
+ */
+function withTurnContext(initialMessages: Message[], contextMessage: Message | null): Message[] {
+  if (!contextMessage) return initialMessages;
+  const lastUser = initialMessages.map((message) => message.role).lastIndexOf('user');
+  if (lastUser < 0) return [...initialMessages, contextMessage];
+  return [...initialMessages.slice(0, lastUser), contextMessage, ...initialMessages.slice(lastUser)];
+}
+
+function turnContextMessageFor(turnContext: string): Message | null {
+  if (!turnContext) return null;
+  return {
+    role: 'user',
+    content: `<${TURN_CONTEXT_TAG}>\nContext for the message that follows, assembled by the harness (task contract, recalled memory, attachments, notes). Use it where it helps; the message after this block is what to answer.\n\n${turnContext}\n</${TURN_CONTEXT_TAG}>`,
+  } as Message;
+}
+
+/**
+ * The turn context holds what the system prompt holds in the default layout
+ * (task contract, validation contract), so compaction must not drop it: put
+ * it back after the leading system messages if it was compacted away.
+ */
+function keepTurnContext(messages: Message[], contextMessage: Message | null): void {
+  if (!contextMessage || messages.some((message) => message.role === 'user' && message.content === contextMessage.content)) return;
+  const firstNonSystem = messages.findIndex((message) => message.role !== 'system');
+  messages.splice(firstNonSystem < 0 ? messages.length : firstNonSystem, 0, contextMessage);
+}
+
+/**
+ * Fingerprint of the part of a request providers can cache across calls: the
+ * leading system message and the tool definitions. Recorded on every
+ * model_request so the run log shows how often that prefix actually repeats.
+ */
+function requestPrefixHash(messages: readonly Message[], tools: readonly unknown[]): string {
+  const system = messages[0]?.role === 'system' ? String(messages[0].content ?? '') : '';
+  return createHash('sha1').update(system).update('\0').update(JSON.stringify(tools)).digest('hex').slice(0, 12);
+}
+
+function buildContextBreakdown(messages: Message[], toolSchemaTokens = 0): { totalTokens: number; systemTokens: number; historyTokens: number; toolResultTokens: number; toolSchemaTokens: number; currentUserTokens: number; messageCount: number } {
   const lastUserIndex = messages.map((message) => message.role).lastIndexOf('user');
   let systemTokens = 0;
   let historyTokens = 0;
@@ -1645,10 +1786,11 @@ function buildContextBreakdown(messages: Message[]): { totalTokens: number; syst
   });
 
   return {
-    totalTokens: systemTokens + historyTokens + toolResultTokens + currentUserTokens,
+    totalTokens: systemTokens + historyTokens + toolResultTokens + currentUserTokens + toolSchemaTokens,
     systemTokens,
     historyTokens,
     toolResultTokens,
+    toolSchemaTokens,
     currentUserTokens,
     messageCount: messages.length,
   };

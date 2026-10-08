@@ -61,6 +61,8 @@ interface OpenAIChatResponse {
     prompt_tokens?: number;
     completion_tokens?: number;
     total_tokens?: number;
+    /** OpenAI-style prompt caching: how many prompt tokens were served from cache. */
+    prompt_tokens_details?: { cached_tokens?: number };
   };
 }
 
@@ -371,10 +373,12 @@ export class OpenAIClient implements IChatClient {
         liftInlineToolCalls(message, (tools ?? []).map((tool) => tool.function?.name).filter((name): name is string => Boolean(name)));
       }
 
+      const cachedTokens = json.usage?.prompt_tokens_details?.cached_tokens;
       const usage: TokenUsage = {
         promptTokens: json.usage?.prompt_tokens ?? 0,
         completionTokens: json.usage?.completion_tokens ?? 0,
         totalDurationNs: elapsedNs,
+        ...(typeof cachedTokens === 'number' && Number.isFinite(cachedTokens) && cachedTokens >= 0 ? { cachedPromptTokens: cachedTokens } : {}),
       };
 
       return { message, usage };
@@ -488,13 +492,39 @@ function toOpenAIResponseFormat(options?: ChatOptions): Record<string, unknown> 
       type: 'json_schema',
       json_schema: {
         name: 'harness_response',
-        strict: true,
+        // Strict mode rejects schemas it cannot enforce (a root anyOf, open
+        // objects); those are sent best-effort instead of failing the call.
+        strict: isStrictCompatibleSchema(schema as Record<string, unknown>, true),
         schema,
       },
     };
   }
   if (options?.format === 'json') return { type: 'json_object' };
   return undefined;
+}
+
+/**
+ * Whether OpenAI structured-output strict mode accepts a schema: the root is
+ * an object (not anyOf), and every object lists all its properties as
+ * required with additionalProperties: false.
+ */
+export function isStrictCompatibleSchema(schema: Record<string, unknown>, root = false): boolean {
+  if (root && (schema.type !== 'object' || 'anyOf' in schema || 'oneOf' in schema)) return false;
+  if ('oneOf' in schema) return false;
+  for (const variant of Array.isArray(schema.anyOf) ? schema.anyOf : []) {
+    if (!variant || typeof variant !== 'object' || !isStrictCompatibleSchema(variant as Record<string, unknown>)) return false;
+  }
+  if (schema.type === 'object') {
+    const properties = (schema.properties ?? {}) as Record<string, Record<string, unknown>>;
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    if (schema.additionalProperties !== false) return false;
+    if (Object.keys(properties).some((key) => !required.includes(key))) return false;
+    if (Object.values(properties).some((property) => !property || typeof property !== 'object' || !isStrictCompatibleSchema(property))) return false;
+  }
+  if (schema.type === 'array' && schema.items && typeof schema.items === 'object') {
+    return isStrictCompatibleSchema(schema.items as Record<string, unknown>);
+  }
+  return true;
 }
 
 function fromOpenAIToolCall(tc: { id?: string; function: { name: string; arguments: string } }): ToolCall {

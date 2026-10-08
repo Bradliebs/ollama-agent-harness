@@ -15,22 +15,26 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { Message } from 'ollama';
 import { recordSwallowed } from '../observability/silentFailureSink';
-import { injectWorkingState } from '../context/workingState';
+import { redact } from '../safety/secretRedactor';
+import { placeWorkingState } from '../context/workingState';
 
-export type RunEventKind =
-  | 'run_start'
-  | 'messages'
-  | 'compaction'
-  | 'model_request'
-  | 'model_response'
-  | 'model_error'
-  | 'tool_call'
-  | 'tool_result'
-  | 'route'
-  | 'verdict'
-  | 'supervisor'
-  | 'state'
-  | 'run_end';
+export const RUN_EVENT_KINDS = [
+  'run_start',
+  'messages',
+  'compaction',
+  'model_request',
+  'model_response',
+  'model_error',
+  'tool_call',
+  'tool_result',
+  'route',
+  'verdict',
+  'supervisor',
+  'state',
+  'run_end',
+] as const;
+
+export type RunEventKind = typeof RUN_EVENT_KINDS[number];
 
 export interface RunEvent {
   seq: number;
@@ -126,7 +130,8 @@ export class RunLog {
       ...(step ? { stepId: step.stepId, stepSeq: step.stepSeq } : {}),
       data,
     };
-    const line = `${JSON.stringify(event)}\n`;
+    // Secrets never reach the log: it is served over the API and replayed to other models.
+    const line = `${redact(JSON.stringify(event))}\n`;
     this.writeChain = this.writeChain
       .then(async () => {
         if (!this.dirReady) this.dirReady = fs.mkdir(runsDir(this.projectDir), { recursive: true }).then(() => undefined);
@@ -232,10 +237,10 @@ export function reconstructModelRequests(events: readonly RunEvent[]): Array<{ s
       const count = Number(event.data.messageCount);
       const base = reconstructMessages(events, event.seq);
       const sliced = Number.isFinite(count) ? base.slice(0, count) : base;
-      // Working state is injected into the system prompt at call time, not
-      // stored in the transcript; the request event carries the rendered text.
+      // Working state is injected at call time, not stored in the
+      // transcript; the request event carries the rendered text and where it went.
       const messages = typeof event.data.workingState === 'string' && event.data.workingState
-        ? injectWorkingState(sliced, event.data.workingState)
+        ? placeWorkingState(sliced, event.data.workingState, event.data.workingStatePosition === 'tail' ? 'tail' : 'system')
         : sliced;
       return { seq: event.seq, stepId: event.stepId, messages };
     });
@@ -266,7 +271,7 @@ async function listRunFiles(projectDir: string): Promise<Array<{ runId: string; 
     throw err;
   }
   const files = await Promise.all(names
-    .filter((name) => name.endsWith('.jsonl'))
+    .filter((name) => name.endsWith('.jsonl') && SAFE_RUN_ID.test(name.slice(0, -'.jsonl'.length)))
     .map(async (name) => {
       const file = path.join(runsDir(projectDir), name);
       try {
@@ -281,7 +286,36 @@ async function listRunFiles(projectDir: string): Promise<Array<{ runId: string; 
 
 export async function listRuns(projectDir: string, limit = 50): Promise<RunSummary[]> {
   const files = (await listRunFiles(projectDir)).slice(0, Math.max(0, limit));
-  return Promise.all(files.map(async (entry) => summarizeRun(entry.runId, await readRunEvents(projectDir, entry.runId), entry.size)));
+  return Promise.all(files.map((entry) => summarizeRunFile(entry)));
+}
+
+/**
+ * Summary from the first line (run_start) and last line (run_end) only, so
+ * listing runs does not parse every event of every log.
+ */
+async function summarizeRunFile(entry: { runId: string; file: string; size: number }): Promise<RunSummary> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(entry.file, 'utf-8');
+  } catch {
+    return summarizeRun(entry.runId, [], entry.size);
+  }
+  const body = raw.trimEnd();
+  if (!body) return summarizeRun(entry.runId, [], entry.size);
+  let lines = 1;
+  for (let index = body.indexOf('\n'); index !== -1; index = body.indexOf('\n', index + 1)) lines += 1;
+  const parse = (line: string): RunEvent | null => {
+    try {
+      return JSON.parse(line) as RunEvent;
+    } catch {
+      return null;
+    }
+  };
+  const firstBreak = body.indexOf('\n');
+  const first = parse(firstBreak === -1 ? body : body.slice(0, firstBreak));
+  const last = firstBreak === -1 ? null : parse(body.slice(body.lastIndexOf('\n') + 1));
+  const events = [first, last].filter((event): event is RunEvent => event !== null);
+  return { ...summarizeRun(entry.runId, events, entry.size), events: lines };
 }
 
 /** Delete the oldest runs beyond the count and size limits. Returns removed run ids. */

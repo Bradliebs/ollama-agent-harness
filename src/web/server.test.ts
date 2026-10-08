@@ -5,7 +5,7 @@ import http from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import { cleanupServerTestWorkspace, serverTestSourceRoot } from './serverTestWorkspace.test-support';
-import { app, ambientEnabled, assistantProfileEnabled, drainChatBackgroundTasksForTest, inferModelCapabilities, parseExplicitSkillInvocation, proactiveProfileEnabled, resetSettingsLoadedForTest, resolveChatModelForRequest, resolveHarnessSourceDistFreshnessPaths, resolveJarvisWhisperBridgePath, setWebRuntimeOverrides, startupConnectorsEnabled, stopUploadsAutoPrune } from './server';
+import { app, ambientEnabled, assistantProfileEnabled, drainChatBackgroundTasksForTest, inferModelCapabilities, inspectorAutoApproved, parseExplicitSkillInvocation, proactiveProfileEnabled, resetSettingsLoadedForTest, resolveChatModelForRequest, resolveHarnessSourceDistFreshnessPaths, resolveJarvisWhisperBridgePath, setWebRuntimeOverrides, startupConnectorsEnabled, stopUploadsAutoPrune } from './server';
 import { runtimeTracer } from '../core/tracing';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { appendLearningCandidate, extractLearningCandidate } from '../learning/sessionLearning';
@@ -1305,6 +1305,12 @@ describe('web server API validation', () => {
   it('uses backend prefixes when inferring cloud tool support', () => {
     expect(inferModelCapabilities('github/gpt-4o-mini').toolUse).toBe('strong');
     expect(inferModelCapabilities('replicate/meta/meta-llama-3-8b-instruct').toolUse).toBe('weak');
+  });
+
+  it('auto-approves inspector prompts in dontAsk except provenance', () => {
+    expect(inspectorAutoApproved('dontAsk', 'adversary')).toBe(true);
+    expect(inspectorAutoApproved('dontAsk', 'provenance')).toBe(false);
+    expect(inspectorAutoApproved('ask', 'adversary')).toBe(false);
   });
 
   it('classifies known :cloud Ollama models with the correct toolUse tier', () => {

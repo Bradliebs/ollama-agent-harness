@@ -4,12 +4,14 @@ import {
   applySnip,
   compactIfNeeded,
   COMPACTION_STRATEGIES,
+  DEFAULT_COMPACTION_CONFIG,
+  elideOldToolCallArguments,
   isCompactionBoundary,
   AUTO_COMPACT_BOUNDARY_PREFIX,
   HISTORICAL_CONTEXT_BEGIN_MARKER,
   HISTORICAL_CONTEXT_END_MARKER,
 } from './compaction';
-import { estimateTokenCount } from './assembly';
+import { estimateTokenCount, estimateToolSchemaTokens } from './assembly';
 import type { Message } from 'ollama';
 
 describe('Context Compaction', () => {
@@ -214,6 +216,43 @@ describe('Context Compaction', () => {
     });
   });
 
+  describe('elideOldToolCallArguments', () => {
+    const write = (path: string, size: number): Message => ({ role: 'assistant', content: '', tool_calls: [{ function: { name: 'file_write', arguments: { path, content: 'x'.repeat(size) } } }] });
+    const conversation = (): Message[] => [
+      { role: 'system', content: 'system' },
+      { role: 'user', content: 'write three files' },
+      write('a.ts', 6000), { role: 'tool', content: 'wrote a.ts' },
+      write('b.ts', 6000), { role: 'tool', content: 'wrote b.ts' },
+      write('c.ts', 6000), { role: 'tool', content: 'wrote c.ts' },
+    ];
+
+    it('shortens long arguments of older calls only, keeping paths and recent calls', () => {
+      const result = elideOldToolCallArguments(conversation(), 2);
+      const args = result.messages.filter((m) => m.tool_calls).map((m) => m.tool_calls![0].function.arguments as Record<string, string>);
+      expect(args[0]).toEqual({ path: 'a.ts', content: '[6000 chars omitted to save context; this call already ran]' });
+      expect(args[1].content).toHaveLength(6000);
+      expect(args[2].content).toHaveLength(6000);
+      expect(result.tokensFreed).toBeGreaterThan(1400);
+      // Idempotent: a second pass changes nothing.
+      expect(elideOldToolCallArguments(result.messages, 2).tokensFreed).toBe(0);
+    });
+
+    it('runs under pressure before any message is snipped', async () => {
+      const client = { chat: jest.fn() };
+      const result = await compactIfNeeded(conversation(), { ...DEFAULT_COMPACTION_CONFIG, maxTokens: 5000 }, client as never);
+      expect(client.chat).not.toHaveBeenCalled();
+      expect(result.messages).toHaveLength(conversation().length);
+      expect(result.tokensFreed).toBeGreaterThan(1400);
+    });
+
+    it('leaves the transcript alone when there is no pressure', async () => {
+      const messages = conversation();
+      const result = await compactIfNeeded(messages, { ...DEFAULT_COMPACTION_CONFIG, maxTokens: 100_000 }, { chat: jest.fn() } as never);
+      expect(result.messages).toEqual(messages);
+      expect(result.tokensFreed).toBe(0);
+    });
+  });
+
   describe('estimateTokenCount', () => {
     it('estimates roughly 4 chars per token', () => {
       const messages: Message[] = [
@@ -221,6 +260,17 @@ describe('Context Compaction', () => {
       ];
       const count = estimateTokenCount(messages);
       expect(count).toBe(100);
+    });
+
+    it('counts tool-call arguments, which are re-sent every turn', () => {
+      const call: Message = { role: 'assistant', content: '', tool_calls: [{ function: { name: 'file_write', arguments: { path: 'a.ts', content: 'x'.repeat(4000) } } }] };
+      expect(estimateTokenCount([call])).toBeGreaterThan(1000);
+    });
+
+    it('estimates tool-schema tokens from the serialized definitions', () => {
+      const schema = { type: 'function', function: { name: 'a', description: 'd'.repeat(390), parameters: {} } };
+      expect(estimateToolSchemaTokens([schema])).toBeGreaterThan(100);
+      expect(estimateToolSchemaTokens([])).toBe(0);
     });
   });
 
@@ -316,6 +366,22 @@ describe('Context Compaction', () => {
       expect(boundaries.length).toBe(1);
       expect(boundaries[0].content).toContain('fresh summary');
       expect(boundaries[0].content).not.toContain('old summary');
+      // ...but the old summary is folded into the new one, not lost.
+      const summarizerInput = String(client.chat.mock.calls[0][0][1].content);
+      expect(summarizerInput).toContain('[PREVIOUS SUMMARY]: old summary');
+    });
+
+    it('keeps the latest auto-compact summary when snipping', () => {
+      const summary: Message = { role: 'system', content: `${AUTO_COMPACT_BOUNDARY_PREFIX}6 messages]\nthe early decisions` };
+      const messages: Message[] = [
+        { role: 'system', content: 'system' },
+        summary,
+        ...Array.from({ length: 8 }, (_, i): Message => ({ role: i % 2 === 0 ? 'user' : 'assistant', content: `m${i}` })),
+      ];
+      const result = applySnip(messages, 3);
+      expect(result.messages).toContain(summary);
+      expect(result.messages.filter((m) => isCompactionBoundary(m) && !String(m.content).startsWith(AUTO_COMPACT_BOUNDARY_PREFIX))).toHaveLength(1);
+      expect(applySnip(result.messages, 2).messages).toContain(summary);
     });
   });
 });

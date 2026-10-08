@@ -22,6 +22,11 @@ function makeStubClient(): IChatClient {
 
 describe('sub-agent declarative composition', () => {
   describe('parseAgentFile sub_agents frontmatter', () => {
+    it('parses CRLF agent files (Windows checkouts)', () => {
+      const def = parseAgentFile(['---', 'id: crlf-agent', 'name: CRLF Agent', '---', '', 'You help.'].join('\r\n'), '/tmp/crlf-agent.md');
+      expect(def).toEqual(expect.objectContaining({ id: 'crlf-agent', name: 'CRLF Agent' }));
+    });
+
     it('parses a sub_agents block with values and description', () => {
       const md = [
         '---',

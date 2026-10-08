@@ -12,6 +12,7 @@ import * as path from 'path';
 import { atomicWriteFile, withFileLock } from '../persistence/atomicFile';
 import { readRunEvents, type RunEvent } from '../persistence/runLog';
 import { recordSkillOutcome } from '../extensibility/skillUsage';
+import { scanForInjection } from '../safety/injectionDefence';
 
 export type LessonKind = 'blocked_source' | 'stuck' | 'unsupported_claims' | 'budget';
 
@@ -59,6 +60,7 @@ export interface RunOutcome {
 export type LessonsMode = 'off' | 'record' | 'recall';
 
 const MAX_LESSONS = 300;
+const NO_OUTCOME_REASONS = new Set(['aborted', 'incomplete']);
 const BLOCKED_FRESH_DAYS = 30;
 const LESSON_FRESH_DAYS = 120;
 const SIMILARITY_THRESHOLD = 0.25;
@@ -256,7 +258,10 @@ function isFresh(lesson: Lesson, now: Date): boolean {
 /** Lessons worth recalling for a new task: fresh, not retired, and relevant. */
 export function recallLessons(store: LessonStore, task: string, now = new Date(), max = 4): Lesson[] {
   if (!task.trim()) return [];
-  const live = store.lessons.filter((lesson) => !lesson.retired && isFresh(lesson, now));
+  // Lesson text quotes tool inputs and answer figures, which a web page may
+  // have steered; anything that reads like an injected instruction is never
+  // recalled into the system prompt.
+  const live = store.lessons.filter((lesson) => !lesson.retired && isFresh(lesson, now) && !scanForInjection(lesson.text).flagged);
   const terms = taskTerms(task);
   const lower = task.toLowerCase();
   const research = RESEARCH_CUE.test(task);
@@ -309,13 +314,17 @@ export async function learnFromRun(projectDir: string, runId: string, now = new 
   const events = await readRunEvents(projectDir, runId);
   if (!events.some((event) => event.kind === 'run_end')) return null;
   const outcome = deriveRunOutcome(runId, events);
+  // A run the user stopped (or that never finished) says nothing about
+  // whether a recalled lesson or a skill works; it can still teach lessons.
+  const judged = !NO_OUTCOME_REASONS.has(outcome.doneReason);
   const file = storePath(projectDir);
   await fs.mkdir(path.dirname(file), { recursive: true });
   const added = await withFileLock(file, async () => {
-    const result = applyRunOutcome(await loadLessons(projectDir), outcome, now);
+    const result = applyRunOutcome(await loadLessons(projectDir), judged ? outcome : { ...outcome, recalledLessons: [] }, now);
     await atomicWriteFile(file, JSON.stringify(result.store, null, 2), { encoding: 'utf-8' });
     return result.added;
   });
+  if (!judged) return { outcome, added };
   const skillSucceeded = outcome.doneReason === 'completed' && outcome.stuckSummary === undefined && !outcome.budgetExceeded;
   for (const skill of outcome.skillsUsed) await recordSkillOutcome(projectDir, skill, skillSucceeded, now);
   return { outcome, added };

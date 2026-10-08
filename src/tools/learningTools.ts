@@ -297,6 +297,11 @@ export const ImproveSkillTool: Tool = {
     const newContent = input.new_content as string;
     const reason = input.reason as string;
 
+    // A skill name is a single folder under .harness/skills, never a path.
+    if (typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+      return { success: false, output: `Invalid skill name: ${JSON.stringify(name)}. Use the skill's folder name (letters, digits, dot, dash, underscore).`, error: 'invalid skill name' };
+    }
+
     const skillPath = path.join(learningProjectDir(), '.harness', 'skills', name, 'SKILL.md');
 
     try {

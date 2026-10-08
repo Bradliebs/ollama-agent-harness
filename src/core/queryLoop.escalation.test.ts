@@ -29,13 +29,14 @@ function tools(): Tool[] {
   ];
 }
 
-function scripted(replies: Message[]) {
+function scripted(replies: Message[], locality?: 'local' | 'cloud') {
   const seen: Message[][] = [];
   return {
     seen,
+    ...(locality ? { getLocality: () => locality } : {}),
     chat: jest.fn(async (messages: Message[]) => {
       seen.push(messages.map((message) => ({ ...message })));
-      return { message: replies.shift() ?? ({ role: 'assistant', content: 'fallback' } as Message) };
+      return { message: replies.shift() ?? ({ role: 'assistant', content: 'fallback' } as Message), usage: { promptTokens: 10, completionTokens: 1 } };
     }),
   };
 }
@@ -69,6 +70,15 @@ describe('in-run escalation', () => {
     expect(weak.chat.mock.calls.length).toBeLessThan(10);
     expect(finalText).toBe('It is about £1,669 new.');
     expect(done).toMatchObject({ reason: 'completed' });
+  });
+
+  it('reports the escalated model\'s locality on its usage', async () => {
+    const weak = scripted(Array.from({ length: 10 }, (_, i) => search(`x100vi price attempt ${i}`)), 'local');
+    const strong = scripted([{ role: 'assistant', content: 'It is about £1,669 new.' } as Message], 'cloud');
+    const { events } = await run(weak, { escalate: jest.fn(async () => ({ model: 'kimi-k3:cloud', client: strong as never })) });
+    const usage = events.filter((event): event is Extract<LoopEvent, { type: 'usage' }> => event.type === 'usage');
+    expect(usage[0]).toMatchObject({ model: 'qwen3.5:4b', locality: 'local' });
+    expect(usage[usage.length - 1]).toMatchObject({ model: 'kimi-k3:cloud', locality: 'cloud' });
   });
 
   it('asks the human when there is nothing stronger to escalate to', async () => {

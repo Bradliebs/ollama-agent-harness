@@ -75,4 +75,12 @@ describe('CostTracker', () => {
     expect(rates['gpt-4o']).toBeDefined();
     expect(rates['gpt-4o'].input).toBe(0.0025);
   });
+
+  it('rateFor resolves backend- and provider-prefixed model ids', () => {
+    expect(CostTracker.rateFor('gpt-4o')?.input).toBe(0.0025);
+    expect(CostTracker.rateFor('openai/gpt-4o')?.input).toBe(0.0025);
+    expect(CostTracker.rateFor('openrouter/openai/gpt-4o')?.input).toBe(0.0025);
+    expect(CostTracker.rateFor('openai/unknown-model')).toBeUndefined();
+    expect(new CostTracker('openai/gpt-4o').getRate().input).toBe(0.0025);
+  });
 });

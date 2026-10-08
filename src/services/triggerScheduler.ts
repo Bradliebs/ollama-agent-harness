@@ -26,6 +26,7 @@ import { spawn } from 'node:child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { logger } from '../core/logger';
+import { atomicWriteFile } from '../persistence/atomicFile';
 import { emitEvent } from '../persistence/eventStore';
 
 export interface TriggerDefinition {
@@ -118,7 +119,8 @@ export async function saveTriggers(projectDir: string, triggers: TriggerDefiniti
   const fp = triggersFilePath(projectDir);
   await fs.mkdir(path.dirname(fp), { recursive: true });
   const envelope: TriggerEnvelope = { version: 1, triggers };
-  await fs.writeFile(fp, JSON.stringify(envelope, null, 2), 'utf-8');
+  // Atomic: the scheduler and the triggers API read this file concurrently.
+  await atomicWriteFile(fp, JSON.stringify(envelope, null, 2), { encoding: 'utf-8' });
 }
 
 export function normalizeEnvelope(value: unknown): TriggerEnvelope {
@@ -143,6 +145,8 @@ export class TriggerScheduler {
   private startedAtMs = 0;
   private lastRunMs: Map<string, number> = new Map();
   private inflight: Set<string> = new Set();
+  /** Default-trigger seeding started by start(); ticks wait for it so they never read a half-written file. */
+  private seeding: Promise<void> = Promise.resolve();
   private opts: Required<Omit<TriggerSchedulerOptions, 'spawn'>> & { spawn?: TriggerSpawnFn };
 
   constructor(opts: TriggerSchedulerOptions) {
@@ -160,7 +164,7 @@ export class TriggerScheduler {
   start(): void {
     if (this.timer) return;
     this.startedAtMs = Date.now();
-    ensureDefaultTriggers(this.opts.projectDir).catch((error) =>
+    this.seeding = ensureDefaultTriggers(this.opts.projectDir).catch((error) =>
       logger.warn('Triggers', 'Failed to seed default triggers', { error: error instanceof Error ? error.message : String(error) }),
     );
     this.timer = setInterval(() => {
@@ -200,6 +204,7 @@ export class TriggerScheduler {
   /** Run one tick. Returns the executions that fired. Public for tests. */
   async tick(now: Date = new Date()): Promise<TriggerExecutionResult[]> {
     const results: TriggerExecutionResult[] = [];
+    await this.seeding;
     if (!this.opts.isEnabled()) return results;
     if (this.opts.isKillSwitchActive()) return results;
     if (now.getTime() - this.startedAtMs < this.opts.startupCooldownMs) return results;

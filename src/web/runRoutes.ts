@@ -3,10 +3,10 @@
 // file changes back to the end of a step.
 
 import express from 'express';
-import { listRuns, readRunEvents, summarizeRun, type RunEventKind } from '../persistence/runLog';
+import { RUN_EVENT_KINDS, listRuns, readRunEvents, summarizeRun, type RunEventKind } from '../persistence/runLog';
 import { listSideEffects } from '../persistence/sideEffectLedger';
 import { revertRun, revertToStep } from '../persistence/runReverter';
-import { restoreGitCheckpoint } from '../persistence/gitCheckpoint';
+import { NoGitCheckpointError, restoreGitCheckpoint } from '../persistence/gitCheckpoint';
 
 export interface RunRoutesDeps {
   projectDir: string;
@@ -16,7 +16,7 @@ export interface RunRoutesDeps {
 }
 
 const SAFE_RUN_ID = /^[A-Za-z0-9._-]{1,160}$/;
-const KNOWN_KINDS = new Set<RunEventKind>(['run_start', 'messages', 'compaction', 'model_request', 'model_response', 'model_error', 'tool_call', 'tool_result', 'route', 'verdict', 'supervisor', 'run_end']);
+const KNOWN_KINDS = new Set<RunEventKind>(RUN_EVENT_KINDS);
 
 export function createRunRouter(deps: RunRoutesDeps): express.Router {
   const router = express.Router();
@@ -61,7 +61,11 @@ export function createRunRouter(deps: RunRoutesDeps): express.Router {
         logger.info('Runs', 'Run restored from git checkpoint', { runId, removed: restored.removed.length });
         res.json({ runId, mode: 'git', commit: restored.commit, removed: restored.removed });
       } catch (error) {
-        res.status(404).json({ error: `No git checkpoint for this run: ${error instanceof Error ? error.message : String(error)}` });
+        if (error instanceof NoGitCheckpointError) {
+          res.status(404).json({ error: error.message });
+        } else {
+          res.status(500).json({ error: `Git restore failed: ${error instanceof Error ? error.message : String(error)}` });
+        }
       }
       return;
     }

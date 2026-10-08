@@ -64,7 +64,7 @@ export class CostTracker {
     this.model = model;
     this.budgetUsd = options?.budgetUsd;
     const customRates = options?.rates ?? {};
-    this.rate = customRates[model] ?? DEFAULT_RATES[model] ?? { input: 0, output: 0 };
+    this.rate = customRates[model] ?? CostTracker.rateFor(model) ?? { input: 0, output: 0 };
   }
 
   /** Record a turn's token usage. Returns true if budget is exceeded. */
@@ -118,5 +118,19 @@ export class CostTracker {
   /** Get all known rates. */
   static getAllRates(): Record<string, TokenRate> {
     return { ...DEFAULT_RATES };
+  }
+
+  /**
+   * Rate for a model id that may carry backend/provider prefixes
+   * ("openai/gpt-4o", "openrouter/openai/gpt-4o"): the full id first, then
+   * each shorter suffix after a "/".
+   */
+  static rateFor(model: string): TokenRate | undefined {
+    const parts = model.split('/');
+    for (let index = 0; index < parts.length; index += 1) {
+      const rate = DEFAULT_RATES[parts.slice(index).join('/')];
+      if (rate) return rate;
+    }
+    return undefined;
   }
 }

@@ -20,6 +20,7 @@ import type { ModelRoutingPolicy } from '../agents/modelRouting';
 import { OUTPUT_VALIDATION_PROFILES, parseOutputValidationProfile, type OutputValidationProfile, type OutputValidationResult } from '../core/outputValidation';
 import { formatCliHelp, resolveCliCommand } from './commands';
 import { runProbeSuite } from '../models/probeRunner';
+import { probeContextWindow } from '../models/probes/usableContext';
 import { safeModelProfileName, type CapabilityProfile } from '../models/capabilityProfile';
 import { runMyceliumCli } from '../mycelium/cli';
 import { createMycelialRouter, deriveToolShortlist, toolNamesFromRoute, type MycelialContextRouter } from '../mycelium/router';
@@ -100,6 +101,8 @@ interface CliOptions {
   replayLastN?: number;
   replayModels?: string[];
   replayLive?: boolean;
+  /** replay / benchmark-history: evaluate deferred tool loading. */
+  deferTools?: boolean;
   json?: boolean;
   benchmarkModels?: string[];
   benchmarkLastN?: number;
@@ -278,10 +281,13 @@ export function parseArgs(args: string[] = process.argv.slice(2)): CliOptions {
         break;
       }
       case '--models':
-        options.benchmarkModels = args[++i].split(',').map((model) => model.trim()).filter(Boolean);
+        options.benchmarkModels = (args[++i] ?? '').split(',').map((model) => model.trim()).filter(Boolean);
         break;
       case '--live':
         options.replayLive = true;
+        break;
+      case '--defer-tools':
+        options.deferTools = true;
         break;
       case '--json':
         options.json = true;
@@ -529,6 +535,7 @@ export async function main(): Promise<void> {
         lastN: options.replayLastN,
         createClient: (model) => createChatClient({ backend: options.backend, model, host: options.host, autoFallback: true, projectDir }),
         schemaTools: getBuiltinTools(),
+        deferTools: options.deferTools,
       });
       if (options.json) console.log(JSON.stringify(report, null, 2));
       else console.log(formatBenchmarkHistoryTable(report));
@@ -550,6 +557,7 @@ export async function main(): Promise<void> {
         mode: options.replayLive ? 'live' : 'deterministic',
         tools,
         schemaTools: getBuiltinTools(),
+        deferTools: options.deferTools,
       })).metrics);
     }
     const report = compareRuns(replayCase.originalMetrics, replays);
@@ -570,6 +578,7 @@ export async function main(): Promise<void> {
       lastN: options.benchmarkLastN ?? 10,
       createClient: (model) => createChatClient({ backend: options.backend, model, host: options.host, autoFallback: true, projectDir }),
       schemaTools: getBuiltinTools(),
+      deferTools: options.deferTools,
     });
     if (options.json) console.log(JSON.stringify(report, null, 2));
     else console.log(formatBenchmarkHistoryTable(report));
@@ -577,22 +586,28 @@ export async function main(): Promise<void> {
   }
 
   if (options.command === 'probe') {
-    const client = createChatClient({
+    const clientConfig = {
       backend: options.backend,
       model: options.model,
       host: options.host,
       autoFallback: true,
       projectDir,
-    });
+    };
+    let client = createChatClient(clientConfig);
     const health = await client.healthCheck();
     if (!health.ok) {
       console.error(`❌ ${health.error}`);
       process.exitCode = 1;
       return;
     }
+    // Probe with a window sized to the probe (not the backend's small default,
+    // and not the model's full native window).
+    const detectedContextTokens = await client.getContextWindow().catch(() => null);
+    client = createChatClient({ ...clientConfig, numCtx: probeContextWindow(detectedContextTokens, options.probeMaxContextTokens) });
     const profile = await runProbeSuite(client, {
       model: options.model,
       projectDir,
+      detectedContextTokens,
       budget: {
         samples: options.probeSamples,
         maxContextTokens: options.probeMaxContextTokens,

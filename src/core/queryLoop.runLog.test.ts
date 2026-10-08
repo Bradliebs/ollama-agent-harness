@@ -80,6 +80,11 @@ describe('queryLoop with a run log', () => {
 
     const responses = logged.filter((event) => event.kind === 'model_response');
     expect(responses.map((event) => event.stepId)).toEqual(['t1', 't2', 't3', 't4']);
+    // The cacheable prefix (system message + tool definitions) is identical on every turn.
+    const prefixHashes = logged.filter((event) => event.kind === 'model_request').map((event) => event.data.prefixHash);
+    expect(prefixHashes).toHaveLength(4);
+    expect(new Set(prefixHashes).size).toBe(1);
+    expect(prefixHashes[0]).toMatch(/^[0-9a-f]{12}$/);
     expect(logged.filter((event) => event.kind === 'tool_result').map((event) => [event.stepId, event.data.name, event.data.success]))
       .toEqual([['t1.1', 'file_edit', true], ['t2.1', 'file_write', true], ['t2.2', 'file_write', true], ['t3.1', 'file_move', true]]);
 

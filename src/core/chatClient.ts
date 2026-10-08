@@ -17,6 +17,12 @@ export interface TokenUsage {
   promptEvalDurationNs?: number;
   /** Nanoseconds spent generating tokens. */
   evalDurationNs?: number;
+  /**
+   * Prompt tokens the provider served from its prompt cache (included in
+   * promptTokens). Only set when the provider reports it (OpenAI-compatible
+   * usage.prompt_tokens_details.cached_tokens).
+   */
+  cachedPromptTokens?: number;
 }
 
 export interface ChatResult {

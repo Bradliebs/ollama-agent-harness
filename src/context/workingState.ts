@@ -75,13 +75,76 @@ function normalizeProtectedPattern(pattern: string): string {
   return pattern.trim().replace(/\\/g, '/').replace(/^\.\//, '');
 }
 
+type GlobToken =
+  | { kind: 'lit'; ch: string }
+  | { kind: 'star' } // any run of characters except '/'
+  | { kind: 'globstar' } // any run of characters, '/' included
+  | { kind: 'qmark' } // one character except '/'
+  | { kind: 'optDirs' } // nothing, or any run ending in '/' (a leading "**/" or the middle of "/**/")
+  | { kind: 'optSuffix' }; // nothing, or '/' followed by anything (a trailing "/**", or a bare name's contents)
+
+function tokenizeProtectedPattern(pattern: string, rootAnchored = false): GlobToken[] {
+  let p = pattern.toLowerCase();
+  if (p.endsWith('/')) p += '**';
+  // Applied at any depth unless anchored, so patterns start with optional directories.
+  const tokens: GlobToken[] = rootAnchored ? [] : [{ kind: 'optDirs' }];
+  for (let i = 0; i < p.length;) {
+    if (p.startsWith('/**/', i)) { tokens.push({ kind: 'lit', ch: '/' }, { kind: 'optDirs' }); i += 4; }
+    else if (i === 0 && p.startsWith('**/')) { if (rootAnchored) tokens.push({ kind: 'optDirs' }); i += 3; }
+    else if (p.startsWith('/**', i) && /^\**$/.test(p.slice(i + 3))) { tokens.push({ kind: 'optSuffix' }); break; }
+    else if (p.startsWith('**', i)) { tokens.push({ kind: 'globstar' }); i += 2; while (p[i] === '*') i += 1; }
+    else if (p[i] === '*') { tokens.push({ kind: 'star' }); i += 1; }
+    else if (p[i] === '?') { tokens.push({ kind: 'qmark' }); i += 1; }
+    else { tokens.push({ kind: 'lit', ch: p[i] }); i += 1; }
+  }
+  const last = tokens[tokens.length - 1].kind;
+  // A bare name also covers a folder of that name and everything in it.
+  if (last !== 'optSuffix' && last !== 'globstar') tokens.push({ kind: 'optSuffix' });
+  return tokens;
+}
+
+/**
+ * Glob match for a protected pattern, applied at any depth: "dir/" and
+ * "dir/**" cover the directory and everything in it, a bare name covers a
+ * file or a directory of that exact name, "*" stays within one path segment,
+ * "**" spans segments. Dynamic programming over (token, position), so the
+ * cost is linear in pattern x path length whatever the pattern: patterns can
+ * come from the model (state_update), and a backtracking regex could hang.
+ */
+function matchesProtectedPattern(tokens: GlobToken[], candidate: string): boolean {
+  const n = candidate.length;
+  let prev: boolean[] = new Array<boolean>(n + 1).fill(false);
+  prev[0] = true;
+  for (const token of tokens) {
+    const next: boolean[] = new Array<boolean>(n + 1).fill(false);
+    let anyBefore = false; // prev[k] for some k < j
+    let slashAfterMatch = false; // prev[k] && candidate[k] === '/' for some k < j
+    for (let j = 0; j <= n; j += 1) {
+      const ch = j > 0 ? candidate[j - 1] : '';
+      switch (token.kind) {
+        case 'lit': next[j] = j > 0 && prev[j - 1] && ch === token.ch; break;
+        case 'qmark': next[j] = j > 0 && prev[j - 1] && ch !== '/'; break;
+        case 'star': next[j] = prev[j] || (j > 0 && next[j - 1] && ch !== '/'); break;
+        case 'globstar': next[j] = prev[j] || (j > 0 && next[j - 1]); break;
+        case 'optDirs': next[j] = prev[j] || (ch === '/' && anyBefore); break;
+        case 'optSuffix': next[j] = prev[j] || slashAfterMatch; break;
+      }
+      if (prev[j]) anyBefore = true;
+      if (prev[j] && candidate[j] === '/') slashAfterMatch = true;
+    }
+    prev = next;
+  }
+  return prev[n];
+}
+
 export class WorkingStateStore {
   private readonly data: WorkingState = { plan: [], facts: [], decisions: [], openQuestions: [], invariants: [], protectedPaths: [], sources: [] };
   private version = 0;
 
   constructor(seed: Partial<Pick<WorkingState, 'invariants' | 'protectedPaths'>> = {}) {
-    for (const invariant of seed.invariants ?? []) this.addInvariant(invariant);
-    for (const pattern of seed.protectedPaths ?? []) this.protect(pattern);
+    // Seeded entries come from the user and task contract: pinned, never capped or evicted.
+    for (const invariant of seed.invariants ?? []) this.addInvariant(invariant, true);
+    for (const pattern of seed.protectedPaths ?? []) this.protect(pattern, true);
     this.version = 0;
   }
 
@@ -144,41 +207,44 @@ export class WorkingStateStore {
 
   /** Harness-derived: a source the agent actually read. */
   addSource(url: string, title?: string): boolean {
-    const added = pushCapped(this.data.sources, { url, ...(title ? { title: clean(title) } : {}) }, LIMITS.sources, (a, b) => a.url === b.url);
+    const cleanUrl = clean(url);
+    if (!cleanUrl) return false;
+    const added = pushCapped(this.data.sources, { url: cleanUrl, ...(title ? { title: clean(title) } : {}) }, LIMITS.sources, (a, b) => a.url === b.url);
     if (added) this.version += 1;
     return added;
   }
 
-  private addInvariant(invariant: string): boolean {
+  // Invariants and protected paths only tighten: once full, new entries are
+  // refused rather than evicting older ones (which the model could otherwise
+  // use to unprotect a path by flooding state_update).
+  private addInvariant(invariant: string, pinned = false): boolean {
     const text = clean(invariant);
-    const added = Boolean(text) && pushCapped(this.data.invariants, text, LIMITS.invariants, (a, b) => a === b);
-    if (added) this.version += 1;
-    return added;
+    if (!text || this.data.invariants.includes(text)) return false;
+    if (!pinned && this.data.invariants.length >= LIMITS.invariants) return false;
+    this.data.invariants.push(text);
+    this.version += 1;
+    return true;
   }
 
-  private protect(pattern: string): boolean {
+  private protect(pattern: string, pinned = false): boolean {
     const normalized = normalizeProtectedPattern(clean(pattern));
-    const added = Boolean(normalized) && pushCapped(this.data.protectedPaths, normalized, LIMITS.protectedPaths, (a, b) => a === b);
-    if (added) this.version += 1;
-    return added;
+    if (!normalized || this.data.protectedPaths.includes(normalized)) return false;
+    if (!pinned && this.data.protectedPaths.length >= LIMITS.protectedPaths) return false;
+    this.data.protectedPaths.push(normalized);
+    this.version += 1;
+    return true;
   }
 
   /** The protected pattern that covers an absolute path, if any. */
   protectedMatch(absPath: string, projectRoot: string): string | null {
     const relative = path.relative(projectRoot, absPath).replace(/\\/g, '/');
-    const candidates = [relative, absPath.replace(/\\/g, '/')];
+    const candidates = [relative, absPath.replace(/\\/g, '/')].map((c) => c.toLowerCase());
     for (const pattern of this.data.protectedPaths) {
-      const lower = pattern.toLowerCase();
-      for (const candidate of candidates.map((c) => c.toLowerCase())) {
-        if (lower.includes('**')) {
-          const prefix = lower.slice(0, lower.indexOf('**'));
-          if (candidate.startsWith(prefix) || candidate.includes(`/${prefix}`)) return pattern;
-        } else if (lower.endsWith('/')) {
-          if (candidate.startsWith(lower) || candidate.includes(`/${lower}`)) return pattern;
-        } else if (candidate === lower || candidate.endsWith(`/${lower}`)) {
-          return pattern;
-        }
-      }
+      const tokens = tokenizeProtectedPattern(pattern);
+      if (candidates.some((candidate) => matchesProtectedPattern(tokens, candidate))) return pattern;
+      // gitignore style: a leading "/" anchors the pattern at the project root
+      // (the literal form above still covers real absolute paths).
+      if (/^\/[^/]/.test(pattern) && matchesProtectedPattern(tokenizeProtectedPattern(pattern.slice(1), true), candidates[0])) return pattern;
     }
     return null;
   }
@@ -205,6 +271,23 @@ export function injectWorkingState(messages: readonly Message[], rendered: strin
   return [{ ...messages[0], content: `${String(messages[0].content ?? '')}\n\n${rendered}` }, ...messages.slice(1)];
 }
 
+/**
+ * Tail placement: send the rendered working state as a last message instead,
+ * so the system prompt and the history before it stay byte-identical between
+ * calls (and cacheable) when the state changes. Not stored in the transcript.
+ */
+export function appendWorkingState(messages: readonly Message[], rendered: string): Message[] {
+  if (!rendered) return [...messages];
+  return [...messages, { role: 'user', content: `${rendered}\n(Maintained by the harness for reference; not a new request.)` } as Message];
+}
+
+export type WorkingStatePosition = 'system' | 'tail';
+
+/** Place the rendered state where the run is configured to put it. */
+export function placeWorkingState(messages: readonly Message[], rendered: string, position: WorkingStatePosition = 'system'): Message[] {
+  return position === 'tail' ? appendWorkingState(messages, rendered) : injectWorkingState(messages, rendered);
+}
+
 /** Parse a numbered or bulleted plan out of free text (heavy scaffolding's plan turn). */
 export function parsePlanText(text: string): string[] {
   return text
@@ -221,7 +304,8 @@ export function shellTouchesProtected(command: string, store: WorkingStateStore)
   if (!WRITE_SHELL.test(command)) return null;
   const normalized = command.replace(/\\/g, '/').toLowerCase();
   for (const pattern of store.state.protectedPaths) {
-    const needle = pattern.toLowerCase().replace(/\*\*.*$/, '').replace(/\/$/, '');
+    // Longest literal run of the pattern ("**/secret.txt" -> "secret.txt").
+    const needle = pattern.toLowerCase().split(/[*?]+/).map((part) => part.replace(/^\/+|\/+$/g, '')).sort((a, b) => b.length - a.length)[0] ?? '';
     if (needle && normalized.includes(needle)) return pattern;
   }
   return null;

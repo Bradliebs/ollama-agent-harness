@@ -6,6 +6,10 @@ import { createGitCheckpoint, deleteGitCheckpoint, isGitWorkTree, restoreGitChec
 
 const git = (cwd: string, args: string[]): string => execFileSync('git', args, { cwd, encoding: 'utf-8' }).trim();
 
+// Each test spawns a dozen or more git processes, which can take several
+// seconds on Windows or under a loaded parallel run.
+jest.setTimeout(30_000);
+
 describe('git checkpoints', () => {
   let dir: string;
 
@@ -53,6 +57,22 @@ describe('git checkpoints', () => {
 
     await deleteGitCheckpoint(dir, 'run-ckpt-1');
     await expect(restoreGitCheckpoint(dir, 'run-ckpt-1')).rejects.toThrow();
+  });
+
+  it('never snapshots or rolls back the harness state directory', async () => {
+    await fs.mkdir(path.join(dir, '.harness', 'runs'), { recursive: true });
+    await fs.writeFile(path.join(dir, '.harness', 'ledger.json'), 'before\n');
+    await createGitCheckpoint(dir, 'run-ckpt-2');
+    expect(git(dir, ['ls-tree', '-r', '--name-only', 'refs/harness/runs/run-ckpt-2'])).not.toContain('.harness');
+
+    await fs.writeFile(path.join(dir, '.harness', 'ledger.json'), 'after\n');
+    await fs.writeFile(path.join(dir, '.harness', 'runs', 'run-ckpt-2.jsonl'), '{}\n');
+    await fs.writeFile(path.join(dir, 'created-by-run.txt'), 'new\n');
+
+    const result = await restoreGitCheckpoint(dir, 'run-ckpt-2');
+    expect(result.removed).toEqual(['created-by-run.txt']);
+    expect(await fs.readFile(path.join(dir, '.harness', 'ledger.json'), 'utf-8')).toBe('after\n');
+    expect(await fs.readFile(path.join(dir, '.harness', 'runs', 'run-ckpt-2.jsonl'), 'utf-8')).toBe('{}\n');
   });
 
   it('returns null outside a git repository and rejects unsafe run ids', async () => {
