@@ -314,6 +314,25 @@ No release tag, publication or installer runtime qualification is implied.
     matched `qwen2.5-3b`.
   - After these changes full Jest passed 361 suites and 4,084 tests with one
     skipped, and typecheck passed.
+- Web UI refresh, guided by the ui-ux-pro-max skill (accessibility first):
+  - Text meets WCAG AA contrast in both themes: the dark theme's muted text
+    and accent-coloured text were below 4.5:1 (42 failures on the welcome
+    screen, now 0), and filled accent buttons use a darker shade for white
+    text. New `--accent-text` / `--accent-strong` tokens follow the accent
+    picker.
+  - Keyboard: every control shows a focus ring; closed side panels no
+    longer take Tab focus (23 of the first 60 Tab stops landed on hidden
+    controls); tabs, menu items, mode pickers, chat history and file items
+    work with Tab and Enter/Space; dialogs take focus, keep it inside, close
+    on Escape and return focus; there is a skip link to the message box.
+  - Reduced motion is respected everywhere, not just for the theme switch.
+  - Top bar and composer icons are a small SVG set with accessible names
+    instead of emoji; screen readers hear "Reply finished" once per reply.
+  - The top bar wraps or collapses labels instead of clipping New chat and
+    Settings when a side panel is open or on a phone; the phone composer
+    gives the message box the full width; copy buttons are reachable by
+    keyboard and touch; the light theme no longer shows dark error cards or
+    a shadow bleeding in at the window edge; no text is smaller than 11px.
 
 See [Modernization Status](docs/MODERNIZATION-STATUS.md) for the complete
 validation record and remaining installation, hosted CI and live-workflow gates.

@@ -94,13 +94,13 @@ async function loadMycelium() {
       const barWidth = Math.round(edge.weight * 100);
       const protectedBadge = edge.protected ? ' <span style="color:#ff8c00" title="protected">🛡</span>' : '';
       const blockedBadge = edge.blockedCount && edge.blockedCount > 0
-        ? ' <span style="color:#fff;background:#c62828;padding:0 4px;border-radius:3px;font-size:10px" title="hard verifier blocks">⛔' + edge.blockedCount + '</span>'
+        ? ' <span style="color:#fff;background:#c62828;padding:0 4px;border-radius:3px;font-size:11px" title="hard verifier blocks">⛔' + edge.blockedCount + '</span>'
         : '';
       const originBadge = edge.origin
-        ? ' <span style="font-size:10px;padding:1px 4px;border:1px solid var(--border);border-radius:3px;color:var(--text-dim)" title="origin">' + esc(edge.origin) + '</span>'
+        ? ' <span style="font-size:11px;padding:1px 4px;border:1px solid var(--border);border-radius:3px;color:var(--text-dim)" title="origin">' + esc(edge.origin) + '</span>'
         : '';
       const relationLabel = edge.relation
-        ? ' <span style="font-size:10px;color:var(--text-dim)">[' + esc(edge.relation) + ']</span>'
+        ? ' <span style="font-size:11px;color:var(--text-dim)">[' + esc(edge.relation) + ']</span>'
         : '';
       return '<div class="trace-meta" style="font-size:11px">'
         + esc(sourceLabel) + ' → ' + esc(targetLabel)
@@ -122,10 +122,10 @@ async function loadMycelium() {
       const routeStr = (ep.route || []).map((id) => id.replace(/^[^.]+\./, '')).join(' → ');
       const rewardColor = ep.reward > 0.5 ? '#50c878' : ep.reward > 0.3 ? '#ffb050' : '#ff5050';
       const taskBadge = ep.taskType
-        ? ' <span style="font-size:10px;padding:1px 4px;border:1px solid var(--border);border-radius:3px;color:var(--text-dim)">' + esc(ep.taskType) + '</span>'
+        ? ' <span style="font-size:11px;padding:1px 4px;border:1px solid var(--border);border-radius:3px;color:var(--text-dim)">' + esc(ep.taskType) + '</span>'
         : '';
-      const dryBadge = ep.dryRun ? ' <span style="font-size:10px;color:#ffb050">[dry-run]</span>' : '';
-      const blockedBadge = ep.blocked ? ' <span style="font-size:10px;color:#fff;background:#c62828;padding:0 4px;border-radius:3px" title="' + escAttr(ep.blockReason || 'blocked') + '">⛔</span>' : '';
+      const dryBadge = ep.dryRun ? ' <span style="font-size:11px;color:#ffb050">[dry-run]</span>' : '';
+      const blockedBadge = ep.blocked ? ' <span style="font-size:11px;color:#fff;background:#c62828;padding:0 4px;border-radius:3px" title="' + escAttr(ep.blockReason || 'blocked') + '">⛔</span>' : '';
       return '<div class="trace-meta" style="font-size:11px">'
         + '<span style="color:' + rewardColor + '">' + (ep.reward || 0).toFixed(2) + '</span>' + taskBadge + dryBadge + blockedBadge + ' '
         + esc(routeStr || '(empty)')
@@ -172,7 +172,7 @@ async function loadMycelium() {
         const rewardColor = ep.reward > 0.5 ? '#50c878' : ep.reward > 0.3 ? '#ffb050' : '#ff5050';
         const headerLine = '<div class="trace-meta" style="font-size:11px"><strong>' + esc(ep.query || '(no query)') + '</strong>'
           + ' <span style="color:' + rewardColor + '">reward:' + (ep.reward || 0).toFixed(2) + '</span>'
-          + (ep.taskType ? ' <span style="font-size:10px;padding:1px 4px;border:1px solid var(--border);border-radius:3px">' + esc(ep.taskType) + '</span>' : '')
+          + (ep.taskType ? ' <span style="font-size:11px;padding:1px 4px;border:1px solid var(--border);border-radius:3px">' + esc(ep.taskType) + '</span>' : '')
           + (ep.dryRun ? ' <span style="color:#ffb050">[dry-run]</span>' : '')
           + (ep.blocked ? ' <span style="color:#fff;background:#c62828;padding:1px 6px;border-radius:3px;font-weight:bold" title="' + escAttr(ep.blockReason || 'verifier hard-check failure') + '">⛔ BLOCKED</span>' : '')
           + '</div>';

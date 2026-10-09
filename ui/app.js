@@ -233,9 +233,105 @@ const ONBOARD_SEEN_KEY = 'harness.onboardSeen';
 function shouldShowOnboardModal() {
   try { return !localStorage.getItem(ONBOARD_SEEN_KEY); } catch(e){ return false; }
 }
+// ─── Modal focus ───────────────────────────────────────────────────
+// Dialogs take keyboard focus when they open, keep Tab inside, close on
+// Escape, and hand focus back to where it was when they close.
+
+const MODAL_FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
+function holdModalFocus(modal, onEscape) {
+  if (!modal || modal._focusHold) return;
+  const returnTo = document.activeElement;
+  const focusables = () => [...modal.querySelectorAll(MODAL_FOCUSABLE)].filter((el) => !el.disabled && el.getClientRects().length > 0);
+  const onKey = (e) => {
+    if (e.key === 'Escape' && onEscape) { e.preventDefault(); e.stopPropagation(); onEscape(); return; }
+    if (e.key !== 'Tab') return;
+    const list = focusables();
+    if (list.length === 0) return;
+    const first = list[0];
+    const last = list[list.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+  modal.addEventListener('keydown', onKey);
+  modal._focusHold = { onKey, returnTo };
+  setTimeout(() => { const first = focusables()[0]; if (first) first.focus(); }, 0);
+}
+
+function releaseModalFocus(modal) {
+  const hold = modal && modal._focusHold;
+  if (!hold) return;
+  modal.removeEventListener('keydown', hold.onKey);
+  modal._focusHold = null;
+  if (hold.returnTo && document.contains(hold.returnTo) && typeof hold.returnTo.focus === 'function') hold.returnTo.focus();
+}
+
+// Clickable <div>/<span> controls in index.html (left-panel tabs, "More"
+// menu items, mode pickers) predate real buttons. Make them reachable with
+// Tab and operable with Enter/Space; backdrop "click outside to close"
+// handlers are left alone.
+function enhanceClickableElements(root) {
+  const candidates = root.matches && root.matches('div, span, li, td, label') ? [root, ...root.querySelectorAll('div, span, li, td, label')] : [...root.querySelectorAll('div, span, li, td, label')];
+  for (const el of candidates) {
+    const attr = el.getAttribute('onclick');
+    // Handlers set from JS (el.onclick = ...) count too; backdrop "click outside to close" ones don't.
+    if (!attr && typeof el.onclick !== 'function') continue;
+    if (attr && /event\.target\s*===\s*this/.test(attr)) continue;
+    if (!attr && el.classList.contains('modal-backdrop')) continue;
+    if (!el.hasAttribute('tabindex')) el.tabIndex = 0;
+    el.dataset.kbdClick = '1';
+    // A row that holds its own buttons (history delete, tab close) stays a
+    // plain focusable row: a role=button would hide those buttons from screen readers.
+    if (!el.hasAttribute('role') && !el.querySelector('button, a[href], input, select, textarea')) el.setAttribute('role', 'button');
+    // Tabs and option pickers show their selection with an "active" class.
+    if (el.matches('.tab, .mode-opt, .skill-modal-tab, .session-tab')) el.setAttribute('aria-pressed', el.classList.contains('active') ? 'true' : 'false');
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const el = e.target;
+  if (!(el instanceof HTMLElement) || el.dataset.kbdClick !== '1') return;
+  if (!el.hasAttribute('onclick') && typeof el.onclick !== 'function') return;
+  if (el.matches('button, a, input, select, textarea, summary')) return;
+  e.preventDefault();
+  el.click();
+});
+
+// Lists rendered later (chat history, files, session tabs, cards) get the
+// same treatment; streaming message text is skipped to keep this cheap.
+const clickableObserver = new MutationObserver((mutations) => {
+  for (const m of mutations) {
+    if (m.type === 'attributes') {
+      const el = m.target;
+      if (el.hasAttribute && el.hasAttribute('aria-pressed')) el.setAttribute('aria-pressed', el.classList.contains('active') ? 'true' : 'false');
+      continue;
+    }
+    if (m.target.closest && m.target.closest('.msg-content')) continue;
+    for (const node of m.addedNodes) {
+      if (node.nodeType === 1) enhanceClickableElements(node);
+    }
+  }
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+  enhanceClickableElements(document);
+  clickableObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+  // Phones: the long placeholder wraps, and Shift+Enter means nothing on a touch keyboard.
+  const chatInput = document.getElementById('chatInput');
+  if (chatInput && window.matchMedia) {
+    const longPlaceholder = chatInput.placeholder;
+    const phone = window.matchMedia('(max-width: 700px)');
+    const applyPlaceholder = () => { chatInput.placeholder = phone.matches ? 'Ask anything…' : longPlaceholder; };
+    applyPlaceholder();
+    if (phone.addEventListener) phone.addEventListener('change', applyPlaceholder);
+  }
+});
+
 function dismissOnboardModal(remember) {
   const modal = document.getElementById('onboardModal');
   if (modal) modal.classList.add('hidden-by-default');
+  releaseModalFocus(modal);
   const cb = document.getElementById('onboardDontShow');
   const shouldRemember = remember !== false && (!cb || cb.checked);
   if (shouldRemember) {
@@ -260,6 +356,7 @@ function showOnboardModal() {
       dismissOnboardModal(true);
     };
   });
+  holdModalFocus(modal, () => dismissOnboardModal(false));
 }
 function replayOnboardingTour() {
   try { localStorage.removeItem(ONBOARD_SEEN_KEY); } catch(e){}
@@ -402,11 +499,13 @@ async function openTeammateWizard() {
   const hint = document.getElementById('teammateNextRunHint');
   if (hint) hint.textContent = state.nextRunAt ? `Next run: ${new Date(state.nextRunAt).toLocaleString()}` : '';
   modal.classList.remove('hidden-by-default');
+  holdModalFocus(modal, dismissTeammateWizard);
 }
 
 function dismissTeammateWizard() {
   const modal = document.getElementById('teammateModal');
   if (modal) modal.classList.add('hidden-by-default');
+  releaseModalFocus(modal);
 }
 
 async function teammateSave() {
@@ -487,10 +586,10 @@ async function loadActiveSubagentsBar() {
       const activity = safeEsc((record.lastActivity || '').slice(0, 60));
       const activityAge = record.updatedAtMs ? Math.max(0, Math.round((Date.now() - record.updatedAtMs) / 1000)) : null;
       const activityHtml = activity
-        ? '<span style="color:var(--accent);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + activity + (activityAge !== null ? ' (' + activityAge + 's ago)' : '') + '">' + activity + '</span>'
+        ? '<span style="color:var(--accent-text);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + activity + (activityAge !== null ? ' (' + activityAge + 's ago)' : '') + '">' + activity + '</span>'
         : '<span style="color:var(--text-dim);font-style:italic" title="No activity reported yet \u2014 the agent may still be thinking">thinking\u2026</span>';
       return '<span class="active-subagent-pill" style="display:inline-flex;align-items:center;gap:6px;padding:2px 6px;margin:2px;border-radius:10px;background:var(--surface2,rgba(120,120,120,0.15));font-size:11px">'
-        + '<span style="color:var(--accent)">\u26AC</span>'
+        + '<span style="color:var(--accent-text)">\u26AC</span>'
         + '<strong>' + safeEsc(record.name || 'subagent') + '</strong>'
         + '<span style="color:var(--text-dim)">' + seconds + 's</span>'
         + activityHtml
@@ -677,7 +776,7 @@ function createSessionTab(switchTo) {
     document.getElementById('chatArea').innerHTML = welcomeMarkup();
     activeTabId = id;
     const btn = document.getElementById('sendBtn');
-    if (btn) { btn.disabled = false; btn.textContent = '➤'; btn.title = 'Send'; }
+    if (btn) { btn.disabled = false; setSendButtonState(btn, 'send'); btn.title = 'Send'; }
   }
   renderSessionTabs();
   return id;
@@ -4836,7 +4935,7 @@ async function sendMessage(opts) {
   activeChatController = new AbortController();
   const sendBtn = document.getElementById('sendBtn');
   sendBtn.disabled = false;
-  sendBtn.textContent = '■';
+  setSendButtonState(sendBtn, 'stop');
   sendBtn.title = 'Stop (streaming)';
   sendBtn.classList.add('streaming');
   const badge = document.getElementById('streamingBadge'); if (badge) badge.classList.add('active');
@@ -5136,7 +5235,7 @@ async function sendMessage(opts) {
               bar.appendChild(fill);
               const label = document.createElement('div');
               label.className = 'time-budget-label';
-              label.style.cssText = 'font-size:10px;color:var(--text-dim);margin-top:2px';
+              label.style.cssText = 'font-size:11px;color:var(--text-dim);margin-top:2px';
               bar.appendChild(label);
               thinkEl.appendChild(bar);
             }
@@ -5304,7 +5403,7 @@ async function sendMessage(opts) {
     if (tab) { tab.chatMessages = [...chatMessages]; tab.currentChatId = currentChatId; tab.isSending = false; tab.activeChatController = null; }
   }
   document.getElementById('sendBtn').disabled = false;
-  document.getElementById('sendBtn').textContent = '➤';
+  setSendButtonState(document.getElementById('sendBtn'), 'send');
   document.getElementById('sendBtn').title = 'Send';
   document.getElementById('sendBtn').classList.remove('streaming');
   const badge2 = document.getElementById('streamingBadge'); if (badge2) { badge2.classList.remove('active'); badge2.textContent = '🔴 streaming'; }
@@ -6675,7 +6774,7 @@ async function runCompareSend(text, modelA, modelB) {
 
   isSending = true;
   const sendBtn = document.getElementById('sendBtn');
-  sendBtn.textContent = '■';
+  setSendButtonState(sendBtn, 'stop');
   sendBtn.classList.add('streaming');
   const badge3 = document.getElementById('streamingBadge'); if (badge3) badge3.classList.add('active');
 
@@ -6724,7 +6823,7 @@ async function runCompareSend(text, modelA, modelB) {
   await Promise.all([runOne(modelA, colA), runOne(modelB, colB)]);
 
   isSending = false;
-  sendBtn.textContent = '➤';
+  setSendButtonState(sendBtn, 'send');
   sendBtn.classList.remove('streaming');
   const badge4 = document.getElementById('streamingBadge'); if (badge4) badge4.classList.remove('active');
   document.getElementById('chatInput').focus();
@@ -6980,7 +7079,7 @@ function attachMessageMeta(msgEl, usage) {
       + (usage.loadDurationMs > 500 ? ' + ' + formatDurationCompact(usage.loadDurationMs) + ' load' : '')
     : '';
   const timingInline = hasTiming
-    ? '<span class="meta-sep">·</span><span style="color:var(--text-dim);font-size:10px" title="' + esc(timingTitle) + '">'
+    ? '<span class="meta-sep">·</span><span style="color:var(--text-dim);font-size:11px" title="' + esc(timingTitle) + '">'
       + formatDurationCompact(usage.promptEvalDurationMs || 0) + ' prefill · '
       + formatDurationCompact(usage.evalDurationMs || 0) + ' gen'
       + '</span>'
@@ -8320,8 +8419,9 @@ function openHelpModal() {
   helpModalIndex = 0;
   renderHelpModalList();
   modal.classList.remove('hidden-by-default');
-  // Tiny global key handler bound while the modal is open.
+  // Tiny global key handler bound while the modal is open (it handles Escape).
   document.addEventListener('keydown', helpModalKeyHandler);
+  holdModalFocus(modal);
 }
 
 function renderHelpModalList() {
@@ -8341,7 +8441,11 @@ function helpModalKeyHandler(e) {
   if (!modal || modal.classList.contains('hidden-by-default')) return;
   if (e.key === 'ArrowDown') { e.preventDefault(); helpModalIndex = Math.min(helpModalIndex + 1, helpModalCommands.length - 1); renderHelpModalList(); }
   else if (e.key === 'ArrowUp') { e.preventDefault(); helpModalIndex = Math.max(helpModalIndex - 1, 0); renderHelpModalList(); }
-  else if (e.key === 'Enter') { e.preventDefault(); const c = helpModalCommands[helpModalIndex]; if (c) useSlashCommandFromHelp(c.cmd); }
+  else if (e.key === 'Enter') {
+    // A focused button (✕) or row handles Enter itself.
+    if (e.defaultPrevented || (e.target instanceof Element && e.target.closest('button, [role="button"]'))) return;
+    e.preventDefault(); const c = helpModalCommands[helpModalIndex]; if (c) useSlashCommandFromHelp(c.cmd);
+  }
   else if (e.key === 'Escape') { e.preventDefault(); closeHelpModal(); }
 }
 
@@ -8349,6 +8453,7 @@ function closeHelpModal() {
   const modal = document.getElementById('helpModal');
   if (modal) modal.classList.add('hidden-by-default');
   document.removeEventListener('keydown', helpModalKeyHandler);
+  releaseModalFocus(modal);
 }
 
 function useSlashCommandFromHelp(cmd) {
@@ -8995,7 +9100,7 @@ function renderAtlas(body, map) {
     + '</tr></thead><tbody>' + (fileRows || '<tr><td colspan="6" style="padding:8px;color:var(--text-dim)">No files changed yet.</td></tr>') + '</tbody></table>';
 
   const taskRows = (map.tasks || []).map((t) => '<tr>'
-    + '<td style="padding:6px 8px;font-size:12px">' + esc(t.title || t.id) + (t.inPlan ? '' : ' <span style="color:var(--text-dim);font-size:10px">(not in plan)</span>') + '</td>'
+    + '<td style="padding:6px 8px;font-size:12px">' + esc(t.title || t.id) + (t.inPlan ? '' : ' <span style="color:var(--text-dim);font-size:11px">(not in plan)</span>') + '</td>'
     + '<td style="padding:6px 8px">' + atlasStatusBadge(t.planStatus) + '</td>'
     + '<td style="padding:6px 8px;text-align:center">' + (t.runCount ?? 0) + '</td>'
     + '<td style="padding:6px 8px;font-size:12px">' + atlasWhen(t.lastRunAt) + '</td>'
@@ -9555,7 +9660,7 @@ async function loadEmailList() {
         ? '<span class="key-source-badge stored">sent</span>'
         : '<span class="key-source-badge env">draft</span>';
       const date = new Date(email.modified).toLocaleString();
-      row.innerHTML = '<span style="font-size:12px">' + badge + ' ' + esc(email.name) + '</span><span style="font-size:10px;color:var(--text-dim);margin-left:auto">' + esc(date) + '</span>';
+      row.innerHTML = '<span style="font-size:12px">' + badge + ' ' + esc(email.name) + '</span><span style="font-size:11px;color:var(--text-dim);margin-left:auto">' + esc(date) + '</span>';
       row.style.display = 'flex';
       row.style.alignItems = 'center';
       row.style.gap = '6px';
@@ -9908,7 +10013,7 @@ function renderAttachmentPreviews() {
   for (var i = 0; i < files.length; i++) {
     (function(file) {
       var card = document.createElement('div');
-      card.style.cssText = 'display:flex;align-items:center;gap:4px;padding:3px 6px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:10px;color:var(--text-dim);max-width:160px';
+      card.style.cssText = 'display:flex;align-items:center;gap:4px;padding:3px 6px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:11px;color:var(--text-dim);max-width:160px';
       if (file.type && file.type.startsWith('image/')) {
         var img = document.createElement('img');
         img.style.cssText = 'width:32px;height:32px;object-fit:cover;border-radius:3px;flex-shrink:0';
@@ -11599,9 +11704,9 @@ function toggleVoiceInput() {
       const inp = document.getElementById('chatInput');
       if (inp && inp.value.trim()) {
         const sendBtn = document.getElementById('sendBtn');
-        if (sendBtn) { sendBtn.textContent = '⏳'; sendBtn.disabled = false; }
+        if (sendBtn) { setSendButtonState(sendBtn, 'wait'); sendBtn.disabled = false; }
         setTimeout(() => {
-          if (sendBtn) sendBtn.textContent = '➤';
+          if (sendBtn) setSendButtonState(sendBtn, 'send');
           sendMessage();
         }, 300);
       }
@@ -12647,6 +12752,37 @@ function showKeyboardShortcuts() {
   document.body.appendChild(modal);
 }
 
+// ─── Chrome icons ───────────────────────────────────────────────────
+// Top bar and composer buttons use the SVG sprite in index.html instead of
+// emoji, which render differently on every platform and carry no name.
+
+function iconSvg(name) {
+  return '<svg class="icon' + (name === 'wait' ? ' icon-spin' : '') + '" aria-hidden="true"><use href="#i-' + name + '"/></svg>';
+}
+
+function setSendButtonState(btn, state) {
+  if (!btn) return;
+  const wasBusy = btn.dataset.state === 'stop' || btn.dataset.state === 'wait';
+  btn.dataset.state = state;
+  btn.innerHTML = iconSvg(state);
+  btn.setAttribute('aria-label', state === 'stop' ? 'Stop generating' : state === 'wait' ? 'Sending' : 'Send message');
+  // One quiet announcement per reply instead of reading the stream token by token.
+  if (state === 'send' && wasBusy) announceStatus('Reply finished');
+}
+
+function announceStatus(text) {
+  const region = document.getElementById('srStatus');
+  if (!region) return;
+  region.textContent = '';
+  setTimeout(() => { region.textContent = text; }, 50);
+}
+
+function setThemeToggleIcon(btn, isLight) {
+  if (!btn) return;
+  btn.innerHTML = iconSvg(isLight ? 'sun' : 'moon');
+  btn.setAttribute('aria-label', isLight ? 'Switch to dark theme' : 'Switch to light theme');
+}
+
 // ─── Theme toggle ───────────────────────────────────────────────────
 
 function toggleTheme() {
@@ -12654,7 +12790,7 @@ function toggleTheme() {
     const isLight = document.documentElement.classList.toggle('light');
     localStorage.setItem('harness-theme', isLight ? 'light' : 'dark');
     const btn = document.getElementById('themeToggle');
-    if (btn) btn.textContent = isLight ? '☀️' : '🌙';
+    setThemeToggleIcon(btn, isLight);
   };
   const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (document.startViewTransition && !reduced) {
@@ -12668,8 +12804,7 @@ function restoreTheme() {
   const saved = localStorage.getItem('harness-theme');
   if (saved === 'light') {
     document.documentElement.classList.add('light');
-    const btn = document.getElementById('themeToggle');
-    if (btn) btn.textContent = '☀️';
+    setThemeToggleIcon(document.getElementById('themeToggle'), true);
   }
   const accent = localStorage.getItem('harness-accent');
   if (accent) applyAccentColor(accent);
@@ -12837,7 +12972,7 @@ async function loadCalibrationReports() {
       html += '<div style="margin:4px 0;padding:6px 0;border-bottom:1px solid var(--border)">';
       html += '<strong>' + esc(r.model) + '</strong> <span style="color:var(--text-dim)">(' + r.totalSamples + ' samples)</span>';
       html += '<div class="calibration-bar"><span>Brier: ' + brierPct + '%</span><div class="calibration-bar-track"><div class="calibration-bar-fill" style="width:' + barWidth + '%"></div></div></div>';
-      html += '<span style="font-size:10px;color:var(--text-dim)">ECE: ' + ecePct + '% · Overconfidence: ' + overPct + '%</span>';
+      html += '<span style="font-size:11px;color:var(--text-dim)">ECE: ' + ecePct + '% · Overconfidence: ' + overPct + '%</span>';
       html += '</div>';
     }
     if (el) el.innerHTML = html;
@@ -12864,7 +12999,7 @@ async function loadGoldenTraces() {
       html += '<div class="golden-trace-item" title="' + esc(t.id) + '">';
       html += '<strong>' + esc(t.name) + '</strong> <span style="color:var(--text-dim)">' + esc(t.model) + '</span>';
       if (tags) html += '<div style="margin-top:2px">' + tags + '</div>';
-      html += '<div style="color:var(--text-dim);font-size:10px">' + esc(t.capturedAt || '') + ' · ' + (t.expectedToolCalls || []).length + ' tools · ' + (t.expectedFiles || []).length + ' files</div>';
+      html += '<div style="color:var(--text-dim);font-size:11px">' + esc(t.capturedAt || '') + ' · ' + (t.expectedToolCalls || []).length + ' tools · ' + (t.expectedFiles || []).length + ' files</div>';
       html += '</div>';
     }
     if (el) el.innerHTML = html;
@@ -12904,11 +13039,11 @@ async function loadPromptRegistry(name) {
       html += '<div class="prompt-version-item' + (isActive ? ' active-version' : '') + '">';
       html += '<strong>v' + v.version + '</strong> ' + esc(v.label || '(no label)');
       html += ' <span style="color:var(--text-dim)">' + esc(v.createdAt || '') + '</span>';
-      if (v.changelog) html += '<div style="color:var(--text-dim);font-size:10px;margin-top:2px">' + esc(v.changelog) + '</div>';
-      if (!isActive) html += ' <a href="#" onclick="activatePromptVersion(\'' + esc(name) + '\',' + v.version + ');event.preventDefault()" style="font-size:10px">activate</a>';
+      if (v.changelog) html += '<div style="color:var(--text-dim);font-size:11px;margin-top:2px">' + esc(v.changelog) + '</div>';
+      if (!isActive) html += ' <a href="#" onclick="activatePromptVersion(\'' + esc(name) + '\',' + v.version + ');event.preventDefault()" style="font-size:11px">activate</a>';
       html += '</div>';
     }
-    if (registry.versions.length > 5) html += '<div style="color:var(--text-dim);font-size:10px">… and ' + (registry.versions.length - 5) + ' more</div>';
+    if (registry.versions.length > 5) html += '<div style="color:var(--text-dim);font-size:11px">… and ' + (registry.versions.length - 5) + ' more</div>';
     if (el) el.innerHTML = html;
   } catch (e) {
     if (el) el.textContent = 'Failed to load';

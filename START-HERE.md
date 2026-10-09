@@ -164,7 +164,7 @@ Jarvis is not a separate app — it's the same harness with its **assistant feat
 
 ### Right panel (Settings)
 
-Click the ⚙ button in the top-right to open Settings. Here you can:
+Click the **Settings** button (the slider icon) in the top-right to open Settings. Here you can:
 
 - Change the AI model
 - Give your agent a **name** and **personality** (under "Agent Identity")

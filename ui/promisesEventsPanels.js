@@ -370,12 +370,12 @@ async function loadAudit() {
       return true;
     });
     const eventChips = ['<span class="trace-meta" style="margin-right:6px">Event:</span>',
-      '<button class="btn-sm" onclick="setAuditFilter(\'eventType\',\'\')"' + (auditFilterState.eventType === '' ? ' style="border-color:var(--accent);color:var(--accent)"' : '') + '>all</button>',
-      ...eventTypes.map((t) => '<button class="btn-sm" onclick="setAuditFilter(\'eventType\',\'' + esc(t) + '\')"' + (auditFilterState.eventType === t ? ' style="border-color:var(--accent);color:var(--accent)"' : '') + '>' + esc(t) + '</button>'),
+      '<button class="btn-sm" onclick="setAuditFilter(\'eventType\',\'\')"' + (auditFilterState.eventType === '' ? ' style="border-color:var(--accent);color:var(--accent-text)"' : '') + '>all</button>',
+      ...eventTypes.map((t) => '<button class="btn-sm" onclick="setAuditFilter(\'eventType\',\'' + esc(t) + '\')"' + (auditFilterState.eventType === t ? ' style="border-color:var(--accent);color:var(--accent-text)"' : '') + '>' + esc(t) + '</button>'),
     ].join(' ');
     const toolChips = ['<span class="trace-meta" style="margin:0 6px 0 12px">Tool:</span>',
-      '<button class="btn-sm" onclick="setAuditFilter(\'tool\',\'\')"' + (auditFilterState.tool === '' ? ' style="border-color:var(--accent);color:var(--accent)"' : '') + '>all</button>',
-      ...tools.map((t) => '<button class="btn-sm" onclick="setAuditFilter(\'tool\',\'' + esc(t) + '\')"' + (auditFilterState.tool === t ? ' style="border-color:var(--accent);color:var(--accent)"' : '') + '>' + esc(t) + '</button>'),
+      '<button class="btn-sm" onclick="setAuditFilter(\'tool\',\'\')"' + (auditFilterState.tool === '' ? ' style="border-color:var(--accent);color:var(--accent-text)"' : '') + '>all</button>',
+      ...tools.map((t) => '<button class="btn-sm" onclick="setAuditFilter(\'tool\',\'' + esc(t) + '\')"' + (auditFilterState.tool === t ? ' style="border-color:var(--accent);color:var(--accent-text)"' : '') + '>' + esc(t) + '</button>'),
     ].join(' ');
     const summary = '<div class="tools-summary-line"><strong>' + filtered.length + '</strong> of <strong>' + allEntries.length + '</strong> entries shown</div><div class="settings-collapse-actions" style="flex-wrap:wrap;justify-content:flex-start;gap:4px">' + eventChips + toolChips + '</div>';
     const rows = filtered.map((entry) => {
@@ -828,10 +828,10 @@ async function loadArtifacts() {
     const rows = records.map((record) => {
       const sizeKb = record.size >= 1024 ? (record.size / 1024).toFixed(1) + ' KB' : record.size + ' B';
       const dateLabel = record.modifiedAt ? record.modifiedAt.replace('T', ' ').slice(0, 19) : '';
-      const tagPills = (record.tags || []).slice(0, 5).map((tag) => '<span class="trace-tag" style="font-size:10px;padding:1px 6px;margin-right:4px;border-radius:8px;background:var(--surface2);color:var(--text-dim)">' + esc(tag) + '</span>').join('');
+      const tagPills = (record.tags || []).slice(0, 5).map((tag) => '<span class="trace-tag" style="font-size:11px;padding:1px 6px;margin-right:4px;border-radius:8px;background:var(--surface2);color:var(--text-dim)">' + esc(tag) + '</span>').join('');
       return '<div class="trace-row" style="padding:6px 8px;border-bottom:1px solid var(--border)">'
         + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">'
-        + '<a href="#" onclick="openArtifactPreview(\'' + esc(record.relativePath).replace(/'/g, "\\'") + '\');return false" style="font-weight:600;color:var(--accent);text-decoration:none">' + esc(record.relativePath) + '</a>'
+        + '<a href="#" onclick="openArtifactPreview(\'' + esc(record.relativePath).replace(/'/g, "\\'") + '\');return false" style="font-weight:600;color:var(--accent-text);text-decoration:none">' + esc(record.relativePath) + '</a>'
         + '<span class="trace-meta" style="font-size:11px;white-space:nowrap">' + esc(sizeKb) + ' · ' + esc(dateLabel) + '</span>'
         + '</div>'
         + '<div style="margin-top:2px">' + tagPills + '</div>'
