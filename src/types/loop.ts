@@ -64,15 +64,18 @@ export interface LoopConfig {
   systemPrompt: string;
   maxTurns: number;
   /**
-   * Run tsc / eslint / npm test after any coding turn that produced file
-   * mutations. Surfaces the result as a `verification` event and promotes the
-   * done reason to `completed_with_test_failures` when a check fails.
+   * Run tsc / eslint / tests after any coding turn that produced file
+   * mutations, in the project root. Surfaces the result as a `verification`
+   * event; a failing check is sent back to the model to fix (see
+   * `repairAttempts`) and, if still failing, promotes the done reason to
+   * `completed_with_test_failures`.
    *
    * `enabled` is tri-state: leave it unset to auto-enable for code projects
    * (working directory has a package.json) while non-code sessions stay
    * untouched; set `false` to force off, `true` to force on. The
    * `HARNESS_VERIFY` env var (0/off or 1/on) overrides this entirely.
-   * A check that exceeds its timeout surfaces as `warn`, not `fail`.
+   * A check that exceeds its timeout surfaces as `warn`, and a missing tool as
+   * `skip`; neither counts as a failure.
    */
   verify?: {
     enabled?: boolean;
@@ -80,6 +83,12 @@ export interface LoopConfig {
     quick?: boolean;
     /** Per-check timeout in ms. Default 60 000. */
     timeout?: number;
+    /**
+     * Times a failed verification is sent back to the model to fix before the
+     * run ends with `completed_with_test_failures`. Each attempt uses a turn
+     * and the run's time budget. Default 1; 0 reports failures without a fix.
+     */
+    repairAttempts?: number;
   };
   /**
    * When true, each tool call's input is validated against the tool's declared

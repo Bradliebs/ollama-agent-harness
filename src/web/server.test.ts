@@ -5,7 +5,7 @@ import http from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import { cleanupServerTestWorkspace, serverTestSourceRoot } from './serverTestWorkspace.test-support';
-import { app, ambientEnabled, assistantProfileEnabled, drainChatBackgroundTasksForTest, inferModelCapabilities, inspectorAutoApproved, parseExplicitSkillInvocation, proactiveProfileEnabled, resetSettingsLoadedForTest, resolveChatModelForRequest, resolveHarnessSourceDistFreshnessPaths, resolveJarvisWhisperBridgePath, setWebRuntimeOverrides, startupConnectorsEnabled, stopUploadsAutoPrune } from './server';
+import { app, ambientEnabled, assistantProfileEnabled, CODING_TIME_BUDGET_MS, drainChatBackgroundTasksForTest, inferModelCapabilities, inspectorAutoApproved, parseExplicitSkillInvocation, proactiveProfileEnabled, resetSettingsLoadedForTest, resolveChatModelForRequest, resolveChatTimeBudgetMs, resolveHarnessSourceDistFreshnessPaths, resolveJarvisWhisperBridgePath, setWebRuntimeOverrides, startupConnectorsEnabled, stopUploadsAutoPrune } from './server';
 import { runtimeTracer } from '../core/tracing';
 import { SessionStorage } from '../persistence/sessionStorage';
 import { appendLearningCandidate, extractLearningCandidate } from '../learning/sessionLearning';
@@ -1305,6 +1305,21 @@ describe('web server API validation', () => {
   it('uses backend prefixes when inferring cloud tool support', () => {
     expect(inferModelCapabilities('github/gpt-4o-mini').toolUse).toBe('strong');
     expect(inferModelCapabilities('replicate/meta/meta-llama-3-8b-instruct').toolUse).toBe('weak');
+  });
+
+  it('treats small qwen2.5 models as weak tool callers whatever the tag separator', () => {
+    for (const name of ['qwen2.5:3b', 'qwen2.5:1.5b', 'qwen2.5:0.5b', 'qwen2.5-coder:3b', 'qwen2.5-3b', 'qwen2.5:3b-instruct-q4_K_M']) {
+      expect(inferModelCapabilities(name).toolUse).toBe('weak');
+    }
+    for (const name of ['qwen2.5:14b', 'qwen2.5-coder:14b', 'qwen2.5:32b', 'qwen2.5-coder:7b']) {
+      expect(inferModelCapabilities(name).toolUse).not.toBe('weak');
+    }
+  });
+
+  it('gives coding tasks at least the coding time budget', () => {
+    expect(resolveChatTimeBudgetMs(180_000, true)).toBe(CODING_TIME_BUDGET_MS);
+    expect(resolveChatTimeBudgetMs(900_000, true)).toBe(900_000);
+    expect(resolveChatTimeBudgetMs(180_000, false)).toBe(180_000);
   });
 
   it('auto-approves inspector prompts in dontAsk except provenance', () => {

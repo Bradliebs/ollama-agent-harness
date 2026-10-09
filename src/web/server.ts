@@ -48,6 +48,7 @@ import { isCapabilityProfileFresh, listCapabilityProfiles, loadCapabilityProfile
 import { rankToolsByRelevance, resolveScaffoldLevel, scaffoldFor, selectRelevantTools } from '../core/scaffolding';
 import { planInitialToolsForConversation, resolveToolLoadingMode, shouldDeferTools } from '../core/toolLoading';
 import { compileModelRequestPlan } from '../models/adapter';
+import { DEFAULT_CONTEXT_MAX_TOKENS, isAutoContextMode, resolveEffectiveContextMaxTokensFromKnown } from '../models/contextWindow';
 import { probeContextWindow } from '../models/probes/usableContext';
 import { createModelProfileRouter } from './modelProfileRoutes';
 import { createReplayRouter } from './replayRoutes';
@@ -826,7 +827,6 @@ function buildAgentIdentityPrefix(): string {
   ].filter(Boolean).join(' ');
 }
 let summarizerModel = '';
-const DEFAULT_CONTEXT_MAX_TOKENS = 8192;
 const MYCELIUM_CONTEXT_MAX_CHARS = 4_000;
 let contextMaxTokens = DEFAULT_CONTEXT_MAX_TOKENS;
 let detectedContextMaxTokens: number | null = null;
@@ -3949,23 +3949,7 @@ app.get('/api/system/health', async (_req, res) => {
 // model's actual window, and (b) whether the configured vision model
 // is actually installed. Both diagnoses are surfaced as small banners
 // in the UI so users can spot misconfigurations without reading logs.
-// Context caps the harness has shipped as defaults at various points.
-// Auto-bump only when the configured value matches one of these — that
-// way an explicit user choice (1024 in tests, or 16k for a deliberate
-// throttle) is respected while a stale default (8192 / 4096) gets
-// rescued when the model exposes a larger window.
-const LEGACY_CONTEXT_DEFAULTS = new Set<number>([8192, 4096]);
-
-function isAutoContextMode(configured: number): boolean {
-  return !configured || configured <= 0 || LEGACY_CONTEXT_DEFAULTS.has(configured);
-}
-
-function resolveEffectiveContextMaxTokensFromKnown(configured: number, detected: number | null): number {
-  if (isAutoContextMode(configured)) {
-    return detected && detected > 0 ? Math.min(detected, 200_000) : DEFAULT_CONTEXT_MAX_TOKENS;
-  }
-  return detected && detected > 0 ? Math.min(configured, detected) : configured;
-}
+// The auto/cap rules live in src/models/contextWindow.ts, shared with the CLI.
 
 async function buildContextHealth(): Promise<{
   configured: number;
@@ -5505,10 +5489,14 @@ CONTEXT HYGIENE (critical for long tasks):
   // more turns. Use a time budget that naturally throttles local inference
   // while preserving full agentic capability on cloud backends.
   // User-configured timeBudgetMs (from Settings) overrides the auto-detect.
+  // Coding tasks (edit, run checks, fix) get at least CODING_TIME_BUDGET_MS so
+  // a verification repair fits even on a slow local model.
   const chatBackend = activeModel.includes('/') ? activeModel.slice(0, activeModel.indexOf('/')) : 'ollama';
   const isLocalBackend = chatBackend === 'ollama' && !activeModel.includes('cloud');
   const defaultBudgetMs = isLocalBackend ? 180_000 : 600_000;
-  const effectiveTimeBudgetMs = timeBudgetMs > 0 ? timeBudgetMs : adaptiveTimeBudget(synthesisStats, activeModel, defaultBudgetMs);
+  const effectiveTimeBudgetMs = timeBudgetMs > 0
+    ? timeBudgetMs
+    : resolveChatTimeBudgetMs(adaptiveTimeBudget(synthesisStats, activeModel, defaultBudgetMs), requiresExecutionProof);
 
   const config: LoopConfig = {
     model: activeModel,
@@ -7154,6 +7142,14 @@ interface ChatModelRoutingDecision {
   reasons?: string[];
 }
 
+/** Minimum wall-clock budget for coding tasks: room to edit, run checks and fix once. */
+export const CODING_TIME_BUDGET_MS = 600_000;
+
+/** Auto-detected chat time budget; coding tasks never get less than CODING_TIME_BUDGET_MS. */
+export function resolveChatTimeBudgetMs(autoBudgetMs: number, codingTask: boolean): number {
+  return codingTask ? Math.max(autoBudgetMs, CODING_TIME_BUDGET_MS) : autoBudgetMs;
+}
+
 const PREFERRED_AGENTIC_FALLBACK_MODELS = [
   'gpt-oss:20b-cloud',
   'gpt-oss:120b-cloud',
@@ -7307,7 +7303,7 @@ export function inferModelCapabilities(name: string, details: Record<string, unk
 
   // Tool-use capability heuristic based on model family and runtime path.
   const weakGemma4LocalToolModel = /^gemma4:(e4b|26b)$/i.test(name.trim());
-  const weakToolModels = /phi-?3.*mini|tinyllama|smollm|qwen2?\.?5?-?(0\.5|1\.5|3)b/i;
+  const weakToolModels = /phi-?3.*mini|tinyllama|smollm|qwen2?\.?5?(?:-coder)?[-:]?(0\.5|1\.5|3)b\b/i;
   // Strong tool-use families. Includes :cloud variants of gpt-oss, qwen3-coder,
   // deepseek-v3, and the GLM 4/5 family which were previously classified as
   // unknown despite live probes confirming reliable tool calls.

@@ -383,3 +383,83 @@ describe('BashTool subprocess working directory', () => {
     }
   });
 });
+
+describe('BashTool coding ergonomics', () => {
+  const original = getProjectRoot();
+  let tmp: string;
+
+  beforeEach(async () => {
+    tmp = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'bash-coding-')));
+    setProjectRoot(tmp);
+  });
+
+  afterEach(async () => {
+    setProjectRoot(original);
+    await fsp.rm(tmp, { recursive: true, force: true });
+  });
+
+  it('keeps the end of long output, where test and build summaries are', async () => {
+    const script = "for (let i = 0; i < 20000; i++) console.log('line ' + i); console.log('SUMMARY: 3 failed');";
+    await fsp.writeFile(path.join(tmp, 'long.js'), script, 'utf-8');
+    const result = await BashTool.execute({ command: 'node long.js', timeout: 30_000 });
+    expect(result.output).toContain('line 0');
+    expect(result.output).toContain('SUMMARY: 3 failed');
+    expect(result.output).toMatch(/characters omitted from the middle/);
+    expect(result.output.length).toBeLessThan(52_000);
+  });
+
+  it('runs in a subdirectory given by cwd and refuses one outside the project', async () => {
+    await fsp.mkdir(path.join(tmp, 'pkg'));
+    const inside = await BashTool.execute({ command: 'node -e "process.stdout.write(process.cwd())"', cwd: 'pkg' });
+    expect(inside.output).toContain(path.join(tmp, 'pkg'));
+    const outside = await BashTool.execute({ command: 'node --version', cwd: path.dirname(tmp) });
+    expect(outside).toMatchObject({ success: false });
+    expect(outside.output).toContain('not a directory inside the project');
+  });
+
+  it('runs .cmd scripts on Windows', async () => {
+    if (process.platform !== 'win32') return;
+    await fsp.writeFile(path.join(tmp, 'build.cmd'), '@echo built %1\r\n', 'utf-8');
+    const result = await BashTool.execute({ command: 'build.cmd release' });
+    expect(result).toMatchObject({ success: true });
+    expect(result.output).toContain('built release');
+  });
+
+  it('ends the whole process tree on timeout on Windows', async () => {
+    if (process.platform !== 'win32') return;
+    await fsp.writeFile(path.join(tmp, 'hang.cmd'), '@node -e "setInterval(()=>{},1000)"\r\n', 'utf-8');
+    const started = Date.now();
+    const result = await BashTool.execute({ command: 'hang.cmd', timeout: 1_500 });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('timed out');
+    expect(Date.now() - started).toBeLessThan(10_000);
+  }, 20_000);
+});
+
+describe('BashTool background children', () => {
+  const original = getProjectRoot();
+  let tmp: string;
+
+  beforeEach(async () => {
+    tmp = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'bash-bg-')));
+    setProjectRoot(tmp);
+  });
+
+  afterEach(async () => {
+    setProjectRoot(original);
+    await fsp.rm(tmp, { recursive: true, force: true });
+  });
+
+  it('returns once the command exits even if a child it started keeps the pipes open', async () => {
+    await fsp.writeFile(path.join(tmp, 'orphan.js'), [
+      "const { spawn } = require('child_process');",
+      "spawn(process.execPath, ['-e', 'setTimeout(() => {}, 15000)'], { stdio: 'inherit', detached: true, cwd: require('os').tmpdir() }).unref();",
+      "console.log('parent done');",
+    ].join('\n'), 'utf-8');
+    const started = Date.now();
+    const result = await BashTool.execute({ command: 'node orphan.js', timeout: 30_000 });
+    expect(result.success).toBe(true);
+    expect(result.output).toContain('parent done');
+    expect(Date.now() - started).toBeLessThan(10_000);
+  }, 30_000);
+});

@@ -2,10 +2,13 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
-import { getAgentOutputDir, getProjectRoot } from './pathResolution';
+import { getAgentOutputDir, getProjectRoot, resolveProjectPath } from './pathResolution';
 import { isSandboxActive, isShellBinaryAllowed } from './sandboxGuards';
 
 const MAX_OUTPUT_SIZE = 50_000;
+// Of MAX_OUTPUT_SIZE per stream, the start is kept and the rest goes to the
+// end: compilers and test runners print errors and the summary last.
+const OUTPUT_HEAD_CHARS = 10_000;
 const MAX_COMMAND_LENGTH = 2000;
 
 // NOTE: BLOCKED_PATTERNS is a footgun hint, NOT a security boundary. It is a
@@ -130,6 +133,9 @@ function needsWindowsCmdShim(executable: string): boolean {
   // "C:\\Program Files\\nodejs\\node.exe" and bare "node" / "git" which
   // resolve to .exe via PATHEXT without needing cmd.exe help.
   if (WINDOWS_NATIVE_EXT_PATTERN.test(executable)) return false;
+  // Batch scripts (gradlew.bat, mvnw.cmd, build.cmd) can only run through
+  // cmd.exe, wherever they live.
+  if (/\.(?:cmd|bat)$/i.test(executable)) return true;
   // Anything containing a path separator points at a specific file —
   // assume the agent picked it deliberately and let the OS resolve it.
   if (executable.includes('\\') || executable.includes('/')) return false;
@@ -277,14 +283,14 @@ function unsupportedWindowsBuiltin(executable: string): string | null {
 // turn instead of retrying the same unix-ism. Only fires on Windows;
 // Linux/macOS spawn these for real.
 const UNIX_ONLY_REDIRECTS: Record<string, string> = {
-  ls: "use the list_files tool (cross-platform) instead of shelling out",
+  ls: "use the list_files tool (cross-platform; recursive=true or pattern for subfolders) instead of shelling out",
   cat: "use the file_read tool instead of shelling out",
   head: "use file_read and slice the result in your reasoning; head isn't on Windows",
   tail: "use file_read; tail isn't on Windows without extra tooling",
   grep: "use the grep tool (separate from bash) for pattern search",
   rg: "use the grep tool for pattern search",
   ack: "use the grep tool for pattern search",
-  find: "use list_files to enumerate files; Windows 'find' is a different program and rarely what you want",
+  find: "use list_files with pattern (e.g. \"**/*.ts\") or recursive=true; Windows 'find' is a different program and rarely what you want",
   pwd: "the cwd is the project root; no shell call needed",
   touch: "use file_write with empty content to create the file",
   mv: "use the file_move tool",
@@ -322,12 +328,40 @@ function unsupportedUnixCommand(executable: string): string | null {
 
 function formatOutput(stdout: string, stderr: string): string {
   const output = [
-    stdout ? `STDOUT:\n${stdout.slice(0, MAX_OUTPUT_SIZE)}` : '',
-    stderr ? `STDERR:\n${stderr.slice(0, MAX_OUTPUT_SIZE)}` : '',
+    stdout ? `STDOUT:\n${stdout}` : '',
+    stderr ? `STDERR:\n${stderr}` : '',
   ]
     .filter(Boolean)
     .join('\n\n');
   return output || '(no output)';
+}
+
+/** Keeps the first OUTPUT_HEAD_CHARS and the last (MAX_OUTPUT_SIZE - OUTPUT_HEAD_CHARS) characters of a stream. */
+export class HeadTailBuffer {
+  private head = '';
+  private tail = '';
+  private omitted = 0;
+
+  push(text: string): void {
+    if (this.head.length < OUTPUT_HEAD_CHARS) {
+      const take = OUTPUT_HEAD_CHARS - this.head.length;
+      this.head += text.slice(0, take);
+      text = text.slice(take);
+    }
+    if (!text) return;
+    this.tail += text;
+    const tailMax = MAX_OUTPUT_SIZE - OUTPUT_HEAD_CHARS;
+    if (this.tail.length > tailMax) {
+      this.omitted += this.tail.length - tailMax;
+      this.tail = this.tail.slice(-tailMax);
+    }
+  }
+
+  toString(): string {
+    return this.omitted > 0
+      ? `${this.head}\n...[${this.omitted} characters omitted from the middle]...\n${this.tail}`
+      : this.head + this.tail;
+  }
 }
 
 // Script extensions we auto-resolve against agent-outputs/ when the arg
@@ -399,12 +433,13 @@ function rewriteBareScriptArgs(args: string[]): {
 
 export const BashTool: Tool = {
   name: 'bash',
-  description: 'Execute a single executable with arguments and return stdout/stderr. Shell control operators and shell built-ins are not supported.',
+  description: 'Execute a single executable with arguments (no shell: no pipes, &&, redirects or built-ins) and return stdout/stderr. Long output keeps its start and its end. Builds, installs and test suites usually need a timeout of 120000-600000 ms.',
   parameters: {
     type: 'object',
     properties: {
       command: { type: 'string', description: 'Single executable invocation to run without a shell' },
       timeout: { type: 'number', description: 'Timeout in milliseconds (default: 30000)' },
+      cwd: { type: 'string', description: 'Directory to run in, inside the project (default: the project root). Use this instead of `cd dir && ...`.' },
     },
     required: ['command'],
   },
@@ -415,6 +450,15 @@ export const BashTool: Tool = {
     const timeout = Number.isFinite(timeoutRaw) && timeoutRaw > 0
       ? Math.floor(timeoutRaw)
       : 30_000;
+    let cwd = getProjectRoot();
+    if (typeof input.cwd === 'string' && input.cwd.trim()) {
+      const resolved = resolveProjectPath(input.cwd);
+      if (!resolved || !fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+        const msg = `Blocked: cwd '${input.cwd}' is not a directory inside the project.`;
+        return { success: false, output: msg, error: msg };
+      }
+      cwd = resolved;
+    }
 
     const blocked = isSafeCommand(command);
     if (blocked) {
@@ -458,8 +502,8 @@ export const BashTool: Tool = {
         : '';
       let settled = false;
       let timedOut = false;
-      let stdout = '';
-      let stderr = '';
+      const stdoutBuffer = new HeadTailBuffer();
+      const stderrBuffer = new HeadTailBuffer();
 
       // Windows .cmd shim workaround: Node 20.12+ / 18.20.2+ refuses to
       // spawn .bat / .cmd files directly without shell:true (CVE-2024-27980),
@@ -482,33 +526,46 @@ export const BashTool: Tool = {
       }
 
       const child = spawn(spawnExecutable, spawnArgs, {
-        cwd: getProjectRoot(),
+        cwd,
         shell: false,
         windowsHide: true,
         windowsVerbatimArguments: useVerbatim,
       });
 
       const appendLimited = (target: 'stdout' | 'stderr', chunk: Buffer | string): void => {
-        const text = chunk.toString();
-        if (target === 'stdout') stdout = (stdout + text).slice(0, MAX_OUTPUT_SIZE + 1_000);
-        else stderr = (stderr + text).slice(0, MAX_OUTPUT_SIZE + 1_000);
+        (target === 'stdout' ? stdoutBuffer : stderrBuffer).push(chunk.toString());
       };
 
       let killEscalationId: NodeJS.Timeout | undefined;
+      let exitGraceId: NodeJS.Timeout | undefined;
       const settle = (result: ToolResult): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timeoutId);
         if (killEscalationId) clearTimeout(killEscalationId);
+        if (exitGraceId) clearTimeout(exitGraceId);
         resolve(result);
       };
 
       const timeoutId = setTimeout(() => {
         timedOut = true;
-        child.kill('SIGTERM');
-        killEscalationId = setTimeout(() => {
-          try { child.kill('SIGKILL'); } catch { /* already dead */ }
-        }, 5_000);
+        const escalate = (): void => {
+          child.kill('SIGTERM');
+          killEscalationId = setTimeout(() => {
+            try { child.kill('SIGKILL'); } catch { /* already dead */ }
+          }, 5_000);
+        };
+        // On Windows, killing cmd.exe (the shim for npm, npx, .cmd scripts)
+        // orphans its children, which keep the output pipes open. taskkill /T
+        // ends the whole tree, but only while cmd.exe is still alive to walk
+        // from, so the direct kill waits for it.
+        if (process.platform === 'win32' && child.pid !== undefined) {
+          const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+          killer.on('exit', escalate);
+          killer.on('error', escalate);
+        } else {
+          escalate();
+        }
       }, timeout);
 
       child.stdout?.on('data', (chunk) => appendLimited('stdout', chunk));
@@ -522,7 +579,23 @@ export const BashTool: Tool = {
         });
       });
 
-      child.on('close', (code) => {
+      // A grandchild that outlives the command (a timeout kill, or a process
+      // it started in the background) can hold the pipes open so 'close'
+      // never fires; once the command itself has exited, finish after a
+      // short grace period with what was captured.
+      child.on('exit', (code) => {
+        exitGraceId = setTimeout(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          finish(code);
+        }, 2_000);
+      });
+
+      child.on('close', (code) => finish(code));
+
+      const finish = (code: number | null): void => {
+        const stdout = stdoutBuffer.toString();
+        const stderr = stderrBuffer.toString();
         if (timedOut) {
           const message = `Command '${executable}' timed out after ${timeout}ms`;
           const output = formatOutput(stdout, stderr);
@@ -553,7 +626,7 @@ export const BashTool: Tool = {
           output: preamble + (output === '(no output)' ? message : `${message}\n${output}`),
           error: message,
         });
-      });
+      };
     });
   },
 };

@@ -56,4 +56,35 @@ describe('grep tool bounds and path safety', () => {
     expect(optInRun.output).toContain('real.md');
     expect(optInRun.output).toContain('scratch.md');
   });
+
+  it('reports when it stops at the match cap and prints project-relative paths', async () => {
+    await fs.writeFile(path.join(fixtureDir, 'many.txt'), Array.from({ length: 250 }, (_, i) => `hit ${i}`).join('\n'), 'utf-8');
+    const result = await GrepTool.execute({ path: fixtureDir, pattern: 'hit' });
+    expect(result.output.split('\n').filter((line) => line.includes(': hit '))).toHaveLength(200);
+    expect(result.output).toContain('stopped at 200 matches');
+    expect(result.output).toContain('.harness/test-fixtures/grep-tool/many.txt:1: hit 0');
+    expect(result.output).not.toContain(process.cwd());
+  });
+
+  it('skips build output and binary files, and matches include globs on the relative path', async () => {
+    await fs.mkdir(path.join(fixtureDir, 'build'), { recursive: true });
+    await fs.mkdir(path.join(fixtureDir, 'src', 'deep'), { recursive: true });
+    await fs.writeFile(path.join(fixtureDir, 'build', 'out.js'), 'needle', 'utf-8');
+    await fs.writeFile(path.join(fixtureDir, 'image.bin'), Buffer.from([0x6e, 0x65, 0x65, 0x64, 0x6c, 0x65, 0x00, 0x01]));
+    await fs.writeFile(path.join(fixtureDir, 'src', 'deep', 'a.ts'), 'needle', 'utf-8');
+    await fs.writeFile(path.join(fixtureDir, 'src', 'b.js'), 'needle', 'utf-8');
+    const result = await GrepTool.execute({ path: fixtureDir, pattern: 'needle', include: 'src/**/*.{ts,tsx}' });
+    expect(result.output).toContain('src/deep/a.ts:1: needle');
+    expect(result.output).not.toContain('b.js');
+    const all = await GrepTool.execute({ path: fixtureDir, pattern: 'needle' });
+    expect(all.output).not.toContain('build/out.js');
+    expect(all.output).not.toContain('image.bin');
+  });
+
+  it('matches include globs from the project root too, and $ in CRLF files', async () => {
+    await fs.mkdir(path.join(fixtureDir, 'src'), { recursive: true });
+    await fs.writeFile(path.join(fixtureDir, 'src', 'a.ts'), 'const x = 1;\r\nconst y = 2;\r\n', 'utf-8');
+    const result = await GrepTool.execute({ path: path.join(fixtureDir, 'src'), pattern: '2;$', include: '.harness/test-fixtures/grep-tool/src/**/*.ts' });
+    expect(result.output).toBe('.harness/test-fixtures/grep-tool/src/a.ts:2: const y = 2;');
+  });
 });

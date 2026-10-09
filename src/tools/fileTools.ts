@@ -3,8 +3,11 @@ import * as path from 'path';
 import type { Tool, ToolResult } from '../types';
 import { applyFileWriteRedirect, getAllowedExternalPaths, getProjectRoot, getUploadsDir, maybeRedirectAgentOutput, resolveProjectPath, resolveProjectReadPath, setAllowedExternalPaths } from './pathResolution';
 import { loadRepoGraph, analyzeImpact } from '../core/codeIntelligence';
+import { SKIPPED_DIRS, displayPath, globToRegExp, matchesGlob } from './grepTool';
 
-const DEFAULT_MAX_READ_BYTES = 100_000;
+// Sized for small local context windows (~3k tokens); callers can raise it
+// per call with max_bytes or page through with start_line.
+const DEFAULT_MAX_READ_BYTES = 12_000;
 const MAX_ALLOWED_READ_BYTES = 1_000_000;
 const MAX_WRITE_BYTES = 5_000_000;
 
@@ -12,14 +15,14 @@ const CODE_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
 
 export const FileReadTool: Tool = {
   name: 'file_read',
-  description: 'Read the contents of a file at the given path',
+  description: 'Read a text file. Returns the content exactly as on disk (copy from it for file_edit). Long files are cut at a whole line with a note saying which lines were shown; continue with start_line, or read a range with start_line/end_line.',
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'Absolute or relative file path to read' },
       start_line: { type: 'number', description: 'Optional 1-based line number to start reading from' },
-      end_line: { type: 'number', description: 'Optional 1-based line number to stop reading at' },
-      max_bytes: { type: 'number', description: 'Maximum bytes to return (default: 100000)' },
+      end_line: { type: 'number', description: 'Optional 1-based line number to stop reading at (inclusive)' },
+      max_bytes: { type: 'number', description: `Maximum bytes to return (default: ${DEFAULT_MAX_READ_BYTES}, max: ${MAX_ALLOWED_READ_BYTES})` },
     },
     required: ['path'],
   },
@@ -31,19 +34,40 @@ export const FileReadTool: Tool = {
     }
     const maxBytes = clampNumber(input.max_bytes, 1, MAX_ALLOWED_READ_BYTES, DEFAULT_MAX_READ_BYTES);
     try {
-      const stat = await fs.stat(filePath);
       const raw = await fs.readFile(filePath, 'utf-8');
-      const content = sliceLines(raw, input.start_line, input.end_line);
-      const truncated = Buffer.byteLength(content, 'utf-8') > maxBytes;
-      const output = truncateUtf8(content, maxBytes);
-      const suffix = truncated || stat.size > maxBytes ? `\n...(truncated, file size ${stat.size} bytes)` : '';
-      return { success: true, output: output + suffix };
+      // A final newline ends the last line; it does not start another one.
+      const lines = raw.split('\n');
+      if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+      const startIndex = Number.isFinite(Number(input.start_line)) ? Math.max(0, Math.floor(Number(input.start_line)) - 1) : 0;
+      if (startIndex >= lines.length && lines.length > 0) {
+        return { success: true, output: `(start_line ${startIndex + 1} is past the end: the file has ${lines.length} lines)` };
+      }
+      const endIndex = Number.isFinite(Number(input.end_line)) ? Math.min(lines.length, Math.max(startIndex, Math.floor(Number(input.end_line)))) : lines.length;
+      const shown = takeWholeLines(lines.slice(startIndex, endIndex), maxBytes);
+      const lastShown = startIndex + shown.count;
+      const output = shown.count > 0 ? lines.slice(startIndex, lastShown).join('\n') : truncateUtf8(lines[startIndex] ?? '', maxBytes);
+      const ranged = startIndex > 0 || endIndex < lines.length;
+      if (shown.count < endIndex - startIndex) {
+        const next = Math.max(lastShown, startIndex + 1) + 1;
+        return { success: true, output: `${output}\n...(showing lines ${startIndex + 1}-${Math.max(lastShown, startIndex + 1)} of ${lines.length}; the rest was cut to stay under ${maxBytes} bytes. Continue with start_line=${next}.)` };
+      }
+      return { success: true, output: ranged ? `${output}\n...(lines ${startIndex + 1}-${endIndex} of ${lines.length})` : raw };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return { success: false, output: `Failed to read '${filePath}': ${msg}`, error: msg };
     }
   },
 };
+
+/** How many leading lines fit in `maxBytes` (counting the newlines between them). */
+function takeWholeLines(lines: string[], maxBytes: number): { count: number } {
+  let bytes = 0;
+  for (let i = 0; i < lines.length; i++) {
+    bytes += Buffer.byteLength(lines[i], 'utf-8') + (i > 0 ? 1 : 0);
+    if (bytes > maxBytes) return { count: i };
+  }
+  return { count: lines.length };
+}
 
 export const FileWriteTool: Tool = {
   name: 'file_write',
@@ -124,12 +148,12 @@ export const FileWriteTool: Tool = {
 
 export const FileEditTool: Tool = {
   name: 'file_edit',
-  description: 'Replace an exact string in a file with a new string',
+  description: 'Replace one exact, unique occurrence of old_string in a file with new_string. Copy old_string from file_read output, including indentation, and add surrounding lines if it occurs more than once. Line endings are matched to the file.',
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'File path to edit' },
-      old_string: { type: 'string', description: 'Exact text to find and replace' },
+      old_string: { type: 'string', description: 'Exact text to find and replace (must occur exactly once)' },
       new_string: { type: 'string', description: 'Replacement text' },
     },
     required: ['path', 'old_string', 'new_string'],
@@ -141,7 +165,7 @@ export const FileEditTool: Tool = {
       return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
     }
     const oldStr = input.old_string as string;
-    const newStr = input.new_string as string;
+    let newStr = input.new_string as string;
     try {
       const content = await fs.readFile(filePath, 'utf-8');
 
@@ -168,12 +192,20 @@ export const FileEditTool: Tool = {
       }
 
       if (idx === -1) {
-        return { success: false, output: `String not found in '${filePath}'`, error: 'old_string not found' };
+        const hint = locateNearMatch(content, oldStr);
+        return { success: false, output: `String not found in '${filePath}'.${hint}`, error: 'old_string not found' };
       }
       // Ensure unique match (against the same normalization that found idx)
       if (content.indexOf(matched, idx + 1) !== -1) {
-        return { success: false, output: `Multiple matches for old_string in '${filePath}'`, error: 'ambiguous match' };
+        const lines = occurrenceLines(content, matched);
+        return {
+          success: false,
+          output: `old_string occurs ${lines.length} times in '${filePath}' (lines ${lines.slice(0, 10).join(', ')}${lines.length > 10 ? ', ...' : ''}). Include more surrounding lines so it matches exactly once.`,
+          error: 'ambiguous match',
+        };
       }
+      // Keep a CRLF file CRLF: a model's new_string usually has bare \n.
+      if (usesCrlf(content)) newStr = newStr.replace(/\r?\n/g, '\r\n');
       const updated = content.slice(0, idx) + newStr + content.slice(idx + matched.length);
       await fs.writeFile(filePath, updated, 'utf-8');
       const impactNote = await getImpactNote(filePath);
@@ -184,6 +216,40 @@ export const FileEditTool: Tool = {
     }
   },
 };
+
+/** True when most of the file's line breaks are CRLF. */
+function usesCrlf(content: string): boolean {
+  const crlf = content.split('\r\n').length - 1;
+  const lf = content.split('\n').length - 1;
+  return crlf > 0 && crlf * 2 >= lf;
+}
+
+/** 1-based line numbers where `needle` starts in `content`. */
+function occurrenceLines(content: string, needle: string): number[] {
+  const lines: number[] = [];
+  for (let at = content.indexOf(needle); at !== -1 && needle.length > 0; at = content.indexOf(needle, at + 1)) {
+    lines.push(content.slice(0, at).split('\n').length);
+  }
+  return lines;
+}
+
+/**
+ * When old_string is not in the file, point at where its first line appears
+ * with different whitespace (the usual cause: indentation, tabs vs spaces,
+ * trailing spaces), so the model can re-read that spot instead of guessing.
+ */
+function locateNearMatch(content: string, oldStr: string): string {
+  const firstLine = oldStr.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0);
+  if (!firstLine) return ' old_string is empty or whitespace only.';
+  const squash = (text: string): string => text.replace(/\s+/g, ' ').trim();
+  const target = squash(firstLine);
+  const hits: number[] = [];
+  content.split('\n').forEach((line, index) => {
+    if (squash(line) === target) hits.push(index + 1);
+  });
+  if (hits.length === 0) return ' Its first line does not appear in the file either: re-read the file before editing.';
+  return ` Its first line appears at line ${hits.slice(0, 5).join(', ')} with different whitespace or different following lines: re-read those lines with file_read (start_line/end_line) and copy them exactly.`;
+}
 
 /**
  * Given the original (CRLF-mixed) file content and a position in its
@@ -360,13 +426,18 @@ export const FileDeleteTool: Tool = {
   },
 };
 
+const MAX_LISTED_ENTRIES = 500;
+const MAX_LIST_DEPTH = 12;
+
 export const ListFilesTool: Tool = {
   name: 'list_files',
-  description: 'List files and directories at the given path',
+  description: 'List a directory. With recursive=true, lists files in all subfolders as paths relative to the project root, ready for file_read (skipping dependency/build folders such as node_modules, dist, build, target and dot-folders); pattern filters by glob relative to the listed directory, e.g. "*.test.ts" or "src/**/*.{ts,tsx}".',
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'Directory path to list' },
+      recursive: { type: 'boolean', description: 'List files in subfolders too (default: false)' },
+      pattern: { type: 'string', description: 'Only list files matching this glob (implies recursive)' },
     },
     required: ['path'],
   },
@@ -376,7 +447,15 @@ export const ListFilesTool: Tool = {
     if (!dirPath) {
       return { success: false, output: 'Path is outside the project directory', error: 'path outside project' };
     }
+    const pattern = typeof input.pattern === 'string' && input.pattern.trim() ? input.pattern.trim() : undefined;
     try {
+      if (input.recursive === true || pattern) {
+        const found: string[] = [];
+        const capped = await walkFiles(dirPath, '', pattern ? globToRegExp(pattern) : undefined, pattern, found, 0);
+        if (found.length === 0) return { success: true, output: pattern ? `No files match "${pattern}"` : '(no files)' };
+        const suffix = capped ? `\n...(stopped at ${MAX_LISTED_ENTRIES} files; narrow the path or pattern)` : '';
+        return { success: true, output: found.join('\n') + suffix };
+      }
       const entries = await fs.readdir(dirPath, { withFileTypes: true });
       const listing = entries
         .map((e) => `${e.isDirectory() ? '[dir]' : '[file]'} ${e.name}`)
@@ -388,6 +467,26 @@ export const ListFilesTool: Tool = {
     }
   },
 };
+
+/** Collect files under `dir` (relative, `/`-separated). Returns true when the entry cap was hit. */
+async function walkFiles(dir: string, rel: string, regex: RegExp | undefined, pattern: string | undefined, found: string[], depth: number): Promise<boolean> {
+  if (depth > MAX_LIST_DEPTH) return false;
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of entries) {
+    // Dot-folders (.git, .venv, .next) are skipped; dot-files such as
+    // .eslintrc.json or .gitignore are listed.
+    if ((entry.isDirectory() && entry.name.startsWith('.')) || SKIPPED_DIRS.has(entry.name)) continue;
+    const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      if (await walkFiles(path.join(dir, entry.name), childRel, regex, pattern, found, depth + 1)) return true;
+    } else if (entry.isFile() && (!pattern || matchesGlob(childRel, pattern, regex))) {
+      if (found.length >= MAX_LISTED_ENTRIES) return true;
+      found.push(displayPath(path.join(dir, entry.name)));
+    }
+  }
+  return false;
+}
 
 export const ListUploadsTool: Tool = {
   name: 'list_uploads',
@@ -446,16 +545,6 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
  * grep conventions. Either bound may be omitted (defaults: start=1,
  * end=lastLine). Non-finite values are treated as missing.
  */
-function sliceLines(content: string, startValue: unknown, endValue: unknown): string {
-  const startLine = Number(startValue);
-  const endLine = Number(endValue);
-  if (!Number.isFinite(startLine) && !Number.isFinite(endLine)) return content;
-  const lines = content.split('\n');
-  const startIndex = Number.isFinite(startLine) ? Math.max(0, Math.floor(startLine) - 1) : 0;
-  const endIndex = Number.isFinite(endLine) ? Math.max(startIndex, Math.floor(endLine)) : lines.length;
-  return lines.slice(startIndex, endIndex).join('\n');
-}
-
 function truncateUtf8(content: string, maxBytes: number): string {
   const buffer = Buffer.from(content, 'utf-8');
   if (buffer.length <= maxBytes) return content;

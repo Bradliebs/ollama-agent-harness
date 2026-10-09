@@ -6,6 +6,7 @@ import {
   COMPACTION_STRATEGIES,
   DEFAULT_COMPACTION_CONFIG,
   elideOldToolCallArguments,
+  freshToolResultBudget,
   isCompactionBoundary,
   AUTO_COMPACT_BOUNDARY_PREFIX,
   HISTORICAL_CONTEXT_BEGIN_MARKER,
@@ -66,6 +67,30 @@ describe('Context Compaction', () => {
       const result = applyBudgetReduction(messages, 500);
       expect(result.messages[0].content).toBe('short result');
       expect(result.tokensFreed).toBe(0);
+    });
+
+    it('gives results after the last assistant message the fresh budget and caps older ones', () => {
+      const big = 'z'.repeat(6_000);
+      const messages: Message[] = [
+        { role: 'user', content: 'go' },
+        { role: 'assistant', content: '', tool_calls: [{ function: { name: 'file_read', arguments: {} } }] },
+        { role: 'tool', content: big },
+        { role: 'assistant', content: '', tool_calls: [{ function: { name: 'file_read', arguments: {} } }] },
+        { role: 'tool', content: big },
+      ];
+      const result = applyBudgetReduction(messages, 500, 10_000);
+      expect(result.messages[2].content!.length).toBeLessThan(1_000);
+      expect(result.messages[4].content).toBe(big);
+    });
+
+    it('splits half the window between the latest results', () => {
+      const tail: Message[] = [
+        { role: 'assistant', content: '' },
+        { role: 'tool', content: 'a' },
+        { role: 'tool', content: 'b' },
+      ];
+      expect(freshToolResultBudget(tail, 8_000)).toBe(8_000);
+      expect(freshToolResultBudget([{ role: 'user', content: 'hi' }], 8_000)).toBe(16_000);
     });
   });
 

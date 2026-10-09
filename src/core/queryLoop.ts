@@ -36,7 +36,7 @@ import type { OutputValidationProfile } from './outputValidation';
 import { formatUnverifiedFooter, verifyPathClaims } from './pathClaims';
 import { SourceLedger, appendSourcesFooter, guessedUrlHint } from './sourceLedger';
 import { annotateAnswer, resolveResearchVerifyMode, revisionPrompt, verifyResearchAnswer, type CriticAccess, type ResearchVerdict } from '../verification/researchVerifier';
-import { verifyCode } from './doneStateVerifier';
+import { verifyCode, type VerificationCheck } from './doneStateVerifier';
 import { classifyModelLocality } from '../observability/costProvenance';
 import { governAnswer } from '../governed/governedAnswer';
 import { META_TOOLS } from '../permissions/engine';
@@ -72,6 +72,17 @@ export function resolveVerifyEnabled(explicit: boolean | undefined, cwd?: string
   if (env === '1' || env === 'on' || env === 'true') return true;
   if (explicit !== undefined) return explicit;
   return cwd !== undefined && existsSync(path.join(cwd, 'package.json'));
+}
+
+/**
+ * The message that sends a failed code verification back to the model. Only
+ * failing checks are listed, with the tail of their output (where compilers
+ * and test runners put the errors and the summary).
+ */
+export function verificationRepairPrompt(checks: VerificationCheck[]): string {
+  const failing = checks.filter((check) => check.status === 'fail');
+  const details = failing.map((check) => `### ${check.name}\n${check.detail ?? '(no output)'}`).join('\n\n');
+  return `Verification of your changes failed (${failing.map((check) => check.name).join(', ')}). Fix the cause in the code, not the checks: do not delete or skip tests or weaken the configuration. If a failure is unrelated to this task and was already there before your change, leave it and say so in your answer instead. Then give your final answer.\n\n${details}`;
 }
 
 /**
@@ -243,7 +254,9 @@ async function* queryLoopCore(
       if (match) return match;
     }
     if ((call.name === 'bash' || call.name === 'docker_exec') && typeof call.input?.command === 'string') {
-      return shellTouchesProtected(call.input.command, workingState);
+      // A write run from inside a protected directory names it only in cwd.
+      const cwd = typeof call.input.cwd === 'string' ? `${call.input.cwd}/ ` : '';
+      return shellTouchesProtected(`${cwd}${call.input.command}`, workingState);
     }
     return null;
   };
@@ -379,7 +392,13 @@ async function* queryLoopCore(
 
   let unproductiveTurns = 0;
   const toolFailureCounts = new Map<string, number>();
-  const PRODUCTIVE_TOOLS = new Set(['file_write', 'file_edit']);
+  const PRODUCTIVE_TOOLS = new Set(['file_write', 'file_edit', 'file_move', 'file_delete']);
+  // Shell commands that change files (bash runs one executable, so the
+  // command name leads): patches, git working-tree commands, formatters and
+  // fixers in write mode, dependency changes, and file-writing cmdlets.
+  const PRODUCTIVE_SHELL = /^\s*(?:git\s+(?:apply|am|restore|mv|rm|stash\s+pop|cherry-pick|revert|merge(?!-base)|checkout(?!\s+-b\b))\b|patch\b|(?:npm|pnpm|yarn|bun)\s+(?:install|i|add|remove|uninstall|rm)\b|pip3?\s+install\b|(?:python3?\s+-m\s+)?(?:black|isort)\b|ruff\s+format\b|go\s+(?:fmt|mod\s+tidy|get)\b|gofmt\s+-w\b|cargo\s+(?:fmt|add|remove)\b|sed\s+-i\b|(?:mv|rm|cp|move|del|copy|tee)\s)|\s--(?:write|fix)(?![\w-])|\b(?:Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|Remove-Item|New-Item)\b/i;
+  const isProductiveCall = (call: ToolCall): boolean => PRODUCTIVE_TOOLS.has(call.name)
+    || (call.name === 'bash' && typeof call.input?.command === 'string' && PRODUCTIVE_SHELL.test(call.input.command));
   const unproductiveLimit = config.unproductiveTurnLimit ?? 0;
   const repeatedToolFailureLimit = config.repeatedToolFailureLimit ?? 3;
   // Tool-loop guardrails (HARNESS_LOOP_HARDENING): catch successful-but-redundant
@@ -432,6 +451,7 @@ async function* queryLoopCore(
   const researchCorpus: string[] = [];
   let researchCorpusChars = 0;
   let researchRevised = false;
+  let verifyRepairsUsed = 0;
   const trustedUserText = initialMessages
     .filter((message) => message.role === 'user' && typeof message.content === 'string')
     .map((message) => String(message.content));
@@ -516,6 +536,9 @@ async function* queryLoopCore(
 
     if (config.context?.enabled !== false) {
       const compactionConfig = { ...DEFAULT_COMPACTION_CONFIG, ...config.context };
+      // With no real window (the 8192 default is a guess), let the latest
+      // results through at file_read's default size but no larger.
+      if (!contextWindowKnown) compactionConfig.maxFreshResultChars ??= 12_000;
       // Budget allocator: the tool definitions and the injected working state
       // are sent with every request but never compacted, so the transcript
       // gets what is left after them. Tool definitions only count against a
@@ -860,6 +883,52 @@ async function* queryLoopCore(
         runLog?.append('verdict', { check: 'research_claims', mode: researchVerifyMode, action: annotateResearch ? 'annotate' : 'record', ...researchVerdict }, currentTurnStep);
       }
 
+      // Post-completion code verification: runs typecheck / lint / tests in
+      // the project root when the agent mutated files. The shared loop
+      // defaults off (env override or explicit config required); the CLI
+      // coding-task runner opts in so real coding tasks are verified by
+      // default. It runs before the answer is emitted so a failure can go
+      // back to the model for a bounded fix, like the research gate above.
+      const requiresProductiveChange = config.taskContract?.mode === 'code_edit' || config.taskContract?.mode === 'debug';
+      const requiredChangeMissing = requiresProductiveChange && !anyProductiveToolSucceeded;
+      let testsFailed = false;
+      if (resolveVerifyEnabled(config.verify?.enabled) && anyProductiveToolSucceeded) {
+        try {
+          const verifyResult = await verifyCode({
+            projectDir: getProjectRoot(),
+            quick: config.verify?.quick ?? false,
+            timeout: config.verify?.timeout ?? 60_000,
+            ...(abortSignal ? { signal: abortSignal } : {}),
+          });
+          tracer?.recordEvent('verification.complete', {
+            overall: verifyResult.overall,
+            checks: verifyResult.checks.length,
+          });
+          yield {
+            type: 'verification',
+            overall: verifyResult.overall,
+            checks: verifyResult.checks,
+          };
+          // Only a failing check counts: skip (nothing to run) and warn (could
+          // not finish) mean "not verified", not "broken".
+          testsFailed = verifyResult.overall === 'fail';
+          // A repair needs a turn and time left: otherwise the next iteration
+          // would drop into tool-less synthesis and lose the failure verdict.
+          const timeLeft = timeBudgetMs <= 0 || Date.now() - loopStarted < timeBudgetMs;
+          if (testsFailed && verifyRepairsUsed < (config.verify?.repairAttempts ?? 1) && turn < maxTurns && timeLeft && !abortSignal?.aborted) {
+            verifyRepairsUsed += 1;
+            runLog?.append('verdict', { check: 'code_verification', action: 'repair', overall: verifyResult.overall, checks: verifyResult.checks }, currentTurnStep);
+            messages.push({ role: 'user', content: verificationRepairPrompt(verifyResult.checks) } as Message);
+            yield { type: 'auto_continue', turn, continuationCount: 0, reason: 'verification failed; fixing the failing checks' };
+            continue;
+          }
+        } catch (verifyErr) {
+          // The verifier itself broke; that says nothing about the code.
+          const msg = verifyErr instanceof Error ? verifyErr.message : String(verifyErr);
+          tracer?.recordEvent('verification.error', { error: msg });
+        }
+      }
+
       let validationFailed = false;
       let validationScore: number | undefined;
       if (config.outputValidation?.enabled) {
@@ -982,41 +1051,6 @@ async function* queryLoopCore(
           findings: selfCertFindings.length,
           types: selfCertFindings.map((f) => f.claimType),
         });
-      }
-
-      // Post-completion code verification: runs tsc / eslint / npm test when
-      // the agent mutated files. The shared loop defaults off (env override or
-      // explicit config required); the CLI coding-task runner opts in via
-      // verify.enabled so real coding tasks are verified by default. This is
-      // Gap 1 — catching regressions introduced by agent edits instead of
-      // trusting that files merely changed.
-      const requiresProductiveChange = config.taskContract?.mode === 'code_edit' || config.taskContract?.mode === 'debug';
-      const requiredChangeMissing = requiresProductiveChange && !anyProductiveToolSucceeded;
-      let testsFailed = false;
-      if (resolveVerifyEnabled(config.verify?.enabled) && anyProductiveToolSucceeded) {
-        try {
-          const verifyResult = await verifyCode({
-            projectDir: process.cwd(),
-            quick: config.verify?.quick ?? false,
-            timeout: config.verify?.timeout ?? 60_000,
-          });
-          tracer?.recordEvent('verification.complete', {
-            overall: verifyResult.overall,
-            checks: verifyResult.checks.length,
-          });
-          yield {
-            type: 'verification',
-            overall: verifyResult.overall,
-            checks: verifyResult.checks,
-          };
-          testsFailed = requiresProductiveChange
-            ? verifyResult.overall !== 'pass'
-            : verifyResult.overall === 'fail';
-        } catch (verifyErr) {
-          const msg = verifyErr instanceof Error ? verifyErr.message : String(verifyErr);
-          tracer?.recordEvent('verification.error', { error: msg });
-          testsFailed = requiresProductiveChange;
-        }
       }
 
       const doneReason = requiredChangeMissing
@@ -1236,7 +1270,7 @@ async function* queryLoopCore(
           toolFailureCounts.set(call.name, 0);
         }
       }
-      if (result.success && PRODUCTIVE_TOOLS.has(call.name)) {
+      if (result.success && isProductiveCall(call)) {
         producedFileChange = true;
         anyProductiveToolSucceeded = true;
       }
@@ -1576,7 +1610,7 @@ async function* queryLoopCore(
     // paths in its summary" failure mode without changing the answer
     // when claims are accurate. Off by default — purely additive.
     if (process.env.HARNESS_VERIFY_PATH_CLAIMS === '1' && synthesisText && typeof synthesisText === 'string') {
-      const report = verifyPathClaims(synthesisText, process.cwd());
+      const report = verifyPathClaims(synthesisText, getProjectRoot());
       const footer = formatUnverifiedFooter(report);
       if (footer) {
         synthesisText = `${synthesisText}${footer}`;

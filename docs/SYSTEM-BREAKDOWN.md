@@ -553,7 +553,7 @@ from the request body; set them yourself only when running
 | `HARNESS_VERIFY_RESEARCH` | check | `off`, `check`, `annotate`, `critic` or `gate`; checks research answers against the pages read |
 | `HARNESS_CRITIC_MODEL` | auto | Critic model for `critic`/`gate` research checks and the adversary inspector |
 | `HARNESS_VERIFY_PATH_CLAIMS` | off | Append a footer flagging file paths in the final answer that don't exist |
-| `HARNESS_VERIFY` | auto | CLI: `1`/`0` forces post-completion code verification on/off (auto = on when `package.json` exists) |
+| `HARNESS_VERIFY` | auto | `1`/`0` forces post-completion code verification on/off (the CLI turns it on when `package.json` exists). Runs typecheck, ESLint and npm/pytest/go/cargo tests in the project root; a failing check goes back to the model once to fix |
 | `HARNESS_LESSONS` | record | `off`, `record`, or `recall` (also injects up to four relevant lessons) |
 | `HARNESS_PROMOTION_GATE_ENABLED` | off | Block learning-candidate promotion on safety / pass count |
 | `HARNESS_PROMOTION_REQUIRE_EXPERIMENT` | off | Also require a confirming experiment (`HARNESS_PROMOTION_EXPERIMENT_ID`, `HARNESS_PROMOTION_CANDIDATE_VARIANT_ID`) |

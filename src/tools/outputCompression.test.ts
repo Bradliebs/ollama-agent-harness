@@ -40,12 +40,19 @@ describe('compressToolOutput', () => {
 
   it('head-tail clamp keeps both ends and reports elided count', () => {
     const input = 'A'.repeat(5000) + 'B'.repeat(5000) + 'C'.repeat(5000);
-    const { output, rulesApplied } = compressToolOutput('file_read', input, { maxChars: 2000 });
+    const { output, rulesApplied } = compressToolOutput('bash', input, { maxChars: 2000 });
     expect(rulesApplied).toContain('head-tail-clamp');
     expect(output.startsWith('A')).toBe(true);
     expect(output.endsWith('C')).toBe(true);
     expect(output).toMatch(/\[\d+ characters elided\]/);
     expect(Array.from(output).length).toBeLessThanOrEqual(2000);
+  });
+
+  it('passes file_read output through verbatim so file_edit can copy from it', () => {
+    const input = 'a  \n\n\n\n}\n}\n' + 'x'.repeat(20_000);
+    const { output, rulesApplied } = compressToolOutput('file_read', input, { maxChars: 2000 });
+    expect(output).toBe(input);
+    expect(rulesApplied).toEqual([]);
   });
 
   it('passes JSON payloads through byte-identical', () => {
@@ -85,11 +92,19 @@ describe('compressToolOutput', () => {
 });
 
 describe('compressToolResult', () => {
-  it('passes through failed results untouched', () => {
+  it('passes through short failed results untouched', () => {
     const failed: ToolResult = { success: false, output: 'x\nx\nx\nx', error: 'boom' };
     const { result, saved } = compressToolResult('bash', failed);
     expect(result).toBe(failed);
     expect(saved).toBe(0);
+  });
+
+  it('clamps an oversized failure log head + tail, keeping the summary at the end', () => {
+    const log = Array.from({ length: 5_000 }, (_, i) => `  at frame ${i}`).join('\n') + '\nTests: 3 failed, 10 passed';
+    const { result } = compressToolResult('bash', { success: false, output: log, error: 'exit 1' }, { maxChars: 4_000 });
+    expect(Array.from(result.output).length).toBeLessThanOrEqual(4_000);
+    expect(result.output.endsWith('Tests: 3 failed, 10 passed')).toBe(true);
+    expect(result.error).toBe('exit 1');
   });
 
   it('reports characters saved on shrink', () => {

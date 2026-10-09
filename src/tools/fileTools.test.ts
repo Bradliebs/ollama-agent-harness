@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { FileReadTool, FileWriteTool, FileMoveTool, FileDeleteTool, ListUploadsTool, MakeDirectoryTool } from './fileTools';
+import { FileReadTool, FileWriteTool, FileMoveTool, FileDeleteTool, ListFilesTool, ListUploadsTool, MakeDirectoryTool } from './fileTools';
 import { drainUploadsFallbacks, clearFileWriteRedirectCache, previewFileWriteRedirect, getProjectRoot, setProjectRoot } from './pathResolution';
 
 describe('file tools bounds and path safety', () => {
@@ -27,15 +27,51 @@ describe('file tools bounds and path safety', () => {
   it('returns requested one-based line ranges', async () => {
     const result = await FileReadTool.execute({ path: fixtureFile, start_line: 2, end_line: 3 });
 
-    expect(result).toMatchObject({ success: true, output: 'beta\ngamma' });
+    expect(result.success).toBe(true);
+    expect(result.output.startsWith('beta\ngamma\n...(lines 2-3 of ')).toBe(true);
   });
 
-  it('truncates reads by max bytes', async () => {
+  it('truncates reads by max bytes on a whole line and says where to continue', async () => {
     const result = await FileReadTool.execute({ path: fixtureFile, max_bytes: 5 });
 
     expect(result.success).toBe(true);
-    expect(result.output).toContain('alpha');
-    expect(result.output).toContain('truncated');
+    expect(result.output.startsWith('alpha\n...(showing lines 1-1 of ')).toBe(true);
+    expect(result.output).toContain('Continue with start_line=2');
+  });
+
+  it('counts lines correctly for a file ending in a newline and returns it byte-for-byte', async () => {
+    await fs.writeFile(fixtureFile, 'one\r\ntwo\r\n', 'utf-8');
+    const whole = await FileReadTool.execute({ path: fixtureFile });
+    expect(whole.output).toBe('one\r\ntwo\r\n');
+    const ranged = await FileReadTool.execute({ path: fixtureFile, start_line: 2 });
+    expect(ranged.output).toBe('two\r\n...(lines 2-2 of 2)');
+    const past = await FileReadTool.execute({ path: fixtureFile, start_line: 9 });
+    expect(past.output).toContain('the file has 2 lines');
+  });
+
+  it('lists files recursively with a glob, skipping dependency folders', async () => {
+    await fs.mkdir(path.join(fixtureDir, 'src', 'deep'), { recursive: true });
+    await fs.mkdir(path.join(fixtureDir, 'node_modules', 'pkg'), { recursive: true });
+    await fs.writeFile(path.join(fixtureDir, 'src', 'deep', 'a.test.ts'), '', 'utf-8');
+    await fs.writeFile(path.join(fixtureDir, 'src', 'b.ts'), '', 'utf-8');
+    await fs.writeFile(path.join(fixtureDir, 'node_modules', 'pkg', 'c.test.ts'), '', 'utf-8');
+
+    const tests = await ListFilesTool.execute({ path: fixtureDir, pattern: '*.test.ts' });
+    const prefix = '.harness/test-fixtures/file-tools/';
+    expect(tests.output).toBe(`${prefix}src/deep/a.test.ts`);
+    const all = await ListFilesTool.execute({ path: fixtureDir, recursive: true });
+    expect(all.output.split('\n')).toEqual([`${prefix}sample.txt`, `${prefix}src/b.ts`, `${prefix}src/deep/a.test.ts`]);
+  });
+
+  it('returns long files verbatim up to the limit, never eliding the middle', async () => {
+    const lines = Array.from({ length: 300 }, (_, i) => `export const value${i} = ${i};   `);
+    const longFile = path.join(fixtureDir, 'long.ts');
+    await fs.writeFile(longFile, lines.join('\n'), 'utf-8');
+    const result = await FileReadTool.execute({ path: longFile, max_bytes: 4_000 });
+    const shownLines = result.output.split('\n...(showing lines')[0].split('\n');
+
+    expect(shownLines).toEqual(lines.slice(0, shownLines.length));
+    expect(result.output).toContain(`Continue with start_line=${shownLines.length + 1}`);
   });
 
   it('rejects oversized writes', async () => {

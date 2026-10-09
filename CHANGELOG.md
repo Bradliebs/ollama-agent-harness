@@ -277,6 +277,43 @@ No release tag, publication or installer runtime qualification is implied.
 - After the token-efficiency changes and the documentation refresh full Jest
   passed 358 suites and 4,050 tests with one skipped (2026-10-08), and
   typecheck passed.
+- Coding tasks:
+  - Fix the model only ever seeing 4,000 characters of each tool result: the
+    always-on budget reduction also cut the results the model had just asked
+    for, so a 12 KB file it read arrived with its middle missing. The latest
+    results now share up to half the context window; older ones stay capped.
+  - `file_read` returns files byte-for-byte (dispatch compression used to trim
+    whitespace and drop repeated lines, so `file_edit` copies failed), cut at a
+    whole line at 12,000 bytes by default with the next `start_line`.
+  - `file_edit` writes the file's own line endings (it left LF lines in CRLF
+    files) and says where a near match is or where the duplicates are.
+  - `list_files` lists recursively and by glob (`find` and `ls` are blocked on
+    Windows, so there was no way to search for files). `grep` prints
+    project-relative paths, says when it stops at 200 matches, skips build
+    folders and binary files, and matches `include` globs on the path.
+  - `bash` keeps the end of long output (it kept only the first 50,000
+    characters, losing test and build summaries), takes a `cwd`, runs
+    `.cmd`/`.bat` scripts on Windows, and no longer hangs on Windows after a
+    timeout or when a command leaves a background process holding its output.
+  - Code verification runs in the project directory (it ran in the daemon's
+    working directory), before the answer is sent, and a failing check goes
+    back to the model once to fix (`verify.repairAttempts`) if turns and time
+    remain. ESLint no longer fails on Windows (it was started as a bare
+    `npx`), missing tools and timeouts count as "not verified" rather than
+    failures, failure output keeps its end, and pytest, `go test` and
+    `cargo test` are detected. Moves, deletes and file-changing shell commands
+    count as changes.
+  - Web chat gives coding tasks at least 10 minutes of wall-clock time (the
+    local default was 3), so an edit, the checks and one repair fit.
+  - The CLI now requests and budgets the same context window as the web chat
+    (reported window up to 200,000 tokens, capped by `contextMaxTokens` and a
+    fresh capability profile). It sent none, so Ollama used its own default
+    while compaction assumed 8,192.
+  - Small qwen2.5 models with Ollama's colon tags (`qwen2.5:3b`,
+    `qwen2.5-coder:1.5b`) are classed as weak tool callers; the pattern only
+    matched `qwen2.5-3b`.
+  - After these changes full Jest passed 361 suites and 4,084 tests with one
+    skipped, and typecheck passed.
 
 See [Modernization Status](docs/MODERNIZATION-STATUS.md) for the complete
 validation record and remaining installation, hosted CI and live-workflow gates.

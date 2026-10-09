@@ -380,7 +380,16 @@ Built-in tools include `file_read`, `file_write`, `file_edit`, `file_move`, `fil
 
 Browser tools (`browser_navigate`, `browser_click`, `browser_fill`) are disabled by default and require a capability grant — they interact with live websites via Playwright.
 
-The `bash` tool spawns a single executable without a shell. Shell control operators (`;`, `|`, `&&`, redirects, command substitution) outside quoted arguments are rejected — quote them and they pass through verbatim (e.g. `python -c "import x; print(x)"`). Use `make_directory` instead of `mkdir`, `file_read`/`list_files` instead of `cat`/`dir`, and pipe through a script file instead of `cmd`-style pipes.
+The `bash` tool spawns a single executable without a shell. Shell control operators (`;`, `|`, `&&`, redirects, command substitution) outside quoted arguments are rejected — quote them and they pass through verbatim (e.g. `python -c "import x; print(x)"`). Use `make_directory` instead of `mkdir`, `file_read`/`list_files` instead of `cat`/`dir`, the `cwd` argument instead of `cd dir && …`, and pipe through a script file instead of `cmd`-style pipes. On Windows, `.cmd`/`.bat` scripts (such as `gradlew.bat`) run through `cmd.exe`, and a timeout ends the whole process tree. Long output keeps its first 10,000 and last 40,000 characters, because compilers and test runners print errors and summaries last.
+
+### Coding tools and verification
+
+* `file_read` returns files exactly as on disk, up to 12,000 bytes by default, cut at a whole line with a note naming the next `start_line`. The results of the latest tool calls reach the model in full, up to half the context window between them; older results are shortened to 4,000 characters. Dispatch-time compression never touches `file_read` output, so `file_edit` can copy from it.
+* `file_edit` replaces one exact, unique occurrence. It writes the file's own line endings. When the text isn't found it points at lines that match apart from whitespace, and when it occurs more than once it lists the lines.
+* `list_files` takes `recursive: true` or a `pattern` glob (`"src/**/*.{ts,tsx}"`). `grep` prints project-relative paths, takes the same globs in `include`, and says when it stopped at 200 matches. Both skip dependency and build folders (`node_modules`, `dist`, `build`, `out`, `coverage`, `target`, `__pycache__`, `vendor`) and dot-folders; grep also skips dot-files (such as `.env`) and binary files.
+* When code verification is on (the CLI turns it on when the project has `package.json`; `HARNESS_VERIFY=1` forces it on), the loop runs typecheck, ESLint and the tests in the project directory after the agent changes files. It detects npm, pytest, `go test` and `cargo test`. A failing check is sent back to the model once to fix (`verify.repairAttempts`); a missing tool or a timeout counts as "not verified", not as a failure.
+* Web chat gives coding tasks (edits and debugging) at least 10 minutes of wall-clock time, so editing, running checks and one fix fit even on a slow local model. Other chats keep the automatic budget (3 minutes for local models, 10 for cloud, or what the model's measured turn time suggests); a time budget set in Settings always wins.
+* The CLI requests and budgets the same context window as the web chat: the window the model reports (up to 200,000 tokens), capped by the per-model or global `contextMaxTokens` setting and by a fresh capability profile. Set `contextMaxTokens` in Settings (or `.harness/settings.json`) to limit GPU memory use.
 
 ### Allowed External Paths
 

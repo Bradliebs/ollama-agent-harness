@@ -49,6 +49,13 @@ const DEFAULT_MAX_CHARS = 12_000;
 
 const WEB_TOOLS = new Set(['web_fetch', 'web_read', 'web_search']);
 
+/**
+ * Tools whose output must reach the model byte-for-byte: file_read output is
+ * copied into file_edit's old_string, so trimming whitespace or eliding lines
+ * makes edits fail. file_read bounds its own output on whole lines instead.
+ */
+const VERBATIM_TOOLS = new Set(['file_read']);
+
 /** Strip HTML tags and collapse to readable text. Web tools only. */
 const htmlToText: CompressionRule = {
   name: 'html-to-text',
@@ -175,6 +182,7 @@ export function compressToolOutput(
   const maxChars = config.maxChars ?? DEFAULT_MAX_CHARS;
   const originalChars = Array.from(output).length;
   const rulesApplied: string[] = [];
+  if (VERBATIM_TOOLS.has(toolName)) return { output, originalChars, compressedChars: originalChars, rulesApplied };
 
   let text = output;
 
@@ -210,15 +218,26 @@ export function compressToolOutput(
 
 /**
  * Apply compression to a `ToolResult`, returning a new result when the
- * output was actually shrunk. Only successful string outputs are
- * touched; failures and empty output pass through unchanged.
+ * output was actually shrunk. Successful string outputs get the full rule
+ * set. Failed results keep their text (error messages are evidence) and are
+ * only clamped head + tail when oversized, so a failing build or test log
+ * cannot flood the context. Empty output passes through unchanged.
  */
 export function compressToolResult(
   toolName: string,
   result: ToolResult,
   config?: CompressionConfig,
 ): { result: ToolResult; saved: number } {
-  if (!result.success || !result.output) return { result, saved: 0 };
+  if (!result.output) return { result, saved: 0 };
+  if (!result.success) {
+    if (VERBATIM_TOOLS.has(toolName)) return { result, saved: 0 };
+    const originalChars = Array.from(result.output).length;
+    const clamped = headTailClamp(result.output, config?.maxChars ?? DEFAULT_MAX_CHARS);
+    const clampedChars = Array.from(clamped).length;
+    return clampedChars < originalChars
+      ? { result: { ...result, output: clamped }, saved: originalChars - clampedChars }
+      : { result, saved: 0 };
+  }
   const c = compressToolOutput(toolName, result.output, config);
   if (c.compressedChars >= c.originalChars) return { result, saved: 0 };
   return {

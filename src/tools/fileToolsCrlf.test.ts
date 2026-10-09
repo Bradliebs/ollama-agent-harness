@@ -44,12 +44,23 @@ describe('FileEditTool CRLF tolerance', () => {
       new_string: 'BETA\nGAMMA',
     });
     expect(result.success).toBe(true);
-    // The replacement preserves the file's existing line endings around the edit
-    // because we only swap the matched span's bytes for the new_string.
+    // The model's \n new_string is written with the file's CRLF endings,
+    // so the edit never leaves a file with mixed line endings.
     const after = await fs.readFile(target, 'utf-8');
-    expect(after).toContain('BETA\nGAMMA');
-    expect(after.startsWith('alpha\r\n')).toBe(true);
-    expect(after.endsWith('delta\r\n')).toBe(true);
+    expect(after).toBe('alpha\r\nBETA\r\nGAMMA\r\ndelta\r\n');
+  });
+
+  it('keeps an LF file LF', async () => {
+    await fs.writeFile(target, 'alpha\nbeta\n', 'utf-8');
+    await FileEditTool.execute({ path: 'sample.ts', old_string: 'beta', new_string: 'b1\nb2' });
+    expect(await fs.readFile(target, 'utf-8')).toBe('alpha\nb1\nb2\n');
+  });
+
+  it('points at a near match when only whitespace differs', async () => {
+    await fs.writeFile(target, 'function a() {\n\treturn 1;\n}\n', 'utf-8');
+    const result = await FileEditTool.execute({ path: 'sample.ts', old_string: '    return 1;', new_string: 'return 2;' });
+    expect(result.success).toBe(false);
+    expect(result.output).toContain('appears at line 2');
   });
 
   it('still reports "String not found" when the content really is absent', async () => {
@@ -71,7 +82,8 @@ describe('FileEditTool CRLF tolerance', () => {
       new_string: 'X',
     });
     expect(result.success).toBe(false);
-    expect(result.output).toContain('Multiple matches');
+    expect(result.output).toContain('occurs 2 times');
+    expect(result.output).toContain('lines 1, 2');
   });
 
   it('handles a single-line LF match against a single-line CRLF file', async () => {

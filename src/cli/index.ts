@@ -21,6 +21,7 @@ import { OUTPUT_VALIDATION_PROFILES, parseOutputValidationProfile, type OutputVa
 import { formatCliHelp, resolveCliCommand } from './commands';
 import { runProbeSuite } from '../models/probeRunner';
 import { probeContextWindow } from '../models/probes/usableContext';
+import { resolveContextMaxTokens } from '../models/contextWindow';
 import { safeModelProfileName, type CapabilityProfile } from '../models/capabilityProfile';
 import { runMyceliumCli } from '../mycelium/cli';
 import { createMycelialRouter, deriveToolShortlist, toolNamesFromRoute, type MycelialContextRouter } from '../mycelium/router';
@@ -625,12 +626,13 @@ export async function main(): Promise<void> {
 
   // Initialize client (Ollama by default; OpenAI-compatible providers via
   // --backend or HARNESS_BACKEND env var).
-  const client = createChatClient({
+  const baseClientConfig = {
     backend: options.backend,
     model: options.model,
     host: options.host,
     autoFallback: true,
-  });
+  };
+  let client = createChatClient(baseClientConfig);
 
   // Health check
   const health = await client.healthCheck();
@@ -638,6 +640,11 @@ export async function main(): Promise<void> {
     console.error(`❌ ${health.error}`);
     process.exit(1);
   }
+
+  // Request and budget the same context window the web chat would. Without
+  // this Ollama used its own default window while compaction assumed 8192.
+  const contextMaxTokens = await resolveContextMaxTokens(projectDir, options.model, await client.getContextWindow().catch(() => null));
+  client = createChatClient({ ...baseClientConfig, numCtx: contextMaxTokens });
 
   function formatCapabilityProfileTable(profile: CapabilityProfile): string {
     const rows = [
@@ -735,6 +742,7 @@ export async function main(): Promise<void> {
     verify: { enabled: resolveVerifyEnabled(undefined, projectDir) },
     // Reject tool calls missing a declared-required parameter before they run.
     validateToolInput: true,
+    context: { maxTokens: contextMaxTokens },
   };
 
   const deps: QueryLoopDeps = {

@@ -189,9 +189,8 @@ leave the machine; see [Security Model](SECURITY.md#what-can-leave-the-machine).
 A model counts as weak at tool calling when a fresh capability profile from
 `harness probe <model>` measured it below 60% (90% or more counts as strong).
 Without a profile, the name decides: `gemma4:e4b`, `gemma4:26b` and small base
-models named like `phi-3-mini`, `tinyllama`, `smollm` or `qwen2.5-3b` are weak.
-Colon-tagged Ollama names such as `qwen2.5:3b` don't match that pattern, so
-probe small models to have them classified.
+models (phi-3-mini, tinyllama, smollm, and qwen2.5 and qwen2.5-coder at 3B or
+smaller, such as `qwen2.5:3b` or `qwen2.5-coder:1.5b`) are weak.
 
 ### Agentic Fallback Models
 

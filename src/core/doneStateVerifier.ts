@@ -8,6 +8,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { stripAnsiCodes } from '../context/toolOutputCompaction';
 
 const execFileAsync = promisify(execFile);
 
@@ -42,62 +43,83 @@ interface CodeVerifyOptions {
   quick?: boolean;
   /** Timeout per check in ms. */
   timeout?: number;
+  /** Cancels running checks (e.g. the user stopped the run). */
+  signal?: AbortSignal;
 }
 
 interface CommandRun {
   ok: boolean;
   output: string;
   duration_ms: number;
-  /** True when the command was killed by its timeout rather than exiting on its own. */
+  /** True when the command could not finish on its own: timeout, output over the buffer limit, or cancellation. */
   timedOut: boolean;
+  /** True when the executable itself was not found. */
+  missing: boolean;
 }
 
-async function runCommand(cwd: string, cmd: string, args: string[], timeout = 60_000): Promise<CommandRun> {
+/** Characters of failing output kept for the model; the end of a log holds the errors and the summary. */
+const FAILURE_DETAIL_MAX_CHARS = 3_000;
+const COMMAND_MAX_BUFFER = 16 * 1024 * 1024;
+
+async function runCommand(cwd: string, cmd: string, args: string[], timeout = 60_000, signal?: AbortSignal): Promise<CommandRun> {
   const start = Date.now();
   try {
-    const { stdout, stderr } = await execFileAsync(cmd, args, { cwd, timeout, windowsHide: true });
-    return { ok: true, output: (stdout + '\n' + stderr).trim(), duration_ms: Date.now() - start, timedOut: false };
+    const { stdout, stderr } = await execFileAsync(cmd, args, { cwd, timeout, windowsHide: true, maxBuffer: COMMAND_MAX_BUFFER, ...(signal ? { signal } : {}) });
+    return { ok: true, output: (stdout + '\n' + stderr).trim(), duration_ms: Date.now() - start, timedOut: false, missing: false };
   } catch (err: unknown) {
-    const e = err as { stdout?: string; stderr?: string; message?: string; killed?: boolean };
-    // execFile sets killed=true when it terminates the child due to the timeout.
-    const errorDetail = e.stderr?.trim() || e.message || '';
-    return { ok: false, output: (e.stdout ?? '') + '\n' + errorDetail, duration_ms: Date.now() - start, timedOut: e.killed === true };
+    const e = err as { stdout?: string; stderr?: string; message?: string; killed?: boolean; code?: string | number; name?: string };
+    // execFile sets killed=true when it terminates the child (timeout or maxBuffer).
+    const interrupted = e.killed === true || e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || e.name === 'AbortError';
+    const output = [e.stdout ?? '', e.stderr ?? '', e.message ?? ''].filter((part) => part.trim()).join('\n');
+    return { ok: false, output, duration_ms: Date.now() - start, timedOut: interrupted, missing: e.code === 'ENOENT' };
   }
 }
 
-// A timed-out check means "could not verify within budget", not "verification
-// failed" — so it maps to warn, never fail. This keeps default-on verification
-// from spuriously failing on repos whose suite is slower than the timeout.
+// A check that could not run or finish means "could not verify", not
+// "verification failed": a missing tool is skip and a timeout is warn, so
+// default-on verification never fails a run on its own account.
 function checkStatus(r: CommandRun): VerificationStatus {
   if (r.ok) return 'pass';
+  if (r.missing) return 'skip';
   return r.timedOut ? 'warn' : 'fail';
 }
 
-function checkDetail(r: CommandRun): string | undefined {
+function checkDetail(r: CommandRun, cmd: string): string | undefined {
   if (r.ok) return undefined;
-  return r.timedOut ? 'Timed out before completing \u2014 could not verify within budget' : r.output.slice(0, 500);
+  if (r.missing) return `${cmd} is not installed or not on PATH`;
+  if (r.timedOut) return 'Did not finish (timed out, cancelled, or output too large) \u2014 could not verify within budget';
+  const text = stripAnsiCodes(r.output).trim();
+  return text.length > FAILURE_DETAIL_MAX_CHARS ? `...${text.slice(-FAILURE_DETAIL_MAX_CHARS)}` : text;
+}
+
+function commandCheck(name: string, cmd: string, r: CommandRun): VerificationCheck {
+  return { name, domain: 'code', status: checkStatus(r), detail: checkDetail(r, cmd), duration_ms: r.duration_ms };
 }
 
 export async function verifyCode(options: CodeVerifyOptions): Promise<VerificationResult> {
-  const { projectDir, quick = false, timeout = 60_000 } = options;
+  const { projectDir, quick = false, timeout = 60_000, signal } = options;
   const checks: VerificationCheck[] = [];
 
-  // TypeScript check
+  // TypeScript check (only with a local install: `npx tsc` without one
+  // downloads the unrelated "tsc" package from npm)
   const tsconfigExists = await fileExists(path.join(projectDir, 'tsconfig.json'));
-  if (tsconfigExists) {
-    const npx = platformCommand('npx', ['tsc', '--noEmit', '--pretty']);
-    const tsc = await runCommand(projectDir, npx.command, npx.args, timeout);
-    checks.push({ name: 'typecheck', domain: 'code', status: checkStatus(tsc), detail: checkDetail(tsc), duration_ms: tsc.duration_ms });
+  if (tsconfigExists && !await hasLocalBin(projectDir, 'tsc')) {
+    checks.push({ name: 'typecheck', domain: 'code', status: 'skip', detail: 'typescript is not installed in node_modules' });
+  } else if (tsconfigExists) {
+    const npx = platformCommand('npx', ['tsc', '--noEmit', '--pretty', 'false']);
+    checks.push(commandCheck('typecheck', 'tsc', await runCommand(projectDir, npx.command, npx.args, timeout, signal)));
   } else {
     checks.push({ name: 'typecheck', domain: 'code', status: 'skip', detail: 'No tsconfig.json found' });
   }
 
   // Lint check (eslint)
   if (!quick) {
-    const eslintConfig = await hasAnyFile(projectDir, ['.eslintrc', '.eslintrc.js', '.eslintrc.json', '.eslintrc.yml', 'eslint.config.js', 'eslint.config.mjs']);
-    if (eslintConfig) {
-      const lint = await runCommand(projectDir, 'npx', ['eslint', '.', '--max-warnings=0'], timeout);
-      checks.push({ name: 'lint', domain: 'code', status: checkStatus(lint), detail: checkDetail(lint), duration_ms: lint.duration_ms });
+    const eslintConfig = await hasAnyFile(projectDir, ['.eslintrc', '.eslintrc.js', '.eslintrc.cjs', '.eslintrc.json', '.eslintrc.yml', '.eslintrc.yaml', 'eslint.config.js', 'eslint.config.mjs', 'eslint.config.cjs', 'eslint.config.ts']);
+    if (eslintConfig && !await hasLocalBin(projectDir, 'eslint')) {
+      checks.push({ name: 'lint', domain: 'code', status: 'skip', detail: 'eslint is not installed in node_modules' });
+    } else if (eslintConfig) {
+      const npx = platformCommand('npx', ['eslint', '.']);
+      checks.push(commandCheck('lint', 'eslint', await runCommand(projectDir, npx.command, npx.args, timeout, signal)));
     } else {
       checks.push({ name: 'lint', domain: 'code', status: 'skip', detail: 'No ESLint config found' });
     }
@@ -105,14 +127,7 @@ export async function verifyCode(options: CodeVerifyOptions): Promise<Verificati
 
   // Test check
   if (!quick) {
-    const packageJson = await readPackageJson(projectDir);
-    if (packageJson?.scripts?.test) {
-      const npm = platformCommand('npm', ['test', '--', '--passWithNoTests']);
-      const test = await runCommand(projectDir, npm.command, npm.args, timeout * 2);
-      checks.push({ name: 'tests', domain: 'code', status: checkStatus(test), detail: checkDetail(test), duration_ms: test.duration_ms });
-    } else {
-      checks.push({ name: 'tests', domain: 'code', status: 'skip', detail: 'No test script in package.json' });
-    }
+    checks.push(await runTests(projectDir, timeout * 2, signal));
   }
 
   return {
@@ -121,6 +136,31 @@ export async function verifyCode(options: CodeVerifyOptions): Promise<Verificati
     checks,
     timestamp: new Date().toISOString(),
   };
+}
+
+async function runTests(projectDir: string, timeout: number, signal?: AbortSignal): Promise<VerificationCheck> {
+  const packageJson = await readPackageJson(projectDir);
+  const testScript = packageJson?.scripts?.test;
+  if (testScript && !/no test specified/i.test(testScript)) {
+    // --passWithNoTests is a jest/vitest flag; other runners may reject it.
+    const extra = /\b(jest|vitest)\b/.test(testScript) ? ['--', '--passWithNoTests'] : [];
+    const npm = platformCommand('npm', ['test', ...extra]);
+    return commandCheck('tests', 'npm', await runCommand(projectDir, npm.command, npm.args, timeout, signal));
+  }
+  if (await hasAnyFile(projectDir, ['pytest.ini', 'conftest.py', 'tox.ini']) || await fileContains(path.join(projectDir, 'pyproject.toml'), '[tool.pytest')) {
+    const run = await runCommand(projectDir, 'python', ['-m', 'pytest', '-q'], timeout, signal);
+    // pytest exit code 5: no tests were collected.
+    if (!run.ok && /exit code:? 5\b|no tests ran/i.test(run.output)) return { name: 'tests', domain: 'code', status: 'skip', detail: 'pytest collected no tests', duration_ms: run.duration_ms };
+    if (!run.ok && /No module named pytest/i.test(run.output)) return { name: 'tests', domain: 'code', status: 'skip', detail: 'pytest is not installed', duration_ms: run.duration_ms };
+    return commandCheck('tests', 'pytest', run);
+  }
+  if (await fileExists(path.join(projectDir, 'go.mod'))) {
+    return commandCheck('tests', 'go', await runCommand(projectDir, 'go', ['test', './...'], timeout, signal));
+  }
+  if (await fileExists(path.join(projectDir, 'Cargo.toml'))) {
+    return commandCheck('tests', 'cargo', await runCommand(projectDir, 'cargo', ['test', '--quiet'], timeout, signal));
+  }
+  return { name: 'tests', domain: 'code', status: 'skip', detail: 'No test runner detected' };
 }
 
 function platformCommand(command: 'npm' | 'npx', args: string[]): { command: string; args: string[] } {
@@ -219,6 +259,26 @@ async function hasAnyFile(dir: string, names: string[]): Promise<boolean> {
     if (await fileExists(path.join(dir, name))) return true;
   }
   return false;
+}
+
+/** Whether node_modules/.bin (here or in a parent, for hoisted monorepos) has the tool. */
+async function hasLocalBin(dir: string, name: string): Promise<boolean> {
+  let current = path.resolve(dir);
+  for (let i = 0; i < 6; i++) {
+    if (await fileExists(path.join(current, 'node_modules', '.bin', name))) return true;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return false;
+}
+
+async function fileContains(fp: string, needle: string): Promise<boolean> {
+  try {
+    return (await fs.readFile(fp, 'utf-8')).includes(needle);
+  } catch {
+    return false;
+  }
 }
 
 async function isValidJson(fp: string): Promise<boolean> {

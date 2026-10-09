@@ -83,6 +83,8 @@ function previousSummaryText(messages: Message[]): string | null {
 export interface CompactionConfig {
   maxTokens: number;
   budgetPerToolResult: number;
+  /** Upper bound for each of the latest results (used when the real window is unknown). */
+  maxFreshResultChars?: number;
   snipThreshold: number;
   autoCompactThreshold: number;
   minSummaryQuality?: number;
@@ -113,14 +115,29 @@ export interface CompactionResult {
   usage?: TokenUsage;
 }
 
+/**
+ * Cap tool results in history. Results after the last assistant message are
+ * the ones the model asked for and has not seen yet, so they get
+ * `freshMaxCharsPerResult` (when given) instead of the tighter cap applied to
+ * older results: cutting a file the model is about to edit leaves it editing
+ * text it cannot see.
+ */
 export function applyBudgetReduction(
   messages: Message[],
   maxCharsPerResult: number,
+  freshMaxCharsPerResult?: number,
 ): CompactionResult {
+  let lastAssistant = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant') { lastAssistant = i; break; }
+  }
   let freed = 0;
-  const updated = messages.map((msg) => {
-    if (msg.role === 'tool' && msg.content && msg.content.length > maxCharsPerResult) {
-      const { content, freedChars } = compactToolOutput(msg.content, maxCharsPerResult);
+  const updated = messages.map((msg, index) => {
+    const limit = freshMaxCharsPerResult !== undefined && index > lastAssistant
+      ? Math.max(maxCharsPerResult, freshMaxCharsPerResult)
+      : maxCharsPerResult;
+    if (msg.role === 'tool' && msg.content && msg.content.length > limit) {
+      const { content, freedChars } = compactToolOutput(msg.content, limit);
       freed += Math.ceil(freedChars / 4);
       return { ...msg, content };
     }
@@ -128,6 +145,18 @@ export function applyBudgetReduction(
   });
 
   return { messages: updated, strategy: 'budget_reduction', tokensFreed: freed };
+}
+
+/** Share of the context window (in characters, ~4 per token) the results of the latest tool calls may use together. */
+const FRESH_RESULTS_WINDOW_SHARE = 0.5;
+
+/** Per-result cap for the results the model has not seen yet. */
+export function freshToolResultBudget(messages: Message[], maxTokens: number): number {
+  let fresh = 0;
+  for (let i = messages.length - 1; i >= 0 && messages[i].role !== 'assistant'; i--) {
+    if (messages[i].role === 'tool') fresh += 1;
+  }
+  return Math.floor((maxTokens * 4 * FRESH_RESULTS_WINDOW_SHARE) / Math.max(1, fresh));
 }
 
 /** Tool-call string arguments longer than this are shortened once the call is old. */
@@ -279,8 +308,9 @@ export async function compactIfNeeded(
   config: CompactionConfig,
   client: IChatClient,
 ): Promise<CompactionResult> {
-  // Layer 1: Budget reduction (always runs)
-  let result = applyBudgetReduction(messages, config.budgetPerToolResult);
+  // Layer 1: Budget reduction (always runs; the latest results get a larger share)
+  const freshBudget = Math.min(freshToolResultBudget(messages, config.maxTokens), config.maxFreshResultChars ?? Number.POSITIVE_INFINITY);
+  let result = applyBudgetReduction(messages, config.budgetPerToolResult, freshBudget);
   let current = result.messages;
 
   // Layer 1b: under pressure, shorten large arguments of older tool calls
