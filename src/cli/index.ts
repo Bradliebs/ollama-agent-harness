@@ -3,6 +3,7 @@
 import * as readline from 'readline';
 import * as path from 'path';
 import { readFile } from 'fs/promises';
+import type { Message } from 'ollama';
 import { OllamaClient } from '../core/ollamaClient';
 import { createChatClient } from '../core/chatClientFactory';
 import type { IChatClient } from '../core/chatClient';
@@ -1316,21 +1317,23 @@ async function runCompactRemoteSmoke(client: IChatClient, prompt: string): Promi
   console.log(content.trim());
 }
 
-async function runInteractive(
+export async function runInteractive(
   config: LoopConfig,
   deps: QueryLoopDeps,
   session: SessionStorage,
+  rl: Pick<readline.Interface, 'question' | 'close'> = readline.createInterface({ input: process.stdin, output: process.stdout }),
 ): Promise<void> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
   console.log(`🤖 Ollama Agent Harness (${config.model})`);
-  console.log('Type your message, or /quit to exit.\n');
+  console.log('Type your message. /clear starts a new conversation, /quit exits.\n');
 
   const prompt = (): Promise<string> =>
     new Promise((resolve) => rl.question('> ', resolve));
+
+  // The conversation so far, as user/assistant text (tool transcripts stay in
+  // the run that produced them, as in the web chat). The loop compacts it
+  // when it outgrows the context window; the cap keeps it from growing forever.
+  const MAX_HISTORY_MESSAGES = 40;
+  let history: Message[] = [];
 
   while (true) {
     const input = await prompt();
@@ -1342,49 +1345,63 @@ async function runInteractive(
       rl.close();
       return;
     }
+    if (trimmed === '/clear' || trimmed === '/new') {
+      history = [];
+      console.log('Started a new conversation.\n');
+      continue;
+    }
 
-    const messages = [{ role: 'user' as const, content: trimmed }];
+    const messages: Message[] = [...history, { role: 'user', content: trimmed }];
     let assistantText = '';
     let toolCalls = 0;
     const toolSummaries: string[] = [];
     const errors: string[] = [];
-    for await (const event of queryLoop(config, deps, messages)) {
-      switch (event.type) {
-        case 'text':
-          assistantText += event.content;
-          console.log(`\n${event.content}\n`);
-          break;
-        case 'tool_call':
-          console.log(`  🔧 ${event.call.name}(${JSON.stringify(event.call.input).slice(0, 100)})`);
-          break;
-        case 'tool_result':
-          toolCalls++;
-          const summary = summarizeConsoleToolResult(event.call.name, event.result.success, event.result.output);
-          if (summary) toolSummaries.push(summary);
-          const icon = event.result.success ? '✅' : '❌';
-          console.log(`  ${icon} ${event.result.output.slice(0, 200)}`);
-          break;
-        case 'error':
-          errors.push(event.message);
-          console.log(`  ⚠️ ${event.message}`);
-          break;
-        case 'synthesis_fired':
-          console.log(`  🔄 synthesis turn: model exhausted ${event.maxTurns} tool turns (${event.toolCallsTotal} calls)`);
-          break;
-        case 'context':
-          console.log(`  🧠 context ${event.strategy}: freed ~${event.tokensFreed} tokens, pressure ${Math.round(event.pressure * 100)}%${event.autosaved ? ', autosaved' : ''}`);
-          break;
-        case 'output_validation':
-          console.log(`  🧪 output validation ${event.validation.status}: score ${event.validation.score}`);
-          for (const finding of event.validation.findings.slice(0, 3)) {
-            console.log(`     ${finding.severity.toUpperCase()} ${finding.message}`);
-          }
-          break;
-        case 'done':
-          if (!assistantText.trim()) console.log(`\n${buildConsoleToolOnlyResponse({ toolCalls, toolSummaries, errors, doneReason: event.reason })}\n`);
-          break;
+    try {
+      for await (const event of queryLoop(config, deps, messages)) {
+        switch (event.type) {
+          case 'text':
+            assistantText += event.content;
+            console.log(`\n${event.content}\n`);
+            break;
+          case 'tool_call':
+            console.log(`  🔧 ${event.call.name}(${JSON.stringify(event.call.input).slice(0, 100)})`);
+            break;
+          case 'tool_result':
+            toolCalls++;
+            const summary = summarizeConsoleToolResult(event.call.name, event.result.success, event.result.output);
+            if (summary) toolSummaries.push(summary);
+            const icon = event.result.success ? '✅' : '❌';
+            console.log(`  ${icon} ${event.result.output.slice(0, 200)}`);
+            break;
+          case 'error':
+            errors.push(event.message);
+            console.log(`  ⚠️ ${event.message}`);
+            break;
+          case 'synthesis_fired':
+            console.log(`  🔄 synthesis turn: model exhausted ${event.maxTurns} tool turns (${event.toolCallsTotal} calls)`);
+            break;
+          case 'context':
+            console.log(`  🧠 context ${event.strategy}: freed ~${event.tokensFreed} tokens, pressure ${Math.round(event.pressure * 100)}%${event.autosaved ? ', autosaved' : ''}`);
+            break;
+          case 'output_validation':
+            console.log(`  🧪 output validation ${event.validation.status}: score ${event.validation.score}`);
+            for (const finding of event.validation.findings.slice(0, 3)) {
+              console.log(`     ${finding.severity.toUpperCase()} ${finding.message}`);
+            }
+            break;
+          case 'done':
+            if (!assistantText.trim()) console.log(`\n${buildConsoleToolOnlyResponse({ toolCalls, toolSummaries, errors, doneReason: event.reason })}\n`);
+            break;
+        }
       }
+    } catch (err) {
+      // A failed turn shouldn't end the session; report it and keep the history consistent.
+      const message = err instanceof Error ? err.message : String(err);
+      console.log(`  ⚠️ The request failed: ${message}`);
+      errors.push(message);
     }
+    const reply = assistantText.trim() || buildConsoleToolOnlyResponse({ toolCalls, toolSummaries, errors });
+    history = [...history, { role: 'user' as const, content: trimmed }, { role: 'assistant' as const, content: reply }].slice(-MAX_HISTORY_MESSAGES);
   }
 }
 

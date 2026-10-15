@@ -39,6 +39,12 @@ export interface ChatOptions {
   format?: 'json' | Record<string, unknown>;
   /** Alias for callers that want to name the intent rather than the wire key. */
   responseSchema?: Record<string, unknown>;
+  /**
+   * Called with the reply text received so far while a streaming backend is
+   * still generating (for live previews). A retry starts again from the
+   * beginning, so the text can shrink. Backends that don't stream ignore it.
+   */
+  onContent?: (contentSoFar: string) => void;
 }
 
 export interface StreamChunk {

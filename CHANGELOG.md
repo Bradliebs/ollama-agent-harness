@@ -333,6 +333,37 @@ No release tag, publication or installer runtime qualification is implied.
     gives the message box the full width; copy buttons are reachable by
     keyboard and touch; the light theme no longer shows dark error cards or
     a shadow bleeding in at the window edge; no text is smaller than 11px.
+- Development and chat experience (compared with Claude Code, Codex, Aider,
+  Cline and Cursor):
+  - Fix one Ctrl+Enter sending the message twice, and Enter while a reply
+    streams stopping the run and leaving the new message unsent: it is now
+    queued and sent when the reply finishes. Enter that confirms an IME
+    composition no longer sends.
+  - `AGENTS.md` and `CLAUDE.md` are read as project instructions alongside
+    `HARNESS.md` (identical copies once, within a shared cap).
+  - Approval cards show the diff, the new file's start, the whole command or
+    the email recipient instead of 180 characters of JSON, with **Approve
+    all edits** to approve file edits for the rest of that chat (the waiting
+    run included) without changing the saved Safety mode.
+  - **↩ Undo changes** under a reply rolls back the file edits its run
+    recorded (the per-step undo was API-only); **✏️ Edit** on a message
+    reruns the conversation from there; `@path` mentions autocomplete
+    project files and inline them (`GET /api/files/search`), reading only the
+    start of very large files and listing what was included.
+  - The chat stops pulling you to the bottom while you read back, with
+    **Jump to latest**. A stopped or failed turn stays in history and is
+    saved (an empty reply too), and earlier replies carry a one-line,
+    secret-redacted tool summary to the model.
+  - The CLI's interactive mode keeps the conversation (it sent each prompt
+    alone), has `/clear`, and survives a failed turn.
+  - Replies stream into the chat as they are written (`text_delta`
+    previews behind `LoopConfig.streamText`, which `/api/chat` enables when
+    the request sets `streamText: true` as the web UI does, and
+    `HARNESS_STREAM_TEXT=0` disables); the final checked text still replaces
+    the preview. `/plan` runs read-only and ends with **▶ Run this plan**. Code
+    blocks are syntax-highlighted by a small built-in highlighter
+    (`ui/codeHighlight.js`, no new dependency). `/api/files` resolves relative paths against
+    the project.
 
 See [Modernization Status](docs/MODERNIZATION-STATUS.md) for the complete
 validation record and remaining installation, hosted CI and live-workflow gates.

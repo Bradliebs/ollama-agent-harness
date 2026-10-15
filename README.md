@@ -390,6 +390,21 @@ The `bash` tool spawns a single executable without a shell. Shell control operat
 * When code verification is on (the CLI turns it on when the project has `package.json`; `HARNESS_VERIFY=1` forces it on), the loop runs typecheck, ESLint and the tests in the project directory after the agent changes files. It detects npm, pytest, `go test` and `cargo test`. A failing check is sent back to the model once to fix (`verify.repairAttempts`); a missing tool or a timeout counts as "not verified", not as a failure.
 * Web chat gives coding tasks (edits and debugging) at least 10 minutes of wall-clock time, so editing, running checks and one fix fit even on a slow local model. Other chats keep the automatic budget (3 minutes for local models, 10 for cloud, or what the model's measured turn time suggests); a time budget set in Settings always wins.
 * The CLI requests and budgets the same context window as the web chat: the window the model reports (up to 200,000 tokens), capped by the per-model or global `contextMaxTokens` setting and by a fresh capability profile. Set `contextMaxTokens` in Settings (or `.harness/settings.json`) to limit GPU memory use.
+* Project instructions: `HARNESS.md`, `AGENTS.md` (the cross-tool convention read by Codex, Copilot and Cursor, among others) and `CLAUDE.md` in the project root are added to the system prompt. A file with the same text as one already included (a symlink, say) is skipped, and together they use at most 16,000 characters on a 32k-token window (less on smaller ones); `forge-memory/patterns.md` has its own allowance.
+* The CLI's interactive mode keeps the conversation between prompts; `/clear` (or `/new`) starts a new one and `/quit` exits.
+
+### Chat
+
+* **Watch it write.** The reply appears as the model writes it (Ollama models; other providers show it when finished). What stays is the final, checked answer, so it can change a little at the end; `HARNESS_STREAM_TEXT=0` turns the live view off. Stopping keeps what was written so far.
+* **Plan first.** `/plan add a dark mode toggle` runs read-only (it can read and search, but nothing that changes files, runs commands or widens folder access) and replies with a plan. It isn't available in compare mode. **▶ Run this plan** under it carries the plan out, with the usual approvals.
+* **Highlighted code.** Code blocks in replies are syntax-highlighted for common languages (JavaScript/TypeScript, Python, shell/PowerShell, JSON, CSS, HTML/XML, YAML, SQL, diffs and C-like languages), with no extra download.
+* **Mention files with `@`.** Typing `@` in the message box suggests project files; `@src/app.ts` puts the file's current contents into the message (up to five files and a quarter of the context window, cut at whole lines), so the model doesn't need to read it first; for a very large file only the start is read. The tool activity shows which files went in and which mentions weren't found. `.harness/` and `.git/` are never inlined, but anything else you mention is, `.env` included, so don't mention files whose secrets shouldn't reach the model.
+* **Approve with the change in view.** Approval cards show the diff for `file_edit`, the start of the file for `file_write`, the whole command for `bash`, and the recipient for email. **Approve all edits** also approves file edits for the rest of that chat, including the rest of the run that asked, so they stop prompting (commands still ask). It works when Safety mode is *Default* and doesn't change the saved mode, so other chats and automations still ask.
+* **Undo a reply's changes.** A reply that changed files has **↩ Undo changes**, which rolls back the edits its run recorded through the file tools (also after you stop a run). Changes made by shell commands aren't recorded this way; see `HARNESS_RUN_GIT_CHECKPOINT` for whole-workspace snapshots.
+* **Type while it works.** Pressing Enter while a reply is streaming queues your message; it's sent when the reply finishes. Stop (or Esc) still stops the run, and a queued message then goes back into the message box.
+* **Edit and resend.** **✏️ Edit** on one of your messages changes it and runs the conversation again from there. File changes made by the replies it replaces stay on disk (it warns you); undo them first if you want them gone.
+* **Reading back.** The chat follows new output only while you're at the bottom; scroll up and it stays put, with **Jump to latest** to return.
+* Follow-ups know what happened: each earlier reply is sent with a one-line summary of the tools it used (files read and edited, commands and whether they failed), and a stopped or failed turn stays in the history.
 
 ### Allowed External Paths
 
@@ -452,6 +467,8 @@ The welcome screen shows a Mission Control dashboard with:
 
 * `/task Create a report` — add a task to the autonomy plan
 * `/schedule every 24h Send daily summary` — create a recurring automation job
+* `/plan add a dark mode toggle` — look around read-only and reply with a plan; **▶ Run this plan** carries it out
+* `@src/app.ts` — put a file's current contents into the message (type `@` for suggestions)
 * Type `/` to see all available slash commands
 
 ### Permissions
@@ -460,6 +477,7 @@ Three permission modes control tool execution:
 
 * **default** — prompts for confirmation on medium/high-risk tool calls
 * **acceptEdits** — auto-approves file edits, prompts for everything else
+  (**Approve all edits** on an approval card does this for the rest of one chat without changing the saved mode)
 * **dontAsk** — auto-approves tool calls (use with caution). Two checks still apply: an action whose target (recipient, URL or command) came only from a web page or email asks for approval (see provenance checks above), and writes to protected paths are always blocked.
 
 The **kill switch** (Tools tab or Ctrl+Shift+K) blocks all tool calls until released.

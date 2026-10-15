@@ -55,6 +55,23 @@ describe('OllamaClient context configuration', () => {
     }));
   });
 
+  it('reports the reply so far to onContent while streaming', async () => {
+    async function* chunks() {
+      yield { message: { role: 'assistant', content: 'hel' }, done: false };
+      yield { message: { role: 'assistant', content: '' }, done: false };
+      yield { message: { role: 'assistant', content: 'lo' }, done: true, eval_count: 2 };
+    }
+    mockChat.mockResolvedValue(chunks());
+    const seen: string[] = [];
+    const client = new OllamaClient({ model: 'test-model' });
+
+    const result = await client.chat([{ role: 'user', content: 'hi' }], undefined, undefined, { onContent: (text) => seen.push(text) });
+
+    expect(seen).toEqual(['hel', 'hello']);
+    expect(result.message.content).toBe('hello');
+    expect(mockChat.mock.calls[0][0]).not.toHaveProperty('onContent');
+  });
+
   it('aggregates streamed chat chunks into one assistant response', async () => {
     async function* chunks() {
       yield { message: { role: 'assistant', content: 'hel' }, done: false };

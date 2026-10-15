@@ -100,7 +100,7 @@ export class OllamaClient implements IChatClient {
 
         let result: ChatResult;
         if (isAsyncIterable<ChatResponse>(response)) {
-          result = await collectStreamingChatResponse(response, abortSignal, recordUsage, offeredToolNames(tools));
+          result = await collectStreamingChatResponse(response, abortSignal, recordUsage, offeredToolNames(tools), options?.onContent);
         } else {
           recordUsage(response);
           result = chatResponseToResult(response, offeredToolNames(tools));
@@ -327,6 +327,7 @@ async function collectStreamingChatResponse(
   abortSignal?: AbortSignal,
   onUsage?: (response: ChatResponse) => void,
   toolNames: string[] = [],
+  onContent?: (contentSoFar: string) => void,
 ): Promise<ChatResult> {
   let content = '';
   let thinking = '';
@@ -343,7 +344,11 @@ async function collectStreamingChatResponse(
       if (abortSignal?.aborted) throw new Error('aborted');
       if (chunk.done) onUsage?.(chunk);
       if (chunk.message?.role) role = chunk.message.role;
-      content += chunk.message?.content ?? '';
+      const piece = chunk.message?.content ?? '';
+      content += piece;
+      if (piece && onContent) {
+        try { onContent(content); } catch { /* a preview must never break the call */ }
+      }
       // Thinking models (e.g. glm-5.2:cloud) stream their reasoning in a
       // separate `thinking` field and only later emit the answer in
       // `content`. Capture it so a response that ends up with empty content

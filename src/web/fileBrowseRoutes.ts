@@ -2,6 +2,7 @@ import express from 'express';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { searchProjectFiles } from './fileMentions';
 
 export interface FileBrowseRoutesDeps {
   projectDir: string;
@@ -12,11 +13,20 @@ export function createFileBrowseRouter(deps: FileBrowseRoutesDeps): express.Rout
   const { projectDir } = deps;
 
   function resolveProjectPath(value: string): string | null {
-    const resolved = path.resolve(value);
+    const resolved = path.resolve(projectDir, value);
     const relative = path.relative(projectDir, resolved);
     if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
     return resolved;
   }
+
+  router.get('/api/files/search', async (req, res) => {
+    const query = typeof req.query.q === 'string' ? req.query.q.slice(0, 200) : '';
+    try {
+      res.json({ files: await searchProjectFiles(projectDir, query) });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
 
   router.get('/api/files', async (req, res) => {
     const dir = resolveProjectPath((req.query.path as string) || projectDir);

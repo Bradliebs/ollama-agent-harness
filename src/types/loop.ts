@@ -121,6 +121,13 @@ export interface LoopConfig {
    */
   inactivityTimeoutMs?: number;
   /**
+   * Emit `text_delta` events with the reply as it is generated (a live
+   * preview). The `text` event that follows is still the authoritative answer,
+   * after verification and validation, and replaces the preview. Off by
+   * default; tool-call-as-text model modes never preview.
+   */
+  streamText?: boolean;
+  /**
    * Terminate the loop early when the agent runs `unproductiveTurnLimit`
    * consecutive turns without invoking a file-mutating tool
    * (file_write / file_edit). Prevents runaway sessions where the model
@@ -261,11 +268,25 @@ export type LoopEvent =
   | GovernedShadowEvent
   | SupervisorEvent
   | ModelEscalatedEvent
-  | BudgetExceededEvent;
+  | BudgetExceededEvent
+  | TextDeltaEvent;
 
 export interface TextEvent {
   type: 'text';
   content: string;
+}
+
+/**
+ * Live preview of the model call in progress (LoopConfig.streamText). Append
+ * `content` to the preview for `turn`; `reset` means start the preview over
+ * (the call was retried). A later `text` event replaces the preview, and a
+ * preview followed by tool calls instead of text should be dropped.
+ */
+export interface TextDeltaEvent {
+  type: 'text_delta';
+  turn: number;
+  content: string;
+  reset?: boolean;
 }
 
 export interface OutputValidationEvent {

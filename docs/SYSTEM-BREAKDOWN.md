@@ -545,6 +545,7 @@ from the request body; set them yourself only when running
 | `HARNESS_TOOL_COMPRESSION_ENABLED` | on | Compress large tool results before they enter history |
 | `HARNESS_TOOL_COMPRESSION_MAX_CHARS` | built-in | Character cap used by that compression |
 | `HARNESS_CHAT_MYCELIUM_SHORTLIST` | off | Use the Mycelium router's tool shortlist for web chat |
+| `HARNESS_STREAM_TEXT` | on | Web chat shows the reply live as it is generated (`text_delta` previews, replaced by the final checked `text`) when the request sets `streamText: true`, as the web UI does; `0` turns it off for everyone |
 
 ### Verification and learning
 

@@ -4326,6 +4326,131 @@ describe('web server API validation', () => {
     }
   });
 
+  it('applies "Approve all edits" to the waiting run and later chat runs without changing the saved mode', async () => {
+    await request('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ permissionMode: 'default' }) });
+    const modes: string[] = [];
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: (mode) => {
+        let engineMode: string = mode;
+        modes.push(mode);
+        return {
+          evaluate: () => (engineMode === 'acceptEdits' ? { decision: 'allow', reason: 'accept edits' } : { decision: 'ask', reason: 'Mode: default' }),
+          setMode: (next: string) => { engineMode = next; },
+        } as never;
+      },
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('accept-edits-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (_config, deps): AsyncGenerator<LoopEvent> {
+        const edit = { name: 'file_edit', input: { path: 'notes.md', old_string: 'a', new_string: 'b' } };
+        const command = await deps.permissionCheck?.({ name: 'bash', input: { command: 'echo hi' } });
+        const first = await deps.permissionCheck?.(edit);
+        const second = await deps.permissionCheck?.(edit);
+        yield { type: 'text', content: JSON.stringify({ command, first, second }) };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const chat = request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'edit the notes', model: 'test-model' }),
+      });
+      const answerNextPrompt = async (): Promise<string> => {
+        let prompt: { id: string; call: { name: string } } | undefined;
+        for (let i = 0; i < 100 && !prompt; i++) {
+          const pending = await (await request('/api/permissions/pending')).json() as { prompts: Array<{ id: string; call: { name: string } }> };
+          prompt = pending.prompts[0];
+          if (!prompt) await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(prompt).toBeDefined();
+        const resolved = await request(`/api/permissions/${prompt!.id}/resolve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ allowed: true, acceptEdits: true }),
+        });
+        expect(resolved.status).toBe(200);
+        return prompt!.call.name;
+      };
+      // acceptEdits on a command prompt is ignored: the first edit still asks.
+      expect(await answerNextPrompt()).toBe('bash');
+      expect(await answerNextPrompt()).toBe('file_edit');
+      const body = await (await chat).text();
+      // The second edit in the same run no longer asks.
+      expect(body).toContain('accept edits');
+      expect((await request('/api/permissions/pending').then((r) => r.json()) as { prompts: unknown[] }).prompts).toEqual([]);
+
+      // Later messages in that chat send acceptEdits; others don't.
+      await (await request('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'more edits', model: 'test-model', acceptEdits: true }) })).text();
+      expect(modes).toEqual(['default', 'acceptEdits']);
+      const settings = await (await request('/api/settings')).json() as { permissionMode: string };
+      expect(settings.permissionMode).toBe('default');
+    } finally {
+      restore();
+    }
+  });
+
+  it('runs /plan messages read-only with the plan instruction', async () => {
+    let seen: { tools: string[]; denied?: { allowed: boolean; reason?: string }; prompt: string; taskContract?: unknown; streamText?: boolean } | null = null;
+    const tool = (name: string, isReadOnly: boolean) => ({ name, description: name, parameters: { type: 'object', properties: {} }, isReadOnly, execute: jest.fn() });
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [tool('file_read', true), tool('add_workspace_path', true), tool('file_write', false), tool('bash', false)] as never,
+      createPermissionEngine: () => ({ evaluate: () => ({ decision: 'allow', reason: 'ok' }), setMode: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('plan-mode-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (config, deps): AsyncGenerator<LoopEvent> {
+        const denied = await deps.permissionCheck?.({ name: 'file_write', input: { path: 'a.ts', content: 'x' } });
+        seen = { tools: deps.tools.map((t) => t.name), denied, prompt: config.systemPrompt, taskContract: config.taskContract, streamText: config.streamText };
+        yield { type: 'text', content: '1. Do the thing.' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      const response = await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'fix the failing login test in src/auth.ts', model: 'test-model', planOnly: true }),
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(seen).not.toBeNull();
+      expect(seen!.tools).toEqual(['file_read']);
+      expect(seen!.denied).toMatchObject({ allowed: false, reason: expect.stringContaining('Plan mode is read-only') });
+      expect(seen!.prompt).toContain('--- Plan mode ---');
+      expect(seen!.taskContract).toBeUndefined();
+      // Live previews only for clients that ask (the web UI sends streamText: true).
+      expect(seen!.streamText).toBe(false);
+    } finally {
+      restore();
+    }
+  });
+
   it('lets dontAsk bypass nervous verification gates for write tools', async () => {
     await request('/api/settings', {
       method: 'POST',

@@ -46,7 +46,7 @@ import { createRunRouter } from './runRoutes';
 import { createGitCheckpoint, deleteGitCheckpoint } from '../persistence/gitCheckpoint';
 import { isCapabilityProfileFresh, listCapabilityProfiles, loadCapabilityProfile, type CapabilityProfile } from '../models/capabilityProfile';
 import { rankToolsByRelevance, resolveScaffoldLevel, scaffoldFor, selectRelevantTools } from '../core/scaffolding';
-import { planInitialToolsForConversation, resolveToolLoadingMode, shouldDeferTools } from '../core/toolLoading';
+import { TOOL_SEARCH_NAME, planInitialToolsForConversation, resolveToolLoadingMode, shouldDeferTools } from '../core/toolLoading';
 import { compileModelRequestPlan } from '../models/adapter';
 import { DEFAULT_CONTEXT_MAX_TOKENS, isAutoContextMode, resolveEffectiveContextMaxTokensFromKnown } from '../models/contextWindow';
 import { probeContextWindow } from '../models/probes/usableContext';
@@ -88,6 +88,8 @@ import { createReviewQueueRouter } from './reviewQueueRoutes';
 import { createBrowserHardeningRouter } from './browserHardeningRoutes';
 import { createAgentRouter } from './agentRoutes';
 import { createFileBrowseRouter } from './fileBrowseRoutes';
+import { buildMentionedFilesBlock } from './fileMentions';
+import { redact } from '../safety/secretRedactor';
 import { createAssetRouter } from './assetRoutes';
 import { createNervousRouter } from './nervousRoutes';
 import { createSynthesisStatsRouter } from './synthesisStatsRoutes';
@@ -111,7 +113,7 @@ import { createOutputValidationRouter } from './outputValidationRoutes';
 import { createCapabilityRouter } from './capabilityRoutes';
 import { createJarvisRouter } from './jarvisRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
-import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectReadPath, resolveToolMutationTarget, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
+import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectPath, resolveProjectReadPath, resolveToolMutationTarget, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { setSkillsDir, setLowerSkillTiers } from '../tools/skillTools';
 import { setImportSkillsDir } from '../tools/skillImportTool';
@@ -119,7 +121,7 @@ import { setInstallSkillsDir } from '../tools/skillInstallTool';
 import { setRagRuntime } from '../tools/ragTools';
 import { setCuratorToolRuntime } from '../tools/curatorTools';
 import { PermissionEngine } from '../permissions/engine';
-import { PermissionPromptBroker } from '../permissions/promptBroker';
+import { PermissionPromptBroker, type PermissionPromptResult } from '../permissions/promptBroker';
 import { KillSwitch } from '../permissions/killSwitch';
 import { SandboxSwitch } from '../permissions/sandboxSwitch';
 import { setSandboxStateProvider } from '../tools/sandboxGuards';
@@ -4824,7 +4826,7 @@ app.post('/api/permissions/:id/resolve', (req, res) => {
     if (!promptId) { res.status(400).json({ error: 'Invalid permission prompt id.' }); return; }
     const allowed = Boolean(req.body?.allowed);
     const pendingBefore = permissionPrompts.list().find((p) => p.id === promptId);
-    const resolved = permissionPrompts.resolve(promptId, allowed, req.body?.reason?.toString());
+    const resolved = permissionPrompts.resolve(promptId, allowed, req.body?.reason?.toString(), { acceptEdits: req.body?.acceptEdits === true });
     if (!resolved) { res.status(404).json({ error: 'Permission prompt not found.' }); return; }
     runtimeTracer.recordEvent('permission.prompt_resolved', { promptId, allowed });
     // Jarvis: feed outcome into the trust ladder so it learns over time.
@@ -4836,6 +4838,13 @@ app.post('/api/permissions/:id/resolve', (req, res) => {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });
+
+const PLAN_MODE_NOTE = [
+  '--- Plan mode ---',
+  'The user wants a plan before anything is changed. Only read-only tools are available: read files, search and list as needed to understand the code.',
+  'Then reply with: what you found (briefly); a numbered, step-by-step plan that names the files to change and how; and any risks or questions for the user.',
+  'Do not change anything and do not claim to have done any of it. The user will approve the plan, and it will be carried out after that.',
+].join('\n');
 
 const PERMISSION_RECOVERY_SMOKE_MESSAGE = 'trigger permission recovery smoke';
 
@@ -5165,7 +5174,10 @@ app.post('/api/chat', async (req, res) => {
     }
   }
 
-  const skipValidationThisTurn = req.body?.skipValidation === true;
+  // Plan mode (/plan): read-only tools, and the reply is a plan to approve, so
+  // nothing is changed and output validation doesn't grade it as an answer.
+  const planOnly = req.body?.planOnly === true;
+  const skipValidationThisTurn = req.body?.skipValidation === true || planOnly;
   if (process.env.NODE_ENV !== 'test' && !rateLimiter.tryConsume()) {
     res.status(429).json({ error: 'Too many requests. Please slow down.' });
     return;
@@ -5206,11 +5218,22 @@ app.post('/api/chat', async (req, res) => {
   const activeContextMaxTokens = await resolveContextMaxTokens(activeModel);
   const stashedModeClassification = (req as any).__modeClassification as { mode: HarnessMode } | undefined;
   const activeOutputValidation = skipValidationThisTurn
-    ? { ...outputValidation, enabled: false, selectionSource: 'manual-selected' as const, selectionReason: 'Validation skipped for this turn by user request.' }
+    ? { ...outputValidation, enabled: false, selectionSource: 'manual-selected' as const, selectionReason: planOnly ? 'Plan mode: the reply is a plan, not an answer to validate.' : 'Validation skipped for this turn by user request.' }
     : effectiveOutputValidationForMessage(message, stashedModeClassification?.mode);
   const client = webRuntime.createClient(activeModel, ollamaHost, activeContextMaxTokens);
   let tools = webRuntime.getTools();
-  const permissions = webRuntime.createPermissionEngine(permissionMode);
+  // add_workspace_path is flagged read-only but grants access to more folders.
+  if (planOnly) tools = tools.filter((tool) => tool.isReadOnly && tool.name !== 'add_workspace_path');
+  const planModeTools = planOnly ? new Set([...tools.map((tool) => tool.name), TOOL_SEARCH_NAME]) : null;
+  // "Approve all edits" in this chat (sent back as acceptEdits) lifts Default to
+  // Accept edits for this chat's runs only; the saved Safety mode is unchanged.
+  const permissions = webRuntime.createPermissionEngine(permissionMode === 'default' && req.body?.acceptEdits === true ? 'acceptEdits' : permissionMode);
+  const askUser = async (call: Parameters<typeof permissionPrompts.request>[0], reason?: string): Promise<PermissionPromptResult> => {
+    const answer = await permissionPrompts.request(call, reason);
+    // Only an edit prompt can turn this on (the UI offers it only there).
+    if (answer.allowed && answer.acceptEdits && permissionMode === 'default' && (call.name === 'file_write' || call.name === 'file_edit')) permissions.setMode('acceptEdits');
+    return answer;
+  };
   const projectDir = PROJECT_DIR;
 
   // In dontAsk mode, auto-grant all gated capabilities for full autonomy
@@ -5284,6 +5307,9 @@ app.post('/api/chat', async (req, res) => {
     : { static: await webRuntime.assembleSystemContext(systemContextInput), perMessage: '' };
   const baseSystemPrompt = systemContextSections.static;
   const attachmentsBlock = await buildAttachmentsContextBlock(req.body?.attachments);
+  // Files the user mentioned as @path go in with the message (up to a quarter of the window).
+  const mentionedFiles = messageText ? await buildMentionedFilesBlock(messageText, { projectDir: PROJECT_DIR, resolvePath: (value) => resolveProjectPath(value), maxTotalChars: Math.min(48_000, Math.floor(activeContextMaxTokens * 4 * 0.25)) }) : null;
+  const mentionedFilesBlock = mentionedFiles?.block ?? null;
   const explicitSkill = messageText ? await loadExplicitSkillContext(messageText) : { context: '' };
 
   // Mycelium routing: grow adaptive context from the message
@@ -5473,16 +5499,17 @@ CONTEXT HYGIENE (critical for long tasks):
     }
   } catch (err) { recordSwallowed('skillGapNote', err); }
 
-  const perMessageBlocks = [attachmentsBlock, explicitSkill.context, myceliumContext, nervousContext, recentAuditBlock, squadNote, conciergeNote, skillGapNote];
+  const planModeNote = planOnly ? PLAN_MODE_NOTE : '';
+  const perMessageBlocks = [planModeNote, attachmentsBlock, mentionedFilesBlock, explicitSkill.context, myceliumContext, nervousContext, recentAuditBlock, squadNote, conciergeNote, skillGapNote];
   const systemPrompt = cacheLayout
     ? [baseSystemPrompt, identityBlock, codeIntelContext, toolSynthesisNudge].filter(Boolean).join('\n\n')
-    : [baseSystemPrompt, identityBlock, attachmentsBlock, explicitSkill.context, myceliumContext, codeIntelContext, nervousContext, recentAuditBlock, squadNote, conciergeNote, skillGapNote, toolSynthesisNudge].filter(Boolean).join('\n\n');
+    : [baseSystemPrompt, identityBlock, planModeNote, attachmentsBlock, mentionedFilesBlock, explicitSkill.context, myceliumContext, codeIntelContext, nervousContext, recentAuditBlock, squadNote, conciergeNote, skillGapNote, toolSynthesisNudge].filter(Boolean).join('\n\n');
   const turnContextBlocks = cacheLayout ? [systemContextSections.perMessage.trim(), ...perMessageBlocks].filter(Boolean) : [];
 
   const synthesisStats = await loadSynthesisStats(PROJECT_DIR);
   const effectiveMaxTurns = adaptiveMaxTurns(synthesisStats, activeModel, 25);
   const chatTaskContract = messageText ? buildTaskContract(messageText) : undefined;
-  const requiresExecutionProof = chatTaskContract?.mode === 'code_edit' || chatTaskContract?.mode === 'debug';
+  const requiresExecutionProof = !planOnly && (chatTaskContract?.mode === 'code_edit' || chatTaskContract?.mode === 'debug');
 
   // Wall-clock budget: local Ollama models are slow per-turn so a generous
   // turn budget hammers the GPU. Cloud APIs are fast so they can afford
@@ -5506,6 +5533,9 @@ CONTEXT HYGIENE (critical for long tasks):
       : effectiveMaxTurns,
     maxTimeMs: effectiveTimeBudgetMs,
     abortSignal: abortController.signal,
+    // Live reply preview (text_delta events) for clients that ask for it (the web
+    // UI); HARNESS_STREAM_TEXT=0 turns it off for everyone.
+    streamText: req.body?.streamText === true && process.env.HARNESS_STREAM_TEXT !== '0',
     ...(requiresExecutionProof ? {
       taskContract: chatTaskContract,
       verify: { enabled: true, quick: false, timeout: 60_000 },
@@ -5606,6 +5636,9 @@ CONTEXT HYGIENE (critical for long tasks):
     client,
     tools,
     permissionCheck: async (call) => {
+      if (planModeTools && !planModeTools.has(call.name)) {
+        return { allowed: false, reason: `Plan mode is read-only: '${call.name}' can't run. Put this step in the plan instead.` };
+      }
       // Browser page tools require an active browser-page-access grant
       const BROWSER_PAGE_TOOLS = new Set(['browser_navigate', 'browser_click', 'browser_fill', 'browser_read', 'browser_screenshot', 'browser_close']);
       if (BROWSER_PAGE_TOOLS.has(call.name)) {
@@ -5636,7 +5669,7 @@ CONTEXT HYGIENE (critical for long tasks):
           return { allowed: true, reason: `Nervous System verification bypassed for '${call.name}' in auto-approve mode: ${motor.reason}` };
         }
         runtimeTracer.recordEvent('permission.prompt_created', { tool: call.name, reason: motor.reason, source: 'nervous.verification' });
-        return permissionPrompts.request(call, `Nervous System requires verification: ${motor.reason}`);
+        return askUser(call, `Nervous System requires verification: ${motor.reason}`);
       }
       if (motor.decision === 'REQUIRE_CONFIRMATION') {
         if (shouldBypassNervousVerification()) {
@@ -5647,7 +5680,7 @@ CONTEXT HYGIENE (critical for long tasks):
           return { allowed: false, reason: `Nervous System requires confirmation for '${call.name}' while permission mode is dontAsk: ${motor.reason}` };
         }
         runtimeTracer.recordEvent('permission.prompt_created', { tool: call.name, reason: motor.reason, source: 'nervous.motor' });
-        return permissionPrompts.request(call, `Nervous System requires confirmation: ${motor.reason}`);
+        return askUser(call, `Nervous System requires confirmation: ${motor.reason}`);
       }
       const result = permissions.evaluate(call);
       if (result.decision === 'allow') {
@@ -5657,7 +5690,7 @@ CONTEXT HYGIENE (critical for long tasks):
         return { allowed: false, reason: result.reason };
       }
       runtimeTracer.recordEvent('permission.prompt_created', { tool: call.name, reason: result.reason });
-      return permissionPrompts.request(call, result.reason);
+      return askUser(call, result.reason);
     },
     hooks: hookPipeline,
     session,
@@ -5706,8 +5739,14 @@ CONTEXT HYGIENE (critical for long tasks):
   for (const item of rawHistory) {
     const role = item && (item.role === 'assistant' || item.role === 'user') ? item.role : null;
     if (!role) continue;
-    const content = typeof item.content === 'string' ? item.content.slice(0, 200_000) : '';
+    let content = typeof item.content === 'string' ? item.content.slice(0, 200_000) : '';
     if (!content) continue;
+    // The UI sends a one-line summary of the tools a past reply used, so a
+    // follow-up ("now fix the other test") knows which files were read and
+    // edited and which commands failed, without replaying whole transcripts.
+    if (role === 'assistant' && typeof item.activity === 'string' && item.activity.trim()) {
+      content += `\n\n[Tools used in that reply: ${redact(item.activity.trim().slice(0, 600))}]`;
+    }
     sanitizedHistory.push({ role, content });
   }
   // History gets what is left of the window after the system prompt, the tool
@@ -5780,6 +5819,9 @@ CONTEXT HYGIENE (critical for long tasks):
         await createGitCheckpoint(PROJECT_DIR, deps.runLog.runId).catch((err) => recordSwallowed('runLog.gitCheckpoint', err));
       }
       res.write(`data: ${JSON.stringify({ type: 'run', runId: deps.runLog.runId })}\n\n`);
+    }
+    if (mentionedFiles && (mentionedFiles.included.length > 0 || mentionedFiles.notFound.length > 0)) {
+      res.write(`data: ${JSON.stringify({ type: 'mentioned_files', included: mentionedFiles.included, notFound: mentionedFiles.notFound })}\n\n`);
     }
     const seenFallbackKeys = new Set<string>();
     let suppressedFallbacks = 0;

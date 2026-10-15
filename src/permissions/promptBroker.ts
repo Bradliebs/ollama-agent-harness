@@ -16,8 +16,15 @@ export interface PendingPermissionPrompt {
   classification?: CommandClassification;
 }
 
+/** The user's answer. `acceptEdits` means "approve file edits for the rest of this chat". */
+export interface PermissionPromptResult {
+  allowed: boolean;
+  reason?: string;
+  acceptEdits?: boolean;
+}
+
 interface PendingPromptState extends PendingPermissionPrompt {
-  resolve: (result: { allowed: boolean; reason?: string }) => void;
+  resolve: (result: PermissionPromptResult) => void;
   timer: NodeJS.Timeout;
 }
 
@@ -53,7 +60,7 @@ export class PermissionPromptBroker {
     this.classifierDeps = deps;
   }
 
-  request(call: ToolCall, reason?: string): Promise<{ allowed: boolean; reason?: string }> {
+  request(call: ToolCall, reason?: string): Promise<PermissionPromptResult> {
     const id = createPromptId();
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
@@ -85,12 +92,12 @@ export class PermissionPromptBroker {
     return Array.from(this.pending.values()).map(({ resolve: _resolve, timer: _timer, ...prompt }) => prompt);
   }
 
-  resolve(id: string, allowed: boolean, reason?: string): boolean {
+  resolve(id: string, allowed: boolean, reason?: string, options: { acceptEdits?: boolean } = {}): boolean {
     const prompt = this.pending.get(id);
     if (!prompt) return false;
     clearTimeout(prompt.timer);
     this.pending.delete(id);
-    prompt.resolve({ allowed, reason: reason ?? (allowed ? 'Approved by user' : 'Denied by user') });
+    prompt.resolve({ allowed, reason: reason ?? (allowed ? 'Approved by user' : 'Denied by user'), ...(allowed && options.acceptEdits ? { acceptEdits: true } : {}) });
     return true;
   }
 

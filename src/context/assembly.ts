@@ -97,16 +97,31 @@ export async function assembleSystemContextSections(config: ContextConfig): Prom
   const skillListMaxItems = Math.max(5, Math.floor(SKILL_LIST_MAX_ITEMS * scale));
   const recallMaxChars = Math.floor(RECALL_SECTIONS_COMBINED_MAX_CHARS * scale);
 
-  // Append project memory files (CLAUDE.md equivalent)
+  // Project instruction files. HARNESS.md is this harness's own; AGENTS.md
+  // is the cross-tool convention (read by Codex, Copilot and Cursor, among
+  // others), and CLAUDE.md is read too because many repos keep their
+  // instructions there. Identical copies (symlinked files) are included once,
+  // and together the instruction files share twice the single-file cap;
+  // forge-memory/patterns.md keeps its own allowance.
+  const instructionPaths = ['HARNESS.md', 'AGENTS.md', 'CLAUDE.md'].map((name) => path.join(config.projectDir, name));
   const memoryPaths = config.memoryFiles ?? [
-    path.join(config.projectDir, 'HARNESS.md'),
+    ...instructionPaths,
     path.join(config.projectDir, 'forge-memory', 'patterns.md'),
   ];
 
+  let instructionBudget = projectMemoryMaxChars * 2;
+  const seenInstructions = new Set<string>();
   for (const filePath of memoryPaths) {
+    const isInstruction = instructionPaths.includes(filePath);
+    if (isInstruction && instructionBudget <= 0) continue;
     try {
       const content = await fs.readFile(filePath, 'utf-8');
-      parts.push(`\n--- ${path.basename(filePath)} ---\n${trimContextText(content, projectMemoryMaxChars, 'middle')}`);
+      const key = content.trim();
+      if (!key || seenInstructions.has(key)) continue;
+      seenInstructions.add(key);
+      const included = trimContextText(content, isInstruction ? Math.min(projectMemoryMaxChars, instructionBudget) : projectMemoryMaxChars, 'middle');
+      if (isInstruction) instructionBudget -= included.length;
+      parts.push(`\n--- ${path.basename(filePath)} ---\n${included}`);
     } catch (err) { recordSwallowed('assembly.readMemoryFile', err); }
   }
 

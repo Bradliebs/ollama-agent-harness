@@ -1186,7 +1186,35 @@
     @container main (max-width:1100px){.logo .logo-word{max-width:0;opacity:0;overflow:hidden}.new-chat-btn .new-chat-label{max-width:0;opacity:0;overflow:hidden}.new-chat-btn{width:34px;padding:0;gap:0}}
     /* Six left-panel tabs share 300px: tighter padding so more labels fit. */
     .tab{padding-left:2px;padding-right:2px}
-    .tab-label{letter-spacing:0}    /* Persona/identity badge: meet the 24px web target size. */
+    .tab-label{letter-spacing:0}    /* Chat: jump back to new output after scrolling up mid-reply. */
+    .input-area{position:relative}
+    .jump-latest-btn{position:absolute;left:50%;top:-44px;transform:translateX(-50%);z-index:20;padding:7px 14px;border-radius:999px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:13px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.25)}
+    .jump-latest-btn:hover{border-color:var(--accent)}
+    .jump-latest-btn[hidden]{display:none}
+    /* Message typed while a reply streams: shown above the composer until sent. */
+    .queued-followup{max-width:800px;margin:0 auto 8px;display:flex;align-items:center;gap:8px;padding:6px 10px;border-left:3px solid var(--accent);background:var(--surface2);border-radius:6px;font-size:12px;color:var(--text-dim)}
+    .queued-followup-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+    /* Approval cards: show the change itself (diff, command, recipient). */
+    .permission-body{flex:1;min-width:0}
+    .permission-path{font-family:'Cascadia Code','Fira Code',monospace;font-size:12px;color:var(--text);margin-bottom:4px;word-break:break-all}
+    .permission-meta{font-size:12px;color:var(--text-dim);margin:2px 0 4px}
+    .permission-command{max-height:200px;overflow:auto;white-space:pre-wrap;word-break:break-word;background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:6px 8px;font-size:12px;color:var(--text);margin:0}
+    .permission-card .diff-block{max-height:260px;overflow:auto}
+    .permission-actions{flex-wrap:wrap;justify-content:flex-end}
+    @media (max-width:700px){.permission-card{flex-direction:column}.permission-actions{justify-content:stretch}}
+    /* Editing a sent message in place. */
+    .msg-edit-box{width:100%;min-height:72px;padding:8px 10px;background:var(--surface2);color:var(--text);border:1px solid var(--accent);border-radius:var(--rs);font:inherit;font-size:14px;resize:vertical}
+    .msg-edit-actions{display:flex;gap:6px;margin-top:6px;justify-content:flex-end}
+    .msg.user .msg-actions{margin-top:4px}
+    /* Syntax highlighting (codeHighlight.js); >= 4.5:1 on the code background in both themes. */
+    .hl-k{color:#c792ea}.hl-s{color:#c3e88d}.hl-n{color:#f78c6c}.hl-c{color:#8f96a1;font-style:italic}.hl-l{color:#82aaff}.hl-t{color:#f07178}.hl-a{color:#ffcb6b}.hl-h{color:#89ddff}.hl-add{color:#7ee787}.hl-del{color:#ff7b72}
+    .light .hl-k{color:#7b30d0}.light .hl-s{color:#1b6e20}.light .hl-n{color:#b5480f}.light .hl-c{color:#5f6670}.light .hl-l{color:#0b5cad}.light .hl-t{color:#b3261e}.light .hl-a{color:#8a5a00}.light .hl-h{color:#0b5cad}.light .hl-add{color:#17702f}.light .hl-del{color:#b42318}
+    /* Live reply preview: a caret while the model is still writing. */
+    .thinking[hidden]{display:none}
+    .msg.streaming .msg-content > :last-child::after,.msg.streaming .msg-content:empty::after{content:'▍';margin-left:2px;color:var(--accent);animation:streamCaret 1s steps(2,start) infinite}
+    @keyframes streamCaret{to{visibility:hidden}}
+    @media (prefers-reduced-motion:reduce){.msg.streaming .msg-content > :last-child::after{animation:none}}
+    /* Persona/identity badge: meet the 24px web target size. */
     .identity-health-badge{min-height:24px;display:inline-flex;align-items:center}
     /* Phones: message box and Send on the first row, attach tools below, so
        the text field gets the full width. */
@@ -1499,6 +1527,7 @@
     </div>
 
     <div class="input-area">
+      <button type="button" id="jumpToLatestBtn" class="jump-latest-btn" hidden onclick="scrollBottom(true)">↓ Jump to latest</button>
       <div id="activeSubagentsBar" class="active-subagents-bar"></div>
       <div id="attachedFiles" class="attached-files"></div>
       <div id="attachmentHint" class="attachment-hint">Attach text, data, image, or audio files. Harness will show what the selected model is likely to understand.</div>
@@ -2577,7 +2606,8 @@
   </div>
 
 <script src="./marked.min.js"></script>
-<script src="./chatHistory.js?v=3"></script>
+<script src="./codeHighlight.js?v=2"></script>
+<script src="./chatHistory.js?v=4"></script>
 <script src="./toolActivity.js?v=1"></script>
 <script src="./execMetrics.js?v=1"></script>
 <script src="./followUps.js?v=1"></script>
@@ -2594,6 +2624,6 @@
 <script src="./healthMyceliumPanel.js?v=1"></script>
 <script src="./promisesEventsPanels.js?v=1"></script>
 <script src="./codeIntelPanel.js?v=1"></script>
-<script src="./app.js?v=40"></script>
+<script src="./app.js?v=47"></script>
 </body>
 </html>

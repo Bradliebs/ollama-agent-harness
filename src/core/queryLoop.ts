@@ -43,6 +43,7 @@ import { META_TOOLS } from '../permissions/engine';
 import { resolveLoopHardeningEnabled } from './iterationBudget';
 import { sanitizeMessages } from './messageSanitization';
 import { withTimeout, InactivityTimeoutError } from './rollingTimeout';
+import { createTextPreview } from './textPreview';
 import {
   createConsecutiveCallTracker,
   createDuplicateResultTracker,
@@ -672,12 +673,19 @@ async function* queryLoopCore(
       const requestMessages = renderedState ? placeWorkingState(outboundMessages, renderedState, statePosition) : outboundMessages;
       runLog?.append('model_request', { turn, model: activeModel, messageCount: outboundMessages.length, tools: chatTools.map((schema) => schema.function?.name), prefixHash: requestPrefixHash(requestMessages, chatTools), ...(modelPlan ? { toolMode: modelPlan.toolMode } : {}), ...(chatOptions ? { format: chatOptions.format } : {}), ...(renderedState ? { workingState: renderedState, ...(statePosition === 'tail' ? { workingStatePosition: 'tail' } : {}) } : {}) }, currentTurnStep);
       const modelCallStarted = Date.now();
-      const chatPromise = chatOptions
-        ? client.chat(requestMessages, chatTools, abortSignal, chatOptions)
+      // Live preview (streamText): not when the model writes tool calls as text.
+      const preview = config.streamText && !promptToolMode && !chatOptions?.format ? createTextPreview() : null;
+      const callOptions = preview ? { ...(chatOptions ?? {}), onContent: preview.onContent } : chatOptions;
+      const chatPromise = callOptions
+        ? client.chat(requestMessages, chatTools, abortSignal, callOptions)
         : client.chat(requestMessages, chatTools, abortSignal);
-      const result = inactivityMs > 0
-        ? await withTimeout(inactivityMs, chatPromise)
-        : await chatPromise;
+      const settled = inactivityMs > 0 ? withTimeout(inactivityMs, chatPromise) : chatPromise;
+      if (preview) {
+        for await (const delta of preview.until(settled)) {
+          yield { type: 'text_delta', turn, content: delta.content, ...(delta.reset ? { reset: true } : {}) };
+        }
+      }
+      const result = await settled;
       assistantMessage = result.message;
       if (promptToolMode && !assistantMessage.tool_calls?.length && typeof assistantMessage.content === 'string') {
         const lifted = parseConstrainedToolCall(assistantMessage.content);

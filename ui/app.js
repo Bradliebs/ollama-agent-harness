@@ -54,6 +54,12 @@ async function ensureApiAuthReady() {
 }
 
 let isSending = false;
+// True while sendMessage awaits before setting isSending (see there).
+let sendPreparing = false;
+// A message typed and sent while a reply was still streaming; it goes out
+// when that run finishes (see queueFollowUp / flushQueuedFollowUp).
+let queuedFollowUp = null;
+let chatAcceptsEdits = false; // set by "Approve all edits"; see approvePermissionAndAcceptEdits
 let activeCodexTaskRun = null;
 // Reply-to-message state. When set, the next outbound user message is
 // prefixed with a markdown blockquote of the referenced assistant reply
@@ -657,6 +663,65 @@ function startReplyTo(messageIndex) {
   const inp = document.getElementById('chatInput');
   if (inp) inp.focus();
 }
+
+// ─── Queued follow-up ───────────────────────────────────────────────
+// Enter while a reply streams queues the message (like Claude Code) instead
+// of stopping the run. It is sent when the run finishes; if the user stops
+// the run, or switches tab, it goes back into the message box instead.
+
+function queueFollowUp() {
+  const inp = document.getElementById('chatInput');
+  const text = inp ? inp.value.trim() : '';
+  if (!text) return;
+  queuedFollowUp = { text: queuedFollowUp ? queuedFollowUp.text + '\n\n' + text : text, tabId: activeTabId };
+  inp.value = '';
+  autoSize(inp);
+  renderQueuedFollowUp();
+  announceStatus('Message queued; it will be sent when the current reply finishes');
+}
+
+function renderQueuedFollowUp() {
+  let host = document.getElementById('queuedFollowUp');
+  if (!host) {
+    const row = document.querySelector('.input-row');
+    if (!row || !row.parentNode) return;
+    host = document.createElement('div');
+    host.id = 'queuedFollowUp';
+    host.className = 'queued-followup';
+    row.parentNode.insertBefore(host, row);
+  }
+  if (!queuedFollowUp) { host.style.display = 'none'; host.innerHTML = ''; return; }
+  host.style.display = 'flex';
+  host.innerHTML = '<span class="queued-followup-label">Queued, sends when this reply finishes:</span> <em class="queued-followup-text"></em><button type="button" class="msg-action-btn" title="Move the queued message back into the message box">Edit</button><button type="button" class="msg-action-btn" title="Discard the queued message" aria-label="Discard queued message">✕</button>';
+  host.querySelector('.queued-followup-text').textContent = queuedFollowUp.text.replace(/\s+/g, ' ').slice(0, 160);
+  const [editBtn, discardBtn] = host.querySelectorAll('button');
+  editBtn.onclick = () => restoreQueuedFollowUp();
+  discardBtn.onclick = () => { queuedFollowUp = null; renderQueuedFollowUp(); };
+}
+
+function restoreQueuedFollowUp() {
+  if (!queuedFollowUp) return;
+  const inp = document.getElementById('chatInput');
+  if (inp) {
+    inp.value = inp.value.trim() ? queuedFollowUp.text + '\n\n' + inp.value : queuedFollowUp.text;
+    autoSize(inp);
+    inp.focus();
+  }
+  queuedFollowUp = null;
+  renderQueuedFollowUp();
+}
+
+function flushQueuedFollowUp(runWasStopped) {
+  if (!queuedFollowUp) return;
+  const inp = document.getElementById('chatInput');
+  // Stopped run, other tab, or the user is typing again: hand it back
+  // rather than sending something they may want to change.
+  if (!inp || runWasStopped || queuedFollowUp.tabId !== activeTabId || inp.value.trim()) { restoreQueuedFollowUp(); return; }
+  inp.value = queuedFollowUp.text;
+  queuedFollowUp = null;
+  renderQueuedFollowUp();
+  sendMessage();
+}
 function saveChatSession() {
   window.HarnessChatHistory.saveChatSession({ chatMessages, currentChatId });
 }
@@ -723,13 +788,16 @@ function _defaultSessionState(title) {
 
 function _snapshotActiveTab() {
   if (!activeTabId || !sessionTabs.has(activeTabId)) return;
+  // Close any open message edit first: its buttons wouldn't work once restored from HTML.
+  document.querySelectorAll('#chatArea .msg-edit-actions button:not(.primary)').forEach((b) => b.click());
   const tab = sessionTabs.get(activeTabId);
   tab.chatMessages = [...chatMessages]; // Deep copy — don't share by reference
   tab.currentChatId = currentChatId;
   tab.isSending = isSending;
   tab.activeChatController = activeChatController;
+  tab.acceptsEdits = chatAcceptsEdits;
   tab.sessionUsage = typeof sessionUsage !== 'undefined' ? { ...sessionUsage } : tab.sessionUsage;
-  tab.htmlSnapshot = document.getElementById('chatArea').innerHTML;
+  tab.htmlSnapshot = document.getElementById('chatArea').innerHTML.replace(/class="msg assistant streaming"/g, 'class="msg assistant"');
   tab.title = chatMessages.length > 0 ? (chatMessages[0].content || '').slice(0, 40) || 'Chat' : 'New chat';
   const modelSel = document.getElementById('modelSelect');
   if (modelSel) tab.model = modelSel.value || null;
@@ -742,6 +810,7 @@ function _restoreTab(tabId) {
   currentChatId = tab.currentChatId;
   isSending = tab.isSending;
   activeChatController = tab.activeChatController;
+  chatAcceptsEdits = Boolean(tab.acceptsEdits);
   if (typeof sessionUsage !== 'undefined') Object.assign(sessionUsage, tab.sessionUsage);
   const area = document.getElementById('chatArea');
   if (tab.htmlSnapshot !== null) {
@@ -784,6 +853,9 @@ function createSessionTab(switchTo) {
 
 function switchToTab(tabId) {
   if (tabId === activeTabId) return;
+  // A follow-up queued in the tab being left goes back in the composer
+  // instead of being sent later into whichever tab is showing.
+  if (queuedFollowUp) restoreQueuedFollowUp();
   _snapshotActiveTab();
   _restoreTab(tabId);
   // Safety: re-render DOM from chatMessages if htmlSnapshot might be stale
@@ -792,11 +864,12 @@ function switchToTab(tabId) {
   if (tab && tab.status === 'done' && tab.htmlSnapshot === null) {
     const area = document.getElementById('chatArea');
     area.innerHTML = '';
-    for (const m of chatMessages) addMsg(m.role, m.content);
+    chatMessages.forEach((m, i) => { const el = addMsg(m.role, m.content); if (m.role === 'user') attachUserEditButton(el, i); });
   }
   renderSessionTabs();
   saveChatSession();
   loadHistory();
+  scrollBottom(true);
 }
 
 function closeSessionTab(tabId) {
@@ -4694,6 +4767,13 @@ function handleChatPaste(event) {
 }
 
 function handleKey(e) {
+  // The @ file palette, like the slash palette, takes the navigation keys.
+  if (mentionState.visible) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); moveMentionSelection(1); return; }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); moveMentionSelection(-1); return; }
+    if ((e.key === 'Enter' && !e.shiftKey && !e.isComposing) || e.key === 'Tab') { e.preventDefault(); applyMention(); return; }
+    if (e.key === 'Escape')    { e.preventDefault(); hideMentionPalette(); return; }
+  }
   // Slash palette intercepts navigation keys when visible.
   if (slashPaletteState.visible) {
     if (e.key === 'ArrowDown') { e.preventDefault(); moveSlashSelection(1); return; }
@@ -4702,9 +4782,14 @@ function handleKey(e) {
     if (e.key === 'Escape')    { e.preventDefault(); hideSlashPalette(); return; }
     if (e.key === 'Tab')       { e.preventDefault(); applySelectedSlashCommand(); return; }
   }
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
-  // Ctrl+Enter: alternative send
-  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendMessage(); }
+  // Enter sends (Ctrl/Cmd+Enter too); Shift+Enter is a newline. Enter that
+  // confirms an IME composition (CJK input) is not a send. While a reply
+  // streams, Enter queues the message instead of stopping the run.
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+    e.preventDefault();
+    if (isSending) queueFollowUp();
+    else sendMessage();
+  }
   // Escape: stop streaming if active
   if (e.key === 'Escape' && activeChatController) { e.preventDefault(); activeChatController.abort(); }
   // Ctrl+/: open slash commands
@@ -4720,6 +4805,7 @@ function autoSize(el) {
   // Re-evaluate slash palette every keystroke so it appears as soon as the
   // user types `/` and disappears the moment the prefix becomes invalid.
   maybeShowSlashPalette(el.value);
+  if (el.id === 'chatInput') maybeShowMentionPalette(el);
   // Plain-English requests (no slash) get a one-click feature suggestion.
   maybeShowIntentChip(el.value);
 }
@@ -4753,6 +4839,7 @@ async function sendMessage(opts) {
     const inp = document.getElementById('chatInput');
     const text = inp.value.trim();
     if (!text) return;
+    if (/^\/plan(\s|$)/i.test(text)) { showToast('/plan works with one model; turn compare off first.'); return; }
     const modelA = document.getElementById('modelSelect').value;
     const modelB = document.getElementById('compareModelSelect').value;
     if (!modelA || !modelB) { showToast('Pick a primary model AND a compare model first.'); return; }
@@ -4866,19 +4953,23 @@ async function sendMessage(opts) {
     chatMessages = chatMessages.slice(0, opts.regenerateFromIndex);
     const area = document.getElementById('chatArea');
     const allMsgs = Array.from(area.querySelectorAll('.msg, .tool-activity, .followup-chips'));
-    // Find the user message DOM node that corresponds to chat index
-    // opts.regenerateFromIndex - 1 (by its ordinal among user messages)
-    // and remove every node that follows it.
-    const targetUserOrdinal = chatMessages.filter((m) => m.role === 'user').length - 1;
-    let userMsgCount = 0;
-    let truncateAt = -1;
-    for (let i = 0; i < allMsgs.length; i++) {
-      if (allMsgs[i].classList.contains('msg') && allMsgs[i].classList.contains('user')) {
-        if (userMsgCount === targetUserOrdinal) {
-          truncateAt = i + 1;
-          break;
+    // Remove every node after the user message at chat index
+    // opts.regenerateFromIndex - 1. Its bubble carries that index; slash-command
+    // bubbles (/task, /run, ...) aren't in the history, so counting user
+    // bubbles is only the fallback for bubbles rendered without an index.
+    let truncateAt = allMsgs.findIndex((el) => el.classList.contains('user') && el.dataset.histIndex === String(opts.regenerateFromIndex - 1));
+    if (truncateAt >= 0) truncateAt += 1;
+    else {
+      const targetUserOrdinal = chatMessages.filter((m) => m.role === 'user').length - 1;
+      let userMsgCount = 0;
+      for (let i = 0; i < allMsgs.length; i++) {
+        if (allMsgs[i].classList.contains('msg') && allMsgs[i].classList.contains('user')) {
+          if (userMsgCount === targetUserOrdinal) {
+            truncateAt = i + 1;
+            break;
+          }
+          userMsgCount++;
         }
-        userMsgCount++;
       }
     }
     if (truncateAt >= 0) {
@@ -4897,8 +4988,14 @@ async function sendMessage(opts) {
     showAttached();
   }
 
-  if (!text || isSending) return;
+  if (!text || isSending || sendPreparing) return;
   if (!model) { showToast('Select a model first.'); return; }
+  // /plan <task>: read-only run that ends in a plan to approve (Run this plan).
+  // The prefix may follow a 💬 Reply quote (regenerating a quoted message).
+  const PLAN_PREFIX = /^((?:>[^\n]*\n)*\s*)\/plan(?:\s+|$)/i;
+  const planOnly = PLAN_PREFIX.test(text);
+  let requestText = planOnly ? text.replace(PLAN_PREFIX, '$1') : text;
+  if (planOnly && !requestText.replace(/^(?:>[^\n]*\n)*\s*/, '').trim()) { showToast('Type what to plan after /plan, e.g. /plan add a dark mode toggle'); return; }
   // If the user clicked 💬 Reply on an earlier assistant message, prefix
   // the outbound text with a markdown blockquote of that reply so the
   // model can resolve "this", "that error", etc. unambiguously. The
@@ -4906,19 +5003,29 @@ async function sendMessage(opts) {
   if (!isRegenerate && pendingReply && pendingReply.snippet) {
     const quoteLines = String(pendingReply.snippet).split('\n').slice(0, 6).map((l) => '> ' + l).join('\n');
     text = quoteLines + '\n\n' + text;
+    requestText = quoteLines + '\n\n' + requestText;
     pendingReply = null;
     renderPendingReplyChip();
   }
   const skipOnceEl = document.getElementById('skipValidationOnce');
   const skipValidationOnce = !!(skipOnceEl && skipOnceEl.checked);
-  if (!skipValidationOnce) await maybeSuggestOutputValidationProfile(text);
+  // isSending is only set below, after this await; block a second send
+  // (double click, key repeat) from starting meanwhile.
+  sendPreparing = true;
+  try {
+    if (!skipValidationOnce && !planOnly) await maybeSuggestOutputValidationProfile(text);
+  } finally {
+    sendPreparing = false;
+  }
   lastValidationPrompt = text;
   try { localStorage.setItem(LAST_VALIDATION_PROMPT_KEY, text.slice(0, 500)); } catch(e){}
   const welcome = document.getElementById('welcome');
   if (welcome) welcome.remove();
   if (!isRegenerate) {
-    addMsg('user', text);
+    const userEl = addMsg('user', text);
+    scrollBottom(true);
     chatMessages.push({ role: 'user', content: text });
+    attachUserEditButton(userEl, chatMessages.length - 1);
     saveChatSession();
     inp.value = '';
     inp.style.height = 'auto';
@@ -4951,6 +5058,32 @@ async function sendMessage(opts) {
   let assistantText = '';
   let msgEl = null;
   let toolBox = null;
+  // Live preview of the model call in progress (text_delta). The final text
+  // event replaces it; tool calls instead of an answer drop it.
+  let draftText = '';
+  let draftTurn = null;
+  let draftFrame = 0;
+  // Previews re-render the whole message, so at most once per frame.
+  const renderDraftSoon = () => {
+    if (draftFrame) return;
+    draftFrame = requestAnimationFrame(() => {
+      draftFrame = 0;
+      if (!draftText || !msgEl) return;
+      renderMd(msgEl.querySelector('.msg-content'), assistantText + draftText, { preview: true });
+      scrollBottom();
+    });
+  };
+  const cancelDraftRender = () => { if (draftFrame) { cancelAnimationFrame(draftFrame); draftFrame = 0; } };
+  const clearDraft = () => {
+    cancelDraftRender();
+    if (!draftText && !(msgEl && msgEl.classList.contains('streaming'))) return;
+    draftText = '';
+    thinkEl.hidden = false;
+    if (!msgEl) return;
+    msgEl.classList.remove('streaming');
+    if (assistantText) renderMd(msgEl.querySelector('.msg-content'), assistantText, { preview: true });
+    else { msgEl.remove(); msgEl = null; }
+  };
   let evidenceCard = null;
   let toolOnlyResultCount = 0;
   let toolOnlyFailureCount = 0;
@@ -4965,6 +5098,16 @@ async function sendMessage(opts) {
   let responseStopped = false;
   const clientEvidenceTools = [];
   const clientEvidenceCommands = [];
+  // For undo and for the history summary: the run id, the files this reply
+  // changed, and a short line per tool call.
+  let turnRunId = null;
+  const turnFileChanges = [];
+  const turnActivity = [];
+  const replyExtras = () => ({
+    ...(turnRunId ? { runId: turnRunId } : {}),
+    ...(turnFileChanges.length ? { fileChanges: [...new Set(turnFileChanges)] } : {}),
+    ...(turnActivity.length ? { activity: summarizeTurnActivity(turnActivity) } : {}),
+  });
   const updateTokRate = () => {
     if (!thinkEl.parentNode) return;
     const elapsedSec = (Date.now() - streamStartedAt) / 1000;
@@ -4976,7 +5119,7 @@ async function sendMessage(opts) {
   };
   tokRateTimer = setInterval(updateTokRate, 250);
   try {
-    const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text, model, skipValidation: skipValidationOnce, history: outboundChatHistory(), attachments: attachmentsForTurn }), signal: activeChatController.signal });
+    const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: requestText, model, skipValidation: skipValidationOnce, history: outboundChatHistory(), attachments: attachmentsForTurn, acceptEdits: chatAcceptsEdits, streamText: true, ...(planOnly ? { planOnly: true } : {}) }), signal: activeChatController.signal });
     if (!res.ok) throw new Error('Chat request failed (HTTP ' + res.status + '). Check provider settings and retry.');
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -5014,7 +5157,33 @@ async function sendMessage(opts) {
           updateThinkingStatus(thinkEl, label);
         }
         switch (ev.type) {
+          case 'run':
+            if (typeof ev.runId === 'string') turnRunId = ev.runId;
+            break;
+          case 'mentioned_files':
+            toolBox = ensureToolBox(toolBox);
+            if (Array.isArray(ev.included) && ev.included.length) {
+              appendToolItem(toolBox, '📎', 'files included', ev.included.map((f) => String(f.path) + (f.truncated ? ' (start only)' : '')).join(', '), false);
+            }
+            if (Array.isArray(ev.notFound) && ev.notFound.length) {
+              appendToolItem(toolBox, '⚠️', 'not included', ev.notFound.map(String).join(', ') + ' — not found or not allowed', false);
+            }
+            break;
+          case 'text_delta':
+            if (ev.reset || ev.turn !== draftTurn) draftText = '';
+            draftTurn = ev.turn;
+            draftText += typeof ev.content === 'string' ? ev.content : '';
+            if (!draftText) { clearDraft(); break; }
+            if (!firstTokenAtMs) firstTokenAtMs = Date.now();
+            thinkEl.hidden = true;
+            if (!msgEl) msgEl = addMsg('assistant', '');
+            msgEl.classList.add('streaming');
+            renderDraftSoon();
+            break;
           case 'text':
+            cancelDraftRender();
+            draftText = '';
+            if (msgEl) msgEl.classList.remove('streaming');
             thinkEl.remove();
             if (!firstTokenAtMs && (ev.content || '').length > 0) firstTokenAtMs = Date.now();
             if (!msgEl) msgEl = addMsg('assistant', '');
@@ -5030,6 +5199,7 @@ async function sendMessage(opts) {
             if (msgEl) attachGoalStartButton(msgEl, ev.taskCount || 1, ev.planPath || 'IMPLEMENTATION_PLAN.md');
             break;
           case 'tool_call':
+            clearDraft();
             notePetToolCall();
             toolBox = ensureToolBox(toolBox);
             if (ev.call.name === 'file_edit' && ev.call.input && typeof ev.call.input.old_string === 'string' && typeof ev.call.input.new_string === 'string') {
@@ -5057,6 +5227,18 @@ async function sendMessage(opts) {
             });
             if (ev.call?.name === 'bash' && typeof ev.call?.input?.command === 'string') {
               clientEvidenceCommands.push({ command: ev.call.input.command, success: Boolean(ev.result?.success), outputSummary: String(ev.result?.output || '').slice(0, 220) });
+            }
+            {
+              const name = ev.call?.name || 'tool';
+              const input = ev.call?.input || {};
+              const target = typeof input.path === 'string' ? input.path
+                : typeof input.to === 'string' ? input.to
+                : typeof input.command === 'string' ? input.command.slice(0, 80)
+                : typeof input.pattern === 'string' ? input.pattern.slice(0, 60)
+                : typeof input.query === 'string' ? input.query.slice(0, 60)
+                : typeof input.url === 'string' ? input.url.slice(0, 80) : '';
+              turnActivity.push({ text: name + (target ? ' ' + redactActivityText(target) : '') + (ev.result?.success ? '' : ' (failed)'), important: !ev.result?.success || ['file_write', 'file_edit', 'file_move', 'file_delete', 'bash', 'docker_exec'].includes(name) });
+              if (ev.result?.success && ['file_write', 'file_edit', 'file_move', 'file_delete'].includes(name)) turnFileChanges.push(target || '?');
             }
             if (toolBox) appendToolItem(toolBox, ev.result.success ? '✅' : '❌', '', ev.result.output.slice(0, 120), !ev.result.success);
             if (toolBox && !ev.result.success && isPermissionOrRecoveryFailure(ev.result.output)) appendPermissionRecoveryItem(toolBox, ev.result.output);
@@ -5167,6 +5349,7 @@ async function sendMessage(opts) {
             appendOutputValidationItem(toolBox, ev.validation);
             break;
           case 'verification':
+            clearDraft(); // the loop is checking or retrying instead of answering
             toolBox = ensureToolBox(toolBox);
             appendVerificationItem(toolBox, ev);
             break;
@@ -5217,6 +5400,7 @@ async function sendMessage(opts) {
               false);
             break;
           case 'synthesis_fired':
+            clearDraft(); // the loop is checking or retrying instead of answering
             toolBox = ensureToolBox(toolBox);
             appendToolItem(toolBox, '🔄', 'synthesis turn', 'model exhausted ' + ev.maxTurns + ' tool turns (' + ev.toolCallsTotal + ' calls) — forcing text summary', false);
             break;
@@ -5256,6 +5440,7 @@ async function sendMessage(opts) {
             break;
           }
           case 'auto_continue':
+            clearDraft(); // the loop is checking or retrying instead of answering
             toolBox = ensureToolBox(toolBox);
             appendToolItem(toolBox, '🔁', 'auto-continue #' + ev.continuationCount, ev.reason + ' — continuing autonomously', false);
             break;
@@ -5265,6 +5450,7 @@ async function sendMessage(opts) {
             if (ev.stage === 'ask_human') supervisorSummary = String(ev.summary || '');
             break;
           case 'model_escalated':
+            clearDraft(); // the loop is checking or retrying instead of answering
             toolBox = ensureToolBox(toolBox);
             appendToolItem(toolBox, '⏫', 'switched to a stronger model', ev.from + ' → ' + ev.to + (ev.reason === 'stuck' ? ' (no progress)' : ' (answer failed verification twice)'), false);
             break;
@@ -5317,6 +5503,7 @@ async function sendMessage(opts) {
         }
       }
     }
+    clearDraft();
     if (thinkEl.parentNode) thinkEl.remove();
     if (!assistantText && toolOnlyResultCount > 0) {
       if (doneReason === 'max_turns_synthesized' || doneReason === 'time_budget_synthesized' || doneReason === 'repetition_synthesized' || doneReason === 'empty_after_tools_synthesized') {
@@ -5327,7 +5514,17 @@ async function sendMessage(opts) {
       }
       msgEl = addMsg('assistant', assistantText);
     }
-    if (assistantText) chatMessages.push({ role: 'assistant', content: assistantText });
+    if (assistantText) chatMessages.push({ role: 'assistant', content: assistantText, ...replyExtras() });
+    else if (chatMessages[chatMessages.length - 1]?.role === 'user') {
+      // No reply text (an error event or an empty answer): still close the
+      // turn so the next message isn't a second user turn in a row.
+      // Only a fatal error counts as the failure; recoverable warnings were for the model.
+      const note = turnFatalError
+        ? '[The request failed: ' + String(turnFatalError).slice(0, 200) + ']'
+        : '[No reply was produced.]';
+      chatMessages.push({ role: 'assistant', content: note, ...replyExtras() });
+      if (msgEl) attachUndoButton(msgEl, chatMessages.length - 1);
+    }
     // Jarvis voice: always dispatch so the hands-free loop can re-arm the
     // mic even when a turn ended in error or yielded no text. The TTS
     // listener already guards on `text` being non-empty before speaking,
@@ -5351,6 +5548,7 @@ async function sendMessage(opts) {
     // back to right before it.
     if (msgEl && assistantText) {
       attachMessageActions(msgEl, chatMessages.length - 1);
+      if (planOnly && !turnFatalError) attachRunPlanButton(msgEl);
     }
     // Follow-up chips: 3 short suggested next prompts derived from the
     // latest exchange. Computed client-side (no extra round-trip).
@@ -5374,15 +5572,29 @@ async function sendMessage(opts) {
     if (thinkEl.parentNode) thinkEl.remove();
     notePetError();
     if (e.name === 'AbortError') {
+      // Keep what was already streaming as the partial answer.
+      if (draftText && msgEl) { cancelDraftRender(); assistantText += draftText; draftText = ''; msgEl.classList.remove('streaming'); renderMd(msgEl.querySelector('.msg-content'), assistantText); }
+      else clearDraft();
       msgEl = addMsg('assistant', 'Stopped.');
       evidenceCard = buildClientStoppedEvidence(text, model, clientEvidenceTools, clientEvidenceCommands, 'user_stopped');
       attachEvidenceCard(msgEl, evidenceCard);
     } else {
+      clearDraft();
       turnFatalError = e.message || 'Request failed';
       lastErrorMessage = turnFatalError;
       msgEl = addMsg('assistant', '⚠️ ' + e.message);
       evidenceCard = buildClientStoppedEvidence(text, model, clientEvidenceTools, clientEvidenceCommands, 'client_error');
       attachEvidenceCard(msgEl, evidenceCard);
+    }
+    // Keep the interrupted turn in history so the next message doesn't send
+    // two user turns in a row, the model knows the last attempt didn't finish,
+    // and the exchange survives a reload.
+    const lastHistory = chatMessages[chatMessages.length - 1];
+    if (lastHistory && lastHistory.role === 'user') {
+      const note = e.name === 'AbortError' ? '[Stopped by the user before finishing.]' : '[The request failed: ' + String(e.message || 'unknown error').slice(0, 200) + ']';
+      chatMessages.push({ role: 'assistant', content: assistantText ? assistantText + '\n\n' + note : note, ...replyExtras() });
+      attachUndoButton(msgEl, chatMessages.length - 1);
+      try { saveChatSession(); autoSaveChat(); } catch (saveErr) { console.warn('saving interrupted turn failed', saveErr); }
     }
   }
   if (typeof classifyTurn === 'function') {
@@ -5410,6 +5622,8 @@ async function sendMessage(opts) {
   const skipOnceReset = document.getElementById('skipValidationOnce');
   if (skipOnceReset) skipOnceReset.checked = false;
   document.getElementById('chatInput').focus();
+  // A message queued during this run goes out now (after this call returns).
+  if (queuedFollowUp) setTimeout(() => flushQueuedFollowUp(responseStopped), 0);
   return {
     state: responseStopped ? 'stopped' : !responseFailed && doneReason === 'completed' && streamedChars > 0 && toolOnlyFailureCount === 0 ? 'responded' : 'not verified',
     model,
@@ -5576,6 +5790,25 @@ function appendToolItem(toolBox, icon, name, detail, isError) {
   toolBox.appendChild(item);
   HarnessToolActivity.updateToolActivitySummary(toolBox, isError);
   scrollBottom();
+}
+
+/**
+ * One line for the history: what a reply's tools did, edits, failures and
+ * commands first (what a follow-up needs), duplicates dropped, about 75
+ * tokens at most.
+ */
+function summarizeTurnActivity(entries) {
+  const ordered = [...entries.filter((e) => e.important), ...entries.filter((e) => !e.important)].map((e) => e.text);
+  return [...new Set(ordered)].join('; ').slice(0, 300);
+}
+
+/** Drop query strings, credentials in URLs and token-like values before they are stored or sent. */
+function redactActivityText(text) {
+  return String(text)
+    .replace(/(https?:\/\/)[^/\s@]+@/gi, '$1')
+    .replace(/(https?:\/\/[^\s?#]+)[?#]\S*/gi, '$1')
+    .replace(/\b(bearer|basic)\s+\S+/gi, '$1 …')
+    .replace(/\b([\w-]*(?:token|key|secret|password|passwd|pwd|auth)[\w-]*)(\s*[=:]\s*|\s+)("[^"]*"|'[^']*'|\S+)/gi, '$1$2…');
 }
 
 function summarizeToolOnlyResult(call, result) {
@@ -5856,10 +6089,67 @@ function renderPermissionPrompts(prompts) {
   // mark it as resolving immediately on click — without that flag the user
   // has to wait for the next pollPermissions tick (up to 1s) to see any
   // feedback that their Approve / Deny click registered.
-  panel.innerHTML = prompts.map((prompt) => '<div class="permission-card" data-prompt-id="' + escAttr(prompt.id) + '"><div><div class="permission-title">Approve tool: ' + esc(prompt.call.name) + '</div><div class="permission-reason">' + esc(prompt.reason || 'Permission required') + '</div><code>' + esc(JSON.stringify(prompt.call.input).slice(0, 180)) + '</code></div><div class="permission-actions"><button class="btn-sm pp-approve" onclick="resolvePermission(\'' + escAttr(prompt.id) + '\',true)">Approve</button><button class="btn-sm danger pp-deny" onclick="resolvePermission(\'' + escAttr(prompt.id) + '\',false)">Deny</button></div></div>').join('');
+  panel.innerHTML = prompts.map((prompt) => {
+    const id = escAttr(prompt.id);
+    const isEdit = prompt.call.name === 'file_write' || prompt.call.name === 'file_edit';
+    const acceptEditsBtn = isEdit
+      ? '<button class="btn-sm pp-approve-edits" onclick="approvePermissionAndAcceptEdits(\'' + id + '\')" title="Approve, and approve file edits for the rest of this chat (commands still ask)">Approve all edits</button>'
+      : '';
+    return '<div class="permission-card" data-prompt-id="' + id + '"><div class="permission-body"><div class="permission-title">Approve tool: ' + esc(prompt.call.name) + '</div><div class="permission-reason">' + esc(prompt.reason || 'Permission required') + '</div>' + renderPermissionDetail(prompt.call) + '</div><div class="permission-actions"><button class="btn-sm pp-approve" onclick="resolvePermission(\'' + id + '\',true)">Approve</button>' + acceptEditsBtn + '<button class="btn-sm danger pp-deny" onclick="resolvePermission(\'' + id + '\',false)">Deny</button></div></div>';
+  }).join('');
 }
 
-async function resolvePermission(id, allowed) {
+/**
+ * What the tool is about to do, in a form a person can judge before
+ * approving: the diff for an edit, the start of a new file, the whole shell
+ * command, the recipient of an email. Anything else shows its arguments.
+ */
+function renderPermissionDetail(call) {
+  const input = (call && call.input) || {};
+  const str = (v) => (typeof v === 'string' ? v : v === undefined || v === null ? '' : JSON.stringify(v));
+  const lines = (text, prefix, cls, max) => {
+    const all = String(text).split(/\r?\n/);
+    const shown = all.slice(0, max).map((l) => '<div class="diff-line ' + cls + '">' + esc(prefix + (l.length > 200 ? l.slice(0, 200) + ' …' : l)) + '</div>').join('');
+    return shown + (all.length > max ? '<div class="diff-line diff-overflow">… ' + (all.length - max) + ' more line(s)</div>' : '');
+  };
+  const pathRow = (p) => '<div class="permission-path">' + esc(str(p)) + '</div>';
+  switch (call && call.name) {
+    case 'file_edit':
+      return pathRow(input.path) + '<div class="diff-block">' + lines(str(input.old_string), '- ', 'diff-del', 20) + lines(str(input.new_string), '+ ', 'diff-add', 20) + '</div>';
+    case 'file_write': {
+      const content = str(input.content);
+      const count = content ? content.split(/\r?\n/).length : 0;
+      return pathRow(input.path) + '<div class="permission-meta">Writes ' + count + ' line(s), ' + content.length + ' characters' + (count > 20 ? '; first 20 shown' : '') + '</div><div class="diff-block">' + lines(content, '+ ', 'diff-add', 20) + '</div>';
+    }
+    case 'file_move':
+      return pathRow(str(input.from) + ' → ' + str(input.to)) + (input.overwrite ? '<div class="permission-meta">Overwrites the destination if it exists</div>' : '');
+    case 'file_delete':
+      return pathRow(input.path);
+    case 'bash':
+    case 'docker_exec':
+      return '<pre class="permission-command">' + esc(str(input.command).slice(0, 4000)) + '</pre>' + (input.cwd ? '<div class="permission-meta">in ' + esc(str(input.cwd)) + '</div>' : '');
+    case 'email_send':
+    case 'email_draft':
+      return '<div class="permission-meta">To: ' + esc(str(input.to)) + (input.subject ? '<br>Subject: ' + esc(str(input.subject)) : '') + '</div>';
+    default:
+      return '<pre class="permission-command">' + esc(JSON.stringify(input, null, 2).slice(0, 1200)) + '</pre>';
+  }
+}
+
+// "Approve all edits" approves file edits for the rest of this chat (like
+// "don't ask again this session" in Claude Code): the waiting run switches
+// to Accept edits, and later messages in this chat ask for it too. The saved
+// Safety mode is not changed, so other chats and automations still ask.
+
+async function approvePermissionAndAcceptEdits(id) {
+  // The prompt panel is shared by all tabs; only remember it for this chat when
+  // this chat is the one running (the waiting run gets it either way).
+  if (isSending) chatAcceptsEdits = true;
+  showToast('File edits are approved for the rest of this chat (commands still ask).', 5000, 'info');
+  await resolvePermission(id, true, { acceptEdits: true });
+}
+
+async function resolvePermission(id, allowed, options) {
   // Immediate visual feedback: mark the card as resolving, disable both
   // buttons, and relabel the chosen one. Without this the click feels
   // dead until the next pollPermissions() tick (~1s) finally re-renders.
@@ -5875,7 +6165,7 @@ async function resolvePermission(id, allowed) {
     if (chosen) chosen.textContent = allowed ? 'Approving…' : 'Denying…';
   }
   try {
-    const res = await fetch('/api/permissions/' + encodeURIComponent(id) + '/resolve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ allowed }) });
+    const res = await fetch('/api/permissions/' + encodeURIComponent(id) + '/resolve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ allowed, acceptEdits: Boolean(options && options.acceptEdits) }) });
     if (res.status === 404) {
       // The prompt is no longer pending on the server — it timed out, was
       // already resolved, or the server restarted since this card was last
@@ -6259,6 +6549,81 @@ function addMsg(role, text) {
   return el;
 }
 
+// "Edit" on a sent message: change it and run the conversation again from
+// there (later turns are replaced), like editing a prompt in ChatGPT or
+// rewinding in Claude Code. Only bubbles that are in chatMessages get it;
+// the index is recorded where the message is pushed (slash-command bubbles
+// such as /task are not in the history).
+function attachUserEditButton(msgEl, historyIndex) {
+  const body = msgEl && msgEl.querySelector('.msg-body');
+  if (!body || !chatMessages[historyIndex] || chatMessages[historyIndex].role !== 'user') return;
+  msgEl.dataset.histIndex = String(historyIndex);
+  if (body.querySelector('.msg-edit-btn')) return;
+  const row = document.createElement('div');
+  row.className = 'msg-actions';
+  const btn = document.createElement('button');
+  btn.className = 'msg-action-btn msg-edit-btn';
+  btn.title = 'Edit this message and run the conversation again from here';
+  btn.textContent = '✏️ Edit';
+  row.appendChild(btn);
+  body.appendChild(row);
+}
+
+function startEditUserMessage(msgEl) {
+  if (isSending) { showToast('Wait for the current reply to finish first.'); return; }
+  const index = Number(msgEl.dataset.histIndex);
+  if (!Number.isInteger(index) || !chatMessages[index] || chatMessages[index].role !== 'user') { showToast('This message is no longer in the conversation history.'); return; }
+  const content = msgEl.querySelector('.msg-content');
+  const actions = msgEl.querySelector('.msg-actions');
+  const original = chatMessages[index].content;
+  const box = document.createElement('textarea');
+  box.className = 'msg-edit-box';
+  box.value = original;
+  box.setAttribute('aria-label', 'Edit message');
+  const bar = document.createElement('div');
+  bar.className = 'msg-edit-actions';
+  bar.innerHTML = '<button type="button" class="btn-sm">Cancel</button><button type="button" class="btn-sm primary">Send</button>';
+  const [cancelBtn, sendBtn] = bar.querySelectorAll('button');
+  const finish = () => { box.remove(); bar.remove(); content.hidden = false; if (actions) actions.hidden = false; };
+  cancelBtn.onclick = finish;
+  sendBtn.onclick = async () => {
+    const edited = box.value.trim();
+    if (!edited || edited === original.trim()) { finish(); return; }
+    // Rerunning drops the later replies but not what they did to files.
+    const changed = [...new Set(chatMessages.slice(index + 1).flatMap((m) => (m.role === 'assistant' && Array.isArray(m.fileChanges) ? m.fileChanges : [])))];
+    if (changed.length && !(await confirmToast('The replies after this message changed ' + changed.length + ' file(s): ' + changed.slice(0, 5).join(', ') + (changed.length > 5 ? ', …' : '') + '. Those changes stay on disk; use ↩ Undo changes on those replies first if you want them gone.\n\nResend anyway?'))) return;
+    finish();
+    chatMessages[index].content = edited;
+    content.textContent = edited;
+    sendMessage({ regenerateFromIndex: index + 1 });
+  };
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(); }
+    else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendBtn.click(); }
+  });
+  content.hidden = true;
+  if (actions) actions.hidden = true;
+  content.after(box, bar);
+  box.focus();
+  box.setSelectionRange(box.value.length, box.value.length);
+}
+
+const RUN_PLAN_PROMPT = 'Go ahead and carry out the plan above, step by step, then check the result.';
+
+/** "▶ Run this plan" under a /plan reply; clicks are handled on #chatArea. */
+function attachRunPlanButton(msgEl) {
+  const body = msgEl && msgEl.querySelector('.msg-body');
+  if (!body || body.querySelector('.run-plan-btn')) return;
+  let row = body.querySelector('.msg-actions');
+  if (!row) { row = document.createElement('div'); row.className = 'msg-actions'; body.appendChild(row); }
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'msg-action-btn run-plan-btn';
+  btn.title = 'Carry out this plan (file edits and commands still ask as usual)';
+  btn.textContent = '▶ Run this plan';
+  row.prepend(btn);
+}
+
 function attachGoalStartButton(msgEl, taskCount, planPath) {
   const body = msgEl.querySelector('.msg-body');
   if (!body) return;
@@ -6546,9 +6911,16 @@ function formatEvidenceFile(file) {
   return action + ': ' + path;
 }
 
-function renderMd(el, text) {
+// opts.preview: a live preview being re-rendered as it streams, so code blocks
+// aren't turned into artifacts yet (the final render does that once).
+function renderMd(el, text, opts) {
   if (!text) { el.innerHTML = ''; return; }
   el.innerHTML = (typeof marked !== 'undefined' && marked.parse) ? marked.parse(text) : ('<pre style="white-space:pre-wrap;word-break:break-word">' + esc(text) + '</pre>');
+  if (typeof HarnessCodeHighlight !== 'undefined') {
+    el.querySelectorAll('pre > code[class*="language-"]').forEach((code) => {
+      try { HarnessCodeHighlight.highlightElement(code); } catch (e) { console.warn('code highlight failed', e); }
+    });
+  }
   // Open links from message output in a new tab. Without this, clicking a
   // markdown link navigates the single-page app away and destroys the live
   // session. In-page fragment links (#...) are left alone.
@@ -6581,7 +6953,7 @@ function renderMd(el, text) {
   // Artifact extraction: any fenced code block of ≥ 8 lines, OR any
   // HTML/SVG block, becomes an artifact tab in the side panel. The
   // chat keeps the inline rendering; the panel adds preview + download.
-  maybeExtractArtifacts(el, text);
+  if (!(opts && opts.preview)) maybeExtractArtifacts(el, text);
 }
 
 // ─── Artifact panel ───────────────────────────────────────────────────
@@ -6757,8 +7129,10 @@ function toggleCompare() {
 async function runCompareSend(text, modelA, modelB) {
   const welcome = document.getElementById('welcome');
   if (welcome) welcome.remove();
-  addMsg('user', text);
+  const userEl = addMsg('user', text);
+  scrollBottom(true);
   chatMessages.push({ role: 'user', content: text });
+  attachUserEditButton(userEl, chatMessages.length - 1);
   saveChatSession();
   document.querySelectorAll('.followup-chips, .context-cards').forEach((n) => n.remove());
 
@@ -6867,7 +7241,62 @@ function makeCompareColumn(model) {
 
 function addThinking() { const area = document.getElementById('chatArea'); const el = document.createElement('div'); el.className = 'thinking'; el.innerHTML = '<div class="dots"><span></span><span></span><span></span></div> <span class="thinking-status">Thinking...</span>'; area.appendChild(el); scrollBottom(); return el; }
 function updateThinkingStatus(el, text) { const status = el && el.querySelector ? el.querySelector('.thinking-status') : null; if (status) status.textContent = text; }
-function scrollBottom() { const a = document.getElementById('chatArea'); a.scrollTop = a.scrollHeight; }
+// Follow new output only while the reader is at (or near) the bottom. Once
+// they scroll up to read, stay put and offer "Jump to latest" instead of
+// yanking them down on every token. Sending a message always jumps.
+let chatStickToBottom = true;
+function scrollBottom(force) {
+  const a = document.getElementById('chatArea');
+  if (!a) return;
+  if (force || chatStickToBottom) {
+    // Instant, not the chat area's smooth behaviour: mid-animation scroll
+    // events would otherwise look like the user scrolling away.
+    a.scrollTo({ top: a.scrollHeight, behavior: 'instant' });
+    chatStickToBottom = true;
+    setJumpToLatestVisible(false);
+  } else {
+    setJumpToLatestVisible(true);
+  }
+}
+
+function setJumpToLatestVisible(visible) {
+  const btn = document.getElementById('jumpToLatestBtn');
+  if (btn) btn.hidden = !visible;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const input = document.getElementById('chatInput');
+  if (input) input.addEventListener('blur', () => setTimeout(hideMentionPalette, 150));
+  const a = document.getElementById('chatArea');
+  if (!a) return;
+  // Delegated so Edit and Undo still work after a tab switch restores the chat
+  // from its saved HTML (which drops per-button handlers).
+  a.addEventListener('click', (e) => {
+    const editBtn = e.target.closest && e.target.closest('.msg-edit-btn');
+    if (editBtn) { startEditUserMessage(editBtn.closest('.msg')); return; }
+    const planBtn = e.target.closest && e.target.closest('.run-plan-btn');
+    if (planBtn) {
+      if (isSending) { showToast('Wait for the current reply to finish first.'); return; }
+      const inp = document.getElementById('chatInput');
+      if (inp.value.trim()) { showToast('Clear the message box first, or send your message.'); return; }
+      if (!document.getElementById('modelSelect').value) { showToast('Select a model first.'); return; }
+      planBtn.disabled = true;
+      inp.value = RUN_PLAN_PROMPT;
+      sendMessage();
+      return;
+    }
+    const undoBtn = e.target.closest && e.target.closest('.undo-changes-btn');
+    if (undoBtn && !undoBtn.disabled) {
+      const entry = chatMessages[Number(undoBtn.dataset.msgIndex)];
+      if (entry && entry.runId && Array.isArray(entry.fileChanges)) undoReplyChanges(entry, undoBtn);
+      else showToast('This reply is no longer in the conversation history.');
+    }
+  });
+  a.addEventListener('scroll', () => {
+    chatStickToBottom = a.scrollHeight - a.scrollTop - a.clientHeight < 80;
+    if (chatStickToBottom) setJumpToLatestVisible(false);
+  }, { passive: true });
+});
 
 // ─── Per-message metadata footer + session totals HUD ──────────────────
 // Folds the new `usage` SSE event into a small dim footer under the
@@ -7197,6 +7626,50 @@ function attachMessageActions(msgEl, messageIndex) {
   row.appendChild(reply);
   row.appendChild(save);
   body.appendChild(row);
+  attachUndoButton(msgEl, messageIndex);
+}
+
+/**
+ * "Undo changes" under a reply that changed files: rolls back the edits its
+ * run recorded (file_write, file_edit, file_move, file_delete), like Claude
+ * Code's /rewind or Aider's /undo. Changes made through shell commands are
+ * not recorded this way, and the confirmation says so.
+ */
+function attachUndoButton(msgEl, messageIndex) {
+  const entry = chatMessages[messageIndex];
+  const body = msgEl && msgEl.querySelector('.msg-body');
+  if (!body || !entry || !entry.runId || !Array.isArray(entry.fileChanges) || entry.fileChanges.length === 0) return;
+  let row = body.querySelector('.msg-actions');
+  if (!row) { row = document.createElement('div'); row.className = 'msg-actions'; body.appendChild(row); }
+  if (row.querySelector('.undo-changes-btn')) return;
+  const btn = document.createElement('button');
+  btn.className = 'msg-action-btn undo-changes-btn';
+  btn.title = 'Undo the file changes this reply made: ' + entry.fileChanges.join(', ');
+  btn.textContent = '↩ Undo changes';
+  btn.dataset.msgIndex = String(messageIndex);
+  row.appendChild(btn);
+}
+
+async function undoReplyChanges(entry, btn) {
+  if (isSending) { showToast('Wait for the current reply to finish first.'); return; }
+  const files = entry.fileChanges.slice(0, 8).join('\n  ') + (entry.fileChanges.length > 8 ? '\n  …' : '');
+  const ok = await confirmToast('Undo the file changes from this reply?\n\n  ' + files + '\n\nFiles go back to how they were before this reply. Later edits to the same files are lost. Changes made by shell commands are not undone.');
+  if (!ok) return;
+  btn.disabled = true;
+  btn.textContent = 'Undoing…';
+  try {
+    const r = await fetch('/api/run-logs/' + encodeURIComponent(entry.runId) + '/revert', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    const reverted = (data.reverted || []).length;
+    const problems = [...(data.failed || []).map((f) => f.description + ': ' + f.error), ...(data.irreversible || []).map((d) => d + ' (cannot be undone)')];
+    btn.textContent = reverted ? '↩ Undone' : '↩ Nothing to undo';
+    showToast(reverted + ' change(s) undone' + (problems.length ? '. Not undone: ' + problems.slice(0, 3).join('; ') : '.'), problems.length ? 8000 : 4000, problems.length ? 'warning' : 'success');
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = '↩ Undo changes';
+    showToast('Undo failed: ' + (e && e.message ? e.message : e), 6000, 'error');
+  }
 }
 
 /**
@@ -7358,6 +7831,10 @@ const SLASH_COMMANDS = [
   { cmd: '/stop',        desc: 'Stop the current agent run',
     apply: () => { hideSlashPalette(); if (activeChatController) activeChatController.abort(); },
     fallback: '' },
+  { cmd: '/plan',        desc: 'Plan first: look around read-only and propose a plan to approve, changing nothing (e.g. /plan add a dark mode toggle)',
+    apply: () => { hideSlashPalette(); },
+    fallback: '',
+    takesArgs: true },
   { cmd: '/task',        desc: 'Add a task to the autonomy plan (type /task followed by the task description)',
     apply: () => { hideSlashPalette(); },
     fallback: '',
@@ -7559,6 +8036,106 @@ function maybeShowIntentChip(value) {
   chip.appendChild(open);
   chip.appendChild(dismiss);
   chip.classList.remove('hidden');
+}
+
+// ─── @ file mentions ───────────────────────────────────────────────
+// Typing "@" in the message box suggests project files; the chosen path is
+// inserted as @path, and the server inlines those files with the message.
+
+const mentionState = { visible: false, items: [], index: 0, start: -1, query: '', requestSeq: 0 };
+let mentionFetchTimer = null;
+
+function mentionPaletteEl() {
+  let palette = document.getElementById('mentionPalette');
+  if (palette) return palette;
+  const slash = document.getElementById('slashPalette');
+  if (!slash || !slash.parentNode) return null;
+  palette = document.createElement('div');
+  palette.id = 'mentionPalette';
+  palette.className = 'slash-palette hidden';
+  palette.setAttribute('role', 'listbox');
+  palette.setAttribute('aria-label', 'Project files');
+  palette.innerHTML = '<div class="slash-palette-header">Files · ↑↓ to choose, Enter or Tab to insert, Esc to close</div><div class="slash-palette-list" id="mentionPaletteList"></div>';
+  slash.parentNode.insertBefore(palette, slash);
+  return palette;
+}
+
+function maybeShowMentionPalette(input) {
+  const caret = input.selectionStart ?? input.value.length;
+  const before = input.value.slice(0, caret);
+  const match = before.match(/(?:^|[\s(])@([^\s@`'"<>]*)$/);
+  if (!match) { hideMentionPalette(); return; }
+  mentionState.start = caret - match[1].length - 1;
+  mentionState.query = match[1];
+  clearTimeout(mentionFetchTimer);
+  mentionFetchTimer = setTimeout(async () => {
+    const seq = ++mentionState.requestSeq;
+    try {
+      const r = await fetch('/api/files/search?q=' + encodeURIComponent(mentionState.query));
+      const data = await r.json();
+      if (seq !== mentionState.requestSeq) return;
+      mentionState.items = Array.isArray(data.files) ? data.files : [];
+      mentionState.index = 0;
+      if (mentionState.items.length === 0) { hideMentionPalette(); return; }
+      renderMentionPalette();
+    } catch { hideMentionPalette(); }
+  }, 120);
+}
+
+function renderMentionPalette() {
+  const palette = mentionPaletteEl();
+  const list = document.getElementById('mentionPaletteList');
+  if (!palette || !list) return;
+  mentionState.visible = true;
+  palette.classList.remove('hidden');
+  list.innerHTML = '';
+  mentionState.items.forEach((file, i) => {
+    const item = document.createElement('div');
+    item.className = 'slash-palette-item' + (i === mentionState.index ? ' active' : '');
+    item.setAttribute('role', 'option');
+    const slash = file.lastIndexOf('/');
+    item.innerHTML = '<span class="sp-cmd">' + esc(file.slice(slash + 1)) + '</span><span class="sp-desc">' + esc(slash > 0 ? file.slice(0, slash) : '') + '</span>';
+    item.onmouseenter = () => { mentionState.index = i; updateMentionHighlight(); };
+    item.onmousedown = (ev) => { ev.preventDefault(); mentionState.index = i; applyMention(); };
+    list.appendChild(item);
+  });
+}
+
+function updateMentionHighlight() {
+  const list = document.getElementById('mentionPaletteList');
+  if (!list) return;
+  [...list.children].forEach((item, i) => item.classList.toggle('active', i === mentionState.index));
+  const active = list.children[mentionState.index];
+  if (active && active.scrollIntoView) active.scrollIntoView({ block: 'nearest' });
+}
+
+function moveMentionSelection(delta) {
+  const n = mentionState.items.length;
+  if (!n) return;
+  mentionState.index = (mentionState.index + delta + n) % n;
+  updateMentionHighlight();
+}
+
+function applyMention() {
+  const input = document.getElementById('chatInput');
+  const file = mentionState.items[mentionState.index];
+  if (!input || !file || mentionState.start < 0) { hideMentionPalette(); return; }
+  const caret = input.selectionStart ?? input.value.length;
+  const insert = '@' + file + ' ';
+  input.value = input.value.slice(0, mentionState.start) + insert + input.value.slice(caret);
+  const pos = mentionState.start + insert.length;
+  input.setSelectionRange(pos, pos);
+  hideMentionPalette();
+  input.focus();
+  autoSize(input);
+}
+
+function hideMentionPalette() {
+  clearTimeout(mentionFetchTimer);
+  mentionState.requestSeq++;
+  mentionState.visible = false;
+  const palette = document.getElementById('mentionPalette');
+  if (palette) palette.classList.add('hidden');
 }
 
 function maybeShowSlashPalette(value) {
@@ -7769,10 +8346,12 @@ async function searchHistory(q) {
   } catch(e){}
 }
 
-async function loadChat(id) { try { const r = await fetch('/api/history/' + id); const d = await r.json(); currentChatId = id; chatMessages = d.messages || []; document.getElementById('chatArea').innerHTML = ''; let lastEl = null; chatMessages.forEach((m, i) => { const el = addMsg(m.role, m.content); lastEl = el; if (m.role === 'assistant' && m.content) attachMessageActions(el, i); }); if (lastEl && chatMessages.length && chatMessages[chatMessages.length - 1].role === 'user' && typeof appendTurnState === 'function') { appendTurnState(lastEl, 'interrupted', { detail: 'This chat ended before a reply was saved.', onRetry: retryLastPrompt }); } saveChatSession(); loadHistory(); } catch(e){} }
+async function loadChat(id) { chatStickToBottom = true; chatAcceptsEdits = false; try { const r = await fetch('/api/history/' + id); const d = await r.json(); currentChatId = id; chatMessages = d.messages || []; document.getElementById('chatArea').innerHTML = ''; let lastEl = null; chatMessages.forEach((m, i) => { const el = addMsg(m.role, m.content); lastEl = el; if (m.role === 'assistant' && m.content) attachMessageActions(el, i); else if (m.role === 'user') attachUserEditButton(el, i); }); if (lastEl && chatMessages.length && chatMessages[chatMessages.length - 1].role === 'user' && typeof appendTurnState === 'function') { appendTurnState(lastEl, 'interrupted', { detail: 'This chat ended before a reply was saved.', onRetry: retryLastPrompt }); } saveChatSession(); loadHistory(); } catch(e){} }
 async function autoSaveChat() { if (chatMessages.length < 2) return; const title = chatMessages[0].content.slice(0, 60); try { const r = await fetch('/api/history', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: currentChatId, title, messages: chatMessages }) }); const d = await r.json(); if (!currentChatId) currentChatId = d.id; saveChatSession(); loadHistory(); } catch(e){} }
 async function deleteChat(id) { await fetch('/api/history/' + id, { method: 'DELETE' }); if (id === currentChatId) newChat(); loadHistory(); }
 function newChat() {
+  chatStickToBottom = true;
+  chatAcceptsEdits = false;
   // If current tab has messages, create a new tab; otherwise reuse the current one
   if (chatMessages.length > 0 && sessionTabs.size > 0) {
     createSessionTab();

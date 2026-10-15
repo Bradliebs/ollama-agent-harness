@@ -36,6 +36,32 @@ describe('assembleSystemContext', () => {
     expect(context).toContain(fact);
   });
 
+  it('reads AGENTS.md and CLAUDE.md project instructions, once each, within a shared cap', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-context-agents-'));
+    await fs.writeFile(path.join(projectDir, 'AGENTS.md'), '# Agents\nRun `pnpm test` before committing.', 'utf-8');
+    // A symlinked or copied CLAUDE.md with the same text must not be included twice.
+    await fs.writeFile(path.join(projectDir, 'CLAUDE.md'), '# Agents\nRun `pnpm test` before committing.', 'utf-8');
+
+    const context = await assembleSystemContext({ systemPrompt: 'base prompt', projectDir });
+
+    expect(context).toContain('--- AGENTS.md ---');
+    expect(context).toContain('Run `pnpm test` before committing.');
+    expect(context).not.toContain('--- CLAUDE.md ---');
+
+    await fs.writeFile(path.join(projectDir, 'HARNESS.md'), 'h'.repeat(20_000), 'utf-8');
+    await fs.writeFile(path.join(projectDir, 'AGENTS.md'), 'a'.repeat(20_000), 'utf-8');
+    await fs.writeFile(path.join(projectDir, 'CLAUDE.md'), 'c'.repeat(20_000), 'utf-8');
+    await fs.mkdir(path.join(projectDir, 'forge-memory'), { recursive: true });
+    await fs.writeFile(path.join(projectDir, 'forge-memory', 'patterns.md'), 'pattern notes', 'utf-8');
+    const capped = await assembleSystemContext({ systemPrompt: 'base prompt', projectDir });
+    expect(capped).toContain('--- HARNESS.md ---');
+    expect(capped).toContain('--- AGENTS.md ---');
+    // Two files use the whole shared budget (2 x 8,000 chars), so the third is left out.
+    expect(capped).not.toContain('--- CLAUDE.md ---');
+    // forge-memory/patterns.md has its own allowance and is not crowded out.
+    expect(capped).toContain('pattern notes');
+  });
+
   it('keeps capped prompt sources under the baseline context budget', async () => {
     const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-context-budget-'));
     const skillsDir = path.join(projectDir, '.harness', 'skills');

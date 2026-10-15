@@ -250,6 +250,9 @@ like this when skills are present:
 --- HARNESS.md ---
 ...
 
+--- AGENTS.md ---          (and CLAUDE.md, when present)
+...
+
 --- Agent Memory: decisions.md ---
 ...
 
