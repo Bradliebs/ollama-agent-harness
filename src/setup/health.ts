@@ -7,6 +7,7 @@ import { findInstalledVisionModel, isCloudModelName } from '../models/visionMode
 import { PdfReadTool } from '../tools/pdfTool';
 import { createBuiltinToolRegistry } from '../tools/registry';
 import { OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiKey, resolveProviderBaseUrl } from '../core/chatClientFactory';
+import { LOCAL_SERVER_BACKEND, isLoopbackServer, localServerBaseUrl } from '../core/localServer';
 import { FALLBACK_COOLDOWN_MS } from '../core/fallbackChatClient';
 import { loadSynthesisStats, adaptiveMaxTurns } from '../core/synthesisStats';
 
@@ -185,6 +186,10 @@ function checkChatSetup(
     return { ...base, state: 'configured', message: isCloudModelName(model)
       ? 'Ollama is reachable. The selected cloud model has not been tested; using it sends the conversation remotely.'
       : 'The selected model is installed. A chat response has not been verified yet.' };
+  }
+  if (backend === LOCAL_SERVER_BACKEND) {
+    const where = isLoopbackServer() ? 'Nothing leaves this machine.' : 'This address is not on this machine, so the conversation is sent there.';
+    return { ...base, state: 'configured', message: `Uses the model server at ${localServerBaseUrl()} (Strata, llama-server, LM Studio, ...). It has not been contacted; start it if chat fails. ${where}` };
   }
   const auth = backends.find((entry) => entry.id === backend);
   if (!auth) return { ...base, state: 'blocked', message: 'The selected chat provider is not supported.' };

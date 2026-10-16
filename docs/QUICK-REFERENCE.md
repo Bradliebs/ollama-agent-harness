@@ -27,7 +27,7 @@ in depth (where one exists).
 
 | Subsystem | Code path | What it owns | Deep-dive doc |
 |-----------|-----------|--------------|---------------|
-| Agent loop and backends | [src/core](../src/core) | `IChatClient`, the chat-client factory and its OpenAI-compatible presets, fallback client, the while-loop core, run supervisor, scaffolding, deferred tool loading | [System breakdown](SYSTEM-BREAKDOWN.md) |
+| Agent loop and backends | [src/core](../src/core) | `IChatClient`, the chat-client factory and its OpenAI-compatible presets, the `local` server backend, fallback client, the while-loop core, run supervisor, scaffolding, deferred tool loading | [System breakdown](SYSTEM-BREAKDOWN.md) |
 | Multi-agent delegation | [src/agents](../src/agents) | Subagents, the orchestrator, weak-model routing and in-run escalation | [System breakdown](SYSTEM-BREAKDOWN.md) |
 | Context assembly | [src/context](../src/context) | System-context assembly, compaction, history window, working state | [System breakdown](SYSTEM-BREAKDOWN.md) |
 | Permissions | [src/permissions](../src/permissions) | Permission engine, prompt broker, kill switch, advisory command classifier | [Capability sandbox](CAPABILITY-SANDBOX.md) |

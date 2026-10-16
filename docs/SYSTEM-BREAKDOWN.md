@@ -116,8 +116,9 @@ limits trips.
 
 | Module | Responsibility |
 |---|---|
-| `chatClientFactory.ts` | Picks Ollama / OpenAI-compatible / Replicate impl by env or settings |
-| `ollamaClient.ts`, `openaiClient.ts`, `replicateClient.ts` | Backend adapters |
+| `chatClientFactory.ts` | Picks Ollama / local server / OpenAI-compatible / Replicate impl by env or settings |
+| `localServer.ts` | `local` backend: OpenAI-compatible server on this machine (Strata, llama-server, LM Studio, vLLM); model discovery, context window, loopback-only locality |
+| `ollamaClient.ts`, `openaiClient.ts`, `replicateClient.ts` | Backend adapters (`openaiClient` streams with an idle timeout for local servers) |
 | `fallbackChatClient.ts` | Auto-fallback on rate-limit / 5xx |
 | `queryLoop.ts` | Tool dispatch, turn budget, context budgeting and compaction, structured output validation, in-run escalation, run-log recording |
 | `supervisor.ts` | Progress-based stuck detection (warn → change strategy → escalate → ask the human) and per-run token/USD budgets |
@@ -584,9 +585,13 @@ from the request body; set them yourself only when running
 
 | Var | Default | Effect |
 |---|---|---|
-| `HARNESS_BACKEND` | ollama | OpenAI-compatible preset to use (`cerebras`, `groq`, `github`, …) |
+| `HARNESS_BACKEND` | ollama | `local` (an OpenAI-compatible server on this machine) or an OpenAI-compatible preset (`cerebras`, `groq`, `github`, …) |
+| `HARNESS_LOCAL_BASE_URL` | `http://127.0.0.1:8080/v1` | The `local` backend's server (Strata / llama-server default; LM Studio `:1234`, vLLM `:8000`); its `/models` appear as `local/<id>` (checked at most every 15 s). Counted as local only on a loopback address |
+| `HARNESS_LOCAL_API_KEY` | unset | Bearer key, only if the local server was started with one |
+| `HARNESS_LOCAL_TIMEOUT_MS` | 600000 | Longest silence from a local server (requests always stream, so a long answer that keeps arriving isn't cut off) |
+| `HARNESS_LOCAL_CONTEXT_WINDOW` | `/props` n_ctx, else 32768 | Context window assumed for `local/` models |
 | `HARNESS_MODEL_<ROLE>` | unset | Model for a loop role (`MAKER`, `JUDGE`, `PLANNER`, `READBACK`); beats `models.config.json` |
-| `HARNESS_REMOTE_AUTO_FALLBACK` | on | `0` disables rate-limit auto-fallback |
+| `HARNESS_REMOTE_AUTO_FALLBACK` | off | `1` enables rate-limit auto-fallback to other configured cloud providers |
 | `HARNESS_REMOTE_FALLBACK_ORDER` | built-in | Comma-separated fallback chain |
 | `HARNESS_REMOTE_FALLBACK_COOLDOWN_MS` | 30000 | How long a rate-limited backend is skipped |
 | `HARNESS_OLLAMA_CHAT_MAX_ATTEMPTS` | 2 | Ollama chat attempts on transient errors (1–5) |

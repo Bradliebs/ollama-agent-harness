@@ -362,7 +362,18 @@ No release tag, publication or installer runtime qualification is implied.
     `HARNESS_STREAM_TEXT=0` disables); the final checked text still replaces
     the preview. `/plan` runs read-only and ends with **▶ Run this plan**. Code
     blocks are syntax-highlighted by a small built-in highlighter
-    (`ui/codeHighlight.js`, no new dependency). `/api/files` resolves relative paths against
+    (`ui/codeHighlight.js`, no new dependency).
+- Local model servers: a `local` backend for OpenAI-compatible engines on this
+  machine such as Strata, llama.cpp's `llama-server`, LM Studio and vLLM
+  (`HARNESS_LOCAL_BASE_URL`, default `http://127.0.0.1:8080/v1`). Their models
+  are listed as `local/<id>`; calls need no key, are costed as local and $0 when
+  the address is on this machine, skip the spend cap and remote fallback, always
+  stream with an idle timeout (`HARNESS_LOCAL_TIMEOUT_MS`, 10 minutes by default
+  for slow prompt reading) and live previews, fall back to a thinking model's
+  reasoning instead of a blank reply, and use the server's context window
+  (`/props` or `HARNESS_LOCAL_CONTEXT_WINDOW`, else 32K).
+- Docs: `HARNESS_REMOTE_AUTO_FALLBACK` is documented as off by default (opt in
+  with `1`), matching the code since v0.5.0. `/api/files` resolves relative paths against
     the project.
 
 See [Modernization Status](docs/MODERNIZATION-STATUS.md) for the complete

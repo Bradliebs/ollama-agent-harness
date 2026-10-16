@@ -297,6 +297,17 @@ Backends are configured via `HARNESS_BACKEND` (or `--backend` flag) plus
 the appropriate `*_API_KEY` env var. `harness doctor` lists every
 configured backend and reports whether its key is set.
 
+#### Local model servers (Strata, llama.cpp, LM Studio, vLLM)
+
+Models that Ollama can't run well can be served by another local engine with an OpenAI-compatible API, for example [Strata](https://github.com/Niko1221/Strata), which runs a 125B mixture-of-experts model on a 12 GB gaming GPU by spreading it over GPU, RAM and SSD. The harness talks to it as the `local` backend:
+
+* Start the server. Strata and llama.cpp's `llama-server` listen on `http://127.0.0.1:8080/v1` by default; for LM Studio (`:1234`) or vLLM (`:8000`) set `HARNESS_LOCAL_BASE_URL`, e.g. `http://127.0.0.1:1234/v1`.
+* Its models appear in the model picker as `local/<model>` while it is running (CLI: `HARNESS_BACKEND=local`).
+* It is treated as local: no API key (set `HARNESS_LOCAL_API_KEY` if you started the server with one), $0 in the cost readout, no daily-spend cap, and never a fallback target, so nothing leaves the machine. That holds for an address on this machine (`127.0.0.1`, `localhost`); a server on another host still works, but the conversation goes there and the cost readout says it doesn't know where the model runs.
+* Requests are streamed, and replies show live in the web chat. `HARNESS_LOCAL_TIMEOUT_MS` (default 10 minutes) is the longest wait for output, because local engines read long prompts slowly (Strata: about a minute per 30,000 tokens); once text flows it applies to silence between chunks, so long answers aren't cut off. A thinking model that writes no answer shows its reasoning instead, and an empty reply is asked for again.
+* The context window comes from `HARNESS_LOCAL_CONTEXT_WINDOW`, else from llama.cpp-style servers' `/props`, else 32K. Set it to the context you chose when starting the server.
+* The model needs working tool calls for agent tasks (llama.cpp: start it with `--jinja`). Use **Probe model** to check.
+
 ### Recommended models for tool use
 
 Not every model can call tools. These are the ones that work with the harness.
@@ -395,7 +406,7 @@ The `bash` tool spawns a single executable without a shell. Shell control operat
 
 ### Chat
 
-* **Watch it write.** The reply appears as the model writes it (Ollama models; other providers show it when finished). What stays is the final, checked answer, so it can change a little at the end; `HARNESS_STREAM_TEXT=0` turns the live view off. Stopping keeps what was written so far.
+* **Watch it write.** The reply appears as the model writes it (Ollama and local servers; cloud providers show it when finished). What stays is the final, checked answer, so it can change a little at the end; `HARNESS_STREAM_TEXT=0` turns the live view off. Stopping keeps what was written so far.
 * **Plan first.** `/plan add a dark mode toggle` runs read-only (it can read and search, but nothing that changes files, runs commands or widens folder access) and replies with a plan. It isn't available in compare mode. **▶ Run this plan** under it carries the plan out, with the usual approvals.
 * **Highlighted code.** Code blocks in replies are syntax-highlighted for common languages (JavaScript/TypeScript, Python, shell/PowerShell, JSON, CSS, HTML/XML, YAML, SQL, diffs and C-like languages), with no extra download.
 * **Mention files with `@`.** Typing `@` in the message box suggests project files; `@src/app.ts` puts the file's current contents into the message (up to five files and a quarter of the context window, cut at whole lines), so the model doesn't need to read it first; for a very large file only the start is read. The tool activity shows which files went in and which mentions weren't found. `.harness/` and `.git/` are never inlined, but anything else you mention is, `.env` included, so don't mention files whose secrets shouldn't reach the model.

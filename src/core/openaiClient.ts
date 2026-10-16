@@ -39,6 +39,13 @@ export interface OpenAIClientConfig {
   maxRetries?: number;
   /** Initial backoff in ms; doubled per attempt. Capped at 30s. (default 2000) */
   retryBaseDelayMs?: number;
+  /** Where the server runs (default 'cloud'); 'local' for a server on this machine. */
+  locality?: ModelLocality;
+  /**
+   * Stream the reply when the caller asks for a live preview (ChatOptions.onContent).
+   * The timeout then applies to silence between chunks rather than the whole reply.
+   */
+  streamPreview?: boolean;
 }
 
 interface OpenAIChatResponse {
@@ -82,6 +89,8 @@ export class OpenAIClient implements IChatClient {
   private readonly providerLabel: string;
   private readonly maxRetries: number;
   private readonly retryBaseDelayMs: number;
+  private readonly locality: ModelLocality;
+  private readonly streamPreview: boolean;
 
   constructor(config: OpenAIClientConfig) {
     if (!config.apiKey) {
@@ -103,6 +112,8 @@ export class OpenAIClient implements IChatClient {
     this.providerLabel = config.providerLabel ?? 'openai-compatible';
     this.maxRetries = config.maxRetries ?? 3;
     this.retryBaseDelayMs = config.retryBaseDelayMs ?? 2000;
+    this.locality = config.locality ?? 'cloud';
+    this.streamPreview = config.streamPreview === true;
   }
 
   /** Get the active key. Rotates after retryable failures. */
@@ -281,7 +292,7 @@ export class OpenAIClient implements IChatClient {
   }
 
   getLocality(): ModelLocality {
-    return 'cloud';
+    return this.locality;
   }
 
   private async invoke(
@@ -291,11 +302,15 @@ export class OpenAIClient implements IChatClient {
     extras: { maxTokens?: number } = {},
     options?: ChatOptions,
   ): Promise<ChatResult> {
+    // Streaming clients (local servers) always stream: the timeout then covers
+    // silence between chunks, not the whole reply, which a slow model can exceed.
+    const onContent = this.streamPreview ? (options?.onContent ?? (() => undefined)) : undefined;
     const body: Record<string, unknown> = {
       model: this.model,
         messages: toOpenAIMessages(messages),
-      stream: false,
+      stream: Boolean(onContent),
     };
+    if (onContent) body.stream_options = { include_usage: true };
     if (extras.maxTokens) body.max_tokens = extras.maxTokens;
     if (tools && tools.length > 0) body.tools = tools.map(toOpenAITool);
     const responseFormat = toOpenAIResponseFormat(options);
@@ -319,7 +334,7 @@ export class OpenAIClient implements IChatClient {
           headers: {
             'content-type': 'application/json',
             authorization: `Bearer ${this.currentKey()}`,
-            accept: 'application/json',
+            accept: onContent ? 'text/event-stream' : 'application/json',
           },
           body: bodyString,
           signal: controller.signal,
@@ -354,6 +369,18 @@ export class OpenAIClient implements IChatClient {
         throw new Error(`${this.providerLabel} HTTP ${response.status}: ${detail || response.statusText}`);
       }
 
+      // A server that ignores stream:true answers with plain JSON; read it as such.
+      if (onContent && /text\/event-stream/i.test(response.headers.get('content-type') ?? '')) {
+        const streamed = await this.collectStream(response, tools, controller, startedAt, onContent);
+        // An empty reply (no text, reasoning or tool call) is a known flake of some
+        // local servers; ask again while attempts remain.
+        if (!streamed.message.content && !streamed.message.tool_calls?.length && attempt < this.maxRetries - 1) {
+          lastError = new Error(`{this.providerLabel} returned an empty reply`);
+          continue;
+        }
+        return streamed;
+      }
+
       const json = (await response.json()) as OpenAIChatResponse;
       const choice = json.choices?.[0];
       if (!choice) {
@@ -386,6 +413,121 @@ export class OpenAIClient implements IChatClient {
     // Loop exited without returning — should not happen because the retryable
     // branch throws when remaining <= 0, but TS needs the assertion.
     throw lastError ?? new Error(`${this.providerLabel}: invoke exhausted retries`);
+  }
+
+  /**
+   * Read a streamed chat completion into one ChatResult, reporting the text
+   * so far to `onContent`. Aborts after `timeoutMs` without a chunk (a long
+   * reply that keeps arriving is fine). Tool-call fragments are joined by index.
+   */
+  private async collectStream(
+    response: Response,
+    tools: Tool[] | undefined,
+    controller: AbortController,
+    startedAt: number,
+    onContent: (contentSoFar: string) => void,
+  ): Promise<ChatResult> {
+    if (!response.body) throw new Error(`${this.providerLabel} stream returned no body`);
+    let idle: ReturnType<typeof setTimeout> | undefined;
+    let idledOut = false;
+    const touch = (): void => {
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(() => { idledOut = true; controller.abort(); }, this.timeoutMs);
+    };
+    const reader = (response.body as unknown as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    const toolCallAccum = new Map<number, { id?: string; name: string; argumentsText: string }>();
+    let buffer = '';
+    let content = '';
+    let reasoning = '';
+    let role = 'assistant';
+    let usage: OpenAIChatResponse['usage'];
+    let streamError = '';
+    /** One SSE line; false once the server reported an error. */
+    const handleLine = (rawLine: string): boolean => {
+      const line = rawLine.replace(/\r$/, '');
+      if (!line.startsWith('data:')) return true;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') return true;
+      let parsed: any;
+      try { parsed = JSON.parse(payload); } catch { return true; }
+      if (parsed?.error) {
+        streamError = stringifyProviderError(parsed.error.message ?? parsed.error) || 'unknown error';
+        return false;
+      }
+      if (parsed?.usage) usage = parsed.usage;
+      const delta = parsed?.choices?.[0]?.delta;
+      if (!delta) return true;
+      if (typeof delta.role === 'string') role = delta.role;
+      // Thinking models on llama.cpp-style servers stream their reasoning separately.
+      const thought = typeof delta.reasoning_content === 'string' ? delta.reasoning_content : typeof delta.reasoning === 'string' ? delta.reasoning : '';
+      if (thought) reasoning += thought;
+      if (typeof delta.content === 'string' && delta.content) {
+        content += delta.content;
+        try { onContent(content); } catch { /* a preview must never break the call */ }
+      }
+      if (Array.isArray(delta.tool_calls)) {
+        for (const tcDelta of delta.tool_calls) {
+          const index = typeof tcDelta.index === 'number' ? tcDelta.index : 0;
+          const entry = toolCallAccum.get(index) ?? { name: '', argumentsText: '' };
+          if (tcDelta.id) entry.id = tcDelta.id;
+          if (tcDelta.function?.name) entry.name = tcDelta.function.name;
+          if (typeof tcDelta.function?.arguments === 'string') entry.argumentsText += tcDelta.function.arguments;
+          toolCallAccum.set(index, entry);
+        }
+      }
+      return true;
+    };
+    touch();
+    try {
+      reading: for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+          // The last frame may come without a trailing newline.
+          buffer += decoder.decode();
+          if (buffer) handleLine(buffer);
+          break;
+        }
+        touch();
+        buffer += decoder.decode(value, { stream: true });
+        let newline: number;
+        while ((newline = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, newline);
+          buffer = buffer.slice(newline + 1);
+          if (!handleLine(line)) break reading;
+        }
+      }
+    } catch (error) {
+      const message = idledOut
+        ? `no output for ${Math.round(this.timeoutMs / 1000)}s`
+        : error instanceof Error ? error.message : String(error);
+      throw new Error(`${this.providerLabel} stream failed: ${message}`);
+    } finally {
+      if (idle) clearTimeout(idle);
+      if (streamError) await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+    }    if (streamError) throw new Error(`${this.providerLabel} stream error: ${streamError}`);
+
+    const calls = Array.from(toolCallAccum.entries())
+      .sort(([a], [b]) => a - b)
+      .filter(([, call]) => call.name)
+      .map(([, call]) => fromOpenAIToolCall({ id: call.id, function: { name: call.name, arguments: call.argumentsText } }));
+    // A thinking model that wrote no answer and called no tool: show its reasoning
+    // rather than a blank reply (as the Ollama client does).
+    const message: Message = { role, content: !content.trim() && calls.length === 0 && reasoning.trim() ? reasoning : content };
+    if (calls.length > 0) message.tool_calls = calls;
+    else liftInlineToolCalls(message, (tools ?? []).map((tool) => tool.function?.name).filter((name): name is string => Boolean(name)));
+
+    const cachedTokens = usage?.prompt_tokens_details?.cached_tokens;
+    return {
+      message,
+      usage: {
+        promptTokens: usage?.prompt_tokens ?? 0,
+        completionTokens: usage?.completion_tokens ?? 0,
+        totalDurationNs: (Date.now() - startedAt) * 1_000_000,
+        ...(typeof cachedTokens === 'number' && Number.isFinite(cachedTokens) && cachedTokens >= 0 ? { cachedPromptTokens: cachedTokens } : {}),
+      },
+    };
   }
 }
 

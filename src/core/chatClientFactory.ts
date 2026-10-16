@@ -5,6 +5,7 @@ import { ReplicateClient } from './replicateClient';
 import type { IChatClient } from './chatClient';
 import { BudgetEnforcingChatClient } from '../budget/budgetEnforcingClient';
 import { getEnvCapUsd } from '../budget/dailyBudget';
+import { LOCAL_SERVER_BACKEND, createLocalServerClient } from './localServer';
 
 /**
  * Provider preset table for OpenAI Chat Completions-compatible backends.
@@ -152,7 +153,7 @@ export const REPLICATE_PRESET: ProviderPreset = {
 };
 
 export interface CreateClientConfig {
-  /** Backend identifier. `ollama` (default), `replicate`, or one of OPENAI_COMPATIBLE_PRESETS. */
+  /** Backend identifier. `ollama` (default), `local` (an OpenAI-compatible server on this machine), `replicate`, or one of OPENAI_COMPATIBLE_PRESETS. */
   backend?: string;
   /** Model identifier passed to the backend. */
   model: string;
@@ -183,6 +184,11 @@ export function createChatClient(config: CreateClientConfig): IChatClient {
     // Local backend: no $ cost, no budget wrapper.
     return new OllamaClient({ model: config.model, host: config.host, numCtx: config.numCtx });
   }
+  if (backend === LOCAL_SERVER_BACKEND) {
+    // Local server (Strata, llama-server, LM Studio, ...): no $ cost, no budget
+    // wrapper, and no fallback that could send the conversation elsewhere.
+    return createLocalServerClient(config.model, config.numCtx);
+  }
   if (backend === 'replicate') {
     const primary = createReplicateClient(config.model);
     // Opt-in by default (v0.5.0+). Previously enabled unless HARNESS_REMOTE_AUTO_FALLBACK=0.
@@ -197,7 +203,7 @@ export function createChatClient(config: CreateClientConfig): IChatClient {
   }
   const preset = OPENAI_COMPATIBLE_PRESETS[backend];
   if (!preset) {
-    const known = ['ollama', ...Object.keys(OPENAI_COMPATIBLE_PRESETS), 'replicate'].join(', ');
+    const known = ['ollama', LOCAL_SERVER_BACKEND, ...Object.keys(OPENAI_COMPATIBLE_PRESETS), 'replicate'].join(', ');
     throw new Error(`Unknown HARNESS_BACKEND="${backend}". Known backends: ${known}.`);
   }
   const apiKey = readApiKey(preset);

@@ -214,12 +214,12 @@ whose answer the verifier rejected twice, continues on the strong-tier model.
 
 ## Remote Provider Fallback
 
-Remote backends can be selected with `--backend` or by choosing a backend-prefixed model in the UI, such as `groq/llama-3.1-8b-instant`. Harness cycles to the next configured remote backend when a provider returns a limit-style failure such as HTTP 429, HTTP 413, quota exceeded, tokens-per-minute exceeded, or context-length exceeded.
+Remote backends can be selected with `--backend` or by choosing a backend-prefixed model in the UI, such as `groq/llama-3.1-8b-instant`. With fallback on, Harness cycles to the next configured remote backend when a provider returns a limit-style failure such as HTTP 429, HTTP 413, quota exceeded, tokens-per-minute exceeded, or context-length exceeded.
 
-Provider fallback is enabled by default. Set this to disable it for a run:
+Provider fallback is off by default (since v0.5.0), because it sends the conversation, including tool output, to whichever other provider has a key. Turn it on for a run with:
 
 ```powershell
-$env:HARNESS_REMOTE_AUTO_FALLBACK = '0'
+$env:HARNESS_REMOTE_AUTO_FALLBACK = '1'
 ```
 
 Set this to control fallback order:
@@ -239,6 +239,19 @@ $env:HARNESS_REMOTE_FALLBACK_COOLDOWN_MS = '60000'
 Tool-capable providers are preferred during agent loops. Chat-only providers such as Cerebras, Cloudflare Workers AI, DeepInfra, Hugging Face, and Replicate are skipped as fallbacks when a turn includes tool schemas, but they can still be used for compact no-tool smoke checks.
 
 The web chat shows a provider fallback row when a configured provider hits a rate, quota, request-size, or context limit and Harness moves to the next configured backend.
+
+## Local Model Servers
+
+The `local` backend talks to an OpenAI-compatible server on this machine: [Strata](https://github.com/Niko1221/Strata), llama.cpp's `llama-server`, LM Studio, vLLM and similar. Start the server, then pick a `local/<model>` entry in the UI (they are listed while the server runs) or use `--backend local --model <model>`.
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `HARNESS_LOCAL_BASE_URL` | `http://127.0.0.1:8080/v1` | Server address (Strata and llama-server use 8080; LM Studio 1234; vLLM 8000) |
+| `HARNESS_LOCAL_API_KEY` | unset | Only if the server was started with a key |
+| `HARNESS_LOCAL_TIMEOUT_MS` | 600000 | Longest silence from the server; requests always stream, so long answers aren't cut off |
+| `HARNESS_LOCAL_CONTEXT_WINDOW` | server `/props`, else 32768 | Context window the harness plans for; set it to the context you started the server with |
+
+On a loopback address the backend is local: no key, $0 in the cost readout, no daily-spend cap, and it never takes part in remote fallback. A server on another host works too, but its locality is reported as unknown. Replies stream live in the web chat; a thinking model that writes no answer shows its reasoning, and an empty reply is retried. Tool calling depends on the server (llama.cpp needs `--jinja`); check it with **Probe model**.
 
 ## Replicate Predictions
 

@@ -1293,9 +1293,9 @@ async function startQuickTest() {
   if (isSending) return;
   const selectedModel = availableModels.find((entry) => entry.name === sel.value);
   const backend = selectedModel?.backend || 'ollama';
-  const remote = backend !== 'ollama' || /(?:-cloud|:cloud)$/.test(sel.value);
+  const remote = (backend !== 'ollama' && backend !== 'local') || /(?:-cloud|:cloud)$/.test(sel.value);
   if (!confirm('Run quick test?\nModel: ' + sel.value + '\nProvider: ' + backend + '\nWorkspace: ' + workspace
-    + (remote ? '\nThis sends conversation and permitted tool results to a remote provider. Charges may apply.' : '\nThis uses your configured Ollama host.')
+    + (remote ? '\nThis sends conversation and permitted tool results to a remote provider. Charges may apply.' : backend === 'local' ? '\nThis uses the local model server on this machine.' : '\nThis uses your configured Ollama host.')
     + '\nNormal permission checks still apply.')) return;
   input.value = 'List files in this project and suggest the best first task for a beginner.';
   const outcome = await sendMessage();

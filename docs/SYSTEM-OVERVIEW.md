@@ -56,7 +56,7 @@ Three user surfaces: the **web chat UI**, a **terminal client (TUI)**, and a **C
 
 | Area | Responsibility |
 |---|---|
-| **core/** | The heart: `queryLoop` drives the LLM→tool→LLM cycle; chat-client factory + backend adapters; auto-fallback on rate-limit/5xx; run supervisor and token budget; per-model scaffolding; opt-in deferred tool loading; output validation; structured-output JSON-schema enforcement; tracing; rate limiting. |
+| **core/** | The heart: `queryLoop` drives the LLM→tool→LLM cycle; chat-client factory + backend adapters (Ollama, local OpenAI-compatible servers such as Strata, cloud presets); opt-in auto-fallback on rate-limit/5xx; run supervisor and token budget; per-model scaffolding; opt-in deferred tool loading; output validation; structured-output JSON-schema enforcement; tracing; rate limiting. |
 | **context/** | System-prompt assembly, history window and compaction (cap tool results → shorten old tool-call arguments → snip at 70% → summarize at 85%, keeping the previous summary), and the typed working state. |
 | **agents/** | Sub-agent orchestration with isolated context windows and summary-only returns; custom agent loader (`.harness/agents/*.md`); small/default/strong helper-model routing, weak-model rerouting and in-run escalation. |
 | **models/** | Model catalog, capability probes and profiles (`harness probe`), per-model request adapter, role routing. |

@@ -3978,6 +3978,26 @@ describe('web server API validation', () => {
     }
   });
 
+  it('lists models from a running local OpenAI-compatible server as local/<id>', async () => {
+    const { createServer } = await import('http');
+    const fake = createServer((req, res) => {
+      res.writeHead(req.url === '/v1/models' ? 200 : 404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(req.url === '/v1/models' ? { data: [{ id: 'qwen3.8-flash-next' }] } : {}));
+    });
+    await new Promise<void>((resolve) => fake.listen(0, '127.0.0.1', resolve));
+    const previous = process.env.HARNESS_LOCAL_BASE_URL;
+    process.env.HARNESS_LOCAL_BASE_URL = `http://127.0.0.1:${(fake.address() as { port: number }).port}/v1`;
+    try {
+      const response = await request('/api/models');
+      const body = await response.json() as { models: Array<{ name: string; backend?: string }> };
+      expect(body.models).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'local/qwen3.8-flash-next', backend: 'local' })]));
+    } finally {
+      if (previous === undefined) delete process.env.HARNESS_LOCAL_BASE_URL;
+      else process.env.HARNESS_LOCAL_BASE_URL = previous;
+      await new Promise<void>((resolve) => fake.close(() => resolve()));
+    }
+  });
+
   it('prefers a measured capability profile over name heuristics', async () => {
     const profileDir = path.join(process.cwd(), '.harness', 'model-profiles');
     const profileFile = path.join(profileDir, 'gemma4_e4b.json');

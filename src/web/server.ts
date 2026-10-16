@@ -11,6 +11,7 @@ import { once } from 'events';
 import { Ollama } from 'ollama';
 import { OllamaClient, drainOllamaChatRetryEvents } from '../core/ollamaClient';
 import { createChatClient, OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiKey } from '../core/chatClientFactory';
+import { LOCAL_SERVER_BACKEND, getLocalServerContextWindow, listLocalServerModels, localServerModelName } from '../core/localServer';
 import { drainRemoteProviderFallbackEvents } from '../core/fallbackChatClient';
 import type { IChatClient } from '../core/chatClient';
 import { queryLoop, type QueryLoopDeps } from '../core/queryLoop';
@@ -1335,7 +1336,7 @@ const capabilityRegistry: CapabilityRegistry = createDefaultCapabilityRegistry()
 function resolveWebChatSelection(model: string): { backend: string; model: string } {
   const slash = model.indexOf('/');
   const backend = slash > 0 ? model.slice(0, slash).toLowerCase() : '';
-  return backend && OPENAI_COMPATIBLE_PRESETS[backend]
+  return backend && (OPENAI_COMPATIBLE_PRESETS[backend] || backend === LOCAL_SERVER_BACKEND)
     ? { backend, model: model.slice(slash + 1) }
     : { backend: 'ollama', model };
 }
@@ -1343,7 +1344,8 @@ function resolveWebChatSelection(model: string): { backend: string; model: strin
 const defaultWebRuntime: WebRuntimeDeps = {
   createClient: (model, host, numCtx) => {
     // Model id may be backend-prefixed: "mistral/mistral-medium-latest"
-    // dispatches to the Mistral preset; bare names route to Ollama.
+    // dispatches to the Mistral preset, "local/<model>" to a local
+    // OpenAI-compatible server; bare names route to Ollama.
     const selection = resolveWebChatSelection(model);
     if (selection.backend !== 'ollama') {
       return createChatClient({ ...selection, host, numCtx });
@@ -1351,6 +1353,8 @@ const defaultWebRuntime: WebRuntimeDeps = {
     return new OllamaClient({ model, host, numCtx });
   },
   getModelContextWindow: (model, host) => {
+    // Local servers can't be assumed to have a huge window: ask, or use 32K.
+    if (localServerModelName(model) !== null) return getLocalServerContextWindow();
     const slash = model.indexOf('/');
     if (slash > 0 && OPENAI_COMPATIBLE_PRESETS[model.slice(0, slash).toLowerCase()]) {
       // OpenAI-compatible backends: use a generous default; the harness
@@ -2399,6 +2403,15 @@ app.get('/api/models', async (_req, res) => {
         });
       }
     }
+    // Models served by a local OpenAI-compatible server (Strata, llama-server,
+    // LM Studio, ...) at HARNESS_LOCAL_BASE_URL, when one is running.
+    for (const id of await listLocalServerModels()) {
+      models.push({
+        name: LOCAL_SERVER_BACKEND + '/' + id,
+        capabilities: inferModelCapabilities(id, {}),
+        backend: LOCAL_SERVER_BACKEND,
+      });
+    }
     if (readApiKey(REPLICATE_PRESET)) {
       for (const m of (REMOTE_MODEL_CATALOG.replicate || [])) {
         models.push({
@@ -2952,7 +2965,7 @@ async function buildAutonomyPreflight(planPreview?: Awaited<ReturnType<typeof re
   const grantIds = new Set(activeGrants.map((grant) => grant.capabilityId));
   const modelBackend = currentModel.includes('/') ? currentModel.slice(0, currentModel.indexOf('/')) : 'ollama';
   const remoteBackendConfigured = modelBackend !== 'ollama' && Boolean(OPENAI_COMPATIBLE_PRESETS[modelBackend] && readApiKey(OPENAI_COMPATIBLE_PRESETS[modelBackend]));
-  const modelHealthy = currentModel ? (modelBackend === 'ollama' ? setup.ollama.ok : remoteBackendConfigured) : false;
+  const modelHealthy = currentModel ? (modelBackend === 'ollama' ? setup.ollama.ok : modelBackend === LOCAL_SERVER_BACKEND ? (await listLocalServerModels()).length > 0 : remoteBackendConfigured) : false;
   const checks: ReadinessCheck[] = [
     { id: 'model.selected', label: 'Model selected', status: currentModel ? 'ready' : 'blocked', message: currentModel ? `Selected ${currentModel}.` : 'No model selected.' },
     { id: 'model.health', label: 'Model backend health', status: modelHealthy ? 'ready' : 'blocked', message: modelHealthy ? `${modelBackend} backend is available.` : `${modelBackend} backend is not ready.` },
@@ -2998,7 +3011,7 @@ app.get('/api/readiness', async (_req, res) => {
     const modelBackend = currentModel.includes('/') ? currentModel.slice(0, currentModel.indexOf('/')) : 'ollama';
     const remoteBackendConfigured = modelBackend !== 'ollama' && Boolean(OPENAI_COMPATIBLE_PRESETS[modelBackend] && readApiKey(OPENAI_COMPATIBLE_PRESETS[modelBackend]));
     const modelHealthy = currentModel
-      ? (modelBackend === 'ollama' ? setup.ollama.ok : remoteBackendConfigured)
+      ? (modelBackend === 'ollama' ? setup.ollama.ok : modelBackend === LOCAL_SERVER_BACKEND ? (await listLocalServerModels()).length > 0 : remoteBackendConfigured)
       : false;
     const grantIds = new Set(activeGrants.map((grant) => grant.capabilityId));
     const hasShellGrant = grantIds.has('arbitrary-shell');
@@ -5519,6 +5532,8 @@ CONTEXT HYGIENE (critical for long tasks):
   // Coding tasks (edit, run checks, fix) get at least CODING_TIME_BUDGET_MS so
   // a verification repair fits even on a slow local model.
   const chatBackend = activeModel.includes('/') ? activeModel.slice(0, activeModel.indexOf('/')) : 'ollama';
+  // Local servers (local/) keep the longer budget: engines such as Strata spend
+  // about a minute reading every 30K prompt tokens.
   const isLocalBackend = chatBackend === 'ollama' && !activeModel.includes('cloud');
   const defaultBudgetMs = isLocalBackend ? 180_000 : 600_000;
   const effectiveTimeBudgetMs = timeBudgetMs > 0
@@ -7252,6 +7267,7 @@ function policyChatModel(model: string | undefined, availableLocalModels: Set<st
   const slash = name.indexOf('/');
   if (slash > 0) {
     const backend = name.slice(0, slash).toLowerCase();
+    if (backend === LOCAL_SERVER_BACKEND) return name;
     const preset = OPENAI_COMPATIBLE_PRESETS[backend];
     return preset && readApiKey(preset) ? name : undefined;
   }
