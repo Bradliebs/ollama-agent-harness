@@ -114,6 +114,31 @@ describe('runExperiment', () => {
     }
   });
 
+  it('stops when a variant capability layers were not applied, instead of scoring it', async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    // The daemon reports the baseline's layers as skipped (e.g. an unprobed model).
+    const fetchImpl = ((input: unknown, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string) as Record<string, unknown>;
+      sent.push(body);
+      const skipped = (body.layers as { adapter?: boolean } | undefined)?.adapter ? ['adapter: baseline-model has not been probed'] : [];
+      const lines = [
+        `data: ${JSON.stringify({ type: 'capability_layers', applied: [], skipped })}\n`,
+        `data: ${JSON.stringify({ type: 'text', content: 'hello' })}\n`,
+        `data: ${JSON.stringify({ type: 'done' })}\n`,
+      ];
+      let index = 0;
+      return Promise.resolve({ ok: true, status: 200, body: { getReader: () => ({ read: () => Promise.resolve(index < lines.length ? { value: new TextEncoder().encode(lines[index++]), done: false } : { value: undefined, done: true }) }) } } as unknown as Response);
+    }) as typeof fetch;
+    await expect(runExperiment({
+      projectDir: tmpDir,
+      manifest: { ...manifest(), baseline: { ...manifest().baseline, layers: { adapter: true } }, candidate: { ...manifest().candidate, layers: {} } },
+      fetchImpl,
+      now: () => new Date('2026-06-09T00:00:00.000Z'),
+    })).rejects.toThrow("Experiment invalid: the baseline variant's capability layers were not applied (adapter: baseline-model has not been probed).");
+    // It stopped before spending anything on the candidate.
+    expect(sent.every((body) => body.model === 'baseline-model')).toBe(true);
+  });
+
   it('enforces maxDurationMs after benchmark runs', async () => {
     let index = 0;
     const ticks = [

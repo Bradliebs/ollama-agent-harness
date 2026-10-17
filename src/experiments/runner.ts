@@ -1,5 +1,5 @@
 import * as crypto from 'crypto';
-import { runBenchmark, type BenchmarkRunOptions } from '../eval/benchmark';
+import { LAYERS_NOT_APPLIED, runBenchmark, type BenchmarkRun, type BenchmarkRunOptions } from '../eval/benchmark';
 import { loadSafetyRules } from '../learning/promotionGate';
 import { buildExperimentPromotionEvidence, buildExperimentSafetyEvidence } from './evidence';
 import { scorePairedExperiment } from './scoring';
@@ -45,13 +45,17 @@ export async function runExperiment(options: RunExperimentOptions): Promise<RunE
     ...commonOptions,
     model: options.manifest.baseline.model,
     systemPrompt: options.manifest.baseline.systemPrompt,
+    layers: options.manifest.baseline.layers,
   });
+  enforceLayersApplied('baseline', baselineRun);
   enforceElapsedBudget(options.manifest, startedAt, now());
   const candidateRun = await runBenchmark({
     ...commonOptions,
     model: options.manifest.candidate.model,
     systemPrompt: options.manifest.candidate.systemPrompt,
+    layers: options.manifest.candidate.layers,
   });
+  enforceLayersApplied('candidate', candidateRun);
   const finishedAt = now();
   enforceElapsedBudget(options.manifest, startedAt, finishedAt);
   enforceToolCallBudget(options.manifest, baselineRun, candidateRun);
@@ -82,6 +86,15 @@ export async function runExperiment(options: RunExperimentOptions): Promise<RunE
   };
   if (persist) await persistExperimentExecution(options.projectDir, record);
   return { type: 'completed', record };
+}
+
+/**
+ * A variant whose capability layers were not applied didn't test what it says;
+ * scoring it (errors count as failures) could keep or discard on a false basis.
+ */
+function enforceLayersApplied(variant: 'baseline' | 'candidate', run: BenchmarkRun): void {
+  const skipped = run.results.find((result) => result.status === 'error' && result.reason.startsWith(LAYERS_NOT_APPLIED));
+  if (skipped) throw new Error(`Experiment invalid: the ${variant} variant's capability layers were not applied (${skipped.reason.slice(LAYERS_NOT_APPLIED.length + 2)}).`);
 }
 
 function enforceElapsedBudget(manifest: ExperimentManifest, startedAt: Date, checkedAt: Date): void {

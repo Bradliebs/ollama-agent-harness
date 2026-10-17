@@ -5,7 +5,9 @@ import * as path from 'path';
 import { readFile } from 'fs/promises';
 import type { Message } from 'ollama';
 import { OllamaClient } from '../core/ollamaClient';
-import { createChatClient } from '../core/chatClientFactory';
+import { createChatClient, resolveModelSelection } from '../core/chatClientFactory';
+import { applyCapabilityLayers, layersFromEnv, type AppliedCapabilityLayers, type CapabilityLayerSpec } from '../models/capabilityLayers';
+import { loadProtectedPaths } from '../context/workingState';
 import type { IChatClient } from '../core/chatClient';
 import { queryLoop, resolveVerifyEnabled, type QueryLoopDeps } from '../core/queryLoop';
 import { getBuiltinTools } from '../tools';
@@ -524,6 +526,11 @@ export async function main(): Promise<void> {
   const projectDir = getWorkspaceDataRoot();
   await loadHeadlessRuntimeSettings(projectDir);
 
+  // Measuring commands never fall back to another provider: the result must come
+  // from the model named, and the prompts must go only where you sent them.
+  // "provider/model" ids pick their backend, so one run can compare local and cloud.
+  const createEvalClient = (model: string): IChatClient => createChatClient({ ...resolveModelSelection(model, options.backend), host: options.host, autoFallback: false, projectDir });
+
   if (options.command === 'replay') {
     const models = options.replayModels ?? [];
     if (models.length === 0) {
@@ -535,7 +542,7 @@ export async function main(): Promise<void> {
       const report = await benchmarkHistory(projectDir, {
         models,
         lastN: options.replayLastN,
-        createClient: (model) => createChatClient({ backend: options.backend, model, host: options.host, autoFallback: true, projectDir }),
+        createClient: (model) => createEvalClient(model),
         schemaTools: getBuiltinTools(),
         deferTools: options.deferTools,
       });
@@ -551,7 +558,7 @@ export async function main(): Promise<void> {
     const replayCase = await loadReplayCase(projectDir, options.replayRunId);
     const replays = [];
     for (const model of models) {
-      const client = createChatClient({ backend: options.backend, model, host: options.host, autoFallback: true, projectDir });
+      const client = createEvalClient(model);
       const tools = options.replayLive ? getBuiltinTools().filter((tool) => tool.isReadOnly === true) : undefined;
       replays.push((await replayRun(replayCase, {
         client,
@@ -578,7 +585,7 @@ export async function main(): Promise<void> {
     const report = await benchmarkHistory(projectDir, {
       models,
       lastN: options.benchmarkLastN ?? 10,
-      createClient: (model) => createChatClient({ backend: options.backend, model, host: options.host, autoFallback: true, projectDir }),
+      createClient: (model) => createEvalClient(model),
       schemaTools: getBuiltinTools(),
       deferTools: options.deferTools,
     });
@@ -588,11 +595,11 @@ export async function main(): Promise<void> {
   }
 
   if (options.command === 'probe') {
+    // Never falls back: the profile is saved for the model named, and trusted for 30 days.
     const clientConfig = {
-      backend: options.backend,
-      model: options.model,
+      ...resolveModelSelection(options.model, options.backend),
       host: options.host,
-      autoFallback: true,
+      autoFallback: false,
       projectDir,
     };
     let client = createChatClient(clientConfig);
@@ -627,11 +634,11 @@ export async function main(): Promise<void> {
 
   // Initialize client (Ollama by default; OpenAI-compatible providers via
   // --backend or HARNESS_BACKEND env var).
+  // Remote fallback follows HARNESS_REMOTE_AUTO_FALLBACK (off by default), as in the web chat.
+  // A "provider/model" id picks its backend, as in the web UI (and finds the same probe profile).
   const baseClientConfig = {
-    backend: options.backend,
-    model: options.model,
+    ...resolveModelSelection(options.model, options.backend),
     host: options.host,
-    autoFallback: true,
   };
   let client = createChatClient(baseClientConfig);
 
@@ -745,6 +752,22 @@ export async function main(): Promise<void> {
     validateToolInput: true,
     context: { maxTokens: contextMaxTokens },
   };
+  const protectedPaths = await loadProtectedPaths(projectDir);
+  if (protectedPaths.length > 0) config.protectedPaths = protectedPaths;
+  // Capability layers switched on by environment variables apply here as in the
+  // web chat (this is also the autonomy loop's path). Interactive mode applies
+  // them per message.
+  const layerSpec = layersFromEnv();
+  if (headlessPrompt) {
+    reportCapabilityLayers(await applyCapabilityLayers(layerSpec, {
+      config,
+      tools,
+      model: options.model,
+      projectDir,
+      userMessages: [headlessPrompt],
+      externalPlanner: process.env.HARNESS_CONDUCTOR === '1',
+    }));
+  }
 
   const deps: QueryLoopDeps = {
     client,
@@ -752,7 +775,7 @@ export async function main(): Promise<void> {
     permissionCheck: (call) => permissionEngine.evaluateAsync(call),
     session,
     summarizerClient: options.summarizerModel
-      ? createChatClient({ backend: options.backend, model: options.summarizerModel, host: options.host, autoFallback: true })
+      ? createChatClient({ ...resolveModelSelection(options.summarizerModel, options.backend), host: options.host })
       : undefined,
   };
 
@@ -774,7 +797,7 @@ export async function main(): Promise<void> {
   }
 
   // Interactive mode
-  await runInteractive(config, deps, session);
+  await runInteractive(config, deps, session, undefined, { layers: layerSpec, projectDir });
 }
 
 export function formatSetupHealth(result: SetupHealthResult): string {
@@ -1317,11 +1340,18 @@ async function runCompactRemoteSmoke(client: IChatClient, prompt: string): Promi
   console.log(content.trim());
 }
 
+/** One line each for the capability layers that were applied or skipped (stderr, beside the tool progress, so piped answers stay clean). */
+function reportCapabilityLayers(result: AppliedCapabilityLayers): void {
+  if (result.applied.length > 0) console.error(`🧩 Capability layers: ${result.applied.join('; ')}`);
+  if (result.skipped.length > 0) console.error(`⚠️  Capability layers skipped: ${result.skipped.join('; ')}`);
+}
+
 export async function runInteractive(
   config: LoopConfig,
   deps: QueryLoopDeps,
   session: SessionStorage,
   rl: Pick<readline.Interface, 'question' | 'close'> = readline.createInterface({ input: process.stdin, output: process.stdout }),
+  options: { layers?: CapabilityLayerSpec; projectDir?: string } = {},
 ): Promise<void> {
   console.log(`🤖 Ollama Agent Harness (${config.model})`);
   console.log('Type your message. /clear starts a new conversation, /quit exits.\n');
@@ -1352,12 +1382,20 @@ export async function runInteractive(
     }
 
     const messages: Message[] = [...history, { role: 'user', content: trimmed }];
+    // Layers depend on the conversation (tool relevance, recalled lessons), so they are applied per message.
+    let turnConfig = config;
+    if (options.layers && options.projectDir && Object.keys(options.layers).length > 0) {
+      turnConfig = { ...config };
+      const userMessages = messages.filter((m) => m.role === 'user').map((m) => String(m.content));
+      const result = await applyCapabilityLayers(options.layers, { config: turnConfig, tools: deps.tools, model: config.model, projectDir: options.projectDir, userMessages });
+      if (history.length === 0) reportCapabilityLayers(result);
+    }
     let assistantText = '';
     let toolCalls = 0;
     const toolSummaries: string[] = [];
     const errors: string[] = [];
     try {
-      for await (const event of queryLoop(config, deps, messages)) {
+      for await (const event of queryLoop(turnConfig, deps, messages)) {
         switch (event.type) {
           case 'text':
             assistantText += event.content;

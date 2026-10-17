@@ -1,4 +1,4 @@
-import { createChatClient, OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiKey, resolveProviderBaseUrl } from './chatClientFactory';
+import { createChatClient, OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiKey, resolveModelSelection, resolveProviderBaseUrl } from './chatClientFactory';
 import { FallbackChatClient } from './fallbackChatClient';
 import { OllamaClient } from './ollamaClient';
 import { OpenAIClient } from './openaiClient';
@@ -140,5 +140,28 @@ describe('createChatClient', () => {
   it('includes replicate in the REPLICATE_PRESET export', () => {
     expect(REPLICATE_PRESET.supportsTools).toBe(false);
     expect(REPLICATE_PRESET.apiKeyEnvVars).toContain('REPLICATE_API_TOKEN');
+  });
+});
+
+describe('resolveModelSelection', () => {
+  it('splits off a known backend prefix and leaves other ids alone', () => {
+    expect(resolveModelSelection('groq/llama-3.1-8b-instant')).toEqual({ backend: 'groq', model: 'llama-3.1-8b-instant' });
+    expect(resolveModelSelection('local/qwen3', 'ollama')).toEqual({ backend: 'local', model: 'qwen3' });
+    expect(resolveModelSelection('replicate/meta/meta-llama-3-8b-instruct')).toEqual({ backend: 'replicate', model: 'meta/meta-llama-3-8b-instruct' });
+    expect(resolveModelSelection('qwen3:8b', 'ollama')).toEqual({ backend: 'ollama', model: 'qwen3:8b' });
+    expect(resolveModelSelection('hf.co/org/model:Q4', 'ollama')).toEqual({ backend: 'ollama', model: 'hf.co/org/model:Q4' });
+  });
+
+  it('keeps a chosen backend own slashed model ids intact', () => {
+    expect(resolveModelSelection('openai/gpt-oss-20b', 'groq')).toEqual({ backend: 'groq', model: 'openai/gpt-oss-20b' });
+    expect(resolveModelSelection('anthropic/claude-sonnet-4.5', 'openrouter')).toEqual({ backend: 'openrouter', model: 'anthropic/claude-sonnet-4.5' });
+    const previous = process.env.HARNESS_BACKEND;
+    process.env.HARNESS_BACKEND = 'groq';
+    try {
+      expect(resolveModelSelection('openai/gpt-oss-20b')).toEqual({ backend: undefined, model: 'openai/gpt-oss-20b' });
+    } finally {
+      if (previous === undefined) delete process.env.HARNESS_BACKEND;
+      else process.env.HARNESS_BACKEND = previous;
+    }
   });
 });

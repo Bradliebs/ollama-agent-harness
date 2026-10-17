@@ -22,6 +22,14 @@ describe('validateExperimentManifest', () => {
     expect(result).toEqual({ ok: true, errors: [] });
   });
 
+  it('validates capability layers on each variant', () => {
+    expect(validateExperimentManifest(manifest({ baseline: { id: 'b', label: 'none', layers: {} }, candidate: { id: 'c', label: 'scaffold', layers: { scaffold: 'medium', adapter: true } } })))
+      .toEqual({ ok: true, errors: [] });
+    const bad = validateExperimentManifest(manifest({ candidate: { id: 'c', label: 'bad', layers: { scaffold: 'huge' } as never } }));
+    expect(bad.errors).toContain('candidate.layers: layers.scaffold must be light, medium, heavy or profile.');
+    expect(bad.ok).toBe(false);
+  });
+
   it('requires a hypothesis, mechanism, evaluator identity, and rollback target', () => {
     const result = validateExperimentManifest(manifest({
       hypothesis: '',

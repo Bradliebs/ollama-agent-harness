@@ -11,6 +11,7 @@
 // remove invariants or protected paths; those only tighten.
 
 import * as path from 'path';
+import { promises as fs } from 'fs';
 import type { Message } from 'ollama';
 import type { Tool, ToolResult } from '../types';
 
@@ -57,6 +58,16 @@ export interface StateUpdate {
 
 const LIMITS = { plan: 12, facts: 30, decisions: 20, openQuestions: 10, invariants: 20, protectedPaths: 50, sources: 12 } as const;
 const MAX_ITEM_CHARS = 300;
+/** User-declared paths tools must never modify: .harness/protected-paths.json (array of strings). */
+export async function loadProtectedPaths(projectDir: string): Promise<string[]> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(path.join(projectDir, '.harness', 'protected-paths.json'), 'utf-8')) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0).slice(0, 50) : [];
+  } catch {
+    return [];
+  }
+}
+
 export const DEFAULT_RENDER_CHARS = 4000;
 export const WORKING_STATE_HEADER = '## Working state (maintained by the harness; kept across compaction)';
 

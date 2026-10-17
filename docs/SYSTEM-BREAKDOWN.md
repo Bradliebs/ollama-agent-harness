@@ -323,6 +323,7 @@ required for the core chat loop. Key modules:
 | `probeRunner.ts` + `probes/` | `harness probe` suite: tool calling, structured output, instruction following, plan coherence, usable context |
 | `capabilityProfile.ts` | Saved profiles in `.harness/model-profiles/<model>.json` and the recommendations derived from scores |
 | `adapter.ts` | Per-model request plan (`HARNESS_ADAPTER_MODE=profile`): tool subset, JSON tool calls for weak native callers |
+| `capabilityLayers.ts` | Applies the opt-in layers (adapter, scaffolding, working state, lesson recall) from the environment or an experiment variant, for web chat, task mode, the CLI and autonomy; conversation-wide tool ranking; reports applied and skipped layers |
 | `modelCatalog.ts`, `modelRegistry.ts`, `modelRouter.ts`, `roleRouting.ts` | Catalog cache, model registry and routing helpers |
 | `visionModels.ts` | Vision-model detection |
 
@@ -559,7 +560,7 @@ from the request body; set them yourself only when running
 | `HARNESS_LESSONS` | record | `off`, `record`, or `recall` (also injects up to four relevant lessons) |
 | `HARNESS_PROMOTION_GATE_ENABLED` | off | Block learning-candidate promotion on safety / pass count |
 | `HARNESS_PROMOTION_REQUIRE_EXPERIMENT` | off | Also require a confirming experiment (`HARNESS_PROMOTION_EXPERIMENT_ID`, `HARNESS_PROMOTION_CANDIDATE_VARIANT_ID`) |
-| `HARNESS_EXPERIMENT_PROMPT_OVERRIDE` | off | Let chat requests carry their own `systemPrompt` (experiments only) |
+| `HARNESS_EXPERIMENT_PROMPT_OVERRIDE` | off | Let chat requests carry their own `systemPrompt` and capability `layers` (experiments only) |
 | `HARNESS_APPLY_EVOLVED_PROMPT_AUTONOMY` | off | Autonomy runs use the approved evolved system prompt |
 | `HARNESS_CURATOR_SAFETY_GATE` | off | Curator won't archive a skill that matches a high-severity safety rule (logged as `skip-safety`) |
 | `HARNESS_DISABLE_BUILD_GATE` | off | Skip the post-chat build check on changed files |

@@ -221,6 +221,25 @@ export function createChatClient(config: CreateClientConfig): IChatClient {
 }
 
 /**
+ * A model id that may name its backend, e.g. "groq/llama-3.1-8b-instant" or
+ * "local/qwen3": the backend prefix is split off when it names a known backend
+ * and no other backend was chosen (`defaultBackend`, else HARNESS_BACKEND, is
+ * Ollama). With a backend chosen, the id is that backend's own model id, which
+ * may itself contain a slash (OpenRouter's "openai/gpt-4o", Groq's
+ * "openai/gpt-oss-20b").
+ */
+export function resolveModelSelection(model: string, defaultBackend?: string): { backend?: string; model: string } {
+  const chosen = (defaultBackend ?? process.env.HARNESS_BACKEND ?? 'ollama').trim().toLowerCase();
+  if (chosen !== 'ollama') return { backend: defaultBackend, model };
+  const slash = model.indexOf('/');
+  const prefix = slash > 0 ? model.slice(0, slash).toLowerCase() : '';
+  if (prefix && (OPENAI_COMPATIBLE_PRESETS[prefix] || prefix === LOCAL_SERVER_BACKEND || prefix === 'replicate')) {
+    return { backend: prefix, model: model.slice(slash + 1) };
+  }
+  return { backend: defaultBackend, model };
+}
+
+/**
  * Apply the daily-spend cap decorator when HARNESS_DAILY_SPEND_USD is set to a
  * positive value. Re-reads the cap on every call inside the decorator so a
  * settings change takes effect without a restart. Skipped for local backends

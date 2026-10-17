@@ -5160,6 +5160,11 @@ async function sendMessage(opts) {
           case 'run':
             if (typeof ev.runId === 'string') turnRunId = ev.runId;
             break;
+          case 'capability_layers':
+            toolBox = ensureToolBox(toolBox);
+            if (Array.isArray(ev.applied) && ev.applied.length) appendToolItem(toolBox, '🧩', 'capability layers', ev.applied.map(String).join('; '), false);
+            if (Array.isArray(ev.skipped) && ev.skipped.length) appendToolItem(toolBox, '⚠️', 'layers skipped', ev.skipped.map(String).join('; '), false);
+            break;
           case 'mentioned_files':
             toolBox = ensureToolBox(toolBox);
             if (Array.isArray(ev.included) && ev.included.length) {

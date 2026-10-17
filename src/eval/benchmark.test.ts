@@ -54,6 +54,40 @@ describe('runBenchmarkTask', () => {
     } as unknown as Response);
   };
 
+  it('sends the variant capability layers with the request', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const inner = makeFetch('ready');
+    const recording: typeof fetch = (input, init) => { bodies.push(JSON.parse(String(init?.body))); return inner(input, init); };
+    const task: BenchmarkTask = { id: 'test.layers', tier: 'canned', description: 'layers', input: 'x', expectIncludes: ['ready'] };
+    await runBenchmarkTask(task, { fetchImpl: recording, layers: { scaffold: 'medium' } });
+    await runBenchmarkTask(task, { fetchImpl: recording, layers: {} });
+    await runBenchmarkTask(task, { fetchImpl: recording });
+    expect(bodies.map((body) => body.layers)).toEqual([{ scaffold: 'medium' }, {}, undefined]);
+  });
+
+  it('fails a task as an error when its requested layers were not applied', async () => {
+    const skippedFetch: typeof fetch = () => Promise.resolve({
+      ok: true,
+      status: 200,
+      body: {
+        getReader: () => {
+          const lines = [
+            `data: ${JSON.stringify({ type: 'capability_layers', applied: [], skipped: ['adapter: m has not been probed'] })}\n`,
+            `data: ${JSON.stringify({ type: 'text', content: 'ready' })}\n`,
+            `data: ${JSON.stringify({ type: 'done' })}\n`,
+          ];
+          let idx = 0;
+          return { read: () => Promise.resolve(idx < lines.length ? { value: new TextEncoder().encode(lines[idx++]), done: false } : { value: undefined, done: true }) };
+        },
+      },
+    } as unknown as Response);
+    const task: BenchmarkTask = { id: 'test.skip', tier: 'canned', description: 'skip', input: 'x', expectIncludes: ['ready'] };
+    const result = await runBenchmarkTask(task, { fetchImpl: skippedFetch, layers: { adapter: true } });
+    expect(result).toMatchObject({ status: 'error', failureCategory: 'ERROR', reason: 'Requested capability layers were not applied: adapter: m has not been probed' });
+    // Without requested layers the same stream scores normally.
+    expect((await runBenchmarkTask(task, { fetchImpl: skippedFetch })).status).toBe('pass');
+  });
+
   it('passes when expectIncludes is satisfied', async () => {
     const task: BenchmarkTask = { id: 'test.1', tier: 'canned', description: 'inc', input: 'x', expectIncludes: ['ready'] };
     const result = await runBenchmarkTask(task, { fetchImpl: makeFetch('I am ready now') });

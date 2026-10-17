@@ -1,4 +1,5 @@
 import type { BenchmarkRun, BenchmarkTier, FailureCategory } from '../eval/benchmark';
+import type { CapabilityLayerSpec } from '../models/capabilityLayers';
 
 export type ExperimentMutationScope =
   | 'model'
@@ -15,6 +16,13 @@ export interface ExperimentVariant {
   model?: string;
   enabledTools?: string[];
   systemPrompt?: string;
+  /**
+   * Capability layers for this variant (adapter, scaffold, workingState, lessons;
+   * see src/models/capabilityLayers.ts). When set, even to {}, they replace the
+   * daemon's environment choice for the variant's requests, so a baseline of {}
+   * means "no layers". Needs HARNESS_EXPERIMENT_PROMPT_OVERRIDE=1 on the daemon.
+   */
+  layers?: CapabilityLayerSpec;
   metadata?: Record<string, unknown>;
 }
 

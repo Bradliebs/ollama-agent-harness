@@ -355,7 +355,8 @@ No release tag, publication or installer runtime qualification is implied.
     saved (an empty reply too), and earlier replies carry a one-line,
     secret-redacted tool summary to the model.
   - The CLI's interactive mode keeps the conversation (it sent each prompt
-    alone), has `/clear`, and survives a failed turn.
+    alone), has `/clear`, and survives a failed turn. `/api/files` resolves
+    relative paths against the project.
   - Replies stream into the chat as they are written (`text_delta`
     previews behind `LoopConfig.streamText`, which `/api/chat` enables when
     the request sets `streamText: true` as the web UI does, and
@@ -373,8 +374,34 @@ No release tag, publication or installer runtime qualification is implied.
   reasoning instead of a blank reply, and use the server's context window
   (`/props` or `HARNESS_LOCAL_CONTEXT_WINDOW`, else 32K).
 - Docs: `HARNESS_REMOTE_AUTO_FALLBACK` is documented as off by default (opt in
-  with `1`), matching the code since v0.5.0. `/api/files` resolves relative paths against
-    the project.
+  with `1`), matching the code since v0.5.0.
+- Making models more capable:
+  - The opt-in capability layers (profile adapter, scaffolding, working state,
+    lesson recall) now apply the same way in the web chat, task mode, the CLI
+    and the autonomy loop (previously web chat only), through one helper
+    (`src/models/capabilityLayers.ts`). Task mode keeps heavy scaffolding's
+    one-tool steps but not its plan wording, plan-only first reply or tool
+    narrowing, since the conductor plans each step.
+  - When a layer limits the tools, half the slots (at least three from five
+    up) go to core tools (`file_read`,
+    `bash`, `file_edit`, `grep`, …) and the rest to the tools most relevant to
+    the whole conversation, so a small tool budget or a follow-up such as
+    "yes, do it" no longer leaves the model without reading or shell tools.
+  - The chat's tool activity and the CLI report which layers were applied, and
+    why any were skipped (a model not probed, or a profile out of date) instead
+    of silently doing nothing.
+  - Experiment variants can set `layers`, so a layer is A/B tested for
+    correctness before it is switched on (honoured with
+    `HARNESS_EXPERIMENT_PROMPT_OVERRIDE=1`); benchmark requests carry them. A
+    variant whose layers weren't applied (flag missing, invalid spec, model not
+    probed) stops the experiment with the reason instead of being scored.
+  - `harness probe`, `replay` and `benchmark-history` never fall back to
+    another provider (results were attributed to the model named, and prompts
+    went only to it), and accept `provider/model` ids; CLI chat follows
+    `HARNESS_REMOTE_AUTO_FALLBACK` like the web chat instead of always falling
+    back. `replicate/...` models picked in the web UI now reach Replicate.
+  - The CLI and task mode enforce `.harness/protected-paths.json`.
+  - New guide: [Getting more from your model](docs/MODEL-CAPABILITY.md).
 
 See [Modernization Status](docs/MODERNIZATION-STATUS.md) for the complete
 validation record and remaining installation, hosted CI and live-workflow gates.

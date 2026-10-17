@@ -10,7 +10,7 @@ import * as os from 'os';
 import { once } from 'events';
 import { Ollama } from 'ollama';
 import { OllamaClient, drainOllamaChatRetryEvents } from '../core/ollamaClient';
-import { createChatClient, OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiKey } from '../core/chatClientFactory';
+import { createChatClient, OPENAI_COMPATIBLE_PRESETS, REPLICATE_PRESET, readApiKey, resolveModelSelection } from '../core/chatClientFactory';
 import { LOCAL_SERVER_BACKEND, getLocalServerContextWindow, listLocalServerModels, localServerModelName } from '../core/localServer';
 import { drainRemoteProviderFallbackEvents } from '../core/fallbackChatClient';
 import type { IChatClient } from '../core/chatClient';
@@ -21,7 +21,7 @@ import { createLlmDecomposer, createOrchestrateFn, createToolchainVerifier, crea
 import { verifyService } from '../core/doneStateVerifier';
 import { createLlmAdversaryJudge, type AdversaryJudge } from '../safety/toolInspectors';
 import { selectCriticCandidates } from '../verification/criticModel';
-import { learnFromRun, loadLessons, recallLessons, renderLessons, resolveLessonsMode } from '../learning/lessons';
+import { learnFromRun, resolveLessonsMode } from '../learning/lessons';
 import { resolveResearchVerifyMode, type CriticAccess } from '../verification/researchVerifier';
 import { buildMorningBriefing, type BriefingCalendarEvent } from '../jarvis/morningBriefing';
 import { parseIcsEvents } from '../tools/calendarTools';
@@ -46,9 +46,9 @@ import { RunLog, newRunId, pruneRuns } from '../persistence/runLog';
 import { createRunRouter } from './runRoutes';
 import { createGitCheckpoint, deleteGitCheckpoint } from '../persistence/gitCheckpoint';
 import { isCapabilityProfileFresh, listCapabilityProfiles, loadCapabilityProfile, type CapabilityProfile } from '../models/capabilityProfile';
-import { rankToolsByRelevance, resolveScaffoldLevel, scaffoldFor, selectRelevantTools } from '../core/scaffolding';
 import { TOOL_SEARCH_NAME, planInitialToolsForConversation, resolveToolLoadingMode, shouldDeferTools } from '../core/toolLoading';
-import { compileModelRequestPlan } from '../models/adapter';
+import { applyCapabilityLayers, layersFromEnv, parseLayerSpec } from '../models/capabilityLayers';
+import { loadProtectedPaths } from '../context/workingState';
 import { DEFAULT_CONTEXT_MAX_TOKENS, isAutoContextMode, resolveEffectiveContextMaxTokensFromKnown } from '../models/contextWindow';
 import { probeContextWindow } from '../models/probes/usableContext';
 import { createModelProfileRouter } from './modelProfileRoutes';
@@ -249,15 +249,6 @@ app.use(express.static(path.join(__dirname, '..', '..', 'ui'), {
 const PROJECT_DIR = assertTestSafeProjectDir(resolveProjectDir());
 setProjectRoot(PROJECT_DIR);
 
-/** User-declared paths tools must never modify: .harness/protected-paths.json (array of strings). */
-async function loadProtectedPaths(): Promise<string[]> {
-  try {
-    const parsed = JSON.parse(await fs.readFile(path.join(PROJECT_DIR, '.harness', 'protected-paths.json'), 'utf-8')) as unknown;
-    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0).slice(0, 50) : [];
-  } catch {
-    return [];
-  }
-}
 
 /**
  * Event-sourced run recording (on by default; HARNESS_RUN_LOG=0 disables).
@@ -1334,11 +1325,8 @@ if ((process.env.HARNESS_AUDIT_LOG ?? '').trim().toLowerCase() !== 'off') {
 const permissionPrompts = new PermissionPromptBroker();
 const capabilityRegistry: CapabilityRegistry = createDefaultCapabilityRegistry();
 function resolveWebChatSelection(model: string): { backend: string; model: string } {
-  const slash = model.indexOf('/');
-  const backend = slash > 0 ? model.slice(0, slash).toLowerCase() : '';
-  return backend && (OPENAI_COMPATIBLE_PRESETS[backend] || backend === LOCAL_SERVER_BACKEND)
-    ? { backend, model: model.slice(slash + 1) }
-    : { backend: 'ollama', model };
+  const selection = resolveModelSelection(model, 'ollama');
+  return { backend: selection.backend ?? 'ollama', model: selection.model };
 }
 
 const defaultWebRuntime: WebRuntimeDeps = {
@@ -3510,6 +3498,11 @@ const runCodexTaskWithConductor: CodexTaskRunner = async ({ task, contract, prom
     taskType: contract.intent_type,
     abortSignal,
   };
+  const taskProtectedPaths = await loadProtectedPaths(PROJECT_DIR);
+  if (taskProtectedPaths.length > 0) config.protectedPaths = taskProtectedPaths;
+  const taskLayers = await applyCapabilityLayers(layersFromEnv(), { config, tools, model: activeModel, projectDir: PROJECT_DIR, userMessages: [prompt], externalPlanner: true });
+  if (taskLayers.applied.length > 0) logger.info('CapabilityLayers', 'Applied (task mode)', { model: activeModel, applied: taskLayers.applied });
+  if (taskLayers.skipped.length > 0) logger.warn('CapabilityLayers', 'Skipped (task mode)', { model: activeModel, skipped: taskLayers.skipped });
   const { onRunEnd: onTaskRunEnd, ...taskRecordingDeps } = startRunRecording('task');
   const deps: QueryLoopDeps = {
     client,
@@ -4914,12 +4907,13 @@ app.post('/api/chat', async (req, res) => {
   const { message, model } = req.body;
   if (!message) { res.status(400).json({ error: 'message is required' }); return; }
 
-  // Experiment prompt-mutation lever: when explicitly enabled, a request may
-  // supply its own system prompt so the experiment runner can evaluate
-  // prompt-scope variants. Gated behind an env flag because overriding the
+  // Experiment levers: when explicitly enabled, a request may supply its own
+  // system prompt (and capability layers, below) so the experiment runner can
+  // evaluate prompt- and layer-scope variants. Gated behind an env flag because overriding the
   // system prompt from request bodies is a privilege a normal chat client
   // must not have.
-  const requestPromptOverride = (process.env.HARNESS_EXPERIMENT_PROMPT_OVERRIDE === '1'
+  const experimentOverridesAllowed = process.env.HARNESS_EXPERIMENT_PROMPT_OVERRIDE === '1';
+  const requestPromptOverride = (experimentOverridesAllowed
     && typeof req.body?.systemPrompt === 'string'
     && req.body.systemPrompt.length > 0)
     ? String(req.body.systemPrompt).slice(0, 20_000)
@@ -5570,53 +5564,36 @@ CONTEXT HYGIENE (critical for long tasks):
     ...(cacheLayout ? { promptLayout: 'cache' as const, ...(turnContextBlocks.length > 0 ? { turnContext: turnContextBlocks.join('\n\n') } : {}) } : {}),
   };
 
-  // Governed working state: protected paths from .harness/protected-paths.json
-  // are always enforced; HARNESS_WORKING_STATE=on also injects the state into
-  // every prompt and offers the state_update tool (answer-changing, opt-in).
-  const protectedPaths = await loadProtectedPaths();
+  // Protected paths from .harness/protected-paths.json are always enforced.
+  const protectedPaths = await loadProtectedPaths(PROJECT_DIR);
   if (protectedPaths.length > 0) config.protectedPaths = protectedPaths;
-  if (process.env.HARNESS_WORKING_STATE === 'on') {
-    // HARNESS_WORKING_STATE_POSITION=tail keeps the cached prefix stable when the state changes.
-    config.workingState = { inject: true, ...(process.env.HARNESS_WORKING_STATE_POSITION?.trim().toLowerCase() === 'tail' ? { position: 'tail' as const } : {}) };
-  }
 
-  // Lessons from earlier runs are always recorded; recalling them into the
-  // prompt changes answers, so it is opt-in (HARNESS_LESSONS=recall).
-  if (resolveLessonsMode() === 'recall') {
-    const recalled = recallLessons(await loadLessons(PROJECT_DIR), message);
-    if (recalled.length > 0) {
-      // Recalled lessons depend on the message, so the cache layout keeps
-      // them out of the system prompt.
-      if (cacheLayout) config.turnContext = [config.turnContext, renderLessons(recalled)].filter(Boolean).join('\n\n');
-      else config.systemPrompt = `${config.systemPrompt}\n\n${renderLessons(recalled)}`;
-      config.recalledLessons = recalled.map((lesson) => lesson.id);
-    }
+  // Capability layers (adapter, scaffolding, working state, lesson recall):
+  // off unless switched on by environment variables. An experiment variant
+  // may choose its own (`layers` in the request) when experiment overrides
+  // are enabled; then it replaces the environment's choice for this request.
+  const priorUserMessages = (Array.isArray(req.body?.history) ? req.body.history : [])
+    .filter((item: { role?: unknown; content?: unknown }) => item?.role === 'user' && typeof item.content === 'string')
+    .map((item: { content: string }) => item.content.slice(0, 2_000));
+  const requestLayers = experimentOverridesAllowed && req.body?.layers !== undefined ? parseLayerSpec(req.body.layers) : null;
+  const layerSpec = requestLayers && 'spec' in requestLayers ? requestLayers.spec : layersFromEnv();
+  const appliedLayers = await applyCapabilityLayers(layerSpec, {
+    config,
+    tools,
+    model: activeModel,
+    projectDir: PROJECT_DIR,
+    userMessages: [...priorUserMessages, message],
+    cacheLayout,
+  });
+  // Say so when a request's own layers were not used, so an experiment can't
+  // compare two runs that silently had the same layers.
+  if (req.body?.layers !== undefined && !experimentOverridesAllowed) {
+    appliedLayers.skipped.unshift('request layers: ignored (the daemon needs HARNESS_EXPERIMENT_PROMPT_OVERRIDE=1)');
+  } else if (requestLayers && 'error' in requestLayers) {
+    appliedLayers.skipped.unshift(`request layers: ignored (${requestLayers.error})`);
   }
-
-  // Capability-profile adapter and adjustable scaffolding. Both change
-  // answers, so both are opt-in (HARNESS_ADAPTER_MODE=profile,
-  // HARNESS_SCAFFOLD_MODE=profile|light|medium|heavy) until replay evals
-  // approve them. Tools are ranked by relevance to the user's message.
-  const adapterMode = process.env.HARNESS_ADAPTER_MODE;
-  const scaffoldMode = process.env.HARNESS_SCAFFOLD_MODE;
-  if (adapterMode === 'profile' || scaffoldMode) {
-    const loaded = await loadCapabilityProfile(activeModel, PROJECT_DIR).catch(() => null);
-    const capability = loaded && isCapabilityProfileFresh(loaded) ? loaded : null;
-    if (adapterMode === 'profile' && capability) {
-      const plan = compileModelRequestPlan({ tools, systemPrompt: config.systemPrompt, profile: capability, relevanceScores: rankToolsByRelevance(tools, message) });
-      config.systemPrompt = plan.systemPrompt;
-      config.modelPlan = { toolMode: plan.toolMode, toolNames: plan.tools.map((tool) => tool.name), ...(plan.format ? { format: plan.format } : {}) };
-      logger.info('Adapter', 'Compiled model request plan', { model: activeModel, toolMode: plan.toolMode, tools: plan.tools.length });
-    }
-    const scaffoldLevel = resolveScaffoldLevel(scaffoldMode, capability?.recommended.scaffoldLevel);
-    if (scaffoldLevel && scaffoldLevel !== 'light') {
-      config.scaffold = scaffoldFor(scaffoldLevel);
-      if (!config.modelPlan && config.scaffold.maxToolsOffered > 0) {
-        config.modelPlan = { toolMode: 'native', toolNames: selectRelevantTools(tools, message, config.scaffold.maxToolsOffered).map((tool) => tool.name) };
-      }
-      logger.info('Scaffold', 'Applied scaffolding level', { model: activeModel, level: scaffoldLevel, source: scaffoldMode });
-    }
-  }
+  if (appliedLayers.applied.length > 0) logger.info('CapabilityLayers', 'Applied', { model: activeModel, applied: appliedLayers.applied });
+  if (appliedLayers.skipped.length > 0) logger.warn('CapabilityLayers', 'Skipped', { model: activeModel, skipped: appliedLayers.skipped });
 
   // Deferred tool loading (opt-in, HARNESS_TOOL_LOADING=deferred|auto): offer
   // core tools plus the ones most relevant to this message, and a tool_search
@@ -5628,9 +5605,6 @@ CONTEXT HYGIENE (critical for long tasks):
       // Picks from every user message so far, not just this one, so the
       // offered set (sent first in every request) only grows within a chat
       // instead of changing from message to message and breaking the cached prefix.
-      const priorUserMessages = (Array.isArray(req.body?.history) ? req.body.history : [])
-        .filter((item: { role?: unknown; content?: unknown }) => item?.role === 'user' && typeof item.content === 'string')
-        .map((item: { content: string }) => item.content.slice(0, 2_000));
       config.toolLoading = { initial: planInitialToolsForConversation(tools, [...priorUserMessages, message]) };
       logger.info('ToolLoading', 'Deferred tool loading', { model: activeModel, mode: toolLoadingMode, offered: config.toolLoading.initial.length, total: tools.length, allSchemaTokens });
     }
@@ -5834,6 +5808,9 @@ CONTEXT HYGIENE (critical for long tasks):
         await createGitCheckpoint(PROJECT_DIR, deps.runLog.runId).catch((err) => recordSwallowed('runLog.gitCheckpoint', err));
       }
       res.write(`data: ${JSON.stringify({ type: 'run', runId: deps.runLog.runId })}\n\n`);
+    }
+    if (appliedLayers.applied.length > 0 || appliedLayers.skipped.length > 0) {
+      res.write(`data: ${JSON.stringify({ type: 'capability_layers', applied: appliedLayers.applied, skipped: appliedLayers.skipped })}\n\n`);
     }
     if (mentionedFiles && (mentionedFiles.included.length > 0 || mentionedFiles.notFound.length > 0)) {
       res.write(`data: ${JSON.stringify({ type: 'mentioned_files', included: mentionedFiles.included, notFound: mentionedFiles.notFound })}\n\n`);

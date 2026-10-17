@@ -15,6 +15,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import type { CapabilityLayerSpec } from '../models/capabilityLayers';
 import { writeMetricsJson, aggregatePanels, type BenchmarkRunMetrics, type BenchmarkTaskMetrics } from '../verification/metrics';
 
 // ─── Schema ──────────────────────────────────────────────────────────
@@ -112,6 +113,9 @@ export interface BenchmarkRun {
   results: BenchmarkTaskResult[];
 }
 
+/** Reason prefix of a task whose requested capability layers were not applied. */
+export const LAYERS_NOT_APPLIED = 'Requested capability layers were not applied';
+
 // ─── SSE stream consumer (shared with simulator.ts) ──────────────────
 
 interface StreamObservation {
@@ -120,6 +124,8 @@ interface StreamObservation {
   turnCount: number;
   completed: boolean;
   error?: string;
+  /** Capability layers the daemon reported as not applied (capability_layers events). */
+  layersSkipped: string[];
 }
 
 async function consumeChatStream(response: Response, timeoutMs: number): Promise<StreamObservation> {
@@ -133,6 +139,7 @@ async function consumeChatStream(response: Response, timeoutMs: number): Promise
   const toolCalls: string[] = [];
   let turnCount = 0;
   let streamError: string | undefined;
+  const layersSkipped: string[] = [];
   const startedAt = Date.now();
 
   while (true) {
@@ -146,21 +153,23 @@ async function consumeChatStream(response: Response, timeoutMs: number): Promise
       const line = rawLine.replace(/\r$/, '');
       if (!line.startsWith('data: ')) continue;
       const payloadText = line.slice(6);
-      if (payloadText === '[DONE]') return { responseText, toolCalls, turnCount, completed: true, error: streamError };
+      if (payloadText === '[DONE]') return { responseText, toolCalls, turnCount, completed: true, error: streamError, layersSkipped };
       try {
-        const event = JSON.parse(payloadText) as { type?: string; content?: string; call?: { name?: string }; turn?: number; reason?: string; message?: string };
+        const event = JSON.parse(payloadText) as { type?: string; content?: string; call?: { name?: string }; turn?: number; reason?: string; message?: string; skipped?: unknown };
         if (event.type === 'text' && typeof event.content === 'string') responseText += event.content;
         else if (event.type === 'tool_call' && event.call?.name) toolCalls.push(event.call.name);
         else if (event.type === 'turn_complete') turnCount = (event.turn ?? 0) + 1;
         else if (event.type === 'error') streamError = event.message || 'Chat stream reported an error';
+        else if (event.type === 'capability_layers' && Array.isArray(event.skipped)) layersSkipped.push(...event.skipped.map(String));
         else if (event.type === 'done') return {
           responseText, toolCalls, turnCount, completed: true,
           error: streamError || (event.reason && event.reason !== 'completed' ? `Chat ended: ${event.reason}` : undefined),
+          layersSkipped,
         };
       } catch { /* skip malformed lines */ }
     }
   }
-  return { responseText, toolCalls, turnCount, completed: false, error: streamError };
+  return { responseText, toolCalls, turnCount, completed: false, error: streamError, layersSkipped };
 }
 
 // ─── Scorer ──────────────────────────────────────────────────────────
@@ -238,6 +247,12 @@ export interface BenchmarkRunOptions {
    */
   systemPrompt?: string;
   /**
+   * Optional capability layers sent with each /api/chat request (the daemon only
+   * honors them when HARNESS_EXPERIMENT_PROMPT_OVERRIDE=1). Used by the experiment
+   * runner to A/B test layers such as scaffolding or the profile adapter.
+   */
+  layers?: CapabilityLayerSpec;
+  /**
    * Number of stochastic replicates to run per task (default 1). When > 1,
    * each task is run this many times and the replicates are aggregated into a
    * single majority-vote verdict, with the k/N pass count recorded on the
@@ -304,6 +319,7 @@ export async function runBenchmarkTask(task: BenchmarkTask, options: BenchmarkRu
         message: task.input,
         model: options.model,
         ...(options.systemPrompt ? { systemPrompt: options.systemPrompt } : {}),
+        ...(options.layers ? { layers: options.layers } : {}),
       }),
     });
     obs = await consumeChatStream(response, timeoutMs);
@@ -335,6 +351,22 @@ export async function runBenchmarkTask(task: BenchmarkTask, options: BenchmarkRu
       status: 'fail',
       failureCategory: 'TIMEOUT',
       reason: `Task exceeded ${timeoutMs}ms timeout`,
+      responsePreview: obs.responseText.slice(0, 300),
+      toolCalls: obs.toolCalls,
+      durationMs,
+      tags: task.tags ?? [],
+    };
+  }
+
+  // A variant whose layers were not applied would be compared as if they had been.
+  if (options.layers && obs.layersSkipped.length > 0) {
+    return {
+      taskId: task.id,
+      tier: task.tier,
+      description: task.description,
+      status: 'error',
+      failureCategory: 'ERROR',
+      reason: `${LAYERS_NOT_APPLIED}: ${obs.layersSkipped.join('; ')}`,
       responsePreview: obs.responseText.slice(0, 300),
       toolCalls: obs.toolCalls,
       durationMs,

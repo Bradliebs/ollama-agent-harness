@@ -51,7 +51,12 @@ Create a JSON manifest with these sections:
   `model`, `prompt`, `skill`, `tool_config`, `routing_config`, or
   `retrieval_config`
 * `rollbackTarget` records the state you can return to if the candidate loses
-* `baseline` and `candidate` define the paired variants
+* `baseline` and `candidate` define the paired variants: a `model`, an optional
+  `systemPrompt`, and optional capability `layers` (`adapter`, `scaffold`,
+  `workingState`, `lessons`; `{}` means none, whatever the daemon's environment
+  sets). Prompts and layers are only honoured when the daemon runs with
+  `HARNESS_EXPERIMENT_PROMPT_OVERRIDE=1`; see
+  [Getting more from your model](MODEL-CAPABILITY.md) for an example
 * `evaluation` selects the frozen benchmark dataset, scorer version, task IDs,
   tiers, timeout, and an optional held-out confirmation split (`holdout`)
 * `budget` limits selected tasks, estimated paired cost units, elapsed duration,
@@ -221,9 +226,11 @@ budget gates see the real spend.
 
 Two practical constraints:
 
-* Replicates only vary if the daemon samples at temperature `> 0` (the default
-  `0.2` is fine). At temperature `0` every replicate is identical and the run is
-  equivalent to `replicates: 1` at `N×` the cost.
+* Replicates only vary if the model samples at temperature `> 0`. The harness
+  doesn't set a temperature (the Settings value isn't sent yet), so each model
+  uses its own default, usually above zero; a model or Modelfile pinned to `0`
+  makes every replicate identical, equivalent to `replicates: 1` at `N×` the
+  cost.
 * A run with `N` replicates spends roughly `N×` the duration and tool-call
   budget, so scale `budget.maxCostUnits`, `budget.maxDurationMs`, and
   `budget.maxToolCalls` accordingly.

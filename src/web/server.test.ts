@@ -4026,6 +4026,72 @@ describe('web server API validation', () => {
     expect(inferModelCapabilities('gemma4:e4b').toolUse).toBe('weak');
   });
 
+  it('lets an experiment request choose its own capability layers only when overrides are enabled', async () => {
+    const captured: LoopConfig[] = [];
+    let body = '';
+    const tools = ['web_search', 'file_read', 'bash', 'calendar_read', 'email_send', 'pdf_read', 'grep', 'list_files', 'file_edit', 'file_write', 'web_read', 'kanban_move']
+      .map((name) => ({ name, description: name.replace('_', ' '), parameters: { type: 'object', properties: {} }, isReadOnly: true, execute: jest.fn() }));
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => tools as never,
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('layers-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
+        captured.push(config);
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+    const previousScaffold = process.env.HARNESS_SCAFFOLD_MODE;
+    const previousOverride = process.env.HARNESS_EXPERIMENT_PROMPT_OVERRIDE;
+    process.env.HARNESS_SCAFFOLD_MODE = 'heavy';
+    const send = async (layers: unknown) => {
+      body = await (await request('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'check the calendar', model: 'test-model', layers }),
+      })).text();
+    };
+    try {
+      // Without the experiment flag the request cannot change the layers.
+      delete process.env.HARNESS_EXPERIMENT_PROMPT_OVERRIDE;
+      await send({});
+      expect(captured[0].scaffold?.level).toBe('heavy');
+      expect(body).toContain('"type":"capability_layers"');
+      expect(body).toContain('scaffold: heavy');
+      expect(body).toContain('request layers: ignored (the daemon needs HARNESS_EXPERIMENT_PROMPT_OVERRIDE=1)');
+      // With it, the variant's layers replace the environment's: {} means none.
+      process.env.HARNESS_EXPERIMENT_PROMPT_OVERRIDE = '1';
+      await send({});
+      expect(captured[1].scaffold).toBeUndefined();
+      expect(captured[1].modelPlan).toBeUndefined();
+      await send({ scaffold: 'medium' });
+      expect(captured[2].scaffold?.level).toBe('medium');
+      expect(captured[2].modelPlan?.toolNames).toHaveLength(10);
+      // Invalid layers fall back to the environment's choice.
+      await send({ scaffold: 'extreme' });
+      expect(captured[3].scaffold?.level).toBe('heavy');
+      expect(body).toContain('request layers: ignored (layers.scaffold must be light, medium, heavy or profile)');
+    } finally {
+      if (previousScaffold === undefined) delete process.env.HARNESS_SCAFFOLD_MODE;
+      else process.env.HARNESS_SCAFFOLD_MODE = previousScaffold;
+      if (previousOverride === undefined) delete process.env.HARNESS_EXPERIMENT_PROMPT_OVERRIDE;
+      else process.env.HARNESS_EXPERIMENT_PROMPT_OVERRIDE = previousOverride;
+      restore();
+    }
+  });
   it('applies forced scaffolding with a relevance-ranked tool subset', async () => {
     let captured: LoopConfig | undefined;
     const tools = ['web_search', 'web_read', 'file_write', 'file_read', 'bash', 'email_send', 'calendar_read', 'pdf_read', 'grep']

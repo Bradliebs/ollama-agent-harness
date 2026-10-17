@@ -1,4 +1,5 @@
 import type { BenchmarkTask } from '../eval/benchmark';
+import { parseLayerSpec } from '../models/capabilityLayers';
 import type { EvaluatorIdentity, ExperimentManifest, ExperimentMutationScope } from './types';
 
 export interface ManifestValidationResult {
@@ -38,6 +39,13 @@ export function validateExperimentManifest(manifest: ExperimentManifest): Manife
     if (manifest.allowedMutationScopes.includes('none') && manifest.allowedMutationScopes.length > 1) {
       errors.push('allowedMutationScopes cannot combine none with mutable scopes.');
     }
+  }
+
+  for (const variant of ['baseline', 'candidate'] as const) {
+    const layers = manifest[variant]?.layers;
+    if (layers === undefined) continue;
+    const parsed = parseLayerSpec(layers);
+    if ('error' in parsed) errors.push(`${variant}.layers: ${parsed.error}.`);
   }
 
   if (manifest.baseline?.id && manifest.candidate?.id && manifest.baseline.id === manifest.candidate.id) {
