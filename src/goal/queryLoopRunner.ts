@@ -89,6 +89,7 @@ export function makeQueryLoopRunner(opts: MakeQueryLoopRunnerOptions): Iteration
     const filesTouched = new Set<string>();
     let tokensUsed = 0;
     let lastText = '';
+    let cutOffPrefix = '';
     let doneReason: string | undefined;
     let firstError: string | undefined;
 
@@ -103,7 +104,13 @@ export function makeQueryLoopRunner(opts: MakeQueryLoopRunnerOptions): Iteration
             tokensUsed += (ev.promptTokens ?? 0) + (ev.completionTokens ?? 0);
             break;
           case 'text':
-            lastText = ev.content;
+            // A reply cut off at the output limit arrives in parts: keep them together.
+            if (ev.partial) {
+              cutOffPrefix += ev.content;
+            } else {
+              lastText = cutOffPrefix + ev.content;
+              cutOffPrefix = '';
+            }
             break;
           case 'error':
             if (!firstError) firstError = ev.message;

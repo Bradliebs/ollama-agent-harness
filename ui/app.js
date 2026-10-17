@@ -5160,6 +5160,12 @@ async function sendMessage(opts) {
           case 'run':
             if (typeof ev.runId === 'string') turnRunId = ev.runId;
             break;
+          case 'output_limit':
+            toolBox = ensureToolBox(toolBox);
+            appendToolItem(toolBox, '✂️', 'output limit', ev.droppedToolCalls
+              ? ev.droppedToolCalls + ' cut-off tool call(s) not run' + (ev.continuing ? ' — asked the model to write in smaller parts' : '')
+              : (ev.contextFull ? 'the context window is full, so the reply was cut off' : ev.continuing ? 'the reply was cut off — continuing it' : 'the reply was cut off at the model\'s output limit'), !ev.continuing);
+            break;
           case 'capability_layers':
             toolBox = ensureToolBox(toolBox);
             if (Array.isArray(ev.applied) && ev.applied.length) appendToolItem(toolBox, '🧩', 'capability layers', ev.applied.map(String).join('; '), false);
@@ -5243,7 +5249,11 @@ async function sendMessage(opts) {
                 : typeof input.query === 'string' ? input.query.slice(0, 60)
                 : typeof input.url === 'string' ? input.url.slice(0, 80) : '';
               turnActivity.push({ text: name + (target ? ' ' + redactActivityText(target) : '') + (ev.result?.success ? '' : ' (failed)'), important: !ev.result?.success || ['file_write', 'file_edit', 'file_move', 'file_delete', 'bash', 'docker_exec'].includes(name) });
-              if (ev.result?.success && ['file_write', 'file_edit', 'file_move', 'file_delete'].includes(name)) turnFileChanges.push(target || '?');
+              if (ev.result?.success && ['file_write', 'file_edit', 'file_move', 'file_delete'].includes(name)) {
+                // The path the tool actually wrote (a bare name may be redirected to agent-outputs/).
+                const written = /Saved to: ([^\n]+)|chars to '(.+?)'(?=\s*(?:[[(]|$))/m.exec(String(ev.result.output || ''));
+                turnFileChanges.push(written ? (written[1] || written[2]).trim() : (target || '?'));
+              }
             }
             if (toolBox) appendToolItem(toolBox, ev.result.success ? '✅' : '❌', '', ev.result.output.slice(0, 120), !ev.result.success);
             if (toolBox && !ev.result.success && isPermissionOrRecoveryFailure(ev.result.output)) appendPermissionRecoveryItem(toolBox, ev.result.output);
@@ -5529,6 +5539,12 @@ async function sendMessage(opts) {
         : '[No reply was produced.]';
       chatMessages.push({ role: 'assistant', content: note, ...replyExtras() });
       if (msgEl) attachUndoButton(msgEl, chatMessages.length - 1);
+    }
+    // A page this reply wrote opens in the preview panel straight away (index.html first).
+    const writtenPages = [...new Set(turnFileChanges)].filter((file) => /\.html?$/i.test(file));
+    if (writtenPages.length && !responseStopped && !turnFatalError) {
+      // Quietly: a page outside the folders the preview may serve just isn't opened.
+      previewWrittenPage(writtenPages.find((file) => /(^|[\\/])index\.html?$/i.test(file)) || writtenPages[0], null, true);
     }
     // Jarvis voice: always dispatch so the hands-free loop can re-arm the
     // mic even when a turn ended in error or yielded no text. The TTS
@@ -7002,7 +7018,10 @@ function addArtifact(artifact) {
   // Dedup against the immediately previous artifact (model frequently
   // re-emits the same code while iterating).
   const prev = artifacts[artifacts.length - 1];
-  if (prev && prev.code === artifact.code && prev.lang === artifact.lang) return;
+  if (prev && prev.code === artifact.code && prev.lang === artifact.lang && prev.url === artifact.url) {
+    openArtifact(artifacts.length - 1);
+    return;
+  }
   artifacts.push(artifact);
   while (artifacts.length > MAX_ARTIFACTS) artifacts.shift();
   activeArtifactIdx = artifacts.length - 1;
@@ -7052,6 +7071,20 @@ function refreshArtifactPreview() {
   const previewable = isPreviewable(art.lang);
   toggle.style.display = previewable ? '' : 'none';
   toggle.textContent = artifactPreviewMode ? 'Source' : 'Preview';
+  const openTab = document.getElementById('artifactOpenTab');
+  if (openTab) openTab.hidden = !art.url;
+  if (previewable && artifactPreviewMode && art.url) {
+    // A page the agent wrote, served by /preview with its CSS, scripts and images.
+    body.innerHTML = '';
+    const frame = document.createElement('iframe');
+    frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-modals allow-popups allow-pointer-lock allow-downloads');
+    frame.setAttribute('allow', 'clipboard-write; fullscreen');
+    frame.setAttribute('allowfullscreen', '');
+    frame.setAttribute('title', 'preview of ' + art.title);
+    frame.src = art.url;
+    body.appendChild(frame);
+    return;
+  }
   if (previewable && artifactPreviewMode) {
     body.innerHTML = '';
     const iframe = document.createElement('iframe');
@@ -7066,6 +7099,29 @@ function refreshArtifactPreview() {
     iframe.srcdoc = html;
   } else {
     body.innerHTML = '<pre>' + esc(art.code) + '</pre>';
+  }
+}
+
+function openArtifactInNewTab() {
+  const art = artifacts[activeArtifactIdx];
+  if (art && art.url) window.open(art.url, '_blank', 'noopener');
+}
+
+/** Open a page the agent wrote in the artifact panel, served with its assets. */
+async function previewWrittenPage(filePath, btn, quiet) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/preview-link?path=' + encodeURIComponent(filePath));
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.url) throw new Error(data.error || ('HTTP ' + r.status));
+    const name = String(data.path || filePath).split(/[\\/]/).pop();
+    // The page source, for Source/Copy/Download; very large pages are previewed without it.
+    const source = await fetch(data.url).then((res) => (res.ok && Number(res.headers.get('content-length') || 0) <= 2_000_000 ? res.text() : '')).catch(() => '');
+    addArtifact({ title: name + ' (live preview)', lang: 'html', code: source, url: data.url });
+  } catch (e) {
+    if (!quiet) showToast('Could not preview ' + filePath + ': ' + (e && e.message ? e.message : e), 6000, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -7290,6 +7346,8 @@ document.addEventListener('DOMContentLoaded', () => {
       sendMessage();
       return;
     }
+    const previewBtn = e.target.closest && e.target.closest('.preview-page-btn');
+    if (previewBtn) { previewWrittenPage(previewBtn.dataset.path, previewBtn); return; }
     const undoBtn = e.target.closest && e.target.closest('.undo-changes-btn');
     if (undoBtn && !undoBtn.disabled) {
       const entry = chatMessages[Number(undoBtn.dataset.msgIndex)];
@@ -7641,6 +7699,7 @@ function attachMessageActions(msgEl, messageIndex) {
  * not recorded this way, and the confirmation says so.
  */
 function attachUndoButton(msgEl, messageIndex) {
+  attachPreviewButtons(msgEl, messageIndex);
   const entry = chatMessages[messageIndex];
   const body = msgEl && msgEl.querySelector('.msg-body');
   if (!body || !entry || !entry.runId || !Array.isArray(entry.fileChanges) || entry.fileChanges.length === 0) return;
@@ -7653,6 +7712,25 @@ function attachUndoButton(msgEl, messageIndex) {
   btn.textContent = '↩ Undo changes';
   btn.dataset.msgIndex = String(messageIndex);
   row.appendChild(btn);
+}
+
+/** "▶ Preview" for each web page a reply wrote (at most two); clicks are handled on #chatArea. */
+function attachPreviewButtons(msgEl, messageIndex) {
+  const entry = chatMessages[messageIndex];
+  const body = msgEl && msgEl.querySelector('.msg-body');
+  const pages = entry && Array.isArray(entry.fileChanges) ? entry.fileChanges.filter((file) => /\.html?$/i.test(String(file))).slice(0, 2) : [];
+  if (!body || pages.length === 0 || body.querySelector('.preview-page-btn')) return;
+  let row = body.querySelector('.msg-actions');
+  if (!row) { row = document.createElement('div'); row.className = 'msg-actions'; body.appendChild(row); }
+  for (const page of pages) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'msg-action-btn preview-page-btn';
+    btn.dataset.path = page;
+    btn.title = 'Open ' + page + ' in the preview panel, with its CSS and scripts';
+    btn.textContent = '▶ Preview ' + String(page).split(/[\\/]/).pop();
+    row.prepend(btn);
+  }
 }
 
 async function undoReplyChanges(entry, btn) {

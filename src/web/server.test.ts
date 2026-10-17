@@ -4247,6 +4247,55 @@ describe('web server API validation', () => {
     }
   });
 
+  it('gives coding tasks build rules instead of the general autonomy rules', async () => {
+    const capturedPrompts: string[] = [];
+    const restore = setWebRuntimeOverrides({
+      createClient: jest.fn(() => ({}) as never),
+      getModelContextWindow: jest.fn().mockResolvedValue(8192),
+      getTools: () => [],
+      createPermissionEngine: () => ({ evaluate: jest.fn() }) as never,
+      createSession: () => ({
+        initialize: jest.fn().mockResolvedValue(undefined),
+        markStatus: jest.fn().mockResolvedValue(undefined),
+        append: jest.fn().mockResolvedValue(undefined),
+        readAll: jest.fn().mockResolvedValue([]),
+        getSessionId: jest.fn().mockReturnValue('build-rules-session'),
+      }) as never,
+      startNewSession: jest.fn(),
+      getEvolvedPrompt: async (basePrompt) => basePrompt,
+      assembleSystemContext: async ({ systemPrompt }) => systemPrompt,
+      runQueryLoop: async function* (config): AsyncGenerator<LoopEvent> {
+        capturedPrompts.push(config.systemPrompt);
+        yield { type: 'text', content: 'ok' };
+        yield { type: 'done', reason: 'completed', turns: 1 };
+      },
+      onSessionEnd: async () => ({ reflection: { insights: [] }, newPatterns: [] }),
+      rebuildSemanticMemory: async () => [],
+    });
+
+    try {
+      for (const message of ['Build a snake game in a single HTML file with JavaScript', 'What is the capital of France?']) {
+        const response = await request('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message, model: 'test-model' }),
+        });
+        expect(response.status).toBe(200);
+        await response.text();
+      }
+      expect(capturedPrompts).toHaveLength(2);
+      const [coding, chat] = capturedPrompts;
+      expect(coding).toContain('BUILD RULES');
+      expect(coding).toContain('CHECKING YOUR WORK');
+      expect(coding).not.toContain('AUTONOMY RULES');
+      expect(coding).not.toContain('DO MORE');
+      expect(chat).toContain('AUTONOMY RULES');
+      expect(chat).not.toContain('BUILD RULES');
+    } finally {
+      restore();
+    }
+  });
+
   it('injects explicitly selected runtime skill instructions into chat context', async () => {
     const skillDir = path.join(process.cwd(), '.harness', 'skills', 'explicit-skill-test');
     const skillFile = path.join(skillDir, 'SKILL.md');

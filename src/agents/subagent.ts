@@ -256,6 +256,7 @@ export async function runSubagent(
   // Run the subagent loop in an isolated context
   const messages = [{ role: 'user' as const, content: prompt }];
   let lastText = '';
+  let cutOffPrefix = '';
   let cancelled = false;
   let runError: Error | null = null;
   let erroredOut = false;
@@ -278,7 +279,13 @@ export async function runSubagent(
         }
       }
       if (event.type === 'text') {
-        lastText = event.content;
+        // A reply cut off at the output limit arrives in parts: keep them together.
+        if (event.partial) {
+          cutOffPrefix += event.content;
+        } else {
+          lastText = cutOffPrefix + event.content;
+          cutOffPrefix = '';
+        }
       }
       if (event.type === 'done' && (event as { reason?: string }).reason === 'error') {
         erroredOut = true;

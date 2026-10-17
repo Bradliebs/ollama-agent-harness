@@ -89,6 +89,7 @@ import { createReviewQueueRouter } from './reviewQueueRoutes';
 import { createBrowserHardeningRouter } from './browserHardeningRoutes';
 import { createAgentRouter } from './agentRoutes';
 import { createFileBrowseRouter } from './fileBrowseRoutes';
+import { createPreviewRouter } from './previewRoutes';
 import { buildMentionedFilesBlock } from './fileMentions';
 import { redact } from '../safety/secretRedactor';
 import { createAssetRouter } from './assetRoutes';
@@ -114,7 +115,7 @@ import { createOutputValidationRouter } from './outputValidationRoutes';
 import { createCapabilityRouter } from './capabilityRoutes';
 import { createJarvisRouter } from './jarvisRoutes';
 import { recordSkillUse, recordSkillView } from '../extensibility/skillUsage';
-import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getUploadsDir, maybeRedirectAgentOutput, resolveProjectPath, resolveProjectReadPath, resolveToolMutationTarget, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
+import { applyFileWriteRedirect, drainUploadsFallbacks, getAllowedExternalPaths, getProjectRoot, getUploadsDir, maybeRedirectAgentOutput, resolveProjectPath, resolveProjectReadPath, resolveToolMutationTarget, setAllowedExternalPaths, setProjectRoot } from '../tools/pathResolution';
 import { iteratePdfPages, MAX_PDF_BYTES } from '../tools/pdfTool';
 import { setSkillsDir, setLowerSkillTiers } from '../tools/skillTools';
 import { setImportSkillsDir } from '../tools/skillImportTool';
@@ -4845,6 +4846,34 @@ app.post('/api/permissions/:id/resolve', (req, res) => {
   }
 });
 
+const GENERAL_AUTONOMY_RULES = `AUTONOMY RULES (critical):
+- When the user gives you a task, complete it FULLY. Do not stop partway through.
+- Do NOT present numbered options and ask the user to choose. Just do ALL of them.
+- Do NOT ask "would you like me to continue?" or "shall I proceed?" — JUST CONTINUE.
+- If a directory has multiple files, read ALL of them. Do not stop after one.
+- If analysis has multiple steps, do ALL steps. Do not summarize step 1 and ask about step 2.
+- If you discover related work while doing a task, do it immediately.
+- The ONLY reason to stop is when the task is genuinely, fully complete.
+- When in doubt, DO MORE rather than asking.`;
+
+const GENERAL_CONTEXT_HYGIENE = `CONTEXT HYGIENE (critical for long tasks):
+- Do NOT call file_read on a file you just successfully file_wrote in this same turn. You already have the content — re-reading wastes tokens and frequently triggers cloud-model stream failures on the next turn.
+- After a successful file_write, the immediate next step is the next real action (send the email, update the manifest, finish the task) — NOT verification.
+- If you genuinely need to confirm a write happened, trust the file_write tool result; it returns the byte count and path.`;
+
+/** Working rules for coding and build tasks (task contract mode code_edit or debug). */
+const CODING_TASK_RULES = `BUILD RULES (this is a coding task; these take precedence over the general rules above):
+- Deliver complete, working results: every feature the user asked for, no placeholders, stubs, TODOs or "rest of the code here". Do not stop at a skeleton.
+- Before writing, decide the structure: the files, the main parts and how they connect. Then write each file in full.
+- Stay within the request. Don't add unrelated features, and don't create skills or memories during the build.
+- A single-file web app (one HTML file) must work when opened directly: put the CSS and JavaScript inline, and use CDN imports only when needed. If it saves state in localStorage, wrap that in try/catch so the page still works where storage is blocked (such as the harness preview). Link a page's own files with relative paths (./style.css, not /style.css).
+- Make it look finished: a consistent layout, spacing and color scheme, readable text and clear controls.
+- Don't ask the user to choose or confirm; make reasonable choices and say what you chose.`;
+
+const CODING_TASK_HYGIENE = `CHECKING YOUR WORK:
+- After writing, check the result with the tools you have: run the project's tests, build or linter when it has them, or run a plain script with node to catch errors (node can't run code that uses the page's DOM; web pages you write are checked when you finish: inline scripts must parse and linked local files must exist). Fix what fails before you finish.
+- Don't re-read a file you just wrote only to confirm the write; the file_write result already gives the path and size. Read it again only when you need to edit it.
+- For a very large file, write a complete working first version, then extend it with file_edit, instead of one enormous write that may be cut off.`;
 const PLAN_MODE_NOTE = [
   '--- Plan mode ---',
   'The user wants a plan before anything is changed. Only read-only tools are available: read files, search and list as needed to understand the code.',
@@ -5449,6 +5478,14 @@ app.post('/api/chat', async (req, res) => {
     nervousContext += '\n' + formatRecoveryPlan(nervousResult.recoveryPlan);
   }
 
+  const chatTaskContract = messageText ? buildTaskContract(messageText) : undefined;
+  const requiresExecutionProof = !planOnly && (chatTaskContract?.mode === 'code_edit' || chatTaskContract?.mode === 'debug');
+  // Coding tasks get build rules instead of the general "do more" autonomy and
+  // "don't verify after writing" hygiene rules, which invite scope creep and
+  // discourage checking a game or site after writing it.
+  const workingRules = requiresExecutionProof
+    ? { autonomy: CODING_TASK_RULES, hygiene: CODING_TASK_HYGIENE }
+    : { autonomy: GENERAL_AUTONOMY_RULES, hygiene: GENERAL_CONTEXT_HYGIENE };
   const toolSynthesisNudge = `IMPORTANT: After using tools, you MUST always provide a final text response summarizing your findings. Never end your turn with only tool calls and no text output. If you have gathered enough information, stop calling tools and write your answer.
 
 TOOL USE RULES (critical):
@@ -5456,15 +5493,7 @@ TOOL USE RULES (critical):
 - When the user asks "what's in the news" or similar, call web_search with a relevant query like "latest news today" and then summarize the results.
 - Your training data has a knowledge cutoff. For anything recent, ALWAYS search first.
 
-AUTONOMY RULES (critical):
-- When the user gives you a task, complete it FULLY. Do not stop partway through.
-- Do NOT present numbered options and ask the user to choose. Just do ALL of them.
-- Do NOT ask "would you like me to continue?" or "shall I proceed?" — JUST CONTINUE.
-- If a directory has multiple files, read ALL of them. Do not stop after one.
-- If analysis has multiple steps, do ALL steps. Do not summarize step 1 and ask about step 2.
-- If you discover related work while doing a task, do it immediately.
-- The ONLY reason to stop is when the task is genuinely, fully complete.
-- When in doubt, DO MORE rather than asking.
+${workingRules.autonomy}
 
 TOOL FALLBACK RULES:
 - If web_read or web_fetch returns HTTP 403/429/500, do NOT retry the same site. Try a different URL or use browser_navigate instead (Playwright-based, handles JavaScript and anti-bot pages).
@@ -5478,10 +5507,7 @@ BASH TOOL RULES (critical on Windows):
 - Do NOT invent Linux paths such as /harness. This workspace is Windows. If an absolute path is unavoidable, use a real Windows path like C:\\AI\\Harness and quote it.
 - Prefer commands that work from the current project directory. For git, use git status or git diff instead of git -C unless the user names a different directory.
 
-CONTEXT HYGIENE (critical for long tasks):
-- Do NOT call file_read on a file you just successfully file_wrote in this same turn. You already have the content — re-reading wastes tokens and frequently triggers cloud-model stream failures on the next turn.
-- After a successful file_write, the immediate next step is the next real action (send the email, update the manifest, finish the task) — NOT verification.
-- If you genuinely need to confirm a write happened, trust the file_write tool result; it returns the byte count and path.`;
+${workingRules.hygiene}`;
 
   const conciergeNote = buildConciergeNote(typeof message === 'string' ? message : '');
   const squadNote = await buildSquadRoutingNote(squadId, typeof message === 'string' ? message : '').catch(() => null);
@@ -5498,7 +5524,7 @@ CONTEXT HYGIENE (critical for long tasks):
   try {
     const msgForSkill = typeof message === 'string' ? message : '';
     const taskShaped = /\b(build|create|make|implement|write|add|generate|scaffold|set\s?up|automate|scrape|crawl|download|convert|refactor|integrate|deploy|configure|install|parse|extract|monitor|schedule)\b/i.test(msgForSkill);
-    if (msgForSkill && taskShaped) {
+    if (msgForSkill && taskShaped && !requiresExecutionProof) {
       const installedSkills = await loadSkillsFromDirs([GLOBAL_SKILLS_DIR, REPO_SKILLS_DIR, SKILLS_DIR]).catch(() => []);
       if (!matchSkillTrigger(installedSkills, msgForSkill)) {
         skillGapNote = '--- Skill gap ---\nNo installed skill matched this request. If this task is a reusable, repeatable procedure you expect to recur, you MAY capture it as a skill with the create_skill tool after completing the work. Only do this for genuinely reusable workflows — never for a one-off request.';
@@ -5515,8 +5541,6 @@ CONTEXT HYGIENE (critical for long tasks):
 
   const synthesisStats = await loadSynthesisStats(PROJECT_DIR);
   const effectiveMaxTurns = adaptiveMaxTurns(synthesisStats, activeModel, 25);
-  const chatTaskContract = messageText ? buildTaskContract(messageText) : undefined;
-  const requiresExecutionProof = !planOnly && (chatTaskContract?.mode === 'code_edit' || chatTaskContract?.mode === 'debug');
 
   // Wall-clock budget: local Ollama models are slow per-turn so a generous
   // turn budget hammers the GPU. Cloud APIs are fast so they can afford
@@ -7133,6 +7157,8 @@ export function getSchedulerStatuses(): Array<{ name: string; running: boolean }
 // ./fileBrowseRoutes.ts; resolveProjectPath helper moved into router
 // (it had no other callers in server.ts).
 app.use(createFileBrowseRouter({ projectDir: PROJECT_DIR }));
+// Sandboxed preview of web pages the agent wrote (see previewRoutes.ts).
+app.use(createPreviewRouter({ resolvePath: (value) => resolveProjectPath(value), roots: () => [getProjectRoot(), ...getAllowedExternalPaths()] }));
 
 // --- Start ---
 

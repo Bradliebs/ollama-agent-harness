@@ -80,6 +80,17 @@ describe('file tools bounds and path safety', () => {
     expect(result).toMatchObject({ success: false, error: 'write too large' });
   });
 
+  it('appends to a file when asked, so a large file can be written in parts', async () => {
+    const target = path.join(fixtureDir, 'parts.html');
+    expect((await FileWriteTool.execute({ path: target, content: '<html>\n' })).output).toContain('Wrote 7 chars');
+    const appended = await FileWriteTool.execute({ path: target, content: '<body></body>\n</html>\n', append: true });
+    expect(appended).toMatchObject({ success: true });
+    expect(appended.output).toContain('Appended');
+    expect(await fs.readFile(target, 'utf-8')).toBe('<html>\n<body></body>\n</html>\n');
+    await FileWriteTool.execute({ path: target, content: 'replaced' });
+    expect(await fs.readFile(target, 'utf-8')).toBe('replaced');
+  });
+
   describe('uploads fallback', () => {
     const uploadsDir = path.join(process.cwd(), '.harness', 'uploads');
     const uploadName = 'test-uploads-fallback.csv';

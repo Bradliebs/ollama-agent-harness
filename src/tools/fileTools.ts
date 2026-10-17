@@ -71,12 +71,13 @@ function takeWholeLines(lines: string[], maxBytes: number): { count: number } {
 
 export const FileWriteTool: Tool = {
   name: 'file_write',
-  description: 'Write content to a file, creating directories as needed',
+  description: 'Write content to a file, creating directories as needed. With append: true, add the content to the end of the file instead (to write a large file in parts).',
   parameters: {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'File path to write to' },
       content: { type: 'string', description: 'Content to write' },
+      append: { type: 'boolean', description: 'Add content to the end of the file instead of replacing it. Default false.' },
     },
     required: ['path', 'content'],
   },
@@ -111,7 +112,9 @@ export const FileWriteTool: Tool = {
     }
     try {
       await fs.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.writeFile(filePath, content, 'utf-8');
+      const append = input.append === true;
+      if (append) await fs.appendFile(filePath, content, 'utf-8');
+      else await fs.writeFile(filePath, content, 'utf-8');
       const impactNote = await getImpactNote(filePath);
       // When a redirect happened, lead with the resolved absolute path on
       // its own line so the model picks it up for follow-up commands
@@ -138,7 +141,7 @@ export const FileWriteTool: Tool = {
             `Wrote ${content.length} chars.${impactNote}`,
         };
       }
-      return { success: true, output: `Wrote ${content.length} chars to '${filePath}'${impactNote}` };
+      return { success: true, output: `${append ? 'Appended' : 'Wrote'} ${content.length} chars to '${filePath}'${impactNote}` };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return { success: false, output: `Failed to write '${filePath}': ${msg}`, error: msg };

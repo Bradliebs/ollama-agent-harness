@@ -130,6 +130,10 @@ export async function verifyCode(options: CodeVerifyOptions): Promise<Verificati
     checks.push(await runTests(projectDir, timeout * 2, signal));
   }
 
+  // Web pages written this run: fast, offline checks a standalone page has no other way to get.
+  const pages = (options.changedFiles ?? []).filter((file) => /\.html?$/i.test(file));
+  if (pages.length > 0) checks.push(await checkWebPages(projectDir, pages));
+
   return {
     domain: 'code',
     overall: deriveOverall(checks),
@@ -161,6 +165,63 @@ async function runTests(projectDir: string, timeout: number, signal?: AbortSigna
     return commandCheck('tests', 'cargo', await runCommand(projectDir, 'cargo', ['test', '--quiet'], timeout, signal));
   }
   return { name: 'tests', domain: 'code', status: 'skip', detail: 'No test runner detected' };
+}
+
+const CLASSIC_SCRIPT_TYPE = /^\s*(?:(?:text|application)\/(?:javascript|ecmascript)\s*)?$/i;
+const LOCAL_REFERENCE_TAG = /<(?:script|link|img|audio|video|source)\b[^>]*>/gi;
+
+/**
+ * Syntax errors in inline classic scripts (compiled, never run) and local
+ * files a page points at that don't exist. Module scripts and other script
+ * types (JSON, shaders, templates) are left alone.
+ */
+async function checkWebPages(projectDir: string, pages: string[]): Promise<VerificationCheck> {
+  const vm = await import('vm');
+  const problems: string[] = [];
+  let checked = 0;
+  for (const page of pages) {
+    let html: string;
+    try {
+      html = await fs.readFile(page, 'utf-8');
+    } catch {
+      continue;
+    }
+    checked += 1;
+    const name = path.relative(projectDir, page) || path.basename(page);
+    for (const match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
+      const attributes = match[1];
+      if (/\ssrc\s*=/i.test(attributes)) continue;
+      const type = /\stype\s*=\s*["']?([^"'\s>]*)/i.exec(attributes)?.[1] ?? '';
+      if (!CLASSIC_SCRIPT_TYPE.test(type)) continue;
+      const bodyStart = (match.index ?? 0) + match[0].indexOf('>') + 1;
+      const lineOffset = html.slice(0, bodyStart).split('\n').length - 1;
+      try {
+        new vm.Script(match[2], { filename: name, lineOffset });
+      } catch (error) {
+        // Not instanceof-checked: vm errors can come from another realm (as under Jest).
+        const failure = error as { stack?: unknown; message?: unknown };
+        const where = typeof failure.stack === 'string' ? failure.stack.split('\n')[0] : name;
+        problems.push(`${where}: ${typeof failure.message === 'string' ? failure.message : String(error)}`);
+      }
+    }
+    for (const tag of html.matchAll(LOCAL_REFERENCE_TAG)) {
+      // Icons and manifests are often named without being written; a missing one doesn't break the page.
+      if (/\srel\s*=\s*["']?[^"'>]*\b(?:icon|manifest)\b/i.test(tag[0])) continue;
+      const reference = (/\s(?:src|href)\s*=\s*["']([^"'#?]*)/i.exec(tag[0])?.[1] ?? '').trim();
+      if (!reference || /^(?:[a-z][a-z0-9+.-]*:|\/\/|\/)/i.test(reference) || reference.includes('${')) continue;
+      let target: string;
+      try {
+        target = path.resolve(path.dirname(page), decodeURIComponent(reference));
+      } catch {
+        continue;
+      }
+      if (!await fileExists(target)) problems.push(`${name}: refers to ${reference}, which does not exist`);
+    }
+  }
+  if (checked === 0) return { name: 'web page', domain: 'code', status: 'skip', detail: 'The pages written this run could not be read' };
+  if (problems.length === 0) return { name: 'web page', domain: 'code', status: 'pass', detail: `${checked} page(s): inline scripts parse and local files exist` };
+  const detail = problems.join('\n');
+  return { name: 'web page', domain: 'code', status: 'fail', detail: detail.length > FAILURE_DETAIL_MAX_CHARS ? `${detail.slice(0, FAILURE_DETAIL_MAX_CHARS)}...` : detail };
 }
 
 function platformCommand(command: 'npm' | 'npx', args: string[]): { command: string; args: string[] } {

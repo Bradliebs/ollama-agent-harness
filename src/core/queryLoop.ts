@@ -212,6 +212,12 @@ const RESEARCH_SOURCE_TOOLS = new Set(['web_read', 'web_fetch', 'web_search', 'b
 const MAX_RESEARCH_SOURCE_CHARS = 60_000;
 const MAX_RESEARCH_CORPUS_CHARS = 400_000;
 
+/** Consecutive replies cut off at the output limit that are continued before one is accepted as it is. */
+const MAX_TRUNCATION_CONTINUES = 2;
+export const CONTINUE_TRUNCATED_PROMPT = 'Your last reply was cut off at the output limit. Continue exactly where it stopped, without repeating anything you already wrote.';
+export const TRUNCATED_THINKING_PROMPT = 'Your last reply reached the output limit before you wrote any answer. Answer now, directly, and keep your reasoning short.';
+export const TRUNCATED_TOOL_CALL_PROMPT = 'Your last reply was cut off at the output limit before its tool call was complete, so the call was not run. Make each call smaller: write a large file in parts (file_write with the first part, then file_write with append: true for each next part), or split it into several files.';
+
 function researchVerificationEvent(verdict: ResearchVerdict): LoopEvent {
   return {
     type: 'verification',
@@ -394,6 +400,8 @@ async function* queryLoopCore(
   let unproductiveTurns = 0;
   const toolFailureCounts = new Map<string, number>();
   const PRODUCTIVE_TOOLS = new Set(['file_write', 'file_edit', 'file_move', 'file_delete']);
+  /** Files written or edited this run, for checks that look at the files themselves (web pages). */
+  const writtenFiles = new Set<string>();
   // Shell commands that change files (bash runs one executable, so the
   // command name leads): patches, git working-tree commands, formatters and
   // fixers in write mode, dependency changes, and file-writing cmdlets.
@@ -421,6 +429,7 @@ async function* queryLoopCore(
   let lastAssistantFingerprint = '';
   let consecutiveRepeats = 0;
   const REPETITION_LIMIT = 2;
+  let truncationContinues = 0;
   // Set when the model ends a turn with empty text after tools ran this run.
   // Routes into the synthesis path instead of accepting an empty `completed`.
   let emptyFinalAfterTools = false;
@@ -641,6 +650,8 @@ async function* queryLoopCore(
     }
 
     let assistantMessage: Message;
+    let replyTruncated = false;
+    let replyTokens = 0;
     const modelSpan = tracer?.startSpan('model.chat', { model: activeModel, turn });
     try {
       const inactivityMs = resolveInactivityTimeoutMs(config.inactivityTimeoutMs);
@@ -687,6 +698,8 @@ async function* queryLoopCore(
       }
       const result = await settled;
       assistantMessage = result.message;
+      replyTruncated = result.truncated === true;
+      replyTokens = (result.usage?.promptTokens ?? 0) + (result.usage?.completionTokens ?? 0);
       if (promptToolMode && !assistantMessage.tool_calls?.length && typeof assistantMessage.content === 'string') {
         const lifted = parseConstrainedToolCall(assistantMessage.content);
         const finalAnswer = lifted?.length ? null : parseConstrainedFinalAnswer(assistantMessage.content);
@@ -741,6 +754,46 @@ async function* queryLoopCore(
       yield { type: 'error', message: `Model call failed: ${msg}`, recoverable: true };
       yield { type: 'done', reason: 'error', turns: turn };
       return;
+    }
+
+    // A reply cut off at the output limit: a cut-off tool call can't run
+    // safely (its arguments are incomplete), and a cut-off answer isn't
+    // finished. Ask the model to go on, a bounded number of times.
+    if (replyTruncated) {
+      const droppedToolCalls = assistantMessage.tool_calls?.length ?? 0;
+      if (droppedToolCalls > 0) {
+        const { tool_calls: _dropped, ...withoutCalls } = assistantMessage;
+        assistantMessage = withoutCalls as Message;
+      }
+      // When the context window itself is full, writing more can't help. A JSON
+      // answer or a tool call written as text can't be joined from two replies.
+      const contextFull = contextWindowKnown && replyTokens >= Math.floor(contextLimit * 0.95);
+      const continuing = !contextFull && !chatOptions?.format && !promptToolMode
+        && truncationContinues < MAX_TRUNCATION_CONTINUES && turn < maxTurns && !abortSignal?.aborted;
+      yield { type: 'output_limit', turn, droppedToolCalls, continuing, ...(contextFull ? { contextFull: true } : {}) };
+      tracer?.recordEvent('output.truncated', { turn, droppedToolCalls, continuing, contextFull });
+      runLog?.append('supervisor', { event: 'output_limit', droppedToolCalls, continuing, contextFull }, currentTurnStep);
+      if (continuing) {
+        truncationContinues += 1;
+        const partial = typeof assistantMessage.content === 'string' ? assistantMessage.content : '';
+        // Nothing written (a thinking model used the whole limit): don't keep an empty reply.
+        const prompt = droppedToolCalls > 0 ? TRUNCATED_TOOL_CALL_PROMPT : partial.trim() ? CONTINUE_TRUNCATED_PROMPT : TRUNCATED_THINKING_PROMPT;
+        if (droppedToolCalls > 0 || partial.trim()) {
+          messages.push(assistantMessage);
+          if (session) await appendSession(session, 'assistant_message', { kind: 'message', message: assistantMessage }, tracer);
+        }
+        if (droppedToolCalls === 0 && partial.trim()) yield { type: 'text', content: partial, partial: true };
+        messages.push({ role: 'user', content: prompt } as Message);
+        if (session) await appendSession(session, 'user_message', { kind: 'message', message: { role: 'user', content: '[continue after output limit]' } }, tracer);
+        continue;
+      }
+      if (contextFull) {
+        yield { type: 'error', message: "The conversation filled the model's context window, so its reply was cut off. Start a new chat, or give the model a larger context window (contextMaxTokens in Settings, or num_ctx for Ollama).", recoverable: true };
+      } else if (droppedToolCalls > 0) {
+        yield { type: 'error', message: "The model's reply was cut off at its output limit again, so its tool call was not run. Try a model with a larger output limit, or ask for the work in smaller parts.", recoverable: true };
+      }
+    } else {
+      truncationContinues = 0;
     }
 
     messages.push(assistantMessage);
@@ -906,6 +959,7 @@ async function* queryLoopCore(
             projectDir: getProjectRoot(),
             quick: config.verify?.quick ?? false,
             timeout: config.verify?.timeout ?? 60_000,
+            changedFiles: [...writtenFiles],
             ...(abortSignal ? { signal: abortSignal } : {}),
           });
           tracer?.recordEvent('verification.complete', {
@@ -1281,6 +1335,10 @@ async function* queryLoopCore(
       if (result.success && isProductiveCall(call)) {
         producedFileChange = true;
         anyProductiveToolSucceeded = true;
+        if (call.name === 'file_write' || call.name === 'file_edit') {
+          const written = resolveToolMutationTarget(call.name, call.input?.path);
+          if (written) writtenFiles.add(written);
+        }
       }
       if (result.success) anyToolSucceeded = true;
 

@@ -334,6 +334,7 @@ async function collectStreamingChatResponse(
   let role = 'assistant';
   const toolCalls: ToolCall[] = [];
   let usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalDurationNs: 0 };
+  let doneReason = '';
   const abort = (): void => stream.abort?.();
 
   if (abortSignal?.aborted) abort();
@@ -342,7 +343,10 @@ async function collectStreamingChatResponse(
   try {
     for await (const chunk of stream) {
       if (abortSignal?.aborted) throw new Error('aborted');
-      if (chunk.done) onUsage?.(chunk);
+      if (chunk.done) {
+        onUsage?.(chunk);
+        doneReason = chunk.done_reason ?? '';
+      }
       if (chunk.message?.role) role = chunk.message.role;
       const piece = chunk.message?.content ?? '';
       content += piece;
@@ -386,7 +390,7 @@ async function collectStreamingChatResponse(
   const message: Message = { role, content };
   if (toolCalls.length > 0) message.tool_calls = toolCalls;
   liftInlineToolCalls(message, toolNames);
-  return { message, usage };
+  return { message, usage, ...(doneReason === 'length' ? { truncated: true } : {}) };
 }
 
 function chatResponseToResult(response: ChatResponse, toolNames: string[] = []): ChatResult {
@@ -401,6 +405,7 @@ function chatResponseToResult(response: ChatResponse, toolNames: string[] = []):
   liftInlineToolCalls(message, toolNames);
   return {
     message,
+    ...(response.done_reason === 'length' ? { truncated: true } : {}),
     usage: {
       promptTokens: response.prompt_eval_count ?? 0,
       completionTokens: response.eval_count ?? 0,

@@ -269,11 +269,27 @@ export type LoopEvent =
   | SupervisorEvent
   | ModelEscalatedEvent
   | BudgetExceededEvent
-  | TextDeltaEvent;
+  | TextDeltaEvent
+  | OutputLimitEvent;
+
+/**
+ * A model reply stopped at the output-token limit. Its cut-off tool calls were
+ * not run; when `continuing` the model was asked to go on.
+ */
+export interface OutputLimitEvent {
+  type: 'output_limit';
+  turn: number;
+  droppedToolCalls: number;
+  continuing: boolean;
+  /** The context window was full, so continuing could not help. */
+  contextFull?: boolean;
+}
 
 export interface TextEvent {
   type: 'text';
   content: string;
+  /** The first part of a reply cut off at the output limit; the continuation follows in later text events. */
+  partial?: boolean;
 }
 
 /**

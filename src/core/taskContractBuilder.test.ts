@@ -92,6 +92,23 @@ describe('buildTaskContract', () => {
     expect(contract.mode).toBe('code_edit');
   });
 
+  it('treats requests to build a game or browser app as code_edit, with room for a build', () => {
+    for (const message of [
+      'make me a snake game in javascript',
+      'Create a Minecraft-like game that runs in the browser with crafting, block physics and inventory',
+      'Code a Minecraft clone in the browser',
+      'Make a 3D voxel sandbox using three.js',
+      'Build a colour palette generator website',
+    ]) {
+      const contract = buildTaskContract(message);
+      expect({ message, mode: contract.mode }).toEqual({ message, mode: 'code_edit' });
+      expect(contract.max_turns).toBe(20);
+    }
+    for (const message of ['make a game plan for the meeting', 'explain how a game engine works', 'what game should I play tonight', 'make a list of games to play with kids', 'explain the code in this file', 'write a poem about a game of chess', 'how do I make a game in unity']) {
+      expect({ message, mode: buildTaskContract(message).mode }).not.toEqual({ message, mode: 'code_edit' });
+    }
+  });
+
   it('classifies a research task as research mode', () => {
     const contract = buildTaskContract('Research the best way to implement rate limiting');
     expect(contract.mode).toBe('research');

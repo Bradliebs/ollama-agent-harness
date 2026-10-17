@@ -28,6 +28,12 @@ export interface TokenUsage {
 export interface ChatResult {
   message: Message;
   usage: TokenUsage;
+  /**
+   * The reply stopped because it reached the output-token limit (Ollama
+   * done_reason / OpenAI finish_reason "length"), so its text or tool call may
+   * be cut off.
+   */
+  truncated?: boolean;
 }
 
 export interface ChatOptions {

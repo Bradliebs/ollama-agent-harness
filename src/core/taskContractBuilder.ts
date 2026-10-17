@@ -163,7 +163,7 @@ function inferValidation(mode: TaskContractMode): string[] {
 
 function inferMaxTurns(mode: TaskContractMode): number {
   const table: Record<TaskContractMode, number> = {
-    code_edit:     12,
+    code_edit:     20,
     debug:         15,
     research:       8,
     planning:       6,

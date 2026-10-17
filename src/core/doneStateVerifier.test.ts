@@ -59,6 +59,41 @@ describe('verifyCode', () => {
     }
   });
 
+  it('checks web pages written this run: inline script syntax and missing local files', async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'done-state-verifier-'));
+    try {
+      const good = path.join(projectDir, 'good.html');
+      const bad = path.join(projectDir, 'game', 'index.html');
+      await fs.mkdir(path.dirname(bad));
+      await fs.writeFile(path.join(projectDir, 'style.css'), 'body {}');
+      await fs.writeFile(good, [
+        '<link rel="stylesheet" href="style.css?v=2">',
+        '<link rel="icon" href="favicon.ico">',
+        '<script src="https://cdn.example.com/lib.js"></script>',
+        '<script type="module">import x from "./x.js";</script>',
+        '<script type="application/json">{"not": "js"</script>',
+        '<script>const ok = 1;</script>',
+      ].join('\n'));
+      await fs.writeFile(bad, ['<html>', '<body>', '<script src="engine.js"></script>', '<script>', 'function loop() {', '  if (x {', '}', '</script>'].join('\n'));
+
+      const passing = await verifyCode({ projectDir, quick: true, changedFiles: [good] });
+      expect(passing.checks.find((c) => c.name === 'web page')).toMatchObject({ status: 'pass' });
+
+      const failing = await verifyCode({ projectDir, quick: true, changedFiles: [good, bad, path.join(projectDir, 'notes.md')] });
+      const check = failing.checks.find((c) => c.name === 'web page');
+      expect(check?.status).toBe('fail');
+      expect(failing.overall).toBe('fail');
+      expect(check?.detail).toContain(`${path.join('game', 'index.html')}:6`);
+      expect(check?.detail).toContain('refers to engine.js, which does not exist');
+      expect(check?.detail).not.toContain('good.html');
+
+      const none = await verifyCode({ projectDir, quick: true, changedFiles: [path.join(projectDir, 'notes.md')] });
+      expect(none.checks.some((c) => c.name === 'web page')).toBe(false);
+    } finally {
+      await fs.rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it('skips typecheck instead of letting npx download a package when typescript is not installed', async () => {
     const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'done-state-verifier-'));
     try {

@@ -139,6 +139,18 @@ apply layers.
   contents into the message; `AGENTS.md` carries project conventions; skills
   carry procedures.
 * **Plan first.** `/plan` runs read-only and ends with a plan you approve.
+* **Build rules for coding tasks.** Web chat gives edits, builds and fixes
+  (including "make me a snake game in JavaScript" or "a Minecraft clone in the
+  browser") rules for complete, in-scope, checked work in place of the general
+  "do more" autonomy rules, tells it not to create skills or memories
+  mid-build, leaves out the skill-gap note, and allows up to 20 turns.
+* **Checking a web page.** When verification runs (web chat coding tasks), web
+  pages written in the run are checked: inline scripts must parse and linked
+  local files must exist. A failure goes back to the model to fix.
+* **Carrying on after the output limit.** A reply cut off at the model's
+  output limit is continued (up to twice in a row); a cut-off tool call is
+  dropped, not run, and the model is asked to write in parts with
+  `file_write`'s `append`. When the context window is full, it isn't continued.
 
 ## Not applied yet
 

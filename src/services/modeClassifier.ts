@@ -29,6 +29,9 @@ interface ModeRule {
   priority: number;
 }
 
+/** Up to six words between the verb and what is built, none of them naming a document or topic. */
+const BUILD_GAP = '(?:(?!(?:about|on|of|for|regarding|email|poem|story|essay|blog|post|letter|report|article|rules|review|summary|speech|lesson|tutorial)\\b)\\S+\\s+){0,6}';
+
 const MODE_RULES: ModeRule[] = [
   // OPERATE — ongoing service behaviour, reminders, task management
   { mode: 'operate', priority: 90, label: 'send me reminders', pattern: /\b(sends? me\b.{0,30}\breminders?|remind me\b.{0,20}\b(daily|every|each)|check in with me|keep track|manage this|monitor this|notify me|add tasks|update tasks|close tasks|add notes|review daily|review weekly|follow up|ask me every morning|keep me honest|keep a log|let me add tasks|let me update tasks|let me close tasks|update for me|telegram reminder)\b/i },
@@ -49,6 +52,10 @@ const MODE_RULES: ModeRule[] = [
 
   // BUILD — create artifacts, apps, code, documents
   { mode: 'build', priority: 40, label: 'build explicit', pattern: /\b(build|create|make|generate|write|implement|scaffold|develop)\b.{0,60}\b(app|application|ui|dashboard|website|site|software|codebase|project|component|page|document|template|artifact|script|function|class|module|api|service|cli|file|tool)\b/i },
+  // "make me a snake game", "code a Minecraft clone", "… in javascript / using three.js".
+  // Not a question about building ("how do I make a game") and not a document
+  // about one ("write a poem about a game", "the rules of the game").
+  { mode: 'build', priority: 39, label: 'build a game or browser app', pattern: new RegExp(`^(?!.*\\b(?:how|what|why|explain|tell me|describe|teach me)\\b.*\\b(?:build|create|make|generate|write|code|develop)\\b).*\\b(?:build|create|make|generate|write|code|develop)\\s+(?:me\\s+|us\\s+)?(?:a|an|the|my|our)\\s+${BUILD_GAP}(?:(?:game(?!\\s*plan)|clone|simulator|simulation|visuali[sz]er|calculator)\\b|${BUILD_GAP}?(?:in|with|using)\\s+(?:javascript|typescript|html5?|three\\.?js|webgl|canvas|p5\\.?js|react|vue|svelte|pygame)\\b)`, 'i') },
   { mode: 'build', priority: 35, label: 'code verbs', pattern: /\b(refactor|port to|add a feature|add an endpoint|add a method|patch|scaffold|implement|write code|write a test|write tests)\b/i },
 
   // CHAT — questions, explanations, conversational

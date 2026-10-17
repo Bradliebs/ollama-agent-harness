@@ -55,6 +55,22 @@ describe('OllamaClient context configuration', () => {
     }));
   });
 
+  it('marks a reply that stopped at the output limit as truncated', async () => {
+    async function* chunks() {
+      yield { message: { role: 'assistant', content: 'half a gam' }, done: false };
+      yield { message: { role: 'assistant', content: 'e' }, done: true, done_reason: 'length', eval_count: 2 };
+    }
+    mockChat.mockResolvedValueOnce(chunks());
+    const client = new OllamaClient({ model: 'test-model' });
+    expect((await client.chat([{ role: 'user', content: 'hi' }])).truncated).toBe(true);
+
+    async function* complete() {
+      yield { message: { role: 'assistant', content: 'done' }, done: true, done_reason: 'stop', eval_count: 1 };
+    }
+    mockChat.mockResolvedValueOnce(complete());
+    expect((await client.chat([{ role: 'user', content: 'hi' }])).truncated).toBeUndefined();
+  });
+
   it('reports the reply so far to onContent while streaming', async () => {
     async function* chunks() {
       yield { message: { role: 'assistant', content: 'hel' }, done: false };

@@ -31,6 +31,29 @@ describe('modeClassifier', () => {
     expect(classifyMode('build an app that tracks my tasks').mode).toBe('build');
     expect(classifyMode('create a dashboard for sales data').mode).toBe('build');
     expect(classifyMode('write a script that processes CSV files').mode).toBe('build');
+    expect(classifyMode('make me a snake game in javascript').mode).toBe('build');
+    expect(classifyMode('code a minecraft clone in the browser').mode).toBe('build');
+    expect(classifyMode('make a 3d voxel sandbox using three.js').mode).toBe('build');
+  });
+
+  it('does not treat questions about code, or writing about games, as builds', () => {
+    for (const message of [
+      'explain the code in this file',
+      'what does this code do in the project',
+      'tell me about the code in app.js',
+      'code review of the page please',
+      'write an email about the new game launch',
+      'write a poem about a game of chess',
+      'write the rules of the game',
+      'how do I make a game in unity',
+      'what is the best way to code a calculator',
+      'can you explain how to write a program in javascript',
+      'write a blog post about using react',
+      'make a training program for my gym',
+      'write a review of the game',
+    ]) {
+      expect({ message, mode: classifyMode(message).mode }).not.toEqual({ message, mode: 'build' });
+    }
   });
 
   it('does not trigger build for ongoing service requests', () => {

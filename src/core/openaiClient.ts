@@ -408,7 +408,7 @@ export class OpenAIClient implements IChatClient {
         ...(typeof cachedTokens === 'number' && Number.isFinite(cachedTokens) && cachedTokens >= 0 ? { cachedPromptTokens: cachedTokens } : {}),
       };
 
-      return { message, usage };
+      return { message, usage, ...(choice.finish_reason === 'length' ? { truncated: true } : {}) };
     }
     // Loop exited without returning — should not happen because the retryable
     // branch throws when remaining <= 0, but TS needs the assertion.
@@ -442,6 +442,7 @@ export class OpenAIClient implements IChatClient {
     let reasoning = '';
     let role = 'assistant';
     let usage: OpenAIChatResponse['usage'];
+    let finishReason = '';
     let streamError = '';
     /** One SSE line; false once the server reported an error. */
     const handleLine = (rawLine: string): boolean => {
@@ -456,6 +457,7 @@ export class OpenAIClient implements IChatClient {
         return false;
       }
       if (parsed?.usage) usage = parsed.usage;
+      if (typeof parsed?.choices?.[0]?.finish_reason === 'string') finishReason = parsed.choices[0].finish_reason;
       const delta = parsed?.choices?.[0]?.delta;
       if (!delta) return true;
       if (typeof delta.role === 'string') role = delta.role;
@@ -527,6 +529,7 @@ export class OpenAIClient implements IChatClient {
         totalDurationNs: (Date.now() - startedAt) * 1_000_000,
         ...(typeof cachedTokens === 'number' && Number.isFinite(cachedTokens) && cachedTokens >= 0 ? { cachedPromptTokens: cachedTokens } : {}),
       },
+      ...(finishReason === 'length' ? { truncated: true } : {}),
     };
   }
 }

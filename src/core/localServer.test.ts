@@ -104,6 +104,19 @@ describe('local OpenAI-compatible server backend', () => {
     expect(requests[0].auth).toBe('Bearer secret');
   });
 
+  it('marks a reply that stopped at the output limit as truncated', async () => {
+    handler = (_req, _body, res) => sse(res, [
+      { choices: [{ delta: { content: 'cut' } }] },
+      { choices: [{ delta: {}, finish_reason: 'length' }] },
+    ]);
+    expect((await createLocalServerClient('qwen').chat([{ role: 'user', content: 'x' }])).truncated).toBe(true);
+    handler = (_req, _body, res) => json(res, 200, { choices: [{ message: { role: 'assistant', content: 'cut' }, finish_reason: 'length' }] });
+    const cloud = new OpenAIClient({ baseUrl: process.env.HARNESS_LOCAL_BASE_URL!, apiKey: 'k', model: 'm' });
+    expect((await cloud.chat([{ role: 'user', content: 'x' }])).truncated).toBe(true);
+    handler = (_req, _body, res) => json(res, 200, { choices: [{ message: { role: 'assistant', content: 'whole' }, finish_reason: 'stop' }] });
+    expect((await cloud.chat([{ role: 'user', content: 'x' }])).truncated).toBeUndefined();
+  });
+
   it('reports an error sent inside the stream', async () => {
     handler = (_req, _body, res) => sse(res, [
       { choices: [{ delta: { content: 'partial' } }] },

@@ -402,6 +402,32 @@ No release tag, publication or installer runtime qualification is implied.
     back. `replicate/...` models picked in the web UI now reach Replicate.
   - The CLI and task mode enforce `.harness/protected-paths.json`.
   - New guide: [Getting more from your model](docs/MODEL-CAPABILITY.md).
+- Building things in one go (from comparing the DeepSeek Harness):
+  - Requests to build a game, clone, simulator or browser app ("make me a
+    snake game in javascript", "a Minecraft clone in the browser", "… using
+    three.js") are classified as coding tasks, and coding tasks get 20 turns
+    instead of 12 (still capped by the turn setting).
+  - Web chat coding tasks get build rules (complete code, no placeholders, stay
+    in scope, check by running tests or the build, guard `localStorage`) in
+    place of the general "do more" autonomy and "don't re-check" rules, and no
+    skill-gap note.
+  - Code verification checks web pages written in the run: inline classic
+    scripts are parsed (not run) and missing linked local files are reported,
+    so a broken page goes back to the model to fix.
+  - A reply cut off at the output limit (`done_reason`/`finish_reason`
+    `length`) is continued up to twice in a row (`output_limit` event); a
+    cut-off tool call is dropped instead of being run with empty arguments,
+    and a thinking model that wrote nothing is asked to answer directly. A
+    reply cut off because the context window is full isn't continued (the chat
+    says so), nor is a tool call written as JSON text. `file_write` takes
+    `append: true` for writing a large file in parts. Subagents keep both
+    parts of a continued reply.
+  - A web page the reply wrote opens in the side panel by itself, with the
+    files in its folder (CSS, scripts including modules, images, data), served
+    sandboxed from `/preview/<token>/…` with a random token per page
+    (`src/web/previewRoutes.ts`); **▶ Preview** reopens it and **↗ New tab**
+    opens it full size. A page directly in the project folder isn't given
+    cross-origin reads, so its scripts can't read the whole project.
 
 See [Modernization Status](docs/MODERNIZATION-STATUS.md) for the complete
 validation record and remaining installation, hosted CI and live-workflow gates.

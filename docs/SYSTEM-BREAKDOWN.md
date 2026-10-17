@@ -370,6 +370,7 @@ Major route groups:
 | `/api/promises/*` | Promise ledger |
 | `/api/events*`, `/api/events/summary` | Event store reader |
 | `/api/artifacts*` | agent-outputs browser |
+| `/api/preview-link`, `/preview/<token>/…` | Live preview of a web page the agent wrote, with the files in its folder, sandboxed; each page gets its own random token (`previewRoutes.ts`) |
 | `/api/output-validation/*` | Profile config + feedback replay |
 | `/metrics` | Prometheus exposition (v0.4.0) |
 | `/ws` | WebSocket fanout (with optional `event_batch` coalescing) |
