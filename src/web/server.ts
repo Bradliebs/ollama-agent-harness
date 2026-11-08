@@ -753,6 +753,7 @@ interface WebRuntimeDeps {
   createClient(model: string, host: string, numCtx?: number): IChatClient;
   getModelContextWindow(model: string, host: string): Promise<number | null>;
   listModels(host: string): Promise<string[]>;
+  listOpenRouterModels(): Promise<Array<{ id: string; label: string }>>;
   getTools(): Tool[];
   createPermissionEngine(mode: PermissionMode): PermissionEngine;
   createSession(projectDir: string, model: string): SessionStorage;
@@ -1338,6 +1339,7 @@ const defaultWebRuntime: WebRuntimeDeps = {
     return new OllamaClient({ model, host }).getContextWindow();
   },
   listModels: (host) => new OllamaClient({ model: '', host }).listModels(),
+  listOpenRouterModels: () => fetchOpenRouterModels(),
   getTools: () => {
     configureWebReadTool({ maxChars: webReadMaxChars });
     // The subagent tool needs a parent client to delegate to; create one
@@ -2366,7 +2368,9 @@ app.get('/api/models', async (_req, res) => {
     // Append OpenAI-compatible backends whose API keys are configured.
     for (const [backendId, preset] of Object.entries(OPENAI_COMPATIBLE_PRESETS)) {
       if (!readApiKey(preset)) continue;
-      const remoteModels = REMOTE_MODEL_CATALOG[backendId] || [];
+      const remoteModels = backendId === 'openrouter'
+        ? await webRuntime.listOpenRouterModels().catch(() => REMOTE_MODEL_CATALOG.openrouter)
+        : REMOTE_MODEL_CATALOG[backendId] || [];
       for (const m of remoteModels) {
         models.push({
           name: backendId + '/' + m.id,
@@ -2480,6 +2484,35 @@ const REMOTE_MODEL_CATALOG: Record<string, Array<{ id: string; label: string }>>
     { id: 'meta/meta-llama-3-70b-instruct', label: 'Llama 3 70B' },
   ],
 };
+
+// OpenRouter publishes its full model list at a public endpoint, so the
+// picker can offer every model instead of the curated subset above.
+// Cached in memory; falls back to the curated list if the fetch fails.
+const OPENROUTER_MODELS_TTL_MS = 60 * 60 * 1000;
+let openRouterModelsCache: { at: number; models: Array<{ id: string; label: string }> } | null = null;
+
+async function fetchOpenRouterModels(): Promise<Array<{ id: string; label: string }>> {
+  if (openRouterModelsCache && Date.now() - openRouterModelsCache.at < OPENROUTER_MODELS_TTL_MS) {
+    return openRouterModelsCache.models;
+  }
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/models', { signal: AbortSignal.timeout(5000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const body = await response.json() as { data?: Array<{ id?: unknown; name?: unknown }> };
+    const models = (body.data || [])
+      .filter((m): m is { id: string; name?: unknown } => typeof m.id === 'string' && m.id.length > 0)
+      .map((m) => ({ id: m.id, label: typeof m.name === 'string' && m.name ? m.name : m.id }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    if (!models.length) throw new Error('empty model list');
+    openRouterModelsCache = { at: Date.now(), models };
+    return models;
+  } catch (error) {
+    logger.warn('Models', 'OpenRouter model list fetch failed, using curated list', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return REMOTE_MODEL_CATALOG.openrouter;
+  }
+}
 
 // API key management for remote backends. Returns which key NAMES are
 // configured (not the values themselves) and whether each comes from

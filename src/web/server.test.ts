@@ -1134,6 +1134,23 @@ describe('web server API validation', () => {
     }
   });
 
+  it('lists the live OpenRouter catalog in /api/models when OpenRouter is configured', async () => {
+    const previous = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = 'test-key';
+    const restore = setWebRuntimeOverrides({
+      listOpenRouterModels: jest.fn().mockResolvedValue([{ id: 'qwen/qwen3-coder', label: 'Qwen3 Coder' }]),
+    });
+    try {
+      const body = await (await request('/api/models')).json() as { models: Array<{ name: string; backend?: string }> };
+      const openRouterNames = body.models.filter((m) => m.backend === 'openrouter').map((m) => m.name);
+      expect(openRouterNames).toEqual(['openrouter/qwen/qwen3-coder']);
+    } finally {
+      restore();
+      if (previous === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = previous;
+    }
+  });
+
   it('keeps a capable selected model for current-information research turns', async () => {
     const previous = process.env.OPENROUTER_API_KEY;
     process.env.OPENROUTER_API_KEY = 'test-key';
