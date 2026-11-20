@@ -16,6 +16,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { writeMetricsJson, aggregatePanels, type BenchmarkRunMetrics, type BenchmarkTaskMetrics } from '../verification/metrics';
+import { CostTracker } from './costTracker';
 
 // ─── Schema ──────────────────────────────────────────────────────────
 
@@ -93,6 +94,14 @@ export interface BenchmarkTaskResult {
   replicateCount?: number;
   /** How many of those replicates passed (the k in a k/N majority vote). */
   passReplicates?: number;
+  /** Total model input tokens, when reported by the chat stream. */
+  promptTokens?: number;
+  /** Total model output tokens, when reported by the chat stream. */
+  completionTokens?: number;
+  /** True only when every completed model turn reported token usage. */
+  usageComplete?: boolean;
+  /** Estimated USD cost when all reported model names have configured rates. */
+  estimatedCostUsd?: number;
 }
 
 export interface BenchmarkRun {
@@ -120,6 +129,8 @@ interface StreamObservation {
   turnCount: number;
   completed: boolean;
   error?: string;
+  usage: Array<{ model: string; turn: number; promptTokens: number; completionTokens: number }>;
+  usageComplete: boolean;
 }
 
 async function consumeChatStream(response: Response, timeoutMs: number): Promise<StreamObservation> {
@@ -131,9 +142,23 @@ async function consumeChatStream(response: Response, timeoutMs: number): Promise
   let buffer = '';
   let responseText = '';
   const toolCalls: string[] = [];
+  const usage: StreamObservation['usage'] = [];
+  const usageTurns = new Set<number>();
+  const completedTurns = new Set<number>();
   let turnCount = 0;
   let streamError: string | undefined;
   const startedAt = Date.now();
+  const observation = (completed: boolean, error?: string): StreamObservation => ({
+    responseText,
+    toolCalls,
+    turnCount,
+    completed,
+    error,
+    usage,
+    usageComplete: completedTurns.size > 0
+      && [...completedTurns].every((turn) => usageTurns.has(turn))
+      && [...usageTurns].every((turn) => completedTurns.has(turn)),
+  });
 
   while (true) {
     if (Date.now() - startedAt > timeoutMs) break;
@@ -146,21 +171,72 @@ async function consumeChatStream(response: Response, timeoutMs: number): Promise
       const line = rawLine.replace(/\r$/, '');
       if (!line.startsWith('data: ')) continue;
       const payloadText = line.slice(6);
-      if (payloadText === '[DONE]') return { responseText, toolCalls, turnCount, completed: true, error: streamError };
+      if (payloadText === '[DONE]') return observation(true, streamError);
       try {
-        const event = JSON.parse(payloadText) as { type?: string; content?: string; call?: { name?: string }; turn?: number; reason?: string; message?: string };
+        const event = JSON.parse(payloadText) as {
+          type?: string;
+          content?: string;
+          call?: { name?: string };
+          turn?: number;
+          model?: string;
+          promptTokens?: number;
+          completionTokens?: number;
+          reason?: string;
+          message?: string;
+        };
         if (event.type === 'text' && typeof event.content === 'string') responseText += event.content;
         else if (event.type === 'tool_call' && event.call?.name) toolCalls.push(event.call.name);
-        else if (event.type === 'turn_complete') turnCount = (event.turn ?? 0) + 1;
+        else if (event.type === 'usage'
+          && typeof event.model === 'string'
+          && Number.isInteger(event.turn)
+          && Number.isFinite(event.promptTokens)
+          && Number.isFinite(event.completionTokens)
+          && (event.promptTokens ?? -1) >= 0
+          && (event.completionTokens ?? -1) >= 0) {
+          const turn = event.turn as number;
+          usage.push({
+            model: event.model,
+            turn,
+            promptTokens: event.promptTokens as number,
+            completionTokens: event.completionTokens as number,
+          });
+          usageTurns.add(turn);
+        }
+        else if (event.type === 'turn_complete') {
+          turnCount = (event.turn ?? 0) + 1;
+          if (Number.isInteger(event.turn)) completedTurns.add(event.turn as number);
+        }
         else if (event.type === 'error') streamError = event.message || 'Chat stream reported an error';
-        else if (event.type === 'done') return {
-          responseText, toolCalls, turnCount, completed: true,
-          error: streamError || (event.reason && event.reason !== 'completed' ? `Chat ended: ${event.reason}` : undefined),
-        };
+        else if (event.type === 'done') {
+          return observation(
+            true,
+            streamError || (event.reason && event.reason !== 'completed' ? `Chat ended: ${event.reason}` : undefined),
+          );
+        }
       } catch { /* skip malformed lines */ }
     }
   }
-  return { responseText, toolCalls, turnCount, completed: false, error: streamError };
+  return observation(false, streamError);
+}
+
+function usageResultFields(obs: StreamObservation): Pick<BenchmarkTaskResult, 'promptTokens' | 'completionTokens' | 'usageComplete' | 'estimatedCostUsd'> {
+  if (obs.usage.length === 0) return obs.usageComplete ? {} : { usageComplete: false };
+  const promptTokens = obs.usage.reduce((sum, item) => sum + item.promptTokens, 0);
+  const completionTokens = obs.usage.reduce((sum, item) => sum + item.completionTokens, 0);
+  const rates = CostTracker.getAllRates();
+  const hasKnownRates = obs.usage.every((item) => rates[item.model] !== undefined);
+  const estimatedCostUsd = obs.usageComplete && hasKnownRates
+    ? Math.round(obs.usage.reduce((sum, item) => {
+      const rate = rates[item.model];
+      return sum + (item.promptTokens / 1000) * rate.input + (item.completionTokens / 1000) * rate.output;
+    }, 0) * 1_000_000) / 1_000_000
+    : undefined;
+  return {
+    promptTokens,
+    completionTokens,
+    usageComplete: obs.usageComplete,
+    ...(estimatedCostUsd !== undefined ? { estimatedCostUsd } : {}),
+  };
 }
 
 // ─── Scorer ──────────────────────────────────────────────────────────
@@ -339,6 +415,7 @@ export async function runBenchmarkTask(task: BenchmarkTask, options: BenchmarkRu
       toolCalls: obs.toolCalls,
       durationMs,
       tags: task.tags ?? [],
+      ...usageResultFields(obs),
     };
   }
 
@@ -354,6 +431,7 @@ export async function runBenchmarkTask(task: BenchmarkTask, options: BenchmarkRu
     toolCalls: obs.toolCalls,
     durationMs,
     tags: task.tags ?? [],
+    ...usageResultFields(obs),
   };
 }
 
@@ -394,6 +472,16 @@ export function aggregateReplicates(replicas: BenchmarkTaskResult[]): BenchmarkT
     tags: representative.tags,
     replicateCount: n,
     passReplicates: passCount,
+    ...(replicas.every((r) => Number.isFinite(r.promptTokens))
+      ? { promptTokens: replicas.reduce((sum, r) => sum + (r.promptTokens ?? 0), 0) }
+      : {}),
+    ...(replicas.every((r) => Number.isFinite(r.completionTokens))
+      ? { completionTokens: replicas.reduce((sum, r) => sum + (r.completionTokens ?? 0), 0) }
+      : {}),
+    usageComplete: replicas.every((r) => r.usageComplete === true),
+    ...(replicas.every((r) => Number.isFinite(r.estimatedCostUsd))
+      ? { estimatedCostUsd: replicas.reduce((sum, r) => sum + (r.estimatedCostUsd ?? 0), 0) }
+      : {}),
   };
 }
 
@@ -495,12 +583,16 @@ export async function persistBenchmarkRun(projectDir: string, run: BenchmarkRun)
 function buildRunMetrics(run: BenchmarkRun): BenchmarkRunMetrics {
   const started = Date.parse(run.startedAt);
   const finished = Date.parse(run.finishedAt);
+  const usage = summarizeTokenUsage(run.results);
   const tasks: BenchmarkTaskMetrics[] = run.results.map((r) => ({
     taskId: r.taskId,
     tier: r.tier,
     status: r.status,
     durationMs: r.durationMs,
     toolCalls: r.toolCalls.length,
+    ...(r.usageComplete === true && Number.isFinite(r.promptTokens) ? { tokensIn: r.promptTokens } : {}),
+    ...(r.usageComplete === true && Number.isFinite(r.completionTokens) ? { tokensOut: r.completionTokens } : {}),
+    ...(Number.isFinite(r.estimatedCostUsd) ? { costUsd: r.estimatedCostUsd } : {}),
   }));
   const { perSignal, perAxis } = aggregatePanels(tasks);
   return {
@@ -517,9 +609,31 @@ function buildRunMetrics(run: BenchmarkRun): BenchmarkRunMetrics {
     errored: run.errored,
     passRate: run.passRate,
     tasks,
+    ...(usage.tokensIn !== null ? { tokensIn: usage.tokensIn } : {}),
+    ...(usage.tokensOut !== null ? { tokensOut: usage.tokensOut } : {}),
+    ...(usage.costUsd !== null ? { costUsd: usage.costUsd } : {}),
     ...(perSignal ? { perSignal } : {}),
     ...(perAxis ? { perAxis } : {}),
   };
+}
+
+export function summarizeTokenUsage(results: BenchmarkTaskResult[]): {
+  tokensIn: number | null;
+  tokensOut: number | null;
+  costUsd: number | null;
+} {
+  const complete = results.length > 0 && results.every((result) =>
+    result.usageComplete === true
+    && Number.isFinite(result.promptTokens)
+    && Number.isFinite(result.completionTokens));
+  if (!complete) return { tokensIn: null, tokensOut: null, costUsd: null };
+  const tokensIn = results.reduce((sum, result) => sum + (result.promptTokens ?? 0), 0);
+  const tokensOut = results.reduce((sum, result) => sum + (result.completionTokens ?? 0), 0);
+  const hasCost = results.every((result) => Number.isFinite(result.estimatedCostUsd));
+  const costUsd = hasCost
+    ? Math.round(results.reduce((sum, result) => sum + (result.estimatedCostUsd ?? 0), 0) * 1_000_000) / 1_000_000
+    : null;
+  return { tokensIn, tokensOut, costUsd };
 }
 
 export async function loadBenchmarkRuns(projectDir: string): Promise<BenchmarkRun[]> {

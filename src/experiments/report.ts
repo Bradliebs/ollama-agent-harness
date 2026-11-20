@@ -1,5 +1,6 @@
 import type { HarnessEvent } from '../persistence/eventStore';
 import type { BenchmarkTaskResult } from '../eval/benchmark';
+import { summarizeTokenUsage } from '../eval/benchmark';
 import type {
   ConfidenceInterval,
   ExperimentExecutionRecord,
@@ -41,8 +42,8 @@ export function summarizeTaskEfficiency(results: BenchmarkTaskResult[]): {
   passedAttempts: number | null;
   totalDurationMs: number | null;
   durationMsPerPassedAttempt: number | null;
-  totalTokens: null;
-  costUsd: null;
+  totalTokens: number | null;
+  costUsd: number | null;
 } {
   const attempts = results.reduce((sum, result) => sum + (result.replicateCount ?? 1), 0);
   const passCountsKnown = results.every((result) => result.replicateCount === undefined || (
@@ -55,13 +56,14 @@ export function summarizeTaskEfficiency(results: BenchmarkTaskResult[]): {
   const totalDurationMs = results.length > 0 && results.every((result) => Number.isFinite(result.durationMs) && result.durationMs >= 0)
     ? results.reduce((sum, result) => sum + result.durationMs, 0)
     : null;
+  const usage = summarizeTokenUsage(results);
   return {
     attempts,
     passedAttempts,
     totalDurationMs,
     durationMsPerPassedAttempt: totalDurationMs !== null && passedAttempts !== null && passedAttempts > 0 ? totalDurationMs / passedAttempts : null,
-    totalTokens: null,
-    costUsd: null,
+    totalTokens: usage.tokensIn !== null && usage.tokensOut !== null ? usage.tokensIn + usage.tokensOut : null,
+    costUsd: usage.costUsd,
   };
 }
 
@@ -293,6 +295,7 @@ export function renderScorecardReport(scorecard: ExperimentScorecard): string {
   lines.push('');
   lines.push(`- Average duration ratio (candidate ÷ baseline): ${fmtRatio(scorecard.averageDurationRatio)}`);
   lines.push(`- Average tool-call ratio (candidate ÷ baseline): ${fmtRatio(scorecard.averageToolCallRatio)}`);
+  lines.push(`- Average token ratio (candidate ÷ baseline): ${fmtRatio(scorecard.averageTokenRatio)}`);
   lines.push('');
 
   const failureEntries = Object.entries(scorecard.failureCategoryDeltas)

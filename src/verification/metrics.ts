@@ -43,6 +43,9 @@ export interface BenchmarkTaskMetrics {
   status: 'pass' | 'fail' | 'error';
   durationMs: number;
   toolCalls: number;
+  tokensIn?: number;
+  tokensOut?: number;
+  costUsd?: number;
   /** Per-task panel result, when one was computed. */
   panel?: PanelResult;
 }

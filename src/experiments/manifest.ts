@@ -85,6 +85,10 @@ export function validateExperimentManifest(manifest: ExperimentManifest): Manife
   if (manifest.budget?.maxToolCalls !== undefined && manifest.budget.maxToolCalls < 0) {
     errors.push('budget.maxToolCalls cannot be negative when provided.');
   }
+  if (manifest.guardrails?.maxTokenRegressionRatio !== undefined
+    && (!Number.isFinite(manifest.guardrails.maxTokenRegressionRatio) || manifest.guardrails.maxTokenRegressionRatio <= 0)) {
+    errors.push('guardrails.maxTokenRegressionRatio must be positive when provided.');
+  }
 
   return { ok: errors.length === 0, errors };
 }

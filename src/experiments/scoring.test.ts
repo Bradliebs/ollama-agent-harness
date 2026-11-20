@@ -1,7 +1,14 @@
 import type { BenchmarkRun, BenchmarkTaskResult, FailureCategory } from '../eval/benchmark';
 import { scorePairedExperiment } from './scoring';
 
-function result(taskId: string, status: BenchmarkTaskResult['status'], failureCategory?: FailureCategory, durationMs = 100, toolCalls: string[] = []): BenchmarkTaskResult {
+function result(
+  taskId: string,
+  status: BenchmarkTaskResult['status'],
+  failureCategory?: FailureCategory,
+  durationMs = 100,
+  toolCalls: string[] = [],
+  usage?: Pick<BenchmarkTaskResult, 'promptTokens' | 'completionTokens' | 'usageComplete'>,
+): BenchmarkTaskResult {
   return {
     taskId,
     tier: 'canned',
@@ -13,6 +20,7 @@ function result(taskId: string, status: BenchmarkTaskResult['status'], failureCa
     toolCalls,
     durationMs,
     tags: [],
+    ...usage,
   };
 }
 
@@ -131,10 +139,44 @@ describe('scorePairedExperiment', () => {
       candidateRun: candidate,
       guardrails: { minPairedTasksForKeep: 1, rejectOnFailureCategoryIncrease: ['WRONG_ANSWER'] },
     });
-
     expect(scorecard.failureCategoryDeltas.WRONG_ANSWER).toBe(1);
     expect(scorecard.decision.status).toBe('discard');
     expect(scorecard.decision.reasons[0]).toContain('WRONG_ANSWER');
+  });
+
+  it('rejects candidates that exceed the configured token regression ratio', () => {
+    const baseline = run('baseline', [
+      result('task-1', 'fail', undefined, 100, [], { promptTokens: 100, completionTokens: 0, usageComplete: true }),
+    ]);
+    const candidate = run('candidate', [
+      result('task-1', 'pass', undefined, 100, [], { promptTokens: 130, completionTokens: 0, usageComplete: true }),
+    ]);
+
+    const scorecard = scorePairedExperiment({
+      baselineVariantId: 'baseline',
+      candidateVariantId: 'candidate',
+      baselineRun: baseline,
+      candidateRun: candidate,
+      guardrails: { minPairedTasksForKeep: 1, maxTokenRegressionRatio: 1.2, rejectOnFailureCategoryIncrease: [] },
+    });
+
+    expect(scorecard.averageTokenRatio).toBeCloseTo(1.3);
+    expect(scorecard.decision.status).toBe('discard');
+    expect(scorecard.decision.reasons[0]).toContain('token ratio');
+  });
+
+  it('keeps token-gated experiments inconclusive when token usage is unavailable', () => {
+    const scorecard = scorePairedExperiment({
+      baselineVariantId: 'baseline',
+      candidateVariantId: 'candidate',
+      baselineRun: run('baseline', [result('task-1', 'fail')]),
+      candidateRun: run('candidate', [result('task-1', 'pass')]),
+      guardrails: { minPairedTasksForKeep: 1, maxTokenRegressionRatio: 1.2, rejectOnFailureCategoryIncrease: [] },
+    });
+
+    expect(scorecard.averageTokenRatio).toBeNull();
+    expect(scorecard.decision.status).toBe('inconclusive');
+    expect(scorecard.decision.reasons[0]).toContain('Token usage evidence is incomplete');
   });
 
   it('reports McNemar significance from paired disagreements', () => {

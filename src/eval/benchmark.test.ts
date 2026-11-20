@@ -60,6 +60,43 @@ describe('runBenchmarkTask', () => {
     expect(result.status).toBe('pass');
   });
 
+  it('records complete token usage and estimates cost only for known model rates', async () => {
+    const fetchImpl: typeof fetch = async () => new Response([
+      { type: 'usage', model: 'gpt-4o', turn: 0, promptTokens: 100, completionTokens: 25 },
+      { type: 'turn_complete', turn: 0 },
+      { type: 'text', content: 'ready' },
+      { type: 'done', reason: 'completed' },
+    ].map((event) => `data: ${JSON.stringify(event)}\n`).join(''));
+
+    const result = await runBenchmarkTask(
+      { id: 'usage', tier: 'canned', description: 'usage', input: 'x' },
+      { fetchImpl },
+    );
+
+    expect(result).toMatchObject({
+      promptTokens: 100,
+      completionTokens: 25,
+      usageComplete: true,
+      estimatedCostUsd: 0.0005,
+    });
+  });
+
+  it('marks token usage incomplete when a completed model turn has no usage event', async () => {
+    const fetchImpl: typeof fetch = async () => new Response([
+      { type: 'turn_complete', turn: 0 },
+      { type: 'text', content: 'ready' },
+      { type: 'done', reason: 'completed' },
+    ].map((event) => `data: ${JSON.stringify(event)}\n`).join(''));
+
+    const result = await runBenchmarkTask(
+      { id: 'usage-missing', tier: 'canned', description: 'usage', input: 'x' },
+      { fetchImpl },
+    );
+
+    expect(result.promptTokens).toBeUndefined();
+    expect(result.usageComplete).toBe(false);
+  });
+
   it('fails when expectIncludes substring is missing', async () => {
     const task: BenchmarkTask = { id: 'test.2', tier: 'canned', description: 'inc', input: 'x', expectIncludes: ['confirmed'] };
     const result = await runBenchmarkTask(task, { fetchImpl: makeFetch('I am ready now') });

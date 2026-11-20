@@ -66,6 +66,8 @@ export interface ExperimentGuardrails {
   minCandidateNetWins?: number;
   maxLatencyRegressionRatio?: number;
   maxToolCallRegressionRatio?: number;
+  /** Optional ceiling for candidate token use relative to baseline. */
+  maxTokenRegressionRatio?: number;
   rejectOnFailureCategoryIncrease?: FailureCategory[];
   requireNoSafetyRegressions?: boolean;
   /**
@@ -200,6 +202,7 @@ export interface ExperimentScorecard {
   failureCategoryDeltas: Partial<Record<FailureCategory, number>>;
   averageDurationRatio: number | null;
   averageToolCallRatio: number | null;
+  averageTokenRatio: number | null;
   mcnemar: McNemarSummary;
   /** Standard error of the paired pass-rate delta (noise floor). */
   passRateDeltaStdErr: number;

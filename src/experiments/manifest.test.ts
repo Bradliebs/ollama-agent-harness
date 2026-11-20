@@ -64,6 +64,15 @@ describe('validateExperimentManifest', () => {
     ]));
   });
 
+  it('rejects a non-positive token regression ratio', () => {
+    const result = validateExperimentManifest(manifest({
+      guardrails: { maxTokenRegressionRatio: 0 },
+    }));
+
+    expect(result.ok).toBe(false);
+    expect(result.errors).toContain('guardrails.maxTokenRegressionRatio must be positive when provided.');
+  });
+
   it('rejects a holdout that sets both fraction and taskIds', () => {
     const result = validateExperimentManifest(manifest({
       evaluation: { datasetId: 'benchmarks:v1', scorerVersion: 'benchmark.ts:v1', holdout: { fraction: 0.3, taskIds: ['task-a'] } },

@@ -52,8 +52,12 @@ export function scorePairedExperiment(input: PairedExperimentScoringInput): Expe
   const failureCategoryDeltas = diffFailureCounts(input.baselineRun.results, input.candidateRun.results);
   const averageDurationRatio = ratio(average(input.candidateRun.results.map((result) => result.durationMs)), average(input.baselineRun.results.map((result) => result.durationMs)));
   const averageToolCallRatio = ratio(average(input.candidateRun.results.map((result) => result.toolCalls.length)), average(input.baselineRun.results.map((result) => result.toolCalls.length)));
+  const baselineTokens = averageMeasuredTokens(input.baselineRun.results);
+  const candidateTokens = averageMeasuredTokens(input.candidateRun.results);
+  const averageTokenRatio = baselineTokens === null || candidateTokens === null ? null : ratio(candidateTokens, baselineTokens);
   const reasons: string[] = [];
   let hardRejected = false;
+  let tokenEvidenceMissing = false;
 
   if (requireNoSafetyRegressions && input.safety && input.safety.candidateViolations > input.safety.baselineViolations) {
     hardRejected = true;
@@ -77,6 +81,15 @@ export function scorePairedExperiment(input: PairedExperimentScoringInput): Expe
     hardRejected = true;
     reasons.push(`Candidate average tool-call ratio ${averageToolCallRatio.toFixed(2)} exceeded ${maxToolCallRegressionRatio}.`);
   }
+  if (guardrails.maxTokenRegressionRatio !== undefined) {
+    if (averageTokenRatio === null) {
+      tokenEvidenceMissing = true;
+      reasons.push(`Token usage evidence is incomplete; cannot evaluate maxTokenRegressionRatio=${guardrails.maxTokenRegressionRatio}.`);
+    } else if (averageTokenRatio > guardrails.maxTokenRegressionRatio) {
+      hardRejected = true;
+      reasons.push(`Candidate average token ratio ${averageTokenRatio.toFixed(2)} exceeded ${guardrails.maxTokenRegressionRatio}.`);
+    }
+  }
 
   const decision = decide({
     hardRejected,
@@ -85,6 +98,7 @@ export function scorePairedExperiment(input: PairedExperimentScoringInput): Expe
     netCandidateWins,
     minCandidateNetWins,
     reasons,
+    tokenEvidenceMissing,
     requireSignificance: guardrails.requireSignificance ?? false,
     significantAt95: paired.mcnemar.significantAt95,
     minHoldoutNetWins: guardrails.minHoldoutNetWins,
@@ -108,6 +122,7 @@ export function scorePairedExperiment(input: PairedExperimentScoringInput): Expe
     failureCategoryDeltas,
     averageDurationRatio,
     averageToolCallRatio,
+    averageTokenRatio,
     mcnemar: paired.mcnemar,
     passRateDeltaStdErr: paired.passRateDeltaStdErr,
     passRateDeltaCi95: paired.passRateDeltaCi95,
@@ -124,6 +139,7 @@ function decide(input: {
   netCandidateWins: number;
   minCandidateNetWins: number;
   reasons: string[];
+  tokenEvidenceMissing: boolean;
   requireSignificance: boolean;
   significantAt95: boolean;
   minHoldoutNetWins?: number;
@@ -145,6 +161,9 @@ function decide(input: {
       reasons: [`Only ${input.pairedTasks} paired task(s) were evaluated; need ${input.minPairedTasksForKeep} before keep decisions.`],
       automaticPromotionAllowed: false,
     };
+  }
+  if (input.tokenEvidenceMissing) {
+    return { status: 'inconclusive', reasons: input.reasons, automaticPromotionAllowed: false };
   }
   if (input.requireSignificance && !input.significantAt95) {
     return {
@@ -326,6 +345,16 @@ function summarizeMcNemar(baselineOnlyPasses: number, candidateOnlyPasses: numbe
 function average(values: number[]): number {
   if (values.length === 0) return 0;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function averageMeasuredTokens(results: BenchmarkTaskResult[]): number | null {
+  if (results.length === 0 || results.some((result) =>
+    result.usageComplete !== true
+    || !Number.isFinite(result.promptTokens)
+    || !Number.isFinite(result.completionTokens))) {
+    return null;
+  }
+  return average(results.map((result) => (result.promptTokens ?? 0) + (result.completionTokens ?? 0)));
 }
 
 function ratio(numerator: number, denominator: number): number | null {

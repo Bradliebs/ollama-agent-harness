@@ -40,6 +40,15 @@ describe('task efficiency accounting', () => {
     });
   });
 
+  it('reports complete token totals and leaves unknown model cost unestimated', () => {
+    expect(summarizeTaskEfficiency([
+      result({ promptTokens: 100, completionTokens: 25, usageComplete: true }),
+    ])).toMatchObject({
+      totalTokens: 125,
+      costUsd: null,
+    });
+  });
+
   it('does not present missing measurements or zero passes as free success', () => {
     expect(summarizeTaskEfficiency([])).toMatchObject({ totalDurationMs: null, durationMsPerPassedAttempt: null });
     expect(summarizeTaskEfficiency([result({ status: 'error' })])).toMatchObject({ durationMsPerPassedAttempt: null });
@@ -167,6 +176,7 @@ describe('renderScorecardReport (grounded markdown)', () => {
       failureCategoryDeltas: { WRONG_ANSWER: -1 },
       averageDurationRatio: 1.1,
       averageToolCallRatio: null,
+      averageTokenRatio: 1.2,
       mcnemar: { baselineOnlyPasses: 0, candidateOnlyPasses: 1, statisticWithContinuityCorrection: 0, significantAt95: false },
       passRateDeltaStdErr: 0.12,
       passRateDeltaCi95: { lower: 0.01, upper: 0.49 },
@@ -196,6 +206,7 @@ describe('renderScorecardReport (grounded markdown)', () => {
     // Cost ratios (one null).
     expect(md).toContain('Average duration ratio (candidate ÷ baseline): 1.10×');
     expect(md).toContain('Average tool-call ratio (candidate ÷ baseline): n/a');
+    expect(md).toContain('Average token ratio (candidate ÷ baseline): 1.20×');
     // Failure-category delta that moved.
     expect(md).toContain('WRONG_ANSWER: -1.000');
     // Decisive task that drove the net win.
