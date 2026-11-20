@@ -25,6 +25,8 @@ export function buildRuntimeSkillFile(input: {
   triggers: string[];
   whenToUse: string;
   requiredTools: string[];
+  derivedFrom?: string[];
+  dependsOn?: string[];
   riskLevel?: 'low' | 'medium' | 'high';
   body: string;
 }): string {
@@ -37,6 +39,8 @@ export function buildRuntimeSkillFile(input: {
   ];
   if (input.whenToUse) lines.push(`when_to_use: ${yamlScalar(input.whenToUse)}`);
   if (input.requiredTools.length > 0) lines.push(...yamlList('required_tools', input.requiredTools));
+  if (input.derivedFrom?.length) lines.push(...yamlList('derived_from', input.derivedFrom));
+  if (input.dependsOn?.length) lines.push(...yamlList('depends_on', input.dependsOn));
   if (input.riskLevel) lines.push(`risk_level: ${yamlScalar(input.riskLevel)}`);
   lines.push('---', '', input.body);
   return `${lines.join('\n').trimEnd()}\n`;

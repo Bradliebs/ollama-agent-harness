@@ -2,7 +2,7 @@
 title: Skills (model-agnostic)
 description: How the harness uses the same Skill protocol as Anthropic's Agent Skills, without coupling to Claude or any vendor API
 author: Bradliebs
-ms.date: 2026-05-16
+ms.date: 2026-11-15
 ---
 
 # Skills
@@ -69,7 +69,14 @@ spec):
 | `risk_level` | `low` / `medium` / `high` — surfaced in the UI and workflow runner. |
 | `enabled` | `false` to disable without deleting the folder. |
 | `required_tools` | YAML list of tool names the skill expects to use. |
+| `derived_from` | YAML list of source identifiers, such as learning candidate IDs or URLs. |
+| `depends_on` | YAML list of skill names that must be installed and enabled. |
 | `steps`, `examples`, `validation_checks`, `rollback_notes` | Structured guidance the workflow runner can read. |
+
+Dependencies are matched by skill name, without regard to case. A skill with a
+missing or disabled dependency is disabled during loading and reported as a
+diagnostic. The curator also skips archiving a skill while an enabled skill
+declares it as a dependency.
 
 ## Progressive disclosure (Level 1 / 2 / 3)
 

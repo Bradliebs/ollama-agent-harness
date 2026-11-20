@@ -42,6 +42,10 @@ describe('skillLoader', () => {
       'required_tools:',
       '  - bash',
       '  - file_read',
+      'derived_from:',
+      '  - candidate-17',
+      'depends_on:',
+      '  - base-skill',
       'steps:',
       '  - Read the package.json.',
       '  - Run the test suite.',
@@ -61,6 +65,8 @@ describe('skillLoader', () => {
       expect(skill.whenToUse).toBe('Before each release.');
       expect(skill.riskLevel).toBe('medium');
       expect(skill.requiredTools).toEqual(['bash', 'file_read']);
+      expect(skill.derivedFrom).toEqual(['candidate-17']);
+      expect(skill.dependsOn).toEqual(['base-skill']);
       expect(skill.steps).toEqual(['Read the package.json.', 'Run the test suite.']);
       expect(skill.examples?.[0]).toContain('v0.2.0');
       expect(skill.validationChecks).toEqual(['All tests pass.']);
@@ -125,6 +131,33 @@ describe('skillLoader', () => {
 
       const scan = await scanSkillsDirs([globalDir, workspaceDir]);
       expect(scan.skills).toHaveLength(2);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('disables skills whose dependencies are missing or disabled after merging tiers', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-skill-dependencies-'));
+    const globalDir = path.join(root, 'global');
+    const workspaceDir = path.join(root, 'workspace');
+    await fs.mkdir(path.join(globalDir, 'derived'), { recursive: true });
+    await fs.mkdir(path.join(workspaceDir, 'base'), { recursive: true });
+    await fs.mkdir(path.join(workspaceDir, 'transitive'), { recursive: true });
+    await fs.writeFile(path.join(globalDir, 'derived', 'SKILL.md'), [
+      '---', 'name: derived', 'description: Derived skill', 'domain: t', 'depends_on:', '  - base', '---', 'Body.',
+    ].join('\n'), 'utf-8');
+    await fs.writeFile(path.join(workspaceDir, 'base', 'SKILL.md'), [
+      '---', 'name: base', 'description: Base skill', 'domain: t', 'enabled: false', '---', 'Body.',
+    ].join('\n'), 'utf-8');
+    await fs.writeFile(path.join(workspaceDir, 'transitive', 'SKILL.md'), [
+      '---', 'name: transitive', 'description: Transitive skill', 'domain: t', 'depends_on:', '  - derived', '---', 'Body.',
+    ].join('\n'), 'utf-8');
+
+    try {
+      const scan = await scanSkillsDirs([globalDir, workspaceDir]);
+      expect(scan.skills.find((skill) => skill.name === 'derived')?.enabled).toBe(false);
+      expect(scan.skills.find((skill) => skill.name === 'transitive')?.enabled).toBe(false);
+      expect(scan.diagnostics.filter((diagnostic) => diagnostic.reason === 'unavailable-dependency')).toHaveLength(2);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

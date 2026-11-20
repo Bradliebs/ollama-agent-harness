@@ -46,6 +46,23 @@ describe('skill tools', () => {
     await expect(fs.readFile(path.join(skillsDir, 'fresh-skill', 'SKILL.md'), 'utf-8')).resolves.toContain('Fresh skill for visibility tests');
   });
 
+  it('persists optional lineage and skill dependencies from the authoring tool', async () => {
+    const created = await CreateSkillTool.execute({
+      name: 'derived-skill',
+      description: 'Derived workflow',
+      derived_from: ['candidate-17'],
+      depends_on: ['base-skill'],
+      instructions: 'Use the base skill.',
+    });
+
+    expect(created.success).toBe(true);
+    const raw = await fs.readFile(path.join(skillsDir, 'derived-skill', 'SKILL.md'), 'utf-8');
+    expect(raw).toContain('derived_from:');
+    expect(raw).toContain('- "candidate-17"');
+    expect(raw).toContain('depends_on:');
+    expect(raw).toContain('- "base-skill"');
+  });
+
   it('escapes quotes/newlines in created skill frontmatter so it cannot break YAML or inject keys', async () => {
     const created = await CreateSkillTool.execute({
       name: 'injection-skill',

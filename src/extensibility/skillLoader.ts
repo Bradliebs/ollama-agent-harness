@@ -26,6 +26,10 @@ export interface SkillDefinition {
   validationChecks?: string[];
   /** Optional notes describing how to roll back if the skill misfires. */
   rollbackNotes?: string;
+  /** Optional source identifiers, such as a learning candidate or imported URL. */
+  derivedFrom?: string[];
+  /** Optional names of skills that must remain available for this skill to work. */
+  dependsOn?: string[];
   /** Whether this skill is currently enabled. Defaults to true when omitted. */
   enabled?: boolean;
 }
@@ -33,7 +37,7 @@ export interface SkillDefinition {
 export interface SkillLoadDiagnostic {
   name: string;
   filePath: string;
-  reason: 'missing-skill-file' | 'unreadable-skill-file' | 'missing-frontmatter' | 'suspicious-content';
+  reason: 'missing-skill-file' | 'unreadable-skill-file' | 'missing-frontmatter' | 'suspicious-content' | 'unavailable-dependency';
   message: string;
 }
 
@@ -47,6 +51,12 @@ export async function loadSkillsDir(skillsDir: string): Promise<SkillDefinition[
 }
 
 export async function scanSkillsDir(skillsDir: string): Promise<SkillDirectoryScan> {
+  const scan = await readSkillsDir(skillsDir);
+  disableUnavailableDependencies(scan.skills, scan.diagnostics);
+  return scan;
+}
+
+async function readSkillsDir(skillsDir: string): Promise<SkillDirectoryScan> {
   const skills: SkillDefinition[] = [];
   const diagnostics: SkillLoadDiagnostic[] = [];
 
@@ -114,14 +124,42 @@ export async function scanSkillsDirs(dirs: string[]): Promise<SkillDirectoryScan
   const diagnostics: SkillLoadDiagnostic[] = [];
 
   for (const dir of dirs) {
-    const scan = await scanSkillsDir(dir);
+    const scan = await readSkillsDir(dir);
     for (const skill of scan.skills) {
       byName.set(skill.name.toLowerCase(), skill);
     }
     diagnostics.push(...scan.diagnostics);
   }
 
-  return { skills: [...byName.values()], diagnostics };
+  const skills = [...byName.values()];
+  disableUnavailableDependencies(skills, diagnostics);
+  return { skills, diagnostics };
+}
+
+function disableUnavailableDependencies(skills: SkillDefinition[], diagnostics: SkillLoadDiagnostic[]): void {
+  const byName = new Map(skills.map((skill) => [skill.name.toLowerCase(), skill]));
+  const unavailable = new Set(skills.filter((skill) => skill.enabled === false).map((skill) => skill.name.toLowerCase()));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const skill of skills) {
+      if (skill.enabled === false || !skill.dependsOn?.length) continue;
+      const missing = skill.dependsOn.filter((dependency) => {
+        const key = dependency.toLowerCase();
+        return !byName.has(key) || unavailable.has(key);
+      });
+      if (missing.length === 0) continue;
+      skill.enabled = false;
+      unavailable.add(skill.name.toLowerCase());
+      diagnostics.push({
+        name: skill.name,
+        filePath: skill.filePath,
+        reason: 'unavailable-dependency',
+        message: `Disabled because required skill dependencies are missing or disabled: ${missing.join(', ')}.`,
+      });
+      changed = true;
+    }
+  }
 }
 
 /** Convenience wrapper around {@link scanSkillsDirs} returning only the merged skills. */
@@ -165,6 +203,8 @@ export function parseSkillFile(content: string, filePath: string): SkillDefiniti
     examples: Array.isArray(frontmatter.examples) ? frontmatter.examples as string[] : undefined,
     validationChecks: Array.isArray(frontmatter.validation_checks) ? frontmatter.validation_checks as string[] : undefined,
     rollbackNotes: typeof frontmatter.rollback_notes === 'string' ? frontmatter.rollback_notes as string : undefined,
+    derivedFrom: normalizeStringList(frontmatter.derived_from),
+    dependsOn: normalizeStringList(frontmatter.depends_on),
     enabled,
   };
 }
@@ -218,7 +258,7 @@ function extractFrontmatter(content: string): Record<string, unknown> | null {
   if (triggersMatch) {
     result.triggers = parseYamlList(triggersMatch[1]);
   }
-  for (const key of ['required_tools', 'steps', 'examples', 'validation_checks']) {
+  for (const key of ['required_tools', 'steps', 'examples', 'validation_checks', 'derived_from', 'depends_on']) {
     const re = new RegExp(`${key}:\\n((?:\\s+-\\s+.+\\n?)*)`);
     const m = yaml.match(re);
     if (m) result[key] = parseYamlList(m[1]);

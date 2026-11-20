@@ -51,7 +51,7 @@ export const DEFAULT_CURATOR_CONFIG: CuratorConfig = {
   demoteProbationAfterFailures: 2,
 };
 
-export type CuratorActionKind = 'archive' | 'restore' | 'merge-proposed' | 'skip-pinned' | 'skip-active' | 'skip-cap' | 'skip-safety';
+export type CuratorActionKind = 'archive' | 'restore' | 'merge-proposed' | 'skip-pinned' | 'skip-active' | 'skip-cap' | 'skip-safety' | 'skip-dependency';
 
 export interface CuratorAction {
   kind: CuratorActionKind;
@@ -128,6 +128,26 @@ export function findStaleSkills(
 ): CuratorAction[] {
   const actions: CuratorAction[] = [];
   const cutoffMs = now.getTime() - config.staleDays * 24 * 60 * 60 * 1000;
+  const activeDependents = new Map<string, string[]>();
+  for (const dependent of skills) {
+    if (dependent.enabled === false) continue;
+    for (const dependency of dependent.dependsOn ?? []) {
+      const key = dependency.toLowerCase();
+      activeDependents.set(key, [...(activeDependents.get(key) ?? []), dependent.name]);
+    }
+  }
+  const addArchiveAction = (action: CuratorAction): void => {
+    const dependents = activeDependents.get(action.skill.toLowerCase()) ?? [];
+    if (dependents.length > 0) {
+      actions.push({
+        ...action,
+        kind: 'skip-dependency',
+        reason: `Active dependent skill(s) must be disabled or archived first: ${dependents.join(', ')}.`,
+      });
+    } else {
+      actions.push(action);
+    }
+  };
   for (const skill of skills) {
     const record = usage.records[skill.name];
     if (record?.pinned) {
@@ -143,7 +163,7 @@ export function findStaleSkills(
       ? config.demoteProbationAfterFailures ?? DEFAULT_CURATOR_CONFIG.demoteProbationAfterFailures ?? 0
       : config.demoteAfterFailures ?? DEFAULT_CURATOR_CONFIG.demoteAfterFailures ?? 0;
     if (record && failLimit > 0 && failing >= failLimit) {
-      actions.push({
+      addArchiveAction({
         kind: 'archive',
         skill: skill.name,
         reason: `Failing: the last ${failing} runs that used it did not finish cleanly${record.status === 'probation' ? ' (it was still on probation)' : ''}.`,
@@ -171,7 +191,7 @@ export function findStaleSkills(
     }
     const ageDays = Math.round((now.getTime() - Date.parse(record?.firstSeenAt ?? lastTouch)) / (24 * 60 * 60 * 1000));
     const daysSinceUse = Math.round((now.getTime() - lastTouchMs) / (24 * 60 * 60 * 1000));
-    actions.push({
+    addArchiveAction({
       kind: 'archive',
       skill: skill.name,
       reason: `Stale: ${daysSinceUse} days since last touch (threshold ${config.staleDays}).`,

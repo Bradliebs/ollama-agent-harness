@@ -135,7 +135,7 @@ export function createSkillRouter(deps: SkillRoutesDeps): express.Router {
 
   // Replace SKILL.md content for a runtime skill. Body accepts EITHER:
   //   { content: string }     -> raw markdown (must start with frontmatter)
-  //   { fields: { name, description, domain, triggers, whenToUse, requiredTools, riskLevel, body } }
+  //   { fields: { name, description, domain, triggers, whenToUse, requiredTools, derivedFrom, dependsOn, riskLevel, body } }
   //                           -> structured form, server rebuilds frontmatter
   // Before writing, the previous content is snapshotted into
   // `.harness/skills/_history/<name>/<ISO>.md` so users can revert via the
@@ -154,6 +154,8 @@ export function createSkillRouter(deps: SkillRoutesDeps): express.Router {
         triggers: sanitizeSkillList(f.triggers, 20, 120),
         whenToUse: sanitizeSkillText(f.whenToUse, '', 800),
         requiredTools: sanitizeSkillList(f.requiredTools, 40, 80),
+        derivedFrom: sanitizeSkillList(f.derivedFrom, 20, 200),
+        dependsOn: sanitizeSkillList(f.dependsOn, 20, 64),
         riskLevel: sanitizeSkillRiskLevel(f.riskLevel),
         body: sanitizeSkillBody(f.body),
       });
@@ -302,6 +304,8 @@ export function createSkillRouter(deps: SkillRoutesDeps): express.Router {
         triggers: sanitizeSkillList(req.body?.triggers, 20, 120),
         whenToUse: sanitizeSkillText(req.body?.whenToUse, '', 800),
         requiredTools: sanitizeSkillList(req.body?.requiredTools, 40, 80),
+        derivedFrom: sanitizeSkillList(req.body?.derivedFrom, 20, 200),
+        dependsOn: sanitizeSkillList(req.body?.dependsOn, 20, 64),
         riskLevel: sanitizeSkillRiskLevel(req.body?.riskLevel),
         body: sanitizeSkillBody(req.body?.content),
       });

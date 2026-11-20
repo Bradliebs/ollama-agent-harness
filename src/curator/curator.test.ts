@@ -30,6 +30,23 @@ describe('Curator deterministic phase', () => {
     expect(actions.find((a) => a.skill === 'pinned-stale')?.kind).toBe('skip-pinned');
   });
 
+  it('does not archive a stale dependency while an enabled skill depends on it', () => {
+    const dependency = { ...makeSkill('base'), dependsOn: [] };
+    const dependent = { ...makeSkill('derived'), dependsOn: ['BASE'] };
+    const store: SkillUsageStore = {
+      version: 1,
+      records: {
+        base: { name: 'base', useCount: 1, viewCount: 3, lastUsedAt: nowMinusDays(120), pinned: false, archived: false, firstSeenAt: nowMinusDays(180), updatedAt: nowMinusDays(120) },
+      },
+    };
+
+    const action = findStaleSkills([dependency, dependent], store, DEFAULT_CURATOR_CONFIG)
+      .find((entry) => entry.skill === 'base');
+
+    expect(action?.kind).toBe('skip-dependency');
+    expect(action?.reason).toContain('derived');
+  });
+
   it('honors per-run archive cap', async () => {
     const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harness-curator-cap-'));
     const skillsDir = path.join(projectDir, '.harness', 'skills');
